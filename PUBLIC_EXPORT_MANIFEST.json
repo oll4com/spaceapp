@@ -1,7 +1,7 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "8aa8ddb2e8a42474a4d9462750c3e51c3c00198d",
+  "sourceCommit": "b258fd446993effa412d6badf7385b51dc6ede69",
   "fileCount": 397,
   "transformations": 32,
   "files": [
@@ -115,8 +115,8 @@
     },
     {
       "path": "apps/api/package.json",
-      "sourceObjectId": "6987981d2ca981bf77f1c168eb2952a82aa7289e",
-      "sha256": "cc83e7accacce387460098237fb2aca3076a9862d9b5b1f211bfad4f0a940a60",
+      "sourceObjectId": "b68f7eb065551222edc8441c6aed2155cb1b1462",
+      "sha256": "bc615ff4a6f5bd0da8766abfc0ba4ee5bc0e4594d0d09c04db14644e93f05390",
       "size": 1204
     },
     {
@@ -1195,8 +1195,8 @@
     },
     {
       "path": "apps/worker/package.json",
-      "sourceObjectId": "c267511e6dce03f3078bce1fb8c3e1f449ad0f11",
-      "sha256": "1250a52c59b4f67f2ebeabb1b12cc782ca1c276139974d5fbfaf5ff3789899ed",
+      "sourceObjectId": "68c52e6b178c6d2cd4cb80a143a2714d994b1f63",
+      "sha256": "8a84ac61138afabb6f9b799cb022c8641451108dbf2546004800da3783740270",
       "size": 802
     },
     {
@@ -1435,9 +1435,9 @@
     },
     {
       "path": "package-lock.json",
-      "sourceObjectId": "ae7b3cc51f7a4936be239f61bc6515ef0f887c3f",
-      "sha256": "651a5252dae41b0cb513a86f41719150687cf589273324675808fe6a7bd00c99",
-      "size": 283090
+      "sourceObjectId": "199da06e76a7d40457bbbdc858130303441d9c2f",
+      "sha256": "1fdee3d4cf25c38437358726ededd5453101e89023e23f092256bc766610b065",
+      "size": 282929
     },
     {
       "path": "package.json",
@@ -2329,9 +2329,9 @@
     },
     {
       "path": "scripts/tests/public-package-metadata.test.mjs",
-      "sourceObjectId": "0b12fa9fedf312e2a087558b65d14fadb76e7bc2",
-      "sha256": "7e6f3246147cd28fbba8c28dfff311da611fcb29960b71643ed3bfd6f6a0a517",
-      "size": 6021
+      "sourceObjectId": "172bb771cafad64d8fdb0bf94e088015f0fc0e71",
+      "sha256": "a3761f62be417d75771723d434ec4340c4f9d02a6d76ddc0b51a30a4766308bc",
+      "size": 6956
     },
     {
       "path": "scripts/tests/public-release-readiness.test.mjs",

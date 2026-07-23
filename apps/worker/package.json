@@ -18,10 +18,10 @@
     "@space/contracts": "0.1.0",
     "@space/db": "0.1.0",
     "@space/memory-graph": "0.1.0",
-    "@temporalio/activity": "1.16.2",
-    "@temporalio/client": "1.16.2",
-    "@temporalio/worker": "1.16.2",
-    "@temporalio/workflow": "1.16.2",
+    "@temporalio/activity": "1.20.3",
+    "@temporalio/client": "1.20.3",
+    "@temporalio/worker": "1.20.3",
+    "@temporalio/workflow": "1.20.3",
     "undici": "8.7.0"
   },
   "devDependencies": {

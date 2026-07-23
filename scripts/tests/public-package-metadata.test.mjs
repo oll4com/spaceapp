@@ -101,6 +101,34 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
   }]);
 });
 
+test("Temporal dependencies use SDK releases with patched transitive packages", async () => {
+  const apiPackage = JSON.parse(
+    await readFile(join(root, "apps", "api", "package.json"), "utf8")
+  );
+  const workerPackage = JSON.parse(
+    await readFile(join(root, "apps", "worker", "package.json"), "utf8")
+  );
+  const lockfile = JSON.parse(
+    await readFile(join(root, "package-lock.json"), "utf8")
+  );
+  const expectedVersion = "1.20.3";
+
+  assert.equal(apiPackage.dependencies["@temporalio/client"], expectedVersion);
+  for (const name of [
+    "@temporalio/activity",
+    "@temporalio/client",
+    "@temporalio/worker",
+    "@temporalio/workflow"
+  ]) {
+    assert.equal(workerPackage.dependencies[name], expectedVersion);
+  }
+  assert.equal(
+    lockfile.packages["node_modules/@temporalio/core-bridge"].version,
+    expectedVersion
+  );
+  assert.equal(lockfile.packages["node_modules/protobufjs"].version, "7.6.5");
+});
+
 test("public policy files are present and point security reports to a private channel", async () => {
   const license = await readFile(join(root, "LICENSE"), "utf8");
   const security = await readFile(join(root, "SECURITY.md"), "utf8");
