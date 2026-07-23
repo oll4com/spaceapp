@@ -50,7 +50,7 @@ test("security workflow scans secrets, dependencies, source, images, and emits a
   assert.deepEqual(
     [...security.matchAll(/uses:\s+aquasecurity\/trivy-action@([^\s]+)/g)]
       .map((match) => match[1]),
-    ["v0.33.1", "v0.33.1"]
+    ["v0.36.0", "v0.36.0"]
   );
   assert.match(security, /severity: HIGH,CRITICAL/);
   assert.match(security, /anchore\/sbom-action/);
