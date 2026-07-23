@@ -52,6 +52,10 @@ test("security workflow scans secrets, dependencies, source, images, and emits a
       .map((match) => match[1]),
     ["v0.36.0", "v0.36.0"]
   );
+  assert.equal(
+    [...security.matchAll(/limit-severities-for-sarif:\s+true/g)].length,
+    2
+  );
   assert.match(security, /severity: HIGH,CRITICAL/);
   assert.match(security, /anchore\/sbom-action/);
   assert.match(security, /github\/codeql-action\/analyze/);

@@ -14,10 +14,13 @@ RUN npm ci --no-audit --no-fund \
 
 FROM node:${NODE_VERSION}-trixie-slim AS runtime-base
 ARG TARGETARCH
+ARG NPM_VERSION=11.18.0
 ENV NODE_ENV=production \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
-RUN apt-get update \
+RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSION}" \
+    && npm cache clean --force \
+    && apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git gosu postgresql-client ripgrep \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 spaceapp \

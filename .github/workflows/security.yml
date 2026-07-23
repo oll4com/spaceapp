@@ -49,6 +49,7 @@ jobs:
           scan-type: fs
           scan-ref: .
           format: sarif
+          limit-severities-for-sarif: true
           output: trivy-filesystem.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
@@ -134,6 +135,7 @@ jobs:
         with:
           image-ref: spaceapp-${{ matrix.target }}:security-scan
           format: sarif
+          limit-severities-for-sarif: true
           output: trivy-${{ matrix.target }}.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true

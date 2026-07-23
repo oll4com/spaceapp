@@ -14,6 +14,11 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   assert.match(dockerfile, /FROM .* AS browser/);
   assert.match(dockerfile, /FROM .* AS cli/);
   assert.match(dockerfile, /ARG TARGETARCH/);
+  assert.match(dockerfile, /ARG NPM_VERSION=11\.18\.0/);
+  assert.match(
+    normalizedDockerfile,
+    /npm install --global --ignore-scripts --no-audit --no-fund "npm@\$\{NPM_VERSION\}"/
+  );
   assert.match(dockerfile, /await r\.json\(\)/);
   assert.match(dockerfile, /body\.ok !== true/);
   assert.match(dockerfile, /rotate-owner-setup-token\.mjs/);
