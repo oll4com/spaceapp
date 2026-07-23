@@ -1,3 +1,4 @@
+import "./container-image-size-budget.test.mjs";
 import "./portable-backup-restore.test.mjs";
 import "./public-compose-config.test.mjs";
 import "./public-docker-distribution.test.mjs";

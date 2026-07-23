@@ -6,8 +6,8 @@ clean-history export of one verified commit.
 
 No npm package, GHCR image, GitHub repository, tag, or release is published
 merely by running the preparation checks below. Publication requires separate
-maintainer authorization and the protected `public-release` GitHub
-environment.
+maintainer authorization and authenticated maintainer sessions. Never request
+or record registry credentials in issues, documentation, or chat.
 
 ## 1. Prepare the candidate
 
@@ -33,6 +33,7 @@ The candidate is blocked when:
   private network value, personal-memory path, credential-shaped value, secret
   file, runtime data, symlink, or generated dependency/build directory;
 - the npm tarball or image inventory differs from the reviewed pins;
+- a core, browser, or CLI image exceeds its enforced size budget;
 - Windows, macOS, Linux, amd64, or arm64 support is missing without an explicit
   release-note exception;
 - browser setup proof has console/network failures;
@@ -57,7 +58,7 @@ Inspect the export, then create a new Git object graph inside that directory:
 cd /absolute/path/to/spaceapp-public-export
 git init --initial-branch=main
 git add .
-git commit -m "release: SpaceApp 0.1.0-alpha.1"
+git commit -m "release: SpaceApp 0.1.0"
 ```
 
 Never add the private repository as a remote, push its branches/tags, copy its
@@ -76,28 +77,53 @@ The release workflow defaults to verification only. It must:
 - run the OS launcher matrix;
 - build core, CLI, and browser targets for the declared architectures;
 - scan source and images for high/critical vulnerabilities;
-- generate SBOMs and preserve build provenance;
+- generate SBOMs and preserve candidate evidence;
+- enforce core, browser, and CLI image-size budgets;
 - create the npm tarball and inspect its file list;
 - upload candidate artifacts only to the private workflow run.
 
-Tag pushes do not publish packages. The workflow's `publish` input defaults to
-`false`.
+Tag pushes do not publish packages. The candidate workflow has no publish
+permission, registry login, or publish job.
 
 ## 4. Authorized publication
 
 Only a maintainer who has reviewed the clean-history commit and clean-room
-evidence may:
+evidence may publish. Authenticate locally with GitHub/GHCR and `npm login`;
+never paste tokens into an agent conversation. When npm trusted publishing is
+configured for the public repository, run the npm step from that approved OIDC
+workflow and include provenance there.
 
-1. approve the protected `public-release` environment;
-2. run the release workflow manually with the exact alpha version and
-   `publish=true`;
-3. publish `run-spaceapp` with npm dist-tag `alpha` and provenance;
-4. publish matching `spaceapp-core`, `spaceapp-cli`, and
-   `spaceapp-browser` multi-architecture GHCR manifests;
-5. create the matching Git tag and GitHub prerelease from the clean-history
-   repository;
-6. verify the public npm metadata, image digests, SBOMs, provenance, and a
-   completely fresh install.
+Publish immutable multi-architecture images before making the launcher
+installable:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 --target core \
+  --tag ghcr.io/oll4com/spaceapp-core:0.1.0 --push .
+docker buildx build --platform linux/amd64,linux/arm64 --target cli \
+  --tag ghcr.io/oll4com/spaceapp-cli:0.1.0 --push .
+docker buildx build --platform linux/amd64,linux/arm64 --target browser \
+  --tag ghcr.io/oll4com/spaceapp-browser:0.1.0 --push .
+```
+
+Verify each manifest and digest, then publish the launcher to the staging
+dist-tag from the sanitized clean-history source:
+
+```bash
+npm publish ./packages/run-spaceapp --tag next
+```
+
+Perform a fresh Linux install from `run-spaceapp@next`, complete the 8 GB light
+profile acceptance, and run the guided macOS and Windows Docker Desktop smokes.
+Only after all three platform checks pass, promote the exact package:
+
+```bash
+npm dist-tag add run-spaceapp@0.1.0 latest
+```
+
+Finally create signed/annotated `v0.1.0` source metadata and the GitHub release
+from the clean-history repository. Verify public npm metadata, GHCR
+architecture manifests/digests, SBOMs, provenance, and a completely fresh
+install using the documented command.
 
 Raw provider credentials, production secrets, or private clean-room state must
 never be added to GitHub Actions secrets. Registry credentials must use the
@@ -108,10 +134,11 @@ platform's protected secret or trusted-publishing mechanism.
 If post-publication verification fails:
 
 - move installation guidance back to the last verified version;
-- restore the npm `alpha` dist-tag to that version;
+- restore the npm `latest` dist-tag to the last verified version;
+- remove or move the `next` dist-tag when it points to the affected package;
 - mark the affected GitHub release as withdrawn and document the reason;
 - do not delete immutable image tags or rewrite public Git history;
-- publish a fixed alpha with a new version;
+- publish a fixed patch release with a new version;
 - tell affected owners whether `spaceapp rollback` is sufficient or whether a
   pre-update backup restore is required.
 

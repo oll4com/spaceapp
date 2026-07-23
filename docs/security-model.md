@@ -1,6 +1,6 @@
 # SpaceApp security model
 
-SpaceApp's alpha security boundary is one trusted owner operating one
+SpaceApp's security boundary is one trusted owner operating one
 self-hosted instance. It does not provide tenant isolation, team roles, or a
 SaaS control plane.
 
@@ -45,10 +45,10 @@ SaaS control plane.
 
 Loopback binding protects only against direct network access. Owners who expose
 SpaceApp through a reverse proxy are responsible for TLS, proxy access policy,
-firewall rules, updates, backups, and log retention. Alpha installations should
-not be placed directly on the public Internet.
+firewall rules, updates, backups, and log retention. Self-hosted installations
+should not be placed directly on the public Internet.
 
-## Out of scope for the alpha
+## Out of scope
 
 - malicious or compromised host administrators;
 - isolation between multiple mutually untrusted users;

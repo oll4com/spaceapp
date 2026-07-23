@@ -1,21 +1,29 @@
 # run-spaceapp
 
-Cross-platform Docker launcher for the SpaceApp public alpha.
+Cross-platform Docker launcher for SpaceApp.
 
-> The package is not published yet. The command below is the intended
-> installation path after the first alpha release.
+Linux and macOS:
 
 ```bash
-npm install --global run-spaceapp@alpha
-spaceapp init
-spaceapp doctor
-spaceapp workspace add /absolute/path/to/a/project
-spaceapp up
-spaceapp open
+npm install -g run-spaceapp && spaceapp install
 ```
 
-The launcher requires Node.js 20.11 or newer and Docker Compose. It stores only
-non-secret configuration in the current user's platform config directory:
+Windows 11 PowerShell:
+
+```powershell
+npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
+```
+
+The launcher requires Node.js 20.11 or newer, 4 CPUs, 8 GB RAM, 15 GiB free
+disk, and Docker Compose. `spaceapp install` initializes, checks, downloads,
+starts, and opens SpaceApp. It selects the `light` profile below 12 GiB RAM and
+the `standard` profile otherwise; override this with `--profile light` or
+`--profile standard`.
+
+Light mode retains every bundled CLI and the core data/workflow services while
+omitting managed Chromium. Resource limits are maximums, not immediate RAM or
+disk reservations. The launcher stores only non-secret configuration in the
+current user's platform config directory:
 
 - Linux: `$XDG_CONFIG_HOME/spaceapp` or `$HOME/.config/spaceapp`
 - macOS: `$HOME/Library/Application Support/SpaceApp`

@@ -1,10 +1,10 @@
-name: Public alpha candidate
+name: Public release candidate
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Exact alpha version from packages/run-spaceapp/package.json
+        description: Exact stable version from packages/run-spaceapp/package.json
         required: true
         type: string
 
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: public-alpha-candidate-${{ inputs.version }}-${{ github.sha }}
+  group: public-release-candidate-${{ inputs.version }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -32,7 +32,6 @@ jobs:
         run: >-
           node scripts/public-release-readiness.mjs
           --version "${{ inputs.version }}"
-          --allow-review-required
 
       - name: Create sanitized source candidate
         run: >-
@@ -70,7 +69,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: public-alpha-source-candidate-${{ inputs.version }}
+          name: public-release-source-candidate-${{ inputs.version }}
           path: ${{ runner.temp }}/release-artifacts/
           if-no-files-found: error
 
@@ -105,6 +104,15 @@ jobs:
           target: ${{ matrix.target }}
           platforms: linux/${{ matrix.arch }}
           push: false
+          load: true
+          tags: spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
           provenance: false
           cache-from: type=gha,scope=candidate-${{ matrix.target }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=candidate-${{ matrix.target }}-${{ matrix.arch }}
+
+      - name: Enforce container size budget
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: >-
+          node scripts/container-image-size-budget.mjs
+          --target "${{ matrix.target }}"
+          --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"

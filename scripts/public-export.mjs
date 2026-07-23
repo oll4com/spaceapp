@@ -42,6 +42,7 @@ const rootFiles = new Set([
   "NOTICE",
   "README.md",
   "SECURITY.md",
+  "SUPPORT.md",
   "THIRD_PARTY_NOTICES.md",
   "package-lock.json",
   "package.json",
@@ -51,14 +52,16 @@ const rootFiles = new Set([
 const publicDocs = new Set([
   "docs/clean-room-testing.md",
   "docs/cli-providers.md",
-  "docs/decisions/ADR-010-public-alpha-distribution.md",
+  "docs/decisions/ADR-010-public-distribution.md",
   "docs/getting-started.md",
+  "docs/legal/cli-distribution-policy.json",
   "docs/operations.md",
   "docs/public-release.md",
   "docs/security-model.md"
 ]);
 
 const publicScripts = new Set([
+  "scripts/container-image-size-budget.mjs",
   "scripts/fix-build-permissions.mjs",
   "scripts/portable-backup.mjs",
   "scripts/portable-restore.mjs",
@@ -67,6 +70,7 @@ const publicScripts = new Set([
   "scripts/reset-owner-password.mjs",
   "scripts/rotate-owner-setup-token.mjs",
   "scripts/space-hygiene-check.mjs",
+  "scripts/tests/container-image-size-budget.test.mjs",
   "scripts/tests/portable-backup-restore.test.mjs",
   "scripts/tests/public-compose-config.test.mjs",
   "scripts/tests/public-docker-distribution.test.mjs",
@@ -86,8 +90,11 @@ const byteStablePublicFiles = new Set([
 
 const publicAppTests = new Set([
   "apps/api/tests/cli-runtime-descriptors.test.ts",
+  "apps/api/tests/constant-time-token.test.ts",
   "apps/api/tests/owner-setup-bootstrap.test.ts",
+  "apps/api/tests/route-rate-limits.test.ts",
   "apps/api/tests/setup.test.ts",
+  "apps/web/tests/clipboard-html.test.ts",
   "apps/web/tests/owner-setup.test.tsx"
 ]);
 

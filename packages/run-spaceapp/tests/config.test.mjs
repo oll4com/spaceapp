@@ -8,6 +8,7 @@ import {
   createDefaultConfig,
   initializeInstallation,
   loadConfig,
+  resolveInstallProfile,
   resolveSpaceAppHome,
   saveConfig
 } from "../src/index.mjs";
@@ -25,23 +26,61 @@ test("resolves an explicit home before platform defaults", () => {
 });
 
 test("default config is versioned, loopback-only, and contains no secret fields", () => {
-  const config = createDefaultConfig({ version: "0.1.0-alpha.1" });
+  const config = createDefaultConfig({ version: "0.1.0" });
   assert.deepEqual(config, {
-    schemaVersion: 1,
-    version: "0.1.0-alpha.1",
+    schemaVersion: 2,
+    version: "0.1.0",
     previousVersion: null,
     bindHost: "127.0.0.1",
     port: 4911,
     telemetry: false,
-    profile: "full",
+    profile: "standard",
     workspaces: []
   });
   assert.doesNotMatch(JSON.stringify(config), /password|secret|token|api.?key/i);
 });
 
+test("auto profile selects light below 12 GB and standard at or above 12 GB", () => {
+  const gibibyte = 1024 ** 3;
+
+  assert.equal(resolveInstallProfile("auto", 8 * gibibyte), "light");
+  assert.equal(resolveInstallProfile("auto", 12 * gibibyte - 1), "light");
+  assert.equal(resolveInstallProfile("auto", 12 * gibibyte), "standard");
+  assert.equal(resolveInstallProfile("light", 64 * gibibyte), "light");
+  assert.equal(resolveInstallProfile("standard", 8 * gibibyte), "standard");
+  assert.throws(() => resolveInstallProfile("full", 16 * gibibyte), /auto, light, or standard/i);
+});
+
+test("loads legacy full and core profiles through the stable schema migration", async () => {
+  for (const [legacyProfile, stableProfile] of [["full", "standard"], ["core", "light"]]) {
+    const root = await mkdtemp(join(tmpdir(), `spaceapp-config-migration-${legacyProfile}-`));
+    await writeFile(join(root, "config.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      version: "0.1.0",
+      previousVersion: null,
+      bindHost: "127.0.0.1",
+      port: 4911,
+      telemetry: false,
+      profile: legacyProfile,
+      workspaces: []
+    })}\n`);
+
+    assert.deepEqual(await loadConfig(root), {
+      schemaVersion: 2,
+      version: "0.1.0",
+      previousVersion: null,
+      bindHost: "127.0.0.1",
+      port: 4911,
+      telemetry: false,
+      profile: stableProfile,
+      workspaces: []
+    });
+  }
+});
+
 test("config persists atomically with owner-only POSIX permissions", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-config-"));
-  const config = createDefaultConfig({ version: "0.1.0-alpha.1" });
+  const config = createDefaultConfig({ version: "0.1.0" });
 
   await saveConfig(root, config);
 
@@ -53,7 +92,7 @@ test("workspace registration accepts only existing absolute directories and avoi
   const root = await mkdtemp(join(tmpdir(), "spaceapp-workspace-"));
   const workspace = join(root, "project");
   await mkdir(workspace);
-  const config = createDefaultConfig({ version: "0.1.0-alpha.1" });
+  const config = createDefaultConfig({ version: "0.1.0" });
 
   const once = await addWorkspace(config, workspace);
   const twice = await addWorkspace(once, workspace);
@@ -68,7 +107,7 @@ test("workspace registration accepts only existing absolute directories and avoi
 test("saved config rejects secret-shaped fields", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-secret-config-"));
   const config = {
-    ...createDefaultConfig({ version: "0.1.0-alpha.1" }),
+    ...createDefaultConfig({ version: "0.1.0" }),
     apiKey: "must-not-be-written"
   };
 
@@ -83,12 +122,12 @@ test("initialization creates idempotent secrets with owner-only POSIX permission
   await writeFile(join(templateDir, "compose.yml"), "services: {}\n");
 
   const first = await initializeInstallation(root, {
-    version: "0.1.0-alpha.1",
+    version: "0.1.0",
     templateDir
   });
   const passwordBefore = await readFile(join(root, "secrets", "postgres-password"), "utf8");
   const second = await initializeInstallation(root, {
-    version: "0.1.0-alpha.1",
+    version: "0.1.0",
     templateDir
   });
 

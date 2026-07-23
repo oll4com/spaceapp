@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-SpaceApp is pre-release software. Security fixes are provided only for the
-latest published alpha release.
+Security fixes are provided for the latest published `0.1.x` release. Owners
+should update to the newest patch before reporting an already-fixed issue.
 
 ## Reporting a vulnerability
 

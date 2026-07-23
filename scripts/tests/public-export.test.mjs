@@ -111,11 +111,18 @@ test("public path policy excludes internal tests and keeps only reviewed public 
   assert.equal(isPublicExportPath("packages/runtime/tests/store.test.ts"), false);
   assert.equal(isPublicExportPath("apps/api/tests/cli-runtimes.test.ts"), false);
   assert.equal(isPublicExportPath("apps/web/tests/public-deployment-config.test.ts"), false);
+  assert.equal(isPublicExportPath("apps/api/tests/constant-time-token.test.ts"), true);
+  assert.equal(isPublicExportPath("apps/api/tests/route-rate-limits.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/setup.test.ts"), true);
+  assert.equal(isPublicExportPath("apps/web/tests/clipboard-html.test.ts"), true);
   assert.equal(isPublicExportPath("packages/runtime/tests/public-defaults.test.ts"), true);
   assert.equal(isPublicExportPath("packages/run-spaceapp/tests/cli.test.mjs"), true);
+  assert.equal(isPublicExportPath("docs/legal/cli-distribution-policy.json"), true);
+  assert.equal(isPublicExportPath("SUPPORT.md"), true);
   for (const path of [
+    "scripts/container-image-size-budget.mjs",
     "scripts/tests/portable-backup-restore.test.mjs",
+    "scripts/tests/container-image-size-budget.test.mjs",
     "scripts/tests/public-compose-config.test.mjs",
     "scripts/tests/public-docker-distribution.test.mjs",
     "scripts/tests/public-export.test.mjs",

@@ -1,7 +1,7 @@
 # Contributing to SpaceApp
 
-Thank you for helping improve SpaceApp. The project is in alpha, so public
-interfaces may change while we make installation and self-hosting reliable.
+Thank you for helping improve SpaceApp. Public compatibility is documented per
+release; proposed breaking changes need migration notes and maintainer review.
 
 ## Before opening a change
 

@@ -21,7 +21,22 @@ const notices = [
 
 test("public release readiness blocks version drift", () => {
   const result = evaluatePublicRelease({
-    requestedVersion: "0.1.0-alpha.2",
+    requestedVersion: "0.1.1",
+    packageVersion: "0.1.0",
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.blockers, [
+    "Requested version 0.1.1 does not match run-spaceapp 0.1.0."
+  ]);
+});
+
+test("public release readiness blocks prerelease version strings", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.0-alpha.1",
     packageVersion: "0.1.0-alpha.1",
     notices,
     dockerfile: "FROM node:22\n",
@@ -30,14 +45,14 @@ test("public release readiness blocks version drift", () => {
 
   assert.equal(result.ok, false);
   assert.deepEqual(result.blockers, [
-    "Requested version 0.1.0-alpha.2 does not match run-spaceapp 0.1.0-alpha.1."
+    "Requested version 0.1.0-alpha.1 is not a stable semantic version."
   ]);
 });
 
 test("public release readiness requires a positive owner-installed-only Claude record", () => {
   const result = evaluatePublicRelease({
-    requestedVersion: "0.1.0-alpha.1",
-    packageVersion: "0.1.0-alpha.1",
+    requestedVersion: "0.1.0",
+    packageVersion: "0.1.0",
     notices: notices.replace("owner-initiated", "manual"),
     dockerfile: "RUN npm install @anthropic-ai/claude-code@2.1.206\n",
     distributionPolicy: {
@@ -61,8 +76,8 @@ test("public release readiness requires a positive owner-installed-only Claude r
 
 test("public release readiness accepts the exact non-redistribution policy", () => {
   const result = evaluatePublicRelease({
-    requestedVersion: "0.1.0-alpha.1",
-    packageVersion: "0.1.0-alpha.1",
+    requestedVersion: "0.1.0",
+    packageVersion: "0.1.0",
     notices,
     dockerfile: "FROM node:22\n",
     distributionPolicy: policy

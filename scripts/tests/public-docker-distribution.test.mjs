@@ -42,6 +42,17 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/LICENSE \/app\/NOTICE \/app\/THIRD_PARTY_NOTICES\.md \.\//);
 });
 
+test("CLI image removes the npm download cache in the same layer as bundled CLI installation", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const cliStage = dockerfile.match(/FROM runtime-base AS cli([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const normalizedCliStage = cliStage.replace(/\\\r?\n\s*/g, " ");
+
+  assert.match(
+    normalizedCliStage,
+    /RUN npm install[\s\S]*run-deepseek-cli@0\.1\.1[\s\S]*&& npm cache clean --force/
+  );
+});
+
 test("public Compose runs without host Docker access or development credentials", async () => {
   const compose = await readFile(
     join(root, "packages", "run-spaceapp", "templates", "compose.yml"),
@@ -52,7 +63,17 @@ test("public Compose runs without host Docker access or development credentials"
     assert.match(compose, new RegExp(`^  ${service}:`, "m"));
   }
   assert.match(compose, /127\.0\.0\.1|SPACEAPP_BIND_HOST/);
-  assert.match(compose, /SPACE_BROWSER_SESSIONS_ENABLED: "true"/);
+  assert.match(compose, /SPACE_BROWSER_SESSIONS_ENABLED: "\$\{SPACEAPP_BROWSER_ENABLED\}"/);
+  assert.match(compose, /^    profiles: \["standard"\]$/m);
+  for (const variable of [
+    "SPACEAPP_CORE_MEMORY_LIMIT",
+    "SPACEAPP_CLI_MEMORY_LIMIT",
+    "SPACEAPP_BROWSER_MEMORY_LIMIT",
+    "SPACEAPP_POSTGRES_MEMORY_LIMIT",
+    "SPACEAPP_TEMPORAL_MEMORY_LIMIT"
+  ]) {
+    assert.match(compose, new RegExp(`mem_limit: "\\$\\{${variable}\\}"`));
+  }
   assert.match(compose, /SPACE_CODEX_HOME: \/var\/lib\/spaceapp-cli\/providers\/codex/);
   assert.match(compose, /SPACE_CODEX_GOALS_DB_PATH: \/var\/lib\/spaceapp\/codex-goals\.sqlite/);
   assert.match(compose, /SPACE_CODEX_APP_SERVER_COMMAND: \/usr\/local\/bin\/codex-vscode-parity/);

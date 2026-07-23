@@ -1,6 +1,6 @@
 # Welcome to SpaceApp
 
-This is the immutable starter memory shipped with the public alpha. Add your
+This is the immutable starter memory shipped with SpaceApp. Add your
 own notes through SpaceApp; mutable owner memory is stored separately and is
 never included in images or source releases.
 

@@ -7,9 +7,12 @@ import {
   composeCommand,
   credentialProviders,
   initializeInstallation,
+  inspectSystemResources,
+  installResourceChecks,
   loadConfig,
   removeCredential,
   removeWorkspace,
+  resolveInstallProfile,
   resolveSpaceAppHome,
   saveConfig,
   selectLatestBackupId,
@@ -24,7 +27,8 @@ export async function run(argv, {
   stdout = process.stdout,
   stderr = process.stderr,
   stdin = process.stdin,
-  execute = executeCommand
+  execute = executeCommand,
+  inspectResources = inspectSystemResources
 } = {}) {
   const [command = "help", ...args] = argv;
   const root = resolveSpaceAppHome({ env, platform });
@@ -37,6 +41,18 @@ export async function run(argv, {
   if (command === "--version" || command === "-v") {
     stdout.write(`${version}\n`);
     return 0;
+  }
+  if (command === "install") {
+    return installCommand(args, {
+      root,
+      version,
+      platform,
+      stdin,
+      stdout,
+      stderr,
+      execute,
+      inspectResources
+    });
   }
   if (command === "init") {
     assertNoArgs(args, "init");
@@ -55,7 +71,7 @@ export async function run(argv, {
 
   if (["up", "down", "status", "logs"].includes(command)) {
     assertNoArgs(args, command);
-    return execute(composeCommand(command, root), { stdin, stdout, stderr });
+    return execute(composeCommand(command, root, { profile: config.profile }), { stdin, stdout, stderr });
   }
   if (command === "open") {
     assertNoArgs(args, "open");
@@ -63,19 +79,19 @@ export async function run(argv, {
   }
   if (command === "doctor") {
     assertNoArgs(args, "doctor");
-    return doctor({ root, stdout, stderr, execute, stdin });
+    return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources });
   }
   if (command === "workspace") {
     return workspaceCommand(args, { root, config, stdout });
   }
   if (command === "credentials") {
-    return credentialsCommand(args, { root, stdin, stdout, stderr, execute });
+    return credentialsCommand(args, { root, config, stdin, stdout, stderr, execute });
   }
   if (command === "provider") {
-    return providerCommand(args, { root, stdin, stdout, stderr, execute });
+    return providerCommand(args, { root, config, stdin, stdout, stderr, execute });
   }
   if (command === "owner") {
-    return ownerCommand(args, { root, stdin, stdout, stderr, execute });
+    return ownerCommand(args, { root, config, stdin, stdout, stderr, execute });
   }
   if (command === "update") {
     return updateCommand(args, { root, config, version, stdin, stdout, stderr, execute });
@@ -91,12 +107,12 @@ export async function run(argv, {
       previousVersion: config.version
     };
     await writeRuntimeFiles(root, rollback);
-    const pullCode = await execute(composeCommand("pull", root), { stdin, stdout, stderr });
+    const pullCode = await execute(composeCommand("pull", root, { profile: rollback.profile }), { stdin, stdout, stderr });
     if (pullCode !== 0) {
       await writeRuntimeFiles(root, config);
       return pullCode;
     }
-    const upCode = await execute(composeCommand("up", root), { stdin, stdout, stderr });
+    const upCode = await execute(composeCommand("up", root, { profile: rollback.profile }), { stdin, stdout, stderr });
     if (upCode !== 0) {
       await writeRuntimeFiles(root, config);
       return upCode;
@@ -107,7 +123,7 @@ export async function run(argv, {
   }
   if (command === "backup") {
     assertNoArgs(args, command);
-    return execute(composeCommand("backup", root), { stdin, stdout, stderr });
+    return execute(composeCommand("backup", root, { profile: config.profile }), { stdin, stdout, stderr });
   }
   if (command === "restore") {
     assertNoArgs(args, command);
@@ -121,17 +137,20 @@ export async function run(argv, {
       throw new Error("Restore cancelled.");
     }
     const backupId = await selectLatestBackupId(root);
-    const backupCode = await execute(composeCommand("backup", root), { stdin, stdout, stderr });
+    const backupCode = await execute(composeCommand("backup", root, { profile: config.profile }), { stdin, stdout, stderr });
     if (backupCode !== 0) return backupCode;
-    const stopCode = await execute(composeCommand("stopForRestore", root), { stdin, stdout, stderr });
+    const stopCode = await execute(composeCommand("stopForRestore", root, { profile: config.profile }), { stdin, stdout, stderr });
     if (stopCode !== 0) return stopCode;
-    const restoreCode = await execute(composeCommand("restore", root, { backupId }), { stdin, stdout, stderr });
+    const restoreCode = await execute(
+      composeCommand("restore", root, { backupId, profile: config.profile }),
+      { stdin, stdout, stderr }
+    );
     if (restoreCode !== 0) return restoreCode;
-    return execute(composeCommand("up", root), { stdin, stdout, stderr });
+    return execute(composeCommand("up", root, { profile: config.profile }), { stdin, stdout, stderr });
   }
   if (command === "uninstall") {
     if (args.length === 0) {
-      const code = await execute(composeCommand("down", root), { stdin, stdout, stderr });
+      const code = await execute(composeCommand("down", root, { profile: config.profile }), { stdin, stdout, stderr });
       if (code === 0) {
         stdout.write(`Containers removed. Data and configuration remain at ${root}.\n`);
       }
@@ -142,12 +161,88 @@ export async function run(argv, {
       if (confirmation !== "DELETE") {
         throw new Error("Purge cancelled.");
       }
-      return execute(composeCommand("purge", root), { stdin, stdout, stderr });
+      return execute(composeCommand("purge", root, { profile: config.profile }), { stdin, stdout, stderr });
     }
     throw new Error("Usage: spaceapp uninstall [--purge-data]");
   }
 
   throw new Error(`Unknown command "${command}". Run "spaceapp help".`);
+}
+
+async function installCommand(args, {
+  root,
+  version,
+  platform,
+  stdin,
+  stdout,
+  stderr,
+  execute,
+  inspectResources
+}) {
+  const { requestedProfile, noOpen } = parseInstallArgs(args);
+  const resources = await inspectResources(root);
+  const profile = resolveInstallProfile(requestedProfile, resources.totalMemoryBytes);
+  const result = await initializeInstallation(root, { version, profile });
+
+  stdout.write(
+    `Selected profile: ${profile} (${formatGigabytes(resources.totalMemoryBytes)} GB system memory detected).\n`
+  );
+  stdout.write(`SpaceApp installation root: ${root}\n`);
+  if (result.setupToken) {
+    stdout.write(`One-time setup token: ${result.setupToken}\n`);
+    stdout.write("Store it temporarily; it expires after first owner setup.\n");
+  }
+
+  const doctorCode = await doctor({
+    root,
+    platform,
+    stdout,
+    stderr,
+    execute,
+    stdin,
+    inspectResources,
+    resources
+  });
+  if (doctorCode !== 0) {
+    stderr.write("Installation stopped before downloading images. Fix the failed checks and run the same command again.\n");
+    return doctorCode;
+  }
+  const pullCode = await execute(composeCommand("pull", root, { profile }), { stdin, stdout, stderr });
+  if (pullCode !== 0) return pullCode;
+  const upCode = await execute(composeCommand("up", root, { profile }), { stdin, stdout, stderr });
+  if (upCode !== 0) return upCode;
+
+  const url = `http://${result.config.bindHost}:${result.config.port}`;
+  stdout.write(`SpaceApp is running at ${url}\n`);
+  stdout.write('Next: add CLI credentials with "spaceapp credentials set <provider>".\n');
+  if (noOpen) return 0;
+  return openBrowser(url, platform, execute, { stdin, stdout, stderr });
+}
+
+function parseInstallArgs(args) {
+  let requestedProfile = "auto";
+  let noOpen = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--no-open" && !noOpen) {
+      noOpen = true;
+      continue;
+    }
+    if (argument === "--profile" && index + 1 < args.length) {
+      requestedProfile = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--profile=")) {
+      requestedProfile = argument.slice("--profile=".length);
+      continue;
+    }
+    throw new Error("Usage: spaceapp install [--profile auto|light|standard] [--no-open]");
+  }
+  if (!["auto", "light", "standard"].includes(requestedProfile)) {
+    throw new Error("Usage: spaceapp install [--profile auto|light|standard] [--no-open]");
+  }
+  return { requestedProfile, noOpen };
 }
 
 async function workspaceCommand(args, { root, config, stdout }) {
@@ -179,7 +274,7 @@ async function workspaceCommand(args, { root, config, stdout }) {
   throw new Error("Usage: spaceapp workspace <add|remove|list>");
 }
 
-async function credentialsCommand(args, { root, stdin, stdout, stderr, execute }) {
+async function credentialsCommand(args, { root, config, stdin, stdout, stderr, execute }) {
   const [action, provider, ...rest] = args;
   if (action === "list" && args.length === 1) {
     stdout.write(`${JSON.stringify(credentialProviders(), null, 2)}\n`);
@@ -191,7 +286,10 @@ async function credentialsCommand(args, { root, stdin, stdout, stderr, execute }
     }
     const value = await readSecret(stdin, stdout, `Enter ${provider} credential: `);
     await writeCredential(root, provider, value);
-    const syncCode = await execute(composeCommand("syncCredentials", root), { stdin, stdout, stderr });
+    const syncCode = await execute(
+      composeCommand("syncCredentials", root, { profile: config.profile }),
+      { stdin, stdout, stderr }
+    );
     if (syncCode !== 0) {
       stderr.write(`Credential stored for ${provider}, but the CLI service could not be refreshed.\n`);
       return syncCode;
@@ -204,7 +302,10 @@ async function credentialsCommand(args, { root, stdin, stdout, stderr, execute }
       throw new Error("Usage: spaceapp credentials remove <provider>");
     }
     const removed = await removeCredential(root, provider);
-    const syncCode = await execute(composeCommand("syncCredentials", root), { stdin, stdout, stderr });
+    const syncCode = await execute(
+      composeCommand("syncCredentials", root, { profile: config.profile }),
+      { stdin, stdout, stderr }
+    );
     if (syncCode !== 0) {
       stderr.write(`Credential file state changed for ${provider}, but the CLI service could not be refreshed.\n`);
       return syncCode;
@@ -215,18 +316,18 @@ async function credentialsCommand(args, { root, stdin, stdout, stderr, execute }
   throw new Error("Usage: spaceapp credentials <set|remove|list>");
 }
 
-async function providerCommand(args, { root, stdin, stdout, stderr, execute }) {
+async function providerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
   if (args.length !== 2 || args[0] !== "install" || args[1] !== "claude") {
     throw new Error("Usage: spaceapp provider install claude");
   }
   stdout.write("Installing Claude Code from Anthropic into this installation's private provider volume.\n");
-  return execute(composeCommand("installClaude", root), { stdin, stdout, stderr });
+  return execute(composeCommand("installClaude", root, { profile: config.profile }), { stdin, stdout, stderr });
 }
 
-async function ownerCommand(args, { root, stdin, stdout, stderr, execute }) {
+async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
   if (args.length === 1 && args[0] === "rotate-setup-token") {
     const token = randomBytes(32).toString("base64url");
-    const code = await execute(composeCommand("rotateOwnerSetupToken", root), {
+    const code = await execute(composeCommand("rotateOwnerSetupToken", root, { profile: config.profile }), {
       stdin,
       stdout,
       stderr,
@@ -245,7 +346,7 @@ async function ownerCommand(args, { root, stdin, stdout, stderr, execute }) {
   if (password.length < 12) {
     throw new Error("Owner password must be at least 12 characters.");
   }
-  return execute(composeCommand("resetOwnerPassword", root), {
+  return execute(composeCommand("resetOwnerPassword", root, { profile: config.profile }), {
     stdin,
     stdout,
     stderr,
@@ -264,12 +365,12 @@ async function updateCommand(args, { root, config, version, stdin, stdout, stder
     previousVersion: config.version
   };
   await writeRuntimeFiles(root, updated);
-  const pullCode = await execute(composeCommand("pull", root), { stdin, stdout, stderr });
+  const pullCode = await execute(composeCommand("pull", root, { profile: updated.profile }), { stdin, stdout, stderr });
   if (pullCode !== 0) {
     await writeRuntimeFiles(root, config);
     return pullCode;
   }
-  const upCode = await execute(composeCommand("up", root), { stdin, stdout, stderr });
+  const upCode = await execute(composeCommand("up", root, { profile: updated.profile }), { stdin, stdout, stderr });
   if (upCode !== 0) {
     await writeRuntimeFiles(root, config);
     return upCode;
@@ -279,20 +380,36 @@ async function updateCommand(args, { root, config, version, stdin, stdout, stder
   return 0;
 }
 
-async function doctor({ root, stdout, stderr, execute, stdin }) {
+async function doctor({
+  root,
+  platform,
+  stdout,
+  stderr,
+  execute,
+  stdin,
+  inspectResources,
+  resources
+}) {
+  const detectedResources = resources ?? await inspectResources(root);
   const checks = [
     { name: "Node.js", ok: Number(process.versions.node.split(".")[0]) >= 20, detail: process.version },
-    { name: "Configuration", ok: true, detail: root }
+    { name: "Configuration", ok: true, detail: root },
+    ...installResourceChecks(detectedResources)
   ];
+  let dockerMissing = false;
   for (const probe of [
     { name: "Docker", command: "docker", args: ["--version"] },
     { name: "Docker Compose", command: "docker", args: ["compose", "version"] }
   ]) {
     const code = await execute(probe, { stdin, stdout: null, stderr: null });
+    if (code !== 0) dockerMissing = true;
     checks.push({ name: probe.name, ok: code === 0, detail: code === 0 ? "available" : "missing" });
   }
   for (const check of checks) {
     (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
+  }
+  if (dockerMissing) {
+    stderr.write(`${dockerInstallHelp(platform)}\n`);
   }
   return checks.every((check) => check.ok) ? 0 : 1;
 }
@@ -377,6 +494,20 @@ function assertNoArgs(args, command) {
   }
 }
 
+function dockerInstallHelp(platform) {
+  if (platform === "win32") {
+    return "Install Docker Desktop with its WSL2 backend, start it, then run spaceapp install again: https://docs.docker.com/desktop/setup/install/windows-install/";
+  }
+  if (platform === "darwin") {
+    return "Install and start Docker Desktop for macOS, then run spaceapp install again: https://docs.docker.com/desktop/setup/install/mac-install/";
+  }
+  return "Install Docker Engine and the Docker Compose plugin, then run spaceapp install again: https://docs.docker.com/engine/install/";
+}
+
+function formatGigabytes(bytes) {
+  return Math.floor((bytes / 1024 ** 3) * 10) / 10;
+}
+
 async function packageVersion() {
   const packageJson = new URL("../package.json", import.meta.url);
   return JSON.parse(await readFile(packageJson, "utf8")).version;
@@ -388,6 +519,8 @@ function helpText() {
 Usage: spaceapp <command>
 
   init                              Create a local SpaceApp installation
+  install [--profile auto|light|standard] [--no-open]
+                                    Initialize, check, download, start, and open
   up | down | status | logs         Manage the Docker application
   open                              Open the local web application
   doctor                            Check Node, Docker, and Compose

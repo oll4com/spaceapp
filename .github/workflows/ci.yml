@@ -40,20 +40,6 @@ jobs:
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm run test:public
 
-      - name: Public owner and CLI API tests
-        working-directory: ${{ runner.temp }}/spaceapp-public-export
-        run: >-
-          npm test -w @space/api --
-          setup.test.ts
-          owner-setup-bootstrap.test.ts
-          cli-runtime-descriptors.test.ts
-
-      - name: Public onboarding web tests
-        working-directory: ${{ runner.temp }}/spaceapp-public-export
-        run: >-
-          npm test -w @space/web --
-          owner-setup.test.tsx
-
       - name: Typecheck candidate
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm run check

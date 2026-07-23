@@ -10,13 +10,13 @@ import {
 
 const home = resolve(tmpdir(), "spaceapp-home");
 const config = {
-  schemaVersion: 1,
-  version: "0.1.0-alpha.1",
+  schemaVersion: 2,
+  version: "0.1.0",
   previousVersion: null,
   bindHost: "127.0.0.1",
   port: 4911,
   telemetry: false,
-  profile: "full",
+  profile: "standard",
   workspaces: [
     {
       id: "project-a1b2c3d4",
@@ -63,17 +63,37 @@ test("compose project identity is stable for the same installation root", () => 
       "--env-file", join(home, "runtime.env"),
       "-f", join(home, "compose.yml"),
       "-f", join(home, "compose.workspaces.yml"),
+      "--profile", "standard",
       "up", "-d", "--remove-orphans"
     ]
   });
 });
 
-test("runtime env contains only non-secret runtime settings", () => {
-  const env = renderRuntimeEnv(config);
-  assert.match(env, /^SPACEAPP_IMAGE_TAG=0\.1\.0-alpha\.1$/m);
-  assert.match(env, /^SPACEAPP_BIND_HOST=127\.0\.0\.1$/m);
-  assert.match(env, /^SPACEAPP_TELEMETRY=false$/m);
-  assert.doesNotMatch(env, /password|secret|token|api.?key/i);
+test("compose activates the optional browser only for the standard profile", () => {
+  const standard = composeCommand("up", home, { profile: "standard" });
+  const light = composeCommand("up", home, { profile: "light" });
+
+  assert.deepEqual(standard.args.slice(-5), ["--profile", "standard", "up", "-d", "--remove-orphans"]);
+  assert.equal(standard.args.includes("--profile"), true);
+  assert.equal(light.args.includes("--profile"), false);
+  assert.throws(() => composeCommand("up", home, { profile: "full" }), /light or standard/i);
+});
+
+test("runtime env applies bounded light and standard resource settings without secrets", () => {
+  const standard = renderRuntimeEnv(config);
+  const light = renderRuntimeEnv({ ...config, profile: "light" });
+
+  assert.match(standard, /^SPACEAPP_IMAGE_TAG=0\.1\.0$/m);
+  assert.match(standard, /^SPACEAPP_BIND_HOST=127\.0\.0\.1$/m);
+  assert.match(standard, /^SPACEAPP_TELEMETRY=false$/m);
+  assert.match(standard, /^SPACEAPP_BROWSER_ENABLED=true$/m);
+  assert.match(standard, /^SPACEAPP_CORE_MEMORY_LIMIT=4g$/m);
+  assert.match(light, /^SPACEAPP_BROWSER_ENABLED=false$/m);
+  assert.match(light, /^SPACEAPP_CORE_MEMORY_LIMIT=2g$/m);
+  assert.match(light, /^SPACEAPP_CLI_MEMORY_LIMIT=1536m$/m);
+  assert.match(light, /^SPACEAPP_POSTGRES_MEMORY_LIMIT=768m$/m);
+  assert.match(light, /^SPACEAPP_TEMPORAL_MEMORY_LIMIT=768m$/m);
+  assert.doesNotMatch(`${standard}\n${light}`, /password|secret|token|api.?key/i);
 });
 
 test("workspace override renders explicit bind mounts without Docker socket access", () => {

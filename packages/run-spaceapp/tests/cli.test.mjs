@@ -17,6 +17,12 @@ function capture() {
   return { stream, value: () => value };
 }
 
+const eightGigabyteLightHost = Object.freeze({
+  cpuCount: 4,
+  totalMemoryBytes: 8 * 1024 ** 3,
+  freeDiskBytes: 15 * 1024 ** 3
+});
+
 test("init emits a one-time setup token without placing it in config", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-init-"));
   const stdout = capture();
@@ -48,6 +54,104 @@ test("init emits a one-time setup token without placing it in config", async () 
     execute: async () => 0
   });
   assert.doesNotMatch(second.value(), /One-time setup token:/);
+});
+
+test("install auto-selects light on an 8 GB host and completes without opening when requested", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-light-"));
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  const options = {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteLightHost,
+    execute: async (spec) => {
+      calls.push(spec);
+      return 0;
+    }
+  };
+
+  assert.equal(await run(["install", "--profile", "auto", "--no-open"], options), 0);
+  assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
+  assert.match(stdout.value(), /Selected profile: light.*8 GB/i);
+  assert.match(stdout.value(), /SpaceApp is running at http:\/\/127\.0\.0\.1:4911/);
+  assert.deepEqual(calls.map((call) => [call.command, ...call.args.slice(-2)]), [
+    ["docker", "docker", "--version"].slice(1),
+    ["docker", "compose", "version"],
+    ["docker", join(root, "compose.workspaces.yml"), "pull"],
+    ["docker", "-d", "--remove-orphans"]
+  ]);
+  assert.doesNotMatch(calls.map((call) => `${call.command} ${call.args.join(" ")}`).join("\n"), /xdg-open/);
+  assert.equal(calls.find((call) => call.args.includes("pull")).args.includes("--profile"), false);
+
+  const second = capture();
+  assert.equal(await run(["install", "--profile", "auto", "--no-open"], {
+    ...options,
+    stdout: second.stream
+  }), 0);
+  assert.doesNotMatch(second.value(), /One-time setup token:/);
+  assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
+});
+
+test("install honors an explicit standard profile and uses the native browser opener", async () => {
+  for (const [platform, opener] of [
+    ["linux", ["xdg-open", "http://127.0.0.1:4911"]],
+    ["darwin", ["open", "http://127.0.0.1:4911"]],
+    ["win32", ["cmd", "/d", "/s", "/c", "start", "", "http://127.0.0.1:4911"]]
+  ]) {
+    const root = await mkdtemp(join(tmpdir(), `spaceapp-cli-install-${platform}-`));
+    const calls = [];
+    const options = {
+      env: { SPACEAPP_HOME: root },
+      platform,
+      stdout: capture().stream,
+      stderr: capture().stream,
+      stdin: Readable.from([]),
+      inspectResources: async () => eightGigabyteLightHost,
+      execute: async (spec) => {
+        calls.push([spec.command, ...spec.args]);
+        return 0;
+      }
+    };
+
+    assert.equal(await run(["install", "--profile", "standard"], options), 0);
+    assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "standard");
+    const pullCall = calls.find((call) => call.includes("pull"));
+    const profileIndex = pullCall.indexOf("--profile");
+    assert.equal(pullCall[profileIndex + 1], "standard");
+    assert.deepEqual(calls.at(-1), opener);
+  }
+});
+
+test("install stops before image pulls when the host is below the 8 GB minimum", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-small-"));
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+
+  assert.equal(await run(["install", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => ({
+      cpuCount: 4,
+      totalMemoryBytes: 7 * 1024 ** 3,
+      freeDiskBytes: 20 * 1024 ** 3
+    }),
+    execute: async (spec) => {
+      calls.push(spec);
+      return 0;
+    }
+  }), 1);
+
+  assert.match(stderr.value(), /FAIL Memory: 7 GB available; 8 GB required/i);
+  assert.equal(calls.some((call) => call.args.includes("pull")), false);
+  assert.equal(calls.some((call) => call.args.includes("up")), false);
 });
 
 test("credentials reject argv values and accept only stdin", async () => {

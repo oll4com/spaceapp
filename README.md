@@ -8,12 +8,7 @@ they deliberately register. Claude Code is installed separately through an
 explicit owner-initiated command because its package is not open-source
 redistributable.
 
-> **Public alpha status:** the source tree is being prepared for its first
-> sanitized release. The npm package and GHCR images referenced below have not
-> been published yet. Do not expect the install command to work until an alpha
-> release is announced.
-
-## What the alpha provides
+## What SpaceApp provides
 
 - one `spaceapp` launcher for Linux, macOS, and Windows 11;
 - a versioned Docker Compose stack with no host Docker socket;
@@ -27,38 +22,55 @@ redistributable.
 - portable, checksummed backups for application data, PostgreSQL, and owner
   memory.
 
-SpaceApp alpha is designed for **one trusted owner on one self-hosted
+SpaceApp is designed for **one trusted owner on one self-hosted
 instance**. It is not a multi-tenant service or an isolation boundary between
 mutually untrusted users.
 
-## Quick start after the first release
+## One-command installation
 
 Requirements:
 
 - Node.js 20.11 or newer for the launcher;
 - Docker Engine with Docker Compose on Linux, or Docker Desktop on macOS and
   Windows 11;
-- at least 4 CPUs, 8 GB of Docker memory, and 40 GB free disk;
-- recommended: 8 CPUs, 16 GB RAM, and 100 GB free disk.
+- at least 4 CPUs, 8 GB system RAM, and 15 GiB free disk;
+- recommended for the standard browser profile: 8 CPUs, 16 GB RAM, and
+  25 GiB free disk.
 
-Windows installations should use Docker Desktop's WSL2 backend.
+Linux and macOS:
 
 ```bash
-npm install --global run-spaceapp@alpha
-spaceapp init
-spaceapp doctor
-spaceapp workspace add /absolute/path/to/a/project
-spaceapp up
-spaceapp open
+npm install -g run-spaceapp && spaceapp install
 ```
 
-`spaceapp init` prints a one-time setup token on a new installation. Open the
-loopback-only application, enter that token, and create the first owner. Then
-connect one provider at a time through its official login flow or masked
-credential input.
+Windows 11 PowerShell:
 
-The default address is `http://127.0.0.1:4911`. Do not expose an alpha instance
-directly to the public Internet.
+```powershell
+npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
+```
+
+`spaceapp install` creates the local configuration and fresh secrets, checks
+the host, selects a resource profile, downloads the images, starts the stack,
+and opens the app. It is idempotent, so running the same command again does not
+replace an existing setup token or secrets.
+
+`auto` selects the `light` profile on systems below 12 GiB RAM. Light mode is
+the supported 8 GB option: it keeps every bundled CLI, PostgreSQL, and Temporal
+but omits managed Chromium. Use `spaceapp install --profile light` to select it
+explicitly, or `--profile standard` for the browser container.
+
+The installer does not create or reserve a separate fixed-size VM. Linux uses
+the native Docker Engine; Windows uses Docker Desktop's WSL2 Linux environment;
+macOS uses Docker Desktop's lightweight Linux VM. Docker images consume real
+space as they are downloaded, while Docker Desktop's virtual disk grows with
+written data up to its configured limit rather than allocating that limit
+immediately.
+
+On a new installation the command prints a one-time setup token. Enter it in
+the first browser page, create the owner, register only the host workspaces
+SpaceApp may access, and connect providers through official login flows or
+masked credential input. The default address is `http://127.0.0.1:4911`; do
+not expose it directly to an untrusted network.
 
 See [Getting started](docs/getting-started.md) for platform-specific paths,
 workspace examples, the first-owner flow, and current source-checkout testing.
@@ -66,13 +78,14 @@ workspace examples, the first-owner flow, and current source-checkout testing.
 ## Architecture
 
 The launcher writes non-secret configuration to the current user's platform
-config directory and manages five Compose services:
+config directory and manages four services in light mode or five in standard
+mode:
 
 | Service | Responsibility |
 | --- | --- |
 | `spaceapp-core` | API, web application, worker supervision, owner memory |
 | `spaceapp-cli` | redistributable pinned CLIs, owner-installed providers, and isolated provider state |
-| `spaceapp-browser` | sandboxed Chromium browser sessions |
+| `spaceapp-browser` | sandboxed Chromium browser sessions; standard profile only |
 | `postgres` | PostgreSQL with pgvector |
 | `temporal` | durable workflow orchestration |
 
@@ -86,7 +99,7 @@ and telemetry is disabled by default.
 spaceapp status
 spaceapp logs
 spaceapp backup
-spaceapp update 0.1.0-alpha.2
+spaceapp update 0.1.1
 spaceapp rollback
 spaceapp down
 spaceapp uninstall
@@ -106,8 +119,9 @@ or restore.
 - [Clean-room testing](docs/clean-room-testing.md)
 - [Public release runbook](docs/public-release.md)
 - [Security model](docs/security-model.md)
-- [Public alpha distribution decision](docs/decisions/ADR-010-public-alpha-distribution.md)
+- [Public distribution decision](docs/decisions/ADR-010-public-distribution.md)
 - [Contributing](CONTRIBUTING.md)
+- [Community support](SUPPORT.md)
 - [Security reporting](SECURITY.md)
 
 ## Development

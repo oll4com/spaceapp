@@ -5,7 +5,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const versionPattern = /^\d+\.\d+\.\d+-alpha\.\d+$/;
+const versionPattern = /^\d+\.\d+\.\d+$/;
 
 export function evaluatePublicRelease({
   requestedVersion,
@@ -17,7 +17,9 @@ export function evaluatePublicRelease({
   const blockers = [];
   const warnings = [];
   if (!versionPattern.test(requestedVersion)) {
-    blockers.push(`Requested version ${requestedVersion} is not an alpha version.`);
+    blockers.push(
+      `Requested version ${requestedVersion} is not a stable semantic version.`
+    );
   } else if (requestedVersion !== packageVersion) {
     blockers.push(
       `Requested version ${requestedVersion} does not match run-spaceapp ${packageVersion}.`
@@ -62,7 +64,7 @@ function parseArgs(argv) {
       index += 1;
     } else {
       throw new Error(
-        "Usage: public-release-readiness.mjs --version <0.1.0-alpha.N>"
+        "Usage: public-release-readiness.mjs --version <major.minor.patch>"
       );
     }
   }

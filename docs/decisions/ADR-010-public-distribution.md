@@ -1,4 +1,4 @@
-# ADR-010: Public alpha distribution
+# ADR-010: Public cross-platform distribution
 
 ## Status
 
@@ -11,8 +11,8 @@ Accepted
 ## Context
 
 Space was developed on a private operator VM and contains mature application
-features alongside host-specific deployment assumptions. A public alpha must
-install consistently on Linux, macOS, and Windows 11 without publishing owner
+features alongside host-specific deployment assumptions. The public release
+must install consistently on Linux, macOS, and Windows 11 without publishing owner
 credentials, personal memory, private infrastructure values, or the private
 repository's historical objects.
 
@@ -37,8 +37,10 @@ production never enables development login or ships a default password.
 Telemetry is disabled by default.
 
 The public Git repository is created from a sanitized export of a verified
-commit, not by pushing the private Git object graph. Release `0.1.0-alpha.1`
-uses npm dist-tag `alpha`.
+commit, not by pushing the private Git object graph. Release `0.1.0` is staged
+under npm dist-tag `next`, clean-room tested, and promoted to `latest` only
+after the release artifacts pass Linux, macOS, and Windows installation
+checks.
 
 ## CLI distribution policy
 
@@ -83,10 +85,16 @@ remains explicit and provider terms remain independently applicable.
 
 ## Consequences
 
-- Docker Desktop is required on Windows and macOS.
-- A full profile needs at least 4 CPUs, 8 GB Docker memory, and 40 GB free disk;
-  8 CPUs, 16 GB RAM, and 100 GB free are recommended.
+- Docker Desktop is required on Windows and macOS; Windows uses its WSL2
+  backend, while Linux runs Docker Engine natively.
+- Installation requires 4 CPUs, 8 GB RAM, and 15 GiB free disk. Systems below
+  12 GiB RAM automatically use the light profile, which keeps every bundled
+  CLI and omits managed Chromium.
+- Resource settings are service ceilings, not preallocated RAM. Docker
+  Desktop's sparse Linux disk grows with written data instead of immediately
+  reserving its configured maximum.
 - Release automation must prove sanitization, license inventory, secret scans,
   clean installation, upgrades, backups, and rollback.
-- The REST API remains experimental during the alpha.
+- The REST API remains experimental until a separate compatibility policy is
+  published.
 - Multi-user/RBAC support requires a separate security design and ADR.

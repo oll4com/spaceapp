@@ -3,6 +3,8 @@ services:
     image: ghcr.io/oll4com/spaceapp-core:${SPACEAPP_IMAGE_TAG}
     restart: unless-stopped
     init: true
+    mem_limit: "${SPACEAPP_CORE_MEMORY_LIMIT}"
+    cpus: "${SPACEAPP_CORE_CPU_LIMIT}"
     environment:
       SPACE_PUBLIC_DISTRIBUTION: "true"
       SPACE_DEV_LOGIN: "false"
@@ -37,7 +39,7 @@ services:
       SPACE_CODEX_CLI_MODE_DEFAULTS_PROJECTION_PATH: /var/lib/spaceapp/codex-cli-mode-defaults-v1.json
       SPACE_TELEGRAM_SECRET_ROOT: /var/lib/spaceapp/telegram
       SPACE_TELEGRAM_OWNERSHIP_MANIFEST: /var/lib/spaceapp/integrations/telegram/thread-ownership.json
-      SPACE_BROWSER_SESSIONS_ENABLED: "true"
+      SPACE_BROWSER_SESSIONS_ENABLED: "${SPACEAPP_BROWSER_ENABLED}"
       SPACE_BROWSER_HOST_TRANSPORT: unix
       SPACE_BROWSER_HOST_SOCKET: /run/spaceapp-browser/browser-host.sock
       SPACE_BROWSER_SESSIONS_DEFAULT_URL: about:blank
@@ -61,8 +63,6 @@ services:
         condition: service_healthy
       spaceapp-cli:
         condition: service_started
-      spaceapp-browser:
-        condition: service_started
     networks:
       - spaceapp
 
@@ -70,6 +70,8 @@ services:
     image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}
     restart: unless-stopped
     init: true
+    mem_limit: "${SPACEAPP_CLI_MEMORY_LIMIT}"
+    cpus: "${SPACEAPP_CLI_CPU_LIMIT}"
     environment:
       SPACE_PUBLIC_DISTRIBUTION: "true"
       SPACE_MEMORY_ROOT: /var/lib/spaceapp/memory
@@ -85,8 +87,11 @@ services:
 
   spaceapp-browser:
     image: ghcr.io/oll4com/spaceapp-browser:${SPACEAPP_IMAGE_TAG}
+    profiles: ["standard"]
     restart: unless-stopped
     init: true
+    mem_limit: "${SPACEAPP_BROWSER_MEMORY_LIMIT}"
+    cpus: "${SPACEAPP_BROWSER_CPU_LIMIT}"
     environment:
       SPACE_PUBLIC_DISTRIBUTION: "true"
       SPACE_RUNTIME_STORE: postgres
@@ -109,6 +114,8 @@ services:
   postgres:
     image: pgvector/pgvector:0.8.3-pg17-trixie
     restart: unless-stopped
+    mem_limit: "${SPACEAPP_POSTGRES_MEMORY_LIMIT}"
+    cpus: "${SPACEAPP_POSTGRES_CPU_LIMIT}"
     environment:
       POSTGRES_DB: spaceapp
       POSTGRES_USER: spaceapp
@@ -128,6 +135,8 @@ services:
   temporal:
     image: temporalio/auto-setup:1.29.1
     restart: unless-stopped
+    mem_limit: "${SPACEAPP_TEMPORAL_MEMORY_LIMIT}"
+    cpus: "${SPACEAPP_TEMPORAL_CPU_LIMIT}"
     depends_on:
       postgres:
         condition: service_healthy

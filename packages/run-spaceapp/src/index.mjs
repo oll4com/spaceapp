@@ -7,14 +7,51 @@ import {
   readdir,
   rename,
   rm,
+  statfs,
   stat,
   writeFile
 } from "node:fs/promises";
-import { homedir } from "node:os";
+import { availableParallelism, homedir, totalmem } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  normalizeWorkspaceName,
+  stripTrailingLineEndings
+} from "./string-utils.mjs";
 
-const CONFIG_SCHEMA_VERSION = 1;
+const CONFIG_SCHEMA_VERSION = 2;
+const AUTO_LIGHT_MEMORY_THRESHOLD_BYTES = 12 * 1024 ** 3;
+const MIN_INSTALL_CPU_COUNT = 4;
+const MIN_INSTALL_MEMORY_BYTES = 8 * 1024 ** 3;
+const MIN_INSTALL_FREE_DISK_BYTES = 15 * 1024 ** 3;
+const PROFILE_RUNTIME_SETTINGS = Object.freeze({
+  light: Object.freeze({
+    browserEnabled: false,
+    coreMemoryLimit: "2g",
+    coreCpuLimit: "2.0",
+    cliMemoryLimit: "1536m",
+    cliCpuLimit: "1.5",
+    browserMemoryLimit: "1536m",
+    browserCpuLimit: "1.5",
+    postgresMemoryLimit: "768m",
+    postgresCpuLimit: "1.0",
+    temporalMemoryLimit: "768m",
+    temporalCpuLimit: "1.0"
+  }),
+  standard: Object.freeze({
+    browserEnabled: true,
+    coreMemoryLimit: "4g",
+    coreCpuLimit: "4.0",
+    cliMemoryLimit: "3g",
+    cliCpuLimit: "3.0",
+    browserMemoryLimit: "2g",
+    browserCpuLimit: "2.0",
+    postgresMemoryLimit: "1g",
+    postgresCpuLimit: "2.0",
+    temporalMemoryLimit: "1g",
+    temporalCpuLimit: "2.0"
+  })
+});
 const SECRET_FIELD = /password|secret|token|api.?key|credential/i;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const BACKUP_ID_PATTERN = /^spaceapp-backup-\d{8}T\d{9}Z$/;
@@ -52,8 +89,61 @@ export function resolveSpaceAppHome({
   return resolve(env.XDG_CONFIG_HOME || join(home, ".config"), "spaceapp");
 }
 
-export function createDefaultConfig({ version }) {
+export function resolveInstallProfile(requestedProfile, totalMemoryBytes) {
+  if (requestedProfile === "light" || requestedProfile === "standard") {
+    return requestedProfile;
+  }
+  if (requestedProfile !== "auto") {
+    throw new Error("Install profile must be auto, light, or standard.");
+  }
+  if (!Number.isFinite(totalMemoryBytes) || totalMemoryBytes <= 0) {
+    throw new Error("Total system memory must be available for automatic profile selection.");
+  }
+  return totalMemoryBytes < AUTO_LIGHT_MEMORY_THRESHOLD_BYTES ? "light" : "standard";
+}
+
+export async function inspectSystemResources(root) {
+  validateHome(root);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  const fileSystem = await statfs(root);
+  return {
+    cpuCount: availableParallelism(),
+    totalMemoryBytes: totalmem(),
+    freeDiskBytes: Number(fileSystem.bavail) * Number(fileSystem.bsize)
+  };
+}
+
+export function installResourceChecks(resources) {
+  const cpuCount = Number(resources?.cpuCount);
+  const totalMemoryBytes = Number(resources?.totalMemoryBytes);
+  const freeDiskBytes = Number(resources?.freeDiskBytes);
+  if (![cpuCount, totalMemoryBytes, freeDiskBytes].every((value) => Number.isFinite(value) && value >= 0)) {
+    throw new Error("System CPU, memory, and free-disk information is required.");
+  }
+  return [
+    {
+      name: "CPU",
+      ok: cpuCount >= MIN_INSTALL_CPU_COUNT,
+      detail: `${cpuCount} available; ${MIN_INSTALL_CPU_COUNT} required`
+    },
+    {
+      name: "Memory",
+      ok: totalMemoryBytes >= MIN_INSTALL_MEMORY_BYTES,
+      detail: `${formatGibibytes(totalMemoryBytes)} GB available; ${formatGibibytes(MIN_INSTALL_MEMORY_BYTES)} GB required`
+    },
+    {
+      name: "Free disk",
+      ok: freeDiskBytes >= MIN_INSTALL_FREE_DISK_BYTES,
+      detail: `${formatGibibytes(freeDiskBytes)} GB available; ${formatGibibytes(MIN_INSTALL_FREE_DISK_BYTES)} GB required`
+    }
+  ];
+}
+
+export function createDefaultConfig({ version, profile = "standard" }) {
   assertVersion(version);
+  if (profile !== "light" && profile !== "standard") {
+    throw new Error("Default config requires a resolved light or standard profile.");
+  }
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
@@ -61,7 +151,7 @@ export function createDefaultConfig({ version }) {
     bindHost: "127.0.0.1",
     port: 4911,
     telemetry: false,
-    profile: "full",
+    profile,
     workspaces: []
   };
 }
@@ -94,8 +184,8 @@ export function validateConfig(config) {
   if (typeof config.telemetry !== "boolean") {
     throw new Error("telemetry must be boolean.");
   }
-  if (!["full", "core"].includes(config.profile)) {
-    throw new Error("profile must be full or core.");
+  if (!["light", "standard"].includes(config.profile)) {
+    throw new Error("profile must be light or standard.");
   }
   if (!Array.isArray(config.workspaces)) {
     throw new Error("workspaces must be an array.");
@@ -115,8 +205,23 @@ export async function saveConfig(root, config) {
 
 export async function loadConfig(root) {
   validateHome(root);
-  const config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  const config = migrateConfig(JSON.parse(await readFile(join(root, "config.json"), "utf8")));
   return validateConfig(config);
+}
+
+function migrateConfig(config) {
+  if (config?.schemaVersion !== 1) {
+    return config;
+  }
+  const legacyProfiles = {
+    core: "light",
+    full: "standard"
+  };
+  return {
+    ...config,
+    schemaVersion: CONFIG_SCHEMA_VERSION,
+    profile: legacyProfiles[config.profile] ?? config.profile
+  };
 }
 
 export async function addWorkspace(config, hostPath, { readOnly = false } = {}) {
@@ -132,8 +237,7 @@ export async function addWorkspace(config, hostPath, { readOnly = false } = {}) 
   if (config.workspaces.some((workspace) => workspace.hostPath === absolutePath)) {
     return structuredClone(config);
   }
-  const rawName = basename(absolutePath);
-  const name = rawName.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+  const name = normalizeWorkspaceName(basename(absolutePath));
   const suffix = createHash("sha256").update(absolutePath).digest("hex").slice(0, 8);
   const workspace = {
     id: `${name}-${suffix}`,
@@ -167,7 +271,7 @@ export function credentialProviders() {
 export async function writeCredential(root, provider, value) {
   assertProvider(provider);
   validateHome(root);
-  const normalized = String(value).replace(/[\r\n]+$/, "");
+  const normalized = stripTrailingLineEndings(value);
   if (!normalized || normalized.includes("\0")) {
     throw new Error("Credential value cannot be empty or contain null bytes.");
   }
@@ -194,7 +298,7 @@ export async function removeCredential(root, provider) {
 
 export async function writeSetupToken(root, token) {
   validateHome(root);
-  const normalized = String(token).replace(/[\r\n]+$/, "");
+  const normalized = stripTrailingLineEndings(token);
   if (normalized.length < 32 || normalized.length > 500 || /[\0\r\n]/.test(normalized)) {
     throw new Error("SpaceApp setup token must be 32-500 characters without line breaks.");
   }
@@ -205,12 +309,24 @@ export async function writeSetupToken(root, token) {
 
 export function renderRuntimeEnv(config) {
   validateConfig(config);
+  const settings = PROFILE_RUNTIME_SETTINGS[config.profile];
   return [
     `SPACEAPP_IMAGE_TAG=${safeEnv(config.version)}`,
     `SPACEAPP_BIND_HOST=${safeEnv(config.bindHost)}`,
     `SPACEAPP_PORT=${config.port}`,
     `SPACEAPP_TELEMETRY=${config.telemetry}`,
     `SPACEAPP_PROFILE=${safeEnv(config.profile)}`,
+    `SPACEAPP_BROWSER_ENABLED=${settings.browserEnabled}`,
+    `SPACEAPP_CORE_MEMORY_LIMIT=${settings.coreMemoryLimit}`,
+    `SPACEAPP_CORE_CPU_LIMIT=${settings.coreCpuLimit}`,
+    `SPACEAPP_CLI_MEMORY_LIMIT=${settings.cliMemoryLimit}`,
+    `SPACEAPP_CLI_CPU_LIMIT=${settings.cliCpuLimit}`,
+    `SPACEAPP_BROWSER_MEMORY_LIMIT=${settings.browserMemoryLimit}`,
+    `SPACEAPP_BROWSER_CPU_LIMIT=${settings.browserCpuLimit}`,
+    `SPACEAPP_POSTGRES_MEMORY_LIMIT=${settings.postgresMemoryLimit}`,
+    `SPACEAPP_POSTGRES_CPU_LIMIT=${settings.postgresCpuLimit}`,
+    `SPACEAPP_TEMPORAL_MEMORY_LIMIT=${settings.temporalMemoryLimit}`,
+    `SPACEAPP_TEMPORAL_CPU_LIMIT=${settings.temporalCpuLimit}`,
     ""
   ].join("\n");
 }
@@ -238,13 +354,18 @@ export function renderWorkspaceCompose(config) {
 
 export function composeCommand(action, root, options = {}) {
   validateHome(root);
+  const profile = options.profile ?? "standard";
+  if (profile !== "light" && profile !== "standard") {
+    throw new Error("Compose profile must be light or standard.");
+  }
   const base = [
     "compose",
     "--project-name", composeProjectName(root),
     "--project-directory", root,
     "--env-file", join(root, "runtime.env"),
     "-f", join(root, "compose.yml"),
-    "-f", join(root, "compose.workspaces.yml")
+    "-f", join(root, "compose.workspaces.yml"),
+    ...(profile === "standard" ? ["--profile", "standard"] : [])
   ];
   const actions = {
     up: ["up", "-d", "--remove-orphans"],
@@ -351,7 +472,11 @@ export async function writeRuntimeFiles(root, config) {
   await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config));
 }
 
-export async function initializeInstallation(root, { version, templateDir = defaultTemplateDir() }) {
+export async function initializeInstallation(root, {
+  version,
+  templateDir = defaultTemplateDir(),
+  profile
+}) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
   await Promise.all([
@@ -365,9 +490,13 @@ export async function initializeInstallation(root, { version, templateDir = defa
     if (error?.code !== "ENOENT") {
       throw error;
     }
-    config = createDefaultConfig({ version });
-    await saveConfig(root, config);
+    config = createDefaultConfig({ version, profile: profile ?? "standard" });
   }
+  if (profile !== undefined) {
+    const resolvedProfile = resolveInstallProfile(profile, AUTO_LIGHT_MEMORY_THRESHOLD_BYTES);
+    config = { ...config, profile: resolvedProfile };
+  }
+  await saveConfig(root, config);
   await copyFile(join(templateDir, "compose.yml"), join(root, "compose.yml"));
   await chmod(join(root, "compose.yml"), 0o600);
   await writeRuntimeFiles(root, config);
@@ -459,6 +588,10 @@ function safeEnv(value) {
     throw new Error("Runtime settings cannot contain newlines.");
   }
   return String(value);
+}
+
+function formatGibibytes(bytes) {
+  return Math.floor((bytes / 1024 ** 3) * 10) / 10;
 }
 
 async function atomicWrite(target, value) {

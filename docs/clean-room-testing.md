@@ -9,12 +9,19 @@ and production hosts.
 
 Maintain one disposable VM for release-candidate testing:
 
-- 8 vCPUs, 16 GB RAM, and at least 100 GB free disk;
+- 4 vCPUs, 8 GB RAM, and a 40 GiB sparse/grow-on-write virtual disk with at
+  least 15 GiB free inside the guest;
 - a supported Linux distribution with a current Docker Engine and Compose v2;
 - a non-admin test user allowed to run Docker;
 - no copied developer configuration, provider credentials, personal memory,
   or application volumes;
 - a clean snapshot before each release-candidate cycle.
+
+The 40 GiB virtual size is a test-lab ceiling, not immediate host allocation.
+Use thin/sparse storage so the backing file or ZFS volume grows only with data.
+This VM intentionally exercises the automatically selected `light` profile.
+Run a separate 16 GB standard-profile cycle when managed browser sessions are
+part of the candidate.
 
 Use CI runners for the launcher OS matrix, but keep the real VM because it
 exercises long-running containers, disk ownership, backup/restore, browser
@@ -30,10 +37,10 @@ npm ci
 npm run check
 npm test
 npm run build
-docker build --target core --tag ghcr.io/oll4com/spaceapp-core:0.1.0-alpha.1 .
-docker build --target browser --tag ghcr.io/oll4com/spaceapp-browser:0.1.0-alpha.1 .
-docker build --target cli --tag ghcr.io/oll4com/spaceapp-cli:0.1.0-alpha.1 .
-npm install --global ./packages/run-spaceapp
+docker build --target core --tag ghcr.io/oll4com/spaceapp-core:0.1.0 .
+docker build --target browser --tag ghcr.io/oll4com/spaceapp-browser:0.1.0 .
+docker build --target cli --tag ghcr.io/oll4com/spaceapp-cli:0.1.0 .
+npm install -g ./packages/run-spaceapp
 ```
 
 Set a brand-new installation root. On Linux/macOS:
@@ -63,16 +70,17 @@ production repository as the clean-room workspace.
 
 ## Release-artifact acceptance
 
-Once npm and GHCR artifacts are explicitly published, repeat the test without
-a source checkout:
+Once npm and GHCR artifacts are published, repeat the test without a source
+checkout. Linux and macOS:
 
 ```bash
-npm install --global run-spaceapp@alpha
-spaceapp init
-spaceapp doctor
-spaceapp workspace add /absolute/path/to/synthetic-workspace
-spaceapp up
-spaceapp open
+npm install -g run-spaceapp && spaceapp install
+```
+
+Windows 11 PowerShell:
+
+```powershell
+npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
 ```
 
 This second pass proves the released npm tarball, image manifests, registry
@@ -85,7 +93,9 @@ For every candidate:
 - `spaceapp init` creates only generic memory and fresh random secrets;
 - configuration and secret files have restrictive host permissions;
 - the default port is reachable only on loopback;
-- all five Compose services become healthy/running;
+- core, CLI, PostgreSQL, and Temporal become healthy/running in light mode;
+- the browser service also becomes healthy in a separate standard-profile
+  cycle;
 - the first page requires the one-time setup claim;
 - invalid setup input does not create an owner;
 - a valid claim can create exactly one owner;

@@ -74,22 +74,22 @@ Before updating:
 
 ```bash
 spaceapp backup
-npm install --global run-spaceapp@alpha
+npm install -g run-spaceapp
 spaceapp doctor
 ```
 
 Then select the exact target release:
 
 ```bash
-spaceapp update 0.1.0-alpha.2
+spaceapp update 0.1.1
 spaceapp status
 ```
 
 An update records one previous version, pulls the corresponding core, CLI, and
 browser images, and recreates the stack while preserving volumes.
 
-Do not use a production application as the first test of a new alpha. Run the
-update and backup/restore sequence in the dedicated clean-room environment
+Do not use an important application as the first test of a new release. Run
+the update and backup/restore sequence in the dedicated clean-room environment
 first.
 
 ## Rollback
@@ -137,8 +137,8 @@ backups and provider key files, remain and must be reviewed separately.
 
 ## Exposure and reverse proxies
 
-The default loopback bind is the supported alpha posture. If an owner changes
-the bind address or adds a reverse proxy, they are responsible for TLS, access
-policy, trusted proxy configuration, firewall rules, updates, backup
-retention, and log retention. Do not bind an alpha instance directly to an
-untrusted network.
+The default loopback bind is the supported single-owner posture. If an owner
+changes the bind address or adds a reverse proxy, they are responsible for TLS,
+access policy, trusted proxy configuration, firewall rules, updates, backup
+retention, and log retention. Do not bind an instance directly to an untrusted
+network.

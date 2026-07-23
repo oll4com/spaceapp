@@ -27,6 +27,7 @@ import {
   captureClipboardText,
   writeClipboardText
 } from "../clipboard-dock/clipboard-events.js";
+import { extractClipboardImageDataUrls } from "./clipboard-html.js";
 
 export { CodexModelPicker };
 
@@ -761,9 +762,8 @@ function fileFromDataUrl(src: string, index: number): File | null {
 function extractImageDataUrlFiles(clipboardData: DataTransfer): File[] {
   const html = clipboardData.getData("text/html");
   if (!html) return [];
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  return Array.from(doc.querySelectorAll("img"))
-    .map((image, index) => fileFromDataUrl(image.getAttribute("src") ?? "", index + 1))
+  return extractClipboardImageDataUrls(html)
+    .map((src, index) => fileFromDataUrl(src, index + 1))
     .filter((file): file is File => Boolean(file));
 }
 

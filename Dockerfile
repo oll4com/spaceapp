@@ -77,6 +77,7 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund \
     && npm install --global --no-audit --no-fund opencode-ai@1.18.4 \
     && npm install --global --ignore-scripts --no-audit --no-fund \
       run-deepseek-cli@0.1.1 \
+    && npm cache clean --force \
     && install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp-cli \
       /var/lib/spaceapp-cli/providers \

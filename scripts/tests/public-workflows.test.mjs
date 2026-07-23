@@ -18,8 +18,7 @@ test("CI creates and validates only the sanitized public candidate", async () =>
   assert.match(ci, /npm run check/);
   assert.match(ci, /npm run build/);
   assert.match(ci, /npm run pack:dry-run -w run-spaceapp/);
-  assert.match(ci, /cli-runtime-descriptors\.test\.ts/);
-  assert.match(ci, /owner-setup\.test\.tsx/);
+  assert.doesNotMatch(ci, /npm test -w @space\/(?:api|web)/);
   assert.doesNotMatch(ci, /name: Full repository suite/);
   assert.doesNotMatch(ci, /\n\s*run: npm test\s*$/m);
   assert.doesNotMatch(ci, /cli-runtimes\.test\.ts/);
@@ -39,6 +38,17 @@ test("launcher and container matrices cover the declared operating systems and a
   assert.match(containers, /- amd64/);
   assert.match(containers, /- arm64/);
   assert.match(containers, /push: false/);
+});
+
+test("container matrices load each image and enforce the public size budgets", async () => {
+  for (const name of ["containers.yml", "release.yml"]) {
+    const content = await workflow(name);
+
+    assert.match(content, /load: true/);
+    assert.match(content, /node scripts\/container-image-size-budget\.mjs/);
+    assert.match(content, /--target "\$\{\{ matrix\.target \}\}"/);
+    assert.match(content, /--image "spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"/);
+  }
 });
 
 test("security workflow scans secrets, dependencies, source, images, and emits an SBOM", async () => {
@@ -66,6 +76,9 @@ test("release is manual, candidate-only, and builds exclusively from the sanitiz
   const release = await workflow("release.yml");
   const trigger = release.match(/\non:\n([\s\S]*?)\npermissions:/)?.[1] || "";
 
+  assert.match(release, /^name: Public release candidate$/m);
+  assert.doesNotMatch(release, /alpha/i);
+  assert.doesNotMatch(release, /--allow-review-required/);
   assert.match(trigger, /workflow_dispatch:/);
   assert.doesNotMatch(trigger, /pull_request:|schedule:|\n  push:/);
   assert.match(release, /permissions:\n  contents: read/);

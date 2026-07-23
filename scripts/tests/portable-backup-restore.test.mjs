@@ -53,7 +53,7 @@ test("restore selects the latest strict backup directory and validates every che
     format: "spaceapp-portable-backup",
     schemaVersion: 1,
     createdAt: "2026-07-23T13:00:00.000Z",
-    appVersion: "0.1.0-alpha.1",
+    appVersion: "0.1.0",
     files
   };
   await writeFile(join(latest, "manifest.json"), `${JSON.stringify(manifest)}\n`);
