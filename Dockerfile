@@ -18,6 +18,8 @@ ARG NPM_VERSION=11.18.0
 ENV NODE_ENV=production \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
+LABEL org.opencontainers.image.source=https://github.com/oll4com/spaceapp
+LABEL org.opencontainers.image.licenses=Apache-2.0
 RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSION}" \
     && npm cache clean --force \
     && apt-get update \

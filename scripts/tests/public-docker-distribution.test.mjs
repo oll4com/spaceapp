@@ -42,6 +42,19 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/LICENSE \/app\/NOTICE \/app\/THIRD_PARTY_NOTICES\.md \.\//);
 });
 
+test("public container images identify their repository and license for GHCR", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+
+  assert.match(
+    dockerfile,
+    /^LABEL org\.opencontainers\.image\.source=https:\/\/github\.com\/oll4com\/spaceapp$/m
+  );
+  assert.match(
+    dockerfile,
+    /^LABEL org\.opencontainers\.image\.licenses=Apache-2\.0$/m
+  );
+});
+
 test("CLI image removes the npm download cache in the same layer as bundled CLI installation", async () => {
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
   const cliStage = dockerfile.match(/FROM runtime-base AS cli([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
