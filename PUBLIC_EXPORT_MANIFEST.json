@@ -1,7 +1,7 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "ff660e1784e6e6c92c00e382f232ada46e408d7d",
+  "sourceCommit": "3a5b3d30da8be51ff242828068f903f36fc7a8a0",
   "fileCount": 397,
   "transformations": 32,
   "files": [
@@ -2161,21 +2161,21 @@
     },
     {
       "path": "packages/run-spaceapp/tests/config.test.mjs",
-      "sourceObjectId": "9901ca52070ad95e82fbeaf483fbf6e1d222a99c",
-      "sha256": "bfd913fcc390c85b5214ac3f446fa455e9b623d1aa337a0238401684f1fb5f62",
-      "size": 3871
+      "sourceObjectId": "7bdfc58d5ae0dfd2bd65affe286f5aa4bc8817c7",
+      "sha256": "5c4739d3713ac3e62d56bdd75b69c2fa3d0248264b23cf75de29181ad79ea1f8",
+      "size": 4124
     },
     {
       "path": "packages/run-spaceapp/tests/credentials.test.mjs",
-      "sourceObjectId": "ae0b179bf9a4dad438cbe5ddd3b739a5bd86fb6d",
-      "sha256": "3fba156b51a691efda8524e5bce26a29a0a5115a1ea21582aea8f9a3961fdff9",
-      "size": 1244
+      "sourceObjectId": "bdf5a665ad3850488cd803d43073d1e4f068d450",
+      "sha256": "18cbc03898c8ad1232c34574894c5d5e218706b3091d9b773291f3053cf8a8b6",
+      "size": 1371
     },
     {
       "path": "packages/run-spaceapp/tests/runtime.test.mjs",
-      "sourceObjectId": "3af376648e99ef5479e31539e48fb160d26122dd",
-      "sha256": "9395bfbeb78dd25937c2aa7a1b7255c2578baaf0763f54eae467bfe10cbce8b4",
-      "size": 2793
+      "sourceObjectId": "8aaeca1d7ec41593f5f94088ca8e8a0959f0e2d3",
+      "sha256": "e707133fe49442c15f165ff31d8e0c9c155df5790473f5dc86f55f79a9d8ac73",
+      "size": 2910
     },
     {
       "path": "packages/runtime/package.json",

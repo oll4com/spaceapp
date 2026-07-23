@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   composeCommand,
@@ -6,7 +8,7 @@ import {
   renderWorkspaceCompose
 } from "../src/index.mjs";
 
-const home = "/tmp/spaceapp-home";
+const home = resolve(tmpdir(), "spaceapp-home");
 const config = {
   schemaVersion: 1,
   version: "0.1.0-alpha.1",
@@ -38,7 +40,7 @@ test("compose actions map to fixed commands and never invoke a shell", () => {
   assert.deepEqual(command.args.slice(-3), ["up", "-d", "--remove-orphans"]);
   assert.notEqual(
     command.args[2],
-    composeCommand("up", "/tmp/another-spaceapp-home").args[2],
+    composeCommand("up", resolve(tmpdir(), "another-spaceapp-home")).args[2],
     "different installation roots must use different Compose projects"
   );
   assert.deepEqual(composeCommand("syncCredentials", home).args.slice(-5), [
@@ -58,9 +60,9 @@ test("compose project identity is stable for the same installation root", () => 
       "compose",
       "--project-name", composeCommand("up", home).args[2],
       "--project-directory", home,
-      "--env-file", `${home}/runtime.env`,
-      "-f", `${home}/compose.yml`,
-      "-f", `${home}/compose.workspaces.yml`,
+      "--env-file", join(home, "runtime.env"),
+      "-f", join(home, "compose.yml"),
+      "-f", join(home, "compose.workspaces.yml"),
       "up", "-d", "--remove-orphans"
     ]
   });

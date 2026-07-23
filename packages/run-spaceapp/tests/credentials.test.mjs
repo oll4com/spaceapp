@@ -17,13 +17,17 @@ test("credential providers distinguish bundled, owner-installed and experimental
   });
 });
 
-test("credentials are allowlisted, newline-trimmed, and written mode 0600", async () => {
+test("credentials are allowlisted, newline-trimmed, and use owner-only POSIX permissions", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-credential-"));
 
   const path = await writeCredential(root, "gemini", "example-value\n");
 
   assert.equal(await readFile(path, "utf8"), "example-value");
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  const metadata = await stat(path);
+  assert.equal(metadata.isFile(), true);
+  if (process.platform !== "win32") {
+    assert.equal(metadata.mode & 0o777, 0o600);
+  }
   await assert.rejects(
     () => writeCredential(root, "../../escape", "value"),
     /provider/i

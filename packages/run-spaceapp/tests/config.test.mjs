@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   addWorkspace,
@@ -13,13 +13,14 @@ import {
 } from "../src/index.mjs";
 
 test("resolves an explicit home before platform defaults", () => {
+  const explicitHome = resolve(tmpdir(), "test-spaceapp");
   assert.equal(
     resolveSpaceAppHome({
-      env: { SPACEAPP_HOME: "/opt/test-spaceapp" },
-      platform: "linux",
-      home: "/home/alice"
+      env: { SPACEAPP_HOME: explicitHome },
+      platform: process.platform,
+      home: resolve(tmpdir(), "ignored-home")
     }),
-    "/opt/test-spaceapp"
+    explicitHome
   );
 });
 
@@ -38,14 +39,14 @@ test("default config is versioned, loopback-only, and contains no secret fields"
   assert.doesNotMatch(JSON.stringify(config), /password|secret|token|api.?key/i);
 });
 
-test("config persists atomically with owner-only permissions", async () => {
+test("config persists atomically with owner-only POSIX permissions", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-config-"));
   const config = createDefaultConfig({ version: "0.1.0-alpha.1" });
 
   await saveConfig(root, config);
 
   assert.deepEqual(await loadConfig(root), config);
-  assert.equal((await stat(join(root, "config.json"))).mode & 0o777, 0o600);
+  await assertOwnerOnlyFile(join(root, "config.json"));
 });
 
 test("workspace registration accepts only existing absolute directories and avoids duplicates", async () => {
@@ -75,7 +76,7 @@ test("saved config rejects secret-shaped fields", async () => {
   await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
 });
 
-test("initialization creates idempotent non-config secrets with restrictive permissions", async () => {
+test("initialization creates idempotent secrets with owner-only POSIX permissions", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-init-"));
   const templateDir = join(root, "templates");
   await mkdir(templateDir);
@@ -102,10 +103,18 @@ test("initialization creates idempotent non-config secrets with restrictive perm
     /^postgresql:\/\/spaceapp:[^@]+@postgres:5432\/spaceapp$/
   );
   for (const file of ["setup-token", "session-secret", "postgres-password", "database-url"]) {
-    assert.equal((await stat(join(root, "secrets", file))).mode & 0o777, 0o600);
+    await assertOwnerOnlyFile(join(root, "secrets", file));
   }
   assert.doesNotMatch(
     await readFile(join(root, "config.json"), "utf8"),
     /password|secret|token|api.?key/i
   );
 });
+
+async function assertOwnerOnlyFile(path) {
+  const metadata = await stat(path);
+  assert.equal(metadata.isFile(), true);
+  if (process.platform !== "win32") {
+    assert.equal(metadata.mode & 0o777, 0o600);
+  }
+}
