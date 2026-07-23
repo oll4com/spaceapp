@@ -47,6 +47,11 @@ test("security workflow scans secrets, dependencies, source, images, and emits a
   assert.match(security, /npm audit --audit-level=high/);
   assert.match(security, /gitleaks\/gitleaks-action/);
   assert.match(security, /aquasecurity\/trivy-action/);
+  assert.deepEqual(
+    [...security.matchAll(/uses:\s+aquasecurity\/trivy-action@([^\s]+)/g)]
+      .map((match) => match[1]),
+    ["v0.33.1", "v0.33.1"]
+  );
   assert.match(security, /severity: HIGH,CRITICAL/);
   assert.match(security, /anchore\/sbom-action/);
   assert.match(security, /github\/codeql-action\/analyze/);
@@ -76,7 +81,7 @@ test("workflow actions use versioned references and avoid privileged pull-reques
     const content = await workflow(name);
     assert.doesNotMatch(content, /pull_request_target:/);
     for (const reference of content.matchAll(/uses:\s+([^\s]+)/g)) {
-      assert.match(reference[1], /@(?:v\d+|0\.\d+\.\d+)$/);
+      assert.match(reference[1], /@(?:v\d+(?:\.\d+\.\d+)?|0\.\d+\.\d+)$/);
       assert.doesNotMatch(reference[1], /@(main|master|latest)$/);
     }
   }
