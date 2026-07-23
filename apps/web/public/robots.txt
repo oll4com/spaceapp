@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /help
+Disallow: /help/
+Disallow: /api/

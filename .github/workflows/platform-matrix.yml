@@ -1,0 +1,45 @@
+name: Platform matrix
+
+on:
+  pull_request:
+    paths:
+      - "packages/run-spaceapp/**"
+      - "package-lock.json"
+      - ".github/workflows/platform-matrix.yml"
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  launcher:
+    name: Launcher / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npm test -w run-spaceapp
+      - run: npm run check -w run-spaceapp
+      - run: npm run pack:dry-run -w run-spaceapp
+      - run: node packages/run-spaceapp/bin/spaceapp.mjs --version

@@ -1,0 +1,6 @@
+# Space
+
+> Space is a calm, multi-agent workspace for rooms, chat, CLI panes, browser context, media, links, and focus music.
+
+- [Space homepage](/): Product overview, interactive local demo, and private-preview waitlist.
+- [Interactive demo](/#demo): A safe demo that makes no real AI calls.

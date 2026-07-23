@@ -1,0 +1,31 @@
+{
+  "name": "@space/memory-graph",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@space/contracts": "0.1.0",
+    "graphology": "0.26.0",
+    "graphology-layout-forceatlas2": "0.10.1",
+    "mdast-util-from-markdown": "2.0.3"
+  },
+  "devDependencies": {
+    "@types/mdast": "4.0.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
+  }
+}

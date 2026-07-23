@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-quality:
+    name: Sanitized public quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Create sanitized candidate
+        run: >-
+          node scripts/public-export.mjs
+          --output "$RUNNER_TEMP/spaceapp-public-export"
+
+      - name: Install candidate dependencies
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm ci
+
+      - name: Public release tests
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run test:public
+
+      - name: Public owner and CLI API tests
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: >-
+          npm test -w @space/api --
+          setup.test.ts
+          owner-setup-bootstrap.test.ts
+          cli-runtime-descriptors.test.ts
+
+      - name: Public onboarding web tests
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: >-
+          npm test -w @space/web --
+          owner-setup.test.tsx
+
+      - name: Typecheck candidate
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run check
+
+      - name: Build candidate
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run build
+
+      - name: Pack launcher candidate
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run pack:dry-run -w run-spaceapp

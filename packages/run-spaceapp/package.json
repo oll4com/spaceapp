@@ -1,0 +1,49 @@
+{
+  "name": "run-spaceapp",
+  "version": "0.1.0-alpha.1",
+  "description": "Cross-platform Docker launcher for the SpaceApp self-hosted agent workspace",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "spaceapp": "bin/spaceapp.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "templates/",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check bin/spaceapp.mjs && node --check src/index.mjs && node --check src/cli.mjs",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oll4com/spaceapp.git",
+    "directory": "packages/run-spaceapp"
+  },
+  "bugs": {
+    "url": "https://github.com/oll4com/spaceapp/issues"
+  },
+  "homepage": "https://github.com/oll4com/spaceapp#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "tag": "alpha"
+  }
+}

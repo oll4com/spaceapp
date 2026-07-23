@@ -1,0 +1,26 @@
+# Generated outputs and local tool reports. These are safe to regenerate; do
+# not commit them, and clean them only with an allowlist.
+node_modules/
+dist/
+dist-types/
+coverage/
+playwright-report/
+test-results/
+
+# Live/deploy-adjacent runtime state. Do not delete with blanket git clean.
+secrets/
+backups/
+bin/
+!packages/run-spaceapp/bin/
+!packages/run-spaceapp/bin/spaceapp.mjs
+var/
+/lost+found/
+
+# Local credentials and machine-specific environment.
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.log
+.DS_Store

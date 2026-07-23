@@ -1,0 +1,309 @@
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent
+} from "react";
+import { Gauge, ShieldAlert, Trash2, X } from "lucide-react";
+import type {
+  CodexHistoryPurgeExecuteRequest,
+  CodexHistoryPurgePreviewResponse,
+  CodexHistoryPurgeResponse,
+  CodexLbSpeedDefaultsResponse,
+  CodexLbSpeedTier
+} from "@space/contracts";
+import { api } from "../../api.js";
+import { DEMO_LOCAL_REPLY, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
+import "./admin-codex-tools.css";
+
+export type AdminCodexTool = "speed" | "history";
+
+export interface AdminCodexToolsClient {
+  speedDefaults(): Promise<CodexLbSpeedDefaultsResponse>;
+  updateSpeedDefault(
+    modelId: CodexLbSpeedDefaultsResponse["models"][number]["modelId"],
+    tier: CodexLbSpeedTier
+  ): Promise<CodexLbSpeedDefaultsResponse>;
+  previewHistoryPurge(): Promise<CodexHistoryPurgePreviewResponse>;
+  executeHistoryPurge(
+    previewId: string,
+    confirmation: CodexHistoryPurgeExecuteRequest["confirmation"]
+  ): Promise<CodexHistoryPurgeResponse>;
+}
+
+const defaultClient: AdminCodexToolsClient = {
+  speedDefaults: () => api.codexLbSpeedDefaults(),
+  updateSpeedDefault: (modelId, tier) => api.updateCodexLbSpeedDefault(modelId, tier),
+  previewHistoryPurge: () => api.previewCodexHistoryPurge(),
+  executeHistoryPurge: (previewId, confirmation) => api.executeCodexHistoryPurge(previewId, confirmation)
+};
+
+const purgeConfirmation = "PURGE HISTORY" as const;
+
+function errorMessage(reason: unknown, fallback: string): string {
+  return reason instanceof Error ? reason.message : fallback;
+}
+
+function plural(count: number, singular: string, pluralValue = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralValue}`;
+}
+
+function PurgeCounts({ counts }: {
+  counts: CodexHistoryPurgePreviewResponse["candidates"] | CodexHistoryPurgeResponse["purged"];
+}) {
+  return (
+    <dl className="admin-codex-counts" aria-label="History counts">
+      <div><dt>Threads</dt><dd>{counts.threads}</dd></div>
+      <div><dt>Shared CLI tasks</dt><dd>{counts.cliTasks}</dd></div>
+      <div><dt>Index entries</dt><dd>{counts.indexEntries}</dd></div>
+      <div><dt>Rollout files</dt><dd>{counts.rolloutFiles}</dd></div>
+      <div><dt>Shell snapshots</dt><dd>{counts.shellSnapshots}</dd></div>
+    </dl>
+  );
+}
+
+export function AdminCodexToolsDialog({
+  client = defaultClient,
+  initialTool,
+  onClose
+}: {
+  client?: AdminCodexToolsClient;
+  initialTool: AdminCodexTool;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const [speed, setSpeed] = useState<CodexLbSpeedDefaultsResponse | null>(null);
+  const [speedLoading, setSpeedLoading] = useState(initialTool === "speed");
+  const [speedUpdatingModel, setSpeedUpdatingModel] = useState<string | null>(null);
+  const [speedError, setSpeedError] = useState<string | null>(null);
+  const [speedMessage, setSpeedMessage] = useState<string | null>(null);
+  const [preview, setPreview] = useState<CodexHistoryPurgePreviewResponse | null>(null);
+  const [purgeResult, setPurgeResult] = useState<CodexHistoryPurgeResponse | null>(null);
+  const [purgeBusy, setPurgeBusy] = useState(false);
+  const [purgeError, setPurgeError] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState("");
+  const busy = speedLoading || Boolean(speedUpdatingModel) || purgeBusy;
+
+  const loadSpeed = useCallback(async () => {
+    setSpeedLoading(true);
+    setSpeedError(null);
+    try {
+      setSpeed(await client.speedDefaults());
+    } catch (reason) {
+      setSpeedError(errorMessage(reason, "Codex-LB speed defaults are unavailable."));
+    } finally {
+      setSpeedLoading(false);
+    }
+  }, [client]);
+
+  useEffect(() => {
+    const focusFrame = window.requestAnimationFrame(() => closeRef.current?.focus());
+    if (initialTool === "speed") void loadSpeed();
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [initialTool, loadSpeed]);
+
+  function close() {
+    if (!busy) onClose();
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape") {
+      if (!busy) {
+        event.preventDefault();
+        onClose();
+      }
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const controls = Array.from(dialog.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled)"));
+    const first = controls[0];
+    const last = controls.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  async function updateSpeed(
+    modelId: CodexLbSpeedDefaultsResponse["models"][number]["modelId"],
+    displayName: string,
+    tier: CodexLbSpeedTier
+  ) {
+    if (speedUpdatingModel) return;
+    setSpeedUpdatingModel(modelId);
+    setSpeedError(null);
+    setSpeedMessage(null);
+    try {
+      setSpeed(await client.updateSpeedDefault(modelId, tier));
+      setSpeedMessage(getSpaceRuntimeKind() === "demo"
+        ? DEMO_LOCAL_REPLY
+        : `${displayName} now uses ${tier === "FAST" ? "Fast" : "Standard"}.`);
+    } catch (reason) {
+      setSpeedError(errorMessage(reason, "Codex-LB speed update failed."));
+    } finally {
+      setSpeedUpdatingModel(null);
+    }
+  }
+
+  async function previewPurge() {
+    if (purgeBusy) return;
+    setPurgeBusy(true);
+    setPurgeError(null);
+    setPurgeResult(null);
+    setConfirmation("");
+    try {
+      setPreview(await client.previewHistoryPurge());
+    } catch (reason) {
+      setPreview(null);
+      setPurgeError(errorMessage(reason, "History purge preview failed."));
+    } finally {
+      setPurgeBusy(false);
+    }
+  }
+
+  async function executePurge() {
+    if (purgeBusy || preview?.status !== "READY" || confirmation !== purgeConfirmation) return;
+    setPurgeBusy(true);
+    setPurgeError(null);
+    try {
+      setPurgeResult(await client.executeHistoryPurge(preview.previewId, purgeConfirmation));
+      setConfirmation("");
+    } catch (reason) {
+      setPurgeError(errorMessage(reason, "History purge failed."));
+    } finally {
+      setPurgeBusy(false);
+    }
+  }
+
+  const isSpeed = initialTool === "speed";
+  const title = isSpeed ? "Codex-LB speed control" : "Purge history";
+  const HeaderIcon = isSpeed ? Gauge : Trash2;
+
+  return (
+    <div className="admin-codex-tools-backdrop" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) close();
+    }}>
+      <section
+        ref={dialogRef}
+        className="admin-codex-tools-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        aria-busy={busy}
+        onKeyDown={handleKeyDown}
+      >
+        <header className="admin-codex-tools-header">
+          <span className={isSpeed ? "admin-codex-tools-icon" : "admin-codex-tools-icon danger"}>
+            <HeaderIcon aria-hidden="true" />
+          </span>
+          <div>
+            <h2>{title}</h2>
+            <p>{isSpeed
+              ? "Choose the global Standard or Fast default for each supported model."
+              : "Remove inactive task history only after a fresh server-side preview."}</p>
+          </div>
+          <button ref={closeRef} type="button" aria-label={`Close ${title}`} disabled={busy} onClick={close}>
+            <X aria-hidden="true" />
+          </button>
+        </header>
+
+        {isSpeed ? (
+          <div className="admin-codex-tools-content">
+            {speedLoading ? <p role="status">Loading Codex-LB speed defaults…</p> : null}
+            {speedError ? <div className="admin-codex-alert error" role="alert">
+              <span>{speedError}</span>
+              {!speed ? <button type="button" onClick={() => void loadSpeed()}>Retry</button> : null}
+            </div> : null}
+            {speed ? <div className="admin-codex-speed-list">
+              {speed.models.map((model) => (
+                <div className="admin-codex-speed-row" key={model.modelId}>
+                  <div><strong>{model.displayName}</strong><small>{model.modelId}</small></div>
+                  <div className="admin-codex-segmented" role="group" aria-label={`${model.displayName} speed tier`}>
+                    {(["STANDARD", "FAST"] as const).map((tier) => (
+                      <button
+                        key={tier}
+                        type="button"
+                        aria-label={`Set ${model.displayName} to ${tier === "FAST" ? "Fast" : "Standard"}`}
+                        aria-pressed={model.tier === tier}
+                        disabled={Boolean(speedUpdatingModel) || model.tier === tier}
+                        onClick={() => void updateSpeed(model.modelId, model.displayName, tier)}
+                      >
+                        {tier === "FAST" ? "Fast" : "Standard"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div> : null}
+            {speedMessage ? <p className="admin-codex-alert success" role="status" aria-live="polite">{speedMessage}</p> : null}
+            <p className="admin-codex-tools-note">Changes are global and apply only to the exact GPT-5.5 or GPT-5.4 model default selected here.</p>
+          </div>
+        ) : (
+          <div className="admin-codex-tools-content">
+            <div className="admin-codex-warning">
+              <ShieldAlert aria-hidden="true" />
+              <p>Active Space CLI and Chat threads stay protected. The server rechecks them again immediately before purge.</p>
+            </div>
+            {!preview && !purgeResult ? (
+              <button className="admin-codex-primary" type="button" disabled={purgeBusy} onClick={() => void previewPurge()}>
+                {purgeBusy ? "Preparing preview…" : "Preview history purge"}
+              </button>
+            ) : null}
+            {preview && !purgeResult ? <div className="admin-codex-preview">
+              <div className="admin-codex-preview-heading">
+                <strong>{preview.status === "READY" ? "Removable history" : "Nothing to purge"}</strong>
+                <small>{preview.protectedThreads} active protected</small>
+              </div>
+              <PurgeCounts counts={preview.candidates} />
+              <p>{plural(preview.protectedThreads, "active thread")} {preview.protectedThreads === 1 ? "is" : "are"} protected.</p>
+              {preview.status === "NOOP" ? <p className="admin-codex-alert success" role="status">No removable history was found.</p> : null}
+            </div> : null}
+            {preview?.status === "READY" && !purgeResult ? <div className="admin-codex-confirmation">
+              <label htmlFor="codex-history-purge-confirmation">Type <code>{purgeConfirmation}</code> to confirm</label>
+              <input
+                id="codex-history-purge-confirmation"
+                aria-label="Type PURGE HISTORY to confirm"
+                autoComplete="off"
+                spellCheck={false}
+                value={confirmation}
+                disabled={purgeBusy}
+                onChange={(event) => setConfirmation(event.currentTarget.value)}
+              />
+              <button
+                type="button"
+                className="danger"
+                disabled={purgeBusy || confirmation !== purgeConfirmation}
+                onClick={() => void executePurge()}
+              >
+                {purgeBusy ? "Purging…" : "Purge history"}
+              </button>
+            </div> : null}
+            {purgeResult ? <div className="admin-codex-result">
+              <PurgeCounts counts={purgeResult.purged} />
+              <p className="admin-codex-alert success" role="status" aria-live="polite">
+                {purgeResult.status === "NOOP"
+                  ? "No history was removed."
+                  : `${plural(purgeResult.purged.threads, "native thread")} and ${plural(
+                    purgeResult.purged.cliTasks,
+                    "shared CLI task"
+                  )} purged.`}
+              </p>
+              {purgeResult.newlyProtectedThreads > 0 ? <p>
+                {plural(purgeResult.newlyProtectedThreads, "thread")} became protected after preview and {purgeResult.newlyProtectedThreads === 1 ? "was" : "were"} not removed.
+              </p> : null}
+            </div> : null}
+            {purgeError ? <p className="admin-codex-alert error" role="alert">{purgeError}</p> : null}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}

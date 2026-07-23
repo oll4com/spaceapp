@@ -1,0 +1,110 @@
+name: Public alpha candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact alpha version from packages/run-spaceapp/package.json
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-alpha-candidate-${{ inputs.version }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  source-candidate:
+    name: Verify sanitized source and npm candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Enforce legal and version readiness
+        run: >-
+          node scripts/public-release-readiness.mjs
+          --version "${{ inputs.version }}"
+          --allow-review-required
+
+      - name: Create sanitized source candidate
+        run: >-
+          node scripts/public-export.mjs
+          --output "$RUNNER_TEMP/spaceapp-public-export"
+
+      - name: Archive immutable sanitized source
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-artifacts"
+          tar -C "$RUNNER_TEMP" \
+            -czf "$RUNNER_TEMP/release-artifacts/spaceapp-public-export-${{ inputs.version }}.tar.gz" \
+            spaceapp-public-export
+
+      - name: Install candidate dependencies
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm ci
+
+      - name: Test candidate
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run test:public
+
+      - name: Typecheck candidate
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run check
+
+      - name: Build candidate
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run build
+
+      - name: Pack npm candidate from sanitized source
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: >-
+          npm pack ./packages/run-spaceapp
+          --pack-destination "$RUNNER_TEMP/release-artifacts"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: public-alpha-source-candidate-${{ inputs.version }}
+          path: ${{ runner.temp }}/release-artifacts/
+          if-no-files-found: error
+
+  container-candidate:
+    name: Sanitized ${{ matrix.target }} / linux-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - core
+          - browser
+          - cli
+        arch:
+          - amd64
+          - arm64
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create sanitized container context
+        run: >-
+          node scripts/public-export.mjs
+          --output "$RUNNER_TEMP/spaceapp-public-export"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ runner.temp }}/spaceapp-public-export
+          target: ${{ matrix.target }}
+          platforms: linux/${{ matrix.arch }}
+          push: false
+          provenance: false
+          cache-from: type=gha,scope=candidate-${{ matrix.target }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=candidate-${{ matrix.target }}-${{ matrix.arch }}

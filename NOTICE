@@ -1,0 +1,11 @@
+SpaceApp
+Copyright 2026 OLL4COM
+
+This product includes software developed by SpaceApp contributors.
+
+SpaceApp integrates with independent third-party command-line tools. Those
+tools are distributed under their own licenses and are not relicensed by
+this NOTICE or by the SpaceApp Apache License 2.0.
+
+See THIRD_PARTY_NOTICES.md for the pinned CLI inventory and redistribution
+boundaries.

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title description">
+  <title id="title">Space homepage demo</title>
+  <desc id="description">A local presentation fixture showing rooms and three demo panes.</desc>
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#121817"/>
+      <stop offset="1" stop-color="#080b0b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="900" rx="32" fill="#070909"/>
+  <rect x="32" y="32" width="1536" height="836" rx="24" fill="url(#surface)" stroke="#40504c" stroke-width="3"/>
+  <rect x="32" y="32" width="1536" height="72" rx="24" fill="#111615"/>
+  <circle cx="78" cy="68" r="12" fill="#70c5b5"/>
+  <text x="108" y="77" fill="#f3f0e9" font-family="Arial, sans-serif" font-size="28" font-weight="700">Space</text>
+  <text x="1390" y="76" fill="#93a09c" font-family="Arial, sans-serif" font-size="19">PUBLIC DEMO</text>
+  <rect x="56" y="132" width="260" height="708" rx="14" fill="#0e1312" stroke="#293431"/>
+  <text x="82" y="176" fill="#8f9a96" font-family="Arial, sans-serif" font-size="18">ROOMS</text>
+  <rect x="72" y="202" width="228" height="82" rx="12" fill="#172421" stroke="#70c5b5"/>
+  <text x="98" y="250" fill="#f3f0e9" font-family="Arial, sans-serif" font-size="22">Launch Room</text>
+  <rect x="72" y="302" width="228" height="82" rx="12" fill="#111716" stroke="#293431"/>
+  <text x="98" y="350" fill="#b4bdb9" font-family="Arial, sans-serif" font-size="22">Content Studio</text>
+  <text x="352" y="168" fill="#f3f0e9" font-family="Arial, sans-serif" font-size="34" font-weight="700">Launch Room</text>
+  <g fill="#101514" stroke="#34413e" stroke-width="2">
+    <rect x="352" y="202" width="382" height="612" rx="14"/>
+    <rect x="752" y="202" width="382" height="612" rx="14"/>
+    <rect x="1152" y="202" width="382" height="612" rx="14"/>
+  </g>
+  <g fill="#70c5b5" font-family="Arial, sans-serif" font-size="20" font-weight="700">
+    <text x="378" y="244">Launch copilot</text>
+    <text x="778" y="244">Codex CLI</text>
+    <text x="1178" y="244">Preview browser</text>
+  </g>
+  <g fill="#9eaaa6" font-family="Arial, sans-serif" font-size="18">
+    <text x="378" y="314">Finalize the homepage story,</text>
+    <text x="378" y="344">verify the demo, and prepare</text>
+    <text x="378" y="374">the early-access announcement.</text>
+    <text x="778" y="314">$ npm run check</text>
+    <text x="778" y="350">✓ types · 0 errors</text>
+    <text x="778" y="386">✓ demo isolation · verified</text>
+    <text x="1178" y="314">Homepage launch</text>
+    <text x="1178" y="350">○ Interactive workspace</text>
+    <text x="1178" y="386">○ Waitlist flow</text>
+  </g>
+</svg>

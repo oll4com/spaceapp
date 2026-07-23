@@ -1,0 +1,480 @@
+import { createHash, randomBytes } from "node:crypto";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile
+} from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const CONFIG_SCHEMA_VERSION = 1;
+const SECRET_FIELD = /password|secret|token|api.?key|credential/i;
+const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const BACKUP_ID_PATTERN = /^spaceapp-backup-\d{8}T\d{9}Z$/;
+const PROVIDERS = Object.freeze({
+  bundled: Object.freeze(["codex", "gemini", "opencode", "qwen", "kimi", "grok"]),
+  ownerInstalled: Object.freeze(["claude"]),
+  experimental: Object.freeze(["deepseek"])
+});
+const ALL_PROVIDERS = new Set(Object.values(PROVIDERS).flat());
+const CONFIG_KEYS = new Set([
+  "schemaVersion",
+  "version",
+  "previousVersion",
+  "bindHost",
+  "port",
+  "telemetry",
+  "profile",
+  "workspaces"
+]);
+
+export function resolveSpaceAppHome({
+  env = process.env,
+  platform = process.platform,
+  home = homedir()
+} = {}) {
+  if (env.SPACEAPP_HOME) {
+    return resolve(env.SPACEAPP_HOME);
+  }
+  if (platform === "win32") {
+    return resolve(env.APPDATA || join(home, "AppData", "Roaming"), "SpaceApp");
+  }
+  if (platform === "darwin") {
+    return resolve(home, "Library", "Application Support", "SpaceApp");
+  }
+  return resolve(env.XDG_CONFIG_HOME || join(home, ".config"), "spaceapp");
+}
+
+export function createDefaultConfig({ version }) {
+  assertVersion(version);
+  return {
+    schemaVersion: CONFIG_SCHEMA_VERSION,
+    version,
+    previousVersion: null,
+    bindHost: "127.0.0.1",
+    port: 4911,
+    telemetry: false,
+    profile: "full",
+    workspaces: []
+  };
+}
+
+export function validateConfig(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("SpaceApp config must be an object.");
+  }
+  for (const key of Object.keys(config)) {
+    if (SECRET_FIELD.test(key)) {
+      throw new Error(`SpaceApp config cannot contain secret field "${key}".`);
+    }
+    if (!CONFIG_KEYS.has(key)) {
+      throw new Error(`Unsupported SpaceApp config field "${key}".`);
+    }
+  }
+  if (config.schemaVersion !== CONFIG_SCHEMA_VERSION) {
+    throw new Error(`Unsupported SpaceApp config schema ${config.schemaVersion}.`);
+  }
+  assertVersion(config.version);
+  if (config.previousVersion !== null) {
+    assertVersion(config.previousVersion);
+  }
+  if (config.bindHost !== "127.0.0.1" && config.bindHost !== "0.0.0.0") {
+    throw new Error("bindHost must be 127.0.0.1 or 0.0.0.0.");
+  }
+  if (!Number.isInteger(config.port) || config.port < 1024 || config.port > 65535) {
+    throw new Error("port must be an integer between 1024 and 65535.");
+  }
+  if (typeof config.telemetry !== "boolean") {
+    throw new Error("telemetry must be boolean.");
+  }
+  if (!["full", "core"].includes(config.profile)) {
+    throw new Error("profile must be full or core.");
+  }
+  if (!Array.isArray(config.workspaces)) {
+    throw new Error("workspaces must be an array.");
+  }
+  for (const workspace of config.workspaces) {
+    validateWorkspace(workspace);
+  }
+  return config;
+}
+
+export async function saveConfig(root, config) {
+  validateHome(root);
+  validateConfig(config);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await atomicWrite(join(root, "config.json"), `${JSON.stringify(config, null, 2)}\n`);
+}
+
+export async function loadConfig(root) {
+  validateHome(root);
+  const config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  return validateConfig(config);
+}
+
+export async function addWorkspace(config, hostPath, { readOnly = false } = {}) {
+  validateConfig(config);
+  if (!isAbsolute(hostPath)) {
+    throw new Error("Workspace path must be absolute.");
+  }
+  const absolutePath = resolve(hostPath);
+  const pathStat = await stat(absolutePath);
+  if (!pathStat.isDirectory()) {
+    throw new Error("Workspace path must be an existing directory.");
+  }
+  if (config.workspaces.some((workspace) => workspace.hostPath === absolutePath)) {
+    return structuredClone(config);
+  }
+  const rawName = basename(absolutePath);
+  const name = rawName.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+  const suffix = createHash("sha256").update(absolutePath).digest("hex").slice(0, 8);
+  const workspace = {
+    id: `${name}-${suffix}`,
+    name,
+    hostPath: absolutePath,
+    containerPath: `/workspaces/${name}`,
+    readOnly: Boolean(readOnly)
+  };
+  return { ...structuredClone(config), workspaces: [...config.workspaces, workspace] };
+}
+
+export function removeWorkspace(config, identity) {
+  validateConfig(config);
+  const remaining = config.workspaces.filter(
+    (workspace) => workspace.id !== identity && workspace.hostPath !== identity
+  );
+  if (remaining.length === config.workspaces.length) {
+    throw new Error(`Workspace "${identity}" is not registered.`);
+  }
+  return { ...structuredClone(config), workspaces: remaining };
+}
+
+export function credentialProviders() {
+  return {
+    bundled: [...PROVIDERS.bundled],
+    ownerInstalled: [...PROVIDERS.ownerInstalled],
+    experimental: [...PROVIDERS.experimental]
+  };
+}
+
+export async function writeCredential(root, provider, value) {
+  assertProvider(provider);
+  validateHome(root);
+  const normalized = String(value).replace(/[\r\n]+$/, "");
+  if (!normalized || normalized.includes("\0")) {
+    throw new Error("Credential value cannot be empty or contain null bytes.");
+  }
+  const credentialsRoot = join(root, "secrets", "providers");
+  await mkdir(credentialsRoot, { recursive: true, mode: 0o700 });
+  const target = join(credentialsRoot, `${provider}.key`);
+  await atomicWrite(target, normalized);
+  return target;
+}
+
+export async function removeCredential(root, provider) {
+  assertProvider(provider);
+  validateHome(root);
+  try {
+    await rm(join(root, "secrets", "providers", `${provider}.key`));
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+export async function writeSetupToken(root, token) {
+  validateHome(root);
+  const normalized = String(token).replace(/[\r\n]+$/, "");
+  if (normalized.length < 32 || normalized.length > 500 || /[\0\r\n]/.test(normalized)) {
+    throw new Error("SpaceApp setup token must be 32-500 characters without line breaks.");
+  }
+  const target = join(root, "secrets", "setup-token");
+  await atomicWrite(target, normalized);
+  return target;
+}
+
+export function renderRuntimeEnv(config) {
+  validateConfig(config);
+  return [
+    `SPACEAPP_IMAGE_TAG=${safeEnv(config.version)}`,
+    `SPACEAPP_BIND_HOST=${safeEnv(config.bindHost)}`,
+    `SPACEAPP_PORT=${config.port}`,
+    `SPACEAPP_TELEMETRY=${config.telemetry}`,
+    `SPACEAPP_PROFILE=${safeEnv(config.profile)}`,
+    ""
+  ].join("\n");
+}
+
+export function renderWorkspaceCompose(config) {
+  validateConfig(config);
+  const mounts = config.workspaces.flatMap((workspace) => [
+    "      - type: bind",
+    `        source: ${JSON.stringify(workspace.hostPath)}`,
+    `        target: ${JSON.stringify(workspace.containerPath)}`,
+    `        read_only: ${workspace.readOnly}`
+  ]);
+  const service = mounts.length > 0
+    ? ["    volumes:", ...mounts]
+    : ["    volumes: []"];
+  return [
+    "services:",
+    "  spaceapp-core:",
+    ...service,
+    "  spaceapp-cli:",
+    ...service,
+    ""
+  ].join("\n");
+}
+
+export function composeCommand(action, root, options = {}) {
+  validateHome(root);
+  const base = [
+    "compose",
+    "--project-name", composeProjectName(root),
+    "--project-directory", root,
+    "--env-file", join(root, "runtime.env"),
+    "-f", join(root, "compose.yml"),
+    "-f", join(root, "compose.workspaces.yml")
+  ];
+  const actions = {
+    up: ["up", "-d", "--remove-orphans"],
+    down: ["down"],
+    status: ["ps"],
+    logs: ["logs", "--tail", String(options.lines || 200)],
+    pull: ["pull"],
+    syncCredentials: ["up", "-d", "--no-deps", "--force-recreate", "spaceapp-cli"],
+    installClaude: [
+      "run",
+      "--rm",
+      "--no-deps",
+      "--user",
+      "10001:10001",
+      "--entrypoint",
+      "npm",
+      "spaceapp-cli",
+      "install",
+      "--prefix",
+      "/var/lib/spaceapp-cli/vendor/claude",
+      "--no-audit",
+      "--no-fund",
+      "@anthropic-ai/claude-code@2.1.206"
+    ],
+    backup: ["exec", "-T", "--user", "0:0", "spaceapp-core", "node", "scripts/portable-backup.mjs"],
+    stopForRestore: ["stop", "spaceapp-core", "spaceapp-cli", "spaceapp-browser"],
+    resetOwnerPassword: [
+      "exec",
+      "-T",
+      "--user",
+      "10001:10001",
+      "spaceapp-core",
+      "node",
+      "scripts/reset-owner-password.mjs",
+      "--stdin"
+    ],
+    rotateOwnerSetupToken: [
+      "exec",
+      "-T",
+      "--user",
+      "10001:10001",
+      "spaceapp-core",
+      "node",
+      "scripts/rotate-owner-setup-token.mjs",
+      "--stdin"
+    ],
+    purge: ["down", "--volumes", "--remove-orphans"]
+  };
+  let selected = actions[action];
+  if (action === "restore") {
+    if (typeof options.backupId !== "string" || !BACKUP_ID_PATTERN.test(options.backupId)) {
+      throw new Error("A valid SpaceApp backup id is required for restore.");
+    }
+    selected = [
+      "run",
+      "--rm",
+      "--no-deps",
+      "--user",
+      "0:0",
+      "--env",
+      "SPACE_DATABASE_URL_FILE=/run/secrets/database-url",
+      "--entrypoint",
+      "node",
+      "spaceapp-core",
+      "scripts/portable-restore.mjs",
+      "--input",
+      "/backups",
+      "--backup-id",
+      options.backupId,
+      "--confirm",
+      "RESTORE"
+    ];
+  }
+  if (!selected) {
+    throw new Error(`Unsupported Compose action "${action}".`);
+  }
+  return { command: "docker", args: [...base, ...selected] };
+}
+
+export function composeProjectName(root) {
+  validateHome(root);
+  return `spaceapp-${createHash("sha256").update(resolve(root)).digest("hex").slice(0, 12)}`;
+}
+
+export async function selectLatestBackupId(root) {
+  validateHome(root);
+  const entries = await readdir(join(root, "backups"), { withFileTypes: true });
+  const backupId = entries
+    .filter((entry) => entry.isDirectory() && BACKUP_ID_PATTERN.test(entry.name))
+    .map((entry) => entry.name)
+    .sort()
+    .at(-1);
+  if (!backupId) {
+    throw new Error('No portable backup exists. Run "spaceapp backup" before restore.');
+  }
+  return backupId;
+}
+
+export async function writeRuntimeFiles(root, config) {
+  validateHome(root);
+  validateConfig(config);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config));
+  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config));
+}
+
+export async function initializeInstallation(root, { version, templateDir = defaultTemplateDir() }) {
+  validateHome(root);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await Promise.all([
+    mkdir(join(root, "backups"), { recursive: true, mode: 0o700 }),
+    mkdir(join(root, "secrets", "providers"), { recursive: true, mode: 0o700 })
+  ]);
+  let config;
+  try {
+    config = await loadConfig(root);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+    config = createDefaultConfig({ version });
+    await saveConfig(root, config);
+  }
+  await copyFile(join(templateDir, "compose.yml"), join(root, "compose.yml"));
+  await chmod(join(root, "compose.yml"), 0o600);
+  await writeRuntimeFiles(root, config);
+
+  const postgresPasswordPath = join(root, "secrets", "postgres-password");
+  let postgresPassword;
+  try {
+    postgresPassword = (await readFile(postgresPasswordPath, "utf8")).trim();
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+    postgresPassword = randomBytes(32).toString("base64url");
+    await atomicWrite(postgresPasswordPath, postgresPassword);
+  }
+  const databaseUrlPath = join(root, "secrets", "database-url");
+  try {
+    await stat(databaseUrlPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+    const encodedPassword = encodeURIComponent(postgresPassword);
+    await atomicWrite(
+      databaseUrlPath,
+      `postgresql://spaceapp:${encodedPassword}@postgres:5432/spaceapp`
+    );
+  }
+
+  const sessionSecretPath = join(root, "secrets", "session-secret");
+  try {
+    await stat(sessionSecretPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+    await atomicWrite(sessionSecretPath, randomBytes(48).toString("base64url"));
+  }
+
+  const setupTokenPath = join(root, "secrets", "setup-token");
+  let setupToken = null;
+  try {
+    await stat(setupTokenPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+    setupToken = randomBytes(32).toString("base64url");
+    await atomicWrite(setupTokenPath, setupToken);
+  }
+  return { config, setupToken };
+}
+
+function validateWorkspace(workspace) {
+  if (!workspace || typeof workspace !== "object") {
+    throw new Error("Invalid workspace entry.");
+  }
+  if (!/^[a-z0-9._-]+-[a-f0-9]{8}$/.test(workspace.id)) {
+    throw new Error("Invalid workspace id.");
+  }
+  if (!isAbsolute(workspace.hostPath) || !workspace.containerPath.startsWith("/workspaces/")) {
+    throw new Error("Workspace paths must be absolute.");
+  }
+  if (typeof workspace.readOnly !== "boolean") {
+    throw new Error("Workspace readOnly must be boolean.");
+  }
+}
+
+function validateHome(root) {
+  if (!root || !isAbsolute(root)) {
+    throw new Error("SpaceApp home must be an absolute path.");
+  }
+}
+
+function assertVersion(version) {
+  if (typeof version !== "string" || !VERSION_PATTERN.test(version)) {
+    throw new Error(`Invalid SpaceApp version "${version}".`);
+  }
+}
+
+function assertProvider(provider) {
+  if (!ALL_PROVIDERS.has(provider)) {
+    throw new Error(`Unsupported credential provider "${provider}".`);
+  }
+}
+
+function safeEnv(value) {
+  if (String(value).includes("\n") || String(value).includes("\r")) {
+    throw new Error("Runtime settings cannot contain newlines.");
+  }
+  return String(value);
+}
+
+async function atomicWrite(target, value) {
+  await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+  const temporary = `${target}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  try {
+    await writeFile(temporary, value, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await chmod(temporary, 0o600);
+    await rename(temporary, target);
+    await chmod(target, 0o600);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function defaultTemplateDir() {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "../templates");
+}

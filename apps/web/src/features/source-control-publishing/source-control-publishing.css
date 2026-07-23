@@ -1,0 +1,138 @@
+.source-control-publishing-card {
+  gap: 0.65rem;
+}
+
+.source-control-publishing-title {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.source-control-provider-list,
+.source-control-provider {
+  min-width: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.source-control-provider {
+  border: 1px solid var(--room-border, #303437);
+  border-radius: 6px;
+  background: var(--room-terminal-bg, #101112);
+  padding: 0.55rem;
+}
+
+.source-control-provider-heading,
+.source-control-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.source-control-provider-heading > span:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.source-control-provider-heading strong,
+.source-control-provider-heading small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-control-provider-heading small,
+.source-control-account {
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.65rem;
+}
+
+.source-control-status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid #48504e;
+  border-radius: 999px;
+  padding: 0.15rem 0.35rem;
+  color: #c6cfcd;
+  font-size: 0.58rem;
+}
+
+.source-control-status.connected {
+  border-color: #3f675d;
+  color: #bce7df;
+}
+
+.source-control-status.error {
+  border-color: #714047;
+  color: #f0abb4;
+}
+
+.source-control-status svg {
+  width: 0.7rem;
+  height: 0.7rem;
+}
+
+.source-control-account,
+.source-control-feedback {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-control-provider form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.4rem;
+}
+
+.source-control-provider input {
+  min-width: 0;
+  width: 100%;
+  min-height: 2.2rem;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 6px;
+  background: var(--room-surface, #141617);
+  color: var(--room-text, #f4efe5);
+  padding: 0 0.55rem;
+  font: inherit;
+}
+
+.source-control-provider button,
+.source-control-actions button {
+  min-height: 2.2rem;
+}
+
+.source-control-actions {
+  justify-content: flex-end;
+}
+
+.source-control-feedback {
+  border: 1px solid #3f675d;
+  border-radius: 6px;
+  background: #14211f;
+  color: #bce7df;
+  padding: 0.45rem;
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.source-control-feedback.error {
+  border-color: #714047;
+  background: #25171a;
+  color: #f0abb4;
+}
+
+@media (max-width: 34rem) {
+  .source-control-provider form {
+    grid-template-columns: 1fr;
+  }
+
+  .source-control-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

@@ -1,0 +1,2 @@
+ALTER TABLE turns
+  ADD COLUMN IF NOT EXISTS prompt text;
