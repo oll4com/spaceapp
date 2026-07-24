@@ -20,10 +20,15 @@ Windows 11 PowerShell:
 npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
 ```
 
-The launcher requires Node.js 20.11 or newer, 4 CPUs, 8 GB RAM, 15 GiB free
-disk, and Docker Compose. `spaceapp install` initializes, checks, downloads,
-starts, and opens SpaceApp. It selects the `light` profile below 12 GiB RAM and
-the `standard` profile otherwise; override this with `--profile light` or
+The launcher requires Node.js 20.11 or newer, 4 CPUs, 8 GB RAM, and 15 GiB free
+disk. If Docker is missing, `spaceapp install` automatically installs it from
+official Docker sources on Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and
+CentOS, starts it, and waits for Engine and Compose readiness before pulling
+images. Docker Desktop license acceptance and Linux `docker` group membership
+require confirmation inside the same command.
+
+The launcher selects the `light` profile below 12 GiB RAM and the `standard`
+profile otherwise; override this with `--profile light` or
 `--profile standard`.
 
 Light mode retains every bundled CLI and the core data/workflow services while

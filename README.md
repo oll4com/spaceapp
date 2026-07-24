@@ -31,8 +31,6 @@ mutually untrusted users.
 Requirements:
 
 - Node.js 20.11 or newer for the launcher;
-- Docker Engine with Docker Compose on Linux, or Docker Desktop on macOS and
-  Windows 11;
 - at least 4 CPUs, 8 GB system RAM, and 15 GiB free disk;
 - recommended for the standard browser profile: 8 CPUs, 16 GB RAM, and
   25 GiB free disk.
@@ -55,10 +53,18 @@ Windows 11 PowerShell:
 npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
 ```
 
-`spaceapp install` creates the local configuration and fresh secrets, checks
-the host, selects a resource profile, downloads the images, starts the stack,
-and opens the app. It is idempotent, so running the same command again does not
-replace an existing setup token or secrets.
+`spaceapp install` creates the local configuration and fresh secrets, installs
+Docker when it is missing, checks the host, selects a resource profile,
+downloads the images, starts the stack, and opens the app. It is idempotent,
+so running the same command again does not replace an existing setup token or
+secrets.
+
+The automatic prerequisite flow uses official Docker sources: Docker Desktop
+with WSL2 on Windows, Docker Desktop on macOS, and Docker Engine repositories
+on Ubuntu, Debian, Fedora, RHEL, and CentOS. Docker Desktop license acceptance
+and Linux `docker` group membership require confirmation inside the same
+command. Windows may require one restart after WSL2 is enabled; rerun the same
+command afterward and it continues safely.
 
 `auto` selects the `light` profile on systems below 12 GiB RAM. Light mode is
 the supported 8 GB option: it keeps every bundled CLI, PostgreSQL, and Temporal

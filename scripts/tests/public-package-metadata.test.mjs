@@ -224,6 +224,7 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
   for (const content of [readme, gettingStarted, packageReadme]) {
     assert.match(content, new RegExp(unixCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.match(content, new RegExp(windowsCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(content, /Docker.*(?:automatically|automatic)/is);
     assert.doesNotMatch(content, /@alpha|0\.1\.0-alpha|public alpha/i);
   }
   for (const heading of ["Linux", "macOS", "Windows 11 — PowerShell"]) {
@@ -234,6 +235,9 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
   assert.match(gettingStarted, /--profile light/);
   assert.match(gettingStarted, /does\s+not preallocate/i);
   assert.match(gettingStarted, /WSL2/);
+  assert.match(gettingStarted, /verifies its Authenticode signature/i);
+  assert.match(gettingStarted, /verifies\s+its code signature/i);
+  assert.match(gettingStarted, /group grants root-level privileges/i);
 });
 
 test("public community files include support and structured contribution intake", async () => {

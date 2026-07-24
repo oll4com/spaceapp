@@ -85,8 +85,9 @@ remains explicit and provider terms remain independently applicable.
 
 ## Consequences
 
-- Docker Desktop is required on Windows and macOS; Windows uses its WSL2
-  backend, while Linux runs Docker Engine natively.
+- Docker Desktop is the runtime on Windows and macOS; Windows uses its WSL2
+  backend, while Linux runs Docker Engine natively. The launcher installs the
+  appropriate Docker runtime from official sources when it is missing.
 - Installation requires 4 CPUs, 8 GB RAM, and 15 GiB free disk. Systems below
   12 GiB RAM automatically use the light profile, which keeps every bundled
   CLI and omits managed Chromium.

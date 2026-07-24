@@ -7,6 +7,12 @@ Semantic Versioning.
 
 ## [0.1.4] - 2026-07-24
 
+- install and start signed Docker Desktop automatically on Windows and macOS
+  when it is missing, with explicit license confirmation;
+- install Docker Engine, Buildx, and Compose automatically from official
+  Docker repositories on Ubuntu, Debian, Fedora, RHEL, and CentOS;
+- require a ready Docker engine before pulling SpaceApp images and safely
+  continue Linux installation through newly granted `docker` group membership;
 - pin the Node 22.23.0 multi-architecture base image by OCI digest and install
   the fixed Debian `liblzma5` package in every image stage;
 - update Temporal and MCP HTTP dependencies to reviewed security releases;

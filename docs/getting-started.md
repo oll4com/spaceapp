@@ -2,7 +2,8 @@
 
 SpaceApp packages its application services and redistributable AI coding CLIs
 in Docker. The host needs Node.js only for the small `spaceapp` launcher,
-Docker, and enough resources for the stack.
+and enough resources for the stack. The launcher installs and starts Docker
+automatically when it is missing.
 
 ## Requirements
 
@@ -11,8 +12,7 @@ Minimum:
 - 4 CPU cores;
 - 8 GB system RAM;
 - 15 GiB free disk;
-- Node.js 20.11 or newer;
-- Docker Compose v2.
+- Node.js 20.11 or newer.
 
 Recommended for browser sessions and several simultaneous CLI panes:
 
@@ -22,9 +22,7 @@ Recommended for browser sessions and several simultaneous CLI panes:
 
 ## Linux
 
-Install Node.js 20.11 or newer, Docker Engine, and the Docker Compose plugin.
-Start Docker and ensure the current non-root user can run `docker version` and
-`docker compose version`, then run:
+Install Node.js 20.11 or newer, then run as a normal non-root user:
 
 ```bash
 sudo npm install -g run-spaceapp && spaceapp install
@@ -33,33 +31,43 @@ sudo npm install -g run-spaceapp && spaceapp install
 Linux runs the containers directly through the host Docker Engine; SpaceApp
 does not create a second guest VM. The `sudo` applies only to the system-wide
 npm package installation; `spaceapp install` runs as the current non-root user
-so the installation remains in that user's config directory.
+so the installation remains in that user's config directory. If Docker is
+missing on Ubuntu, Debian, Fedora, RHEL, or CentOS, the launcher adds Docker's
+official repository, installs Engine, Buildx, and Compose, and starts the
+service. Before adding the current user to the `docker` group, it explains that
+the group grants root-level privileges and asks for confirmation.
 
 ## macOS
 
-Install Node.js 20.11 or newer and a current Docker Desktop for Mac release,
-start Docker Desktop, then run in Terminal:
+Install Node.js 20.11 or newer, then run in Terminal:
 
 ```bash
 npm install -g run-spaceapp && spaceapp install
 ```
 
-Docker Desktop uses its managed lightweight Linux environment. Apple Silicon
-uses the native `linux/arm64` images and Intel Macs use `linux/amd64`.
+If Docker is missing, the launcher asks you to review and accept Docker
+Desktop's terms, downloads the official architecture-specific DMG, verifies
+its code signature, installs it, starts it, and waits until it is ready. Docker
+Desktop uses its managed lightweight Linux environment. Apple Silicon uses the
+native `linux/arm64` images and Intel Macs use `linux/amd64`.
 
 ## Windows 11 — PowerShell
 
-Enable hardware virtualization and WSL2, install Node.js 20.11 or newer, and
-install Docker Desktop with the WSL2 backend. Start Docker Desktop, open
-PowerShell or Windows Terminal, and run:
+Enable hardware virtualization and install Node.js 20.11 or newer. Open an
+Administrator PowerShell or Windows Terminal for the first installation and
+run:
 
 ```powershell
 npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
 ```
 
-SpaceApp reuses Docker Desktop's WSL2 Linux environment. It does not install a
-second full virtual machine. Keep each workspace in a location Docker Desktop
-can access and use one shell style consistently for paths.
+If Docker is missing, the launcher asks you to review and accept Docker
+Desktop's terms, enables WSL2 support, downloads Docker Desktop from Docker's
+official distribution service, verifies its Authenticode signature, installs
+it for the current user, starts it, and waits until it is ready. Windows may
+request one restart after WSL2 is enabled; rerun the same command afterward.
+SpaceApp reuses Docker Desktop's WSL2 Linux environment and does not install a
+second full virtual machine.
 
 ## Installation profiles
 
@@ -96,11 +104,12 @@ before its visible file size shrinks.
 
 ## What the command does
 
-`spaceapp install` performs `initialize → doctor → pull → up → open`. It
-creates non-secret configuration, fresh database/session secrets, and a
-one-time setup token; checks CPU, RAM, free disk, Docker, and Compose; downloads
-the selected images; starts the services; and opens
-`http://127.0.0.1:4911`.
+`spaceapp install` performs
+`initialize → prerequisites → doctor → pull → up → open`. It creates
+non-secret configuration, fresh database/session secrets, and a one-time setup
+token; installs Docker from official sources when required; checks CPU, RAM,
+free disk, Docker CLI, Compose, and engine readiness; downloads the selected
+images; starts the services; and opens `http://127.0.0.1:4911`.
 
 The command is idempotent. Running it again preserves the installation's
 secrets, data, provider state, and existing unclaimed setup token. Use

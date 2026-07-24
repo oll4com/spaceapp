@@ -12,9 +12,9 @@ spaceapp status
 spaceapp logs
 ```
 
-`doctor` checks local prerequisites. `status` reports Compose service state.
-`logs` returns the current bounded Compose log tail; inspect it before
-restarting a failing service.
+`doctor` checks local resources, Docker CLI, Compose, and engine readiness.
+`status` reports Compose service state. `logs` returns the current bounded
+Compose log tail; inspect it before restarting a failing service.
 
 Stop or start the application without deleting data:
 

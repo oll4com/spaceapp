@@ -546,12 +546,12 @@ function assertNoArgs(args, command) {
 
 function dockerInstallHelp(platform) {
   if (platform === "win32") {
-    return "Install Docker Desktop with its WSL2 backend, start it, then run spaceapp install again: https://docs.docker.com/desktop/setup/install/windows-install/";
+    return 'Run "spaceapp install" to install and start signed Docker Desktop with WSL2 automatically.';
   }
   if (platform === "darwin") {
-    return "Install and start Docker Desktop for macOS, then run spaceapp install again: https://docs.docker.com/desktop/setup/install/mac-install/";
+    return 'Run "spaceapp install" to install and start signed Docker Desktop automatically.';
   }
-  return "Install Docker Engine and the Docker Compose plugin, then run spaceapp install again: https://docs.docker.com/engine/install/";
+  return 'Run "spaceapp install" to install and start Docker Engine and Compose automatically on supported Linux distributions.';
 }
 
 function formatGigabytes(bytes) {
@@ -570,10 +570,10 @@ Usage: spaceapp <command>
 
   init                              Create a local SpaceApp installation
   install [--profile auto|light|standard] [--no-open]
-                                    Initialize, check, download, start, and open
+                                    Install prerequisites, initialize, and start
   up | down | status | logs         Manage the Docker application
   open                              Open the local web application
-  doctor                            Check Node, Docker, and Compose
+  doctor                            Check resources, Docker, Compose, and engine
   update [version] | rollback       Update or roll back images
   backup | restore                  Back up or restore persistent state
   workspace add <path> [--read-only]
