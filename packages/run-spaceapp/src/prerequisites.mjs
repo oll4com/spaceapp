@@ -19,6 +19,19 @@ const MAC_DOCKER_DOWNLOADS = Object.freeze({
   x64: "https://desktop.docker.com/mac/main/amd64/Docker.dmg",
   arm64: "https://desktop.docker.com/mac/main/arm64/Docker.dmg"
 });
+// Sources:
+// https://learn.microsoft.com/windows/package-manager/winget/install
+// https://github.com/microsoft/winget-pkgs/tree/master/manifests/d/Docker/DockerDesktop
+const WINDOWS_DOCKER_WINGET_ARGS = Object.freeze([
+  "install",
+  "--id", "Docker.DockerDesktop",
+  "--exact",
+  "--source", "winget",
+  "--silent",
+  "--accept-package-agreements",
+  "--accept-source-agreements",
+  "--disable-interactivity"
+]);
 
 export function windowsPowerShellArgs(operation) {
   const scripts = {
@@ -166,6 +179,35 @@ async function ensureWindowsDocker({
         "Windows must restart to finish enabling WSL2. Restart Windows, then run the same SpaceApp command again.\n"
       );
       return { code: 1, reexecuted: false };
+    }
+  }
+
+  if (!application) {
+    const wingetCode = await execute(
+      { command: "winget.exe", args: ["--version"] },
+      { stdin, stdout: null, stderr: null }
+    );
+    if (wingetCode === 0) {
+      stdout.write(
+        "Installing Docker Desktop through Windows Package Manager with manifest hash verification...\n"
+      );
+      const installCode = await execute(
+        { command: "winget.exe", args: [...WINDOWS_DOCKER_WINGET_ARGS] },
+        { stdin, stdout, stderr }
+      );
+      if (installCode === 0) {
+        application = await firstExisting(paths.applications, pathExists);
+        if (!application) {
+          stderr.write(
+            "Windows Package Manager reported success, but Docker Desktop could not be found.\n"
+          );
+          return { code: 1, reexecuted: false };
+        }
+      } else {
+        stdout.write(
+          "Windows Package Manager could not install Docker Desktop; trying Docker's signed direct installer...\n"
+        );
+      }
     }
   }
 

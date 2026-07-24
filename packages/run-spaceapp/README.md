@@ -24,10 +24,12 @@ The launcher requires Node.js 20.11 or newer, 4 CPUs, 8 GB RAM, and 15 GiB free
 disk. If Docker is missing, `spaceapp install` automatically installs it from
 official Docker sources on Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and
 CentOS, starts it, and waits for Engine and Compose readiness before pulling
-images. Docker Desktop license acceptance and Linux `docker` group membership
-require confirmation inside the same command. On Windows, approve the UAC
-prompt if WSL2 must be enabled. If Windows requests one restart, rerun the same
-command afterward and installation continues safely.
+images. Windows prefers Windows Package Manager's hash-pinned Docker Desktop
+manifest and retains a signed direct-download fallback. Docker Desktop license
+acceptance and Linux `docker` group membership require confirmation inside the
+same command. On Windows, approve any UAC prompt required by WSL2 or Docker
+Desktop. If Windows requests one restart, rerun the same command afterward and
+installation continues safely.
 
 The launcher selects the `light` profile below 12 GiB RAM and the `standard`
 profile otherwise; override this with `--profile light` or

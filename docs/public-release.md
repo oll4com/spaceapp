@@ -62,15 +62,15 @@ The workflow then:
 5. publishes that tarball as `run-spaceapp@<version>` with `--tag next
    --provenance`.
 
-For `0.1.5`, `latest` must remain `0.1.3` until clean-install acceptance is
+For `0.1.6`, `latest` must remain `0.1.5` until clean-install acceptance is
 complete.
 
 ## Staged acceptance and promotion
 
 Verify npm metadata before installation:
 
-- `version` and `next` are `0.1.5`;
-- `latest` is still `0.1.3`;
+- `version` and `next` are `0.1.6`;
+- `latest` is still `0.1.5`;
 - `gitHead` equals the released `main` commit;
 - provenance is present and references `.github/workflows/release.yml`.
 
@@ -81,14 +81,14 @@ installation. Never use `/srv/space` for release acceptance.
 
 Before promotion:
 
-- npm account `oll4com` is a package owner;
+- the authenticated npm maintainer appears in `npm owner ls run-spaceapp`;
 - both maintainers have active 2FA;
 - every clean-install and image verification is green.
 
 Promote with a 2FA-protected maintainer session:
 
 ```bash
-npm dist-tag add run-spaceapp@0.1.5 latest
+npm dist-tag add run-spaceapp@0.1.6 latest
 ```
 
 Then set package Publishing Access to **Require 2FA and disallow tokens** and
@@ -100,15 +100,15 @@ add ignores for upstream-unfixed findings.
 
 Published npm versions and GHCR exact tags are immutable.
 
-If `0.1.5` fails after promotion:
+If `0.1.6` fails after promotion:
 
 ```bash
-npm dist-tag add run-spaceapp@0.1.3 latest
-npm deprecate run-spaceapp@0.1.5 "Withdrawn after release verification; use 0.1.3 until a corrected release is available."
+npm dist-tag add run-spaceapp@0.1.5 latest
+npm deprecate run-spaceapp@0.1.6 "Withdrawn after release verification; use 0.1.5 until a corrected release is available."
 ```
 
 The failed `0.1.4` staging run already produced immutable GHCR artifacts, so
-preserve those and any failed `0.1.5` artifacts as evidence. Do not delete or
+preserve those and any failed `0.1.6` artifacts as evidence. Do not delete or
 overwrite exact version tags.
 
 ## Official references

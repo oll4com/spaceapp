@@ -60,11 +60,12 @@ so running the same command again does not replace an existing setup token or
 secrets.
 
 The automatic prerequisite flow uses official Docker sources: Docker Desktop
-with WSL2 on Windows, Docker Desktop on macOS, and Docker Engine repositories
-on Ubuntu, Debian, Fedora, RHEL, and CentOS. Docker Desktop license acceptance
-and Linux `docker` group membership require confirmation inside the same
-command. Windows may require one restart after WSL2 is enabled; rerun the same
-command afterward and it continues safely.
+through Windows Package Manager's hash-pinned manifest on Windows (with a
+signed direct-download fallback), Docker Desktop on macOS, and Docker Engine
+repositories on Ubuntu, Debian, Fedora, RHEL, and CentOS. Docker Desktop
+license acceptance and Linux `docker` group membership require confirmation
+inside the same command. Windows may require one restart after WSL2 is enabled;
+rerun the same command afterward and it continues safely.
 
 `auto` selects the `light` profile on systems below 12 GiB RAM. Light mode is
 the supported 8 GB option: it keeps every bundled CLI, PostgreSQL, and Temporal
@@ -111,7 +112,7 @@ and telemetry is disabled by default.
 spaceapp status
 spaceapp logs
 spaceapp backup
-spaceapp update 0.1.5
+spaceapp update 0.1.6
 spaceapp rollback
 spaceapp down
 spaceapp uninstall

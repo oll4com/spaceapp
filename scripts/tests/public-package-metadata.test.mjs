@@ -112,7 +112,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
 
   assert.deepEqual(publishable, [{
     name: "run-spaceapp",
-    version: "0.1.5",
+    version: "0.1.6",
     bin: { spaceapp: "bin/spaceapp.mjs" }
   }]);
   const launcherPackage = JSON.parse(
@@ -235,7 +235,9 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
   assert.match(gettingStarted, /--profile light/);
   assert.match(gettingStarted, /does\s+not preallocate/i);
   assert.match(gettingStarted, /WSL2/);
-  assert.match(gettingStarted, /verifies its Authenticode signature/i);
+  assert.match(gettingStarted, /Windows Package Manager/);
+  assert.match(gettingStarted, /hash-pinned/i);
+  assert.match(gettingStarted, /verifies\s+its\s+Authenticode\s+signature/i);
   assert.match(gettingStarted, /verifies\s+its code signature/i);
   assert.match(gettingStarted, /group grants root-level privileges/i);
 });

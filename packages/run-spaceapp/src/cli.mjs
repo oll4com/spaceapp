@@ -35,6 +35,7 @@ const trustedCommands = new Set([
   "sg",
   "spctl",
   "sudo",
+  "winget.exe",
   "wsl.exe",
   "xdg-open"
 ]);
@@ -583,6 +584,7 @@ function spawnTrustedCommand(spec, options) {
     case "sg": return spawn("sg", args, options);
     case "spctl": return spawn("spctl", args, options);
     case "sudo": return spawn("sudo", args, options);
+    case "winget.exe": return spawn("winget.exe", args, options);
     case "wsl.exe": return spawn("wsl.exe", args, options);
     case "xdg-open": return spawn("xdg-open", args, options);
     default: throw new Error("SpaceApp refused to execute an untrusted command.");

@@ -71,6 +71,9 @@ test("Windows enables WSL2, installs signed Docker Desktop, and continues in one
         wslChecks += 1;
         return wslChecks === 1 ? 1 : 0;
       }
+      if (spec.command === "winget.exe") {
+        return 127;
+      }
       if (spec.command === "powershell.exe") {
         if (spec.operation === "install-wsl") {
           return 0;
@@ -132,6 +135,79 @@ test("Windows enables WSL2, installs signed Docker Desktop, and continues in one
   }]);
   assert.match(stdout.value(), /Docker Desktop is required/i);
   assert.match(stdout.value(), /Docker Desktop is ready/i);
+  assert.equal(stderr.value(), "");
+});
+
+test("Windows prefers hash-verified winget Docker Desktop installation over the direct downloader", async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  let downloaded = false;
+  let installed = false;
+  let launched = false;
+
+  const result = await ensureDockerAvailable({
+    platform: "win32",
+    arch: "x64",
+    env: {
+      LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local",
+      ProgramFiles: "C:\\Program Files",
+      Path: "C:\\Windows\\System32"
+    },
+    stdin: Readable.from(["y\n"]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker") {
+        return installed && launched ? 0 : 127;
+      }
+      if (spec.command === "wsl.exe") {
+        return 0;
+      }
+      if (spec.command === "winget.exe" && spec.args[0] === "--version") {
+        return 0;
+      }
+      if (spec.command === "winget.exe" && spec.args[0] === "install") {
+        installed = true;
+        return 0;
+      }
+      return 1;
+    },
+    download: async () => {
+      downloaded = true;
+    },
+    launch: async () => {
+      launched = true;
+      return 0;
+    },
+    pathExists: async (path) => installed && path.endsWith("Docker Desktop.exe"),
+    sleep: async () => {}
+  });
+
+  assert.deepEqual(result, { code: 0, reexecuted: false });
+  assert.equal(downloaded, false);
+  assert.ok(calls.some((spec) =>
+    spec.command === "winget.exe" &&
+    spec.args.join(" ") === [
+      "install",
+      "--id", "Docker.DockerDesktop",
+      "--exact",
+      "--source", "winget",
+      "--silent",
+      "--accept-package-agreements",
+      "--accept-source-agreements",
+      "--disable-interactivity"
+    ].join(" ")
+  ));
+  assert.equal(
+    calls.some((spec) =>
+      spec.command === "powershell.exe" &&
+      spec.operation === "verify-docker-installer"
+    ),
+    false
+  );
+  assert.match(stdout.value(), /Windows Package Manager/i);
   assert.equal(stderr.value(), "");
 });
 
