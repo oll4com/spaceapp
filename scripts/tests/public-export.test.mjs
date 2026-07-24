@@ -137,6 +137,20 @@ test("public path policy excludes internal tests and keeps only reviewed public 
   }
 });
 
+test("every public-suite import survives the sanitized export allowlist", async () => {
+  const suite = await readFile(
+    join(repoRoot, "scripts", "tests", "public-suite.test.mjs"),
+    "utf8"
+  );
+  const importedTests = [...suite.matchAll(/^import "\.\/([^"]+)";$/gm)]
+    .map((match) => `scripts/tests/${match[1]}`);
+
+  assert.ok(importedTests.length > 0);
+  for (const path of importedTests) {
+    assert.equal(isPublicExportPath(path), true, `${path} must be exported`);
+  }
+});
+
 test("public export rejects unreviewed binary files and removes partial output", async () => {
   const sourceRoot = await mkdtemp(join(tmpdir(), "spaceapp-public-binary-source-"));
   const outputRoot = join(await mkdtemp(join(tmpdir(), "spaceapp-public-binary-output-")), "export");

@@ -67,11 +67,16 @@ const publicScripts = new Set([
   "scripts/portable-restore.mjs",
   "scripts/public-export.mjs",
   "scripts/public-release-readiness.mjs",
+  "scripts/release-artifact-preflight.mjs",
   "scripts/reset-owner-password.mjs",
   "scripts/rotate-owner-setup-token.mjs",
   "scripts/space-hygiene-check.mjs",
+  "scripts/trivy-report-summary.mjs",
+  "scripts/verify-published-containers.mjs",
   "scripts/tests/container-image-size-budget.test.mjs",
+  "scripts/tests/mcp-hono-compatibility.test.mjs",
   "scripts/tests/portable-backup-restore.test.mjs",
+  "scripts/tests/published-container-verification.test.mjs",
   "scripts/tests/public-compose-config.test.mjs",
   "scripts/tests/public-docker-distribution.test.mjs",
   "scripts/tests/public-export.test.mjs",
@@ -79,8 +84,10 @@ const publicScripts = new Set([
   "scripts/tests/public-release-readiness.test.mjs",
   "scripts/tests/public-suite.test.mjs",
   "scripts/tests/public-workflows.test.mjs",
+  "scripts/tests/release-artifact-preflight.test.mjs",
   "scripts/tests/reset-owner-password.test.mjs",
-  "scripts/tests/rotate-owner-setup-token.test.mjs"
+  "scripts/tests/rotate-owner-setup-token.test.mjs",
+  "scripts/tests/trivy-report-summary.test.mjs"
 ]);
 
 const byteStablePublicFiles = new Set([
