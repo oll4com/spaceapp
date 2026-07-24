@@ -81,6 +81,7 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   assert.deepEqual(calls.map((call) => [call.command, ...call.args.slice(-2)]), [
     ["docker", "docker", "--version"].slice(1),
     ["docker", "compose", "version"],
+    ["docker", "info"],
     ["docker", join(root, "compose.workspaces.yml"), "pull"],
     ["docker", "-d", "--remove-orphans"]
   ]);

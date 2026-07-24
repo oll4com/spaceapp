@@ -242,7 +242,8 @@ async function installCommand(args, {
     execute,
     stdin,
     inspectResources,
-    resources
+    resources,
+    dockerReady: true
   });
   if (doctorCode !== 0) {
     stderr.write("Installation stopped before downloading images. Fix the failed checks and run the same command again.\n");
@@ -433,7 +434,8 @@ async function doctor({
   execute,
   stdin,
   inspectResources,
-  resources
+  resources,
+  dockerReady = false
 }) {
   const detectedResources = resources ?? await inspectResources(root);
   const checks = [
@@ -444,9 +446,12 @@ async function doctor({
   let dockerMissing = false;
   for (const probe of [
     { name: "Docker", command: "docker", args: ["--version"] },
-    { name: "Docker Compose", command: "docker", args: ["compose", "version"] }
+    { name: "Docker Compose", command: "docker", args: ["compose", "version"] },
+    { name: "Docker Engine", command: "docker", args: ["info"] }
   ]) {
-    const code = await execute(probe, { stdin, stdout: null, stderr: null });
+    const code = dockerReady
+      ? 0
+      : await execute(probe, { stdin, stdout: null, stderr: null });
     if (code !== 0) dockerMissing = true;
     checks.push({ name: probe.name, ok: code === 0, detail: code === 0 ? "available" : "missing" });
   }
