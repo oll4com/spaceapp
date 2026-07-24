@@ -126,6 +126,28 @@ test("install honors an explicit standard profile and uses the native browser op
   }
 });
 
+test("install succeeds when the native browser opener is unavailable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-headless-"));
+  const stdout = capture();
+  const stderr = capture();
+
+  assert.equal(await run(["install"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    execute: async (spec) => spec.command === "xdg-open" ? 127 : 0
+  }), 0);
+
+  assert.match(stdout.value(), /SpaceApp is running at http:\/\/127\.0\.0\.1:4911/);
+  assert.match(
+    stderr.value(),
+    /Could not open SpaceApp automatically\. Open http:\/\/127\.0\.0\.1:4911 manually\./
+  );
+});
+
 test("install stops before image pulls when the host is below the 8 GB minimum", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-small-"));
   const stdout = capture();

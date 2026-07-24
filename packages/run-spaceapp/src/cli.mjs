@@ -216,7 +216,11 @@ async function installCommand(args, {
   stdout.write(`SpaceApp is running at ${url}\n`);
   stdout.write('Next: add CLI credentials with "spaceapp credentials set <provider>".\n');
   if (noOpen) return 0;
-  return openBrowser(url, platform, execute, { stdin, stdout, stderr });
+  const openCode = await openBrowser(url, platform, execute, { stdin, stdout, stderr });
+  if (openCode !== 0) {
+    stderr.write(`Could not open SpaceApp automatically. Open ${url} manually.\n`);
+  }
+  return 0;
 }
 
 function parseInstallArgs(args) {
