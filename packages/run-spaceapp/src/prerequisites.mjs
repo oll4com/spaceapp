@@ -119,10 +119,12 @@ async function ensureWindowsDocker({
           "-NonInteractive",
           "-Command",
           [
+            "$ErrorActionPreference = 'Stop'; try {",
             "$process = Start-Process -FilePath 'wsl.exe'",
             "-ArgumentList @('--install','--no-distribution')",
             "-Verb RunAs -Wait -PassThru",
-            "; exit $process.ExitCode"
+            "; exit $process.ExitCode",
+            "} catch { exit 1 }"
           ].join(" ")
         ]
       },

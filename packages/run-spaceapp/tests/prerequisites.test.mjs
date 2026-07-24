@@ -155,6 +155,8 @@ test("Windows elevates WSL2 setup and stops for a required restart before downlo
     spec.args.join(" ").includes("--install") &&
     spec.args.join(" ").includes("--no-distribution") &&
     spec.args.join(" ").includes("-Verb RunAs") &&
+    spec.args.join(" ").includes("$ErrorActionPreference = 'Stop'") &&
+    spec.args.join(" ").includes("catch { exit 1 }") &&
     spec.args.join(" ").includes("; exit $process.ExitCode")
   ));
   assert.match(stderr.value(), /restart Windows/i);
