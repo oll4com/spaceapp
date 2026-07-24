@@ -48,6 +48,27 @@ test("the process launcher rejects executables outside the fixed command allowli
   );
 });
 
+test("the process launcher dispatches only hard-coded executable literals", async () => {
+  const source = await readFile(new URL("../src/cli.mjs", import.meta.url), "utf8");
+
+  assert.doesNotMatch(source, /spawn\(\s*spec\.command/u);
+  for (const command of [
+    "cmd",
+    "codesign",
+    "docker",
+    "hdiutil",
+    "open",
+    "powershell.exe",
+    "sg",
+    "spctl",
+    "sudo",
+    "wsl.exe",
+    "xdg-open"
+  ]) {
+    assert.match(source, new RegExp(`spawn\\("${command.replace(".", "\\.")}", args, options\\)`));
+  }
+});
+
 test("init emits a one-time setup token without placing it in config", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-init-"));
   const stdout = capture();

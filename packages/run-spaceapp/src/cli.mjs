@@ -536,7 +536,7 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
     const commandEnv = spec.env === undefined
       ? process.env
       : validateCommandEnvironment(spec.env);
-    const child = spawn(spec.command, spec.args, {
+    const child = spawnTrustedCommand(spec.command, spec.args, {
       env: commandEnv,
       shell: false,
       stdio: [input === undefined ? (stdin || "inherit") : "pipe", stdout || "ignore", stderr || "ignore"]
@@ -555,6 +555,23 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
       child.stdin.end(input);
     }
   });
+}
+
+function spawnTrustedCommand(command, args, options) {
+  switch (command) {
+    case "cmd": return spawn("cmd", args, options);
+    case "codesign": return spawn("codesign", args, options);
+    case "docker": return spawn("docker", args, options);
+    case "hdiutil": return spawn("hdiutil", args, options);
+    case "open": return spawn("open", args, options);
+    case "powershell.exe": return spawn("powershell.exe", args, options);
+    case "sg": return spawn("sg", args, options);
+    case "spctl": return spawn("spctl", args, options);
+    case "sudo": return spawn("sudo", args, options);
+    case "wsl.exe": return spawn("wsl.exe", args, options);
+    case "xdg-open": return spawn("xdg-open", args, options);
+    default: throw new Error("SpaceApp refused to execute an untrusted command.");
+  }
 }
 
 function validateCommandEnvironment(commandEnvironment) {
