@@ -8,15 +8,19 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const publicTestModules = [
   "container-image-size-budget.test.mjs",
+  "mcp-hono-compatibility.test.mjs",
   "portable-backup-restore.test.mjs",
+  "published-container-verification.test.mjs",
   "public-compose-config.test.mjs",
   "public-docker-distribution.test.mjs",
   "public-export.test.mjs",
   "public-package-metadata.test.mjs",
   "public-release-readiness.test.mjs",
   "public-workflows.test.mjs",
+  "release-artifact-preflight.test.mjs",
   "reset-owner-password.test.mjs",
-  "rotate-owner-setup-token.test.mjs"
+  "rotate-owner-setup-token.test.mjs",
+  "trivy-report-summary.test.mjs"
 ];
 
 async function packageFiles(directory) {
@@ -108,7 +112,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
 
   assert.deepEqual(publishable, [{
     name: "run-spaceapp",
-    version: "0.1.3",
+    version: "0.1.4",
     bin: { spaceapp: "bin/spaceapp.mjs" }
   }]);
   const launcherPackage = JSON.parse(
@@ -127,7 +131,19 @@ test("Temporal dependencies use SDK releases with patched transitive packages", 
   const lockfile = JSON.parse(
     await readFile(join(root, "package-lock.json"), "utf8")
   );
-  const expectedVersion = "1.20.3";
+  const cargoLock = await readFile(
+    join(
+      root,
+      "apps",
+      "worker",
+      "node_modules",
+      "@temporalio",
+      "core-bridge",
+      "Cargo.lock"
+    ),
+    "utf8"
+  );
+  const expectedVersion = "1.21.0";
 
   assert.equal(apiPackage.dependencies["@temporalio/client"], expectedVersion);
   for (const name of [
@@ -138,11 +154,41 @@ test("Temporal dependencies use SDK releases with patched transitive packages", 
   ]) {
     assert.equal(workerPackage.dependencies[name], expectedVersion);
   }
-  assert.equal(
-    lockfile.packages["node_modules/@temporalio/core-bridge"].version,
-    expectedVersion
+  const lockedTemporalPackages = Object.entries(lockfile.packages)
+    .filter(([path]) => path.includes("node_modules/@temporalio/"));
+  assert.ok(
+    lockedTemporalPackages.some(([path]) => path.endsWith("/@temporalio/core-bridge"))
   );
+  for (const [path, metadata] of lockedTemporalPackages) {
+    assert.equal(metadata.version, expectedVersion, `${path} must use the reviewed SDK release`);
+  }
   assert.equal(lockfile.packages["node_modules/protobufjs"].version, "7.6.5");
+
+  const cargoPackages = [...cargoLock.matchAll(
+    /\[\[package\]\]\r?\nname = "([^"]+)"\r?\nversion = "([^"]+)"/g
+  )];
+  const crateVersions = (name) =>
+    cargoPackages
+      .filter(([, packageName]) => packageName === name)
+      .map(([, , version]) => version)
+      .sort();
+
+  assert.deepEqual(crateVersions("opentelemetry_sdk"), ["0.32.1"]);
+  assert.deepEqual(crateVersions("rand"), ["0.10.1", "0.8.6", "0.9.3"]);
+  assert.deepEqual(crateVersions("tar"), ["0.4.46"]);
+});
+
+test("MCP Node transport is forced to the reviewed Hono security release", async () => {
+  const rootPackage = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  const lockfile = JSON.parse(
+    await readFile(join(root, "package-lock.json"), "utf8")
+  );
+
+  assert.equal(rootPackage.overrides?.["@hono/node-server"], "2.0.11");
+  assert.equal(
+    lockfile.packages["node_modules/@hono/node-server"].version,
+    "2.0.11"
+  );
 });
 
 test("public policy files are present and point security reports to a private channel", async () => {

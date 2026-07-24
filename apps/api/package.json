@@ -28,7 +28,7 @@
     "@space/db": "0.1.0",
     "@space/memory-graph": "0.1.0",
     "@space/runtime": "0.1.0",
-    "@temporalio/client": "1.20.3",
+    "@temporalio/client": "1.21.0",
     "fastify": "^5.6.2",
     "nanoid": "^5.1.6",
     "node-pty": "^1.1.0",

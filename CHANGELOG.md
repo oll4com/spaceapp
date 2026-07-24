@@ -5,6 +5,17 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-07-24
+
+- pin the Node 22.23.0 multi-architecture base image by OCI digest and install
+  the fixed Debian `liblzma5` package in every image stage;
+- update Temporal and MCP HTTP dependencies to reviewed security releases;
+- prevent container privilege escalation with `no-new-privileges`;
+- block fixable Medium, High, and Critical findings while preserving complete
+  weekly Trivy evidence for upstream-unfixed vulnerabilities;
+- publish protected GHCR and npm artifacts through a manual, main-only OIDC
+  workflow with SBOM, provenance, immutable-tag preflight, and no npm token.
+
 ## [0.1.3] - 2026-07-24
 
 - complete headless Linux installation successfully when no native browser
@@ -31,7 +42,8 @@ Initial public release:
 - portable backup, restore, update, and rollback commands;
 - no telemetry by default.
 
-[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.4
 [0.1.3]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.3
 [0.1.2]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.2
 [0.1.0]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.0

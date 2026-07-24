@@ -9,10 +9,25 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 test("public Dockerfile provides native multi-arch core, browser, and redistributable pinned CLI targets", async () => {
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
   const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
+  const nodeImage =
+    "node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82";
+  const nodeStages = Array.from(
+    dockerfile.matchAll(/^FROM (\S+) AS (build|runtime-base)$/gm),
+    ([, image, stage]) => ({ image, stage })
+  );
 
   assert.match(dockerfile, /FROM .* AS core/);
   assert.match(dockerfile, /FROM .* AS browser/);
   assert.match(dockerfile, /FROM .* AS cli/);
+  assert.deepEqual(nodeStages, [
+    { image: nodeImage, stage: "build" },
+    { image: nodeImage, stage: "runtime-base" }
+  ]);
+  assert.equal(
+    normalizedDockerfile.match(/apt-get install -y --no-install-recommends[^&]*liblzma5/g)?.length,
+    3,
+    "build, runtime, and browser apt transactions must explicitly install patched liblzma5"
+  );
   assert.match(dockerfile, /ARG TARGETARCH/);
   assert.match(dockerfile, /ARG NPM_VERSION=11\.18\.0/);
   assert.match(
@@ -114,6 +129,17 @@ test("public Compose runs without host Docker access or development credentials"
 
   const coreBlock = compose.match(/^  spaceapp-core:[\s\S]*?(?=^  spaceapp-cli:)/m)?.[0] || "";
   assert.doesNotMatch(coreBlock, /spaceapp-cli-state|spaceapp-secrets\/providers|secrets\/providers/);
+
+  for (const [service, nextService] of [
+    ["spaceapp-core", "spaceapp-cli"],
+    ["spaceapp-cli", "spaceapp-browser"],
+    ["spaceapp-browser", "postgres"]
+  ]) {
+    const block =
+      compose.match(new RegExp(`^  ${service}:[\\s\\S]*?(?=^  ${nextService}:)`, "m"))?.[0] || "";
+    assert.match(block, /^    security_opt:\n      - no-new-privileges:true$/m);
+    assert.doesNotMatch(block, /cap_drop:/);
+  }
 });
 
 test("container entrypoints load secrets from files and drop root before application processes", async () => {

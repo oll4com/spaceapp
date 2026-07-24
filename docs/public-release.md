@@ -1,146 +1,122 @@
 # Public release runbook
 
-SpaceApp must never be published from the private repository history or from a
-live runtime directory. The release source is a sanitized, audited,
-clean-history export of one verified commit.
+SpaceApp releases are built only from the sanitized public export of the
+reviewed `main` commit. Never publish from private history, a developer
+worktree, or a live runtime directory.
 
-No npm package, GHCR image, GitHub repository, tag, or release is published
-merely by running the preparation checks below. Publication requires separate
-maintainer authorization and authenticated maintainer sessions. Never request
-or record registry credentials in issues, documentation, or chat.
+## Protected release identity
 
-## 1. Prepare the candidate
+`.github/workflows/release.yml` is manual-only and rejects dispatches outside
+`main`. The requested version must exactly equal
+`packages/run-spaceapp/package.json`.
 
-Start from a clean feature or release commit:
+The GitHub Environment is named `npm` and must have:
 
-```bash
-npm ci
-npm run check
-npm run test:public
-npm run build
-npm audit --audit-level=high
-npm run public:export:verify
-```
+- required reviewer `pirniramon`;
+- deployment branch policy limited to `main`;
+- wait timer `0`.
 
-Build all container targets locally and validate the generated launcher
-Compose configuration. Run the first-owner, synthetic workspace,
-backup/restore, update, and rollback flows in the clean-room VM.
+The npm Trusted Publisher must identify organization `oll4com`, repository
+`spaceapp`, workflow `release.yml`, and Environment `npm`. Publishing uses npm
+CLI `11.18.0`, GitHub OIDC, and `id-token: write`; an `NPM_TOKEN` or other npm
+registry credential is forbidden.
 
-The candidate is blocked when:
+Candidate jobs have only `contents: read`. Jobs behind the protected
+Environment have only `contents: read`, `packages: write`, and
+`id-token: write`.
 
-- any high or critical dependency/container vulnerability remains;
-- the public-export audit finds a private hostname, internal path, known
-  private network value, personal-memory path, credential-shaped value, secret
-  file, runtime data, symlink, or generated dependency/build directory;
-- the npm tarball or image inventory differs from the reviewed pins;
-- a core, browser, or CLI image exceeds its enforced size budget;
-- Windows, macOS, Linux, amd64, or arm64 support is missing without an explicit
-  release-note exception;
-- browser setup proof has console/network failures;
-- backup/restore or rollback has not been exercised.
+## Candidate gates
 
-## 2. Create the clean-history source
+Before requesting Environment approval, the workflow:
 
-Choose a new, empty directory outside the private worktree:
+1. creates a sanitized export and archives it before dependencies or build
+   output are added;
+2. runs `npm ci`, `npm audit --audit-level=high`, `npm run test:public`,
+   `npm run check`, `npm run build`, and the npm package dry run;
+3. builds `core`, `cli`, and `browser` for both `linux/amd64` and
+   `linux/arm64`;
+4. enforces image-size budgets;
+5. blocks every fixable Medium, High, or Critical Trivy finding;
+6. stores complete JSON reports, including upstream-unfixed findings, as
+   workflow artifacts and job summaries.
 
-```bash
-npm run public:export -- --output /absolute/path/to/spaceapp-public-export
-```
+The scheduled Security workflow re-runs the same fixable gate weekly.
+Upstream-unfixed Debian findings, including `acl`, `attr`, `util-linux`,
+`diffutils`, and `perl-base`, remain visible and are not ignored.
 
-The exporter copies only the public allowlist, applies deterministic generic
-replacements, rejects unsafe files/content, and writes
-`PUBLIC_EXPORT_MANIFEST.json` with the private source commit, file hashes,
-sizes, and transformation count.
+## Publication order
 
-Inspect the export, then create a new Git object graph inside that directory:
+After approval, `release-artifact-preflight.mjs` proves that neither
+`run-spaceapp@<version>` nor any exact GHCR tag already exists. A registry
+timeout, authentication failure, or ambiguous response blocks the release.
+Existing artifacts are never overwritten.
 
-```bash
-cd /absolute/path/to/spaceapp-public-export
-git init --initial-branch=main
-git add .
-git commit -m "release: SpaceApp 0.1.0"
-```
+The workflow then:
 
-Never add the private repository as a remote, push its branches/tags, copy its
-`.git` directory, or use a history-rewrite tool as a substitute for the fresh
-repository.
+1. publishes exact-version `core`, `cli`, and `browser` GHCR manifests from
+   the archived sanitized source;
+2. includes `linux/amd64`, `linux/arm64`, BuildKit SBOM, and maximum
+   provenance attestations for every image;
+3. verifies both architectures and both attestation classes;
+4. verifies the checksum of the npm tarball produced by the candidate job;
+5. publishes that tarball as `run-spaceapp@<version>` with `--tag next
+   --provenance`.
 
-Run the complete public CI and security workflows against this clean-history
-repository before any registry publication.
+For `0.1.4`, `latest` must remain `0.1.2` until clean-install acceptance is
+complete.
 
-## 3. Verify artifacts without publishing
+## Staged acceptance and promotion
 
-The release workflow defaults to verification only. It must:
+Verify npm metadata before installation:
 
-- check that the requested version equals `run-spaceapp/package.json`;
-- run launcher, public distribution, API setup, and web onboarding tests;
-- run the OS launcher matrix;
-- build core, CLI, and browser targets for the declared architectures;
-- scan source and images for high/critical vulnerabilities;
-- generate SBOMs and preserve candidate evidence;
-- enforce core, browser, and CLI image-size budgets;
-- create the npm tarball and inspect its file list;
-- upload candidate artifacts only to the private workflow run.
+- `version` and `next` are `0.1.4`;
+- `latest` is still `0.1.2`;
+- `gitHead` equals the released `main` commit;
+- provenance is present and references `.github/workflows/release.yml`.
 
-Tag pushes do not publish packages. The candidate workflow has no publish
-permission, registry login, or publish job.
+Create an isolated temporary installation root and install
+`run-spaceapp@next`. Start the standard profile, wait for `/readyz`, exercise
+the launcher, CLI host, and browser host, then remove the complete temporary
+installation. Never use `/srv/space` for release acceptance.
 
-## 4. Authorized publication
+Before promotion:
 
-Only a maintainer who has reviewed the clean-history commit and clean-room
-evidence may publish. Authenticate locally with GitHub/GHCR and `npm login`;
-never paste tokens into an agent conversation. When npm trusted publishing is
-configured for the public repository, run the npm step from that approved OIDC
-workflow and include provenance there.
+- npm account `oll4com` is a package owner;
+- both maintainers have active 2FA;
+- every clean-install and image verification is green.
 
-Publish immutable multi-architecture images before making the launcher
-installable:
+Promote with a 2FA-protected maintainer session:
 
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64 --target core \
-  --tag ghcr.io/oll4com/spaceapp-core:0.1.0 --push .
-docker buildx build --platform linux/amd64,linux/arm64 --target cli \
-  --tag ghcr.io/oll4com/spaceapp-cli:0.1.0 --push .
-docker buildx build --platform linux/amd64,linux/arm64 --target browser \
-  --tag ghcr.io/oll4com/spaceapp-browser:0.1.0 --push .
+npm dist-tag add run-spaceapp@0.1.4 latest
 ```
 
-Verify each manifest and digest, then publish the launcher to the staging
-dist-tag from the sanitized clean-history source:
+Then set package Publishing Access to **Require 2FA and disallow tokens** and
+revoke every write-capable npm token, including the former host-scoped
+publishing token. Confirm a final Snyk re-test has no fixable findings; do not
+add ignores for upstream-unfixed findings.
+
+## Rollback
+
+Published npm versions and GHCR exact tags are immutable.
+
+If `0.1.4` fails after promotion:
 
 ```bash
-npm publish ./packages/run-spaceapp --tag next
+npm dist-tag add run-spaceapp@0.1.2 latest
+npm deprecate run-spaceapp@0.1.4 "Withdrawn after release verification; use 0.1.2 until 0.1.5 is available."
 ```
 
-Perform a fresh Linux install from `run-spaceapp@next`, complete the 8 GB light
-profile acceptance, and run the guided macOS and Windows Docker Desktop smokes.
-Only after all three platform checks pass, promote the exact package:
+Preserve the failed artifacts for evidence and publish the correction as
+`0.1.5`. Do not delete or overwrite `0.1.4`.
 
-```bash
-npm dist-tag add run-spaceapp@0.1.0 latest
-```
+## Official references
 
-Finally create signed/annotated `v0.1.0` source metadata and the GitHub release
-from the clean-history repository. Verify public npm metadata, GHCR
-architecture manifests/digests, SBOMs, provenance, and a completely fresh
-install using the documented command.
-
-Raw provider credentials, production secrets, or private clean-room state must
-never be added to GitHub Actions secrets. Registry credentials must use the
-platform's protected secret or trusted-publishing mechanism.
-
-## 5. Rollback
-
-If post-publication verification fails:
-
-- move installation guidance back to the last verified version;
-- restore the npm `latest` dist-tag to the last verified version;
-- remove or move the `next` dist-tag when it points to the affected package;
-- mark the affected GitHub release as withdrawn and document the reason;
-- do not delete immutable image tags or rewrite public Git history;
-- publish a fixed patch release with a new version;
-- tell affected owners whether `spaceapp rollback` is sufficient or whether a
-  pre-update backup restore is required.
-
-Treat any accidentally published secret as compromised: revoke and rotate it
-before attempting history or artifact cleanup.
+- npm Trusted Publishers:
+  https://docs.npmjs.com/trusted-publishers/
+- GitHub deployment environments:
+  https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments
+- GitHub Actions full-SHA hardening:
+  https://docs.github.com/en/actions/how-tos/security-for-github-actions/security-guides/security-hardening-for-github-actions
+- Docker SBOM and provenance attestations:
+  https://docs.docker.com/build/ci/github-actions/attestations/

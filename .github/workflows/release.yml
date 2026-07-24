@@ -1,4 +1,4 @@
-name: Public release candidate
+name: Public OIDC release
 
 on:
   workflow_dispatch:
@@ -12,18 +12,26 @@ permissions:
   contents: read
 
 concurrency:
-  group: public-release-candidate-${{ inputs.version }}-${{ github.sha }}
+  group: public-oidc-release-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
-  source-candidate:
-    name: Verify sanitized source and npm candidate
+  release-policy:
+    name: Enforce main and exact release version
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - name: Reject non-main dispatches
+        if: github.ref != 'refs/heads/main'
+        run: exit 1
 
-      - uses: actions/setup-node@v4
+      - name: Confirm main dispatch
+        if: github.ref == 'refs/heads/main'
+        run: echo "Release source is main."
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -32,6 +40,19 @@ jobs:
         run: >-
           node scripts/public-release-readiness.mjs
           --version "${{ inputs.version }}"
+
+  source-candidate:
+    name: Verify sanitized source and npm candidate
+    needs: release-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
 
       - name: Create sanitized source candidate
         run: >-
@@ -49,6 +70,10 @@ jobs:
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm ci
 
+      - name: Audit candidate dependencies
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm audit --audit-level=high
+
       - name: Test candidate
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm run test:public
@@ -61,13 +86,37 @@ jobs:
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm run build
 
+      - name: Pack dry run
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run pack:dry-run -w run-spaceapp
+
+      - name: Block fixable source vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/spaceapp-public-export
+          format: table
+          severity: MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Stamp the reviewed public git head
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm pkg set "gitHead=${{ github.sha }}" -w run-spaceapp
+
       - name: Pack npm candidate from sanitized source
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: >-
           npm pack ./packages/run-spaceapp
           --pack-destination "$RUNNER_TEMP/release-artifacts"
 
-      - uses: actions/upload-artifact@v4
+      - name: Record npm candidate checksum
+        working-directory: ${{ runner.temp }}/release-artifacts
+        run: >-
+          sha256sum "run-spaceapp-${{ inputs.version }}.tgz"
+          > "run-spaceapp-${{ inputs.version }}.tgz.sha256"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: public-release-source-candidate-${{ inputs.version }}
           path: ${{ runner.temp }}/release-artifacts/
@@ -75,6 +124,7 @@ jobs:
 
   container-candidate:
     name: Sanitized ${{ matrix.target }} / linux-${{ matrix.arch }}
+    needs: release-policy
     strategy:
       fail-fast: false
       matrix:
@@ -86,19 +136,19 @@ jobs:
           - amd64
           - arm64
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 65
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Create sanitized container context
         run: >-
           node scripts/public-export.mjs
           --output "$RUNNER_TEMP/spaceapp-public-export"
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: ${{ runner.temp }}/spaceapp-public-export
           target: ${{ matrix.target }}
@@ -116,3 +166,182 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Block fixable container vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          format: table
+          severity: MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Capture full candidate image report
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          format: json
+          output: trivy-full-${{ matrix.target }}-${{ matrix.arch }}.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Summarize full candidate image report
+        if: always() && hashFiles(format('trivy-full-{0}-{1}.json', matrix.target, matrix.arch)) != ''
+        run: >-
+          node scripts/trivy-report-summary.mjs
+          --input "trivy-full-${{ matrix.target }}-${{ matrix.arch }}.json"
+          --label "${{ matrix.target }} / linux-${{ matrix.arch }}"
+          >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload full candidate image report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: trivy-full-${{ matrix.target }}-${{ matrix.arch }}
+          path: trivy-full-${{ matrix.target }}-${{ matrix.arch }}.json
+          if-no-files-found: error
+
+  publish-preflight:
+    name: Approve and prove release tags are new
+    needs:
+      - source-candidate
+      - container-candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail closed if any exact artifact already exists
+        run: >-
+          node scripts/release-artifact-preflight.mjs
+          --version "${{ inputs.version }}"
+
+  publish-containers:
+    name: Publish ${{ matrix.target }} multi-arch image
+    needs: publish-preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - core
+          - browser
+          - cli
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    environment: npm
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: public-release-source-candidate-${{ inputs.version }}
+          path: ${{ runner.temp }}/release-artifacts
+
+      - name: Restore verified sanitized source
+        run: |
+          mkdir -p "$RUNNER_TEMP/publish-context"
+          tar -C "$RUNNER_TEMP/publish-context" \
+            -xzf "$RUNNER_TEMP/release-artifacts/spaceapp-public-export-${{ inputs.version }}.tar.gz"
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish immutable exact-version image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ runner.temp }}/publish-context/spaceapp-public-export
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/oll4com/spaceapp-${{ matrix.target }}:${{ inputs.version }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=publish-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=publish-${{ matrix.target }}
+
+  verify-containers:
+    name: Verify published manifests and attestations
+    needs: publish-containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify architectures, SBOMs, and provenance
+        run: >-
+          node scripts/verify-published-containers.mjs
+          --version "${{ inputs.version }}"
+
+  publish-npm:
+    name: Publish run-spaceapp with npm OIDC
+    needs: verify-containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.23.0
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: public-release-source-candidate-${{ inputs.version }}
+          path: ${{ runner.temp }}/release-artifacts
+
+      - name: Verify npm candidate checksum
+        working-directory: ${{ runner.temp }}/release-artifacts
+        run: sha256sum --check "run-spaceapp-${{ inputs.version }}.tgz.sha256"
+
+      - name: Install trusted-publishing npm CLI
+        run: npm install --global --ignore-scripts --no-audit --no-fund npm@11.18.0
+
+      - name: Publish sanitized tarball to next
+        run: npm publish "$RUNNER_TEMP/release-artifacts/run-spaceapp-${{ inputs.version }}.tgz" --tag next --provenance
+
+      - name: Verify staged npm metadata
+        run: |
+          test "$(npm view "run-spaceapp@${{ inputs.version }}" version)" = "${{ inputs.version }}"
+          test "$(npm view run-spaceapp dist-tags.next)" = "${{ inputs.version }}"
+          test "$(npm view "run-spaceapp@${{ inputs.version }}" gitHead)" = "${{ github.sha }}"

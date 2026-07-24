@@ -22,13 +22,13 @@ jobs:
   source:
     name: Source, dependencies, and SBOM
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -39,36 +39,64 @@ jobs:
       - run: npm run public:export:verify
 
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Filesystem vulnerability scan
-        uses: aquasecurity/trivy-action@v0.36.0
+      - name: Block fixable Medium, High, and Critical filesystem findings
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
           format: sarif
           limit-severities-for-sarif: true
           output: trivy-filesystem.sarif
-          severity: HIGH,CRITICAL
+          severity: MEDIUM,HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
 
-      - name: Upload filesystem scan
+      - name: Upload blocking filesystem scan
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
         with:
           sarif_file: trivy-filesystem.sarif
 
+      - name: Capture all filesystem findings
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: trivy-full-filesystem.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Summarize all filesystem findings
+        if: always() && hashFiles('trivy-full-filesystem.json') != ''
+        run: >-
+          node scripts/trivy-report-summary.mjs
+          --input trivy-full-filesystem.json
+          --label filesystem
+          >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload full filesystem report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: trivy-full-filesystem
+          path: trivy-full-filesystem.json
+          if-no-files-found: error
+
       - name: Generate source SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           path: .
           format: spdx-json
           output-file: spaceapp-source.spdx.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: source-sbom
           path: spaceapp-source.spdx.json
@@ -79,8 +107,8 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
         with:
           fail-on-severity: high
 
@@ -89,13 +117,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
         with:
           languages: javascript-typescript
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -103,7 +131,7 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
 
   image:
     name: Image scan / ${{ matrix.target }}
@@ -115,13 +143,13 @@ jobs:
           - browser
           - cli
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 55
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: ${{ matrix.target }}
@@ -130,19 +158,46 @@ jobs:
           cache-from: type=gha,scope=security-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=security-${{ matrix.target }}
 
-      - name: Scan image
-        uses: aquasecurity/trivy-action@v0.36.0
+      - name: Block fixable Medium, High, and Critical image findings
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: spaceapp-${{ matrix.target }}:security-scan
           format: sarif
           limit-severities-for-sarif: true
           output: trivy-${{ matrix.target }}.sarif
-          severity: HIGH,CRITICAL
+          severity: MEDIUM,HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
 
-      - name: Upload image scan
+      - name: Upload blocking image scan
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
         with:
           sarif_file: trivy-${{ matrix.target }}.sarif
+
+      - name: Capture all image findings
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: spaceapp-${{ matrix.target }}:security-scan
+          format: json
+          output: trivy-full-${{ matrix.target }}.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Summarize all image findings
+        if: always() && hashFiles(format('trivy-full-{0}.json', matrix.target)) != ''
+        run: >-
+          node scripts/trivy-report-summary.mjs
+          --input "trivy-full-${{ matrix.target }}.json"
+          --label "${{ matrix.target }}"
+          >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload full image report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: trivy-full-${{ matrix.target }}
+          path: trivy-full-${{ matrix.target }}.json
+          if-no-files-found: error
