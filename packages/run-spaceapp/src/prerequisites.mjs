@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
+const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
 const WINDOWS_DOCKER_DOWNLOADS = Object.freeze({
   x64: "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
   arm64: "https://desktop.docker.com/win/main/arm64/Docker%20Desktop%20Installer.exe"
@@ -110,7 +111,21 @@ async function ensureWindowsDocker({
   if (wslCode !== 0) {
     stdout.write("Installing the Windows Subsystem for Linux 2 support required by Docker Desktop...\n");
     const installWslCode = await execute(
-      { command: "wsl.exe", args: ["--install", "--no-distribution"] },
+      {
+        command: "powershell.exe",
+        args: [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          [
+            "$process = Start-Process -FilePath 'wsl.exe'",
+            "-ArgumentList @('--install','--no-distribution')",
+            "-Verb RunAs -Wait -PassThru",
+            "; exit $process.ExitCode"
+          ].join(" ")
+        ]
+      },
       { stdin, stdout, stderr }
     );
     if (installWslCode !== 0) {
@@ -118,6 +133,16 @@ async function ensureWindowsDocker({
         "Windows could not enable WSL2 automatically. Run this command from an Administrator terminal, restart Windows if requested, and run it again.\n"
       );
       return { code: installWslCode, reexecuted: false };
+    }
+    const installedWslCode = await execute(
+      { command: "wsl.exe", args: ["--version"] },
+      { stdin, stdout: null, stderr: null }
+    );
+    if (installedWslCode !== 0) {
+      stderr.write(
+        "Windows must restart to finish enabling WSL2. Restart Windows, then run the same SpaceApp command again.\n"
+      );
+      return { code: 1, reexecuted: false };
     }
   }
 
@@ -245,6 +270,14 @@ async function ensureMacDocker({
       }, { stdin, stdout: null, stderr });
       if (signatureCode !== 0) {
         stderr.write("The Docker Desktop application signature is not valid. Installation was stopped.\n");
+        return { code: 1, reexecuted: false };
+      }
+      const gatekeeperCode = await execute({
+        command: "spctl",
+        args: ["--assess", "--type", "execute", "--verbose=4", mountedApplication]
+      }, { stdin, stdout: null, stderr });
+      if (gatekeeperCode !== 0) {
+        stderr.write("macOS Gatekeeper did not accept Docker Desktop. Installation was stopped.\n");
         return { code: 1, reexecuted: false };
       }
       const installCode = await execute({
@@ -517,9 +550,33 @@ async function installDnfDockerEngine({ id, stdin, stdout, stderr, execute }) {
   const repositoryArgs = id === "fedora"
     ? ["dnf", "config-manager", "addrepo", "--from-repofile", repositoryUrl]
     : ["dnf", "config-manager", "--add-repo", repositoryUrl];
-  for (const spec of [
+  const pluginCode = await execute(
     { command: "sudo", args: ["dnf", "-y", "install", "dnf-plugins-core"] },
+    { stdin, stdout, stderr }
+  );
+  if (pluginCode !== 0) {
+    return pluginCode;
+  }
+
+  let repositoryCode = await execute(
     { command: "sudo", args: repositoryArgs },
+    { stdin, stdout, stderr }
+  );
+  if (repositoryCode !== 0 && id === "fedora") {
+    stdout.write("The DNF5 repository command was unavailable; retrying with DNF4 syntax...\n");
+    repositoryCode = await execute(
+      {
+        command: "sudo",
+        args: ["dnf", "config-manager", "--add-repo", repositoryUrl]
+      },
+      { stdin, stdout, stderr }
+    );
+  }
+  if (repositoryCode !== 0) {
+    return repositoryCode;
+  }
+
+  return execute(
     {
       command: "sudo",
       args: [
@@ -532,14 +589,9 @@ async function installDnfDockerEngine({ id, stdin, stdout, stderr, execute }) {
         "docker-buildx-plugin",
         "docker-compose-plugin"
       ]
-    }
-  ]) {
-    const code = await execute(spec, { stdin, stdout, stderr });
-    if (code !== 0) {
-      return code;
-    }
-  }
-  return 0;
+    },
+    { stdin, stdout, stderr }
+  );
 }
 
 async function readLinuxOsRelease() {
@@ -626,15 +678,38 @@ async function fileExists(path) {
   }
 }
 
-async function downloadFile(url, target) {
-  const response = await fetch(url, { redirect: "follow" });
-  if (!response.ok || !response.body) {
-    throw new Error(`Docker download failed with HTTP ${response.status}.`);
+export async function downloadFile(url, target, {
+  timeoutMs = DOWNLOAD_TIMEOUT_MS
+} = {}) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("Docker download timeout must be a positive number.");
   }
-  await pipeline(
-    Readable.fromWeb(response.body),
-    createWriteStream(target, { flags: "wx", mode: 0o600 })
-  );
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      redirect: "follow",
+      signal: controller.signal
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`Docker download failed with HTTP ${response.status}.`);
+    }
+    await pipeline(
+      Readable.fromWeb(response.body),
+      createWriteStream(target, { flags: "wx", mode: 0o600 }),
+      { signal: controller.signal }
+    );
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `Docker download timed out after ${Math.ceil(timeoutMs / 1_000)} seconds.`,
+        { cause: error }
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function launchDetachedCommand(spec) {
