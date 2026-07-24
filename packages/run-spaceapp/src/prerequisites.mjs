@@ -1,7 +1,7 @@
 import { createWriteStream } from "node:fs";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join, win32 } from "node:path";
+import { delimiter, join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
 import { Readable } from "node:stream";
@@ -229,7 +229,7 @@ async function ensureMacDocker({
   sleep
 }) {
   const application = "/Applications/Docker.app";
-  const cliDirectory = join(application, "Contents", "Resources", "bin");
+  const cliDirectory = posix.join(application, "Contents", "Resources", "bin");
   let installed = await pathExists(application);
 
   if (!installed) {
@@ -253,7 +253,7 @@ async function ensureMacDocker({
     const temporaryRoot = await mkdtemp(join(tmpdir(), "spaceapp-docker-"));
     const diskImage = join(temporaryRoot, "Docker.dmg");
     const mountedApplication = "/Volumes/Docker/Docker.app";
-    const installer = join(mountedApplication, "Contents", "MacOS", "install");
+    const installer = posix.join(mountedApplication, "Contents", "MacOS", "install");
     let mounted = false;
     try {
       stdout.write("Downloading Docker Desktop from Docker's official distribution service...\n");
