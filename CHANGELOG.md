@@ -9,6 +9,8 @@ Semantic Versioning.
 
 - install and start signed Docker Desktop automatically on Windows and macOS
   when it is missing, with explicit license confirmation;
+- elevate WSL2 setup through the Windows UAC prompt and stop safely for a
+  required restart before downloading Docker Desktop;
 - install Docker Engine, Buildx, and Compose automatically from official
   Docker repositories on Ubuntu, Debian, Fedora, RHEL, and CentOS;
 - require a ready Docker engine before pulling SpaceApp images and safely

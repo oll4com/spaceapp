@@ -53,21 +53,20 @@ native `linux/arm64` images and Intel Macs use `linux/amd64`.
 
 ## Windows 11 — PowerShell
 
-Enable hardware virtualization and install Node.js 20.11 or newer. Open an
-Administrator PowerShell or Windows Terminal for the first installation and
-run:
+Enable hardware virtualization and install Node.js 20.11 or newer. Open a
+normal PowerShell or Windows Terminal and run:
 
 ```powershell
 npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
 ```
 
 If Docker is missing, the launcher asks you to review and accept Docker
-Desktop's terms, enables WSL2 support, downloads Docker Desktop from Docker's
-official distribution service, verifies its Authenticode signature, installs
-it for the current user, starts it, and waits until it is ready. Windows may
-request one restart after WSL2 is enabled; rerun the same command afterward.
-SpaceApp reuses Docker Desktop's WSL2 Linux environment and does not install a
-second full virtual machine.
+Desktop's terms, requests a Windows UAC approval only when WSL2 must be
+enabled, downloads Docker Desktop from Docker's official distribution service,
+verifies its Authenticode signature, installs it for the current user, starts
+it, and waits until it is ready. Windows may request one restart after WSL2 is
+enabled; rerun the same command afterward. SpaceApp reuses Docker Desktop's
+WSL2 Linux environment and does not install a second full virtual machine.
 
 ## Installation profiles
 

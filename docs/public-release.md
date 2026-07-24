@@ -62,7 +62,7 @@ The workflow then:
 5. publishes that tarball as `run-spaceapp@<version>` with `--tag next
    --provenance`.
 
-For `0.1.4`, `latest` must remain `0.1.2` until clean-install acceptance is
+For `0.1.4`, `latest` must remain `0.1.3` until clean-install acceptance is
 complete.
 
 ## Staged acceptance and promotion
@@ -70,7 +70,7 @@ complete.
 Verify npm metadata before installation:
 
 - `version` and `next` are `0.1.4`;
-- `latest` is still `0.1.2`;
+- `latest` is still `0.1.3`;
 - `gitHead` equals the released `main` commit;
 - provenance is present and references `.github/workflows/release.yml`.
 
@@ -103,8 +103,8 @@ Published npm versions and GHCR exact tags are immutable.
 If `0.1.4` fails after promotion:
 
 ```bash
-npm dist-tag add run-spaceapp@0.1.2 latest
-npm deprecate run-spaceapp@0.1.4 "Withdrawn after release verification; use 0.1.2 until 0.1.5 is available."
+npm dist-tag add run-spaceapp@0.1.3 latest
+npm deprecate run-spaceapp@0.1.4 "Withdrawn after release verification; use 0.1.3 until 0.1.5 is available."
 ```
 
 Preserve the failed artifacts for evidence and publish the correction as

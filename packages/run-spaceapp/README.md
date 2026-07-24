@@ -25,7 +25,9 @@ disk. If Docker is missing, `spaceapp install` automatically installs it from
 official Docker sources on Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and
 CentOS, starts it, and waits for Engine and Compose readiness before pulling
 images. Docker Desktop license acceptance and Linux `docker` group membership
-require confirmation inside the same command.
+require confirmation inside the same command. On Windows, approve the UAC
+prompt if WSL2 must be enabled. If Windows requests one restart, rerun the same
+command afterward and installation continues safely.
 
 The launcher selects the `light` profile below 12 GiB RAM and the `standard`
 profile otherwise; override this with `--profile light` or
