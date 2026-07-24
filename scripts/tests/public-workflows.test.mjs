@@ -119,6 +119,11 @@ test("release is manual-only on main and publishes only approved sanitized artif
   assert.match(release, /npm install --global --ignore-scripts --no-audit --no-fund npm@11\.18\.0/);
   assert.match(release, /npm pkg set "gitHead=\$\{\{ github\.sha \}\}" -w run-spaceapp/);
   assert.match(release, /npm publish "\$RUNNER_TEMP\/release-artifacts\/run-spaceapp-\$\{\{ inputs\.version \}\}\.tgz" --tag next --provenance/);
+  assert.match(release, /RELEASE_VERSION: \$\{\{ inputs\.version \}\}/);
+  assert.match(release, /RELEASE_GIT_HEAD: \$\{\{ github\.sha \}\}/);
+  assert.match(release, /for attempt in \$\(seq 1 12\)/);
+  assert.match(release, /sleep 5/);
+  assert.match(release, /npm metadata did not become consistent after 12 attempts/);
   assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|npm publish \.\/packages\/run-spaceapp/);
   assert.match(release, /actions\/download-artifact/);
   assert.match(release, /spaceapp-public-export-\$\{\{ inputs\.version \}\}\.tar\.gz/);

@@ -353,7 +353,25 @@ jobs:
         run: npm publish "$RUNNER_TEMP/release-artifacts/run-spaceapp-${{ inputs.version }}.tgz" --tag next --provenance
 
       - name: Verify staged npm metadata
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_GIT_HEAD: ${{ github.sha }}
         run: |
-          test "$(npm view "run-spaceapp@${{ inputs.version }}" version)" = "${{ inputs.version }}"
-          test "$(npm view run-spaceapp dist-tags.next)" = "${{ inputs.version }}"
-          test "$(npm view "run-spaceapp@${{ inputs.version }}" gitHead)" = "${{ github.sha }}"
+          for attempt in $(seq 1 12); do
+            published_version="$(npm view "run-spaceapp@$RELEASE_VERSION" version 2>/dev/null || true)"
+            published_next="$(npm view run-spaceapp dist-tags.next 2>/dev/null || true)"
+            published_git_head="$(npm view "run-spaceapp@$RELEASE_VERSION" gitHead 2>/dev/null || true)"
+
+            if [[ "$published_version" == "$RELEASE_VERSION" &&
+                  "$published_next" == "$RELEASE_VERSION" &&
+                  "$published_git_head" == "$RELEASE_GIT_HEAD" ]]; then
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt 12 ]]; then
+              sleep 5
+            fi
+          done
+
+          echo "npm metadata did not become consistent after 12 attempts." >&2
+          exit 1
