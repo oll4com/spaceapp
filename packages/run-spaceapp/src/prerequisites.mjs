@@ -156,6 +156,9 @@ async function ensureWindowsDocker({
     }
     const temporaryRoot = await mkdtemp(join(tmpdir(), "spaceapp-docker-"));
     const installer = join(temporaryRoot, "Docker Desktop Installer.exe");
+    const installerEnv = {
+      SPACEAPP_DOCKER_INSTALLER_PATH: installer
+    };
     try {
       stdout.write("Downloading Docker Desktop from Docker's official distribution service...\n");
       await download(downloadUrl, installer);
@@ -167,11 +170,13 @@ async function ensureWindowsDocker({
           "-NonInteractive",
           "-Command",
           [
-            "$signature = Get-AuthenticodeSignature -LiteralPath $args[0]",
+            "$path = $env:SPACEAPP_DOCKER_INSTALLER_PATH",
+            "if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }",
+            "$signature = Get-AuthenticodeSignature -LiteralPath $path",
             "if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Docker') { exit 1 }"
-          ].join("; "),
-          installer
-        ]
+          ].join("; ")
+        ],
+        env: installerEnv
       }, { stdin, stdout: null, stderr });
       if (signatureCode !== 0) {
         stderr.write("The Docker Desktop installer signature is not valid. Installation was stopped.\n");
@@ -185,13 +190,14 @@ async function ensureWindowsDocker({
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "$process = Start-Process -FilePath $args[0] -ArgumentList $args[1..($args.Count - 1)] -Wait -PassThru; exit $process.ExitCode",
-            installer,
-            "install",
-            "--user",
-            "--quiet",
-            "--accept-license"
-          ]
+            [
+              "$path = $env:SPACEAPP_DOCKER_INSTALLER_PATH",
+              "if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }",
+              "$process = Start-Process -FilePath $path -ArgumentList @('install','--user','--quiet','--accept-license') -Wait -PassThru",
+              "exit $process.ExitCode"
+            ].join("; ")
+          ],
+          env: installerEnv
         },
         { stdin, stdout, stderr }
       );
@@ -222,9 +228,11 @@ async function ensureWindowsDocker({
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      "Start-Process -FilePath $args[0]",
-      application
-    ]
+      "$path = $env:SPACEAPP_DOCKER_DESKTOP_PATH; if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }; Start-Process -FilePath $path"
+    ],
+    env: {
+      SPACEAPP_DOCKER_DESKTOP_PATH: application
+    }
   });
   if (launchCode !== 0) {
     stderr.write("Docker Desktop is installed, but SpaceApp could not start it.\n");
@@ -742,6 +750,7 @@ function launchDetachedCommand(spec) {
   return new Promise((resolve) => {
     const child = spawn(spec.command, spec.args, {
       detached: true,
+      env: spec.env ? { ...process.env, ...spec.env } : process.env,
       shell: false,
       stdio: "ignore"
     });

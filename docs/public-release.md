@@ -107,8 +107,9 @@ npm dist-tag add run-spaceapp@0.1.3 latest
 npm deprecate run-spaceapp@0.1.5 "Withdrawn after release verification; use 0.1.3 until a corrected release is available."
 ```
 
-Preserve the failed `0.1.4` staging artifacts and any failed `0.1.5` artifacts
-for evidence. Do not delete or overwrite exact version tags.
+The failed `0.1.4` staging run already produced immutable GHCR artifacts, so
+preserve those and any failed `0.1.5` artifacts as evidence. Do not delete or
+overwrite exact version tags.
 
 ## Official references
 

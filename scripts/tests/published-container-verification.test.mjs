@@ -69,6 +69,30 @@ test("published container verification requires both platforms and attestations"
   );
 });
 
+test("published container verification aggregates split attestations for one platform", () => {
+  assert.deepEqual(
+    evaluatePublishedContainer({
+      image: "ghcr.io/oll4com/spaceapp-core:0.1.4",
+      manifest,
+      attestations: [
+        {
+          descriptor: manifest.manifests[2],
+          manifest: { layers: [attestationManifest.layers[0]] }
+        },
+        {
+          descriptor: manifest.manifests[2],
+          manifest: { layers: [attestationManifest.layers[1]] }
+        },
+        {
+          descriptor: manifest.manifests[3],
+          manifest: attestationManifest
+        }
+      ]
+    }),
+    { ok: true, blockers: [] }
+  );
+});
+
 test("published container verification reports missing architecture and evidence", () => {
   const result = evaluatePublishedContainer({
     image: "ghcr.io/oll4com/spaceapp-core:0.1.4",

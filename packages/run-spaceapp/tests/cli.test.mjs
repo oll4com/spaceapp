@@ -38,6 +38,14 @@ test("the process launcher rejects executables outside the fixed command allowli
     }),
     /SpaceApp command arguments must be strings/
   );
+  await assert.rejects(
+    executeCommand({
+      command: "docker",
+      args: ["info"],
+      env: { PATH: "/tmp/untrusted" }
+    }),
+    /SpaceApp refused untrusted command environment values/
+  );
 });
 
 test("init emits a one-time setup token without placing it in config", async () => {

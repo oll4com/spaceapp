@@ -22,7 +22,7 @@ export function evaluatePublishedContainer({ image, manifest, attestations }) {
       blockers.push(`${image} is missing linux/${architecture}.`);
       continue;
     }
-    const attestation = (Array.isArray(attestations) ? attestations : []).find(
+    const matchingAttestations = (Array.isArray(attestations) ? attestations : []).filter(
       (entry) =>
         entry?.descriptor?.annotations?.["vnd.docker.reference.type"] ===
           "attestation-manifest" &&
@@ -30,10 +30,10 @@ export function evaluatePublishedContainer({ image, manifest, attestations }) {
           platformManifest.digest
     );
     const predicates = new Set(
-      (Array.isArray(attestation?.manifest?.layers)
-        ? attestation.manifest.layers
-        : []
-      )
+      matchingAttestations
+        .flatMap((attestation) =>
+          Array.isArray(attestation?.manifest?.layers) ? attestation.manifest.layers : []
+        )
         .map((layer) => layer?.annotations?.["in-toto.io/predicate-type"])
         .filter((value) => typeof value === "string")
     );
@@ -58,7 +58,8 @@ function inspectRaw(image) {
     }
   );
   if (result.status !== 0) {
-    throw new Error(`Could not inspect ${image}.`);
+    const detail = result.stderr?.trim() || "unknown error";
+    throw new Error(`Could not inspect ${image}: ${detail}`);
   }
   try {
     return JSON.parse(result.stdout);

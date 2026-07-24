@@ -35,6 +35,9 @@ const trustedCommands = new Set([
   "wsl.exe",
   "xdg-open"
 ]);
+const trustedEnvironmentNames = new Set([
+  "SPACEAPP_DOCKER_INSTALLER_PATH"
+]);
 
 export async function run(argv, {
   env = process.env,
@@ -530,7 +533,11 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
       reject(new Error("SpaceApp command arguments must be strings."));
       return;
     }
+    const commandEnv = spec.env === undefined
+      ? process.env
+      : validateCommandEnvironment(spec.env);
     const child = spawn(spec.command, spec.args, {
+      env: commandEnv,
       shell: false,
       stdio: [input === undefined ? (stdin || "inherit") : "pipe", stdout || "ignore", stderr || "ignore"]
     });
@@ -548,6 +555,20 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
       child.stdin.end(input);
     }
   });
+}
+
+function validateCommandEnvironment(commandEnvironment) {
+  if (
+    !commandEnvironment ||
+    typeof commandEnvironment !== "object" ||
+    Array.isArray(commandEnvironment) ||
+    Object.entries(commandEnvironment).some(
+      ([name, value]) => !trustedEnvironmentNames.has(name) || typeof value !== "string"
+    )
+  ) {
+    throw new Error("SpaceApp refused untrusted command environment values.");
+  }
+  return { ...process.env, ...commandEnvironment };
 }
 
 function openBrowser(url, platform, execute, io) {
