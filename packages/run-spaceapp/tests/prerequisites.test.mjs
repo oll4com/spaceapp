@@ -3,7 +3,8 @@ import { Readable, Writable } from "node:stream";
 import test from "node:test";
 import {
   downloadFile,
-  ensureDockerAvailable
+  ensureDockerAvailable,
+  windowsPowerShellArgs
 } from "../src/prerequisites.mjs";
 
 function capture() {
@@ -16,6 +17,30 @@ function capture() {
   });
   return { stream, value: () => value };
 }
+
+test("Windows PowerShell operations use fixed scripts and reject arbitrary commands", () => {
+  const operations = [
+    "install-wsl",
+    "verify-docker-installer",
+    "install-docker-desktop",
+    "start-docker-desktop"
+  ];
+
+  for (const operation of operations) {
+    const args = windowsPowerShellArgs(operation);
+    assert.deepEqual(args.slice(0, 4), [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command"
+    ]);
+    assert.equal(typeof args[4], "string");
+  }
+  assert.throws(
+    () => windowsPowerShellArgs("Write-Output untrusted"),
+    /untrusted PowerShell operation/
+  );
+});
 
 test("Windows enables WSL2, installs signed Docker Desktop, and continues in one command", async () => {
   const stdout = capture();
@@ -47,19 +72,17 @@ test("Windows enables WSL2, installs signed Docker Desktop, and continues in one
         return wslChecks === 1 ? 1 : 0;
       }
       if (spec.command === "powershell.exe") {
-        const command = spec.args.at(-1);
-        if (command?.includes("wsl.exe") && command.includes("-Verb RunAs")) {
+        if (spec.operation === "install-wsl") {
           return 0;
         }
         if (
-          command?.includes("Get-AuthenticodeSignature") &&
+          spec.operation === "verify-docker-installer" &&
           spec.env?.SPACEAPP_DOCKER_INSTALLER_PATH?.endsWith("Docker Desktop Installer.exe")
         ) {
           return 0;
         }
         if (
-          command?.includes("Start-Process -FilePath $path") &&
-          command.includes("@('install','--user','--quiet','--accept-license')") &&
+          spec.operation === "install-docker-desktop" &&
           spec.env?.SPACEAPP_DOCKER_INSTALLER_PATH?.endsWith("Docker Desktop Installer.exe")
         ) {
           installed = true;
@@ -87,28 +110,22 @@ test("Windows enables WSL2, installs signed Docker Desktop, and continues in one
   assert.match(downloads[0].url, /^https:\/\/desktop\.docker\.com\/win\/main\/amd64\//);
   assert.ok(calls.some((spec) =>
     spec.command === "powershell.exe" &&
-    spec.args.join(" ").includes("Get-AuthenticodeSignature")
+    spec.operation === "verify-docker-installer" &&
+    spec.args === undefined
   ));
   assert.ok(calls.some((spec) =>
     spec.command === "powershell.exe" &&
-    spec.args.join(" ").includes("Start-Process") &&
-    spec.args.join(" ").includes("-Verb RunAs")
+    spec.operation === "install-wsl" &&
+    spec.args === undefined
   ));
   assert.ok(calls.some((spec) =>
     spec.command === "powershell.exe" &&
-    spec.args.join(" ").includes("Start-Process") &&
-    spec.args.at(-1).includes("@('install','--user','--quiet','--accept-license')") &&
+    spec.operation === "install-docker-desktop" &&
+    spec.args === undefined &&
     spec.env?.SPACEAPP_DOCKER_INSTALLER_PATH.endsWith("Docker Desktop Installer.exe")
   ));
   assert.deepEqual(launches, [{
-    command: "powershell.exe",
-    args: [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "$path = $env:SPACEAPP_DOCKER_DESKTOP_PATH; if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }; Start-Process -FilePath $path"
-    ],
+    operation: "start-docker-desktop",
     env: {
       SPACEAPP_DOCKER_DESKTOP_PATH: "C:\\Users\\Admin\\AppData\\Local\\Programs\\DockerDesktop\\Docker Desktop.exe"
     }
@@ -176,13 +193,8 @@ test("Windows elevates WSL2 setup and stops for a required restart before downlo
   assert.equal(downloaded, false);
   assert.ok(calls.some((spec) =>
     spec.command === "powershell.exe" &&
-    spec.args.join(" ").includes("Start-Process") &&
-    spec.args.join(" ").includes("--install") &&
-    spec.args.join(" ").includes("--no-distribution") &&
-    spec.args.join(" ").includes("-Verb RunAs") &&
-    spec.args.join(" ").includes("$ErrorActionPreference = 'Stop'") &&
-    spec.args.join(" ").includes("catch { exit 1 }") &&
-    spec.args.join(" ").includes("; exit $process.ExitCode")
+    spec.operation === "install-wsl" &&
+    spec.args === undefined
   ));
   assert.match(stderr.value(), /restart Windows/i);
 });
@@ -237,8 +249,7 @@ test("macOS installs the official signed Docker Desktop image and starts it", as
     spec.args.includes("--user=space-user")
   ));
   assert.ok(calls.some((spec) =>
-    spec.command === "open" &&
-    spec.args.join(" ") === "-a Docker"
+    spec.operation === "open-docker-desktop"
   ));
 });
 

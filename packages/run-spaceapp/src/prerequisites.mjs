@@ -20,6 +20,40 @@ const MAC_DOCKER_DOWNLOADS = Object.freeze({
   arm64: "https://desktop.docker.com/mac/main/arm64/Docker.dmg"
 });
 
+export function windowsPowerShellArgs(operation) {
+  const scripts = {
+    "install-wsl": [
+      "$ErrorActionPreference = 'Stop'; try {",
+      "$process = Start-Process -FilePath 'wsl.exe'",
+      "-ArgumentList @('--install','--no-distribution')",
+      "-Verb RunAs -Wait -PassThru",
+      "; exit $process.ExitCode",
+      "} catch { exit 1 }"
+    ].join(" "),
+    "verify-docker-installer": [
+      "$path = $env:SPACEAPP_DOCKER_INSTALLER_PATH",
+      "if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }",
+      "$signature = Get-AuthenticodeSignature -LiteralPath $path",
+      "if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Docker') { exit 1 }"
+    ].join("; "),
+    "install-docker-desktop": [
+      "$path = $env:SPACEAPP_DOCKER_INSTALLER_PATH",
+      "if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }",
+      "$process = Start-Process -FilePath $path -ArgumentList @('install','--user','--quiet','--accept-license') -Wait -PassThru",
+      "exit $process.ExitCode"
+    ].join("; "),
+    "start-docker-desktop": [
+      "$path = $env:SPACEAPP_DOCKER_DESKTOP_PATH",
+      "if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }",
+      "Start-Process -FilePath $path"
+    ].join("; ")
+  };
+  if (!Object.hasOwn(scripts, operation)) {
+    throw new Error("SpaceApp refused an untrusted PowerShell operation.");
+  }
+  return ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", scripts[operation]];
+}
+
 export async function ensureDockerAvailable({
   platform = process.platform,
   arch = process.arch,
@@ -113,20 +147,7 @@ async function ensureWindowsDocker({
     const installWslCode = await execute(
       {
         command: "powershell.exe",
-        args: [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          [
-            "$ErrorActionPreference = 'Stop'; try {",
-            "$process = Start-Process -FilePath 'wsl.exe'",
-            "-ArgumentList @('--install','--no-distribution')",
-            "-Verb RunAs -Wait -PassThru",
-            "; exit $process.ExitCode",
-            "} catch { exit 1 }"
-          ].join(" ")
-        ]
+        operation: "install-wsl"
       },
       { stdin, stdout, stderr }
     );
@@ -164,18 +185,7 @@ async function ensureWindowsDocker({
       await download(downloadUrl, installer);
       const signatureCode = await execute({
         command: "powershell.exe",
-        args: [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          [
-            "$path = $env:SPACEAPP_DOCKER_INSTALLER_PATH",
-            "if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }",
-            "$signature = Get-AuthenticodeSignature -LiteralPath $path",
-            "if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Docker') { exit 1 }"
-          ].join("; ")
-        ],
+        operation: "verify-docker-installer",
         env: installerEnv
       }, { stdin, stdout: null, stderr });
       if (signatureCode !== 0) {
@@ -185,18 +195,7 @@ async function ensureWindowsDocker({
       const installCode = await execute(
         {
           command: "powershell.exe",
-          args: [
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            [
-              "$path = $env:SPACEAPP_DOCKER_INSTALLER_PATH",
-              "if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }",
-              "$process = Start-Process -FilePath $path -ArgumentList @('install','--user','--quiet','--accept-license') -Wait -PassThru",
-              "exit $process.ExitCode"
-            ].join("; ")
-          ],
+          operation: "install-docker-desktop",
           env: installerEnv
         },
         { stdin, stdout, stderr }
@@ -222,14 +221,7 @@ async function ensureWindowsDocker({
     prependPath(env, cliDirectory);
   }
   const launchCode = await launch({
-    command: "powershell.exe",
-    args: [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "$path = $env:SPACEAPP_DOCKER_DESKTOP_PATH; if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }; Start-Process -FilePath $path"
-    ],
+    operation: "start-docker-desktop",
     env: {
       SPACEAPP_DOCKER_DESKTOP_PATH: application
     }
@@ -343,7 +335,7 @@ async function ensureMacDocker({
   if (await pathExists(cliDirectory)) {
     prependPath(env, cliDirectory);
   }
-  const launchCode = await launch({ command: "open", args: ["-a", "Docker"] });
+  const launchCode = await launch({ operation: "open-docker-desktop" });
   if (launchCode !== 0) {
     stderr.write("Docker Desktop is installed, but SpaceApp could not start it.\n");
     return { code: launchCode, reexecuted: false };
@@ -748,12 +740,26 @@ export async function downloadFile(url, target, {
 
 function launchDetachedCommand(spec) {
   return new Promise((resolve) => {
-    const child = spawn(spec.command, spec.args, {
+    const options = {
       detached: true,
       env: spec.env ? { ...process.env, ...spec.env } : process.env,
       shell: false,
       stdio: "ignore"
-    });
+    };
+    let child;
+    try {
+      if (spec.operation === "start-docker-desktop") {
+        child = spawn("powershell.exe", windowsPowerShellArgs(spec.operation), options);
+      } else if (spec.operation === "open-docker-desktop") {
+        child = spawn("open", ["-a", "Docker"], options);
+      } else {
+        resolve(1);
+        return;
+      }
+    } catch {
+      resolve(1);
+      return;
+    }
     child.once("error", () => resolve(1));
     child.once("spawn", () => {
       child.unref();
