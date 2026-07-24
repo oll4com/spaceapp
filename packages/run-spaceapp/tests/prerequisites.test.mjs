@@ -118,7 +118,12 @@ test("macOS installs the official signed Docker Desktop image and starts it", as
     execute: async (spec) => {
       calls.push(spec);
       if (spec.command === "docker") return installed && launched ? 0 : 127;
-      if (spec.command.endsWith("/Contents/MacOS/install")) installed = true;
+      if (
+        spec.command === "sudo" &&
+        spec.args[0].endsWith("/Contents/MacOS/install")
+      ) {
+        installed = true;
+      }
       return 0;
     },
     download: async (url, target) => {
@@ -129,7 +134,7 @@ test("macOS installs the official signed Docker Desktop image and starts it", as
       launched = true;
       return 0;
     },
-    pathExists: async () => true,
+    pathExists: async (path) => installed && path === "/Applications/Docker.app",
     sleep: async () => {}
   });
 
@@ -137,7 +142,8 @@ test("macOS installs the official signed Docker Desktop image and starts it", as
   assert.match(downloads[0].url, /^https:\/\/desktop\.docker\.com\/mac\/main\/arm64\//);
   assert.ok(calls.some((spec) => spec.command === "codesign" && spec.args.includes("--strict")));
   assert.ok(calls.some((spec) =>
-    spec.command.endsWith("/Contents/MacOS/install") &&
+    spec.command === "sudo" &&
+    spec.args[0].endsWith("/Contents/MacOS/install") &&
     spec.args.includes("--accept-license") &&
     spec.args.includes("--user=space-user")
   ));

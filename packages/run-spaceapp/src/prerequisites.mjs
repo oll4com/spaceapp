@@ -13,6 +13,10 @@ const WINDOWS_DOCKER_DOWNLOADS = Object.freeze({
   x64: "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
   arm64: "https://desktop.docker.com/win/main/arm64/Docker%20Desktop%20Installer.exe"
 });
+const MAC_DOCKER_DOWNLOADS = Object.freeze({
+  x64: "https://desktop.docker.com/mac/main/amd64/Docker.dmg",
+  arm64: "https://desktop.docker.com/mac/main/arm64/Docker.dmg"
+});
 
 export async function ensureDockerAvailable({
   platform = process.platform,
@@ -184,7 +188,105 @@ async function ensureWindowsDocker({
   return { code: 1, reexecuted: false };
 }
 
-async function ensureMacDocker() {
+async function ensureMacDocker({
+  arch,
+  env,
+  stdin,
+  stdout,
+  stderr,
+  execute,
+  launch,
+  download,
+  pathExists,
+  sleep
+}) {
+  const application = "/Applications/Docker.app";
+  const cliDirectory = join(application, "Contents", "Resources", "bin");
+  let installed = await pathExists(application);
+
+  if (!installed) {
+    stdout.write("Docker Desktop is required and is not installed.\n");
+    const accepted = await confirmDesktopInstall({ platformName: "macOS", stdin, stdout });
+    if (!accepted) {
+      stderr.write("Docker Desktop installation was cancelled.\n");
+      return { code: 1, reexecuted: false };
+    }
+    const downloadUrl = MAC_DOCKER_DOWNLOADS[arch];
+    if (!downloadUrl) {
+      stderr.write(`Docker Desktop automatic installation does not support macOS architecture "${arch}".\n`);
+      return { code: 1, reexecuted: false };
+    }
+    const username = String(env.USER || "");
+    if (!/^[A-Za-z0-9._-]+$/.test(username)) {
+      stderr.write("A valid macOS username is required for Docker Desktop installation.\n");
+      return { code: 1, reexecuted: false };
+    }
+
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "spaceapp-docker-"));
+    const diskImage = join(temporaryRoot, "Docker.dmg");
+    const mountedApplication = "/Volumes/Docker/Docker.app";
+    const installer = join(mountedApplication, "Contents", "MacOS", "install");
+    let mounted = false;
+    try {
+      stdout.write("Downloading Docker Desktop from Docker's official distribution service...\n");
+      await download(downloadUrl, diskImage);
+      const attachCode = await execute(
+        { command: "hdiutil", args: ["attach", "-nobrowse", diskImage] },
+        { stdin, stdout, stderr }
+      );
+      if (attachCode !== 0) {
+        return { code: attachCode, reexecuted: false };
+      }
+      mounted = true;
+      const signatureCode = await execute({
+        command: "codesign",
+        args: ["--verify", "--deep", "--strict", "--verbose=2", mountedApplication]
+      }, { stdin, stdout: null, stderr });
+      if (signatureCode !== 0) {
+        stderr.write("The Docker Desktop application signature is not valid. Installation was stopped.\n");
+        return { code: 1, reexecuted: false };
+      }
+      const installCode = await execute({
+        command: "sudo",
+        args: [installer, "--accept-license", `--user=${username}`]
+      }, { stdin, stdout, stderr });
+      if (installCode !== 0) {
+        stderr.write("Docker Desktop installation failed before SpaceApp downloaded any images.\n");
+        return { code: installCode, reexecuted: false };
+      }
+    } finally {
+      if (mounted) {
+        await execute(
+          { command: "hdiutil", args: ["detach", "/Volumes/Docker"] },
+          { stdin, stdout: null, stderr: null }
+        );
+      }
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+    installed = await pathExists(application);
+    if (!installed) {
+      stderr.write("Docker Desktop reported success, but /Applications/Docker.app could not be found.\n");
+      return { code: 1, reexecuted: false };
+    }
+  } else {
+    stdout.write("Docker Desktop is installed but is not running. Starting it now...\n");
+  }
+
+  if (await pathExists(cliDirectory)) {
+    prependPath(env, cliDirectory);
+  }
+  const launchCode = await launch({ command: "open", args: ["-a", "Docker"] });
+  if (launchCode !== 0) {
+    stderr.write("Docker Desktop is installed, but SpaceApp could not start it.\n");
+    return { code: launchCode, reexecuted: false };
+  }
+  if (await waitForDocker({ execute, sleep })) {
+    stdout.write("Docker Desktop is ready.\n");
+    return { code: 0, reexecuted: false };
+  }
+  stderr.write(
+    "Docker Desktop was installed but did not become ready. Complete any Docker Desktop prompt, then run the same SpaceApp command again.\n"
+  );
   return { code: 1, reexecuted: false };
 }
 
