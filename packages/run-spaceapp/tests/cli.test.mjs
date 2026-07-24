@@ -148,6 +148,37 @@ test("install succeeds when the native browser opener is unavailable", async () 
   );
 });
 
+test("install bootstraps missing Docker before running doctor and pulling images", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-bootstrap-"));
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  let ensureCalls = 0;
+
+  assert.equal(await run(["install", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "win32",
+    arch: "x64",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => {
+      ensureCalls += 1;
+      return { code: 0, reexecuted: false };
+    },
+    execute: async (spec) => {
+      calls.push(spec);
+      return 0;
+    }
+  }), 0);
+
+  assert.equal(ensureCalls, 1);
+  assert.ok(calls.some((spec) => spec.command === "docker" && spec.args.includes("pull")));
+  assert.match(stdout.value(), /SpaceApp is running at http:\/\/127\.0\.0\.1:4911/);
+  assert.equal(stderr.value(), "");
+});
+
 test("install stops before image pulls when the host is below the 8 GB minimum", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-small-"));
   const stdout = capture();

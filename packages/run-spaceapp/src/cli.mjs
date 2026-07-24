@@ -20,15 +20,18 @@ import {
   writeRuntimeFiles,
   writeSetupToken
 } from "./index.mjs";
+import { ensureDockerAvailable } from "./prerequisites.mjs";
 
 export async function run(argv, {
   env = process.env,
   platform = process.platform,
+  arch = process.arch,
   stdout = process.stdout,
   stderr = process.stderr,
   stdin = process.stdin,
   execute = executeCommand,
-  inspectResources = inspectSystemResources
+  inspectResources = inspectSystemResources,
+  ensureDocker = ensureDockerAvailable
 } = {}) {
   const [command = "help", ...args] = argv;
   const root = resolveSpaceAppHome({ env, platform });
@@ -47,11 +50,14 @@ export async function run(argv, {
       root,
       version,
       platform,
+      arch,
+      env,
       stdin,
       stdout,
       stderr,
       execute,
-      inspectResources
+      inspectResources,
+      ensureDocker
     });
   }
   if (command === "init") {
@@ -173,11 +179,14 @@ async function installCommand(args, {
   root,
   version,
   platform,
+  arch,
+  env,
   stdin,
   stdout,
   stderr,
   execute,
-  inspectResources
+  inspectResources,
+  ensureDocker
 }) {
   const { requestedProfile, noOpen } = parseInstallArgs(args);
   const resources = await inspectResources(root);
@@ -191,6 +200,38 @@ async function installCommand(args, {
   if (result.setupToken) {
     stdout.write(`One-time setup token: ${result.setupToken}\n`);
     stdout.write("Store it temporarily; it expires after first owner setup.\n");
+  }
+
+  if (installResourceChecks(resources).some((check) => !check.ok)) {
+    const doctorCode = await doctor({
+      root,
+      platform,
+      stdout,
+      stderr,
+      execute,
+      stdin,
+      inspectResources,
+      resources
+    });
+    stderr.write("Installation stopped before downloading images. Fix the failed checks and run the same command again.\n");
+    return doctorCode;
+  }
+
+  const prerequisiteResult = await ensureDocker({
+    platform,
+    arch,
+    env,
+    stdin,
+    stdout,
+    stderr,
+    execute,
+    installArgs: { requestedProfile, noOpen }
+  });
+  if (prerequisiteResult.reexecuted || prerequisiteResult.code !== 0) {
+    if (prerequisiteResult.code !== 0) {
+      stderr.write("Installation stopped before downloading images. Fix the failed checks and run the same command again.\n");
+    }
+    return prerequisiteResult.code;
   }
 
   const doctorCode = await doctor({
