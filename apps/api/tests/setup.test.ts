@@ -26,6 +26,23 @@ describe("public single-owner setup API", () => {
         SPACE_BROWSER_SESSIONS_ENABLED: "false",
         SPACE_DATABASE_URL: "postgres://spaceapp:test@postgres/spaceapp",
         SPACE_RUNTIME_STORE: "postgres"
+      }),
+      workerReadinessChecker: async () => ({
+        id: "space-worker",
+        status: "RUNNING",
+        statusReason: "Test worker is ready.",
+        address: "temporal:7233",
+        namespace: "default",
+        taskQueue: "space",
+        reachable: true,
+        workflowPollerCount: 1,
+        activityPollerCount: 1,
+        pollerCount: 2,
+        workflowBacklogCount: 0,
+        activityBacklogCount: 0,
+        pollerIdentities: ["test-worker"],
+        lastPollerAccessAt: "2026-07-24T00:00:00.000Z",
+        checkedAt: "2026-07-24T00:00:00.000Z"
       })
     });
 
