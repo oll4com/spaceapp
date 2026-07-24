@@ -1157,6 +1157,63 @@ function readRuntimeValue<T>(result: { result?: { value?: T } }): T | null {
   return result.result && "value" in result.result ? (result.result.value ?? null) : null;
 }
 
+interface ElementScreenshotClip {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+}
+
+interface CdpCommandSender {
+  send(
+    method: string,
+    params?: Record<string, unknown>,
+    sessionId?: string
+  ): Promise<unknown>;
+}
+
+export async function resolveElementScreenshotClip(
+  client: CdpCommandSender,
+  cdpSessionId: string,
+  selector: string
+): Promise<ElementScreenshotClip | null> {
+  const documentResult = await client.send(
+    "DOM.getDocument",
+    { depth: 0, pierce: true },
+    cdpSessionId
+  ) as { root?: { nodeId?: number } };
+  const rootNodeId = documentResult.root?.nodeId;
+  if (!Number.isInteger(rootNodeId) || !rootNodeId || rootNodeId <= 0) return null;
+
+  const queryResult = await client.send(
+    "DOM.querySelector",
+    { nodeId: rootNodeId, selector },
+    cdpSessionId
+  ) as { nodeId?: number };
+  if (!Number.isInteger(queryResult.nodeId) || !queryResult.nodeId || queryResult.nodeId <= 0) {
+    return null;
+  }
+
+  const boxResult = await client.send(
+    "DOM.getBoxModel",
+    { nodeId: queryResult.nodeId },
+    cdpSessionId
+  ) as { model?: { border?: number[] } };
+  const border = boxResult.model?.border;
+  if (!Array.isArray(border) || border.length < 8 || border.some((value) => !Number.isFinite(value))) {
+    return null;
+  }
+  const xCoordinates = border.filter((_value, index) => index % 2 === 0);
+  const yCoordinates = border.filter((_value, index) => index % 2 === 1);
+  const x = Math.min(...xCoordinates);
+  const y = Math.min(...yCoordinates);
+  const width = Math.max(...xCoordinates) - x;
+  const height = Math.max(...yCoordinates) - y;
+  if (width <= 0 || height <= 0) return null;
+  return { x, y, width, height, scale: 1 };
+}
+
 export function createBrowserSessionManager(options: { store: SpaceStore; config: SpaceApiConfig }): BrowserSessionManager {
   const { store, config } = options;
   const runtimes = new Map<string, BrowserRuntime>();
@@ -1809,17 +1866,13 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       const size = metrics.contentSize;
       if (size?.width && size.height) clip = { x: size.x ?? 0, y: size.y ?? 0, width: size.width, height: size.height, scale: 1 };
     } else if (job.options.target === "ELEMENT" && job.options.selector) {
-      const result = await runtime.client.send<{ result?: { value?: { x: number; y: number; width: number; height: number } | null } }>(
-        "Runtime.evaluate",
-        {
-          expression: `(() => { const element = document.querySelector(${JSON.stringify(job.options.selector)}); if (!element) return null; const r = element.getBoundingClientRect(); return { x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height }; })()`,
-          returnByValue: true
-        },
-        runtime.cdpSessionId
+      const value = await resolveElementScreenshotClip(
+        runtime.client,
+        runtime.cdpSessionId,
+        job.options.selector
       );
-      const value = readRuntimeValue(result);
-      if (!value || value.width <= 0 || value.height <= 0) throw new SpaceNotFoundError(`Browser element ${job.options.selector} was not found.`);
-      clip = { ...value, scale: 1 };
+      if (!value) throw new SpaceNotFoundError(`Browser element ${job.options.selector} was not found.`);
+      clip = value;
     }
     const screenshot = await runtime.client.send<{ data: string }>(
       "Page.captureScreenshot",

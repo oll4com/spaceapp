@@ -5,6 +5,18 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-07-24
+
+- fix release verification for compact multi-platform OCI attestations so
+  large browser SBOMs no longer exceed the verifier process buffer;
+- remove CodeQL command, JavaScript, and redirect injection paths;
+- prove global and per-route API rate-limit ordering with runtime regression
+  coverage;
+- update React, React DOM, Lucide, Vite, and release workflow actions while
+  preserving immutable full-SHA action pins;
+- keep TypeScript 5.9 until the TypeScript 7 compiler API is stable enough for
+  the release security tests.
+
 ## [0.1.4] - 2026-07-24
 
 - install and start signed Docker Desktop automatically on Windows and macOS
@@ -50,7 +62,8 @@ Initial public release:
 - portable backup, restore, update, and rollback commands;
 - no telemetry by default.
 
-[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.5
 [0.1.4]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.4
 [0.1.3]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.3
 [0.1.2]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.2

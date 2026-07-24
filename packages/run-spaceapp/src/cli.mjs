@@ -22,6 +22,23 @@ import {
 } from "./index.mjs";
 import { ensureDockerAvailable } from "./prerequisites.mjs";
 
+const trustedCommands = new Set([
+  "cmd",
+  "codesign",
+  "docker",
+  "hdiutil",
+  "open",
+  "powershell.exe",
+  "sg",
+  "spctl",
+  "sudo",
+  "wsl.exe",
+  "xdg-open"
+]);
+const trustedEnvironmentNames = new Set([
+  "SPACEAPP_DOCKER_INSTALLER_PATH"
+]);
+
 export async function run(argv, {
   env = process.env,
   platform = process.platform,
@@ -508,7 +525,19 @@ export async function readSecret(stdin, stdout, prompt, { mask = true } = {}) {
 
 export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
   return new Promise((resolve, reject) => {
+    if (!spec || typeof spec !== "object" || !trustedCommands.has(spec.command)) {
+      reject(new Error("SpaceApp refused to execute an untrusted command."));
+      return;
+    }
+    if (!Array.isArray(spec.args) || spec.args.some((argument) => typeof argument !== "string")) {
+      reject(new Error("SpaceApp command arguments must be strings."));
+      return;
+    }
+    const commandEnv = spec.env === undefined
+      ? process.env
+      : validateCommandEnvironment(spec.env);
     const child = spawn(spec.command, spec.args, {
+      env: commandEnv,
       shell: false,
       stdio: [input === undefined ? (stdin || "inherit") : "pipe", stdout || "ignore", stderr || "ignore"]
     });
@@ -526,6 +555,20 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
       child.stdin.end(input);
     }
   });
+}
+
+function validateCommandEnvironment(commandEnvironment) {
+  if (
+    !commandEnvironment ||
+    typeof commandEnvironment !== "object" ||
+    Array.isArray(commandEnvironment) ||
+    Object.entries(commandEnvironment).some(
+      ([name, value]) => !trustedEnvironmentNames.has(name) || typeof value !== "string"
+    )
+  ) {
+    throw new Error("SpaceApp refused untrusted command environment values.");
+  }
+  return { ...process.env, ...commandEnvironment };
 }
 
 function openBrowser(url, platform, execute, io) {

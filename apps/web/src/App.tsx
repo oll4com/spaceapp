@@ -9,7 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
-  Chrome,
+  Globe2,
   CircleHelp,
   CircleStop,
   Clipboard,
@@ -6405,7 +6405,7 @@ function BrowserDock({
     <div className="dock-panel browser-dock">
       <div className="browser-dock-strip" role="group" aria-label="Browser controls">
         <button disabled={!canOpenBrowser} title={canOpenBrowser ? "Open Chrome browser pane" : disabledReason} aria-label="Open Chrome browser" onClick={onOpenBrowser}>
-          <Chrome aria-hidden="true" />
+          <Globe2 aria-hidden="true" />
         </button>
         <button
           disabled={!hasBrowserPane}
