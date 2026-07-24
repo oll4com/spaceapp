@@ -3652,10 +3652,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const cliAdminHost = config.cliRootEnabled
       ? await cliTerminalManager.hostHealth("cli:root").then(() => "RUNNING" as const).catch(() => "UNAVAILABLE" as const)
       : "disabled" as const;
-    let browserHost: "in-process" | "RUNNING" | "UNAVAILABLE" | "DISABLED" | "CAPACITY_MISMATCH" = "in-process";
+    let browserHost: "in-process" | "RUNNING" | "UNAVAILABLE" | "DISABLED" | "CAPACITY_MISMATCH" =
+      config.browserSessionsEnabled ? "in-process" : "DISABLED";
     let browserHostBuildCommit: string | null = null;
     let browserHostCaptureMetrics: BrowserHostCaptureMetrics | null = null;
-    if (config.browserHostTransport === "unix") {
+    if (config.browserSessionsEnabled && config.browserHostTransport === "unix") {
       try {
         const [health, git] = await Promise.all([
           browserSessionManager.browserHostHealth
@@ -3672,7 +3673,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     return {
       ok: worker.status === "RUNNING" && cliHost !== "UNAVAILABLE" && cliAdminHost !== "UNAVAILABLE" &&
-        (browserHost === "in-process" || browserHost === "RUNNING"),
+        (browserHost === "in-process" || browserHost === "RUNNING" || browserHost === "DISABLED"),
       apiStartedAt,
       dependencies: {
         store: config.runtimeStore,

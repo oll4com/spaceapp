@@ -22,8 +22,20 @@ describe("public single-owner setup API", () => {
       setup: createOwnerSetupBootstrap(token, "2099-07-23T12:15:00.000Z"),
       config: getApiConfig({
         SPACE_BROWSER_EVIDENCE_ENABLED: "false",
-        SPACE_BROWSER_SESSIONS_ENABLED: "false"
+        SPACE_BROWSER_HOST_TRANSPORT: "unix",
+        SPACE_BROWSER_SESSIONS_ENABLED: "false",
+        SPACE_DATABASE_URL: "postgres://spaceapp:test@postgres/spaceapp",
+        SPACE_RUNTIME_STORE: "postgres"
       })
+    });
+
+    const readiness = await app.inject({ method: "GET", url: "/readyz" });
+    expect(readiness.statusCode).toBe(200);
+    expect(readiness.json()).toMatchObject({
+      ok: true,
+      dependencies: {
+        browserHost: "DISABLED"
+      }
     });
 
     const initial = await app.inject({ method: "GET", url: "/api/setup/status" });
