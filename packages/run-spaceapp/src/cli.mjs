@@ -20,12 +20,15 @@ import {
   writeRuntimeFiles,
   writeSetupToken
 } from "./index.mjs";
-import { ensureDockerAvailable } from "./prerequisites.mjs";
+import {
+  ensureDockerAvailable,
+  windowsPowerShellArgs
+} from "./prerequisites.mjs";
 
 const trustedCommands = new Set([
-  "cmd",
   "codesign",
   "docker",
+  "explorer.exe",
   "hdiutil",
   "open",
   "powershell.exe",
@@ -529,14 +532,24 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
       reject(new Error("SpaceApp refused to execute an untrusted command."));
       return;
     }
-    if (!Array.isArray(spec.args) || spec.args.some((argument) => typeof argument !== "string")) {
+    if (spec.command === "powershell.exe" && (
+      spec.args !== undefined ||
+      typeof spec.operation !== "string"
+    )) {
+      reject(new Error("SpaceApp PowerShell commands must use a trusted operation."));
+      return;
+    }
+    if (spec.command !== "powershell.exe" && (
+      !Array.isArray(spec.args) ||
+      spec.args.some((argument) => typeof argument !== "string")
+    )) {
       reject(new Error("SpaceApp command arguments must be strings."));
       return;
     }
     const commandEnv = spec.env === undefined
       ? process.env
       : validateCommandEnvironment(spec.env);
-    const child = spawn(spec.command, spec.args, {
+    const child = spawnTrustedCommand(spec, {
       env: commandEnv,
       shell: false,
       stdio: [input === undefined ? (stdin || "inherit") : "pipe", stdout || "ignore", stderr || "ignore"]
@@ -555,6 +568,25 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
       child.stdin.end(input);
     }
   });
+}
+
+function spawnTrustedCommand(spec, options) {
+  const args = spec.args;
+  switch (spec.command) {
+    case "codesign": return spawn("codesign", args, options);
+    case "docker": return spawn("docker", args, options);
+    case "explorer.exe": return spawn("explorer.exe", args, options);
+    case "hdiutil": return spawn("hdiutil", args, options);
+    case "open": return spawn("open", args, options);
+    case "powershell.exe":
+      return spawn("powershell.exe", windowsPowerShellArgs(spec.operation), options);
+    case "sg": return spawn("sg", args, options);
+    case "spctl": return spawn("spctl", args, options);
+    case "sudo": return spawn("sudo", args, options);
+    case "wsl.exe": return spawn("wsl.exe", args, options);
+    case "xdg-open": return spawn("xdg-open", args, options);
+    default: throw new Error("SpaceApp refused to execute an untrusted command.");
+  }
 }
 
 function validateCommandEnvironment(commandEnvironment) {
@@ -576,7 +608,7 @@ function openBrowser(url, platform, execute, io) {
     return execute({ command: "open", args: [url] }, io);
   }
   if (platform === "win32") {
-    return execute({ command: "cmd", args: ["/d", "/s", "/c", "start", "", url] }, io);
+    return execute({ command: "explorer.exe", args: [url] }, io);
   }
   return execute({ command: "xdg-open", args: [url] }, io);
 }
