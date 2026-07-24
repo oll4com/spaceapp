@@ -60,46 +60,81 @@ test("security workflow scans secrets, dependencies, source, images, and emits a
   assert.deepEqual(
     [...security.matchAll(/uses:\s+aquasecurity\/trivy-action@([^\s]+)/g)]
       .map((match) => match[1]),
-    ["v0.36.0", "v0.36.0"]
+    [
+      "ed142fd0673e97e23eac54620cfb913e5ce36c25",
+      "ed142fd0673e97e23eac54620cfb913e5ce36c25",
+      "ed142fd0673e97e23eac54620cfb913e5ce36c25",
+      "ed142fd0673e97e23eac54620cfb913e5ce36c25"
+    ]
   );
   assert.equal(
     [...security.matchAll(/limit-severities-for-sarif:\s+true/g)].length,
     2
   );
-  assert.match(security, /severity: HIGH,CRITICAL/);
+  assert.equal(
+    [...security.matchAll(/severity: MEDIUM,HIGH,CRITICAL/g)].length,
+    2
+  );
+  assert.equal([...security.matchAll(/ignore-unfixed: true/g)].length, 2);
+  assert.equal([...security.matchAll(/exit-code: "1"/g)].length, 2);
+  assert.equal([...security.matchAll(/format: json/g)].length, 2);
+  assert.equal([...security.matchAll(/ignore-unfixed: false/g)].length, 2);
+  assert.equal([...security.matchAll(/exit-code: "0"/g)].length, 2);
+  assert.match(security, /UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL/);
+  assert.match(security, /trivy-full-[^\s]*\.json/);
+  assert.match(security, /GITHUB_STEP_SUMMARY/);
+  assert.match(security, /actions\/upload-artifact/);
   assert.match(security, /anchore\/sbom-action/);
   assert.match(security, /github\/codeql-action\/analyze/);
   assert.match(security, /actions\/dependency-review-action/);
 });
 
-test("release is manual, candidate-only, and builds exclusively from the sanitized export", async () => {
+test("release is manual-only on main and publishes only approved sanitized artifacts", async () => {
   const release = await workflow("release.yml");
   const trigger = release.match(/\non:\n([\s\S]*?)\npermissions:/)?.[1] || "";
 
-  assert.match(release, /^name: Public release candidate$/m);
+  assert.match(release, /^name: Public OIDC release$/m);
   assert.doesNotMatch(release, /alpha/i);
   assert.doesNotMatch(release, /--allow-review-required/);
   assert.match(trigger, /workflow_dispatch:/);
   assert.doesNotMatch(trigger, /pull_request:|schedule:|\n  push:/);
   assert.match(release, /permissions:\n  contents: read/);
+  assert.match(release, /github\.ref == 'refs\/heads\/main'/);
   assert.match(release, /node scripts\/public-export\.mjs/g);
   assert.match(release, /context: \$\{\{ runner\.temp \}\}\/spaceapp-public-export/);
   assert.match(release, /working-directory: \$\{\{ runner\.temp \}\}\/spaceapp-public-export/g);
   assert.match(release, /actions\/upload-artifact/);
   assert.match(release, /push: false/);
-  assert.doesNotMatch(release, /npm publish|docker\/login-action|gh release|push: true/);
-  assert.doesNotMatch(release, /packages: write|contents: write|id-token: write/);
-  assert.doesNotMatch(release, /\npublish:/);
-  assert.doesNotMatch(release, /environment:/);
+  assert.match(release, /node scripts\/release-artifact-preflight\.mjs/);
+  assert.match(release, /environment: npm/g);
+  assert.match(release, /packages: write/g);
+  assert.match(release, /id-token: write/g);
+  assert.doesNotMatch(release, /contents: write/);
+  assert.match(release, /docker\/login-action/);
+  assert.match(release, /platforms: linux\/amd64,linux\/arm64/);
+  assert.match(release, /ghcr\.io\/oll4com\/spaceapp-\$\{\{ matrix\.target \}\}:\$\{\{ inputs\.version \}\}/);
+  assert.match(release, /push: true/);
+  assert.match(release, /sbom: true/);
+  assert.match(release, /provenance: mode=max/);
+  assert.match(release, /npm install --global --ignore-scripts --no-audit --no-fund npm@11\.18\.0/);
+  assert.match(release, /npm pkg set "gitHead=\$\{\{ github\.sha \}\}" -w run-spaceapp/);
+  assert.match(release, /npm publish "\$RUNNER_TEMP\/release-artifacts\/run-spaceapp-\$\{\{ inputs\.version \}\}\.tgz" --tag next --provenance/);
+  assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|npm publish \.\/packages\/run-spaceapp/);
+  assert.match(release, /actions\/download-artifact/);
+  assert.match(release, /spaceapp-public-export-\$\{\{ inputs\.version \}\}\.tar\.gz/);
 });
 
-test("workflow actions use versioned references and avoid privileged pull-request triggers", async () => {
+test("workflow actions use full commit SHA pins with version comments", async () => {
   for (const name of ["ci.yml", "platform-matrix.yml", "containers.yml", "security.yml", "release.yml"]) {
     const content = await workflow(name);
     assert.doesNotMatch(content, /pull_request_target:/);
-    for (const reference of content.matchAll(/uses:\s+([^\s]+)/g)) {
-      assert.match(reference[1], /@(?:v\d+(?:\.\d+\.\d+)?|0\.\d+\.\d+)$/);
-      assert.doesNotMatch(reference[1], /@(main|master|latest)$/);
+    for (const reference of content.matchAll(/uses:\s+([^@\s]+)@([0-9a-f]{40})(?:\s+#\s+([^\s]+))?/g)) {
+      assert.match(reference[1], /^[\w.-]+\/[\w./-]+$/);
+      assert.match(reference[2], /^[0-9a-f]{40}$/);
+      assert.match(reference[3] || "", /^v?\d+\.\d+\.\d+$/);
     }
+    const usesCount = [...content.matchAll(/uses:\s+/g)].length;
+    const pinnedCount = [...content.matchAll(/uses:\s+[^@\s]+@[0-9a-f]{40}\s+#\s+v?\d+\.\d+\.\d+/g)].length;
+    assert.equal(pinnedCount, usesCount, `${name} must pin every action by full commit SHA`);
   }
 });

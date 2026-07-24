@@ -3,6 +3,8 @@ services:
     image: ghcr.io/oll4com/spaceapp-core:${SPACEAPP_IMAGE_TAG}
     restart: unless-stopped
     init: true
+    security_opt:
+      - no-new-privileges:true
     mem_limit: "${SPACEAPP_CORE_MEMORY_LIMIT}"
     cpus: "${SPACEAPP_CORE_CPU_LIMIT}"
     environment:
@@ -70,6 +72,8 @@ services:
     image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}
     restart: unless-stopped
     init: true
+    security_opt:
+      - no-new-privileges:true
     mem_limit: "${SPACEAPP_CLI_MEMORY_LIMIT}"
     cpus: "${SPACEAPP_CLI_CPU_LIMIT}"
     environment:
@@ -90,6 +94,8 @@ services:
     profiles: ["standard"]
     restart: unless-stopped
     init: true
+    security_opt:
+      - no-new-privileges:true
     mem_limit: "${SPACEAPP_BROWSER_MEMORY_LIMIT}"
     cpus: "${SPACEAPP_BROWSER_CPU_LIMIT}"
     environment:
