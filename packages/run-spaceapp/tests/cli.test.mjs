@@ -17,9 +17,9 @@ function capture() {
   return { stream, value: () => value };
 }
 
-const eightGigabyteLightHost = Object.freeze({
+const eightGigabyteClassLinuxGuest = Object.freeze({
   cpuCount: 4,
-  totalMemoryBytes: 8 * 1024 ** 3,
+  totalMemoryBytes: 8_325_902_336,
   freeDiskBytes: 15 * 1024 ** 3
 });
 
@@ -56,7 +56,7 @@ test("init emits a one-time setup token without placing it in config", async () 
   assert.doesNotMatch(second.value(), /One-time setup token:/);
 });
 
-test("install auto-selects light on an 8 GB host and completes without opening when requested", async () => {
+test("install accepts the usable memory reported by an 8 GB-class Linux guest", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-light-"));
   const stdout = capture();
   const stderr = capture();
@@ -67,7 +67,7 @@ test("install auto-selects light on an 8 GB host and completes without opening w
     stdout: stdout.stream,
     stderr: stderr.stream,
     stdin: Readable.from([]),
-    inspectResources: async () => eightGigabyteLightHost,
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
     execute: async (spec) => {
       calls.push(spec);
       return 0;
@@ -76,7 +76,7 @@ test("install auto-selects light on an 8 GB host and completes without opening w
 
   assert.equal(await run(["install", "--profile", "auto", "--no-open"], options), 0);
   assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
-  assert.match(stdout.value(), /Selected profile: light.*8 GB/i);
+  assert.match(stdout.value(), /Selected profile: light.*7\.7 GB/i);
   assert.match(stdout.value(), /SpaceApp is running at http:\/\/127\.0\.0\.1:4911/);
   assert.deepEqual(calls.map((call) => [call.command, ...call.args.slice(-2)]), [
     ["docker", "docker", "--version"].slice(1),
@@ -110,7 +110,7 @@ test("install honors an explicit standard profile and uses the native browser op
       stdout: capture().stream,
       stderr: capture().stream,
       stdin: Readable.from([]),
-      inspectResources: async () => eightGigabyteLightHost,
+      inspectResources: async () => eightGigabyteClassLinuxGuest,
       execute: async (spec) => {
         calls.push([spec.command, ...spec.args]);
         return 0;

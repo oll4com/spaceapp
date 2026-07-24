@@ -27,11 +27,13 @@ Start Docker and ensure the current non-root user can run `docker version` and
 `docker compose version`, then run:
 
 ```bash
-npm install -g run-spaceapp && spaceapp install
+sudo npm install -g run-spaceapp && spaceapp install
 ```
 
 Linux runs the containers directly through the host Docker Engine; SpaceApp
-does not create a second guest VM.
+does not create a second guest VM. The `sudo` applies only to the system-wide
+npm package installation; `spaceapp install` runs as the current non-root user
+so the installation remains in that user's config directory.
 
 ## macOS
 

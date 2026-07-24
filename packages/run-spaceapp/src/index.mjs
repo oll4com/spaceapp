@@ -22,7 +22,8 @@ import {
 const CONFIG_SCHEMA_VERSION = 2;
 const AUTO_LIGHT_MEMORY_THRESHOLD_BYTES = 12 * 1024 ** 3;
 const MIN_INSTALL_CPU_COUNT = 4;
-const MIN_INSTALL_MEMORY_BYTES = 8 * 1024 ** 3;
+const MIN_INSTALL_MEMORY_BYTES = 8_000_000_000;
+const MIN_INSTALL_MEMORY_LABEL = "8 GB";
 const MIN_INSTALL_FREE_DISK_BYTES = 15 * 1024 ** 3;
 const PROFILE_RUNTIME_SETTINGS = Object.freeze({
   light: Object.freeze({
@@ -129,7 +130,7 @@ export function installResourceChecks(resources) {
     {
       name: "Memory",
       ok: totalMemoryBytes >= MIN_INSTALL_MEMORY_BYTES,
-      detail: `${formatGibibytes(totalMemoryBytes)} GB available; ${formatGibibytes(MIN_INSTALL_MEMORY_BYTES)} GB required`
+      detail: `${formatGibibytes(totalMemoryBytes)} GB available; ${MIN_INSTALL_MEMORY_LABEL} required`
     },
     {
       name: "Free disk",

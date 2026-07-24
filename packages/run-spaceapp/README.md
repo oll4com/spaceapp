@@ -2,7 +2,13 @@
 
 Cross-platform Docker launcher for SpaceApp.
 
-Linux and macOS:
+Linux:
+
+```bash
+sudo npm install -g run-spaceapp && spaceapp install
+```
+
+macOS:
 
 ```bash
 npm install -g run-spaceapp && spaceapp install

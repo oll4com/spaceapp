@@ -74,9 +74,12 @@ Before updating:
 
 ```bash
 spaceapp backup
-npm install -g run-spaceapp
 spaceapp doctor
 ```
+
+Update the launcher with `sudo npm install -g run-spaceapp` on Linux when Node
+uses a system-wide npm prefix, or `npm install -g run-spaceapp` on macOS and
+Windows.
 
 Then select the exact target release:
 

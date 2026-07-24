@@ -37,7 +37,13 @@ Requirements:
 - recommended for the standard browser profile: 8 CPUs, 16 GB RAM, and
   25 GiB free disk.
 
-Linux and macOS:
+Linux:
+
+```bash
+sudo npm install -g run-spaceapp && spaceapp install
+```
+
+macOS:
 
 ```bash
 npm install -g run-spaceapp && spaceapp install

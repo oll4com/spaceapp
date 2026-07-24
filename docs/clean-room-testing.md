@@ -71,7 +71,13 @@ production repository as the clean-room workspace.
 ## Release-artifact acceptance
 
 Once npm and GHCR artifacts are published, repeat the test without a source
-checkout. Linux and macOS:
+checkout. Linux:
+
+```bash
+sudo npm install -g run-spaceapp && spaceapp install
+```
+
+macOS:
 
 ```bash
 npm install -g run-spaceapp && spaceapp install
