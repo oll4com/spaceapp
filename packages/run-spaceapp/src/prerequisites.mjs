@@ -177,10 +177,24 @@ async function ensureWindowsDocker({
         stderr.write("The Docker Desktop installer signature is not valid. Installation was stopped.\n");
         return { code: 1, reexecuted: false };
       }
-      const installCode = await execute({
-        command: installer,
-        args: ["install", "--user", "--quiet", "--accept-license"]
-      }, { stdin, stdout, stderr });
+      const installCode = await execute(
+        {
+          command: "powershell.exe",
+          args: [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$process = Start-Process -FilePath $args[0] -ArgumentList $args[1..($args.Count - 1)] -Wait -PassThru; exit $process.ExitCode",
+            installer,
+            "install",
+            "--user",
+            "--quiet",
+            "--accept-license"
+          ]
+        },
+        { stdin, stdout, stderr }
+      );
       if (installCode !== 0) {
         stderr.write("Docker Desktop installation failed before SpaceApp downloaded any images.\n");
         return { code: installCode, reexecuted: false };
@@ -201,7 +215,17 @@ async function ensureWindowsDocker({
   if (cliDirectory) {
     prependPath(env, cliDirectory);
   }
-  const launchCode = await launch({ command: application, args: [] });
+  const launchCode = await launch({
+    command: "powershell.exe",
+    args: [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Start-Process -FilePath $args[0]",
+      application
+    ]
+  });
   if (launchCode !== 0) {
     stderr.write("Docker Desktop is installed, but SpaceApp could not start it.\n");
     return { code: launchCode, reexecuted: false };

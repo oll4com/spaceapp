@@ -4,6 +4,7 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveLegacyAppRedirect } from "./server-routing.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const host = process.env.SPACE_WEB_HOST ?? "0.0.0.0";
@@ -404,13 +405,11 @@ function serveFile(request, response, filePath) {
 
 const server = http.createServer((request, response) => {
   const requestUrl = new URL(request.url ?? "/", "http://space.local");
-  if (
-    (requestUrl.pathname === "/app" || requestUrl.pathname === "/app/") &&
-    (request.method === "GET" || request.method === "HEAD")
-  ) {
+  const legacyAppRedirect = resolveLegacyAppRedirect(request.url, request.method);
+  if (legacyAppRedirect) {
     response.writeHead(308, {
       "cache-control": "no-store",
-      location: `/${requestUrl.search}`
+      location: legacyAppRedirect
     });
     response.end();
     return;

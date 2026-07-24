@@ -22,6 +22,20 @@ import {
 } from "./index.mjs";
 import { ensureDockerAvailable } from "./prerequisites.mjs";
 
+const trustedCommands = new Set([
+  "cmd",
+  "codesign",
+  "docker",
+  "hdiutil",
+  "open",
+  "powershell.exe",
+  "sg",
+  "spctl",
+  "sudo",
+  "wsl.exe",
+  "xdg-open"
+]);
+
 export async function run(argv, {
   env = process.env,
   platform = process.platform,
@@ -508,6 +522,14 @@ export async function readSecret(stdin, stdout, prompt, { mask = true } = {}) {
 
 export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
   return new Promise((resolve, reject) => {
+    if (!spec || typeof spec !== "object" || !trustedCommands.has(spec.command)) {
+      reject(new Error("SpaceApp refused to execute an untrusted command."));
+      return;
+    }
+    if (!Array.isArray(spec.args) || spec.args.some((argument) => typeof argument !== "string")) {
+      reject(new Error("SpaceApp command arguments must be strings."));
+      return;
+    }
     const child = spawn(spec.command, spec.args, {
       shell: false,
       stdio: [input === undefined ? (stdin || "inherit") : "pipe", stdout || "ignore", stderr || "ignore"]

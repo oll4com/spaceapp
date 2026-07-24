@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import test from "node:test";
-import { run } from "../src/cli.mjs";
+import { executeCommand, run } from "../src/cli.mjs";
 
 function capture() {
   let value = "";
@@ -21,6 +21,23 @@ const eightGigabyteClassLinuxGuest = Object.freeze({
   cpuCount: 4,
   totalMemoryBytes: 8_325_902_336,
   freeDiskBytes: 15 * 1024 ** 3
+});
+
+test("the process launcher rejects executables outside the fixed command allowlist", async () => {
+  await assert.rejects(
+    executeCommand({
+      command: "/tmp/untrusted-spaceapp-executable",
+      args: []
+    }),
+    /SpaceApp refused to execute an untrusted command/
+  );
+  await assert.rejects(
+    executeCommand({
+      command: "docker",
+      args: ["info", 123]
+    }),
+    /SpaceApp command arguments must be strings/
+  );
 });
 
 test("init emits a one-time setup token without placing it in config", async () => {

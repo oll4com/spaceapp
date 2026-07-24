@@ -46,9 +46,8 @@ test("Windows enables WSL2, installs signed Docker Desktop, and continues in one
         wslChecks += 1;
         return wslChecks === 1 ? 1 : 0;
       }
-      if (spec.command === "powershell.exe") return 0;
-      if (spec.command.endsWith("Docker Desktop Installer.exe")) {
-        installed = true;
+      if (spec.command === "powershell.exe") {
+        if (spec.args.includes("--accept-license")) installed = true;
         return 0;
       }
       return 0;
@@ -79,14 +78,23 @@ test("Windows enables WSL2, installs signed Docker Desktop, and continues in one
     spec.args.join(" ").includes("-Verb RunAs")
   ));
   assert.ok(calls.some((spec) =>
-    spec.command.endsWith("Docker Desktop Installer.exe") &&
+    spec.command === "powershell.exe" &&
+    spec.args.join(" ").includes("Start-Process") &&
+    spec.args.some((argument) => argument.endsWith("Docker Desktop Installer.exe")) &&
     spec.args.includes("--user") &&
     spec.args.includes("--quiet") &&
     spec.args.includes("--accept-license")
   ));
   assert.deepEqual(launches, [{
-    command: "C:\\Users\\Admin\\AppData\\Local\\Programs\\DockerDesktop\\Docker Desktop.exe",
-    args: []
+    command: "powershell.exe",
+    args: [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Start-Process -FilePath $args[0]",
+      "C:\\Users\\Admin\\AppData\\Local\\Programs\\DockerDesktop\\Docker Desktop.exe"
+    ]
   }]);
   assert.match(stdout.value(), /Docker Desktop is required/i);
   assert.match(stdout.value(), /Docker Desktop is ready/i);
