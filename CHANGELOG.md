@@ -5,6 +5,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-24
+
+- accept nominal 8 GB hosts whose guest operating system reports slightly
+  less than 8 GiB;
+- report the optional browser host as disabled in the light profile so
+  readiness and container health become green without starting Chromium.
+
 ## [0.1.0] - 2026-07-23
 
 Initial public release:
@@ -19,5 +26,6 @@ Initial public release:
 - portable backup, restore, update, and rollback commands;
 - no telemetry by default.
 
-[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.2
 [0.1.0]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.0
