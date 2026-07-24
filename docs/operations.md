@@ -84,7 +84,7 @@ Windows.
 Then select the exact target release:
 
 ```bash
-spaceapp update 0.1.4
+spaceapp update 0.1.5
 spaceapp status
 ```
 
