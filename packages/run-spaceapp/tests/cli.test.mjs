@@ -74,6 +74,7 @@ test("the process launcher dispatches only hard-coded executable literals", asyn
     "sg",
     "spctl",
     "sudo",
+    "winget.exe",
     "wsl.exe",
     "xdg-open"
   ]) {

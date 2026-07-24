@@ -61,12 +61,16 @@ npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
 ```
 
 If Docker is missing, the launcher asks you to review and accept Docker
-Desktop's terms, requests a Windows UAC approval only when WSL2 must be
-enabled, downloads Docker Desktop from Docker's official distribution service,
-verifies its Authenticode signature, installs it for the current user, starts
-it, and waits until it is ready. Windows may request one restart after WSL2 is
-enabled; rerun the same command afterward. SpaceApp reuses Docker Desktop's
-WSL2 Linux environment and does not install a second full virtual machine.
+Desktop's terms, requests a Windows UAC approval when WSL2 or the package
+installation requires it, and prefers the official Docker Desktop package
+through Windows Package Manager. Windows Package Manager verifies the
+installer against its hash-pinned `Docker.DockerDesktop` manifest. If Windows
+Package Manager is unavailable or fails, the launcher downloads Docker Desktop
+from Docker's official distribution service and verifies its Authenticode
+signature before running it. The launcher then starts Docker Desktop and waits
+until it is ready. Windows may request a UAC approval or one restart; rerun the
+same command afterward. SpaceApp reuses Docker Desktop's WSL2 Linux environment
+and does not install a second full virtual machine.
 
 ## Installation profiles
 
