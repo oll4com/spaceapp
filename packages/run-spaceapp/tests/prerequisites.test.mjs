@@ -200,6 +200,76 @@ test("Ubuntu installs Docker Engine from Docker's official repository and re-ent
     spec.command === "sg" &&
     spec.args[0] === "docker" &&
     spec.args[1] === "-c" &&
-    spec.args[2].includes("spaceapp install --profile auto")
+    spec.args[2].includes("SPACEAPP_PREREQUISITES_BOOTSTRAPPED=1") &&
+    spec.args[2].includes("'install' '--profile' 'auto'")
   ));
+});
+
+test("Fedora uses Docker's official DNF repository and starts the engine", async () => {
+  const calls = [];
+  let serviceStarted = false;
+
+  const result = await ensureDockerAvailable({
+    platform: "linux",
+    arch: "x64",
+    env: { USER: "spaceuser" },
+    stdin: Readable.from([]),
+    stdout: capture().stream,
+    stderr: capture().stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker") return serviceStarted ? 0 : 127;
+      if (spec.command === "sudo" && spec.args.includes("systemctl")) {
+        serviceStarted = true;
+      }
+      return 0;
+    },
+    download: async () => {},
+    launch: async () => 0,
+    pathExists: async () => true,
+    sleep: async () => {},
+    osRelease: { ID: "fedora", VERSION_ID: "42" },
+    installArgs: { requestedProfile: "auto", noOpen: true }
+  });
+
+  assert.deepEqual(result, { code: 0, reexecuted: false });
+  assert.ok(calls.some((spec) =>
+    spec.command === "sudo" &&
+    spec.args.join(" ") ===
+      "dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo"
+  ));
+  assert.ok(calls.some((spec) =>
+    spec.command === "sudo" &&
+    spec.args.join(" ") ===
+      "dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
+  ));
+});
+
+test("Linux rejects an unsafe username before granting docker-group access", async () => {
+  const calls = [];
+  const stderr = capture();
+
+  const result = await ensureDockerAvailable({
+    platform: "linux",
+    arch: "x64",
+    env: { USER: "user;touch-pwned" },
+    stdin: Readable.from([]),
+    stdout: capture().stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker" && spec.args.includes("info")) return 1;
+      return 0;
+    },
+    download: async () => {},
+    launch: async () => 0,
+    pathExists: async () => true,
+    sleep: async () => {},
+    installArgs: { requestedProfile: "auto", noOpen: true }
+  });
+
+  assert.deepEqual(result, { code: 1, reexecuted: false });
+  assert.equal(calls.some((spec) => spec.args?.includes("user;touch-pwned")), false);
+  assert.equal(calls.some((spec) => spec.command === "sg"), false);
+  assert.match(stderr.value(), /valid non-root Linux username/i);
 });

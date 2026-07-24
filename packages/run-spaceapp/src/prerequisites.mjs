@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, win32 } from "node:path";
 import process from "node:process";
@@ -7,6 +7,7 @@ import { createInterface } from "node:readline/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const WINDOWS_DOCKER_DOWNLOADS = Object.freeze({
@@ -290,22 +291,121 @@ async function ensureMacDocker({
   return { code: 1, reexecuted: false };
 }
 
-async function ensureLinuxDocker() {
-  return { code: 1, reexecuted: false };
+async function ensureLinuxDocker({
+  arch,
+  env,
+  stdin,
+  stdout,
+  stderr,
+  execute,
+  download,
+  osRelease,
+  installArgs
+}) {
+  const cliAvailable = await dockerCliAndComposeAreAvailable(execute);
+  if (!cliAvailable) {
+    const release = osRelease ?? await readLinuxOsRelease();
+    stdout.write(`Docker Engine is required and is not installed. Installing it for ${release.ID}...\n`);
+    const installCode = await installLinuxDockerEngine({
+      arch,
+      release,
+      stdin,
+      stdout,
+      stderr,
+      execute,
+      download
+    });
+    if (installCode !== 0) {
+      return { code: installCode, reexecuted: false };
+    }
+  } else {
+    stdout.write("Docker Engine is installed but is not ready. Starting it now...\n");
+  }
+
+  const startCode = await execute(
+    { command: "sudo", args: ["systemctl", "enable", "--now", "docker"] },
+    { stdin, stdout, stderr }
+  );
+  if (startCode !== 0) {
+    stderr.write("Docker Engine was installed, but its system service could not be started.\n");
+    return { code: startCode, reexecuted: false };
+  }
+  if (await dockerIsReady(execute)) {
+    stdout.write("Docker Engine is ready.\n");
+    return { code: 0, reexecuted: false };
+  }
+  if (env.SPACEAPP_PREREQUISITES_BOOTSTRAPPED === "1") {
+    stderr.write("Docker Engine is running, but the current user still cannot access it.\n");
+    return { code: 1, reexecuted: false };
+  }
+
+  const username = String(env.SUDO_USER || env.USER || "");
+  if (!/^[A-Za-z0-9._-]+$/.test(username) || username === "root") {
+    stderr.write("A valid non-root Linux username is required for Docker Engine access.\n");
+    return { code: 1, reexecuted: false };
+  }
+  const accepted = await confirmQuestion({
+    stdin,
+    stdout,
+    question: [
+      "Docker's official post-install flow uses the docker group.",
+      "Membership grants root-level privileges on this host.",
+      `Add ${username} to the docker group and continue? [y/N] `
+    ].join("\n")
+  });
+  if (!accepted) {
+    stderr.write("Docker group membership was not changed.\n");
+    return { code: 1, reexecuted: false };
+  }
+  const groupCode = await execute(
+    { command: "sudo", args: ["usermod", "-aG", "docker", username] },
+    { stdin, stdout, stderr }
+  );
+  if (groupCode !== 0) {
+    return { code: groupCode, reexecuted: false };
+  }
+
+  const reentryCommand = linuxReentryCommand(installArgs);
+  stdout.write("Docker Engine is ready. Continuing SpaceApp installation with the new group membership...\n");
+  const reentryCode = await execute(
+    { command: "sg", args: ["docker", "-c", reentryCommand] },
+    { stdin, stdout, stderr }
+  );
+  return { code: reentryCode, reexecuted: true };
 }
 
 async function confirmDesktopInstall({ platformName, stdin, stdout }) {
+  return confirmQuestion({
+    stdin,
+    stdout,
+    question:
+      `Review the Docker Desktop terms at ${DOCKER_TERMS_URL}\n` +
+      `Install Docker Desktop for ${platformName} and accept those terms? [y/N] `
+  });
+}
+
+async function confirmQuestion({ stdin, stdout, question }) {
   const readline = createInterface({ input: stdin, output: stdout, terminal: Boolean(stdin.isTTY) });
   try {
-    const answer = await readline.question(
-      `Review the Docker Desktop terms at ${DOCKER_TERMS_URL}\nInstall Docker Desktop for ${platformName} and accept those terms? [y/N] `
-    );
+    const answer = await readline.question(question);
     return /^(?:y|yes)$/i.test(answer.trim());
   } catch {
     return false;
   } finally {
     readline.close();
   }
+}
+
+async function dockerCliAndComposeAreAvailable(execute) {
+  for (const spec of [
+    { command: "docker", args: ["--version"] },
+    { command: "docker", args: ["compose", "version"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 async function dockerIsReady(execute) {
@@ -319,6 +419,160 @@ async function dockerIsReady(execute) {
     }
   }
   return true;
+}
+
+async function installLinuxDockerEngine({
+  arch,
+  release,
+  stdin,
+  stdout,
+  stderr,
+  execute,
+  download
+}) {
+  const id = String(release?.ID || "").toLowerCase();
+  if (id === "ubuntu" || id === "debian") {
+    return installAptDockerEngine({
+      arch,
+      id,
+      codename: release.VERSION_CODENAME || release.UBUNTU_CODENAME,
+      stdin,
+      stdout,
+      stderr,
+      execute,
+      download
+    });
+  }
+  if (id === "fedora" || id === "rhel" || id === "centos") {
+    return installDnfDockerEngine({ id, stdin, stdout, stderr, execute });
+  }
+  stderr.write(
+    `Automatic Docker Engine installation is not yet supported for Linux distribution "${id || "unknown"}". ` +
+    "Install Docker Engine and the Compose plugin from https://docs.docker.com/engine/install/ and rerun the same command.\n"
+  );
+  return 1;
+}
+
+async function installAptDockerEngine({
+  arch,
+  id,
+  codename,
+  stdin,
+  stdout,
+  stderr,
+  execute,
+  download
+}) {
+  const dockerArch = { x64: "amd64", arm64: "arm64" }[arch];
+  if (!dockerArch || !/^[a-z0-9._-]+$/.test(String(codename || ""))) {
+    stderr.write("This Debian/Ubuntu architecture or release codename is not supported automatically.\n");
+    return 1;
+  }
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "spaceapp-docker-"));
+  const signingKey = join(temporaryRoot, "docker.asc");
+  const repositoryFile = join(temporaryRoot, "docker.list");
+  const repositoryBase = `https://download.docker.com/linux/${id}`;
+  try {
+    await download(`${repositoryBase}/gpg`, signingKey);
+    await writeFile(
+      repositoryFile,
+      `deb [arch=${dockerArch} signed-by=/etc/apt/keyrings/docker.asc] ${repositoryBase} ${codename} stable\n`,
+      { mode: 0o600, flag: "wx" }
+    );
+    for (const spec of [
+      { command: "sudo", args: ["install", "-m", "0755", "-d", "/etc/apt/keyrings"] },
+      { command: "sudo", args: ["install", "-m", "0644", signingKey, "/etc/apt/keyrings/docker.asc"] },
+      {
+        command: "sudo",
+        args: ["install", "-m", "0644", repositoryFile, "/etc/apt/sources.list.d/docker.list"]
+      },
+      { command: "sudo", args: ["apt-get", "update"] },
+      {
+        command: "sudo",
+        args: [
+          "apt-get",
+          "install",
+          "-y",
+          "docker-ce",
+          "docker-ce-cli",
+          "containerd.io",
+          "docker-buildx-plugin",
+          "docker-compose-plugin"
+        ]
+      }
+    ]) {
+      const code = await execute(spec, { stdin, stdout, stderr });
+      if (code !== 0) {
+        return code;
+      }
+    }
+    return 0;
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+async function installDnfDockerEngine({ id, stdin, stdout, stderr, execute }) {
+  const repositoryUrl = `https://download.docker.com/linux/${id}/docker-ce.repo`;
+  const repositoryArgs = id === "fedora"
+    ? ["dnf", "config-manager", "addrepo", "--from-repofile", repositoryUrl]
+    : ["dnf", "config-manager", "--add-repo", repositoryUrl];
+  for (const spec of [
+    { command: "sudo", args: ["dnf", "-y", "install", "dnf-plugins-core"] },
+    { command: "sudo", args: repositoryArgs },
+    {
+      command: "sudo",
+      args: [
+        "dnf",
+        "-y",
+        "install",
+        "docker-ce",
+        "docker-ce-cli",
+        "containerd.io",
+        "docker-buildx-plugin",
+        "docker-compose-plugin"
+      ]
+    }
+  ]) {
+    const code = await execute(spec, { stdin, stdout, stderr });
+    if (code !== 0) {
+      return code;
+    }
+  }
+  return 0;
+}
+
+async function readLinuxOsRelease() {
+  const content = await readFile("/etc/os-release", "utf8");
+  const values = {};
+  for (const line of content.split(/\r?\n/)) {
+    const match = /^([A-Z_]+)=(.*)$/.exec(line);
+    if (!match) continue;
+    const raw = match[2].trim();
+    values[match[1]] = raw.replace(/^(['"])(.*)\1$/, "$2");
+  }
+  return values;
+}
+
+function linuxReentryCommand({ requestedProfile = "auto", noOpen = false } = {}) {
+  if (!["auto", "light", "standard"].includes(requestedProfile)) {
+    throw new Error("Invalid SpaceApp profile for Docker group re-entry.");
+  }
+  const entrypoint = fileURLToPath(new URL("../bin/spaceapp.mjs", import.meta.url));
+  return [
+    "/usr/bin/env",
+    "SPACEAPP_PREREQUISITES_BOOTSTRAPPED=1",
+    process.execPath,
+    entrypoint,
+    "install",
+    "--profile",
+    requestedProfile,
+    ...(noOpen ? ["--no-open"] : [])
+  ].map(shellQuote).join(" ");
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
 async function waitForDocker({ execute, sleep }) {
