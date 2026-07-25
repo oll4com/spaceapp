@@ -123,7 +123,12 @@ export async function run(argv, {
   }
   if (command === "open") {
     assertNoArgs(args, "open");
-    return openBrowser(`http://${config.bindHost}:${config.port}`, platform, execute, { stdin, stdout, stderr });
+    const url = `http://${config.bindHost}:${config.port}`;
+    const openCode = await openBrowser(url, platform, execute, { stdin, stdout, stderr });
+    if (openCode !== 0) {
+      stderr.write(`Could not open SpaceApp automatically. Open ${url} manually.\n`);
+    }
+    return 0;
   }
   if (command === "doctor") {
     assertNoArgs(args, "doctor");
