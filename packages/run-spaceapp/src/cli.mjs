@@ -60,7 +60,8 @@ export async function run(argv, {
   ensureDocker = ensureDockerAvailable,
   prepareDockerPath = prepareDockerCliPath,
   request = globalThis.fetch,
-  sleep = wait
+  sleep = wait,
+  persistSetupToken = writeSetupToken
 } = {}) {
   await prepareDockerPath({ platform, env });
   const [command = "help", ...args] = argv;
@@ -89,7 +90,8 @@ export async function run(argv, {
       inspectResources,
       ensureDocker,
       request,
-      sleep
+      sleep,
+      persistSetupToken
     });
   }
   if (command === "init") {
@@ -253,7 +255,8 @@ async function installCommand(args, {
   inspectResources,
   ensureDocker,
   request,
-  sleep
+  sleep,
+  persistSetupToken
 }) {
   const { requestedProfile, noOpen } = parseInstallArgs(args);
   const resources = await inspectResources(root);
@@ -372,7 +375,15 @@ async function installCommand(args, {
       );
       return rotateCode;
     }
-    await writeSetupToken(root, setupToken);
+    try {
+      await persistSetupToken(root, setupToken);
+    } catch {
+      stderr.write(
+        "SpaceApp accepted a new setup token, but it could not be saved locally.\n" +
+        'Run "spaceapp owner rotate-setup-token" to obtain a usable token.\n'
+      );
+      return 1;
+    }
   }
 
   stdout.write(`SpaceApp is ready at ${url}\n`);

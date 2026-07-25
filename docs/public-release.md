@@ -106,8 +106,13 @@ If `0.1.8` fails after promotion:
 
 ```bash
 npm dist-tag add run-spaceapp@0.1.6 latest
+npm dist-tag add run-spaceapp@0.1.6 next
 npm deprecate run-spaceapp@0.1.8 "Withdrawn after release verification; use 0.1.6 until a corrected release is available."
+npm view run-spaceapp dist-tags --json
 ```
+
+Verify that both `latest` and `next` report `0.1.6`. Exact version artifacts
+remain immutable and must not be deleted or overwritten.
 
 The failed `0.1.4` staging run already produced immutable GHCR artifacts, so
 preserve those and the unpromoted `0.1.7` artifacts as evidence. Do not delete

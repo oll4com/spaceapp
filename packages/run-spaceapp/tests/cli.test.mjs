@@ -254,6 +254,47 @@ test("install retains the host token and prints no secret when database rotation
   assert.match(stderr.value(), /fresh owner setup token could not be created/i);
 });
 
+test("install explains recovery when the database accepts a token that cannot be saved locally", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-token-write-failed-"));
+  await run(["init"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: capture().stream,
+    stderr: capture().stream,
+    stdin: Readable.from([]),
+    prepareDockerPath: async () => null,
+    execute: async () => 0
+  });
+  const initialToken = (await readFile(join(root, "secrets", "setup-token"), "utf8")).trim();
+  const stdout = capture();
+  const stderr = capture();
+
+  assert.equal(await run(["install", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    request: readyUnclaimedRequest,
+    sleep: async () => {},
+    execute: async () => 0,
+    persistSetupToken: async () => {
+      throw new Error("read-only filesystem");
+    }
+  }), 1);
+
+  assert.equal(
+    (await readFile(join(root, "secrets", "setup-token"), "utf8")).trim(),
+    initialToken
+  );
+  assert.doesNotMatch(stdout.value(), /One-time setup token:/);
+  assert.match(stderr.value(), /accepted a new setup token.*could not be saved locally/is);
+  assert.match(stderr.value(), /spaceapp owner rotate-setup-token/i);
+});
+
 test("install does not rotate or print a setup token after the owner is already claimed", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-claimed-"));
   const stdout = capture();

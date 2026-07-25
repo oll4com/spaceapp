@@ -758,7 +758,7 @@ async function firstExisting(paths, pathExists) {
 
 function prependPath(env, directory, platform = process.platform) {
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
-  const pathDelimiter = platform === "win32" ? ";" : ":";
+  const pathDelimiter = platform === "win32" ? win32.delimiter : posix.delimiter;
   const entries = String(env[pathKey] || "").split(pathDelimiter).filter(Boolean);
   if (!entries.includes(directory)) {
     env[pathKey] = [directory, ...entries].join(pathDelimiter);
