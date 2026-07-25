@@ -211,6 +211,49 @@ test("Windows prefers hash-verified winget Docker Desktop installation over the 
   assert.equal(stderr.value(), "");
 });
 
+test("Windows explains first-run Docker onboarding and keeps waiting for the user to finish it", async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  let sleepCalls = 0;
+
+  const result = await ensureDockerAvailable({
+    platform: "win32",
+    arch: "x64",
+    env: {
+      LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local",
+      Path: "C:\\Windows\\System32"
+    },
+    stdin: Readable.from([]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker") return 127;
+      if (spec.command === "wsl.exe") return 0;
+      return 0;
+    },
+    launch: async () => 0,
+    pathExists: async (path) =>
+      path.endsWith("Docker Desktop.exe") ||
+      path.endsWith("resources\\bin"),
+    sleep: async () => {
+      sleepCalls += 1;
+    }
+  });
+
+  assert.deepEqual(result, { code: 1, reexecuted: false });
+  assert.equal(sleepCalls, 300);
+  assert.ok(calls.some((spec) =>
+    spec.command === "docker" &&
+    spec.args.join(" ") === "desktop start --detach"
+  ));
+  assert.match(stdout.value(), /Welcome to Docker/i);
+  assert.match(stdout.value(), /Skip/i);
+  assert.match(stdout.value(), /continue automatically/i);
+  assert.match(stderr.value(), /first-run setup/i);
+});
+
 test("Windows does not install Docker Desktop when its license is declined", async () => {
   let downloaded = false;
   const result = await ensureDockerAvailable({

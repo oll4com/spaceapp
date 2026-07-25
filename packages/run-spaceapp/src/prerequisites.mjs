@@ -262,6 +262,15 @@ async function ensureWindowsDocker({
   if (cliDirectory) {
     prependPath(env, cliDirectory);
   }
+  stdout.write(
+    "Opening Docker Desktop for its first-run setup.\n" +
+    "If Docker shows \"Welcome to Docker\", select \"Skip\" in the top-right (or sign in), and accept any remaining Docker prompt.\n" +
+    "Keep this terminal open; SpaceApp will continue automatically when Docker is ready (up to 10 minutes).\n"
+  );
+  await execute(
+    { command: "docker", args: ["desktop", "start", "--detach"] },
+    { stdin, stdout: null, stderr: null }
+  );
   const launchCode = await launch({
     operation: "start-docker-desktop",
     env: {
@@ -272,12 +281,12 @@ async function ensureWindowsDocker({
     stderr.write("Docker Desktop is installed, but SpaceApp could not start it.\n");
     return { code: launchCode, reexecuted: false };
   }
-  if (await waitForDocker({ execute, sleep })) {
+  if (await waitForDocker({ execute, sleep, attempts: 300 })) {
     stdout.write("Docker Desktop is ready.\n");
     return { code: 0, reexecuted: false };
   }
   stderr.write(
-    "Docker Desktop was installed but did not become ready. Complete any Docker Desktop prompt or restart Windows if requested, then run the same SpaceApp command again.\n"
+    "Docker Desktop did not become ready after 10 minutes. Open Docker Desktop and complete its first-run setup (select \"Skip\" on \"Welcome to Docker\" or sign in), restart Windows if requested, then run \"spaceapp install\" again.\n"
   );
   return { code: 1, reexecuted: false };
 }
@@ -695,8 +704,8 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-async function waitForDocker({ execute, sleep }) {
-  for (let attempt = 0; attempt < 90; attempt += 1) {
+async function waitForDocker({ execute, sleep, attempts = 90 }) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (await dockerIsReady(execute)) {
       return true;
     }
