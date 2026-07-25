@@ -56,8 +56,9 @@ npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
 `spaceapp install` creates the local configuration and fresh secrets, installs
 Docker when it is missing, checks the host, selects a resource profile,
 downloads the images, starts the stack, and opens the app. It is idempotent,
-so running the same command again does not replace an existing setup token or
-secrets.
+so running the same command again preserves data and long-lived secrets. While
+the owner is still unclaimed, every successful install issues a fresh
+15-minute setup token that is accepted by the running database.
 
 The automatic prerequisite flow uses official Docker sources: Docker Desktop
 through Windows Package Manager's hash-pinned manifest on Windows (with a
@@ -84,11 +85,12 @@ space as they are downloaded, while Docker Desktop's virtual disk grows with
 written data up to its configured limit rather than allocating that limit
 immediately.
 
-On a new installation the command prints a one-time setup token. Enter it in
-the first browser page, create the owner, register only the host workspaces
-SpaceApp may access, and connect providers through official login flows or
-masked credential input. The default address is `http://127.0.0.1:4911`; do
-not expose it directly to an untrusted network.
+After the application passes readiness checks, the command prints a one-time
+setup token and exact paste instructions. Enter it in the first browser page,
+create the owner, register only the host workspaces SpaceApp may access, and
+connect providers through official login flows or masked credential input. If
+the token expires, run `spaceapp owner rotate-setup-token`. The default address
+is `http://127.0.0.1:4911`; do not expose it directly to an untrusted network.
 
 See [Getting started](docs/getting-started.md) for platform-specific paths,
 workspace examples, the first-owner flow, and current source-checkout testing.
@@ -117,7 +119,7 @@ and telemetry is disabled by default.
 spaceapp status
 spaceapp logs
 spaceapp backup
-spaceapp update 0.1.7
+spaceapp update 0.1.8
 spaceapp rollback
 spaceapp down
 spaceapp uninstall

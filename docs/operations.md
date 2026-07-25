@@ -84,7 +84,7 @@ Windows.
 Then select the exact target release:
 
 ```bash
-spaceapp update 0.1.7
+spaceapp update 0.1.8
 spaceapp status
 ```
 
@@ -127,6 +127,10 @@ files, secrets, and Docker volumes:
 ```bash
 spaceapp uninstall
 ```
+
+The command reports progress and is safe to repeat. It does not remove the
+global launcher package. Remove that separately with
+`npm uninstall -g run-spaceapp` only after the runtime result is successful.
 
 Remove containers and Docker volumes only after an explicit confirmation:
 

@@ -103,6 +103,10 @@ permissions, and image architecture—not just the repository build.
 For every candidate:
 
 - `spaceapp init` creates only generic memory and fresh random secrets;
+- `spaceapp install` waits for `/readyz`, queries first-owner status, and
+  prints a fresh database-accepted token only after successful startup;
+- rerunning install before owner claim rotates and prints a usable token,
+  while rerunning it after owner claim prints no token;
 - configuration and secret files have restrictive host permissions;
 - the default port is reachable only on loopback;
 - core, CLI, PostgreSQL, and Temporal become healthy/running in light mode;
@@ -123,7 +127,13 @@ For every candidate:
 - restore succeeds after a deliberate synthetic data change;
 - update and rollback preserve application data;
 - provider credentials and login state are absent from portable backups;
-- uninstall keeps data by default, while confirmed purge removes volumes.
+- every entry shown by `spaceapp help` passes its success contract and its
+  primary invalid/cancelled contract;
+- `doctor` probes Docker CLI, Compose, and Engine once each and distinguishes
+  missing tooling from a stopped or inaccessible Engine;
+- Docker exit `127` is visible for runtime commands;
+- uninstall reports progress, keeps data by default, prints the separate
+  global npm removal command, and confirmed purge removes volumes.
 
 ## Cross-platform matrix
 

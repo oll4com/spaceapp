@@ -67,3 +67,15 @@ Run `spaceapp help` for the complete command list. Full documentation:
 - [CLI providers](https://github.com/oll4com/spaceapp/blob/main/docs/cli-providers.md)
 - [Operations](https://github.com/oll4com/spaceapp/blob/main/docs/operations.md)
 - [Security model](https://github.com/oll4com/spaceapp/blob/main/docs/security-model.md)
+
+After the stack passes readiness checks, `spaceapp install` prints the fresh
+15-minute token to paste into the browser's **One-time setup token** field. If
+it expires before the owner is created, run:
+
+```bash
+spaceapp owner rotate-setup-token
+```
+
+`spaceapp uninstall` removes the runtime while retaining data by default and
+prints the separate `npm uninstall -g run-spaceapp` command for removing the
+global launcher.

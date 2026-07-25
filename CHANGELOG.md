@@ -5,6 +5,22 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-07-25
+
+- wait for application readiness before reporting installation success or
+  opening the browser;
+- issue and print a fresh database-accepted first-owner token at the end of
+  every successful unclaimed installation, with exact paste and recovery
+  instructions;
+- discover Docker Desktop's trusted CLI directory on every Windows and macOS
+  launcher invocation, including `doctor`, `status`, and `uninstall`;
+- distinguish missing Docker CLI/Compose from a stopped engine and make Docker
+  exit `127` visible for every runtime command;
+- report uninstall progress, retained state, repeat-safe success, volume purge
+  results, and the separate global npm removal command;
+- add command contracts for every entry exposed by `spaceapp help` and
+  supersede the unpromoted `0.1.7` candidate.
+
 ## [0.1.6] - 2026-07-24
 
 - fix Windows one-command setup by preferring the hash-pinned
@@ -69,7 +85,8 @@ Initial public release:
 - portable backup, restore, update, and rollback commands;
 - no telemetry by default.
 
-[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.8
 [0.1.6]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.6
 [0.1.5]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.5
 [0.1.4]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.4
