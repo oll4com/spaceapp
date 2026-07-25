@@ -121,6 +121,19 @@ test("up, down, status, logs, backup, and open delegate to their fixed native co
   }
 });
 
+test("open succeeds with an exact manual URL when the native opener is unavailable", async () => {
+  const fixture = await installation({
+    platform: "linux",
+    execute: async (spec) => spec.command === "xdg-open" ? 127 : 0
+  });
+
+  assert.equal(await run(["open"], fixture.options), 0);
+  assert.match(
+    fixture.stderr.value(),
+    /Could not open SpaceApp automatically\. Open http:\/\/127\.0\.0\.1:4911 manually\./
+  );
+});
+
 test("workspace and credential list contracts persist only the requested local state", async () => {
   const { root, options } = await installation();
   const workspace = await mkdtemp(join(tmpdir(), "spaceapp-command-workspace-"));
@@ -168,14 +181,14 @@ test("update and rollback persist version state only after both Docker operation
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.6", previousVersion: "0.1.8" }
+    { version: "0.1.6", previousVersion: "0.1.9" }
   );
   assert.equal(await run(["rollback"], options), 0);
   assert.deepEqual(
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.8", previousVersion: "0.1.6" }
+    { version: "0.1.9", previousVersion: "0.1.6" }
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
     "pull",
@@ -184,7 +197,7 @@ test("update and rollback persist version state only after both Docker operation
     "--remove-orphans"
   ]);
   assert.match(stdout.value(), /Updated to SpaceApp 0\.1\.6/);
-  assert.match(stdout.value(), /Rolled back to SpaceApp 0\.1\.8/);
+  assert.match(stdout.value(), /Rolled back to SpaceApp 0\.1\.9/);
 });
 
 test("doctor is read-only for installation configuration and generated runtime files", async () => {

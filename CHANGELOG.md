@@ -5,6 +5,14 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-07-25
+
+- make `spaceapp open` degrade cleanly on headless systems by printing the
+  exact manual URL and returning success when the native browser opener is
+  unavailable;
+- supersede the unpromoted `0.1.8` candidate after clean-room acceptance
+  exposed the missing-opener contract gap.
+
 ## [0.1.8] - 2026-07-25
 
 - wait for application readiness before reporting installation success or
@@ -85,7 +93,8 @@ Initial public release:
 - portable backup, restore, update, and rollback commands;
 - no telemetry by default.
 
-[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.9
 [0.1.8]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.8
 [0.1.6]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.6
 [0.1.5]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.5

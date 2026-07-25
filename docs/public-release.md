@@ -62,14 +62,14 @@ The workflow then:
 5. publishes that tarball as `run-spaceapp@<version>` with `--tag next
    --provenance`.
 
-For `0.1.8`, `latest` must remain `0.1.6` until clean-install acceptance is
+For `0.1.9`, `latest` must remain `0.1.6` until clean-install acceptance is
 complete.
 
 ## Staged acceptance and promotion
 
 Verify npm metadata before installation:
 
-- `version` and `next` are `0.1.8`;
+- `version` and `next` are `0.1.9`;
 - `latest` is still `0.1.6`;
 - `gitHead` equals the released `main` commit;
 - provenance is present and references `.github/workflows/release.yml`.
@@ -89,8 +89,9 @@ Before promotion:
 Promote with a 2FA-protected maintainer session:
 
 ```bash
-npm dist-tag add run-spaceapp@0.1.8 latest
-npm deprecate run-spaceapp@0.1.7 "Superseded by 0.1.8; upgrade for corrected setup token, Docker discovery, doctor, and uninstall behavior."
+npm dist-tag add run-spaceapp@0.1.9 latest
+npm deprecate run-spaceapp@0.1.7 "Superseded by 0.1.9; upgrade for corrected setup token, Docker discovery, doctor, uninstall, and headless open behavior."
+npm deprecate run-spaceapp@0.1.8 "Superseded by 0.1.9; upgrade for the corrected headless open fallback."
 ```
 
 Then set package Publishing Access to **Require 2FA and disallow tokens** and
@@ -102,12 +103,12 @@ add ignores for upstream-unfixed findings.
 
 Published npm versions and GHCR exact tags are immutable.
 
-If `0.1.8` fails after promotion:
+If `0.1.9` fails after promotion:
 
 ```bash
 npm dist-tag add run-spaceapp@0.1.6 latest
 npm dist-tag add run-spaceapp@0.1.6 next
-npm deprecate run-spaceapp@0.1.8 "Withdrawn after release verification; use 0.1.6 until a corrected release is available."
+npm deprecate run-spaceapp@0.1.9 "Withdrawn after release verification; use 0.1.6 until a corrected release is available."
 npm view run-spaceapp dist-tags --json
 ```
 
@@ -115,8 +116,8 @@ Verify that both `latest` and `next` report `0.1.6`. Exact version artifacts
 remain immutable and must not be deleted or overwritten.
 
 The failed `0.1.4` staging run already produced immutable GHCR artifacts, so
-preserve those and the unpromoted `0.1.7` artifacts as evidence. Do not delete
-or overwrite exact version tags.
+preserve those and the unpromoted `0.1.7` and `0.1.8` artifacts as evidence.
+Do not delete or overwrite exact version tags.
 
 ## Official references
 
