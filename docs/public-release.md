@@ -12,7 +12,7 @@ worktree, or a live runtime directory.
 
 The GitHub Environment is named `npm` and must have:
 
-- required reviewer `pirniramon`;
+- required reviewer GitHub account `oll4com`;
 - deployment branch policy limited to `main`;
 - wait timer `0`.
 
