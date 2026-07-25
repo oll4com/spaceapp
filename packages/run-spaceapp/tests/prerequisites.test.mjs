@@ -232,7 +232,7 @@ test("Windows explains first-run Docker onboarding and continues when the user f
       calls.push(spec);
       if (spec.command === "docker" && spec.args[0] === "info") {
         dockerInfoChecks += 1;
-        return dockerInfoChecks >= 4 ? 0 : 127;
+        return dockerInfoChecks >= 302 ? 0 : 127;
       }
       if (spec.command === "docker") return 0;
       if (spec.command === "wsl.exe") return 0;
@@ -248,7 +248,7 @@ test("Windows explains first-run Docker onboarding and continues when the user f
   });
 
   assert.deepEqual(result, { code: 0, reexecuted: false });
-  assert.equal(sleepCalls, 2);
+  assert.equal(sleepCalls, 300);
   assert.ok(calls.some((spec) =>
     spec.command === "docker" &&
     spec.args.join(" ") === "desktop start --detach"

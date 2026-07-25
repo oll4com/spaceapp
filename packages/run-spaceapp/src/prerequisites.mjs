@@ -705,11 +705,13 @@ function shellQuote(value) {
 }
 
 async function waitForDocker({ execute, sleep, attempts = 90 }) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+  for (let attempt = 0; attempt <= attempts; attempt += 1) {
     if (await dockerIsReady(execute)) {
       return true;
     }
-    await sleep(2_000);
+    if (attempt < attempts) {
+      await sleep(2_000);
+    }
   }
   return false;
 }
