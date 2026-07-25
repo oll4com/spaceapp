@@ -112,7 +112,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
 
   assert.deepEqual(publishable, [{
     name: "run-spaceapp",
-    version: "0.1.6",
+    version: "0.1.7",
     bin: { spaceapp: "bin/spaceapp.mjs" }
   }]);
   const launcherPackage = JSON.parse(
@@ -189,6 +189,20 @@ test("MCP Node transport is forced to the reviewed Hono security release", async
     lockfile.packages["node_modules/@hono/node-server"].version,
     "2.0.11"
   );
+});
+
+test("temporary vulnerability ignores are narrow, documented, and expiring", async () => {
+  const ignoreFile = await readFile(join(root, ".trivyignore"), "utf8");
+  const activeEntries = ignoreFile
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+
+  assert.deepEqual(activeEntries, [
+    "GHSA-4w2j-m93h-cj5j exp:2026-08-25"
+  ]);
+  assert.match(ignoreFile, /unused Cargo\.lock entry/i);
+  assert.match(ignoreFile, /no dependency path/i);
 });
 
 test("public policy files are present and point security reports to a private channel", async () => {

@@ -68,9 +68,13 @@ installer against its hash-pinned `Docker.DockerDesktop` manifest. If Windows
 Package Manager is unavailable or fails, the launcher downloads Docker Desktop
 from Docker's official distribution service and verifies its Authenticode
 signature before running it. The launcher then starts Docker Desktop and waits
-until it is ready. Windows may request a UAC approval or one restart; rerun the
-same command afterward. SpaceApp reuses Docker Desktop's WSL2 Linux environment
-and does not install a second full virtual machine.
+until it is ready. On the first launch, Docker Desktop may show a
+**Welcome to Docker** screen before starting the Engine. Select **Skip** in the
+top-right (or sign in), accept any remaining Docker prompt, and leave the
+terminal open. SpaceApp waits for up to ten minutes and continues automatically
+when Docker becomes ready. Windows may request a UAC approval or one restart;
+rerun `spaceapp install` afterward. SpaceApp reuses Docker Desktop's WSL2 Linux
+environment and does not install a second full virtual machine.
 
 ## Installation profiles
 

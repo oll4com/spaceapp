@@ -34,6 +34,7 @@ const rootFiles = new Set([
   ".dockerignore",
   ".gitignore",
   ".nvmrc",
+  ".trivyignore",
   "CHANGELOG.md",
   "CODE_OF_CONDUCT.md",
   "CONTRIBUTING.md",

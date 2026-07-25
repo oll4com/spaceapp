@@ -89,6 +89,12 @@ Windows 11 PowerShell:
 npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
 ```
 
+For a Windows image without Docker Desktop, verify the first-run handoff as
+part of acceptance: the terminal must identify the **Welcome to Docker** screen,
+tell the tester to select **Skip** (or sign in), remain open while Docker starts,
+and continue automatically without rerunning the command once the Engine is
+ready.
+
 This second pass proves the released npm tarball, image manifests, registry
 permissions, and image architecture—not just the repository build.
 

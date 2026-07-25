@@ -120,6 +120,7 @@ test("public path policy excludes internal tests and keeps only reviewed public 
   assert.equal(isPublicExportPath("docs/legal/cli-distribution-policy.json"), true);
   assert.equal(isPublicExportPath("SUPPORT.md"), true);
   for (const path of [
+    ".trivyignore",
     "scripts/container-image-size-budget.mjs",
     "scripts/tests/portable-backup-restore.test.mjs",
     "scripts/tests/container-image-size-budget.test.mjs",
