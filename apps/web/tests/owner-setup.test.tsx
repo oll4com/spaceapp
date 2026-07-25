@@ -92,6 +92,9 @@ describe("first-owner setup", () => {
   it("shows the owner a first-run checklist before the setup claim", () => {
     render(<OwnerSetupScreen expiresAt={null} onClaim={vi.fn(async () => undefined)} />);
 
+    expect(screen.getByText(/shown at the end of/i).textContent).toMatch(/spaceapp install/i);
+    expect(screen.getByText(/spaceapp owner rotate-setup-token/i)).toBeTruthy();
+    expect(screen.queryByText(/spaceapp init/i)).toBeNull();
     expect(screen.getByRole("heading", { name: "After you sign in" })).toBeTruthy();
     expect(screen.getByText(/register only the workspaces/i)).toBeTruthy();
     expect(screen.getByText(/connect one provider at a time/i)).toBeTruthy();

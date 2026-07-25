@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   downloadFile,
   ensureDockerAvailable,
+  prepareDockerCliPath,
   windowsPowerShellArgs
 } from "../src/prerequisites.mjs";
 
@@ -40,6 +41,38 @@ test("Windows PowerShell operations use fixed scripts and reject arbitrary comma
     () => windowsPowerShellArgs("Write-Output untrusted"),
     /untrusted PowerShell operation/
   );
+});
+
+test("Docker Desktop CLI discovery is prepared on every supported desktop platform", async () => {
+  const windowsEnv = {
+    LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local",
+    ProgramFiles: "C:\\Program Files",
+    Path: "C:\\Windows\\System32"
+  };
+  const windowsDirectory = "C:\\Program Files\\Docker\\Docker\\resources\\bin";
+  assert.equal(await prepareDockerCliPath({
+    platform: "win32",
+    env: windowsEnv,
+    pathExists: async (path) => path === windowsDirectory
+  }), windowsDirectory);
+  assert.equal(windowsEnv.Path, `${windowsDirectory};C:\\Windows\\System32`);
+
+  const macEnv = { PATH: "/usr/bin:/bin" };
+  const macDirectory = "/Applications/Docker.app/Contents/Resources/bin";
+  assert.equal(await prepareDockerCliPath({
+    platform: "darwin",
+    env: macEnv,
+    pathExists: async (path) => path === macDirectory
+  }), macDirectory);
+  assert.equal(macEnv.PATH, `${macDirectory}:/usr/bin:/bin`);
+
+  const linuxEnv = { PATH: "/usr/bin:/bin" };
+  assert.equal(await prepareDockerCliPath({
+    platform: "linux",
+    env: linuxEnv,
+    pathExists: async () => true
+  }), null);
+  assert.equal(linuxEnv.PATH, "/usr/bin:/bin");
 });
 
 test("Windows enables WSL2, installs signed Docker Desktop, and continues in one command", async () => {

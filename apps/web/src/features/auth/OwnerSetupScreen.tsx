@@ -90,8 +90,9 @@ export function OwnerSetupScreen({ expiresAt, onClaim }: OwnerSetupScreenProps) 
         </div>
 
         <p className="setup-intro">
-          Use the one-time token shown by <code>spaceapp init</code>, then choose the email and password
-          you will use to sign in.
+          Use the one-time token shown at the end of <code>spaceapp install</code>, then choose the
+          email and password you will use to sign in. If the token expires, run{" "}
+          <code>spaceapp owner rotate-setup-token</code> and paste the new token here.
         </p>
 
         <div className="setup-security-note">

@@ -1,7 +1,7 @@
 import { createWriteStream } from "node:fs";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join, posix, win32 } from "node:path";
+import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
 import { Readable } from "node:stream";
@@ -65,6 +65,27 @@ export function windowsPowerShellArgs(operation) {
     throw new Error("SpaceApp refused an untrusted PowerShell operation.");
   }
   return ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", scripts[operation]];
+}
+
+export async function prepareDockerCliPath({
+  platform = process.platform,
+  env = process.env,
+  pathExists = fileExists
+} = {}) {
+  let directories = [];
+  if (platform === "win32") {
+    directories = windowsDockerPaths(env).cliDirectories;
+  } else if (platform === "darwin") {
+    directories = ["/Applications/Docker.app/Contents/Resources/bin"];
+  } else {
+    return null;
+  }
+  const directory = await firstExisting(directories, pathExists);
+  if (!directory) {
+    return null;
+  }
+  prependPath(env, directory, platform);
+  return directory;
 }
 
 export async function ensureDockerAvailable({
@@ -258,10 +279,7 @@ async function ensureWindowsDocker({
     stdout.write("Docker Desktop is installed but is not running. Starting it now...\n");
   }
 
-  const cliDirectory = await firstExisting(paths.cliDirectories, pathExists);
-  if (cliDirectory) {
-    prependPath(env, cliDirectory);
-  }
+  await prepareDockerCliPath({ platform: "win32", env, pathExists });
   stdout.write(
     "Opening Docker Desktop for its first-run setup.\n" +
     "If Docker shows \"Welcome to Docker\", select \"Skip\" in the top-right (or sign in), and accept any remaining Docker prompt.\n" +
@@ -383,9 +401,7 @@ async function ensureMacDocker({
     stdout.write("Docker Desktop is installed but is not running. Starting it now...\n");
   }
 
-  if (await pathExists(cliDirectory)) {
-    prependPath(env, cliDirectory);
-  }
+  await prepareDockerCliPath({ platform: "darwin", env, pathExists });
   const launchCode = await launch({ operation: "open-docker-desktop" });
   if (launchCode !== 0) {
     stderr.write("Docker Desktop is installed, but SpaceApp could not start it.\n");
@@ -740,11 +756,12 @@ async function firstExisting(paths, pathExists) {
   return null;
 }
 
-function prependPath(env, directory) {
+function prependPath(env, directory, platform = process.platform) {
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
-  const entries = String(env[pathKey] || "").split(delimiter).filter(Boolean);
+  const pathDelimiter = platform === "win32" ? win32.delimiter : posix.delimiter;
+  const entries = String(env[pathKey] || "").split(pathDelimiter).filter(Boolean);
   if (!entries.includes(directory)) {
-    env[pathKey] = [directory, ...entries].join(delimiter);
+    env[pathKey] = [directory, ...entries].join(pathDelimiter);
   }
 }
 

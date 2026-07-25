@@ -112,15 +112,18 @@ before its visible file size shrinks.
 ## What the command does
 
 `spaceapp install` performs
-`initialize → prerequisites → doctor → pull → up → open`. It creates
+`initialize → prerequisites → doctor → pull → up → readiness → setup status → open`. It creates
 non-secret configuration, fresh database/session secrets, and a one-time setup
 token; installs Docker from official sources when required; checks CPU, RAM,
 free disk, Docker CLI, Compose, and engine readiness; downloads the selected
-images; starts the services; and opens `http://127.0.0.1:4911`.
+images; starts the services; waits up to three minutes for `/readyz`; verifies
+first-owner status; and opens `http://127.0.0.1:4911`.
 
 The command is idempotent. Running it again preserves the installation's
-secrets, data, provider state, and existing unclaimed setup token. Use
-`--no-open` on headless machines.
+long-lived secrets, data, and provider state. While the owner remains
+unclaimed, each successful install replaces only the setup token with a fresh
+15-minute value after the database accepts it, then prints that value at the
+end. Use `--no-open` on headless machines.
 
 The default installation roots are:
 
@@ -175,7 +178,8 @@ binds to `http://127.0.0.1:4911` by default.
 
 On the first page:
 
-1. enter the one-time setup token printed by `spaceapp install`;
+1. copy the one-time setup token printed at the end of `spaceapp install` and
+   paste it into the field with the same name;
 2. create the owner email and a password of at least 12 characters;
 3. sign in as that owner;
 4. connect one CLI provider at a time;
@@ -220,7 +224,9 @@ spaceapp status
 spaceapp logs
 ```
 
-`doctor` checks Node.js, Docker, Docker Compose, CPU, memory, and free disk.
+`doctor` checks Node.js, Docker CLI, Docker Compose, Docker Engine, CPU,
+memory, and free disk exactly once each. It distinguishes a missing CLI or
+Compose plugin from an installed engine that is stopped or inaccessible.
 Light mode should show core, CLI, PostgreSQL, and Temporal running; standard
 mode also includes the browser service. If startup is still in progress, wait
 for the health checks and inspect bounded logs.

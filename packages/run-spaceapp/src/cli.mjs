@@ -22,9 +22,14 @@ import {
 } from "./index.mjs";
 import {
   ensureDockerAvailable,
+  prepareDockerCliPath,
   windowsPowerShellArgs
 } from "./prerequisites.mjs";
 
+const APPLICATION_READY_WAIT_MS = 3 * 60 * 1_000;
+const APPLICATION_READY_POLL_MS = 2_000;
+const APPLICATION_READY_MAX_ATTEMPTS = APPLICATION_READY_WAIT_MS / APPLICATION_READY_POLL_MS;
+const SETUP_STATUS_TIMEOUT_MS = 10_000;
 const trustedCommands = new Set([
   "codesign",
   "docker",
@@ -52,8 +57,13 @@ export async function run(argv, {
   stdin = process.stdin,
   execute = executeCommand,
   inspectResources = inspectSystemResources,
-  ensureDocker = ensureDockerAvailable
+  ensureDocker = ensureDockerAvailable,
+  prepareDockerPath = prepareDockerCliPath,
+  request = globalThis.fetch,
+  sleep = wait,
+  persistSetupToken = writeSetupToken
 } = {}) {
+  await prepareDockerPath({ platform, env });
   const [command = "help", ...args] = argv;
   const root = resolveSpaceAppHome({ env, platform });
   const version = await packageVersion();
@@ -78,7 +88,10 @@ export async function run(argv, {
       stderr,
       execute,
       inspectResources,
-      ensureDocker
+      ensureDocker,
+      request,
+      sleep,
+      persistSetupToken
     });
   }
   if (command === "init") {
@@ -94,11 +107,19 @@ export async function run(argv, {
   }
 
   const config = await loadConfig(root);
-  await writeRuntimeFiles(root, config);
+  if (commandNeedsRuntimeFiles(command, args)) {
+    await writeRuntimeFiles(root, config);
+  }
+  const runtimeExecute = (spec, io) => executeWithDockerDiagnostics(
+    execute,
+    spec,
+    io,
+    { platform, stderr }
+  );
 
   if (["up", "down", "status", "logs"].includes(command)) {
     assertNoArgs(args, command);
-    return execute(composeCommand(command, root, { profile: config.profile }), { stdin, stdout, stderr });
+    return runtimeExecute(composeCommand(command, root, { profile: config.profile }), { stdin, stdout, stderr });
   }
   if (command === "open") {
     assertNoArgs(args, "open");
@@ -112,16 +133,16 @@ export async function run(argv, {
     return workspaceCommand(args, { root, config, stdout });
   }
   if (command === "credentials") {
-    return credentialsCommand(args, { root, config, stdin, stdout, stderr, execute });
+    return credentialsCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
   }
   if (command === "provider") {
-    return providerCommand(args, { root, config, stdin, stdout, stderr, execute });
+    return providerCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
   }
   if (command === "owner") {
-    return ownerCommand(args, { root, config, stdin, stdout, stderr, execute });
+    return ownerCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
   }
   if (command === "update") {
-    return updateCommand(args, { root, config, version, stdin, stdout, stderr, execute });
+    return updateCommand(args, { root, config, version, stdin, stdout, stderr, execute: runtimeExecute });
   }
   if (command === "rollback") {
     assertNoArgs(args, "rollback");
@@ -134,12 +155,12 @@ export async function run(argv, {
       previousVersion: config.version
     };
     await writeRuntimeFiles(root, rollback);
-    const pullCode = await execute(composeCommand("pull", root, { profile: rollback.profile }), { stdin, stdout, stderr });
+    const pullCode = await runtimeExecute(composeCommand("pull", root, { profile: rollback.profile }), { stdin, stdout, stderr });
     if (pullCode !== 0) {
       await writeRuntimeFiles(root, config);
       return pullCode;
     }
-    const upCode = await execute(composeCommand("up", root, { profile: rollback.profile }), { stdin, stdout, stderr });
+    const upCode = await runtimeExecute(composeCommand("up", root, { profile: rollback.profile }), { stdin, stdout, stderr });
     if (upCode !== 0) {
       await writeRuntimeFiles(root, config);
       return upCode;
@@ -150,7 +171,7 @@ export async function run(argv, {
   }
   if (command === "backup") {
     assertNoArgs(args, command);
-    return execute(composeCommand("backup", root, { profile: config.profile }), { stdin, stdout, stderr });
+    return runtimeExecute(composeCommand("backup", root, { profile: config.profile }), { stdin, stdout, stderr });
   }
   if (command === "restore") {
     assertNoArgs(args, command);
@@ -164,22 +185,33 @@ export async function run(argv, {
       throw new Error("Restore cancelled.");
     }
     const backupId = await selectLatestBackupId(root);
-    const backupCode = await execute(composeCommand("backup", root, { profile: config.profile }), { stdin, stdout, stderr });
+    const backupCode = await runtimeExecute(composeCommand("backup", root, { profile: config.profile }), { stdin, stdout, stderr });
     if (backupCode !== 0) return backupCode;
-    const stopCode = await execute(composeCommand("stopForRestore", root, { profile: config.profile }), { stdin, stdout, stderr });
+    const stopCode = await runtimeExecute(composeCommand("stopForRestore", root, { profile: config.profile }), { stdin, stdout, stderr });
     if (stopCode !== 0) return stopCode;
-    const restoreCode = await execute(
+    const restoreCode = await runtimeExecute(
       composeCommand("restore", root, { backupId, profile: config.profile }),
       { stdin, stdout, stderr }
     );
     if (restoreCode !== 0) return restoreCode;
-    return execute(composeCommand("up", root, { profile: config.profile }), { stdin, stdout, stderr });
+    return runtimeExecute(composeCommand("up", root, { profile: config.profile }), { stdin, stdout, stderr });
   }
   if (command === "uninstall") {
     if (args.length === 0) {
-      const code = await execute(composeCommand("down", root, { profile: config.profile }), { stdin, stdout, stderr });
+      stdout.write("Stopping and removing SpaceApp containers and network...\n");
+      const code = await runtimeExecute(
+        composeCommand("down", root, { profile: config.profile }),
+        { stdin, stdout, stderr }
+      );
       if (code === 0) {
-        stdout.write(`Containers removed. Data and configuration remain at ${root}.\n`);
+        stdout.write("SpaceApp runtime removed successfully. It is safe to run this command again.\n");
+        stdout.write(`Data, configuration, secrets, and backups remain at ${root}.\n`);
+        stdout.write("Docker volumes are retained. The global SpaceApp CLI remains installed.\n");
+        stdout.write("To remove only the global CLI, run: npm uninstall -g run-spaceapp\n");
+      } else {
+        stderr.write(`Uninstall could not remove the runtime (Docker exit ${code}).\n`);
+        stdout.write(`Data, configuration, secrets, and backups remain at ${root}.\n`);
+        stdout.write("The global SpaceApp CLI remains installed.\n");
       }
       return code;
     }
@@ -188,7 +220,21 @@ export async function run(argv, {
       if (confirmation !== "DELETE") {
         throw new Error("Purge cancelled.");
       }
-      return execute(composeCommand("purge", root, { profile: config.profile }), { stdin, stdout, stderr });
+      stdout.write("Removing SpaceApp containers, network, and Docker volumes...\n");
+      const code = await runtimeExecute(
+        composeCommand("purge", root, { profile: config.profile }),
+        { stdin, stdout, stderr }
+      );
+      if (code === 0) {
+        stdout.write("SpaceApp runtime and Docker volumes removed successfully.\n");
+        stdout.write(`Host configuration and backups remain at ${root} for manual review.\n`);
+        stdout.write("The global SpaceApp CLI remains installed.\n");
+        stdout.write("To remove only the global CLI, run: npm uninstall -g run-spaceapp\n");
+      } else {
+        stderr.write(`SpaceApp Docker volume purge failed (Docker exit ${code}).\n`);
+        stdout.write(`Host files and the global SpaceApp CLI remain at ${root}.\n`);
+      }
+      return code;
     }
     throw new Error("Usage: spaceapp uninstall [--purge-data]");
   }
@@ -207,7 +253,10 @@ async function installCommand(args, {
   stderr,
   execute,
   inspectResources,
-  ensureDocker
+  ensureDocker,
+  request,
+  sleep,
+  persistSetupToken
 }) {
   const { requestedProfile, noOpen } = parseInstallArgs(args);
   const resources = await inspectResources(root);
@@ -218,11 +267,6 @@ async function installCommand(args, {
     `Selected profile: ${profile} (${formatGigabytes(resources.totalMemoryBytes)} GB system memory detected).\n`
   );
   stdout.write(`SpaceApp installation root: ${root}\n`);
-  if (result.setupToken) {
-    stdout.write(`One-time setup token: ${result.setupToken}\n`);
-    stdout.write("Store it temporarily; it expires after first owner setup.\n");
-  }
-
   if (installResourceChecks(resources).some((check) => !check.ok)) {
     const doctorCode = await doctor({
       root,
@@ -270,13 +314,85 @@ async function installCommand(args, {
     stderr.write("Installation stopped before downloading images. Fix the failed checks and run the same command again.\n");
     return doctorCode;
   }
-  const pullCode = await execute(composeCommand("pull", root, { profile }), { stdin, stdout, stderr });
+  const pullCode = await executeWithDockerDiagnostics(
+    execute,
+    composeCommand("pull", root, { profile }),
+    { stdin, stdout, stderr },
+    { platform, stderr }
+  );
   if (pullCode !== 0) return pullCode;
-  const upCode = await execute(composeCommand("up", root, { profile }), { stdin, stdout, stderr });
+  const upCode = await executeWithDockerDiagnostics(
+    execute,
+    composeCommand("up", root, { profile }),
+    { stdin, stdout, stderr },
+    { platform, stderr }
+  );
   if (upCode !== 0) return upCode;
 
   const url = `http://${result.config.bindHost}:${result.config.port}`;
-  stdout.write(`SpaceApp is running at ${url}\n`);
+  stdout.write("Waiting for SpaceApp services to become ready...\n");
+  const ready = await waitForApplicationReady({
+    url,
+    request,
+    sleep
+  });
+  if (!ready) {
+    stderr.write(
+      "SpaceApp containers started, but the application did not become ready within 3 minutes.\n" +
+      'Run "spaceapp status" and "spaceapp logs", then run "spaceapp install" again.\n'
+    );
+    return 1;
+  }
+
+  let setupStatus;
+  try {
+    setupStatus = await requestSetupStatus({ url, request });
+  } catch (error) {
+    stderr.write(
+      `SpaceApp is ready, but owner setup status could not be verified: ${error?.message || String(error)}\n` +
+      'Run "spaceapp status" and "spaceapp logs", then run "spaceapp install" again.\n'
+    );
+    return 1;
+  }
+
+  let setupToken = null;
+  if (setupStatus.setupRequired) {
+    setupToken = randomBytes(32).toString("base64url");
+    const rotateCode = await executeWithDockerDiagnostics(
+      execute,
+      composeCommand("rotateOwnerSetupToken", root, { profile }),
+      {
+        stdin,
+        stdout,
+        stderr,
+        input: `${setupToken}\n`
+      },
+      { platform, stderr }
+    );
+    if (rotateCode !== 0) {
+      stderr.write(
+        'SpaceApp is ready, but a fresh owner setup token could not be created. Run "spaceapp owner rotate-setup-token".\n'
+      );
+      return rotateCode;
+    }
+    try {
+      await persistSetupToken(root, setupToken);
+    } catch {
+      stderr.write(
+        "SpaceApp accepted a new setup token, but it could not be saved locally.\n" +
+        'Run "spaceapp owner rotate-setup-token" to obtain a usable token.\n'
+      );
+      return 1;
+    }
+  }
+
+  stdout.write(`SpaceApp is ready at ${url}\n`);
+  if (setupToken) {
+    stdout.write(`One-time setup token: ${setupToken}\n`);
+    stdout.write('Paste it into the "One-time setup token" field in the page that opens.\n');
+    stdout.write("It expires in 15 minutes and stops working after the first owner is created.\n");
+    stdout.write("If it expires, run: spaceapp owner rotate-setup-token\n");
+  }
   stdout.write('Next: add CLI credentials with "spaceapp credentials set <provider>".\n');
   if (noOpen) return 0;
   const openCode = await openBrowser(url, platform, execute, { stdin, stdout, stderr });
@@ -464,25 +580,138 @@ async function doctor({
     { name: "Configuration", ok: true, detail: root },
     ...installResourceChecks(detectedResources)
   ];
-  let dockerMissing = false;
+  const dockerResults = [];
   for (const probe of [
-    { name: "Docker", command: "docker", args: ["--version"] },
+    { name: "Docker CLI", command: "docker", args: ["--version"] },
     { name: "Docker Compose", command: "docker", args: ["compose", "version"] },
     { name: "Docker Engine", command: "docker", args: ["info"] }
   ]) {
     const code = dockerReady
       ? 0
       : await execute(probe, { stdin, stdout: null, stderr: null });
-    if (code !== 0) dockerMissing = true;
-    checks.push({ name: probe.name, ok: code === 0, detail: code === 0 ? "available" : "missing" });
+    dockerResults.push({ ...probe, code });
   }
+  const [dockerCli, dockerCompose, dockerEngine] = dockerResults;
+  checks.push({
+    name: dockerCli.name,
+    ok: dockerCli.code === 0,
+    detail: dockerCli.code === 0
+      ? "available"
+      : dockerCli.code === 127
+        ? "not found on PATH"
+        : `unavailable (exit ${dockerCli.code})`
+  });
+  checks.push({
+    name: dockerCompose.name,
+    ok: dockerCompose.code === 0,
+    detail: dockerCompose.code === 0
+      ? "available"
+      : dockerCli.code !== 0
+        ? "not available because Docker CLI is missing"
+        : `plugin unavailable (exit ${dockerCompose.code})`
+  });
+  checks.push({
+    name: dockerEngine.name,
+    ok: dockerEngine.code === 0,
+    detail: dockerEngine.code === 0
+      ? "available"
+      : dockerCli.code === 0
+        ? "installed but not running or inaccessible"
+        : "not reachable because Docker CLI is missing"
+  });
   for (const check of checks) {
     (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
   }
-  if (dockerMissing) {
+  if (dockerCli.code !== 0 || dockerCompose.code !== 0) {
     stderr.write(`${dockerInstallHelp(platform)}\n`);
+  } else if (dockerEngine.code !== 0) {
+    stderr.write(`${dockerEngineHelp(platform)}\n`);
   }
   return checks.every((check) => check.ok) ? 0 : 1;
+}
+
+async function waitForApplicationReady({
+  url,
+  request,
+  sleep,
+  maxAttempts = APPLICATION_READY_MAX_ATTEMPTS
+}) {
+  if (typeof request !== "function") {
+    throw new Error("SpaceApp readiness requires a Fetch-compatible request function.");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), APPLICATION_READY_WAIT_MS);
+  try {
+    for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const response = await request(`${url}/readyz`, {
+          method: "GET",
+          headers: { accept: "application/json" },
+          redirect: "error",
+          signal: controller.signal
+        });
+        if (response?.ok) {
+          const payload = await response.json();
+          if (payload?.ok === true) {
+            return true;
+          }
+        }
+      } catch {
+        if (controller.signal.aborted) {
+          return false;
+        }
+      }
+      if (attempt < maxAttempts && !controller.signal.aborted) {
+        await sleep(APPLICATION_READY_POLL_MS);
+      }
+    }
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function requestSetupStatus({ url, request }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SETUP_STATUS_TIMEOUT_MS);
+  try {
+    const response = await request(`${url}/api/setup/status`, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      redirect: "error",
+      signal: controller.signal
+    });
+    if (!response?.ok) {
+      throw new Error(`HTTP ${response?.status ?? "error"}`);
+    }
+    const payload = await response.json();
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      typeof payload.setupRequired !== "boolean" ||
+      (payload.expiresAt !== null && typeof payload.expiresAt !== "string")
+    ) {
+      throw new Error("invalid setup status response");
+    }
+    return payload;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("setup status request timed out", { cause: error });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function executeWithDockerDiagnostics(execute, spec, io, { platform, stderr }) {
+  const code = await execute(spec, io);
+  if (spec.command === "docker" && code === 127) {
+    stderr.write(
+      `SpaceApp could not find the Docker CLI. ${dockerInstallHelp(platform)}\n`
+    );
+  }
+  return code;
 }
 
 export async function readSecret(stdin, stdout, prompt, { mask = true } = {}) {
@@ -621,6 +850,30 @@ function assertNoArgs(args, command) {
   }
 }
 
+function commandNeedsRuntimeFiles(command, args) {
+  if ([
+    "up",
+    "down",
+    "status",
+    "logs",
+    "backup",
+    "restore",
+    "uninstall"
+  ].includes(command)) {
+    return true;
+  }
+  if (command === "credentials") {
+    return args[0] === "set" || args[0] === "remove";
+  }
+  if (command === "provider") {
+    return args[0] === "install";
+  }
+  if (command === "owner") {
+    return args[0] === "reset-password" || args[0] === "rotate-setup-token";
+  }
+  return false;
+}
+
 function dockerInstallHelp(platform) {
   if (platform === "win32") {
     return 'Run "spaceapp install" to install and start signed Docker Desktop with WSL2 automatically.';
@@ -631,8 +884,19 @@ function dockerInstallHelp(platform) {
   return 'Run "spaceapp install" to install and start Docker Engine and Compose automatically on supported Linux distributions.';
 }
 
+function dockerEngineHelp(platform) {
+  if (platform === "win32" || platform === "darwin") {
+    return 'Open Docker Desktop, complete any first-run prompt, then run "spaceapp doctor" again.';
+  }
+  return 'Start Docker Engine, verify the current user can access it, then run "spaceapp doctor" again.';
+}
+
 function formatGigabytes(bytes) {
   return Math.floor((bytes / 1024 ** 3) * 10) / 10;
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function packageVersion() {

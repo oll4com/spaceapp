@@ -112,7 +112,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
 
   assert.deepEqual(publishable, [{
     name: "run-spaceapp",
-    version: "0.1.7",
+    version: "0.1.8",
     bin: { spaceapp: "bin/spaceapp.mjs" }
   }]);
   const launcherPackage = JSON.parse(
@@ -254,6 +254,15 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
   assert.match(gettingStarted, /verifies\s+its\s+Authenticode\s+signature/i);
   assert.match(gettingStarted, /verifies\s+its code signature/i);
   assert.match(gettingStarted, /group grants root-level privileges/i);
+});
+
+test("the public release rollback restores both stable npm dist-tags", async () => {
+  const runbook = await readFile(join(root, "docs", "public-release.md"), "utf8");
+
+  assert.match(runbook, /npm dist-tag add run-spaceapp@0\.1\.6 latest/);
+  assert.match(runbook, /npm dist-tag add run-spaceapp@0\.1\.6 next/);
+  assert.match(runbook, /npm view run-spaceapp dist-tags --json/);
+  assert.match(runbook, /exact version artifacts\s+remain immutable/i);
 });
 
 test("public community files include support and structured contribution intake", async () => {
