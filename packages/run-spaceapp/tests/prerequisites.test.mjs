@@ -211,10 +211,11 @@ test("Windows prefers hash-verified winget Docker Desktop installation over the 
   assert.equal(stderr.value(), "");
 });
 
-test("Windows explains first-run Docker onboarding and keeps waiting for the user to finish it", async () => {
+test("Windows explains first-run Docker onboarding and continues when the user finishes it", async () => {
   const stdout = capture();
   const stderr = capture();
   const calls = [];
+  let dockerInfoChecks = 0;
   let sleepCalls = 0;
 
   const result = await ensureDockerAvailable({
@@ -229,7 +230,11 @@ test("Windows explains first-run Docker onboarding and keeps waiting for the use
     stderr: stderr.stream,
     execute: async (spec) => {
       calls.push(spec);
-      if (spec.command === "docker") return 127;
+      if (spec.command === "docker" && spec.args[0] === "info") {
+        dockerInfoChecks += 1;
+        return dockerInfoChecks >= 4 ? 0 : 127;
+      }
+      if (spec.command === "docker") return 0;
       if (spec.command === "wsl.exe") return 0;
       return 0;
     },
@@ -242,8 +247,8 @@ test("Windows explains first-run Docker onboarding and keeps waiting for the use
     }
   });
 
-  assert.deepEqual(result, { code: 1, reexecuted: false });
-  assert.equal(sleepCalls, 300);
+  assert.deepEqual(result, { code: 0, reexecuted: false });
+  assert.equal(sleepCalls, 2);
   assert.ok(calls.some((spec) =>
     spec.command === "docker" &&
     spec.args.join(" ") === "desktop start --detach"
@@ -251,6 +256,36 @@ test("Windows explains first-run Docker onboarding and keeps waiting for the use
   assert.match(stdout.value(), /Welcome to Docker/i);
   assert.match(stdout.value(), /Skip/i);
   assert.match(stdout.value(), /continue automatically/i);
+  assert.match(stdout.value(), /Docker Desktop is ready/i);
+  assert.equal(stderr.value(), "");
+});
+
+test("Windows bounds the first-run Docker onboarding wait at ten minutes", async () => {
+  const stderr = capture();
+  let sleepCalls = 0;
+
+  const result = await ensureDockerAvailable({
+    platform: "win32",
+    arch: "x64",
+    env: {
+      LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local",
+      Path: "C:\\Windows\\System32"
+    },
+    stdin: Readable.from([]),
+    stdout: capture().stream,
+    stderr: stderr.stream,
+    execute: async (spec) => spec.command === "wsl.exe" ? 0 : 127,
+    launch: async () => 0,
+    pathExists: async (path) =>
+      path.endsWith("Docker Desktop.exe") ||
+      path.endsWith("resources\\bin"),
+    sleep: async () => {
+      sleepCalls += 1;
+    }
+  });
+
+  assert.deepEqual(result, { code: 1, reexecuted: false });
+  assert.equal(sleepCalls, 300);
   assert.match(stderr.value(), /first-run setup/i);
 });
 
