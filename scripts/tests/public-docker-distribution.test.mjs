@@ -81,6 +81,32 @@ test("CLI image removes the npm download cache in the same layer as bundled CLI 
   );
 });
 
+test("runtime images patch fixable vulnerabilities in npm's bundled dependencies", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const runtimeStage =
+    dockerfile.match(/FROM [^\n]+ AS runtime-base([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const normalizedRuntimeStage = runtimeStage
+    .replace(/\\\r?\n\s*/g, " ")
+    .replace(/\s+/g, " ");
+
+  assert.match(
+    normalizedRuntimeStage,
+    /npm pack --ignore-scripts --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.8 tar@7\.5\.21/
+  );
+  assert.match(
+    normalizedRuntimeStage,
+    /tar -xzf \/tmp\/npm-security-patches\/brace-expansion-5\.0\.8\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/brace-expansion --strip-components=1/
+  );
+  assert.match(
+    normalizedRuntimeStage,
+    /tar -xzf \/tmp\/npm-security-patches\/tar-7\.5\.21\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/tar --strip-components=1/
+  );
+  assert.match(
+    normalizedRuntimeStage,
+    /rm -rf \/tmp\/npm-security-patches && npm cache clean --force/
+  );
+});
+
 test("public Compose runs without host Docker access or development credentials", async () => {
   const compose = await readFile(
     join(root, "packages", "run-spaceapp", "templates", "compose.yml"),

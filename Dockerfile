@@ -19,6 +19,20 @@ ENV NODE_ENV=production \
 LABEL org.opencontainers.image.source=https://github.com/oll4com/spaceapp
 LABEL org.opencontainers.image.licenses=Apache-2.0
 RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSION}" \
+    && install -d /tmp/npm-security-patches \
+    && npm pack --ignore-scripts --pack-destination /tmp/npm-security-patches \
+      brace-expansion@5.0.8 tar@7.5.21 \
+    && rm -rf \
+      /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
+      /usr/local/lib/node_modules/npm/node_modules/tar \
+    && install -d \
+      /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
+      /usr/local/lib/node_modules/npm/node_modules/tar \
+    && tar -xzf /tmp/npm-security-patches/brace-expansion-5.0.8.tgz \
+      -C /usr/local/lib/node_modules/npm/node_modules/brace-expansion --strip-components=1 \
+    && tar -xzf /tmp/npm-security-patches/tar-7.5.21.tgz \
+      -C /usr/local/lib/node_modules/npm/node_modules/tar --strip-components=1 \
+    && rm -rf /tmp/npm-security-patches \
     && npm cache clean --force \
     && apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git gosu liblzma5 postgresql-client ripgrep \
