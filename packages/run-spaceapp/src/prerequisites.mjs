@@ -1,7 +1,7 @@
 import { createWriteStream } from "node:fs";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join, posix, win32 } from "node:path";
+import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
 import { Readable } from "node:stream";
@@ -758,7 +758,7 @@ async function firstExisting(paths, pathExists) {
 
 function prependPath(env, directory, platform = process.platform) {
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
-  const pathDelimiter = platform === "win32" ? ";" : delimiter;
+  const pathDelimiter = platform === "win32" ? ";" : ":";
   const entries = String(env[pathKey] || "").split(pathDelimiter).filter(Boolean);
   if (!entries.includes(directory)) {
     env[pathKey] = [directory, ...entries].join(pathDelimiter);
