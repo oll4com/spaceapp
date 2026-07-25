@@ -191,6 +191,20 @@ test("MCP Node transport is forced to the reviewed Hono security release", async
   );
 });
 
+test("temporary vulnerability ignores are narrow, documented, and expiring", async () => {
+  const ignoreFile = await readFile(join(root, ".trivyignore"), "utf8");
+  const activeEntries = ignoreFile
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+
+  assert.deepEqual(activeEntries, [
+    "GHSA-4w2j-m93h-cj5j exp:2026-08-25"
+  ]);
+  assert.match(ignoreFile, /unused Cargo\.lock entry/i);
+  assert.match(ignoreFile, /no dependency path/i);
+});
+
 test("public policy files are present and point security reports to a private channel", async () => {
   const license = await readFile(join(root, "LICENSE"), "utf8");
   const security = await readFile(join(root, "SECURITY.md"), "utf8");

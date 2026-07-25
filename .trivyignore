@@ -1,0 +1,4 @@
+# GHSA-4w2j-m93h-cj5j is an unused Cargo.lock entry bundled by
+# @temporalio/core-bridge 1.21.0. The locked all-target cargo tree reports no dependency path.
+# Recheck after the next Temporal SDK release.
+GHSA-4w2j-m93h-cj5j exp:2026-08-25
