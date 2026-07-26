@@ -14,7 +14,7 @@ redistributable.
 - a versioned Docker Compose stack with no host Docker socket;
 - pinned Codex, Gemini, OpenCode, Qwen Code, Kimi Code, Grok Build, and
   experimental community DeepSeek CLI runtimes;
-- an owner-initiated `spaceapp provider install claude` flow that installs
+- an owner-initiated Claude installation flow that installs
   Claude Code into that installation's private provider volume;
 - one-time first-owner setup with no default password;
 - isolated, persistent provider state and mutable owner memory;
@@ -38,7 +38,7 @@ Requirements:
 Run the same command in Linux, macOS, or Windows 11 Command Prompt:
 
 ```bash
-npx --yes run-spaceapp install
+npx --yes run-spaceapp@latest install
 ```
 
 This downloads the current launcher, installs missing Docker prerequisites,
@@ -49,12 +49,18 @@ selects the light profile, starts SpaceApp, and opens it. To keep a global
 npm install -g run-spaceapp
 ```
 
-`spaceapp install` creates the local configuration and fresh secrets, installs
-Docker when it is missing, checks the host, selects a resource profile,
-downloads the images, starts the stack, and opens the app. It is idempotent,
-so running the same command again preserves data and long-lived secrets. While
-the owner is still unclaimed, every successful install issues a fresh
-15-minute setup token that is accepted by the running database.
+Keep `@latest` in the command. Under npm's
+[exec contract](https://docs.npmjs.com/cli/v11/commands/npm-exec), a package
+name without a version specifier can match an existing local package, while
+the explicit specifier resolves the requested current release.
+
+The universal install command creates the local configuration and fresh
+secrets, installs Docker when it is missing, checks the host, selects a
+resource profile, downloads the images, starts the stack, and opens the app.
+It is idempotent, so running the same command again preserves data and
+long-lived secrets. While the owner is still unclaimed, every successful
+install issues a fresh 15-minute setup token that is accepted by the running
+database.
 
 The automatic prerequisite flow uses official Docker sources: Docker Desktop
 through Windows Package Manager's hash-pinned manifest on Windows (with a
@@ -76,8 +82,10 @@ Docker is ready.
 
 `auto` always selects the lightweight profile so the default stays usable on
 an 8 GB host. Light mode keeps every bundled CLI, PostgreSQL, and Temporal but
-omits managed Chromium. Use `--profile standard` explicitly when the managed
-browser container is required and the host has the recommended resources.
+omits managed Chromium. Use
+`npx --yes run-spaceapp@latest install --profile standard` explicitly when the
+managed browser container is required and the host has the recommended
+resources.
 
 The installer does not create or reserve a separate fixed-size VM. Linux uses
 the native Docker Engine; Windows uses Docker Desktop's WSL2 Linux environment;
@@ -90,8 +98,9 @@ After the application passes readiness checks, the command prints a one-time
 setup token and exact paste instructions. Enter it in the first browser page,
 create the owner, register only the host workspaces SpaceApp may access, and
 connect providers through official login flows or masked credential input. If
-the token expires, run `spaceapp owner rotate-setup-token`. The default address
-is `http://127.0.0.1:4911`; do not expose it directly to an untrusted network.
+the token expires, run
+`npx --yes run-spaceapp@latest owner rotate-setup-token`. The default address is
+`http://127.0.0.1:4911`; do not expose it directly to an untrusted network.
 
 See [Getting started](docs/getting-started.md) for platform-specific paths,
 workspace examples, the first-owner flow, and current source-checkout testing.
@@ -110,20 +119,21 @@ mode:
 | `postgres` | PostgreSQL with pgvector |
 | `temporal` | durable workflow orchestration |
 
-Only workspaces added with `spaceapp workspace add` are mounted. Core and CLI
+Only workspaces added with
+`npx --yes run-spaceapp@latest workspace add` are mounted. Core and CLI
 containers run as an unprivileged application user, secrets are file-mounted,
 and telemetry is disabled by default.
 
 ## Common commands
 
 ```bash
-spaceapp status
-spaceapp logs
-spaceapp backup
-spaceapp update 0.1.11
-spaceapp rollback
-spaceapp down
-spaceapp uninstall
+npx --yes run-spaceapp@latest status
+npx --yes run-spaceapp@latest logs
+npx --yes run-spaceapp@latest backup
+npx --yes run-spaceapp@latest install
+npx --yes run-spaceapp@latest rollback
+npx --yes run-spaceapp@latest down
+npx --yes run-spaceapp@latest uninstall
 ```
 
 Portable backups include a PostgreSQL custom dump, application-data archive,

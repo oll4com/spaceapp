@@ -62,23 +62,30 @@ The workflow then:
 5. publishes that tarball as `run-spaceapp@<version>` with `--tag next
    --provenance`.
 
-For `0.1.11`, `latest` must remain `0.1.10` until clean-install acceptance is
+For `0.1.13`, `latest` must remain `0.1.12` until clean-install acceptance is
 complete.
 
 ## Staged acceptance and promotion
 
 Verify npm metadata before installation:
 
-- `version` and `next` are `0.1.11`;
-- `latest` is still `0.1.10`;
+- `version` and `next` are `0.1.13`;
+- `latest` is still `0.1.12`;
 - `gitHead` equals the released `main` commit;
 - provenance is present and references `.github/workflows/release.yml`.
 
-Create an isolated temporary installation root and install
-`run-spaceapp@next`. Start the standard profile, wait for `/readyz`, exercise
-every command exposed by `spaceapp help`, the first-owner token flow, CLI host,
-and browser host, then remove the complete temporary installation. Never use
-`/srv/space` for release acceptance.
+Create an isolated temporary installation root and run the pre-promotion
+candidate explicitly:
+
+```bash
+npx --yes run-spaceapp@next install
+```
+
+Start the light profile, wait for `/readyz`, exercise every command exposed by
+`npx --yes run-spaceapp@next help`, the first-owner token flow, CLI host, and
+persistent-state update behavior. Run a separate explicit standard-profile
+cycle for the browser host, then remove the complete temporary installation.
+Never use `/srv/space` for release acceptance.
 
 Before promotion:
 
@@ -89,7 +96,13 @@ Before promotion:
 Promote with a 2FA-protected maintainer session:
 
 ```bash
-npm dist-tag add run-spaceapp@0.1.11 latest
+npm dist-tag add run-spaceapp@0.1.13 latest
+```
+
+Immediately verify the promoted public path with the exact end-user command:
+
+```bash
+npx --yes run-spaceapp@latest install
 ```
 
 Then set package Publishing Access to **Require 2FA and disallow tokens** and
@@ -101,16 +114,16 @@ add ignores for upstream-unfixed findings.
 
 Published npm versions and GHCR exact tags are immutable.
 
-If `0.1.11` fails after promotion:
+If `0.1.13` fails after promotion:
 
 ```bash
-npm dist-tag add run-spaceapp@0.1.10 latest
-npm dist-tag add run-spaceapp@0.1.10 next
-npm deprecate run-spaceapp@0.1.11 "Withdrawn after release verification; use 0.1.10 until a corrected release is available."
+npm dist-tag add run-spaceapp@0.1.12 latest
+npm dist-tag add run-spaceapp@0.1.12 next
+npm deprecate run-spaceapp@0.1.13 "Withdrawn after release verification; use 0.1.12 until a corrected release is available."
 npm view run-spaceapp dist-tags --json
 ```
 
-Verify that both `latest` and `next` report `0.1.10`. Exact version artifacts
+Verify that both `latest` and `next` report `0.1.12`. Exact version artifacts
 remain immutable and must not be deleted or overwritten.
 
 The failed `0.1.4` staging run already produced immutable GHCR artifacts, so

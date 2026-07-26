@@ -74,7 +74,7 @@ Once npm and GHCR artifacts are published, repeat the test without a source
 checkout. Use the same command on Linux, macOS, and Windows 11 Command Prompt:
 
 ```bash
-npx --yes run-spaceapp install
+npx --yes run-spaceapp@latest install
 ```
 
 For a Windows image without Docker Desktop, verify the first-run handoff as

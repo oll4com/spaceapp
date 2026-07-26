@@ -5,6 +5,13 @@ import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import test from "node:test";
 import { executeCommand, run } from "../src/cli.mjs";
+import {
+  addWorkspace,
+  composeProjectName,
+  initializeInstallation,
+  saveConfig,
+  writeCredential
+} from "../src/index.mjs";
 
 function capture() {
   let value = "";
@@ -208,7 +215,10 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
     stdout.value(),
     new RegExp(`One-time setup token: ${installedToken}\\nPaste it into the "One-time setup token" field`)
   );
-  assert.match(stdout.value(), /If it expires, run: spaceapp owner rotate-setup-token/);
+  assert.match(
+    stdout.value(),
+    /If it expires, run: npx --yes run-spaceapp@latest owner rotate-setup-token/
+  );
   assert.ok(stdout.value().lastIndexOf(installedToken) > stdout.value().lastIndexOf("SpaceApp is ready"));
   assert.equal(stderr.value(), "");
 });
@@ -291,7 +301,10 @@ test("install explains recovery when the database accepts a token that cannot be
   );
   assert.doesNotMatch(stdout.value(), /One-time setup token:/);
   assert.match(stderr.value(), /accepted a new setup token.*could not be saved locally/is);
-  assert.match(stderr.value(), /spaceapp owner rotate-setup-token/i);
+  assert.match(
+    stderr.value(),
+    /npx --yes run-spaceapp@latest owner rotate-setup-token/i
+  );
 });
 
 test("install does not rotate or print a setup token after the owner is already claimed", async () => {
@@ -350,8 +363,8 @@ test("install fails visibly when application readiness never arrives", async () 
   assert.equal(readinessChecks, 91);
   assert.equal(sleepCalls, 90);
   assert.match(stderr.value(), /did not become ready within 3 minutes/i);
-  assert.match(stderr.value(), /spaceapp status/);
-  assert.match(stderr.value(), /spaceapp logs/);
+  assert.match(stderr.value(), /npx --yes run-spaceapp@latest status/);
+  assert.match(stderr.value(), /npx --yes run-spaceapp@latest logs/);
   assert.doesNotMatch(stdout.value(), /SpaceApp is ready/);
 });
 
@@ -397,6 +410,89 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   }), 0);
   assert.match(second.value(), /One-time setup token:/);
   assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
+});
+
+test("install upgrades a 0.1.10 standard installation to 0.1.13 light without changing persistent state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-upgrade-"));
+  const workspace = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-workspace-"));
+  const initialized = await initializeInstallation(root, {
+    version: "0.1.10",
+    profile: "standard"
+  });
+  const staleConfig = await addWorkspace(initialized.config, workspace);
+  await saveConfig(root, staleConfig);
+  await writeCredential(root, "gemini", "fixture-provider-credential");
+
+  const preservedPaths = [
+    "secrets/postgres-password",
+    "secrets/database-url",
+    "secrets/session-secret",
+    "secrets/setup-token",
+    "secrets/providers/gemini.key"
+  ];
+  const preservedFiles = new Map(await Promise.all(
+    preservedPaths.map(async (path) => [path, await readFile(join(root, path), "utf8")])
+  ));
+  const composeBefore = await readFile(join(root, "compose.yml"), "utf8");
+  const projectBefore = composeProjectName(root);
+  const calls = [];
+  const stdout = capture();
+  const options = {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: capture().stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => ({
+      ...eightGigabyteClassLinuxGuest,
+      totalMemoryBytes: 64 * 1024 ** 3
+    }),
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    request: async (url) => url.endsWith("/readyz")
+      ? jsonResponse({ ok: true })
+      : jsonResponse({ setupRequired: false, expiresAt: null }),
+    sleep: async () => {},
+    execute: async (spec) => {
+      calls.push(spec);
+      return 0;
+    }
+  };
+
+  assert.equal(await run(["install", "--no-open"], options), 0);
+
+  const upgradedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  assert.equal(upgradedConfig.version, "0.1.13");
+  assert.equal(upgradedConfig.previousVersion, "0.1.10");
+  assert.equal(upgradedConfig.profile, "light");
+  assert.deepEqual(upgradedConfig.workspaces, staleConfig.workspaces);
+  for (const [path, content] of preservedFiles) {
+    assert.equal(await readFile(join(root, path), "utf8"), content);
+  }
+  assert.equal(await readFile(join(root, "compose.yml"), "utf8"), composeBefore);
+  assert.equal(composeProjectName(root), projectBefore);
+  assert.equal(calls.some((spec) => spec.args.includes("down")), false);
+  assert.equal(calls.some((spec) => spec.args.includes("--volumes")), false);
+  for (const spec of calls) {
+    assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
+  }
+  assert.match(stdout.value(), /Launcher version: 0\.1\.13/);
+  assert.match(stdout.value(), /SpaceApp version: 0\.1\.10 -> 0\.1\.13/);
+  assert.match(stdout.value(), /Profile: standard -> light/);
+  assert.match(stdout.value(), /data.*workspaces.*credentials.*secrets.*persistent Docker volumes/i);
+
+  const refreshOutput = capture();
+  assert.equal(await run(["install", "--no-open"], {
+    ...options,
+    stdout: refreshOutput.stream
+  }), 0);
+  const refreshedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  assert.equal(refreshedConfig.version, "0.1.13");
+  assert.equal(refreshedConfig.previousVersion, "0.1.10");
+  assert.equal(refreshedConfig.profile, "light");
+  assert.deepEqual(refreshedConfig.workspaces, staleConfig.workspaces);
+  assert.match(refreshOutput.value(), /SpaceApp version: 0\.1\.13 -> 0\.1\.13/);
+  assert.match(refreshOutput.value(), /Profile: light -> light/);
 });
 
 test("install honors an explicit standard profile and uses the native browser opener", async () => {
@@ -654,7 +750,7 @@ test("Docker-backed commands explain exit 127 instead of failing silently", asyn
     execute: async () => 127
   }), 127);
   assert.match(stderr.value(), /could not find the Docker CLI/i);
-  assert.match(stderr.value(), /spaceapp install/);
+  assert.match(stderr.value(), /npx --yes run-spaceapp@latest install/);
 });
 
 test("doctor probes Docker CLI, Compose, and Engine once and distinguishes a stopped engine", async () => {

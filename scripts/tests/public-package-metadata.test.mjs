@@ -113,7 +113,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
 
   assert.deepEqual(publishable, [{
     name: "run-spaceapp",
-    version: "0.1.12",
+    version: "0.1.13",
     bin: {
       spaceapp: "bin/spaceapp.mjs",
       "run-spaceapp": "bin/spaceapp.mjs"
@@ -235,7 +235,25 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
     join(root, "packages", "run-spaceapp", "README.md"),
     "utf8"
   );
-  const universalCommand = "npx --yes run-spaceapp install";
+  const cleanRoom = await readFile(
+    join(root, "docs", "clean-room-testing.md"),
+    "utf8"
+  );
+  const operations = await readFile(join(root, "docs", "operations.md"), "utf8");
+  const cliProviders = await readFile(
+    join(root, "docs", "cli-providers.md"),
+    "utf8"
+  );
+  const publicRelease = await readFile(
+    join(root, "docs", "public-release.md"),
+    "utf8"
+  );
+  const securityModel = await readFile(
+    join(root, "docs", "security-model.md"),
+    "utf8"
+  );
+  const universalPrefix = "npx --yes run-spaceapp@latest";
+  const universalCommand = `${universalPrefix} install`;
 
   for (const content of [readme, gettingStarted, packageReadme]) {
     assert.match(
@@ -244,6 +262,37 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
     );
     assert.match(content, /Docker.*(?:automatically|automatic)/is);
     assert.doesNotMatch(content, /@alpha|0\.1\.0-alpha|public alpha/i);
+  }
+  for (const content of [
+    readme,
+    gettingStarted,
+    packageReadme,
+    cleanRoom,
+    operations,
+    cliProviders,
+    publicRelease,
+    securityModel
+  ]) {
+    assert.doesNotMatch(content, /\bnpx --yes run-spaceapp(?:\s|$)/);
+  }
+  for (const content of [
+    readme,
+    gettingStarted,
+    packageReadme,
+    operations,
+    cliProviders
+  ]) {
+    assert.doesNotMatch(
+      content,
+      /^spaceapp (?:doctor|status|uninstall|credentials)\b/m
+    );
+  }
+  const followUpExamples = [readme, gettingStarted, operations, cliProviders].join("\n");
+  for (const command of ["doctor", "status", "uninstall", "credentials"]) {
+    assert.match(followUpExamples, new RegExp(`${universalPrefix.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    )} ${command}\\b`));
   }
   for (const heading of ["Linux", "macOS", "Windows 11 — Command Prompt"]) {
     assert.match(gettingStarted, new RegExp(`^## ${heading}$`, "m"));
@@ -265,8 +314,8 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
 test("the public release rollback restores both stable npm dist-tags", async () => {
   const runbook = await readFile(join(root, "docs", "public-release.md"), "utf8");
 
-  assert.match(runbook, /npm dist-tag add run-spaceapp@0\.1\.10 latest/);
-  assert.match(runbook, /npm dist-tag add run-spaceapp@0\.1\.10 next/);
+  assert.match(runbook, /npm dist-tag add run-spaceapp@0\.1\.12 latest/);
+  assert.match(runbook, /npm dist-tag add run-spaceapp@0\.1\.12 next/);
   assert.match(runbook, /npm view run-spaceapp dist-tags --json/);
   assert.match(runbook, /exact version artifacts\s+remain immutable/i);
 });

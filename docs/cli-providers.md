@@ -24,7 +24,7 @@ install the reviewed version into the current installation's private provider
 volume:
 
 ```bash
-spaceapp provider install claude
+npx --yes run-spaceapp@latest provider install claude
 ```
 
 That command downloads `@anthropic-ai/claude-code@2.1.206` directly from npm
@@ -63,8 +63,8 @@ the developer or host user.
 For supported direct-key flows:
 
 ```bash
-spaceapp credentials list
-spaceapp credentials set <provider>
+npx --yes run-spaceapp@latest credentials list
+npx --yes run-spaceapp@latest credentials set <provider>
 ```
 
 The value is read from masked standard input, not from a command argument. It
@@ -77,7 +77,7 @@ provider-key directory.
 Remove an imported key with:
 
 ```bash
-spaceapp credentials remove <provider>
+npx --yes run-spaceapp@latest credentials remove <provider>
 ```
 
 Removing an imported key does not revoke it at the provider. Revoke or rotate
@@ -92,7 +92,8 @@ OAuth, device-code, and official CLI login state is stored in the
 volume or the host provider-key directory; runtime operations cross the
 protected CLI-host socket instead.
 
-Portable `spaceapp backup` archives intentionally exclude:
+Portable backups created with `npx --yes run-spaceapp@latest backup`
+intentionally exclude:
 
 - imported provider API-key files;
 - the `spaceapp-cli-state` provider volume;
@@ -106,6 +107,6 @@ from silently becoming a credential bundle.
 
 Bundled provider versions change only through a reviewed SpaceApp CLI-image
 release. Claude Code remains outside the distributed image; rerun
-`spaceapp provider install claude` only when deliberately installing the
-reviewed owner-managed version. Update SpaceApp images through
-`spaceapp update`, then verify provider readiness again.
+`npx --yes run-spaceapp@latest provider install claude` only when deliberately
+installing the reviewed owner-managed version. Update SpaceApp images through
+`npx --yes run-spaceapp@latest install`, then verify provider readiness again.

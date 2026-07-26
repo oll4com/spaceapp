@@ -459,7 +459,9 @@ export async function selectLatestBackupId(root) {
     .sort()
     .at(-1);
   if (!backupId) {
-    throw new Error('No portable backup exists. Run "spaceapp backup" before restore.');
+    throw new Error(
+      'No portable backup exists. Run "npx --yes run-spaceapp@latest backup" before restore.'
+    );
   }
   return backupId;
 }

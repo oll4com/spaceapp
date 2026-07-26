@@ -5,6 +5,22 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-07-26
+
+- qualify every universal launcher invocation as
+  `npx --yes run-spaceapp@latest` so npm resolves the current published
+  launcher instead of reusing a matching stale local or cached package;
+- make the same command a visible clean-install, stale-update, and idempotent
+  refresh path with launcher version, SpaceApp version, profile transition,
+  and persistent-state preservation output;
+- use the reliable universal prefix in public follow-up examples and launcher
+  recovery guidance while keeping global installation optional.
+
+## [0.1.12] - 2026-07-26
+
+- bypass the Microsoft Edge first-run experience when the Windows installer
+  opens the local owner-setup page after a clean installation.
+
 ## [0.1.11] - 2026-07-26
 
 - make `npx --yes run-spaceapp install` the same one-command installer on
@@ -116,7 +132,9 @@ Initial public release:
 - portable backup, restore, update, and rollback commands;
 - no telemetry by default.
 
-[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.11...HEAD
+[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.13...HEAD
+[0.1.13]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.13
+[0.1.12]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.12
 [0.1.11]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.11
 [0.1.10]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.10
 [0.1.9]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.9

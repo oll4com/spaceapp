@@ -7,9 +7,9 @@ during installation.
 ## Routine status and logs
 
 ```bash
-spaceapp doctor
-spaceapp status
-spaceapp logs
+npx --yes run-spaceapp@latest doctor
+npx --yes run-spaceapp@latest status
+npx --yes run-spaceapp@latest logs
 ```
 
 `doctor` checks local resources, Docker CLI, Compose, and engine readiness.
@@ -19,14 +19,14 @@ Compose log tail; inspect it before restarting a failing service.
 Stop or start the application without deleting data:
 
 ```bash
-spaceapp down
-spaceapp up
+npx --yes run-spaceapp@latest down
+npx --yes run-spaceapp@latest up
 ```
 
 ## Backup
 
 ```bash
-spaceapp backup
+npx --yes run-spaceapp@latest backup
 ```
 
 Each backup is stored below the installation's `backups` directory and
@@ -50,7 +50,7 @@ data.
 ## Restore
 
 ```bash
-spaceapp restore
+npx --yes run-spaceapp@latest restore
 ```
 
 The launcher:
@@ -70,26 +70,35 @@ Docker host.
 
 ## Update
 
+The universal install command is also the preferred update command. It resolves
+the latest launcher, records the previously installed SpaceApp version, selects
+the light profile by default, pulls the matching images, and recreates the
+stack without deleting application data, workspaces, credentials, secrets, or
+persistent Docker volumes.
+
 Before updating:
 
 ```bash
-spaceapp backup
-spaceapp doctor
+npx --yes run-spaceapp@latest backup
+npx --yes run-spaceapp@latest doctor
 ```
 
-Update the launcher with `sudo npm install -g run-spaceapp` on Linux when Node
-uses a system-wide npm prefix, or `npm install -g run-spaceapp` on macOS and
-Windows.
-
-Then select the exact target release:
+Then run the same universal command used for a clean installation:
 
 ```bash
-spaceapp update 0.1.11
-spaceapp status
+npx --yes run-spaceapp@latest install
+npx --yes run-spaceapp@latest status
 ```
 
-An update records one previous version, pulls the corresponding core, CLI, and
-browser images, and recreates the stack while preserving volumes.
+An existing standard installation changes to light unless the managed browser
+profile is explicitly requested:
+
+```bash
+npx --yes run-spaceapp@latest install --profile standard
+```
+
+Installing a global launcher with `npm install -g run-spaceapp` remains
+optional. The universal examples do not depend on that global installation.
 
 Do not use an important application as the first test of a new release. Run
 the update and backup/restore sequence in the dedicated clean-room environment
@@ -100,8 +109,8 @@ first.
 If the new release fails its health or owner workflow checks:
 
 ```bash
-spaceapp rollback
-spaceapp status
+npx --yes run-spaceapp@latest rollback
+npx --yes run-spaceapp@latest status
 ```
 
 Rollback returns to the single previously recorded image version. It does not
@@ -112,7 +121,7 @@ pre-update backup.
 ## Owner password
 
 ```bash
-spaceapp owner reset-password
+npx --yes run-spaceapp@latest owner reset-password
 ```
 
 The new password is read from masked input and must be at least 12 characters.
@@ -125,7 +134,7 @@ Remove containers and the Compose network while keeping configuration, backup
 files, secrets, and Docker volumes:
 
 ```bash
-spaceapp uninstall
+npx --yes run-spaceapp@latest uninstall
 ```
 
 The command reports progress and is safe to repeat. It does not remove the
@@ -135,7 +144,7 @@ global launcher package. Remove that separately with
 Remove containers and Docker volumes only after an explicit confirmation:
 
 ```bash
-spaceapp uninstall --purge-data
+npx --yes run-spaceapp@latest uninstall --purge-data
 ```
 
 `--purge-data` is destructive to application, database, memory, provider

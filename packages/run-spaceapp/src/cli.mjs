@@ -30,6 +30,7 @@ const APPLICATION_READY_WAIT_MS = 3 * 60 * 1_000;
 const APPLICATION_READY_POLL_MS = 2_000;
 const APPLICATION_READY_MAX_ATTEMPTS = APPLICATION_READY_WAIT_MS / APPLICATION_READY_POLL_MS;
 const SETUP_STATUS_TIMEOUT_MS = 10_000;
+const UNIVERSAL_COMMAND = "npx --yes run-spaceapp@latest";
 const trustedCommands = new Set([
   "codesign",
   "docker",
@@ -104,7 +105,9 @@ export async function run(argv, {
       stdout.write(`One-time setup token: ${result.setupToken}\n`);
       stdout.write("Store it temporarily; it expires after first owner setup.\n");
     }
-    stdout.write("Next: spaceapp doctor && spaceapp up && spaceapp open\n");
+    stdout.write(
+      `Next: ${UNIVERSAL_COMMAND} doctor && ${UNIVERSAL_COMMAND} up && ${UNIVERSAL_COMMAND} open\n`
+    );
     return 0;
   }
 
@@ -243,10 +246,10 @@ export async function run(argv, {
       }
       return code;
     }
-    throw new Error("Usage: spaceapp uninstall [--purge-data]");
+    throw new Error(`Usage: ${UNIVERSAL_COMMAND} uninstall [--purge-data]`);
   }
 
-  throw new Error(`Unknown command "${command}". Run "spaceapp help".`);
+  throw new Error(`Unknown command "${command}". Run "${UNIVERSAL_COMMAND} help".`);
 }
 
 async function installCommand(args, {
@@ -268,8 +271,19 @@ async function installCommand(args, {
   const { requestedProfile, noOpen } = parseInstallArgs(args);
   const resources = await inspectResources(root);
   const profile = resolveInstallProfile(requestedProfile, resources.totalMemoryBytes);
+  const existingConfig = await loadExistingInstallation(root);
   const result = await initializeInstallation(root, { version, profile });
 
+  stdout.write(`Launcher version: ${version}\n`);
+  stdout.write(
+    `SpaceApp version: ${existingConfig?.version ?? "not installed"} -> ${result.config.version}\n`
+  );
+  stdout.write(
+    `Profile: ${existingConfig?.profile ?? "not configured"} -> ${result.config.profile}\n`
+  );
+  stdout.write(existingConfig
+    ? "Preserved existing data, workspaces, credentials, secrets, and persistent Docker volumes.\n"
+    : "Future refreshes preserve data, workspaces, credentials, secrets, and persistent Docker volumes.\n");
   stdout.write(
     `Selected profile: ${profile} (${formatGigabytes(resources.totalMemoryBytes)} GB system memory detected).\n`
   );
@@ -285,7 +299,9 @@ async function installCommand(args, {
       inspectResources,
       resources
     });
-    stderr.write("Installation stopped before downloading images. Fix the failed checks and run the same command again.\n");
+    stderr.write(
+      `Installation stopped before downloading images. Fix the failed checks and run "${UNIVERSAL_COMMAND} install" again.\n`
+    );
     return doctorCode;
   }
 
@@ -301,7 +317,9 @@ async function installCommand(args, {
   });
   if (prerequisiteResult.reexecuted || prerequisiteResult.code !== 0) {
     if (prerequisiteResult.code !== 0) {
-      stderr.write("Installation stopped before downloading images. Fix the failed checks and run the same command again.\n");
+      stderr.write(
+        `Installation stopped before downloading images. Fix the failed checks and run "${UNIVERSAL_COMMAND} install" again.\n`
+      );
     }
     return prerequisiteResult.code;
   }
@@ -318,7 +336,9 @@ async function installCommand(args, {
     dockerReady: true
   });
   if (doctorCode !== 0) {
-    stderr.write("Installation stopped before downloading images. Fix the failed checks and run the same command again.\n");
+    stderr.write(
+      `Installation stopped before downloading images. Fix the failed checks and run "${UNIVERSAL_COMMAND} install" again.\n`
+    );
     return doctorCode;
   }
   const pullCode = await executeWithDockerDiagnostics(
@@ -346,7 +366,7 @@ async function installCommand(args, {
   if (!ready) {
     stderr.write(
       "SpaceApp containers started, but the application did not become ready within 3 minutes.\n" +
-      'Run "spaceapp status" and "spaceapp logs", then run "spaceapp install" again.\n'
+      `Run "${UNIVERSAL_COMMAND} status" and "${UNIVERSAL_COMMAND} logs", then run "${UNIVERSAL_COMMAND} install" again.\n`
     );
     return 1;
   }
@@ -357,7 +377,7 @@ async function installCommand(args, {
   } catch (error) {
     stderr.write(
       `SpaceApp is ready, but owner setup status could not be verified: ${error?.message || String(error)}\n` +
-      'Run "spaceapp status" and "spaceapp logs", then run "spaceapp install" again.\n'
+      `Run "${UNIVERSAL_COMMAND} status" and "${UNIVERSAL_COMMAND} logs", then run "${UNIVERSAL_COMMAND} install" again.\n`
     );
     return 1;
   }
@@ -378,7 +398,7 @@ async function installCommand(args, {
     );
     if (rotateCode !== 0) {
       stderr.write(
-        'SpaceApp is ready, but a fresh owner setup token could not be created. Run "spaceapp owner rotate-setup-token".\n'
+        `SpaceApp is ready, but a fresh owner setup token could not be created. Run "${UNIVERSAL_COMMAND} owner rotate-setup-token".\n`
       );
       return rotateCode;
     }
@@ -387,7 +407,7 @@ async function installCommand(args, {
     } catch {
       stderr.write(
         "SpaceApp accepted a new setup token, but it could not be saved locally.\n" +
-        'Run "spaceapp owner rotate-setup-token" to obtain a usable token.\n'
+        `Run "${UNIVERSAL_COMMAND} owner rotate-setup-token" to obtain a usable token.\n`
       );
       return 1;
     }
@@ -398,9 +418,11 @@ async function installCommand(args, {
     stdout.write(`One-time setup token: ${setupToken}\n`);
     stdout.write('Paste it into the "One-time setup token" field in the page that opens.\n');
     stdout.write("It expires in 15 minutes and stops working after the first owner is created.\n");
-    stdout.write("If it expires, run: spaceapp owner rotate-setup-token\n");
+    stdout.write(`If it expires, run: ${UNIVERSAL_COMMAND} owner rotate-setup-token\n`);
   }
-  stdout.write('Next: add CLI credentials with "spaceapp credentials set <provider>".\n');
+  stdout.write(
+    `Next: add CLI credentials with "${UNIVERSAL_COMMAND} credentials set <provider>".\n`
+  );
   if (noOpen) return 0;
   const openCode = await openBrowser(url, platform, execute, { stdin, stdout, stderr });
   if (openCode !== 0) {
@@ -427,19 +449,36 @@ function parseInstallArgs(args) {
       requestedProfile = argument.slice("--profile=".length);
       continue;
     }
-    throw new Error("Usage: spaceapp install [--profile auto|light|standard] [--no-open]");
+    throw new Error(
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--no-open]`
+    );
   }
   if (!["auto", "light", "standard"].includes(requestedProfile)) {
-    throw new Error("Usage: spaceapp install [--profile auto|light|standard] [--no-open]");
+    throw new Error(
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--no-open]`
+    );
   }
   return { requestedProfile, noOpen };
+}
+
+async function loadExistingInstallation(root) {
+  try {
+    return await loadConfig(root);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function workspaceCommand(args, { root, config, stdout }) {
   const [action, identity, ...rest] = args;
   if (action === "add") {
     if (!identity || rest.some((arg) => arg !== "--read-only")) {
-      throw new Error("Usage: spaceapp workspace add <absolute-path> [--read-only]");
+      throw new Error(
+        `Usage: ${UNIVERSAL_COMMAND} workspace add <absolute-path> [--read-only]`
+      );
     }
     const updated = await addWorkspace(config, identity, { readOnly: rest.includes("--read-only") });
     await saveConfig(root, updated);
@@ -449,7 +488,9 @@ async function workspaceCommand(args, { root, config, stdout }) {
   }
   if (action === "remove") {
     if (!identity || rest.length > 0) {
-      throw new Error("Usage: spaceapp workspace remove <id-or-absolute-path>");
+      throw new Error(
+        `Usage: ${UNIVERSAL_COMMAND} workspace remove <id-or-absolute-path>`
+      );
     }
     const updated = removeWorkspace(config, identity);
     await saveConfig(root, updated);
@@ -461,7 +502,7 @@ async function workspaceCommand(args, { root, config, stdout }) {
     stdout.write(`${JSON.stringify(config.workspaces, null, 2)}\n`);
     return 0;
   }
-  throw new Error("Usage: spaceapp workspace <add|remove|list>");
+  throw new Error(`Usage: ${UNIVERSAL_COMMAND} workspace <add|remove|list>`);
 }
 
 async function credentialsCommand(args, { root, config, stdin, stdout, stderr, execute }) {
@@ -472,7 +513,9 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
   }
   if (action === "set") {
     if (!provider || rest.length > 0) {
-      throw new Error("Usage: spaceapp credentials set <provider> (the value is read from stdin)");
+      throw new Error(
+        `Usage: ${UNIVERSAL_COMMAND} credentials set <provider> (the value is read from stdin)`
+      );
     }
     const value = await readSecret(stdin, stdout, `Enter ${provider} credential: `);
     await writeCredential(root, provider, value);
@@ -489,7 +532,7 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
   }
   if (action === "remove") {
     if (!provider || rest.length > 0) {
-      throw new Error("Usage: spaceapp credentials remove <provider>");
+      throw new Error(`Usage: ${UNIVERSAL_COMMAND} credentials remove <provider>`);
     }
     const removed = await removeCredential(root, provider);
     const syncCode = await execute(
@@ -503,12 +546,12 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
     stdout.write(removed ? `Credential removed and applied for ${provider}.\n` : `No credential stored for ${provider}.\n`);
     return syncCode;
   }
-  throw new Error("Usage: spaceapp credentials <set|remove|list>");
+  throw new Error(`Usage: ${UNIVERSAL_COMMAND} credentials <set|remove|list>`);
 }
 
 async function providerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
   if (args.length !== 2 || args[0] !== "install" || args[1] !== "claude") {
-    throw new Error("Usage: spaceapp provider install claude");
+    throw new Error(`Usage: ${UNIVERSAL_COMMAND} provider install claude`);
   }
   stdout.write("Installing Claude Code from Anthropic into this installation's private provider volume.\n");
   return execute(composeCommand("installClaude", root, { profile: config.profile }), { stdin, stdout, stderr });
@@ -530,7 +573,9 @@ async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute
     return 0;
   }
   if (args.length !== 1 || args[0] !== "reset-password") {
-    throw new Error("Usage: spaceapp owner <reset-password|rotate-setup-token>");
+    throw new Error(
+      `Usage: ${UNIVERSAL_COMMAND} owner <reset-password|rotate-setup-token>`
+    );
   }
   const password = await readSecret(stdin, stdout, "New owner password: ");
   if (password.length < 12) {
@@ -546,7 +591,7 @@ async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute
 
 async function updateCommand(args, { root, config, version, stdin, stdout, stderr, execute }) {
   if (args.length > 1) {
-    throw new Error("Usage: spaceapp update [version]");
+    throw new Error(`Usage: ${UNIVERSAL_COMMAND} update [version]`);
   }
   const targetVersion = args[0] || version;
   const updated = {
@@ -857,7 +902,7 @@ function openBrowser(url, platform, execute, io) {
 
 function assertNoArgs(args, command) {
   if (args.length > 0) {
-    throw new Error(`Usage: spaceapp ${command}`);
+    throw new Error(`Usage: ${UNIVERSAL_COMMAND} ${command}`);
   }
 }
 
@@ -887,19 +932,19 @@ function commandNeedsRuntimeFiles(command, args) {
 
 function dockerInstallHelp(platform) {
   if (platform === "win32") {
-    return 'Run "spaceapp install" to install and start signed Docker Desktop with WSL2 automatically.';
+    return `Run "${UNIVERSAL_COMMAND} install" to install and start signed Docker Desktop with WSL2 automatically.`;
   }
   if (platform === "darwin") {
-    return 'Run "spaceapp install" to install and start signed Docker Desktop automatically.';
+    return `Run "${UNIVERSAL_COMMAND} install" to install and start signed Docker Desktop automatically.`;
   }
-  return 'Run "spaceapp install" to install and start Docker Engine and Compose automatically on supported Linux distributions.';
+  return `Run "${UNIVERSAL_COMMAND} install" to install and start Docker Engine and Compose automatically on supported Linux distributions.`;
 }
 
 function dockerEngineHelp(platform) {
   if (platform === "win32" || platform === "darwin") {
-    return 'Open Docker Desktop, complete any first-run prompt, then run "spaceapp doctor" again.';
+    return `Open Docker Desktop, complete any first-run prompt, then run "${UNIVERSAL_COMMAND} doctor" again.`;
   }
-  return 'Start Docker Engine, verify the current user can access it, then run "spaceapp doctor" again.';
+  return `Start Docker Engine, verify the current user can access it, then run "${UNIVERSAL_COMMAND} doctor" again.`;
 }
 
 function formatGigabytes(bytes) {
@@ -918,7 +963,8 @@ async function packageVersion() {
 function helpText() {
   return `SpaceApp self-hosted launcher
 
-Usage: spaceapp <command>
+Usage: ${UNIVERSAL_COMMAND} <command>
+       spaceapp <command>             Optional global launcher
 
   init                              Create a local SpaceApp installation
   install [--profile auto|light|standard] [--no-open]

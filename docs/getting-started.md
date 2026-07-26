@@ -25,7 +25,7 @@ Recommended for browser sessions and several simultaneous CLI panes:
 Install Node.js 20.11 or newer, then run as a normal non-root user:
 
 ```bash
-npx --yes run-spaceapp install
+npx --yes run-spaceapp@latest install
 ```
 
 Linux runs the containers directly through the host Docker Engine; SpaceApp
@@ -41,7 +41,7 @@ the group grants root-level privileges and asks for confirmation.
 Install Node.js 20.11 or newer, then run in Terminal:
 
 ```bash
-npx --yes run-spaceapp install
+npx --yes run-spaceapp@latest install
 ```
 
 If Docker is missing, the launcher asks you to review and accept Docker
@@ -57,7 +57,7 @@ Enable hardware virtualization and install Node.js 20.11 or newer. Open
 Terminal, and run:
 
 ```bat
-npx --yes run-spaceapp install
+npx --yes run-spaceapp@latest install
 ```
 
 Do not run the universal command from a PowerShell profile whose execution
@@ -86,7 +86,7 @@ not install a second full virtual machine.
 
 ## Installation profiles
 
-`spaceapp install` defaults to `--profile auto`:
+The universal install command defaults to `--profile auto`:
 
 | Profile | Selection | Included services | Resource posture |
 | --- | --- | --- | --- |
@@ -96,8 +96,8 @@ not install a second full virtual machine.
 Choose explicitly when needed:
 
 ```bash
-spaceapp install --profile light
-spaceapp install --profile standard
+npx --yes run-spaceapp@latest install --profile light
+npx --yes run-spaceapp@latest install --profile standard
 ```
 
 The light limits are 2 GiB for core, 1536 MiB for the CLI service, and 768 MiB
@@ -123,7 +123,7 @@ before its visible file size shrinks.
 
 ## What the command does
 
-`spaceapp install` performs
+The universal install command performs
 `initialize → prerequisites → doctor → pull → up → readiness → setup status → open`. It creates
 non-secret configuration, fresh database/session secrets, and a one-time setup
 token; installs Docker from official sources when required; checks CPU, RAM,
@@ -146,7 +146,7 @@ The default installation roots are:
 | Windows | `%APPDATA%\SpaceApp` |
 
 To isolate an installation or clean-room test, set `SPACEAPP_HOME` to an
-absolute path before running every `spaceapp` command.
+absolute path before every launcher command.
 
 ## Register a workspace
 
@@ -155,21 +155,21 @@ tools are allowed to read or modify:
 
 ```bash
 # Linux
-spaceapp workspace add /home/alice/code/example
+npx --yes run-spaceapp@latest workspace add /home/alice/code/example
 
 # macOS
-spaceapp workspace add /Users/alice/code/example
+npx --yes run-spaceapp@latest workspace add /Users/alice/code/example
 
 # Windows PowerShell
-spaceapp workspace add "C:\Users\Alice\code\example"
+npx --yes run-spaceapp@latest workspace add "C:\Users\Alice\code\example"
 ```
 
 Use `--read-only` when the tools should not modify the directory:
 
 ```bash
-spaceapp workspace add /absolute/path/to/reference --read-only
-spaceapp workspace list
-spaceapp workspace remove /absolute/path/to/reference
+npx --yes run-spaceapp@latest workspace add /absolute/path/to/reference --read-only
+npx --yes run-spaceapp@latest workspace list
+npx --yes run-spaceapp@latest workspace remove /absolute/path/to/reference
 ```
 
 Adding a workspace grants the application CLIs access to that host directory.
@@ -179,24 +179,25 @@ instructions before allowing tools to operate on it.
 Apply the updated mount list to the running stack:
 
 ```bash
-spaceapp up
+npx --yes run-spaceapp@latest up
 ```
 
 ## First browser setup
 
 The install command starts the stack and opens the first-run page. If the
-browser was closed or `--no-open` was used, run `spaceapp open`. The application
-binds to `http://127.0.0.1:4911` by default.
+browser was closed or `--no-open` was used, run
+`npx --yes run-spaceapp@latest open`. The application binds to
+`http://127.0.0.1:4911` by default.
 
 On the first page:
 
-1. copy the one-time setup token printed at the end of `spaceapp install` and
+1. copy the one-time setup token printed at the end of the install command and
    paste it into the field with the same name;
 2. create the owner email and a password of at least 12 characters;
 3. sign in as that owner;
 4. connect one CLI provider at a time;
 5. create a test room and verify the selected workspace;
-6. run `spaceapp backup` before the first update.
+6. run `npx --yes run-spaceapp@latest backup` before the first update.
 
 There is no default owner password or production development-login fallback.
 The setup claim is single-use.
@@ -205,7 +206,7 @@ If the 15-minute token expires before the first owner is claimed, rotate it
 locally and use the newly printed value:
 
 ```bash
-spaceapp owner rotate-setup-token
+npx --yes run-spaceapp@latest owner rotate-setup-token
 ```
 
 Rotation is refused after an owner exists.
@@ -217,10 +218,10 @@ OAuth, device-code, or login flow. For providers that support direct API keys,
 the launcher also accepts a value from masked standard input:
 
 ```bash
-spaceapp credentials list
-spaceapp provider install claude
-spaceapp credentials set claude
-spaceapp credentials set gemini
+npx --yes run-spaceapp@latest credentials list
+npx --yes run-spaceapp@latest provider install claude
+npx --yes run-spaceapp@latest credentials set claude
+npx --yes run-spaceapp@latest credentials set gemini
 ```
 
 Credentials are never accepted as command-line arguments. See
@@ -231,9 +232,9 @@ warning.
 ## Verify the installation
 
 ```bash
-spaceapp doctor
-spaceapp status
-spaceapp logs
+npx --yes run-spaceapp@latest doctor
+npx --yes run-spaceapp@latest status
+npx --yes run-spaceapp@latest logs
 ```
 
 `doctor` checks Node.js, Docker CLI, Docker Compose, Docker Engine, CPU,
