@@ -114,6 +114,7 @@ test("public path policy excludes internal tests and keeps only reviewed public 
   assert.equal(isPublicExportPath("apps/api/tests/constant-time-token.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/route-rate-limits.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/setup.test.ts"), true);
+  assert.equal(isPublicExportPath("apps/api/tests/storage-warning.test.ts"), true);
   assert.equal(isPublicExportPath("apps/web/tests/clipboard-html.test.ts"), true);
   assert.equal(isPublicExportPath("packages/runtime/tests/public-defaults.test.ts"), true);
   assert.equal(isPublicExportPath("packages/run-spaceapp/tests/cli.test.mjs"), true);
