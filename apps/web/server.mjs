@@ -4,7 +4,7 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveLegacyAppRedirect } from "./server-routing.mjs";
+import { localAppSecurityHeaders, resolveLegacyAppRedirect } from "./server-routing.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const host = process.env.SPACE_WEB_HOST ?? "0.0.0.0";
@@ -368,7 +368,7 @@ function publicHomepageSecurityHeaders(request, filePath) {
       "x-frame-options": "SAMEORIGIN"
     };
   }
-  if (pathname !== "/homepage") return {};
+  if (pathname !== "/homepage") return localAppSecurityHeaders();
   return {
     "content-security-policy": publicHomepageContentSecurityPolicy,
     "cross-origin-opener-policy": "same-origin",
