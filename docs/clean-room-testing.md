@@ -71,29 +71,20 @@ production repository as the clean-room workspace.
 ## Release-artifact acceptance
 
 Once npm and GHCR artifacts are published, repeat the test without a source
-checkout. Linux:
+checkout. Use the same command on Linux, macOS, and Windows 11 Command Prompt:
 
 ```bash
-sudo npm install -g run-spaceapp && spaceapp install
-```
-
-macOS:
-
-```bash
-npm install -g run-spaceapp && spaceapp install
-```
-
-Windows 11 PowerShell:
-
-```powershell
-npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
+npx --yes run-spaceapp install
 ```
 
 For a Windows image without Docker Desktop, verify the first-run handoff as
 part of acceptance: the terminal must identify the **Welcome to Docker** screen,
 tell the tester to select **Skip** (or sign in), remain open while Docker starts,
 and continue automatically without rerunning the command once the Engine is
-ready.
+ready. If clean WSL2 setup requires a restart, verify that SpaceApp registers
+the one-time resume, asks before restarting, and reopens the same pinned
+installer automatically after the tester signs back in. Do not type the install
+command a second time.
 
 This second pass proves the released npm tarball, image manifests, registry
 permissions, and image architecture—not just the repository build.

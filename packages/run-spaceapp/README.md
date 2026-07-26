@@ -2,22 +2,17 @@
 
 Cross-platform Docker launcher for SpaceApp.
 
-Linux:
+Run the same command in Linux, macOS, or Windows 11 Command Prompt:
 
 ```bash
-sudo npm install -g run-spaceapp && spaceapp install
+npx --yes run-spaceapp install
 ```
 
-macOS:
+To keep a global `spaceapp` command for later operations, install it
+separately:
 
 ```bash
-npm install -g run-spaceapp && spaceapp install
-```
-
-Windows 11 PowerShell:
-
-```powershell
-npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
+npm install -g run-spaceapp
 ```
 
 The launcher requires Node.js 20.11 or newer, 4 CPUs, 8 GB RAM, and 15 GiB free
@@ -28,15 +23,19 @@ images. Windows prefers Windows Package Manager's hash-pinned Docker Desktop
 manifest and retains a signed direct-download fallback. Docker Desktop license
 acceptance and Linux `docker` group membership require confirmation inside the
 same command. On Windows, approve any UAC prompt required by WSL2 or Docker
-Desktop. On Docker Desktop's first launch, select **Skip** in the top-right of
-the **Welcome to Docker** window (or sign in), accept any remaining Docker
-prompt, and keep the terminal open. SpaceApp waits for up to ten minutes and
-continues automatically when Docker is ready. If Windows requests one restart,
-rerun `spaceapp install` afterward and installation continues safely.
+Desktop. Use the **Command Prompt** profile because a restricted PowerShell
+policy can block npm's `npx.ps1` before SpaceApp starts. On Docker Desktop's
+first launch, select **Skip** in the top-right of the **Welcome to Docker**
+window (or sign in), accept any remaining Docker prompt, and keep the terminal
+open. SpaceApp waits for up to ten minutes and continues automatically when
+Docker is ready. If WSL2 requires one restart, SpaceApp registers a one-time
+resume and asks before scheduling it. Sign back in after Windows restarts; the
+same install continues automatically in Command Prompt without entering a
+second command.
 
-The launcher selects the `light` profile below 12 GiB RAM and the `standard`
-profile otherwise; override this with `--profile light` or
-`--profile standard`.
+The launcher defaults to the `light` profile on every system. Select
+`--profile standard` explicitly when managed Chromium is required and the host
+has the recommended resources.
 
 Light mode retains every bundled CLI and the core data/workflow services while
 omitting managed Chromium. Resource limits are maximums, not immediate RAM or

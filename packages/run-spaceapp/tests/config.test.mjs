@@ -34,18 +34,18 @@ test("default config is versioned, loopback-only, and contains no secret fields"
     bindHost: "127.0.0.1",
     port: 4911,
     telemetry: false,
-    profile: "standard",
+    profile: "light",
     workspaces: []
   });
   assert.doesNotMatch(JSON.stringify(config), /password|secret|token|api.?key/i);
 });
 
-test("auto profile selects light below 12 GB and standard at or above 12 GB", () => {
+test("auto profile defaults to light at every supported memory size and standard stays explicit", () => {
   const gibibyte = 1024 ** 3;
 
   assert.equal(resolveInstallProfile("auto", 8 * gibibyte), "light");
-  assert.equal(resolveInstallProfile("auto", 12 * gibibyte - 1), "light");
-  assert.equal(resolveInstallProfile("auto", 12 * gibibyte), "standard");
+  assert.equal(resolveInstallProfile("auto", 12 * gibibyte), "light");
+  assert.equal(resolveInstallProfile("auto", 64 * gibibyte), "light");
   assert.equal(resolveInstallProfile("light", 64 * gibibyte), "light");
   assert.equal(resolveInstallProfile("standard", 8 * gibibyte), "standard");
   assert.throws(() => resolveInstallProfile("full", 16 * gibibyte), /auto, light, or standard/i);
@@ -148,6 +148,51 @@ test("initialization creates idempotent secrets with owner-only POSIX permission
     await readFile(join(root, "config.json"), "utf8"),
     /password|secret|token|api.?key/i
   );
+});
+
+test("initialization resolves the auto profile on a clean install", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-init-auto-profile-"));
+  const templateDir = join(root, "templates");
+  await mkdir(templateDir);
+  await writeFile(join(templateDir, "compose.yml"), "services: {}\n");
+
+  const result = await initializeInstallation(root, {
+    version: "0.1.11",
+    templateDir,
+    profile: "auto"
+  });
+
+  assert.equal(result.config.profile, "light");
+  assert.equal((await loadConfig(root)).profile, "light");
+});
+
+test("initialization synchronizes an existing install to the launcher version and preserves rollback and secrets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-init-version-sync-"));
+  const templateDir = join(root, "templates");
+  await mkdir(templateDir);
+  await writeFile(join(templateDir, "compose.yml"), "services: {}\n");
+
+  await initializeInstallation(root, {
+    version: "0.1.10",
+    templateDir,
+    profile: "standard"
+  });
+  const passwordBefore = await readFile(join(root, "secrets", "postgres-password"), "utf8");
+
+  const result = await initializeInstallation(root, {
+    version: "0.1.11",
+    templateDir,
+    profile: "light"
+  });
+
+  assert.equal(result.config.version, "0.1.11");
+  assert.equal(result.config.previousVersion, "0.1.10");
+  assert.equal(result.config.profile, "light");
+  assert.equal(
+    await readFile(join(root, "secrets", "postgres-password"), "utf8"),
+    passwordBefore
+  );
+  assert.deepEqual(await loadConfig(root), result.config);
 });
 
 async function assertOwnerOnlyFile(path) {

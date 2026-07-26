@@ -89,6 +89,41 @@ describe("first-owner setup", () => {
     expect(requests).not.toContain("/api/setup/status");
   });
 
+  it("renders a production-safe operator login form", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url === "/api/auth/me") {
+          return jsonResponse({
+            user: null,
+            isAuthenticated: false,
+            isSetupRequired: false
+          });
+        }
+        if (url === "/api/setup/status") {
+          return jsonResponse({
+            setupRequired: false,
+            expiresAt: null
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      })
+    );
+
+    render(<LiveSpaceApp />);
+
+    const email = await screen.findByLabelText("Email") as HTMLInputElement;
+    const password = screen.getByLabelText("Password") as HTMLInputElement;
+
+    expect(email.value).toBe("");
+    expect(email.id).toBe("operator-email");
+    expect(email.name).toBe("email");
+    expect(email.type).toBe("email");
+    expect(password.id).toBe("operator-password");
+    expect(password.name).toBe("password");
+  });
+
   it("shows the owner a first-run checklist before the setup claim", () => {
     render(<OwnerSetupScreen expiresAt={null} onClaim={vi.fn(async () => undefined)} />);
 
@@ -106,6 +141,25 @@ describe("first-owner setup", () => {
 
     expect(screen.getByText(/sent only in the request body/i)).toBeTruthy();
     expect(screen.queryByText(/encrypted request/i)).toBeNull();
+  });
+
+  it("gives every owner setup control a stable browser form name", () => {
+    render(<OwnerSetupScreen expiresAt={null} onClaim={vi.fn(async () => undefined)} />);
+
+    expect((screen.getByLabelText("One-time setup token") as HTMLInputElement).name).toBe("token");
+    expect((screen.getByLabelText("Owner email") as HTMLInputElement).name).toBe("email");
+    expect((screen.getByLabelText("New password") as HTMLInputElement).name).toBe("password");
+    expect((screen.getByLabelText("Confirm password") as HTMLInputElement).name).toBe("passwordConfirmation");
+  });
+
+  it("places the owner username before password-like setup controls", () => {
+    const { container } = render(
+      <OwnerSetupScreen expiresAt={null} onClaim={vi.fn(async () => undefined)} />
+    );
+
+    expect(
+      Array.from(container.querySelectorAll("form input")).map((input) => input.getAttribute("name"))
+    ).toEqual(["email", "token", "password", "passwordConfirmation"]);
   });
 
   it("validates token, email, password length, and confirmation before claiming", async () => {

@@ -5458,7 +5458,7 @@ export function App() {
 }
 
 function LoginScreen({ auth, onLogin }: { auth: AuthMe; onLogin: (auth: AuthMe) => void | Promise<void> }) {
-  const [email, setEmail] = useState("space@space.local");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -5488,13 +5488,22 @@ function LoginScreen({ auth, onLogin }: { auth: AuthMe; onLogin: (auth: AuthMe) 
             <span>{auth.isSetupRequired ? "Operator setup required" : "Operator access"}</span>
           </div>
         </div>
-        <label>
+        <label htmlFor="operator-email">
           Email
-          <input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" />
+          <input
+            id="operator-email"
+            name="email"
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            autoComplete="username"
+          />
         </label>
-        <label>
+        <label htmlFor="operator-password">
           Password
           <input
+            id="operator-password"
+            name="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             type="password"

@@ -38,6 +38,7 @@ const trustedCommands = new Set([
   "open",
   "powershell.exe",
   "sg",
+  "shutdown.exe",
   "spctl",
   "sudo",
   "winget.exe",
@@ -45,7 +46,8 @@ const trustedCommands = new Set([
   "xdg-open"
 ]);
 const trustedEnvironmentNames = new Set([
-  "SPACEAPP_DOCKER_INSTALLER_PATH"
+  "SPACEAPP_DOCKER_INSTALLER_PATH",
+  "SPACEAPP_RESUME_SCRIPT_PATH"
 ]);
 
 export async function run(argv, {
@@ -295,7 +297,7 @@ async function installCommand(args, {
     stdout,
     stderr,
     execute,
-    installArgs: { requestedProfile, noOpen }
+    installArgs: { root, requestedProfile, noOpen }
   });
   if (prerequisiteResult.reexecuted || prerequisiteResult.code !== 0) {
     if (prerequisiteResult.code !== 0) {
@@ -816,6 +818,7 @@ function spawnTrustedCommand(spec, options) {
     case "powershell.exe":
       return spawn("powershell.exe", windowsPowerShellArgs(spec.operation), options);
     case "sg": return spawn("sg", args, options);
+    case "shutdown.exe": return spawn("shutdown.exe", args, options);
     case "spctl": return spawn("spctl", args, options);
     case "sudo": return spawn("sudo", args, options);
     case "winget.exe": return spawn("winget.exe", args, options);
