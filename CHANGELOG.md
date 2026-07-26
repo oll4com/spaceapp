@@ -5,6 +5,20 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-07-26
+
+- make `npx --yes run-spaceapp install` the same one-command installer on
+  Linux, macOS, and Windows 11 Command Prompt;
+- expose a package-name-matching `run-spaceapp` executable so npm can resolve
+  the launcher reliably through `npx`;
+- default automatic installs to the supported 8 GB light profile on every
+  host while retaining the standard browser profile as an explicit opt-in;
+- synchronize an existing installation to the installed launcher and image
+  version on a repeated `install`, preserving data, credentials, secrets, and
+  the previous version for rollback;
+- document the Windows restricted-PowerShell interception and direct users to
+  the Command Prompt profile where the universal command works unchanged.
+
 ## [0.1.10] - 2026-07-26
 
 - hide the browser-heavy 150–250 GB dedicated-storage warning when the
@@ -100,7 +114,8 @@ Initial public release:
 - portable backup, restore, update, and rollback commands;
 - no telemetry by default.
 
-[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.11
 [0.1.10]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.10
 [0.1.9]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.9
 [0.1.8]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.8

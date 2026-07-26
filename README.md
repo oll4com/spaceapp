@@ -118,7 +118,7 @@ and telemetry is disabled by default.
 spaceapp status
 spaceapp logs
 spaceapp backup
-spaceapp update 0.1.10
+spaceapp update 0.1.11
 spaceapp rollback
 spaceapp down
 spaceapp uninstall
