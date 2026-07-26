@@ -9675,7 +9675,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       status: "ok",
       mode: config.runtimeStore === "postgres" ? "v0-postgres" : "v0-in-memory",
       capabilities: await store.listCapabilities(),
-      storageWarning: storageReadiness.status === "VERIFIED" ? "" : storageReadiness.statusReason
+      storageWarning:
+        config.browserSessionsEnabled && storageReadiness.status !== "VERIFIED"
+          ? storageReadiness.statusReason
+          : ""
     };
   });
   app.get("/api/admin/storage", defaultRouteRateLimitOptions, async () => storageReadinessSchema.parse(await storageReadinessChecker()));
