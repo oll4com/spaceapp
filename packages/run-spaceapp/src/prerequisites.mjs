@@ -45,18 +45,15 @@ export function windowsPowerShellArgs(operation) {
     ].join(" "),
     "windows-wsl-ready": [
       "$ErrorActionPreference = 'Stop'",
-      "$feature = Get-WindowsOptionalFeature -Online -FeatureName 'VirtualMachinePlatform'",
       "$system = Get-CimInstance -ClassName Win32_ComputerSystem",
-      "if ($feature.State -eq 'Enabled' -and $system.HypervisorPresent) { exit 0 }",
+      "if ($system.HypervisorPresent) { exit 0 }",
       "exit 1"
     ].join("; "),
     "windows-restart-pending": [
-      "$pending =",
-      "(Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') -or",
-      "(Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired')",
+      "$pending = (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') -or (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired')",
       "if ($pending) { exit 0 }",
       "exit 1"
-    ].join(" "),
+    ].join("; "),
     "register-spaceapp-resume": [
       "$ErrorActionPreference = 'Stop'",
       "$path = $env:SPACEAPP_RESUME_SCRIPT_PATH",

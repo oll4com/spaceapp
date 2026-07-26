@@ -47,6 +47,16 @@ test("Windows PowerShell operations use fixed scripts and reject arbitrary comma
   );
 });
 
+test("Windows WSL readiness and restart probes are valid non-admin PowerShell statements", () => {
+  const readinessScript = windowsPowerShellArgs("windows-wsl-ready")[4];
+  const restartScript = windowsPowerShellArgs("windows-restart-pending")[4];
+
+  assert.match(readinessScript, /Get-CimInstance/);
+  assert.doesNotMatch(readinessScript, /Get-WindowsOptionalFeature/);
+  assert.match(restartScript, /;\s*if \(\$pending\)/);
+  assert.doesNotMatch(restartScript, /\)\s+if \(\$pending\)/);
+});
+
 test("Windows resume uses the same pinned launcher entrypoint and validated install options", () => {
   const script = windowsResumeScript({
     executable: "C:\\Program Files\\nodejs\\node.exe",
