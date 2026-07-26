@@ -81,7 +81,6 @@ test("the process launcher dispatches only hard-coded executable literals", asyn
   for (const command of [
     "codesign",
     "docker",
-    "explorer.exe",
     "hdiutil",
     "open",
     "sg",
@@ -404,7 +403,7 @@ test("install honors an explicit standard profile and uses the native browser op
   for (const [platform, opener] of [
     ["linux", ["xdg-open", "http://127.0.0.1:4911"]],
     ["darwin", ["open", "http://127.0.0.1:4911"]],
-    ["win32", ["explorer.exe", "http://127.0.0.1:4911"]]
+    ["win32", ["powershell.exe", "open-spaceapp-browser", "http://127.0.0.1:4911"]]
   ]) {
     const root = await mkdtemp(join(tmpdir(), `spaceapp-cli-install-${platform}-`));
     const calls = [];
@@ -418,7 +417,9 @@ test("install honors an explicit standard profile and uses the native browser op
       request: readyUnclaimedRequest,
       sleep: async () => {},
       execute: async (spec) => {
-        calls.push([spec.command, ...spec.args]);
+        calls.push(spec.operation
+          ? [spec.command, spec.operation, spec.env?.SPACEAPP_OPEN_URL]
+          : [spec.command, ...spec.args]);
         return 0;
       }
     };

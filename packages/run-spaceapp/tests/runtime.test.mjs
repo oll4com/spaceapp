@@ -46,6 +46,11 @@ test("compose actions map to fixed commands and never invoke a shell", () => {
   assert.deepEqual(composeCommand("syncCredentials", home).args.slice(-5), [
     "up", "-d", "--no-deps", "--force-recreate", "spaceapp-cli"
   ]);
+  assert.equal(
+    composeCommand("pull", home).env,
+    undefined,
+    "pull must retain Docker Desktop's graphical logon session config"
+  );
   assert.deepEqual(composeCommand("rotateOwnerSetupToken", home).args.slice(-8), [
     "exec", "-T", "--user", "10001:10001", "spaceapp-core",
     "node", "scripts/rotate-owner-setup-token.mjs", "--stdin"
