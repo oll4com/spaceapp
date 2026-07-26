@@ -102,6 +102,7 @@ const publicAppTests = new Set([
   "apps/api/tests/owner-setup-bootstrap.test.ts",
   "apps/api/tests/route-rate-limits.test.ts",
   "apps/api/tests/setup.test.ts",
+  "apps/api/tests/storage-warning.test.ts",
   "apps/web/tests/clipboard-html.test.ts",
   "apps/web/tests/owner-setup.test.tsx"
 ]);

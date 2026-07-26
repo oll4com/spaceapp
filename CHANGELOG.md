@@ -5,6 +5,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-07-26
+
+- hide the browser-heavy 150–250 GB dedicated-storage warning when the
+  automatic 8 GB light profile has browser sessions disabled;
+- retain the dedicated-storage readiness warning for the standard profile,
+  where managed browser sessions are enabled.
+
 ## [0.1.9] - 2026-07-25
 
 - make `spaceapp open` degrade cleanly on headless systems by printing the
@@ -93,7 +100,8 @@ Initial public release:
 - portable backup, restore, update, and rollback commands;
 - no telemetry by default.
 
-[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.10
 [0.1.9]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.9
 [0.1.8]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.8
 [0.1.6]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.6

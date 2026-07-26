@@ -78,6 +78,7 @@ test("public test command uses a portable one-file suite that imports every publ
     "owner-setup-bootstrap.test.ts",
     "route-rate-limits.test.ts",
     "setup.test.ts",
+    "storage-warning.test.ts",
     "clipboard-html.test.ts",
     "owner-setup.test.tsx"
   ]) {
@@ -112,7 +113,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
 
   assert.deepEqual(publishable, [{
     name: "run-spaceapp",
-    version: "0.1.9",
+    version: "0.1.10",
     bin: { spaceapp: "bin/spaceapp.mjs" }
   }]);
   const launcherPackage = JSON.parse(
@@ -259,8 +260,8 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
 test("the public release rollback restores both stable npm dist-tags", async () => {
   const runbook = await readFile(join(root, "docs", "public-release.md"), "utf8");
 
-  assert.match(runbook, /npm dist-tag add run-spaceapp@0\.1\.6 latest/);
-  assert.match(runbook, /npm dist-tag add run-spaceapp@0\.1\.6 next/);
+  assert.match(runbook, /npm dist-tag add run-spaceapp@0\.1\.9 latest/);
+  assert.match(runbook, /npm dist-tag add run-spaceapp@0\.1\.9 next/);
   assert.match(runbook, /npm view run-spaceapp dist-tags --json/);
   assert.match(runbook, /exact version artifacts\s+remain immutable/i);
 });
