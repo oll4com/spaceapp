@@ -25,13 +25,12 @@ Recommended for browser sessions and several simultaneous CLI panes:
 Install Node.js 20.11 or newer, then run as a normal non-root user:
 
 ```bash
-sudo npm install -g run-spaceapp && spaceapp install
+npx --yes run-spaceapp install
 ```
 
 Linux runs the containers directly through the host Docker Engine; SpaceApp
-does not create a second guest VM. The `sudo` applies only to the system-wide
-npm package installation; `spaceapp install` runs as the current non-root user
-so the installation remains in that user's config directory. If Docker is
+does not create a second guest VM. The launcher runs as the current non-root
+user so the installation remains in that user's config directory. If Docker is
 missing on Ubuntu, Debian, Fedora, RHEL, or CentOS, the launcher adds Docker's
 official repository, installs Engine, Buildx, and Compose, and starts the
 service. Before adding the current user to the `docker` group, it explains that
@@ -42,7 +41,7 @@ the group grants root-level privileges and asks for confirmation.
 Install Node.js 20.11 or newer, then run in Terminal:
 
 ```bash
-npm install -g run-spaceapp && spaceapp install
+npx --yes run-spaceapp install
 ```
 
 If Docker is missing, the launcher asks you to review and accept Docker
@@ -51,14 +50,20 @@ its code signature, installs it, starts it, and waits until it is ready. Docker
 Desktop uses its managed lightweight Linux environment. Apple Silicon uses the
 native `linux/arm64` images and Intel Macs use `linux/amd64`.
 
-## Windows 11 — PowerShell
+## Windows 11 — Command Prompt
 
-Enable hardware virtualization and install Node.js 20.11 or newer. Open a
-normal PowerShell or Windows Terminal and run:
+Enable hardware virtualization and install Node.js 20.11 or newer. Open
+**Command Prompt**, or select the **Command Prompt** profile in Windows
+Terminal, and run:
 
-```powershell
-npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
+```bat
+npx --yes run-spaceapp install
 ```
+
+Do not run the universal command from a PowerShell profile whose execution
+policy is `Restricted`: Windows can block npm's `npx.ps1` before SpaceApp gets
+a chance to run. Command Prompt invokes npm's `npx.cmd` shim with the same
+universal command and needs no execution-policy change.
 
 If Docker is missing, the launcher asks you to review and accept Docker
 Desktop's terms, requests a Windows UAC approval when WSL2 or the package
@@ -82,8 +87,8 @@ environment and does not install a second full virtual machine.
 
 | Profile | Selection | Included services | Resource posture |
 | --- | --- | --- | --- |
-| `light` | automatically below 12 GiB RAM, or explicit | core, every bundled CLI, PostgreSQL, Temporal | supported on an 8 GB host; managed Chromium omitted |
-| `standard` | automatically at or above 12 GiB RAM, or explicit | light services plus managed Chromium | recommended with 16 GB RAM |
+| `light` | automatic default, or explicit | core, every bundled CLI, PostgreSQL, Temporal | supported on an 8 GB host; managed Chromium omitted |
+| `standard` | explicit opt-in only | light services plus managed Chromium | recommended with 16 GB RAM |
 
 Choose explicitly when needed:
 
@@ -95,6 +100,10 @@ spaceapp install --profile standard
 The light limits are 2 GiB for core, 1536 MiB for the CLI service, and 768 MiB
 each for PostgreSQL and Temporal. These are upper bounds, not memory reserved
 at startup.
+
+The `npx` command is the universal one-command installer. To retain a global
+launcher for later operations, optionally run `npm install -g run-spaceapp`;
+this is not required for the first install.
 
 ## Disk usage
 

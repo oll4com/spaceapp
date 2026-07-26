@@ -114,7 +114,10 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
   assert.deepEqual(publishable, [{
     name: "run-spaceapp",
     version: "0.1.10",
-    bin: { spaceapp: "bin/spaceapp.mjs" }
+    bin: {
+      spaceapp: "bin/spaceapp.mjs",
+      "run-spaceapp": "bin/spaceapp.mjs"
+    }
   }]);
   const launcherPackage = JSON.parse(
     await readFile(join(root, "packages", "run-spaceapp", "package.json"), "utf8")
@@ -232,19 +235,21 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
     join(root, "packages", "run-spaceapp", "README.md"),
     "utf8"
   );
-  const unixCommand = "npm install -g run-spaceapp && spaceapp install";
-  const windowsCommand =
-    "npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }";
+  const universalCommand = "npx --yes run-spaceapp install";
 
   for (const content of [readme, gettingStarted, packageReadme]) {
-    assert.match(content, new RegExp(unixCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(content, new RegExp(windowsCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(
+      content,
+      new RegExp(universalCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    );
     assert.match(content, /Docker.*(?:automatically|automatic)/is);
     assert.doesNotMatch(content, /@alpha|0\.1\.0-alpha|public alpha/i);
   }
-  for (const heading of ["Linux", "macOS", "Windows 11 — PowerShell"]) {
+  for (const heading of ["Linux", "macOS", "Windows 11 — Command Prompt"]) {
     assert.match(gettingStarted, new RegExp(`^## ${heading}$`, "m"));
   }
+  assert.match(gettingStarted, /Restricted/);
+  assert.match(gettingStarted, /npx\.cmd/);
   assert.match(gettingStarted, /8 GB/);
   assert.match(gettingStarted, /15 GiB/);
   assert.match(gettingStarted, /--profile light/);

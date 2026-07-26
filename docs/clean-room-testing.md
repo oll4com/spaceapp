@@ -71,22 +71,10 @@ production repository as the clean-room workspace.
 ## Release-artifact acceptance
 
 Once npm and GHCR artifacts are published, repeat the test without a source
-checkout. Linux:
+checkout. Use the same command on Linux, macOS, and Windows 11 Command Prompt:
 
 ```bash
-sudo npm install -g run-spaceapp && spaceapp install
-```
-
-macOS:
-
-```bash
-npm install -g run-spaceapp && spaceapp install
-```
-
-Windows 11 PowerShell:
-
-```powershell
-npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
+npx --yes run-spaceapp install
 ```
 
 For a Windows image without Docker Desktop, verify the first-run handoff as

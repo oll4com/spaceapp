@@ -35,22 +35,18 @@ Requirements:
 - recommended for the standard browser profile: 8 CPUs, 16 GB RAM, and
   25 GiB free disk.
 
-Linux:
+Run the same command in Linux, macOS, or Windows 11 Command Prompt:
 
 ```bash
-sudo npm install -g run-spaceapp && spaceapp install
+npx --yes run-spaceapp install
 ```
 
-macOS:
+This downloads the current launcher, installs missing Docker prerequisites,
+selects the light profile, starts SpaceApp, and opens it. To keep a global
+`spaceapp` command for later operations, install it separately:
 
 ```bash
-npm install -g run-spaceapp && spaceapp install
-```
-
-Windows 11 PowerShell:
-
-```powershell
-npm install -g run-spaceapp; if ($LASTEXITCODE -eq 0) { spaceapp install }
+npm install -g run-spaceapp
 ```
 
 `spaceapp install` creates the local configuration and fresh secrets, installs
@@ -68,15 +64,18 @@ license acceptance and Linux `docker` group membership require confirmation
 inside the same command. Windows may require one restart after WSL2 is enabled;
 rerun the same command afterward and it continues safely.
 On Docker Desktop's first launch, its **Welcome to Docker** window may require
-one user choice before the Engine starts. Select **Skip** in the top-right (or
-sign in), accept any remaining Docker prompt, and keep the terminal open.
+one user choice before the Engine starts. On Windows, use the **Command
+Prompt** profile in Windows Terminal because the default restricted PowerShell
+policy can block npm's `npx.ps1` before SpaceApp starts. Select **Skip** in the
+top-right (or sign in), accept any remaining Docker prompt, and keep the
+terminal open.
 SpaceApp waits for up to ten minutes and continues automatically as soon as
 Docker is ready.
 
-`auto` selects the `light` profile on systems below 12 GiB RAM. Light mode is
-the supported 8 GB option: it keeps every bundled CLI, PostgreSQL, and Temporal
-but omits managed Chromium. Use `spaceapp install --profile light` to select it
-explicitly, or `--profile standard` for the browser container.
+`auto` always selects the lightweight profile so the default stays usable on
+an 8 GB host. Light mode keeps every bundled CLI, PostgreSQL, and Temporal but
+omits managed Chromium. Use `--profile standard` explicitly when the managed
+browser container is required and the host has the recommended resources.
 
 The installer does not create or reserve a separate fixed-size VM. Linux uses
 the native Docker Engine; Windows uses Docker Desktop's WSL2 Linux environment;

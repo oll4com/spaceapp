@@ -34,6 +34,17 @@ async function installation({ platform = "linux", execute = async () => 0 } = {}
   return { root, stdout, stderr, options };
 }
 
+test("the package exposes stable global and universal npx command names", async () => {
+  const packageManifest = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8")
+  );
+
+  assert.deepEqual(packageManifest.bin, {
+    spaceapp: "bin/spaceapp.mjs",
+    "run-spaceapp": "bin/spaceapp.mjs"
+  });
+});
+
 test("help and version aliases expose the complete stable command surface", async () => {
   for (const args of [[], ["help"], ["--help"], ["-h"]]) {
     const stdout = capture();
@@ -82,7 +93,7 @@ test("help and version aliases expose the complete stable command surface", asyn
 
 test("up, down, status, logs, backup, and open delegate to their fixed native contracts", async () => {
   const calls = [];
-  const { options } = await installation({
+  const { root, options } = await installation({
     execute: async (spec) => {
       calls.push(spec);
       return 0;
@@ -94,8 +105,8 @@ test("up, down, status, logs, backup, and open delegate to their fixed native co
   }
   assert.deepEqual(calls.map((spec) => spec.args.slice(-3)), [
     ["up", "-d", "--remove-orphans"],
-    ["--profile", "standard", "down"],
-    ["--profile", "standard", "ps"],
+    ["-f", join(root, "compose.workspaces.yml"), "down"],
+    ["-f", join(root, "compose.workspaces.yml"), "ps"],
     ["logs", "--tail", "200"],
     ["spaceapp-core", "node", "scripts/portable-backup.mjs"]
   ]);

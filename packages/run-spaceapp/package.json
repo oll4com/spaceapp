@@ -5,7 +5,8 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "spaceapp": "bin/spaceapp.mjs"
+    "spaceapp": "bin/spaceapp.mjs",
+    "run-spaceapp": "bin/spaceapp.mjs"
   },
   "exports": {
     ".": "./src/index.mjs"

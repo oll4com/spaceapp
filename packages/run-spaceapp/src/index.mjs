@@ -20,7 +20,6 @@ import {
 } from "./string-utils.mjs";
 
 const CONFIG_SCHEMA_VERSION = 2;
-const AUTO_LIGHT_MEMORY_THRESHOLD_BYTES = 12 * 1024 ** 3;
 const MIN_INSTALL_CPU_COUNT = 4;
 const MIN_INSTALL_MEMORY_BYTES = 8_000_000_000;
 const MIN_INSTALL_MEMORY_LABEL = "8 GB";
@@ -100,7 +99,7 @@ export function resolveInstallProfile(requestedProfile, totalMemoryBytes) {
   if (!Number.isFinite(totalMemoryBytes) || totalMemoryBytes <= 0) {
     throw new Error("Total system memory must be available for automatic profile selection.");
   }
-  return totalMemoryBytes < AUTO_LIGHT_MEMORY_THRESHOLD_BYTES ? "light" : "standard";
+  return "light";
 }
 
 export async function inspectSystemResources(root) {
@@ -140,7 +139,7 @@ export function installResourceChecks(resources) {
   ];
 }
 
-export function createDefaultConfig({ version, profile = "standard" }) {
+export function createDefaultConfig({ version, profile = "light" }) {
   assertVersion(version);
   if (profile !== "light" && profile !== "standard") {
     throw new Error("Default config requires a resolved light or standard profile.");
@@ -491,10 +490,17 @@ export async function initializeInstallation(root, {
     if (error?.code !== "ENOENT") {
       throw error;
     }
-    config = createDefaultConfig({ version, profile: profile ?? "standard" });
+    config = createDefaultConfig({ version, profile: profile ?? "light" });
+  }
+  if (config.version !== version) {
+    config = {
+      ...config,
+      version,
+      previousVersion: config.version
+    };
   }
   if (profile !== undefined) {
-    const resolvedProfile = resolveInstallProfile(profile, AUTO_LIGHT_MEMORY_THRESHOLD_BYTES);
+    const resolvedProfile = resolveInstallProfile(profile, totalmem());
     config = { ...config, profile: resolvedProfile };
   }
   await saveConfig(root, config);
