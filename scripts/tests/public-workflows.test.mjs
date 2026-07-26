@@ -32,6 +32,12 @@ test("launcher and container matrices cover the declared operating systems and a
   for (const os of ["ubuntu-latest", "macos-latest", "windows-latest"]) {
     assert.match(platform, new RegExp(os));
   }
+  assert.match(
+    platform,
+    /name: Launcher \/ \$\{\{ matrix\.os \}\} \/ Node \$\{\{ matrix\.node \}\}/
+  );
+  assert.match(platform, /- os: windows-latest\s+node: "24"/);
+  assert.equal([...platform.matchAll(/- os: windows-latest/g)].length, 2);
   for (const target of ["core", "browser", "cli"]) {
     assert.match(containers, new RegExp(`- ${target}`));
   }
