@@ -118,6 +118,7 @@ export function OwnerSetupScreen({ expiresAt, onClaim }: OwnerSetupScreenProps) 
           One-time setup token
           <input
             id="space-setup-token"
+            name="token"
             value={token}
             onChange={(event) => {
               setToken(event.target.value);
@@ -138,6 +139,7 @@ export function OwnerSetupScreen({ expiresAt, onClaim }: OwnerSetupScreenProps) 
           Owner email
           <input
             id="space-owner-email"
+            name="email"
             value={email}
             onChange={(event) => {
               setEmail(event.target.value);
@@ -157,6 +159,7 @@ export function OwnerSetupScreen({ expiresAt, onClaim }: OwnerSetupScreenProps) 
           New password
           <input
             id="space-owner-password"
+            name="password"
             value={password}
             onChange={(event) => {
               setPassword(event.target.value);
@@ -177,6 +180,7 @@ export function OwnerSetupScreen({ expiresAt, onClaim }: OwnerSetupScreenProps) 
           Confirm password
           <input
             id="space-owner-password-confirmation"
+            name="passwordConfirmation"
             value={confirmation}
             onChange={(event) => {
               setConfirmation(event.target.value);

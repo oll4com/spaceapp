@@ -142,6 +142,15 @@ describe("first-owner setup", () => {
     expect(screen.queryByText(/encrypted request/i)).toBeNull();
   });
 
+  it("gives every owner setup control a stable browser form name", () => {
+    render(<OwnerSetupScreen expiresAt={null} onClaim={vi.fn(async () => undefined)} />);
+
+    expect((screen.getByLabelText("One-time setup token") as HTMLInputElement).name).toBe("token");
+    expect((screen.getByLabelText("Owner email") as HTMLInputElement).name).toBe("email");
+    expect((screen.getByLabelText("New password") as HTMLInputElement).name).toBe("password");
+    expect((screen.getByLabelText("Confirm password") as HTMLInputElement).name).toBe("passwordConfirmation");
+  });
+
   it("validates token, email, password length, and confirmation before claiming", async () => {
     const onClaim = vi.fn(async () => undefined);
     render(<OwnerSetupScreen expiresAt="2099-07-23T12:15:00.000Z" onClaim={onClaim} />);
