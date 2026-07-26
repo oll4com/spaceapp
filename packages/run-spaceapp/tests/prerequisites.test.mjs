@@ -23,7 +23,6 @@ function capture() {
 test("Windows PowerShell operations use fixed scripts and reject arbitrary commands", () => {
   const operations = [
     "install-wsl",
-    "windows-wsl-ready",
     "windows-restart-pending",
     "register-spaceapp-resume",
     "verify-docker-installer",
@@ -47,12 +46,9 @@ test("Windows PowerShell operations use fixed scripts and reject arbitrary comma
   );
 });
 
-test("Windows WSL readiness and restart probes are valid non-admin PowerShell statements", () => {
-  const readinessScript = windowsPowerShellArgs("windows-wsl-ready")[4];
+test("Windows restart probe is a valid non-admin PowerShell statement", () => {
   const restartScript = windowsPowerShellArgs("windows-restart-pending")[4];
 
-  assert.match(readinessScript, /Get-CimInstance/);
-  assert.doesNotMatch(readinessScript, /Get-WindowsOptionalFeature/);
   assert.match(restartScript, /;\s*if \(\$pending\)/);
   assert.doesNotMatch(restartScript, /\)\s+if \(\$pending\)/);
 });
@@ -242,9 +238,6 @@ test("Windows schedules the same install to resume after the WSL2 restart", asyn
       if (spec.command === "powershell.exe" && spec.operation === "install-wsl") {
         return 0;
       }
-      if (spec.command === "powershell.exe" && spec.operation === "windows-wsl-ready") {
-        return 1;
-      }
       if (spec.command === "powershell.exe" && spec.operation === "windows-restart-pending") {
         return 0;
       }
@@ -275,10 +268,6 @@ test("Windows schedules the same install to resume after the WSL2 restart", asyn
   assert.equal(scheduled[0].root, "C:\\Users\\Admin\\AppData\\Roaming\\SpaceApp");
   assert.equal(scheduled[0].requestedProfile, "light");
   assert.equal(scheduled[0].noOpen, true);
-  assert.ok(calls.some((spec) =>
-    spec.command === "powershell.exe" &&
-    spec.operation === "windows-wsl-ready"
-  ));
   assert.ok(calls.some((spec) =>
     spec.command === "powershell.exe" &&
     spec.operation === "windows-restart-pending"
@@ -393,6 +382,9 @@ test("Windows explains first-run Docker onboarding and continues when the user f
       }
       if (spec.command === "docker") return 0;
       if (spec.command === "wsl.exe") return 0;
+      if (spec.command === "powershell.exe" && spec.operation === "windows-restart-pending") {
+        return 1;
+      }
       return 0;
     },
     launch: async () => 0,
@@ -433,8 +425,8 @@ test("Windows bounds the first-run Docker onboarding wait at ten minutes", async
     stderr: stderr.stream,
     execute: async (spec) => {
       if (spec.command === "wsl.exe") return 0;
-      if (spec.command === "powershell.exe" && spec.operation === "windows-wsl-ready") {
-        return 0;
+      if (spec.command === "powershell.exe" && spec.operation === "windows-restart-pending") {
+        return 1;
       }
       return 127;
     },
@@ -474,9 +466,11 @@ test("Windows does not install Docker Desktop when its license is declined", asy
   assert.equal(downloaded, false);
 });
 
-test("Windows stops when virtualization is unavailable without a pending restart", async () => {
+test("Windows with installed WSL and a pending restart schedules resume before Docker", async () => {
   const calls = [];
+  const stdout = capture();
   const stderr = capture();
+  const scheduled = [];
   let downloaded = false;
   let wslChecks = 0;
 
@@ -485,7 +479,7 @@ test("Windows stops when virtualization is unavailable without a pending restart
     arch: "x64",
     env: { LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local" },
     stdin: Readable.from(["y\n"]),
-    stdout: capture().stream,
+    stdout: stdout.stream,
     stderr: stderr.stream,
     execute: async (spec) => {
       calls.push(spec);
@@ -494,11 +488,8 @@ test("Windows stops when virtualization is unavailable without a pending restart
         wslChecks += 1;
         return 0;
       }
-      if (spec.command === "powershell.exe" && spec.operation === "windows-wsl-ready") {
-        return 1;
-      }
       if (spec.command === "powershell.exe" && spec.operation === "windows-restart-pending") {
-        return 1;
+        return 0;
       }
       return 0;
     },
@@ -507,12 +498,23 @@ test("Windows stops when virtualization is unavailable without a pending restart
     },
     launch: async () => 0,
     pathExists: async () => false,
-    sleep: async () => {}
+    sleep: async () => {},
+    installArgs: {
+      root: "C:\\Users\\Admin\\AppData\\Roaming\\SpaceApp",
+      requestedProfile: "light",
+      noOpen: false
+    },
+    scheduleResume: async (options) => {
+      scheduled.push(options);
+      return 0;
+    },
+    confirmRestart: async () => false
   });
 
-  assert.deepEqual(result, { code: 1, reexecuted: false });
+  assert.deepEqual(result, { code: 0, reexecuted: true });
   assert.equal(wslChecks, 1);
   assert.equal(downloaded, false);
+  assert.equal(scheduled.length, 1);
   assert.equal(
     calls.some((spec) =>
       spec.command === "powershell.exe" &&
@@ -520,7 +522,8 @@ test("Windows stops when virtualization is unavailable without a pending restart
     ),
     false
   );
-  assert.match(stderr.value(), /virtualization is unavailable/i);
+  assert.match(stdout.value(), /Restart Windows when ready/i);
+  assert.equal(stderr.value(), "");
 });
 
 test("macOS installs the official signed Docker Desktop image and starts it", async () => {

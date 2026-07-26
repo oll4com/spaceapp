@@ -43,12 +43,6 @@ export function windowsPowerShellArgs(operation) {
       "; exit $process.ExitCode",
       "} catch { exit 1 }"
     ].join(" "),
-    "windows-wsl-ready": [
-      "$ErrorActionPreference = 'Stop'",
-      "$system = Get-CimInstance -ClassName Win32_ComputerSystem",
-      "if ($system.HypervisorPresent) { exit 0 }",
-      "exit 1"
-    ].join("; "),
     "windows-restart-pending": [
       "$pending = (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') -or (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired')",
       "if ($pending) { exit 0 }",
@@ -223,71 +217,61 @@ async function ensureWindowsDocker({
     wslInstalledNow = true;
   }
 
-  const wslReadyCode = await execute(
-    { command: "powershell.exe", operation: "windows-wsl-ready" },
+  const restartPendingCode = await execute(
+    { command: "powershell.exe", operation: "windows-restart-pending" },
     { stdin, stdout: null, stderr: null }
   );
-  if (wslReadyCode !== 0) {
-    const restartPendingCode = await execute(
-      { command: "powershell.exe", operation: "windows-restart-pending" },
-      { stdin, stdout: null, stderr: null }
+  if (wslInstalledNow || restartPendingCode === 0) {
+    const scheduleCode = await scheduleResume({
+      ...installArgs,
+      execute,
+      stdin,
+      stdout,
+      stderr
+    });
+    if (scheduleCode !== 0) {
+      stderr.write(
+        "Windows must restart to finish WSL2, but SpaceApp could not schedule automatic continuation.\n" +
+        "Restart Windows, then run the same SpaceApp command again.\n"
+      );
+      return { code: scheduleCode, reexecuted: false };
+    }
+    stdout.write(
+      "Windows must restart to finish enabling WSL2.\n" +
+      "SpaceApp is scheduled to resume automatically after you sign in.\n"
     );
-    if (wslInstalledNow || restartPendingCode === 0) {
-      const scheduleCode = await scheduleResume({
-        ...installArgs,
-        execute,
-        stdin,
-        stdout,
-        stderr
-      });
-      if (scheduleCode !== 0) {
-        stderr.write(
-          "Windows must restart to finish WSL2, but SpaceApp could not schedule automatic continuation.\n" +
-          "Restart Windows, then run the same SpaceApp command again.\n"
-        );
-        return { code: scheduleCode, reexecuted: false };
-      }
+    const restartNow = await confirmRestart({
+      stdin,
+      stdout,
+      question: "Restart Windows in 15 seconds and continue SpaceApp after sign-in? [y/N] "
+    });
+    if (!restartNow) {
       stdout.write(
-        "Windows must restart to finish enabling WSL2.\n" +
-        "SpaceApp is scheduled to resume automatically after you sign in.\n"
-      );
-      const restartNow = await confirmRestart({
-        stdin,
-        stdout,
-        question: "Restart Windows in 15 seconds and continue SpaceApp after sign-in? [y/N] "
-      });
-      if (!restartNow) {
-        stdout.write(
-          "Restart Windows when ready. SpaceApp will resume automatically the next time you sign in.\n"
-        );
-        return { code: 0, reexecuted: true };
-      }
-      const restartCode = await execute(
-        {
-          command: "shutdown.exe",
-          args: [
-            "/r",
-            "/t", "15",
-            "/c", "SpaceApp will continue automatically after you sign in."
-          ]
-        },
-        { stdin, stdout, stderr }
-      );
-      if (restartCode !== 0) {
-        stderr.write(
-          "Windows restart could not be scheduled. Restart Windows manually; SpaceApp will resume after sign-in.\n"
-        );
-        return { code: restartCode, reexecuted: false };
-      }
-      stdout.write(
-        "Windows will restart in 15 seconds. Save your work; run \"shutdown /a\" to cancel the countdown.\n"
+        "Restart Windows when ready. SpaceApp will resume automatically the next time you sign in.\n"
       );
       return { code: 0, reexecuted: true };
     }
-    stderr.write(
-      "WSL2 is installed, but Windows virtualization is unavailable. Enable CPU virtualization in firmware, restart Windows, and run the same SpaceApp command again.\n"
+    const restartCode = await execute(
+      {
+        command: "shutdown.exe",
+        args: [
+          "/r",
+          "/t", "15",
+          "/c", "SpaceApp will continue automatically after you sign in."
+        ]
+      },
+      { stdin, stdout, stderr }
     );
-    return { code: 1, reexecuted: false };
+    if (restartCode !== 0) {
+      stderr.write(
+        "Windows restart could not be scheduled. Restart Windows manually; SpaceApp will resume after sign-in.\n"
+      );
+      return { code: restartCode, reexecuted: false };
+    }
+    stdout.write(
+      "Windows will restart in 15 seconds. Save your work; run \"shutdown /a\" to cancel the countdown.\n"
+    );
+    return { code: 0, reexecuted: true };
   }
 
   if (!application) {
