@@ -151,6 +151,16 @@ describe("first-owner setup", () => {
     expect((screen.getByLabelText("Confirm password") as HTMLInputElement).name).toBe("passwordConfirmation");
   });
 
+  it("places the owner username before password-like setup controls", () => {
+    const { container } = render(
+      <OwnerSetupScreen expiresAt={null} onClaim={vi.fn(async () => undefined)} />
+    );
+
+    expect(
+      Array.from(container.querySelectorAll("form input")).map((input) => input.getAttribute("name"))
+    ).toEqual(["email", "token", "password", "passwordConfirmation"]);
+  });
+
   it("validates token, email, password length, and confirmation before claiming", async () => {
     const onClaim = vi.fn(async () => undefined);
     render(<OwnerSetupScreen expiresAt="2099-07-23T12:15:00.000Z" onClaim={onClaim} />);

@@ -114,27 +114,6 @@ export function OwnerSetupScreen({ expiresAt, onClaim }: OwnerSetupScreenProps) 
 
         {expiryLabel ? <p className="setup-expiry">Setup token expires {expiryLabel}.</p> : null}
 
-        <label htmlFor="space-setup-token">
-          One-time setup token
-          <input
-            id="space-setup-token"
-            name="token"
-            value={token}
-            onChange={(event) => {
-              setToken(event.target.value);
-              clearFieldError("token");
-            }}
-            type="password"
-            autoComplete="one-time-code"
-            spellCheck={false}
-            aria-invalid={Boolean(fieldErrors.token)}
-            aria-describedby={fieldErrors.token ? "space-setup-token-error" : undefined}
-            disabled={pending}
-            autoFocus
-          />
-        </label>
-        {fieldErrors.token ? <p id="space-setup-token-error" className="form-field-error">{fieldErrors.token}</p> : null}
-
         <label htmlFor="space-owner-email">
           Owner email
           <input
@@ -151,9 +130,30 @@ export function OwnerSetupScreen({ expiresAt, onClaim }: OwnerSetupScreenProps) 
             aria-invalid={Boolean(fieldErrors.email)}
             aria-describedby={fieldErrors.email ? "space-owner-email-error" : undefined}
             disabled={pending}
+            autoFocus
           />
         </label>
         {fieldErrors.email ? <p id="space-owner-email-error" className="form-field-error">{fieldErrors.email}</p> : null}
+
+        <label htmlFor="space-setup-token">
+          One-time setup token
+          <input
+            id="space-setup-token"
+            name="token"
+            value={token}
+            onChange={(event) => {
+              setToken(event.target.value);
+              clearFieldError("token");
+            }}
+            type="password"
+            autoComplete="one-time-code"
+            spellCheck={false}
+            aria-invalid={Boolean(fieldErrors.token)}
+            aria-describedby={fieldErrors.token ? "space-setup-token-error" : undefined}
+            disabled={pending}
+          />
+        </label>
+        {fieldErrors.token ? <p id="space-setup-token-error" className="form-field-error">{fieldErrors.token}</p> : null}
 
         <label htmlFor="space-owner-password">
           New password
