@@ -150,6 +150,22 @@ test("initialization creates idempotent secrets with owner-only POSIX permission
   );
 });
 
+test("initialization resolves the auto profile on a clean install", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-init-auto-profile-"));
+  const templateDir = join(root, "templates");
+  await mkdir(templateDir);
+  await writeFile(join(templateDir, "compose.yml"), "services: {}\n");
+
+  const result = await initializeInstallation(root, {
+    version: "0.1.11",
+    templateDir,
+    profile: "auto"
+  });
+
+  assert.equal(result.config.profile, "light");
+  assert.equal((await loadConfig(root)).profile, "light");
+});
+
 test("initialization synchronizes an existing install to the launcher version and preserves rollback and secrets", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-init-version-sync-"));
   const templateDir = join(root, "templates");

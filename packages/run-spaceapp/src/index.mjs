@@ -483,6 +483,9 @@ export async function initializeInstallation(root, {
     mkdir(join(root, "backups"), { recursive: true, mode: 0o700 }),
     mkdir(join(root, "secrets", "providers"), { recursive: true, mode: 0o700 })
   ]);
+  const resolvedProfile = profile === undefined
+    ? undefined
+    : resolveInstallProfile(profile, totalmem());
   let config;
   try {
     config = await loadConfig(root);
@@ -490,7 +493,7 @@ export async function initializeInstallation(root, {
     if (error?.code !== "ENOENT") {
       throw error;
     }
-    config = createDefaultConfig({ version, profile: profile ?? "light" });
+    config = createDefaultConfig({ version, profile: resolvedProfile ?? "light" });
   }
   if (config.version !== version) {
     config = {
@@ -499,8 +502,7 @@ export async function initializeInstallation(root, {
       previousVersion: config.version
     };
   }
-  if (profile !== undefined) {
-    const resolvedProfile = resolveInstallProfile(profile, totalmem());
+  if (resolvedProfile !== undefined) {
     config = { ...config, profile: resolvedProfile };
   }
   await saveConfig(root, config);

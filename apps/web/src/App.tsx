@@ -5493,6 +5493,7 @@ function LoginScreen({ auth, onLogin }: { auth: AuthMe; onLogin: (auth: AuthMe) 
           <input
             id="operator-email"
             name="email"
+            type="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             autoComplete="username"

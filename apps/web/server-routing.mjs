@@ -9,6 +9,13 @@ export function localAppSecurityHeaders() {
   };
 }
 
+export function localAppSecurityHeadersForRoute(rawUrl, fileExtension) {
+  if (fileExtension !== ".html") return null;
+  const pathname = new URL(rawUrl ?? "/", "http://space.local").pathname.replace(/\/+$/, "") || "/";
+  if (pathname === "/homepage" || pathname === "/demo-workspace") return null;
+  return localAppSecurityHeaders();
+}
+
 export function resolveLegacyAppRedirect(rawUrl, method) {
   const requestUrl = new URL(rawUrl ?? "/", "http://space.local");
   if (

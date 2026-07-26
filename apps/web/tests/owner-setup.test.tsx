@@ -119,6 +119,7 @@ describe("first-owner setup", () => {
     expect(email.value).toBe("");
     expect(email.id).toBe("operator-email");
     expect(email.name).toBe("email");
+    expect(email.type).toBe("email");
     expect(password.id).toBe("operator-password");
     expect(password.name).toBe("password");
   });
