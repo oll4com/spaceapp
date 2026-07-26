@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
@@ -43,6 +43,29 @@ export function windowsPowerShellArgs(operation) {
       "; exit $process.ExitCode",
       "} catch { exit 1 }"
     ].join(" "),
+    "windows-wsl-ready": [
+      "$ErrorActionPreference = 'Stop'",
+      "$feature = Get-WindowsOptionalFeature -Online -FeatureName 'VirtualMachinePlatform'",
+      "$system = Get-CimInstance -ClassName Win32_ComputerSystem",
+      "if ($feature.State -eq 'Enabled' -and $system.HypervisorPresent) { exit 0 }",
+      "exit 1"
+    ].join("; "),
+    "windows-restart-pending": [
+      "$pending =",
+      "(Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') -or",
+      "(Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired')",
+      "if ($pending) { exit 0 }",
+      "exit 1"
+    ].join(" "),
+    "register-spaceapp-resume": [
+      "$ErrorActionPreference = 'Stop'",
+      "$path = $env:SPACEAPP_RESUME_SCRIPT_PATH",
+      "if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { exit 1 }",
+      "$runOnce = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce'",
+      "New-Item -Path $runOnce -Force | Out-Null",
+      "$command = 'cmd.exe /d /k call \"' + $path + '\"'",
+      "New-ItemProperty -Path $runOnce -Name 'SpaceAppResumeInstall' -Value $command -PropertyType String -Force | Out-Null"
+    ].join("; "),
     "verify-docker-installer": [
       "$path = $env:SPACEAPP_DOCKER_INSTALLER_PATH",
       "if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }",
@@ -101,7 +124,9 @@ export async function ensureDockerAvailable({
   pathExists = fileExists,
   sleep = wait,
   osRelease,
-  installArgs
+  installArgs,
+  scheduleResume = scheduleWindowsInstallResume,
+  confirmRestart = confirmWindowsRestart
 }) {
   if (await dockerIsReady(execute)) {
     return { code: 0, reexecuted: false };
@@ -117,7 +142,10 @@ export async function ensureDockerAvailable({
       launch,
       download,
       pathExists,
-      sleep
+      sleep,
+      installArgs,
+      scheduleResume,
+      confirmRestart
     });
   }
   if (platform === "darwin") {
@@ -158,7 +186,10 @@ async function ensureWindowsDocker({
   launch,
   download,
   pathExists,
-  sleep
+  sleep,
+  installArgs,
+  scheduleResume,
+  confirmRestart
 }) {
   const paths = windowsDockerPaths(env);
   let application = await firstExisting(paths.applications, pathExists);
@@ -172,6 +203,7 @@ async function ensureWindowsDocker({
     }
   }
 
+  let wslInstalledNow = false;
   const wslCode = await execute(
     { command: "wsl.exe", args: ["--version"] },
     { stdin, stdout: null, stderr: null }
@@ -191,16 +223,74 @@ async function ensureWindowsDocker({
       );
       return { code: installWslCode, reexecuted: false };
     }
-    const installedWslCode = await execute(
-      { command: "wsl.exe", args: ["--version"] },
+    wslInstalledNow = true;
+  }
+
+  const wslReadyCode = await execute(
+    { command: "powershell.exe", operation: "windows-wsl-ready" },
+    { stdin, stdout: null, stderr: null }
+  );
+  if (wslReadyCode !== 0) {
+    const restartPendingCode = await execute(
+      { command: "powershell.exe", operation: "windows-restart-pending" },
       { stdin, stdout: null, stderr: null }
     );
-    if (installedWslCode !== 0) {
-      stderr.write(
-        "Windows must restart to finish enabling WSL2. Restart Windows, then run the same SpaceApp command again.\n"
+    if (wslInstalledNow || restartPendingCode === 0) {
+      const scheduleCode = await scheduleResume({
+        ...installArgs,
+        execute,
+        stdin,
+        stdout,
+        stderr
+      });
+      if (scheduleCode !== 0) {
+        stderr.write(
+          "Windows must restart to finish WSL2, but SpaceApp could not schedule automatic continuation.\n" +
+          "Restart Windows, then run the same SpaceApp command again.\n"
+        );
+        return { code: scheduleCode, reexecuted: false };
+      }
+      stdout.write(
+        "Windows must restart to finish enabling WSL2.\n" +
+        "SpaceApp is scheduled to resume automatically after you sign in.\n"
       );
-      return { code: 1, reexecuted: false };
+      const restartNow = await confirmRestart({
+        stdin,
+        stdout,
+        question: "Restart Windows in 15 seconds and continue SpaceApp after sign-in? [y/N] "
+      });
+      if (!restartNow) {
+        stdout.write(
+          "Restart Windows when ready. SpaceApp will resume automatically the next time you sign in.\n"
+        );
+        return { code: 0, reexecuted: true };
+      }
+      const restartCode = await execute(
+        {
+          command: "shutdown.exe",
+          args: [
+            "/r",
+            "/t", "15",
+            "/c", "SpaceApp will continue automatically after you sign in."
+          ]
+        },
+        { stdin, stdout, stderr }
+      );
+      if (restartCode !== 0) {
+        stderr.write(
+          "Windows restart could not be scheduled. Restart Windows manually; SpaceApp will resume after sign-in.\n"
+        );
+        return { code: restartCode, reexecuted: false };
+      }
+      stdout.write(
+        "Windows will restart in 15 seconds. Save your work; run \"shutdown /a\" to cancel the countdown.\n"
+      );
+      return { code: 0, reexecuted: true };
     }
+    stderr.write(
+      "WSL2 is installed, but Windows virtualization is unavailable. Enable CPU virtualization in firmware, restart Windows, and run the same SpaceApp command again.\n"
+    );
+    return { code: 1, reexecuted: false };
   }
 
   if (!application) {
@@ -510,6 +600,10 @@ async function confirmDesktopInstall({ platformName, stdin, stdout }) {
   });
 }
 
+async function confirmWindowsRestart({ stdin, stdout, question }) {
+  return confirmQuestion({ stdin, stdout, question });
+}
+
 async function confirmQuestion({ stdin, stdout, question }) {
   const readline = createInterface({ input: stdin, output: stdout, terminal: Boolean(stdin.isTTY) });
   try {
@@ -716,8 +810,91 @@ function linuxReentryCommand({ requestedProfile = "auto", noOpen = false } = {})
   ].map(shellQuote).join(" ");
 }
 
+export function windowsResumeScript({
+  executable = process.execPath,
+  entrypoint = fileURLToPath(new URL("../bin/spaceapp.mjs", import.meta.url)),
+  requestedProfile = "auto",
+  noOpen = false
+} = {}) {
+  if (!["auto", "light", "standard"].includes(requestedProfile)) {
+    throw new Error("Invalid SpaceApp profile for Windows resume.");
+  }
+  if (typeof noOpen !== "boolean") {
+    throw new Error("Invalid SpaceApp browser option for Windows resume.");
+  }
+  for (const [name, value] of [["executable", executable], ["entrypoint", entrypoint]]) {
+    if (
+      typeof value !== "string" ||
+      !win32.isAbsolute(value) ||
+      /["\r\n%]/.test(value)
+    ) {
+      throw new Error(`Invalid SpaceApp Windows resume ${name}.`);
+    }
+  }
+  const command = [
+    windowsBatchQuote(executable),
+    windowsBatchQuote(entrypoint),
+    "install",
+    "--profile",
+    requestedProfile,
+    ...(noOpen ? ["--no-open"] : [])
+  ].join(" ");
+  return [
+    "@echo off",
+    "setlocal",
+    command,
+    'set "SPACEAPP_RESUME_EXIT=%ERRORLEVEL%"',
+    'if "%SPACEAPP_RESUME_EXIT%"=="0" del /f /q "%~f0"',
+    'if not "%SPACEAPP_RESUME_EXIT%"=="0" echo SpaceApp setup needs attention. Review the error above, then run this file again.',
+    "exit /b %SPACEAPP_RESUME_EXIT%",
+    ""
+  ].join("\r\n");
+}
+
+async function scheduleWindowsInstallResume({
+  root,
+  requestedProfile = "auto",
+  noOpen = false,
+  execute,
+  stdin,
+  stdout,
+  stderr
+} = {}) {
+  if (
+    typeof root !== "string" ||
+    !win32.isAbsolute(root) ||
+    /["\r\n%]/.test(root)
+  ) {
+    stderr?.write("SpaceApp could not determine a safe Windows resume path.\n");
+    return 1;
+  }
+  const resumePath = win32.join(root, "resume-install.cmd");
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await writeFile(
+    resumePath,
+    windowsResumeScript({ requestedProfile, noOpen }),
+    { encoding: "utf8", mode: 0o600 }
+  );
+  const code = await execute(
+    {
+      command: "powershell.exe",
+      operation: "register-spaceapp-resume",
+      env: { SPACEAPP_RESUME_SCRIPT_PATH: resumePath }
+    },
+    { stdin, stdout: null, stderr }
+  );
+  if (code !== 0) {
+    await rm(resumePath, { force: true });
+  }
+  return code;
+}
+
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function windowsBatchQuote(value) {
+  return `"${String(value)}"`;
 }
 
 async function waitForDocker({ execute, sleep, attempts = 90 }) {

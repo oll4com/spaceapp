@@ -16,6 +16,8 @@ Semantic Versioning.
 - synchronize an existing installation to the installed launcher and image
   version on a repeated `install`, preserving data, credentials, secrets, and
   the previous version for rollback;
+- detect the clean-Windows WSL2 reboot boundary, register a one-time pinned
+  installer resume, and continue automatically after the user signs back in;
 - document the Windows restricted-PowerShell interception and direct users to
   the Command Prompt profile where the universal command works unchanged.
 

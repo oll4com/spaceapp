@@ -5,6 +5,7 @@ import {
   downloadFile,
   ensureDockerAvailable,
   prepareDockerCliPath,
+  windowsResumeScript,
   windowsPowerShellArgs
 } from "../src/prerequisites.mjs";
 
@@ -22,6 +23,9 @@ function capture() {
 test("Windows PowerShell operations use fixed scripts and reject arbitrary commands", () => {
   const operations = [
     "install-wsl",
+    "windows-wsl-ready",
+    "windows-restart-pending",
+    "register-spaceapp-resume",
     "verify-docker-installer",
     "install-docker-desktop",
     "start-docker-desktop"
@@ -40,6 +44,32 @@ test("Windows PowerShell operations use fixed scripts and reject arbitrary comma
   assert.throws(
     () => windowsPowerShellArgs("Write-Output untrusted"),
     /untrusted PowerShell operation/
+  );
+});
+
+test("Windows resume uses the same pinned launcher entrypoint and validated install options", () => {
+  const script = windowsResumeScript({
+    executable: "C:\\Program Files\\nodejs\\node.exe",
+    entrypoint: "C:\\Users\\Admin\\AppData\\Local\\npm-cache\\spaceapp.mjs",
+    requestedProfile: "light",
+    noOpen: true
+  });
+
+  assert.match(
+    script,
+    /"C:\\Program Files\\nodejs\\node\.exe" "C:\\Users\\Admin\\AppData\\Local\\npm-cache\\spaceapp\.mjs" install --profile light --no-open/
+  );
+  assert.match(script, /SPACEAPP_RESUME_EXIT/);
+  assert.match(script, /del \/f \/q "%~f0"/);
+  assert.doesNotMatch(script, /\bnpx(?:\.cmd)?\b/i);
+  assert.throws(
+    () => windowsResumeScript({
+      executable: "C:\\Program Files\\nodejs\\node.exe",
+      entrypoint: "C:\\spaceapp.mjs",
+      requestedProfile: "unsafe & whoami",
+      noOpen: false
+    }),
+    /profile/i
   );
 });
 
@@ -75,7 +105,7 @@ test("Docker Desktop CLI discovery is prepared on every supported desktop platfo
   assert.equal(linuxEnv.PATH, "/usr/bin:/bin");
 });
 
-test("Windows enables WSL2, installs signed Docker Desktop, and continues in one command", async () => {
+test("Windows with ready WSL2 installs signed Docker Desktop and continues in one command", async () => {
   const stdout = capture();
   const stderr = capture();
   const calls = [];
@@ -102,13 +132,13 @@ test("Windows enables WSL2, installs signed Docker Desktop, and continues in one
       }
       if (spec.command === "wsl.exe") {
         wslChecks += 1;
-        return wslChecks === 1 ? 1 : 0;
+        return 0;
       }
       if (spec.command === "winget.exe") {
         return 127;
       }
       if (spec.command === "powershell.exe") {
-        if (spec.operation === "install-wsl") {
+        if (spec.operation === "windows-wsl-ready") {
           return 0;
         }
         if (
@@ -141,7 +171,7 @@ test("Windows enables WSL2, installs signed Docker Desktop, and continues in one
   });
 
   assert.deepEqual(result, { code: 0, reexecuted: false });
-  assert.equal(wslChecks, 2);
+  assert.equal(wslChecks, 1);
   assert.equal(downloads.length, 1);
   assert.match(downloads[0].url, /^https:\/\/desktop\.docker\.com\/win\/main\/amd64\//);
   assert.ok(calls.some((spec) =>
@@ -149,11 +179,13 @@ test("Windows enables WSL2, installs signed Docker Desktop, and continues in one
     spec.operation === "verify-docker-installer" &&
     spec.args === undefined
   ));
-  assert.ok(calls.some((spec) =>
-    spec.command === "powershell.exe" &&
-    spec.operation === "install-wsl" &&
-    spec.args === undefined
-  ));
+  assert.equal(
+    calls.some((spec) =>
+      spec.command === "powershell.exe" &&
+      spec.operation === "install-wsl"
+    ),
+    false
+  );
   assert.ok(calls.some((spec) =>
     spec.command === "powershell.exe" &&
     spec.operation === "install-docker-desktop" &&
@@ -168,6 +200,85 @@ test("Windows enables WSL2, installs signed Docker Desktop, and continues in one
   }]);
   assert.match(stdout.value(), /Docker Desktop is required/i);
   assert.match(stdout.value(), /Docker Desktop is ready/i);
+  assert.equal(stderr.value(), "");
+});
+
+test("Windows schedules the same install to resume after the WSL2 restart", async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  const scheduled = [];
+  let wslChecks = 0;
+  let downloaded = false;
+
+  const result = await ensureDockerAvailable({
+    platform: "win32",
+    arch: "x64",
+    env: {
+      LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local",
+      ProgramFiles: "C:\\Program Files",
+      Path: "C:\\Windows\\System32"
+    },
+    stdin: Readable.from(["y\n"]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker") return 127;
+      if (spec.command === "wsl.exe") {
+        wslChecks += 1;
+        return wslChecks === 1 ? 1 : 0;
+      }
+      if (spec.command === "powershell.exe" && spec.operation === "install-wsl") {
+        return 0;
+      }
+      if (spec.command === "powershell.exe" && spec.operation === "windows-wsl-ready") {
+        return 1;
+      }
+      if (spec.command === "powershell.exe" && spec.operation === "windows-restart-pending") {
+        return 0;
+      }
+      if (spec.command === "shutdown.exe") return 0;
+      return 127;
+    },
+    download: async () => {
+      downloaded = true;
+    },
+    launch: async () => 0,
+    pathExists: async () => false,
+    sleep: async () => {},
+    installArgs: {
+      root: "C:\\Users\\Admin\\AppData\\Roaming\\SpaceApp",
+      requestedProfile: "light",
+      noOpen: true
+    },
+    scheduleResume: async (options) => {
+      scheduled.push(options);
+      return 0;
+    },
+    confirmRestart: async () => true
+  });
+
+  assert.deepEqual(result, { code: 0, reexecuted: true });
+  assert.equal(downloaded, false);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].root, "C:\\Users\\Admin\\AppData\\Roaming\\SpaceApp");
+  assert.equal(scheduled[0].requestedProfile, "light");
+  assert.equal(scheduled[0].noOpen, true);
+  assert.ok(calls.some((spec) =>
+    spec.command === "powershell.exe" &&
+    spec.operation === "windows-wsl-ready"
+  ));
+  assert.ok(calls.some((spec) =>
+    spec.command === "powershell.exe" &&
+    spec.operation === "windows-restart-pending"
+  ));
+  assert.ok(calls.some((spec) =>
+    spec.command === "shutdown.exe" &&
+    spec.args.join(" ") ===
+      '/r /t 15 /c SpaceApp will continue automatically after you sign in.'
+  ));
+  assert.match(stdout.value(), /resume automatically after you sign in/i);
   assert.equal(stderr.value(), "");
 });
 
@@ -196,6 +307,9 @@ test("Windows prefers hash-verified winget Docker Desktop installation over the 
         return installed && launched ? 0 : 127;
       }
       if (spec.command === "wsl.exe") {
+        return 0;
+      }
+      if (spec.command === "powershell.exe" && spec.operation === "windows-wsl-ready") {
         return 0;
       }
       if (spec.command === "winget.exe" && spec.args[0] === "--version") {
@@ -307,7 +421,13 @@ test("Windows bounds the first-run Docker onboarding wait at ten minutes", async
     stdin: Readable.from([]),
     stdout: capture().stream,
     stderr: stderr.stream,
-    execute: async (spec) => spec.command === "wsl.exe" ? 0 : 127,
+    execute: async (spec) => {
+      if (spec.command === "wsl.exe") return 0;
+      if (spec.command === "powershell.exe" && spec.operation === "windows-wsl-ready") {
+        return 0;
+      }
+      return 127;
+    },
     launch: async () => 0,
     pathExists: async (path) =>
       path.endsWith("Docker Desktop.exe") ||
@@ -344,7 +464,7 @@ test("Windows does not install Docker Desktop when its license is declined", asy
   assert.equal(downloaded, false);
 });
 
-test("Windows elevates WSL2 setup and stops for a required restart before downloading Docker", async () => {
+test("Windows stops when virtualization is unavailable without a pending restart", async () => {
   const calls = [];
   const stderr = capture();
   let downloaded = false;
@@ -362,9 +482,14 @@ test("Windows elevates WSL2 setup and stops for a required restart before downlo
       if (spec.command === "docker") return 127;
       if (spec.command === "wsl.exe") {
         wslChecks += 1;
+        return 0;
+      }
+      if (spec.command === "powershell.exe" && spec.operation === "windows-wsl-ready") {
         return 1;
       }
-      if (spec.command === "powershell.exe") return 0;
+      if (spec.command === "powershell.exe" && spec.operation === "windows-restart-pending") {
+        return 1;
+      }
       return 0;
     },
     download: async () => {
@@ -376,14 +501,16 @@ test("Windows elevates WSL2 setup and stops for a required restart before downlo
   });
 
   assert.deepEqual(result, { code: 1, reexecuted: false });
-  assert.equal(wslChecks, 2);
+  assert.equal(wslChecks, 1);
   assert.equal(downloaded, false);
-  assert.ok(calls.some((spec) =>
-    spec.command === "powershell.exe" &&
-    spec.operation === "install-wsl" &&
-    spec.args === undefined
-  ));
-  assert.match(stderr.value(), /restart Windows/i);
+  assert.equal(
+    calls.some((spec) =>
+      spec.command === "powershell.exe" &&
+      spec.operation === "install-wsl"
+    ),
+    false
+  );
+  assert.match(stderr.value(), /virtualization is unavailable/i);
 });
 
 test("macOS installs the official signed Docker Desktop image and starts it", async () => {

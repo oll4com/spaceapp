@@ -62,7 +62,9 @@ signed direct-download fallback), Docker Desktop on macOS, and Docker Engine
 repositories on Ubuntu, Debian, Fedora, RHEL, and CentOS. Docker Desktop
 license acceptance and Linux `docker` group membership require confirmation
 inside the same command. Windows may require one restart after WSL2 is enabled;
-rerun the same command afterward and it continues safely.
+SpaceApp registers a one-time resume, asks before scheduling the restart, and
+continues automatically after the user signs back in. The install command does
+not need to be entered again.
 On Docker Desktop's first launch, its **Welcome to Docker** window may require
 one user choice before the Engine starts. On Windows, use the **Command
 Prompt** profile in Windows Terminal because the default restricted PowerShell

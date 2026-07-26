@@ -77,9 +77,12 @@ until it is ready. On the first launch, Docker Desktop may show a
 **Welcome to Docker** screen before starting the Engine. Select **Skip** in the
 top-right (or sign in), accept any remaining Docker prompt, and leave the
 terminal open. SpaceApp waits for up to ten minutes and continues automatically
-when Docker becomes ready. Windows may request a UAC approval or one restart;
-rerun `spaceapp install` afterward. SpaceApp reuses Docker Desktop's WSL2 Linux
-environment and does not install a second full virtual machine.
+when Docker becomes ready. Windows may request a UAC approval or one restart.
+When WSL2 needs the restart, SpaceApp registers a one-time resume and asks
+before scheduling it. Save your work, approve the restart, and sign back in;
+the installer resumes automatically in Command Prompt without entering the
+command again. SpaceApp reuses Docker Desktop's WSL2 Linux environment and does
+not install a second full virtual machine.
 
 ## Installation profiles
 

@@ -28,8 +28,10 @@ policy can block npm's `npx.ps1` before SpaceApp starts. On Docker Desktop's
 first launch, select **Skip** in the top-right of the **Welcome to Docker**
 window (or sign in), accept any remaining Docker prompt, and keep the terminal
 open. SpaceApp waits for up to ten minutes and continues automatically when
-Docker is ready. If Windows requests one restart, rerun the same command and
-installation continues safely.
+Docker is ready. If WSL2 requires one restart, SpaceApp registers a one-time
+resume and asks before scheduling it. Sign back in after Windows restarts; the
+same install continues automatically in Command Prompt without entering a
+second command.
 
 The launcher defaults to the `light` profile on every system. Select
 `--profile standard` explicitly when managed Chromium is required and the host
