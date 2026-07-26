@@ -5,6 +5,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const unqualifiedNpxCommand = /(^|[^\w-])npx --yes run-spaceapp(?:$|[^\w@])/;
+const globalFollowUpCommand =
+  /(^|[^\w-])spaceapp (?:doctor|status|uninstall|credentials)\b/;
 
 const publicTestModules = [
   "container-image-size-budget.test.mjs",
@@ -29,6 +32,11 @@ async function packageFiles(directory) {
     .filter((entry) => entry.isDirectory())
     .map((entry) => join(root, directory, entry.name, "package.json"));
 }
+
+test("public command guards reject forbidden commands inside inline Markdown", () => {
+  assert.match("Use `npx --yes run-spaceapp` to continue.", unqualifiedNpxCommand);
+  assert.match("Use `spaceapp doctor` to diagnose it.", globalFollowUpCommand);
+});
 
 test("public test command uses a portable one-file suite that imports every public test", async () => {
   const rootPackage = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
@@ -273,7 +281,7 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
     publicRelease,
     securityModel
   ]) {
-    assert.doesNotMatch(content, /\bnpx --yes run-spaceapp(?:\s|$)/);
+    assert.doesNotMatch(content, unqualifiedNpxCommand);
   }
   for (const content of [
     readme,
@@ -282,10 +290,7 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
     operations,
     cliProviders
   ]) {
-    assert.doesNotMatch(
-      content,
-      /^spaceapp (?:doctor|status|uninstall|credentials)\b/m
-    );
+    assert.doesNotMatch(content, globalFollowUpCommand);
   }
   const followUpExamples = [readme, gettingStarted, operations, cliProviders].join("\n");
   for (const command of ["doctor", "status", "uninstall", "credentials"]) {
