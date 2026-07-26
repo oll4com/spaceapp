@@ -33,7 +33,6 @@ const SETUP_STATUS_TIMEOUT_MS = 10_000;
 const trustedCommands = new Set([
   "codesign",
   "docker",
-  "explorer.exe",
   "hdiutil",
   "open",
   "powershell.exe",
@@ -47,6 +46,7 @@ const trustedCommands = new Set([
 ]);
 const trustedEnvironmentNames = new Set([
   "SPACEAPP_DOCKER_INSTALLER_PATH",
+  "SPACEAPP_OPEN_URL",
   "SPACEAPP_RESUME_SCRIPT_PATH"
 ]);
 
@@ -812,7 +812,6 @@ function spawnTrustedCommand(spec, options) {
   switch (spec.command) {
     case "codesign": return spawn("codesign", args, options);
     case "docker": return spawn("docker", args, options);
-    case "explorer.exe": return spawn("explorer.exe", args, options);
     case "hdiutil": return spawn("hdiutil", args, options);
     case "open": return spawn("open", args, options);
     case "powershell.exe":
@@ -847,7 +846,11 @@ function openBrowser(url, platform, execute, io) {
     return execute({ command: "open", args: [url] }, io);
   }
   if (platform === "win32") {
-    return execute({ command: "explorer.exe", args: [url] }, io);
+    return execute({
+      command: "powershell.exe",
+      operation: "open-spaceapp-browser",
+      env: { SPACEAPP_OPEN_URL: url }
+    }, io);
   }
   return execute({ command: "xdg-open", args: [url] }, io);
 }

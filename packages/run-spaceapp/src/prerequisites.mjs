@@ -73,6 +73,17 @@ export function windowsPowerShellArgs(operation) {
       "$path = $env:SPACEAPP_DOCKER_DESKTOP_PATH",
       "if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }",
       "Start-Process -FilePath $path"
+    ].join("; "),
+    "open-spaceapp-browser": [
+      "$ErrorActionPreference = 'Stop'",
+      "$url = $env:SPACEAPP_OPEN_URL",
+      "$uri = $null",
+      "if ([string]::IsNullOrWhiteSpace($url) -or -not [Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$uri)) { exit 1 }",
+      "if ($uri.Scheme -ne 'http' -or @('127.0.0.1','0.0.0.0') -notcontains $uri.Host -or $uri.Port -lt 1024 -or $uri.Port -gt 65535) { exit 1 }",
+      "$roots = @([Environment]::GetEnvironmentVariable('ProgramFiles(x86)'), [Environment]::GetEnvironmentVariable('ProgramFiles'), [Environment]::GetEnvironmentVariable('LOCALAPPDATA')) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }",
+      "$edge = $roots | ForEach-Object { Join-Path $_ 'Microsoft\\Edge\\Application\\msedge.exe' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1",
+      "if ($edge) { Start-Process -FilePath $edge -ArgumentList @('--no-first-run','--no-default-browser-check',$url); exit 0 }",
+      "Start-Process -FilePath 'explorer.exe' -ArgumentList @($url)"
     ].join("; ")
   };
   if (!Object.hasOwn(scripts, operation)) {

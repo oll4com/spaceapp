@@ -27,7 +27,8 @@ test("Windows PowerShell operations use fixed scripts and reject arbitrary comma
     "register-spaceapp-resume",
     "verify-docker-installer",
     "install-docker-desktop",
-    "start-docker-desktop"
+    "start-docker-desktop",
+    "open-spaceapp-browser"
   ];
 
   for (const operation of operations) {
@@ -44,6 +45,16 @@ test("Windows PowerShell operations use fixed scripts and reject arbitrary comma
     () => windowsPowerShellArgs("Write-Output untrusted"),
     /untrusted PowerShell operation/
   );
+});
+
+test("Windows browser launch bypasses Edge first-run only for a validated local URL", () => {
+  const browserScript = windowsPowerShellArgs("open-spaceapp-browser")[4];
+
+  assert.match(browserScript, /SPACEAPP_OPEN_URL/);
+  assert.match(browserScript, /--no-first-run/);
+  assert.match(browserScript, /127\.0\.0\.1/);
+  assert.match(browserScript, /0\.0\.0\.0/);
+  assert.match(browserScript, /explorer\.exe/);
 });
 
 test("Windows restart probe is a valid non-admin PowerShell statement", () => {
