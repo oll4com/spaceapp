@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import test from "node:test";
 import { executeCommand, run } from "../src/cli.mjs";
@@ -392,11 +392,16 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
   assert.match(stdout.value(), /Selected profile: light.*7\.7 GB/i);
   assert.match(stdout.value(), /SpaceApp is ready at http:\/\/127\.0\.0\.1:4911/);
-  assert.deepEqual(calls.map((call) => [call.command, ...call.args.slice(-2)]), [
+  assert.deepEqual(calls.map((call) => [
+    call.command,
+    ...call.args.slice(-2).map((argument) =>
+      argument.endsWith("compose.workspaces.yml") ? "compose.workspaces.yml" : argument
+    )
+  ]), [
     ["docker", "docker", "--version"].slice(1),
     ["docker", "compose", "version"],
     ["docker", "info"],
-    ["docker", join(root, "compose.workspaces.yml"), "pull"],
+    ["docker", "compose.workspaces.yml", "pull"],
     ["docker", "-d", "--remove-orphans"],
     ["docker", "scripts/rotate-owner-setup-token.mjs", "--stdin"]
   ]);
@@ -436,6 +441,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.13 light without ch
   const composeBefore = await readFile(join(root, "compose.yml"), "utf8");
   const projectBefore = composeProjectName(root);
   const calls = [];
+  const stagedStateRoots = new Set();
   const stdout = capture();
   const options = {
     env: { SPACEAPP_HOME: root },
@@ -455,6 +461,20 @@ test("install upgrades a 0.1.10 standard installation to 0.1.13 light without ch
     sleep: async () => {},
     execute: async (spec) => {
       calls.push(spec);
+      const envFileIndex = spec.args.indexOf("--env-file");
+      if (envFileIndex !== -1) {
+        const stagedStateRoot = dirname(spec.args[envFileIndex + 1]);
+        stagedStateRoots.add(stagedStateRoot);
+        assert.notEqual(stagedStateRoot, root);
+        assert.equal(
+          spec.args[spec.args.indexOf("--project-directory") + 1],
+          root
+        );
+        assert.match(
+          await readFile(join(stagedStateRoot, "runtime.env"), "utf8"),
+          /^SPACEAPP_IMAGE_TAG=0\.1\.13$/m
+        );
+      }
       return 0;
     }
   };
@@ -482,6 +502,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.13 light without ch
   assert.match(stdout.value(), /data.*workspaces.*credentials.*secrets.*persistent Docker volumes/i);
 
   const refreshOutput = capture();
+  const refreshCallStart = calls.length;
   assert.equal(await run(["install", "--no-open"], {
     ...options,
     stdout: refreshOutput.stream
@@ -491,8 +512,108 @@ test("install upgrades a 0.1.10 standard installation to 0.1.13 light without ch
   assert.equal(refreshedConfig.previousVersion, "0.1.10");
   assert.equal(refreshedConfig.profile, "light");
   assert.deepEqual(refreshedConfig.workspaces, staleConfig.workspaces);
+  for (const [path, content] of preservedFiles) {
+    assert.equal(await readFile(join(root, path), "utf8"), content);
+  }
+  assert.equal(await readFile(join(root, "compose.yml"), "utf8"), composeBefore);
+  assert.equal(composeProjectName(root), projectBefore);
+  const refreshCalls = calls.slice(refreshCallStart);
+  assert.equal(refreshCalls.some((spec) => spec.args.includes("down")), false);
+  assert.equal(refreshCalls.some((spec) => spec.args.includes("--volumes")), false);
+  assert.equal(stagedStateRoots.size, 2);
+  for (const stagedStateRoot of stagedStateRoots) {
+    await assert.rejects(() => readFile(join(stagedStateRoot, "runtime.env"), "utf8"));
+  }
   assert.match(refreshOutput.value(), /SpaceApp version: 0\.1\.13 -> 0\.1\.13/);
   assert.match(refreshOutput.value(), /Profile: light -> light/);
+});
+
+test("a failed upgrade preserves the committed installation state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-failed-upgrade-"));
+  await initializeInstallation(root, {
+    version: "0.1.10",
+    profile: "standard"
+  });
+  const statePaths = [
+    "config.json",
+    "runtime.env",
+    "compose.yml",
+    "compose.workspaces.yml"
+  ];
+  const committedState = new Map(await Promise.all(
+    statePaths.map(async (path) => [path, await readFile(join(root, path), "utf8")])
+  ));
+
+  assert.equal(await run(["install", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: capture().stream,
+    stderr: capture().stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => ({
+      ...eightGigabyteClassLinuxGuest,
+      cpuCount: 1
+    }),
+    prepareDockerPath: async () => null,
+    execute: async () => 0
+  }), 1);
+
+  for (const [path, content] of committedState) {
+    assert.equal(await readFile(join(root, path), "utf8"), content);
+  }
+});
+
+test("Docker and readiness failures preserve the committed installation state", async () => {
+  for (const failure of ["pull", "up", "readiness"]) {
+    const root = await mkdtemp(join(tmpdir(), `spaceapp-cli-${failure}-failure-`));
+    await initializeInstallation(root, {
+      version: "0.1.10",
+      profile: "standard"
+    });
+    const statePaths = [
+      "config.json",
+      "runtime.env",
+      "compose.yml",
+      "compose.workspaces.yml"
+    ];
+    const committedState = new Map(await Promise.all(
+      statePaths.map(async (path) => [path, await readFile(join(root, path), "utf8")])
+    ));
+    const stagedStateRoots = new Set();
+
+    const code = await run(["install", "--no-open"], {
+      env: { SPACEAPP_HOME: root },
+      platform: "linux",
+      stdout: capture().stream,
+      stderr: capture().stream,
+      stdin: Readable.from([]),
+      inspectResources: async () => eightGigabyteClassLinuxGuest,
+      ensureDocker: async () => ({ code: 0, reexecuted: false }),
+      prepareDockerPath: async () => null,
+      request: async (url) => url.endsWith("/readyz")
+        ? jsonResponse({ ok: failure !== "readiness" }, failure === "readiness" ? 503 : 200)
+        : jsonResponse({ setupRequired: false, expiresAt: null }),
+      sleep: async () => {},
+      execute: async (spec) => {
+        const envFileIndex = spec.args.indexOf("--env-file");
+        if (envFileIndex !== -1) {
+          stagedStateRoots.add(dirname(spec.args[envFileIndex + 1]));
+        }
+        if (failure === "pull" && spec.args.at(-1) === "pull") return 41;
+        if (failure === "up" && spec.args.includes("--remove-orphans")) return 42;
+        return 0;
+      }
+    });
+
+    assert.equal(code, failure === "pull" ? 41 : failure === "up" ? 42 : 1);
+    for (const [path, content] of committedState) {
+      assert.equal(await readFile(join(root, path), "utf8"), content);
+    }
+    assert.equal(stagedStateRoots.size, 1);
+    for (const stagedStateRoot of stagedStateRoots) {
+      await assert.rejects(() => readFile(join(stagedStateRoot, "runtime.env"), "utf8"));
+    }
+  }
 });
 
 test("install honors an explicit standard profile and uses the native browser opener", async () => {

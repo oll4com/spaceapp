@@ -1,9 +1,12 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import process from "node:process";
 import {
   addWorkspace,
+  commitInstallation,
   composeCommand,
   credentialProviders,
   initializeInstallation,
@@ -12,6 +15,7 @@ import {
   loadConfig,
   removeCredential,
   removeWorkspace,
+  prepareInstallation,
   resolveInstallProfile,
   resolveSpaceAppHome,
   saveConfig,
@@ -272,7 +276,7 @@ async function installCommand(args, {
   const resources = await inspectResources(root);
   const profile = resolveInstallProfile(requestedProfile, resources.totalMemoryBytes);
   const existingConfig = await loadExistingInstallation(root);
-  const result = await initializeInstallation(root, { version, profile });
+  const result = await prepareInstallation(root, { version, profile });
 
   stdout.write(`Launcher version: ${version}\n`);
   stdout.write(
@@ -341,94 +345,103 @@ async function installCommand(args, {
     );
     return doctorCode;
   }
-  const pullCode = await executeWithDockerDiagnostics(
-    execute,
-    composeCommand("pull", root, { profile }),
-    { stdin, stdout, stderr },
-    { platform, stderr }
-  );
-  if (pullCode !== 0) return pullCode;
-  const upCode = await executeWithDockerDiagnostics(
-    execute,
-    composeCommand("up", root, { profile }),
-    { stdin, stdout, stderr },
-    { platform, stderr }
-  );
-  if (upCode !== 0) return upCode;
-
-  const url = `http://${result.config.bindHost}:${result.config.port}`;
-  stdout.write("Waiting for SpaceApp services to become ready...\n");
-  const ready = await waitForApplicationReady({
-    url,
-    request,
-    sleep
-  });
-  if (!ready) {
-    stderr.write(
-      "SpaceApp containers started, but the application did not become ready within 3 minutes.\n" +
-      `Run "${UNIVERSAL_COMMAND} status" and "${UNIVERSAL_COMMAND} logs", then run "${UNIVERSAL_COMMAND} install" again.\n`
-    );
-    return 1;
-  }
-
-  let setupStatus;
+  const stagedStateRoot = await mkdtemp(join(tmpdir(), "run-spaceapp-install-"));
   try {
-    setupStatus = await requestSetupStatus({ url, request });
-  } catch (error) {
-    stderr.write(
-      `SpaceApp is ready, but owner setup status could not be verified: ${error?.message || String(error)}\n` +
-      `Run "${UNIVERSAL_COMMAND} status" and "${UNIVERSAL_COMMAND} logs", then run "${UNIVERSAL_COMMAND} install" again.\n`
-    );
-    return 1;
-  }
-
-  let setupToken = null;
-  if (setupStatus.setupRequired) {
-    setupToken = randomBytes(32).toString("base64url");
-    const rotateCode = await executeWithDockerDiagnostics(
+    await commitInstallation(stagedStateRoot, result.config);
+    const stagedComposeCommand = (action) =>
+      composeCommand(action, root, { profile, stateRoot: stagedStateRoot });
+    const pullCode = await executeWithDockerDiagnostics(
       execute,
-      composeCommand("rotateOwnerSetupToken", root, { profile }),
-      {
-        stdin,
-        stdout,
-        stderr,
-        input: `${setupToken}\n`
-      },
+      stagedComposeCommand("pull"),
+      { stdin, stdout, stderr },
       { platform, stderr }
     );
-    if (rotateCode !== 0) {
+    if (pullCode !== 0) return pullCode;
+    const upCode = await executeWithDockerDiagnostics(
+      execute,
+      stagedComposeCommand("up"),
+      { stdin, stdout, stderr },
+      { platform, stderr }
+    );
+    if (upCode !== 0) return upCode;
+
+    const url = `http://${result.config.bindHost}:${result.config.port}`;
+    stdout.write("Waiting for SpaceApp services to become ready...\n");
+    const ready = await waitForApplicationReady({
+      url,
+      request,
+      sleep
+    });
+    if (!ready) {
       stderr.write(
-        `SpaceApp is ready, but a fresh owner setup token could not be created. Run "${UNIVERSAL_COMMAND} owner rotate-setup-token".\n`
-      );
-      return rotateCode;
-    }
-    try {
-      await persistSetupToken(root, setupToken);
-    } catch {
-      stderr.write(
-        "SpaceApp accepted a new setup token, but it could not be saved locally.\n" +
-        `Run "${UNIVERSAL_COMMAND} owner rotate-setup-token" to obtain a usable token.\n`
+        "SpaceApp containers started, but the application did not become ready within 3 minutes.\n" +
+        `Run "${UNIVERSAL_COMMAND} status" and "${UNIVERSAL_COMMAND} logs", then run "${UNIVERSAL_COMMAND} install" again.\n`
       );
       return 1;
     }
-  }
 
-  stdout.write(`SpaceApp is ready at ${url}\n`);
-  if (setupToken) {
-    stdout.write(`One-time setup token: ${setupToken}\n`);
-    stdout.write('Paste it into the "One-time setup token" field in the page that opens.\n');
-    stdout.write("It expires in 15 minutes and stops working after the first owner is created.\n");
-    stdout.write(`If it expires, run: ${UNIVERSAL_COMMAND} owner rotate-setup-token\n`);
+    let setupStatus;
+    try {
+      setupStatus = await requestSetupStatus({ url, request });
+    } catch (error) {
+      stderr.write(
+        `SpaceApp is ready, but owner setup status could not be verified: ${error?.message || String(error)}\n` +
+        `Run "${UNIVERSAL_COMMAND} status" and "${UNIVERSAL_COMMAND} logs", then run "${UNIVERSAL_COMMAND} install" again.\n`
+      );
+      return 1;
+    }
+
+    let setupToken = null;
+    if (setupStatus.setupRequired) {
+      setupToken = randomBytes(32).toString("base64url");
+      const rotateCode = await executeWithDockerDiagnostics(
+        execute,
+        stagedComposeCommand("rotateOwnerSetupToken"),
+        {
+          stdin,
+          stdout,
+          stderr,
+          input: `${setupToken}\n`
+        },
+        { platform, stderr }
+      );
+      if (rotateCode !== 0) {
+        stderr.write(
+          `SpaceApp is ready, but a fresh owner setup token could not be created. Run "${UNIVERSAL_COMMAND} owner rotate-setup-token".\n`
+        );
+        return rotateCode;
+      }
+      try {
+        await persistSetupToken(root, setupToken);
+      } catch {
+        stderr.write(
+          "SpaceApp accepted a new setup token, but it could not be saved locally.\n" +
+          `Run "${UNIVERSAL_COMMAND} owner rotate-setup-token" to obtain a usable token.\n`
+        );
+        return 1;
+      }
+    }
+
+    await commitInstallation(root, result.config);
+    stdout.write(`SpaceApp is ready at ${url}\n`);
+    if (setupToken) {
+      stdout.write(`One-time setup token: ${setupToken}\n`);
+      stdout.write('Paste it into the "One-time setup token" field in the page that opens.\n');
+      stdout.write("It expires in 15 minutes and stops working after the first owner is created.\n");
+      stdout.write(`If it expires, run: ${UNIVERSAL_COMMAND} owner rotate-setup-token\n`);
+    }
+    stdout.write(
+      `Next: add CLI credentials with "${UNIVERSAL_COMMAND} credentials set <provider>".\n`
+    );
+    if (noOpen) return 0;
+    const openCode = await openBrowser(url, platform, execute, { stdin, stdout, stderr });
+    if (openCode !== 0) {
+      stderr.write(`Could not open SpaceApp automatically. Open ${url} manually.\n`);
+    }
+    return 0;
+  } finally {
+    await rm(stagedStateRoot, { recursive: true, force: true });
   }
-  stdout.write(
-    `Next: add CLI credentials with "${UNIVERSAL_COMMAND} credentials set <provider>".\n`
-  );
-  if (noOpen) return 0;
-  const openCode = await openBrowser(url, platform, execute, { stdin, stdout, stderr });
-  if (openCode !== 0) {
-    stderr.write(`Could not open SpaceApp automatically. Open ${url} manually.\n`);
-  }
-  return 0;
 }
 
 function parseInstallArgs(args) {

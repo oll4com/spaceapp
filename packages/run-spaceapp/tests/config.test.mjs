@@ -5,9 +5,11 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   addWorkspace,
+  commitInstallation,
   createDefaultConfig,
   initializeInstallation,
   loadConfig,
+  prepareInstallation,
   resolveInstallProfile,
   resolveSpaceAppHome,
   saveConfig
@@ -193,6 +195,35 @@ test("initialization synchronizes an existing install to the launcher version an
     passwordBefore
   );
   assert.deepEqual(await loadConfig(root), result.config);
+});
+
+test("installation preparation defers committed version and runtime changes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-prepare-version-sync-"));
+  const templateDir = join(root, "templates");
+  await mkdir(templateDir);
+  await writeFile(join(templateDir, "compose.yml"), "services: {}\n");
+  await initializeInstallation(root, {
+    version: "0.1.10",
+    templateDir,
+    profile: "standard"
+  });
+  const committedConfig = await readFile(join(root, "config.json"), "utf8");
+  const committedRuntime = await readFile(join(root, "runtime.env"), "utf8");
+
+  const prepared = await prepareInstallation(root, {
+    version: "0.1.13",
+    profile: "light"
+  });
+
+  assert.equal(prepared.config.version, "0.1.13");
+  assert.equal(prepared.config.previousVersion, "0.1.10");
+  assert.equal(prepared.config.profile, "light");
+  assert.equal(await readFile(join(root, "config.json"), "utf8"), committedConfig);
+  assert.equal(await readFile(join(root, "runtime.env"), "utf8"), committedRuntime);
+
+  await commitInstallation(root, prepared.config, { templateDir });
+  assert.deepEqual(await loadConfig(root), prepared.config);
+  assert.match(await readFile(join(root, "runtime.env"), "utf8"), /^SPACEAPP_IMAGE_TAG=0\.1\.13$/m);
 });
 
 async function assertOwnerOnlyFile(path) {
