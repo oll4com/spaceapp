@@ -813,8 +813,12 @@ test("Docker, readiness, and browser-cleanup failures preserve the committed ins
     for (const [path, content] of committedState) {
       assert.equal(await readFile(join(root, path), "utf8"), content);
     }
-    assert.equal(stagedStateRoots.size, 1);
-    for (const stagedStateRoot of stagedStateRoots) {
+    assert.equal(stagedStateRoots.has(root), failure !== "pull");
+    const temporaryStateRoots = [...stagedStateRoots].filter(
+      (stateRoot) => stateRoot !== root
+    );
+    assert.equal(temporaryStateRoots.length, 1);
+    for (const stagedStateRoot of temporaryStateRoots) {
       await assert.rejects(() => readFile(join(stagedStateRoot, "runtime.env"), "utf8"));
     }
   }
@@ -829,6 +833,7 @@ test("a failed host-root activation restores the previous isolated runtime", asy
   });
   const stderr = capture();
   const upAccessModes = [];
+  const upStateRoots = [];
 
   const code = await run(["install", "--access", "host-root", "--no-open"], {
     env: { SPACEAPP_HOME: root },
@@ -844,6 +849,7 @@ test("a failed host-root activation restores the previous isolated runtime", asy
       if (spec.args.includes("--remove-orphans")) {
         const envFileIndex = spec.args.indexOf("--env-file");
         const stateRoot = dirname(spec.args[envFileIndex + 1]);
+        upStateRoots.push(stateRoot);
         const hostAccess = await readFile(join(stateRoot, "compose.host-access.yml"), "utf8");
         upAccessModes.push(hostAccess.includes('target: "/host"') ? "host-root" : "isolated");
         return upAccessModes.length === 1 ? 42 : 0;
@@ -854,6 +860,8 @@ test("a failed host-root activation restores the previous isolated runtime", asy
 
   assert.equal(code, 42);
   assert.deepEqual(upAccessModes, ["host-root", "isolated"]);
+  assert.notEqual(upStateRoots[0], root);
+  assert.equal(upStateRoots[1], root);
   assert.equal(
     (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).accessMode,
     "isolated"

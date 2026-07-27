@@ -3,12 +3,13 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { isRegistrySafeReleaseVersion } from "./release-version.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const versionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 export function evaluatePublicRelease({
   requestedVersion,
+  requestedNpmTag,
   packageVersion,
   notices,
   dockerfile,
@@ -16,13 +17,21 @@ export function evaluatePublicRelease({
 }) {
   const blockers = [];
   const warnings = [];
-  if (!versionPattern.test(requestedVersion)) {
+  if (!isRegistrySafeReleaseVersion(requestedVersion)) {
     blockers.push(
-      `Requested version ${requestedVersion} is not a valid semantic version.`
+      `Requested version ${requestedVersion} is not a valid registry-safe semantic version.`
     );
   } else if (requestedVersion !== packageVersion) {
     blockers.push(
       `Requested version ${requestedVersion} does not match run-spaceapp ${packageVersion}.`
+    );
+  }
+  if (
+    requestedVersion.includes("-hostroot.") &&
+    requestedNpmTag !== "personal"
+  ) {
+    blockers.push(
+      "Host-root prereleases must publish only to the npm personal tag."
     );
   }
   const claudePolicy = distributionPolicy?.packages?.["@anthropic-ai/claude-code"];
@@ -57,21 +66,30 @@ export function evaluatePublicRelease({
 
 function parseArgs(argv) {
   let requestedVersion = "";
+  let requestedNpmTag = "";
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--version" && argv[index + 1]) {
       requestedVersion = argv[index + 1];
       index += 1;
+    } else if (argument === "--npm-tag" && argv[index + 1]) {
+      requestedNpmTag = argv[index + 1];
+      index += 1;
     } else {
       throw new Error(
-        "Usage: public-release-readiness.mjs --version <semantic-version>"
+        "Usage: public-release-readiness.mjs --version <semantic-version> --npm-tag <next|personal>"
       );
     }
   }
-  if (!requestedVersion) {
-    throw new Error("A release version is required.");
+  if (
+    !requestedVersion ||
+    !["next", "personal"].includes(requestedNpmTag)
+  ) {
+    throw new Error(
+      "Usage: public-release-readiness.mjs --version <semantic-version> --npm-tag <next|personal>"
+    );
   }
-  return { requestedVersion };
+  return { requestedVersion, requestedNpmTag };
 }
 
 export async function runCli(argv) {

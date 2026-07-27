@@ -62,6 +62,11 @@ The workflow then:
 5. publishes that tarball as `run-spaceapp@<version>` with the explicitly
    selected `next` or `personal` tag and `--provenance`.
 
+Release versions use the registry-safe SemVer subset accepted unchanged by
+both npm and Docker tags. Numeric identifiers with leading zeros and SemVer
+build metadata (`+...`) are rejected because the exact version is also the
+immutable GHCR tag.
+
 For `0.1.14`, `latest` must remain `0.1.12` until clean-install acceptance is
 complete.
 

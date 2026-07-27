@@ -182,6 +182,11 @@ test("container entrypoints load secrets and keep CLI root only for explicit hos
     /if \[ "\$\{SPACEAPP_CLI_HOST_ROOT_ACCESS:-false\}" = "true" \]; then\s+exec node packages\/cli-host\/dist\/main\.js\s+fi/
   );
   assert.match(cli, /gosu spaceapp/);
+  assert.match(
+    cli,
+    /chown -hR spaceapp:spaceapp \/var\/lib\/spaceapp-cli \/var\/lib\/spaceapp\/memory/
+  );
+  assert.doesNotMatch(cli, /chown -R[^\n]*\/workspaces/);
   assert.match(cli, /rm -f -- "\$destination"/);
   assert.doesNotMatch(cli, /(?:-n|-z).*SPACEAPP_CLI_HOST_ROOT_ACCESS/);
   assert.doesNotMatch(`${core}\n${cli}`, /set -x/);

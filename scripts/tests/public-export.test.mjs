@@ -123,6 +123,7 @@ test("public path policy excludes internal tests and keeps only reviewed public 
   for (const path of [
     ".trivyignore",
     "scripts/container-image-size-budget.mjs",
+    "scripts/release-version.mjs",
     "scripts/tests/portable-backup-restore.test.mjs",
     "scripts/tests/container-image-size-budget.test.mjs",
     "scripts/tests/public-compose-config.test.mjs",
@@ -132,6 +133,7 @@ test("public path policy excludes internal tests and keeps only reviewed public 
     "scripts/tests/public-release-readiness.test.mjs",
     "scripts/tests/public-suite.test.mjs",
     "scripts/tests/public-workflows.test.mjs",
+    "scripts/tests/release-version.test.mjs",
     "scripts/tests/reset-owner-password.test.mjs",
     "scripts/tests/rotate-owner-setup-token.test.mjs"
   ]) {

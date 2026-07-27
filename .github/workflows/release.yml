@@ -46,10 +46,14 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
-      - name: Enforce legal and version readiness
+      - name: Enforce legal, version, and npm channel readiness
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_DIST_TAG: ${{ inputs.npm_tag }}
         run: >-
           node scripts/public-release-readiness.mjs
-          --version "${{ inputs.version }}"
+          --version "$RELEASE_VERSION"
+          --npm-tag "$RELEASE_DIST_TAG"
 
   source-candidate:
     name: Verify sanitized source and npm candidate
@@ -358,7 +362,9 @@ jobs:
         run: npm install --global --ignore-scripts --no-audit --no-fund npm@11.18.0
 
       - name: Publish sanitized tarball to selected prerelease channel
-        run: npm publish "$RUNNER_TEMP/release-artifacts/run-spaceapp-${{ inputs.version }}.tgz" --tag "${{ inputs.npm_tag }}" --provenance
+        env:
+          RELEASE_DIST_TAG: ${{ inputs.npm_tag }}
+        run: npm publish "$RUNNER_TEMP/release-artifacts/run-spaceapp-${{ inputs.version }}.tgz" --tag "$RELEASE_DIST_TAG" --provenance
 
       - name: Verify staged npm metadata
         env:

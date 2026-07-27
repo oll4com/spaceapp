@@ -531,19 +531,17 @@ async function restoreRuntimeAfterFailedInstall({
   );
   try {
     if (existingConfig) {
-      await commitInstallation(stagedStateRoot, existingConfig);
+      await commitInstallation(root, existingConfig);
       const restoreCode = await runtimeExecute(
         composeCommand("up", root, {
-          profile: existingConfig.profile,
-          stateRoot: stagedStateRoot
+          profile: existingConfig.profile
         })
       );
       if (restoreCode === 0) {
         if (existingConfig.profile === "light") {
           const cleanupCode = await runtimeExecute(
             composeCommand("removeBrowser", root, {
-              profile: "standard",
-              stateRoot: stagedStateRoot
+              profile: "standard"
             })
           );
           if (cleanupCode !== 0) {
@@ -563,7 +561,7 @@ async function restoreRuntimeAfterFailedInstall({
     const stopCode = await runtimeExecute(
       composeCommand("down", root, {
         profile: existingConfig?.profile ?? attemptedProfile,
-        stateRoot: stagedStateRoot
+        stateRoot: existingConfig ? root : stagedStateRoot
       })
     );
     if (stopCode !== 0) {

@@ -128,8 +128,8 @@ do not change the access mode.
 If the new release fails its health or owner workflow checks:
 
 ```bash
-npx --yes run-spaceapp@latest rollback
-npx --yes run-spaceapp@latest status
+npx --yes run-spaceapp@personal rollback
+npx --yes run-spaceapp@personal status
 ```
 
 Rollback returns to the single previously recorded image version. It does not

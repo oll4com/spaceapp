@@ -37,6 +37,7 @@ test("public release readiness blocks version drift", () => {
 test("public release readiness accepts exact semantic prerelease versions", () => {
   const result = evaluatePublicRelease({
     requestedVersion: "0.1.15-hostroot.0",
+    requestedNpmTag: "personal",
     packageVersion: "0.1.15-hostroot.0",
     notices,
     dockerfile: "FROM node:22\n",
@@ -45,6 +46,22 @@ test("public release readiness accepts exact semantic prerelease versions", () =
 
   assert.equal(result.ok, true);
   assert.deepEqual(result.blockers, []);
+});
+
+test("public release readiness reserves host-root versions for the personal tag", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.0",
+    requestedNpmTag: "next",
+    packageVersion: "0.1.15-hostroot.0",
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.blockers, [
+    "Host-root prereleases must publish only to the npm personal tag."
+  ]);
 });
 
 test("public release readiness requires a positive owner-installed-only Claude record", () => {

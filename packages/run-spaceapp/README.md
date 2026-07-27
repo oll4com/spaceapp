@@ -59,10 +59,11 @@ npx --yes run-spaceapp@personal install --access host-root
 ```
 
 This mounts the Linux `/` at `/host` read/write in the CLI service and runs CLI
-sessions as container root. It can expose every host credential or make the
-operating system unbootable. It does not mount the Docker socket or enable a
-privileged container. Profiles control resources and managed Chromium, not
-access. Return to isolation without deleting persistent data with:
+sessions as container root. The core service receives `/host` read-only. It can
+expose every host credential or make the operating system unbootable. It does
+not mount the Docker socket or enable a privileged container. Profiles control
+resources and managed Chromium, not access. Return to isolation without
+deleting persistent data with:
 
 ```bash
 npx --yes run-spaceapp@personal install --access isolated
@@ -80,10 +81,10 @@ Claude Code is not redistributed in SpaceApp images. Install the reviewed
 package as an explicit owner action with:
 
 ```bash
-npx --yes run-spaceapp@latest provider install claude
+npx --yes run-spaceapp@personal provider install claude
 ```
 
-Run `npx --yes run-spaceapp@latest help` for the complete command list. Full
+Run `npx --yes run-spaceapp@personal help` for the complete command list. Full
 documentation:
 
 - [Getting started](https://github.com/oll4com/spaceapp/blob/main/docs/getting-started.md)
@@ -96,16 +97,16 @@ After the stack passes readiness checks, the install command prints the fresh
 it expires before the owner is created, run:
 
 ```bash
-npx --yes run-spaceapp@latest owner rotate-setup-token
+npx --yes run-spaceapp@personal owner rotate-setup-token
 ```
 
 Common follow-up commands use the same reliable launcher prefix:
 
 ```bash
-npx --yes run-spaceapp@latest doctor
-npx --yes run-spaceapp@latest status
-npx --yes run-spaceapp@latest credentials list
-npx --yes run-spaceapp@latest uninstall
+npx --yes run-spaceapp@personal doctor
+npx --yes run-spaceapp@personal status
+npx --yes run-spaceapp@personal credentials list
+npx --yes run-spaceapp@personal uninstall
 ```
 
 Uninstall retains data by default and prints the separate

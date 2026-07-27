@@ -24,4 +24,7 @@ if [ "${SPACEAPP_CLI_HOST_ROOT_ACCESS:-false}" = "true" ]; then
   exec node packages/cli-host/dist/main.js
 fi
 
+# Host-root sessions may leave root-owned provider or memory state. Restore only
+# the named-volume state; /workspaces can contain owner-managed host bind mounts.
+chown -hR spaceapp:spaceapp /var/lib/spaceapp-cli /var/lib/spaceapp/memory
 exec gosu spaceapp node packages/cli-host/dist/main.js
