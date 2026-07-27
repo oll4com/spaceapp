@@ -112,7 +112,7 @@ Installation profiles do not control filesystem permissions. Both `light` and
 `standard` use isolated access by default, where only registered workspaces are
 mounted.
 
-The launcher-only `0.1.15-hostroot.1` personal candidate supports isolated
+The launcher-only `0.1.15-hostroot.2` personal candidate supports isolated
 access only and reuses the existing `0.1.15-hostroot.0` runtime images:
 
 ```bash

@@ -780,7 +780,7 @@ test("install enables, preserves, and removes Linux host-root access without del
   assert.equal(await readFile(join(root, "secrets", "session-secret"), "utf8"), secretBefore);
 });
 
-test("Windows launcher .1 upgrades a 0.1.10 standard install to runtime .0 light without changing persistent state", async () => {
+test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .0 light without changing persistent state", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-upgrade-"));
   const workspace = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-workspace-"));
   const initialized = await initializeInstallation(root, {
@@ -868,7 +868,7 @@ test("Windows launcher .1 upgrades a 0.1.10 standard install to runtime .0 light
   for (const spec of calls) {
     assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
   }
-  assert.match(stdout.value(), /Launcher version: 0\.1\.15-hostroot\.1/);
+  assert.match(stdout.value(), /Launcher version: 0\.1\.15-hostroot\.2/);
   assert.match(stdout.value(), /Runtime image version: 0\.1\.10 -> 0\.1\.15-hostroot\.0/);
   assert.match(stdout.value(), /Profile: standard -> light/);
   assert.match(stdout.value(), /data.*workspaces.*credentials.*secrets.*persistent Docker volumes/i);

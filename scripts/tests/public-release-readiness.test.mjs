@@ -51,11 +51,11 @@ test("public release readiness accepts exact semantic prerelease versions", () =
 
 test("launcher-only readiness accepts a new launcher pinned to an older runtime", () => {
   const result = evaluatePublicRelease({
-    requestedVersion: "0.1.15-hostroot.1",
+    requestedVersion: "0.1.15-hostroot.2",
     requestedNpmTag: "personal",
     requestedReleaseMode: "launcher-only",
     requestedRuntimeVersion: "0.1.15-hostroot.0",
-    packageVersion: "0.1.15-hostroot.1",
+    packageVersion: "0.1.15-hostroot.2",
     packageRuntimeVersion: "0.1.15-hostroot.0",
     packageHostRootRuntimeCompatible: false,
     notices,
@@ -69,11 +69,11 @@ test("launcher-only readiness accepts a new launcher pinned to an older runtime"
 
 test("launcher-only readiness blocks runtime input drift", () => {
   const result = evaluatePublicRelease({
-    requestedVersion: "0.1.15-hostroot.1",
+    requestedVersion: "0.1.15-hostroot.2",
     requestedNpmTag: "personal",
     requestedReleaseMode: "launcher-only",
     requestedRuntimeVersion: "0.1.15-hostroot.0",
-    packageVersion: "0.1.15-hostroot.1",
+    packageVersion: "0.1.15-hostroot.2",
     packageRuntimeVersion: "0.1.15-hostroot.9",
     packageHostRootRuntimeCompatible: false,
     notices,

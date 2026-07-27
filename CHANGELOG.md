@@ -5,6 +5,14 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.15-hostroot.2] - 2026-07-27
+
+- release every non-successful readiness response body before retrying so
+  transient Docker Desktop startup responses cannot exhaust the Windows HTTP
+  connection pool;
+- continue reusing the existing `0.1.15-hostroot.0` runtime images without
+  enabling host-root access or publishing new container tags.
+
 ## [0.1.15-hostroot.1] - 2026-07-27
 
 - accept the `7.4 GiB` usable memory reported by an 8 GB-class CachyOS laptop
