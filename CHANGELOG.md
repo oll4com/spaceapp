@@ -5,6 +5,17 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.15-hostroot.1] - 2026-07-27
+
+- accept the `7.4 GiB` usable memory reported by an 8 GB-class CachyOS laptop
+  for the default light profile;
+- wait up to ten minutes for first-start readiness, print service status every
+  30 seconds, and show recent startup logs every two minutes;
+- automatically print final service status and logs before a failed install
+  rolls containers back while retaining persistent volumes;
+- preserve the real error from Linux Docker-group re-entry instead of adding
+  the inaccurate claim that installation stopped before image download.
+
 ## [0.1.14] - 2026-07-27
 
 - remove an already-running managed browser container when an existing

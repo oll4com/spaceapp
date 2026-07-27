@@ -111,7 +111,7 @@ Installation profiles do not control filesystem permissions. Both `light` and
 `standard` use isolated access by default, where only registered workspaces are
 mounted.
 
-The personal `0.1.15-hostroot.0` prerelease adds an explicit Linux-only mode
+The personal `0.1.15-hostroot.1` prerelease adds an explicit Linux-only mode
 for a trusted owner who wants CLI sessions to change the Linux installation:
 
 ```bash

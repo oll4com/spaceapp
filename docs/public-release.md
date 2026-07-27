@@ -72,17 +72,17 @@ complete.
 
 ## Personal host-root prerelease
 
-For `0.1.15-hostroot.0`, dispatch `release.yml` from `main` with:
+For `0.1.15-hostroot.1`, dispatch `release.yml` from `main` with:
 
-- `version`: `0.1.15-hostroot.0`;
+- `version`: `0.1.15-hostroot.1`;
 - `npm_tag`: `personal`.
 
 The full candidate, audit, Trivy, multi-architecture, SBOM, provenance, and
 artifact-existence gates remain mandatory. Do not change `latest` or `next`.
 After publication, confirm:
 
-- `run-spaceapp@0.1.15-hostroot.0` exists and has the reviewed `gitHead`;
-- `dist-tags.personal` is `0.1.15-hostroot.0`;
+- `run-spaceapp@0.1.15-hostroot.1` exists and has the reviewed `gitHead`;
+- `dist-tags.personal` is `0.1.15-hostroot.1`;
 - `latest` and `next` are unchanged;
 - all three exact GHCR tags expose `linux/amd64`, `linux/arm64`, SBOM, and
   provenance.
