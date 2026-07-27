@@ -31,7 +31,9 @@ import {
   windowsPowerShellArgs
 } from "./prerequisites.mjs";
 import {
+  HOST_ROOT_RUNTIME_COMPATIBLE,
   PACKAGE_VERSION,
+  RUNTIME_VERSION,
   UNIVERSAL_COMMAND
 } from "./package-info.mjs";
 
@@ -75,11 +77,13 @@ export async function run(argv, {
   prepareDockerPath = prepareDockerCliPath,
   request = globalThis.fetch,
   sleep = wait,
-  persistSetupToken = writeSetupToken
+  persistSetupToken = writeSetupToken,
+  launcherVersion = PACKAGE_VERSION,
+  runtimeVersion = RUNTIME_VERSION,
+  hostRootRuntimeCompatible = HOST_ROOT_RUNTIME_COMPATIBLE
 } = {}) {
   const [command = "help", ...args] = argv;
   const root = resolveSpaceAppHome({ env, platform });
-  const version = PACKAGE_VERSION;
 
   if (command !== "install") {
     await prepareDockerPath({ platform, env });
@@ -89,13 +93,15 @@ export async function run(argv, {
     return 0;
   }
   if (command === "--version" || command === "-v") {
-    stdout.write(`${version}\n`);
+    stdout.write(`${launcherVersion}\n`);
     return 0;
   }
   if (command === "install") {
     return installCommand(args, {
       root,
-      version,
+      launcherVersion,
+      runtimeVersion,
+      hostRootRuntimeCompatible,
       platform,
       arch,
       env,
@@ -113,7 +119,7 @@ export async function run(argv, {
   }
   if (command === "init") {
     assertNoArgs(args, "init");
-    const result = await initializeInstallation(root, { version });
+    const result = await initializeInstallation(root, { version: runtimeVersion });
     stdout.write(`SpaceApp initialized at ${root}\n`);
     if (result.setupToken) {
       stdout.write(`One-time setup token: ${result.setupToken}\n`);
@@ -166,7 +172,15 @@ export async function run(argv, {
     return ownerCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
   }
   if (command === "update") {
-    return updateCommand(args, { root, config, version, stdin, stdout, stderr, execute: runtimeExecute });
+    return updateCommand(args, {
+      root,
+      config,
+      version: runtimeVersion,
+      stdin,
+      stdout,
+      stderr,
+      execute: runtimeExecute
+    });
   }
   if (command === "rollback") {
     assertNoArgs(args, "rollback");
@@ -268,7 +282,9 @@ export async function run(argv, {
 
 async function installCommand(args, {
   root,
-  version,
+  launcherVersion,
+  runtimeVersion,
+  hostRootRuntimeCompatible,
   platform,
   arch,
   env,
@@ -292,6 +308,11 @@ async function installCommand(args, {
   if (accessMode === "host-root" && platform !== "linux") {
     throw new Error("Host-root access is supported only on Linux.");
   }
+  if (accessMode === "host-root" && !hostRootRuntimeCompatible) {
+    throw new Error(
+      "Host-root access is disabled for this launcher-only candidate because its runtime images were not rebuilt. Use --access isolated."
+    );
+  }
   await prepareDockerPath({ platform, env });
   const resources = await inspectResources(root);
   const profile = resolveInstallProfile(requestedProfile, resources.totalMemoryBytes);
@@ -300,11 +321,15 @@ async function installCommand(args, {
       "WARNING: host-root access lets SpaceApp CLI sessions read and modify the entire Linux host through /host, including credentials and system files.\n"
     );
   }
-  const result = await prepareInstallation(root, { version, profile, accessMode });
+  const result = await prepareInstallation(root, {
+    version: runtimeVersion,
+    profile,
+    accessMode
+  });
 
-  stdout.write(`Launcher version: ${version}\n`);
+  stdout.write(`Launcher version: ${launcherVersion}\n`);
   stdout.write(
-    `SpaceApp version: ${existingConfig?.version ?? "not installed"} -> ${result.config.version}\n`
+    `Runtime image version: ${existingConfig?.version ?? "not installed"} -> ${result.config.version}\n`
   );
   stdout.write(
     `Profile: ${existingConfig?.profile ?? "not configured"} -> ${result.config.profile}\n`
@@ -853,11 +878,13 @@ async function updateCommand(args, { root, config, version, stdin, stdout, stder
     throw new Error(`Usage: ${UNIVERSAL_COMMAND} update [version]`);
   }
   const targetVersion = args[0] || version;
-  const updated = {
-    ...config,
-    version: targetVersion,
-    previousVersion: config.version
-  };
+  const updated = targetVersion === config.version
+    ? config
+    : {
+      ...config,
+      version: targetVersion,
+      previousVersion: config.version
+    };
   await writeRuntimeFiles(root, updated);
   const pullCode = await execute(composeCommand("pull", root, { profile: updated.profile }), { stdin, stdout, stderr });
   if (pullCode !== 0) {
