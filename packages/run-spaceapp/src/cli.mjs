@@ -411,15 +411,6 @@ async function installCommand(args, {
         );
         return rotateCode;
       }
-      try {
-        await persistSetupToken(root, setupToken);
-      } catch {
-        stderr.write(
-          "SpaceApp accepted a new setup token, but it could not be saved locally.\n" +
-          `Run "${UNIVERSAL_COMMAND} owner rotate-setup-token" to obtain a usable token.\n`
-        );
-        return 1;
-      }
     }
 
     if (profile === "light") {
@@ -437,6 +428,18 @@ async function installCommand(args, {
           "SpaceApp is ready, but the managed browser container could not be removed for the light profile.\n"
         );
         return removeBrowserCode;
+      }
+    }
+
+    if (setupToken) {
+      try {
+        await persistSetupToken(root, setupToken);
+      } catch {
+        stderr.write(
+          "SpaceApp accepted a new setup token, but it could not be saved locally.\n" +
+          `Run "${UNIVERSAL_COMMAND} owner rotate-setup-token" to obtain a usable token.\n`
+        );
+        return 1;
       }
     }
 

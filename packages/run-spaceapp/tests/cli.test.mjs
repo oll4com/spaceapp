@@ -591,7 +591,8 @@ test("Docker, readiness, and browser-cleanup failures preserve the committed ins
       "config.json",
       "runtime.env",
       "compose.yml",
-      "compose.workspaces.yml"
+      "compose.workspaces.yml",
+      "secrets/setup-token"
     ];
     const committedState = new Map(await Promise.all(
       statePaths.map(async (path) => [path, await readFile(join(root, path), "utf8")])
@@ -609,7 +610,10 @@ test("Docker, readiness, and browser-cleanup failures preserve the committed ins
       prepareDockerPath: async () => null,
       request: async (url) => url.endsWith("/readyz")
         ? jsonResponse({ ok: failure !== "readiness" }, failure === "readiness" ? 503 : 200)
-        : jsonResponse({ setupRequired: false, expiresAt: null }),
+        : jsonResponse({
+          setupRequired: failure === "browser-cleanup",
+          expiresAt: failure === "browser-cleanup" ? "2099-07-23T12:15:00.000Z" : null
+        }),
       sleep: async () => {},
       execute: async (spec) => {
         const envFileIndex = spec.args.indexOf("--env-file");
