@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import test from "node:test";
 import { executeCommand, run } from "../src/cli.mjs";
+import { ensureDockerAvailable } from "../src/prerequisites.mjs";
 import {
   addWorkspace,
   composeProjectName,
@@ -441,10 +442,11 @@ test("readiness progress diagnostics cannot abort an otherwise successful instal
   assert.match(stdout.value(), /SpaceApp is ready/i);
 });
 
-test("install accepts 7.4 GiB usable memory on an 8 GB-class CachyOS laptop", async () => {
+test("install accepts 7.4 GiB usable memory on an 8 GB-class CachyOS laptop and reaches Docker startup", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-cachyos-memory-"));
   const stdout = capture();
   const stderr = capture();
+  let dockerStartupReached = false;
 
   assert.equal(await run(["install", "--profile", "light", "--no-open"], {
     env: { SPACEAPP_HOME: root },
@@ -453,7 +455,10 @@ test("install accepts 7.4 GiB usable memory on an 8 GB-class CachyOS laptop", as
     stderr: stderr.stream,
     stdin: Readable.from([]),
     inspectResources: async () => cachyOsEightGigabyteClassLaptop,
-    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    ensureDocker: async () => {
+      dockerStartupReached = true;
+      return { code: 0, reexecuted: false };
+    },
     prepareDockerPath: async () => null,
     request: readyUnclaimedRequest,
     sleep: async () => {},
@@ -462,6 +467,7 @@ test("install accepts 7.4 GiB usable memory on an 8 GB-class CachyOS laptop", as
 
   assert.match(stdout.value(), /Selected profile: light \(7\.4 GiB system memory detected\)/i);
   assert.match(stdout.value(), /PASS Memory: 7\.4 GiB available; 7 GiB usable \(8 GB-class system\) required/i);
+  assert.equal(dockerStartupReached, true);
   assert.equal(stderr.value(), "");
 });
 
@@ -686,7 +692,7 @@ test("install enables, preserves, and removes Linux host-root access without del
   assert.equal(await readFile(join(root, "secrets", "session-secret"), "utf8"), secretBefore);
 });
 
-test("install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.1 light without changing persistent state", async () => {
+test("Windows install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.1 light without changing persistent state", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-upgrade-"));
   const workspace = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-workspace-"));
   const initialized = await initializeInstallation(root, {
@@ -714,7 +720,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.1 light
   const stdout = capture();
   const options = {
     env: { SPACEAPP_HOME: root },
-    platform: "linux",
+    platform: "win32",
     stdout: stdout.stream,
     stderr: capture().stream,
     stdin: Readable.from([]),
@@ -1126,6 +1132,52 @@ test("install bootstraps missing Docker before running doctor and pulling images
   assert.ok(calls.some((spec) => spec.command === "docker" && spec.args.includes("pull")));
   assert.match(stdout.value(), /SpaceApp is ready at http:\/\/127\.0\.0\.1:4911/);
   assert.equal(stderr.value(), "");
+});
+
+test("macOS authorization failure stops the install before SpaceApp image pulls", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-macos-authorization-"));
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+
+  assert.equal(await run(["install", "--no-open"], {
+    env: { SPACEAPP_HOME: root, USER: "space-user", PATH: "/usr/bin:/bin" },
+    platform: "darwin",
+    arch: "x64",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: Readable.from(["yes\n"]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    prepareDockerPath: async () => null,
+    ensureDocker: async (options) => ensureDockerAvailable({
+      ...options,
+      download: async () => {},
+      launch: async () => {
+        throw new Error("Docker Desktop must not launch after authorization failure.");
+      },
+      pathExists: async () => false,
+      sleep: async () => {}
+    }),
+    execute: async (spec, io) => {
+      calls.push({ spec, io });
+      if (spec.command === "docker") return 127;
+      if (spec.command === "sudo") return 1;
+      return 0;
+    }
+  }), 1);
+
+  assert.ok(calls.some(({ spec }) => spec.command === "sudo"));
+  assert.equal(
+    calls.some(({ spec }) =>
+      spec.command === "docker" &&
+      (spec.args.includes("pull") || spec.args.includes("up"))
+    ),
+    false
+  );
+  assert.match(stdout.value(), /password for your Mac administrator account/i);
+  assert.match(stderr.value(), /macOS authorization failed/i);
+  assert.match(stderr.value(), /No SpaceApp images were downloaded/i);
+  assert.match(stderr.value(), /stopped before downloading images/i);
 });
 
 test("install does not misreport a failed Docker group re-entry as a pre-download failure", async () => {

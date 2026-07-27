@@ -20,6 +20,8 @@ const MAC_DOCKER_DOWNLOADS = Object.freeze({
   x64: "https://desktop.docker.com/mac/main/amd64/Docker.dmg",
   arm64: "https://desktop.docker.com/mac/main/arm64/Docker.dmg"
 });
+const MAC_ADMIN_PASSWORD_PROMPT =
+  "SpaceApp Mac administrator password (input hidden): ";
 // Sources:
 // https://learn.microsoft.com/windows/package-manager/winget/install
 // https://github.com/microsoft/winget-pkgs/tree/master/manifests/d/Docker/DockerDesktop
@@ -444,8 +446,8 @@ async function ensureMacDocker({
       mounted = true;
       const signatureCode = await execute({
         command: "codesign",
-        args: ["--verify", "--deep", "--strict", "--verbose=2", mountedApplication]
-      }, { stdin, stdout: null, stderr });
+        args: ["--verify", "--deep", "--strict", mountedApplication]
+      }, { stdin, stdout: null, stderr: null });
       if (signatureCode !== 0) {
         stderr.write("The Docker Desktop application signature is not valid. Installation was stopped.\n");
         return { code: 1, reexecuted: false };
@@ -453,17 +455,33 @@ async function ensureMacDocker({
       const gatekeeperCode = await execute({
         command: "spctl",
         args: ["--assess", "--type", "execute", "--verbose=4", mountedApplication]
-      }, { stdin, stdout: null, stderr });
+      }, { stdin, stdout: null, stderr: null });
       if (gatekeeperCode !== 0) {
         stderr.write("macOS Gatekeeper did not accept Docker Desktop. Installation was stopped.\n");
         return { code: 1, reexecuted: false };
       }
+      stdout.write("Docker Desktop signature and macOS trust verification passed.\n");
+      stdout.write(
+        "macOS administrator authorization is required to install Docker Desktop.\n" +
+        "Enter the password for your Mac administrator account—not a Docker or SpaceApp password.\n" +
+        "Characters are not displayed while you type. SpaceApp does not read, store, or log this password.\n"
+      );
       const installCode = await execute({
         command: "sudo",
-        args: [installer, "--accept-license", `--user=${username}`]
+        args: [
+          "-p",
+          MAC_ADMIN_PASSWORD_PROMPT,
+          installer,
+          "--accept-license",
+          `--user=${username}`
+        ]
       }, { stdin, stdout, stderr });
       if (installCode !== 0) {
-        stderr.write("Docker Desktop installation failed before SpaceApp downloaded any images.\n");
+        stderr.write(
+          "macOS authorization failed. Docker Desktop must be installed by a Mac administrator account.\n" +
+          "Enter that account's password—not a Docker or SpaceApp password—and rerun the same SpaceApp install command.\n" +
+          "No SpaceApp images were downloaded.\n"
+        );
         return { code: installCode, reexecuted: false };
       }
     } finally {
@@ -553,24 +571,19 @@ async function ensureLinuxDocker({
     stderr.write("A valid non-root Linux username is required for Docker Engine access.\n");
     return { code: 1, reexecuted: false };
   }
-  const accepted = await confirmQuestion({
-    stdin,
-    stdout,
-    question: [
+  stdout.write(
+    [
       "Docker's official post-install flow uses the docker group.",
       "Membership grants root-level privileges on this host.",
-      `Add ${username} to the docker group and continue? [y/N] `
-    ].join("\n")
-  });
-  if (!accepted) {
-    stderr.write("Docker group membership was not changed.\n");
-    return { code: 1, reexecuted: false };
-  }
+      `Adding ${username} to the docker group automatically and continuing.`
+    ].join("\n") + "\n"
+  );
   const groupCode = await execute(
     { command: "sudo", args: ["usermod", "-aG", "docker", username] },
     { stdin, stdout, stderr }
   );
   if (groupCode !== 0) {
+    stderr.write(`SpaceApp could not add ${username} to the docker group.\n`);
     return { code: groupCode, reexecuted: false };
   }
 
