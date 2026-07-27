@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
-  copyFile,
   mkdir,
   readFile,
   readdir,
@@ -354,6 +353,8 @@ export function renderWorkspaceCompose(config) {
 
 export function composeCommand(action, root, options = {}) {
   validateHome(root);
+  const stateRoot = options.stateRoot ?? root;
+  validateHome(stateRoot);
   const profile = options.profile ?? "standard";
   if (profile !== "light" && profile !== "standard") {
     throw new Error("Compose profile must be light or standard.");
@@ -362,9 +363,9 @@ export function composeCommand(action, root, options = {}) {
     "compose",
     "--project-name", composeProjectName(root),
     "--project-directory", root,
-    "--env-file", join(root, "runtime.env"),
-    "-f", join(root, "compose.yml"),
-    "-f", join(root, "compose.workspaces.yml"),
+    "--env-file", join(stateRoot, "runtime.env"),
+    "-f", join(stateRoot, "compose.yml"),
+    "-f", join(stateRoot, "compose.workspaces.yml"),
     ...(profile === "standard" ? ["--profile", "standard"] : [])
   ];
   const actions = {
@@ -459,7 +460,9 @@ export async function selectLatestBackupId(root) {
     .sort()
     .at(-1);
   if (!backupId) {
-    throw new Error('No portable backup exists. Run "spaceapp backup" before restore.');
+    throw new Error(
+      'No portable backup exists. Run "npx --yes run-spaceapp@latest backup" before restore.'
+    );
   }
   return backupId;
 }
@@ -472,9 +475,8 @@ export async function writeRuntimeFiles(root, config) {
   await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config));
 }
 
-export async function initializeInstallation(root, {
+export async function prepareInstallation(root, {
   version,
-  templateDir = defaultTemplateDir(),
   profile
 }) {
   validateHome(root);
@@ -505,10 +507,7 @@ export async function initializeInstallation(root, {
   if (resolvedProfile !== undefined) {
     config = { ...config, profile: resolvedProfile };
   }
-  await saveConfig(root, config);
-  await copyFile(join(templateDir, "compose.yml"), join(root, "compose.yml"));
-  await chmod(join(root, "compose.yml"), 0o600);
-  await writeRuntimeFiles(root, config);
+  validateConfig(config);
 
   const postgresPasswordPath = join(root, "secrets", "postgres-password");
   let postgresPassword;
@@ -557,6 +556,26 @@ export async function initializeInstallation(root, {
     await atomicWrite(setupTokenPath, setupToken);
   }
   return { config, setupToken };
+}
+
+export async function commitInstallation(root, config, {
+  templateDir = defaultTemplateDir()
+} = {}) {
+  validateHome(root);
+  validateConfig(config);
+  const composeTemplate = await readFile(join(templateDir, "compose.yml"), "utf8");
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await atomicWrite(join(root, "compose.yml"), composeTemplate);
+  await writeRuntimeFiles(root, config);
+  await saveConfig(root, config);
+}
+
+export async function initializeInstallation(root, options) {
+  const result = await prepareInstallation(root, options);
+  await commitInstallation(root, result.config, {
+    templateDir: options.templateDir
+  });
+  return result;
 }
 
 function validateWorkspace(workspace) {

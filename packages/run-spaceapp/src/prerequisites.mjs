@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
+const UNIVERSAL_INSTALL_COMMAND = "npx --yes run-spaceapp@latest install";
 const WINDOWS_DOCKER_DOWNLOADS = Object.freeze({
   x64: "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
   arm64: "https://desktop.docker.com/win/main/arm64/Docker%20Desktop%20Installer.exe"
@@ -221,7 +222,7 @@ async function ensureWindowsDocker({
     );
     if (installWslCode !== 0) {
       stderr.write(
-        "Windows could not enable WSL2 automatically. Run this command from an Administrator terminal, restart Windows if requested, and run it again.\n"
+        `Windows could not enable WSL2 automatically. Run "${UNIVERSAL_INSTALL_COMMAND}" from an Administrator Command Prompt, restart Windows if requested, and run it again.\n`
       );
       return { code: installWslCode, reexecuted: false };
     }
@@ -243,7 +244,7 @@ async function ensureWindowsDocker({
     if (scheduleCode !== 0) {
       stderr.write(
         "Windows must restart to finish WSL2, but SpaceApp could not schedule automatic continuation.\n" +
-        "Restart Windows, then run the same SpaceApp command again.\n"
+        `Restart Windows, then run "${UNIVERSAL_INSTALL_COMMAND}" again.\n`
       );
       return { code: scheduleCode, reexecuted: false };
     }
@@ -386,7 +387,7 @@ async function ensureWindowsDocker({
     return { code: 0, reexecuted: false };
   }
   stderr.write(
-    "Docker Desktop did not become ready after 10 minutes. Open Docker Desktop and complete its first-run setup (select \"Skip\" on \"Welcome to Docker\" or sign in), restart Windows if requested, then run \"spaceapp install\" again.\n"
+    `Docker Desktop did not become ready after 10 minutes. Open Docker Desktop and complete its first-run setup (select "Skip" on "Welcome to Docker" or sign in), restart Windows if requested, then run "${UNIVERSAL_INSTALL_COMMAND}" again.\n`
   );
   return { code: 1, reexecuted: false };
 }
@@ -494,7 +495,7 @@ async function ensureMacDocker({
     return { code: 0, reexecuted: false };
   }
   stderr.write(
-    "Docker Desktop was installed but did not become ready. Complete any Docker Desktop prompt, then run the same SpaceApp command again.\n"
+    `Docker Desktop was installed but did not become ready. Complete any Docker Desktop prompt, then run "${UNIVERSAL_INSTALL_COMMAND}" again.\n`
   );
   return { code: 1, reexecuted: false };
 }

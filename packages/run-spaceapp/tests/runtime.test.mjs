@@ -74,6 +74,19 @@ test("compose project identity is stable for the same installation root", () => 
   });
 });
 
+test("compose can use staged state without changing the installation project identity", () => {
+  const stagedStateRoot = resolve(tmpdir(), "spaceapp-staged-state");
+  const command = composeCommand("pull", home, {
+    profile: "light",
+    stateRoot: stagedStateRoot
+  });
+
+  assert.equal(command.args[command.args.indexOf("--project-name") + 1], composeCommand("pull", home).args[2]);
+  assert.equal(command.args[command.args.indexOf("--project-directory") + 1], home);
+  assert.equal(command.args[command.args.indexOf("--env-file") + 1], join(stagedStateRoot, "runtime.env"));
+  assert.equal(command.args.includes(join(home, "runtime.env")), false);
+});
+
 test("compose activates the optional browser only for the standard profile", () => {
   const standard = composeCommand("up", home, { profile: "standard" });
   const light = composeCommand("up", home, { profile: "light" });

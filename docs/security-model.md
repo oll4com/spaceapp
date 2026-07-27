@@ -36,7 +36,7 @@ SaaS control plane.
 - Portable backups intentionally exclude provider API-key files, provider
   login state, registered host workspace contents, and browser profiles.
 - Host workspaces are not mounted until the owner runs
-  `spaceapp workspace add`.
+  `npx --yes run-spaceapp@latest workspace add`.
 - Containers do not receive the Docker socket.
 - Telemetry is disabled by default.
 - Mutable owner memory is separate from the immutable generic starter memory.
