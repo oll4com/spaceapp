@@ -93,7 +93,7 @@ resources.
 
 ### Personal launcher-only candidate
 
-The `0.1.15-hostroot.1` personal candidate contains cross-platform installer
+The `0.1.15-hostroot.2` personal candidate contains cross-platform installer
 fixes and deliberately reuses the already published `0.1.15-hostroot.0`
 runtime images:
 
@@ -103,7 +103,7 @@ npx --yes run-spaceapp@personal install
 
 This candidate supports isolated access only. It rejects `--access host-root`
 until matching runtime images are rebuilt in a future full release. The
-launcher prints its own `.1` version separately from the pinned `.0` runtime
+launcher prints its own `.2` version separately from the pinned `.0` runtime
 image version.
 
 The earlier host-root experiment remains available only by pinning its exact

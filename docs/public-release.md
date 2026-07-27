@@ -72,9 +72,9 @@ personal candidate test.
 
 ## Personal launcher-only prerelease
 
-For `0.1.15-hostroot.1`, dispatch `release.yml` from `main` with:
+For `0.1.15-hostroot.2`, dispatch `release.yml` from `main` with:
 
-- `version`: `0.1.15-hostroot.1`;
+- `version`: `0.1.15-hostroot.2`;
 - `runtime_version`: `0.1.15-hostroot.0`;
 - `release_mode`: `launcher-only`;
 - `npm_tag`: `personal`.
@@ -85,12 +85,12 @@ multi-architecture manifests, SBOMs, and provenance, but skips every container
 candidate and container publication job. Do not change `latest` or `next`.
 After npm-only publication, confirm:
 
-- `run-spaceapp@0.1.15-hostroot.1` exists and has the reviewed `gitHead`;
-- `dist-tags.personal` is `0.1.15-hostroot.1`;
+- `run-spaceapp@0.1.15-hostroot.2` exists and has the reviewed `gitHead`;
+- `dist-tags.personal` is `0.1.15-hostroot.2`;
 - `latest` and `next` are unchanged;
 - all three existing `.0` GHCR tags still expose `linux/amd64`, `linux/arm64`,
   SBOM, and provenance;
-- no `.1` GHCR tag was created.
+- no `.2` GHCR tag was created.
 
 Run the isolated cross-platform acceptance with:
 
@@ -98,7 +98,7 @@ Run the isolated cross-platform acceptance with:
 npx --yes run-spaceapp@personal install
 ```
 
-Verify that the launcher reports `.1`, `runtime.env` pins `.0`, and update
+Verify that the launcher reports `.2`, `runtime.env` pins `.0`, and update
 preserves data and volumes. On Linux, also prove that `--access host-root`
 fails before Docker or image pulls.
 

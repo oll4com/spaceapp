@@ -8,7 +8,7 @@ test("launcher metadata pins the existing runtime images independently", async (
     await readFile(new URL("../package.json", import.meta.url), "utf8")
   );
 
-  assert.equal(manifest.version, "0.1.15-hostroot.1");
+  assert.equal(manifest.version, "0.1.15-hostroot.2");
   assert.equal(manifest.spaceappRuntimeVersion, "0.1.15-hostroot.0");
   assert.equal(manifest.spaceappHostRootRuntimeCompatible, false);
   assert.equal(packageInfo.PACKAGE_VERSION, manifest.version);

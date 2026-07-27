@@ -106,7 +106,7 @@ first.
 
 ## Linux access mode
 
-The current `0.1.15-hostroot.1` personal candidate is launcher-only and accepts
+The current `0.1.15-hostroot.2` personal candidate is launcher-only and accepts
 isolated access only. It reuses the `0.1.15-hostroot.0` images and rejects
 `--access host-root` until the next full runtime build.
 

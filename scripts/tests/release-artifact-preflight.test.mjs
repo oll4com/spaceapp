@@ -65,7 +65,7 @@ test("launcher-only preflight requires a new npm version but reuses existing ima
   const existing = { status: 0, output: "existing immutable image" };
   const result = evaluateArtifactAvailability({
     releaseMode: "launcher-only",
-    version: "0.1.15-hostroot.1",
+    version: "0.1.15-hostroot.2",
     npm: { status: 1, output: "npm error code E404" },
     images: {
       core: existing,

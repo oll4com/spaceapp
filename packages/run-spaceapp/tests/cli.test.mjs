@@ -230,6 +230,49 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
   assert.equal(stderr.value(), "");
 });
 
+test("install cancels non-OK readiness bodies so later checks can use the connection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-readiness-body-"));
+  let firstBodyCanceled = false;
+  let readinessChecks = 0;
+
+  assert.equal(await run(["install", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "win32",
+    stdout: capture().stream,
+    stderr: capture().stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    request: async (url) => {
+      if (!url.endsWith("/readyz")) {
+        return jsonResponse({ setupRequired: false, expiresAt: null });
+      }
+      readinessChecks += 1;
+      if (readinessChecks === 1) {
+        return {
+          ok: false,
+          status: 503,
+          body: {
+            cancel: async () => {
+              firstBodyCanceled = true;
+            }
+          }
+        };
+      }
+      if (!firstBodyCanceled) {
+        throw new Error("The previous response still owns the only available connection.");
+      }
+      return jsonResponse({ ok: true });
+    },
+    sleep: async () => {},
+    execute: async () => 0
+  }), 0);
+
+  assert.equal(firstBodyCanceled, true);
+  assert.equal(readinessChecks, 2);
+});
+
 test("install retains the host token and prints no secret when database rotation fails", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-token-rejected-"));
   await run(["init"], {
@@ -737,7 +780,7 @@ test("install enables, preserves, and removes Linux host-root access without del
   assert.equal(await readFile(join(root, "secrets", "session-secret"), "utf8"), secretBefore);
 });
 
-test("Windows launcher .1 upgrades a 0.1.10 standard install to runtime .0 light without changing persistent state", async () => {
+test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .0 light without changing persistent state", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-upgrade-"));
   const workspace = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-workspace-"));
   const initialized = await initializeInstallation(root, {
@@ -825,7 +868,7 @@ test("Windows launcher .1 upgrades a 0.1.10 standard install to runtime .0 light
   for (const spec of calls) {
     assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
   }
-  assert.match(stdout.value(), /Launcher version: 0\.1\.15-hostroot\.1/);
+  assert.match(stdout.value(), /Launcher version: 0\.1\.15-hostroot\.2/);
   assert.match(stdout.value(), /Runtime image version: 0\.1\.10 -> 0\.1\.15-hostroot\.0/);
   assert.match(stdout.value(), /Profile: standard -> light/);
   assert.match(stdout.value(), /data.*workspaces.*credentials.*secrets.*persistent Docker volumes/i);

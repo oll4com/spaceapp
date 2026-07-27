@@ -994,6 +994,8 @@ async function waitForApplicationReady({
           if (payload?.ok === true) {
             return true;
           }
+        } else {
+          await response?.body?.cancel?.();
         }
       } catch {
         if (controller.signal.aborted) {

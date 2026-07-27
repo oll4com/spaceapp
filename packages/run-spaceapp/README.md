@@ -52,7 +52,7 @@ current user's platform config directory:
 
 Set `SPACEAPP_HOME` to an absolute path to use a dedicated installation root.
 
-The `0.1.15-hostroot.1` personal candidate tests installer fixes while reusing
+The `0.1.15-hostroot.2` personal candidate tests installer fixes while reusing
 the existing `0.1.15-hostroot.0` runtime images:
 
 ```bash
@@ -61,7 +61,7 @@ npx --yes run-spaceapp@personal install
 
 This launcher-only candidate accepts isolated access on Linux, macOS, and
 Windows. It rejects `--access host-root` because no matching runtime images
-were rebuilt. The launcher reports version `.1` while `runtime.env` remains
+were rebuilt. The launcher reports version `.2` while `runtime.env` remains
 pinned to `.0`.
 
 Use the same `npx --yes run-spaceapp@personal` prefix for follow-up commands
