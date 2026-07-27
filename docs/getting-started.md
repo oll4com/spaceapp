@@ -111,7 +111,7 @@ Installation profiles do not control filesystem permissions. Both `light` and
 `standard` use isolated access by default, where only registered workspaces are
 mounted.
 
-The personal `0.1.15-hostroot.0` prerelease adds an explicit Linux-only mode
+The personal `0.1.15-hostroot.1` prerelease adds an explicit Linux-only mode
 for a trusted owner who wants CLI sessions to change the Linux installation:
 
 ```bash
@@ -165,7 +165,7 @@ The universal install command performs
 non-secret configuration, fresh database/session secrets, and a one-time setup
 token; installs Docker from official sources when required; checks CPU, RAM,
 free disk, Docker CLI, Compose, and engine readiness; downloads the selected
-images; starts the services; waits up to three minutes for `/readyz`; verifies
+images; starts the services; waits up to ten minutes for `/readyz`; verifies
 first-owner status; and opens `http://127.0.0.1:4911`.
 
 The command is idempotent. Running it again preserves the installation's
@@ -230,7 +230,7 @@ On the first page:
 
 1. copy the one-time setup token printed at the end of the install command and
    paste it into the field with the same name;
-2. create the owner email and a password of at least 12 characters;
+2. create the owner email and a password of at least 6 characters;
 3. sign in as that owner;
 4. connect one CLI provider at a time;
 5. create a test room and verify the selected workspace;

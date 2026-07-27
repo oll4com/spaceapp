@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OwnerSetupScreen } from "../src/features/auth/OwnerSetupScreen.js";
@@ -162,6 +164,16 @@ describe("first-owner setup", () => {
     ).toEqual(["email", "token", "password", "passwordConfirmation"]);
   });
 
+  it("keeps the owner setup shell vertically scrollable at normal browser zoom", async () => {
+    const styles = await readFile(resolve(process.cwd(), "src/styles.css"), "utf8");
+    expect(styles).toMatch(
+      /\.login-shell\s*\{[\s\S]*?height:\s*100dvh;[\s\S]*?overflow-y:\s*auto;[\s\S]*?\}/
+    );
+    expect(styles).toMatch(
+      /\.setup-shell\s*\{[\s\S]*?place-items:\s*start center;[\s\S]*?\}/
+    );
+  });
+
   it("validates token, email, password length, and confirmation before claiming", async () => {
     const onClaim = vi.fn(async () => undefined);
     render(<OwnerSetupScreen expiresAt="2099-07-23T12:15:00.000Z" onClaim={onClaim} />);
@@ -173,7 +185,7 @@ describe("first-owner setup", () => {
       target: { value: "not-an-email" }
     });
     fireEvent.change(screen.getByLabelText("New password"), {
-      target: { value: "short" }
+      target: { value: "12345" }
     });
     fireEvent.change(screen.getByLabelText("Confirm password"), {
       target: { value: "different" }
@@ -182,9 +194,36 @@ describe("first-owner setup", () => {
 
     expect(await screen.findByText(/token must contain at least 32 characters/i)).toBeTruthy();
     expect(screen.getByText(/enter a valid email address/i)).toBeTruthy();
-    expect(screen.getByText(/password must contain at least 12 characters/i)).toBeTruthy();
+    expect(screen.getByText(/password must contain at least 6 characters/i)).toBeTruthy();
     expect(screen.getByText(/passwords do not match/i)).toBeTruthy();
     expect(onClaim).not.toHaveBeenCalled();
+  });
+
+  it("accepts an owner password with exactly six characters", async () => {
+    const onClaim = vi.fn(async () => undefined);
+    render(<OwnerSetupScreen expiresAt={null} onClaim={onClaim} />);
+
+    fireEvent.change(screen.getByLabelText("One-time setup token"), {
+      target: { value: "setup-token-value-with-at-least-thirty-two-characters" }
+    });
+    fireEvent.change(screen.getByLabelText("Owner email"), {
+      target: { value: "owner@example.com" }
+    });
+    fireEvent.change(screen.getByLabelText("New password"), {
+      target: { value: "abc123" }
+    });
+    fireEvent.change(screen.getByLabelText("Confirm password"), {
+      target: { value: "abc123" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create owner account" }));
+
+    await waitFor(() => {
+      expect(onClaim).toHaveBeenCalledWith({
+        token: "setup-token-value-with-at-least-thirty-two-characters",
+        email: "owner@example.com",
+        password: "abc123"
+      });
+    });
   });
 
   it("claims setup without putting credentials in URLs or browser storage", async () => {

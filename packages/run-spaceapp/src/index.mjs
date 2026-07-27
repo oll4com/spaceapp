@@ -21,8 +21,8 @@ import { UNIVERSAL_COMMAND } from "./package-info.mjs";
 
 const CONFIG_SCHEMA_VERSION = 3;
 const MIN_INSTALL_CPU_COUNT = 4;
-const MIN_INSTALL_MEMORY_BYTES = 8_000_000_000;
-const MIN_INSTALL_MEMORY_LABEL = "8 GB";
+const MIN_INSTALL_MEMORY_BYTES = 7 * 1024 ** 3;
+const MIN_INSTALL_MEMORY_LABEL = "7 GiB usable (8 GB-class system)";
 const MIN_INSTALL_FREE_DISK_BYTES = 15 * 1024 ** 3;
 const PROFILE_RUNTIME_SETTINGS = Object.freeze({
   light: Object.freeze({
@@ -140,12 +140,12 @@ export function installResourceChecks(resources) {
     {
       name: "Memory",
       ok: totalMemoryBytes >= MIN_INSTALL_MEMORY_BYTES,
-      detail: `${formatGibibytes(totalMemoryBytes)} GB available; ${MIN_INSTALL_MEMORY_LABEL} required`
+      detail: `${formatGibibytes(totalMemoryBytes)} GiB available; ${MIN_INSTALL_MEMORY_LABEL} required`
     },
     {
       name: "Free disk",
       ok: freeDiskBytes >= MIN_INSTALL_FREE_DISK_BYTES,
-      detail: `${formatGibibytes(freeDiskBytes)} GB available; ${formatGibibytes(MIN_INSTALL_FREE_DISK_BYTES)} GB required`
+      detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(MIN_INSTALL_FREE_DISK_BYTES)} GiB required`
     }
   ];
 }

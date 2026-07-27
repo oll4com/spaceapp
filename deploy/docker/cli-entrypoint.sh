@@ -21,7 +21,7 @@ if [ -d /run/spaceapp-secrets/providers ]; then
 fi
 
 if [ "${SPACEAPP_CLI_HOST_ROOT_ACCESS:-false}" = "true" ]; then
-  exec node packages/cli-host/dist/main.js
+  exec gosu root:spaceapp node packages/cli-host/dist/main.js
 fi
 
 # Host-root sessions may leave root-owned provider or memory state. Restore only

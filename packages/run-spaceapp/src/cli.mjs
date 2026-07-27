@@ -35,9 +35,12 @@ import {
   UNIVERSAL_COMMAND
 } from "./package-info.mjs";
 
-const APPLICATION_READY_WAIT_MS = 3 * 60 * 1_000;
+const APPLICATION_READY_WAIT_MINUTES = 10;
+const APPLICATION_READY_WAIT_MS = APPLICATION_READY_WAIT_MINUTES * 60 * 1_000;
 const APPLICATION_READY_POLL_MS = 2_000;
 const APPLICATION_READY_MAX_ATTEMPTS = APPLICATION_READY_WAIT_MS / APPLICATION_READY_POLL_MS;
+const APPLICATION_READY_PROGRESS_ATTEMPTS = 30_000 / APPLICATION_READY_POLL_MS;
+const APPLICATION_READY_LOG_INTERVAL_SECONDS = 120;
 const SETUP_STATUS_TIMEOUT_MS = 10_000;
 const trustedCommands = new Set([
   "codesign",
@@ -313,7 +316,7 @@ async function installCommand(args, {
     ? "Preserved existing data, workspaces, credentials, secrets, and persistent Docker volumes.\n"
     : "Future refreshes preserve data, workspaces, credentials, secrets, and persistent Docker volumes.\n");
   stdout.write(
-    `Selected profile: ${profile} (${formatGigabytes(resources.totalMemoryBytes)} GB system memory detected).\n`
+    `Selected profile: ${profile} (${formatGibibytes(resources.totalMemoryBytes)} GiB system memory detected).\n`
   );
   stdout.write(`SpaceApp installation root: ${root}\n`);
   if (installResourceChecks(resources).some((check) => !check.ok)) {
@@ -343,12 +346,13 @@ async function installCommand(args, {
     execute,
     installArgs: { root, requestedProfile, requestedAccessMode, noOpen }
   });
-  if (prerequisiteResult.reexecuted || prerequisiteResult.code !== 0) {
-    if (prerequisiteResult.code !== 0) {
-      stderr.write(
-        `Installation stopped before downloading images. Fix the failed checks and run "${UNIVERSAL_COMMAND} install" again.\n`
-      );
-    }
+  if (prerequisiteResult.reexecuted) {
+    return prerequisiteResult.code;
+  }
+  if (prerequisiteResult.code !== 0) {
+    stderr.write(
+      `Installation stopped before downloading images. Fix the failed checks and run "${UNIVERSAL_COMMAND} install" again.\n`
+    );
     return prerequisiteResult.code;
   }
 
@@ -373,6 +377,16 @@ async function installCommand(args, {
   let runtimeMutationAttempted = false;
   const failAfterRuntimeMutation = async (code) => {
     if (runtimeMutationAttempted) {
+      await reportInstallDiagnostics({
+        root,
+        stateRoot: stagedStateRoot,
+        profile,
+        platform,
+        stdin,
+        stdout,
+        stderr,
+        execute
+      });
       await restoreRuntimeAfterFailedInstall({
         root,
         stagedStateRoot,
@@ -390,8 +404,12 @@ async function installCommand(args, {
   };
   try {
     await commitInstallation(stagedStateRoot, result.config);
-    const stagedComposeCommand = (action) =>
-      composeCommand(action, root, { profile, stateRoot: stagedStateRoot });
+    const stagedComposeCommand = (action, options = {}) =>
+      composeCommand(action, root, {
+        profile,
+        stateRoot: stagedStateRoot,
+        ...options
+      });
     const pullCode = await executeWithDockerDiagnostics(
       execute,
       stagedComposeCommand("pull"),
@@ -409,16 +427,60 @@ async function installCommand(args, {
     if (upCode !== 0) return await failAfterRuntimeMutation(upCode);
 
     const url = `http://${result.config.bindHost}:${result.config.port}`;
-    stdout.write("Waiting for SpaceApp services to become ready...\n");
+    stdout.write(
+      `Waiting up to ${APPLICATION_READY_WAIT_MINUTES} minutes for SpaceApp services to become ready...\n`
+    );
     const ready = await waitForApplicationReady({
       url,
       request,
-      sleep
+      sleep,
+      onProgress: async ({ elapsedSeconds }) => {
+        stdout.write(
+          `Still waiting for SpaceApp services (${elapsedSeconds} seconds elapsed; ` +
+          `up to ${APPLICATION_READY_WAIT_MINUTES} minutes)...\n`
+        );
+        try {
+          const statusCode = await executeWithDockerDiagnostics(
+            execute,
+            stagedComposeCommand("status"),
+            { stdin, stdout, stderr },
+            { platform, stderr }
+          );
+          if (statusCode !== 0) {
+            stderr.write(`SpaceApp service status check failed with Docker exit ${statusCode}.\n`);
+          }
+        } catch (error) {
+          stderr.write(
+            `SpaceApp could not collect status diagnostics: ${error?.message || String(error)}.\n`
+          );
+        }
+        if (
+          elapsedSeconds % APPLICATION_READY_LOG_INTERVAL_SECONDS === 0 &&
+          elapsedSeconds < APPLICATION_READY_WAIT_MINUTES * 60
+        ) {
+          stdout.write(`Showing recent startup logs after ${elapsedSeconds} seconds...\n`);
+          try {
+            const logsCode = await executeWithDockerDiagnostics(
+              execute,
+              stagedComposeCommand("logs", { lines: 50 }),
+              { stdin, stdout, stderr },
+              { platform, stderr }
+            );
+            if (logsCode !== 0) {
+              stderr.write(`SpaceApp startup log check failed with Docker exit ${logsCode}.\n`);
+            }
+          } catch (error) {
+            stderr.write(
+              `SpaceApp could not collect logs diagnostics: ${error?.message || String(error)}.\n`
+            );
+          }
+        }
+      }
     });
     if (!ready) {
       stderr.write(
-        "SpaceApp containers started, but the application did not become ready within 3 minutes.\n" +
-        `Run "${UNIVERSAL_COMMAND} status" and "${UNIVERSAL_COMMAND} logs", then run "${UNIVERSAL_COMMAND} install" again.\n`
+        `SpaceApp containers started, but the application did not become ready within ` +
+        `${APPLICATION_READY_WAIT_MINUTES} minutes.\n`
       );
       return await failAfterRuntimeMutation(1);
     }
@@ -509,6 +571,42 @@ async function installCommand(args, {
     throw error;
   } finally {
     await rm(stagedStateRoot, { recursive: true, force: true });
+  }
+}
+
+async function reportInstallDiagnostics({
+  root,
+  stateRoot,
+  profile,
+  platform,
+  stdin,
+  stdout,
+  stderr,
+  execute
+}) {
+  stderr.write("Collecting SpaceApp service status and recent logs before rollback...\n");
+  for (const action of ["status", "logs"]) {
+    try {
+      const code = await executeWithDockerDiagnostics(
+        execute,
+        composeCommand(action, root, {
+          profile,
+          stateRoot,
+          lines: 200
+        }),
+        { stdin, stdout, stderr },
+        { platform, stderr }
+      );
+      if (code !== 0) {
+        stderr.write(
+          `SpaceApp could not collect ${action} diagnostics (Docker exit ${code}).\n`
+        );
+      }
+    } catch (error) {
+      stderr.write(
+        `SpaceApp could not collect ${action} diagnostics: ${error?.message || String(error)}.\n`
+      );
+    }
   }
 }
 
@@ -739,8 +837,8 @@ async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute
     );
   }
   const password = await readSecret(stdin, stdout, "New owner password: ");
-  if (password.length < 12) {
-    throw new Error("Owner password must be at least 12 characters.");
+  if (password.length < 6) {
+    throw new Error("Owner password must be at least 6 characters.");
   }
   return execute(composeCommand("resetOwnerPassword", root, { profile: config.profile }), {
     stdin,
@@ -847,6 +945,7 @@ async function waitForApplicationReady({
   url,
   request,
   sleep,
+  onProgress,
   maxAttempts = APPLICATION_READY_MAX_ATTEMPTS
 }) {
   if (typeof request !== "function") {
@@ -876,6 +975,15 @@ async function waitForApplicationReady({
       }
       if (attempt < maxAttempts && !controller.signal.aborted) {
         await sleep(APPLICATION_READY_POLL_MS);
+        const completedAttempts = attempt + 1;
+        if (
+          typeof onProgress === "function" &&
+          completedAttempts % APPLICATION_READY_PROGRESS_ATTEMPTS === 0
+        ) {
+          await onProgress({
+            elapsedSeconds: completedAttempts * APPLICATION_READY_POLL_MS / 1_000
+          });
+        }
       }
     }
     return false;
@@ -1108,7 +1216,7 @@ function dockerEngineHelp(platform) {
   return `Start Docker Engine, verify the current user can access it, then run "${UNIVERSAL_COMMAND} doctor" again.`;
 }
 
-function formatGigabytes(bytes) {
+function formatGibibytes(bytes) {
   return Math.floor((bytes / 1024 ** 3) * 10) / 10;
 }
 

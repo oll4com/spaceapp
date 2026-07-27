@@ -9,6 +9,7 @@ describe("public single-owner setup API", () => {
   it("claims an expiring token once, creates a session, and enables later owner login", async () => {
     const token = "setup-token-value-with-at-least-thirty-two-characters";
     const legacyPassword = "legacy operator password";
+    const ownerPassword = "abc123";
     const store = new InMemorySpaceStore();
     const app = await createApp({
       store,
@@ -85,7 +86,7 @@ describe("public single-owner setup API", () => {
       payload: {
         token,
         email: "owner@example.com",
-        password: "correct horse battery staple"
+        password: ownerPassword
       }
     });
     expect(claimed.statusCode).toBe(200);
@@ -109,7 +110,7 @@ describe("public single-owner setup API", () => {
       url: "/api/auth/login",
       payload: {
         email: "owner@example.com",
-        password: "correct horse battery staple"
+        password: ownerPassword
       }
     });
     expect(login.statusCode).toBe(200);

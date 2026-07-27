@@ -30,6 +30,12 @@ const eightGigabyteClassLinuxGuest = Object.freeze({
   freeDiskBytes: 15 * 1024 ** 3
 });
 
+const cachyOsEightGigabyteClassLaptop = Object.freeze({
+  cpuCount: 8,
+  totalMemoryBytes: 7_950_000_000,
+  freeDiskBytes: 218 * 1024 ** 3
+});
+
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -338,6 +344,7 @@ test("install fails visibly when application readiness never arrives", async () 
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-not-ready-"));
   const stdout = capture();
   const stderr = capture();
+  const composeActions = [];
   let readinessChecks = 0;
   let sleepCalls = 0;
   assert.equal(await run(["install", "--no-open"], {
@@ -357,15 +364,105 @@ test("install fails visibly when application readiness never arrives", async () 
     sleep: async () => {
       sleepCalls += 1;
     },
-    execute: async () => 0
+    execute: async (spec, io) => {
+      if (spec.args.at(-1) === "ps") {
+        composeActions.push("status");
+        io.stdout?.write("spaceapp-core running\n");
+      }
+      if (spec.args.includes("logs")) {
+        composeActions.push("logs");
+        io.stderr?.write("spaceapp-core | startup failed visibly\n");
+      }
+      if (spec.args.at(-1) === "down") {
+        composeActions.push("down");
+      }
+      return 0;
+    }
   }), 1);
 
-  assert.equal(readinessChecks, 91);
-  assert.equal(sleepCalls, 90);
-  assert.match(stderr.value(), /did not become ready within 3 minutes/i);
-  assert.match(stderr.value(), /npx --yes run-spaceapp@personal status/);
-  assert.match(stderr.value(), /npx --yes run-spaceapp@personal logs/);
+  assert.equal(readinessChecks, 301);
+  assert.equal(sleepCalls, 300);
+  assert.match(stdout.value(), /Still waiting for SpaceApp services \(30 seconds elapsed; up to 10 minutes\)/i);
+  assert.match(stdout.value(), /Showing recent startup logs after 120 seconds/i);
+  assert.match(stdout.value(), /spaceapp-core running/i);
+  assert.match(stderr.value(), /did not become ready within 10 minutes/i);
+  assert.match(stderr.value(), /Collecting SpaceApp service status and recent logs before rollback/i);
+  assert.match(stderr.value(), /spaceapp-core \| startup failed visibly/i);
+  assert.ok(composeActions.indexOf("status") < composeActions.indexOf("logs"));
+  assert.ok(composeActions.indexOf("logs") < composeActions.indexOf("down"));
   assert.doesNotMatch(stdout.value(), /SpaceApp is ready/);
+});
+
+test("readiness progress diagnostics cannot abort an otherwise successful install", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-readiness-diagnostics-"));
+  const stdout = capture();
+  const stderr = capture();
+  let readinessChecks = 0;
+  let statusCalls = 0;
+  let logCalls = 0;
+
+  assert.equal(await run(["install", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    request: async (url) => {
+      if (!url.endsWith("/readyz")) {
+        return jsonResponse({ setupRequired: false, expiresAt: null });
+      }
+      readinessChecks += 1;
+      return readinessChecks >= 61
+        ? jsonResponse({ ok: true })
+        : jsonResponse({ ok: false }, 503);
+    },
+    sleep: async () => {},
+    execute: async (spec) => {
+      if (spec.args.at(-1) === "ps") {
+        statusCalls += 1;
+        if (statusCalls === 1) throw new Error("status transport closed");
+      }
+      if (spec.args.includes("logs")) {
+        logCalls += 1;
+        if (logCalls === 1) throw new Error("logs transport closed");
+      }
+      return 0;
+    }
+  }), 0);
+
+  assert.equal(readinessChecks, 61);
+  assert.equal(statusCalls, 4);
+  assert.equal(logCalls, 1);
+  assert.match(stderr.value(), /could not collect status diagnostics.*status transport closed/i);
+  assert.match(stderr.value(), /could not collect logs diagnostics.*logs transport closed/i);
+  assert.match(stdout.value(), /SpaceApp is ready/i);
+});
+
+test("install accepts 7.4 GiB usable memory on an 8 GB-class CachyOS laptop", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-cachyos-memory-"));
+  const stdout = capture();
+  const stderr = capture();
+
+  assert.equal(await run(["install", "--profile", "light", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => cachyOsEightGigabyteClassLaptop,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    request: readyUnclaimedRequest,
+    sleep: async () => {},
+    execute: async () => 0
+  }), 0);
+
+  assert.match(stdout.value(), /Selected profile: light \(7\.4 GiB system memory detected\)/i);
+  assert.match(stdout.value(), /PASS Memory: 7\.4 GiB available; 7 GiB usable \(8 GB-class system\) required/i);
+  assert.equal(stderr.value(), "");
 });
 
 test("install accepts the usable memory reported by an 8 GB-class Linux guest", async () => {
@@ -390,7 +487,7 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
 
   assert.equal(await run(["install", "--profile", "auto", "--no-open"], options), 0);
   assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
-  assert.match(stdout.value(), /Selected profile: light.*7\.7 GB/i);
+  assert.match(stdout.value(), /Selected profile: light.*7\.7 GiB/i);
   assert.match(stdout.value(), /SpaceApp is ready at http:\/\/127\.0\.0\.1:4911/);
   assert.deepEqual(calls.map((call) => [
     call.command,
@@ -589,7 +686,7 @@ test("install enables, preserves, and removes Linux host-root access without del
   assert.equal(await readFile(join(root, "secrets", "session-secret"), "utf8"), secretBefore);
 });
 
-test("install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.0 light without changing persistent state", async () => {
+test("install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.1 light without changing persistent state", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-upgrade-"));
   const workspace = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-workspace-"));
   const initialized = await initializeInstallation(root, {
@@ -644,7 +741,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.0 light
         );
         assert.match(
           await readFile(join(stagedStateRoot, "runtime.env"), "utf8"),
-          /^SPACEAPP_IMAGE_TAG=0\.1\.15-hostroot\.0$/m
+          /^SPACEAPP_IMAGE_TAG=0\.1\.15-hostroot\.1$/m
         );
       }
       return 0;
@@ -654,7 +751,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.0 light
   assert.equal(await run(["install", "--no-open"], options), 0);
 
   const upgradedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(upgradedConfig.version, "0.1.15-hostroot.0");
+  assert.equal(upgradedConfig.version, "0.1.15-hostroot.1");
   assert.equal(upgradedConfig.previousVersion, "0.1.10");
   assert.equal(upgradedConfig.profile, "light");
   assert.deepEqual(upgradedConfig.workspaces, staleConfig.workspaces);
@@ -677,8 +774,8 @@ test("install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.0 light
   for (const spec of calls) {
     assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
   }
-  assert.match(stdout.value(), /Launcher version: 0\.1\.15-hostroot\.0/);
-  assert.match(stdout.value(), /SpaceApp version: 0\.1\.10 -> 0\.1\.15-hostroot\.0/);
+  assert.match(stdout.value(), /Launcher version: 0\.1\.15-hostroot\.1/);
+  assert.match(stdout.value(), /SpaceApp version: 0\.1\.10 -> 0\.1\.15-hostroot\.1/);
   assert.match(stdout.value(), /Profile: standard -> light/);
   assert.match(stdout.value(), /data.*workspaces.*credentials.*secrets.*persistent Docker volumes/i);
 
@@ -689,7 +786,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.0 light
     stdout: refreshOutput.stream
   }), 0);
   const refreshedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(refreshedConfig.version, "0.1.15-hostroot.0");
+  assert.equal(refreshedConfig.version, "0.1.15-hostroot.1");
   assert.equal(refreshedConfig.previousVersion, "0.1.10");
   assert.equal(refreshedConfig.profile, "light");
   assert.deepEqual(refreshedConfig.workspaces, staleConfig.workspaces);
@@ -714,7 +811,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.0 light
   }
   assert.match(
     refreshOutput.value(),
-    /SpaceApp version: 0\.1\.15-hostroot\.0 -> 0\.1\.15-hostroot\.0/
+    /SpaceApp version: 0\.1\.15-hostroot\.1 -> 0\.1\.15-hostroot\.1/
   );
   assert.match(refreshOutput.value(), /Profile: light -> light/);
 });
@@ -898,6 +995,48 @@ test("a failed clean host-root install stops the partially started runtime", asy
   await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
 });
 
+test("diagnostic command errors never prevent failed-install rollback", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-diagnostic-rollback-"));
+  const stderr = capture();
+  const composeActions = [];
+  let statusCalls = 0;
+  let logCalls = 0;
+
+  assert.equal(await run(["install", "--access", "host-root", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: capture().stream,
+    stderr: stderr.stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    request: async () => jsonResponse({ ok: false }, 503),
+    sleep: async () => {},
+    execute: async (spec) => {
+      if (spec.args.includes("--remove-orphans")) {
+        composeActions.push("up");
+      }
+      if (spec.args.at(-1) === "ps") {
+        statusCalls += 1;
+        if (statusCalls >= 21) throw new Error("diagnostic status transport closed");
+      }
+      if (spec.args.includes("logs")) {
+        logCalls += 1;
+        if (logCalls >= 5) throw new Error("diagnostic logs transport closed");
+      }
+      if (spec.args.at(-1) === "down") {
+        composeActions.push("down");
+      }
+      return 0;
+    }
+  }), 1);
+
+  assert.deepEqual(composeActions, ["up", "down"]);
+  assert.match(stderr.value(), /could not collect status diagnostics.*transport closed/i);
+  assert.match(stderr.value(), /could not collect logs diagnostics.*transport closed/i);
+});
+
 test("install honors an explicit standard profile and uses the native browser opener", async () => {
   for (const [platform, opener] of [
     ["linux", ["xdg-open", "http://127.0.0.1:4911"]],
@@ -989,7 +1128,30 @@ test("install bootstraps missing Docker before running doctor and pulling images
   assert.equal(stderr.value(), "");
 });
 
-test("install stops before image pulls when the host is below the 8 GB minimum", async () => {
+test("install does not misreport a failed Docker group re-entry as a pre-download failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-reentry-failure-"));
+  const stderr = capture();
+
+  assert.equal(await run(["install", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: capture().stream,
+    stderr: stderr.stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => {
+      stderr.stream.write("The re-entered installer displayed the real runtime failure.\n");
+      return { code: 1, reexecuted: true };
+    },
+    prepareDockerPath: async () => null,
+    execute: async () => 0
+  }), 1);
+
+  assert.match(stderr.value(), /real runtime failure/i);
+  assert.doesNotMatch(stderr.value(), /stopped before downloading images/i);
+});
+
+test("install stops before image pulls when usable memory is below 7 GiB", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-small-"));
   const stdout = capture();
   const stderr = capture();
@@ -1003,7 +1165,7 @@ test("install stops before image pulls when the host is below the 8 GB minimum",
     stdin: Readable.from([]),
     inspectResources: async () => ({
       cpuCount: 4,
-      totalMemoryBytes: 7 * 1024 ** 3,
+      totalMemoryBytes: 6.9 * 1024 ** 3,
       freeDiskBytes: 20 * 1024 ** 3
     }),
     execute: async (spec) => {
@@ -1012,7 +1174,10 @@ test("install stops before image pulls when the host is below the 8 GB minimum",
     }
   }), 1);
 
-  assert.match(stderr.value(), /FAIL Memory: 7 GB available; 8 GB required/i);
+  assert.match(
+    stderr.value(),
+    /FAIL Memory: 6\.9 GiB available; 7 GiB usable \(8 GB-class system\) required/i
+  );
   assert.equal(calls.some((call) => call.args.includes("pull")), false);
   assert.equal(calls.some((call) => call.args.includes("up")), false);
 });
@@ -1276,15 +1441,15 @@ test("owner password reset passes the password only over container stdin", async
   await run(["init"], { ...options, stdin: Readable.from([]) });
   await run(["owner", "reset-password"], {
     ...options,
-    stdin: Readable.from(["correct horse battery staple\n"])
+    stdin: Readable.from(["abc123\n"])
   });
 
   assert.deepEqual(
     calls[0].spec.args.slice(-8),
     ["exec", "-T", "--user", "10001:10001", "spaceapp-core", "node", "scripts/reset-owner-password.mjs", "--stdin"]
   );
-  assert.equal(calls[0].io.input, "correct horse battery staple\n");
-  assert.doesNotMatch(JSON.stringify(calls[0].spec), /correct horse battery staple/);
+  assert.equal(calls[0].io.input, "abc123\n");
+  assert.doesNotMatch(JSON.stringify(calls[0].spec), /abc123/);
 });
 
 test("owner setup token rotation updates the host secret only after the database accepts it", async () => {

@@ -5,6 +5,25 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.15-hostroot.1] - 2026-07-27
+
+- accept the `7.4 GiB` usable memory reported by an 8 GB-class CachyOS laptop
+  for the default light profile;
+- wait up to ten minutes for first-start readiness, print service status every
+  30 seconds, and show recent startup logs every two minutes;
+- keep the host-root CLI daemon at UID 0 while sharing its `0660`,
+  `root:spaceapp` Unix socket with the non-root core service;
+- automatically print final service status and logs before a failed install
+  rolls containers back while retaining persistent volumes;
+- keep readiness polling active when an intermediate Docker status or log
+  diagnostic cannot be collected;
+- keep the first-owner setup usable at normal browser zoom on short laptop
+  viewports by making the setup shell vertically scrollable;
+- accept owner passwords from 6 through 500 characters consistently in setup
+  and password reset flows;
+- preserve the real error from Linux Docker-group re-entry instead of adding
+  the inaccurate claim that installation stopped before image download.
+
 ## [0.1.14] - 2026-07-27
 
 - remove an already-running managed browser container when an existing

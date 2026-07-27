@@ -15,8 +15,8 @@ export async function readOwnerPassword(stdin) {
     }
   }
   const password = value.replace(/[\r\n]+$/, "");
-  if (password.length < 12 || password.length > maxPasswordLength || /[\0\r\n]/.test(password)) {
-    throw new Error("Owner password must be 12-500 characters without line breaks.");
+  if (password.length < 6 || password.length > maxPasswordLength || /[\0\r\n]/.test(password)) {
+    throw new Error("Owner password must be 6-500 characters without line breaks.");
   }
   return password;
 }

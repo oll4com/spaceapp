@@ -179,7 +179,7 @@ test("container entrypoints load secrets and keep CLI root only for explicit hos
   assert.match(core, /gosu spaceapp/);
   assert.match(
     cli,
-    /if \[ "\$\{SPACEAPP_CLI_HOST_ROOT_ACCESS:-false\}" = "true" \]; then\s+exec node packages\/cli-host\/dist\/main\.js\s+fi/
+    /if \[ "\$\{SPACEAPP_CLI_HOST_ROOT_ACCESS:-false\}" = "true" \]; then\s+exec gosu root:spaceapp node packages\/cli-host\/dist\/main\.js\s+fi/
   );
   assert.match(cli, /gosu spaceapp/);
   assert.match(
@@ -190,6 +190,17 @@ test("container entrypoints load secrets and keep CLI root only for explicit hos
   assert.match(cli, /rm -f -- "\$destination"/);
   assert.doesNotMatch(cli, /(?:-n|-z).*SPACEAPP_CLI_HOST_ROOT_ACCESS/);
   assert.doesNotMatch(`${core}\n${cli}`, /set -x/);
+});
+
+test("host-root CLI socket remains accessible to the non-root core service", async () => {
+  const cli = await readFile(join(root, "deploy", "docker", "cli-entrypoint.sh"), "utf8");
+  const cliMain = await readFile(join(root, "packages", "cli-host", "src", "main.ts"), "utf8");
+
+  assert.match(
+    cli,
+    /SPACEAPP_CLI_HOST_ROOT_ACCESS:-false\}" = "true" \]; then\s+exec gosu root:spaceapp node packages\/cli-host\/dist\/main\.js\s+fi/
+  );
+  assert.match(cliMain, /createCliHostServer\(\{ socketPath, socketMode: 0o660, registry \}\)/);
 });
 
 test("public CLI wrapper isolates provider state and supports protected DeepSeek setup", async () => {

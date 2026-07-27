@@ -122,7 +122,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
 
   assert.deepEqual(publishable, [{
     name: "run-spaceapp",
-    version: "0.1.15-hostroot.0",
+    version: "0.1.15-hostroot.1",
     bin: {
       spaceapp: "bin/spaceapp.mjs",
       "run-spaceapp": "bin/spaceapp.mjs"

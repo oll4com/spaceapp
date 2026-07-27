@@ -24,12 +24,12 @@ function capture() {
 
 test("owner password input is bounded and accepted only through stdin", async () => {
   await assert.rejects(
-    () => readOwnerPassword(Readable.from(["too-short\n"])),
-    /12-500/
+    () => readOwnerPassword(Readable.from(["short\n"])),
+    /6-500/
   );
   assert.equal(
-    await readOwnerPassword(Readable.from(["correct horse battery staple\n"])),
-    "correct horse battery staple"
+    await readOwnerPassword(Readable.from(["abc123\n"])),
+    "abc123"
   );
 });
 
