@@ -644,6 +644,10 @@ async function installLinuxDockerEngine({
   download
 }) {
   const id = String(release?.ID || "").toLowerCase();
+  const idFamily = new Set([
+    id,
+    ...String(release?.ID_LIKE || "").toLowerCase().split(/\s+/).filter(Boolean)
+  ]);
   if (id === "ubuntu" || id === "debian") {
     return installAptDockerEngine({
       arch,
@@ -659,11 +663,35 @@ async function installLinuxDockerEngine({
   if (id === "fedora" || id === "rhel" || id === "centos") {
     return installDnfDockerEngine({ id, stdin, stdout, stderr, execute });
   }
+  if (
+    idFamily.has("arch") ||
+    idFamily.has("archlinux") ||
+    idFamily.has("cachyos")
+  ) {
+    return installPacmanDockerEngine({ stdin, stdout, stderr, execute });
+  }
   stderr.write(
     `Automatic Docker Engine installation is not yet supported for Linux distribution "${id || "unknown"}". ` +
     "Install Docker Engine and the Compose plugin from https://docs.docker.com/engine/install/ and rerun the same command.\n"
   );
   return 1;
+}
+
+function installPacmanDockerEngine({ stdin, stdout, stderr, execute }) {
+  return execute(
+    {
+      command: "sudo",
+      args: [
+        "pacman",
+        "-S",
+        "--needed",
+        "--noconfirm",
+        "docker",
+        "docker-compose"
+      ]
+    },
+    { stdin, stdout, stderr }
+  );
 }
 
 async function installAptDockerEngine({

@@ -655,6 +655,51 @@ test("Ubuntu installs Docker Engine from Docker's official repository and re-ent
   ));
 });
 
+test("CachyOS and Arch-family derivatives install Docker through fixed pacman arguments", async () => {
+  for (const release of [
+    { ID: "cachyos", ID_LIKE: "arch" },
+    { ID: "custom-desktop", ID_LIKE: "arch linux" }
+  ]) {
+    const calls = [];
+    let serviceStarted = false;
+
+    const result = await ensureDockerAvailable({
+      platform: "linux",
+      arch: "x64",
+      env: { USER: "spaceuser" },
+      stdin: Readable.from([]),
+      stdout: capture().stream,
+      stderr: capture().stream,
+      execute: async (spec) => {
+        calls.push(spec);
+        if (spec.command === "docker") return serviceStarted ? 0 : 127;
+        if (spec.command === "sudo" && spec.args.includes("systemctl")) {
+          serviceStarted = true;
+        }
+        return 0;
+      },
+      download: async () => {
+        throw new Error("Arch-family installation must not download repository bootstrap files.");
+      },
+      sleep: async () => {},
+      osRelease: release,
+      installArgs: { requestedProfile: "auto", requestedAccessMode: "host-root" }
+    });
+
+    assert.deepEqual(result, { code: 0, reexecuted: false });
+    assert.ok(calls.some((spec) =>
+      spec.command === "sudo" &&
+      spec.args.join(" ") ===
+        "pacman -S --needed --noconfirm docker docker-compose"
+    ));
+    assert.ok(calls.some((spec) =>
+      spec.command === "sudo" &&
+      spec.args.join(" ") === "systemctl enable --now docker"
+    ));
+    assert.equal(calls.some((spec) => spec.command === "sg"), false);
+  }
+});
+
 test("Fedora uses Docker's official DNF repository and starts the engine", async () => {
   const calls = [];
   let serviceStarted = false;
