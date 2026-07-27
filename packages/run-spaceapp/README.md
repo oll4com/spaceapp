@@ -24,8 +24,9 @@ Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and CentOS, or with native
 waits for Engine and Compose readiness before pulling images. Windows prefers
 Windows Package Manager's hash-pinned Docker Desktop
 manifest and retains a signed direct-download fallback. Docker Desktop license
-acceptance and Linux `docker` group membership require confirmation inside the
-same command. On Windows, approve any UAC prompt required by WSL2 or Docker
+acceptance still requires confirmation. On Linux, the same command explains
+the root-equivalent `docker` group and adds the current user automatically.
+On Windows, approve any UAC prompt required by WSL2 or Docker
 Desktop. Use the **Command Prompt** profile because a restricted PowerShell
 policy can block npm's `npx.ps1` before SpaceApp starts. On Docker Desktop's
 first launch, select **Skip** in the top-right of the **Welcome to Docker**

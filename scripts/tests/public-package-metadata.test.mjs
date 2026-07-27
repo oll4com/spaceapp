@@ -338,12 +338,13 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
   assert.match(gettingStarted, /group grants root-level privileges/i);
   assert.match(
     gettingStarted,
-    /npx --yes run-spaceapp@personal install --access host-root/
+    /npx --yes run-spaceapp@0\.1\.15-hostroot\.0 install --access host-root/
   );
   assert.match(gettingStarted, /--access isolated/);
-  assert.match(gettingStarted, /equivalent to host-root\s+file access/i);
-  assert.match(packageReadme, /run-spaceapp@personal install --access host-root/);
-  assert.match(packageReadme, /core service receives `\/host` read-only/i);
+  assert.match(gettingStarted, /equivalent to\s+host-root\s+file access/i);
+  assert.match(packageReadme, /run-spaceapp@personal install/);
+  assert.match(packageReadme, /rejects `--access host-root`/i);
+  assert.match(packageReadme, /existing `0\.1\.15-hostroot\.0` runtime images/i);
   for (const command of [
     "provider install claude",
     "help",

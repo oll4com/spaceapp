@@ -35,7 +35,8 @@ missing on Ubuntu, Debian, Fedora, RHEL, or CentOS, the launcher adds Docker's
 official repository. On Arch-family systems, including CachyOS, it installs
 the native `docker` and `docker-compose` packages through `pacman`. It then
 starts the service. Before adding the current user to the `docker` group, it
-explains that the group grants root-level privileges and asks for confirmation.
+explains that the group grants root-level privileges, adds the user
+automatically, and continues in the same command.
 
 ## macOS
 

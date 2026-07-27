@@ -69,8 +69,9 @@ through Windows Package Manager's hash-pinned manifest on Windows (with a
 signed direct-download fallback), Docker Desktop on macOS, and Docker Engine
 repositories on Ubuntu, Debian, Fedora, RHEL, and CentOS, or the native
 `pacman` packages on Arch-family systems including CachyOS. Docker Desktop
-license acceptance and Linux `docker` group membership require confirmation
-inside the same command. Windows may require one restart after WSL2 is enabled;
+license acceptance still requires confirmation. On Linux, the same command
+explains the root-equivalent `docker` group and adds the current user
+automatically. Windows may require one restart after WSL2 is enabled;
 SpaceApp registers a one-time resume, asks before scheduling the restart, and
 continues automatically after the user signs back in. The install command does
 not need to be entered again.
