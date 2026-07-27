@@ -403,7 +403,8 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
     ["docker", "info"],
     ["docker", "compose.workspaces.yml", "pull"],
     ["docker", "-d", "--remove-orphans"],
-    ["docker", "scripts/rotate-owner-setup-token.mjs", "--stdin"]
+    ["docker", "scripts/rotate-owner-setup-token.mjs", "--stdin"],
+    ["docker", "--force", "spaceapp-browser"]
   ]);
   assert.doesNotMatch(calls.map((call) => `${call.command} ${call.args.join(" ")}`).join("\n"), /xdg-open/);
   assert.equal(calls.find((call) => call.args.includes("pull")).args.includes("--profile"), false);
@@ -417,7 +418,7 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
 });
 
-test("install upgrades a 0.1.10 standard installation to 0.1.13 light without changing persistent state", async () => {
+test("install upgrades a 0.1.10 standard installation to 0.1.14 light without changing persistent state", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-upgrade-"));
   const workspace = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-workspace-"));
   const initialized = await initializeInstallation(root, {
@@ -472,7 +473,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.13 light without ch
         );
         assert.match(
           await readFile(join(stagedStateRoot, "runtime.env"), "utf8"),
-          /^SPACEAPP_IMAGE_TAG=0\.1\.13$/m
+          /^SPACEAPP_IMAGE_TAG=0\.1\.14$/m
         );
       }
       return 0;
@@ -482,7 +483,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.13 light without ch
   assert.equal(await run(["install", "--no-open"], options), 0);
 
   const upgradedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(upgradedConfig.version, "0.1.13");
+  assert.equal(upgradedConfig.version, "0.1.14");
   assert.equal(upgradedConfig.previousVersion, "0.1.10");
   assert.equal(upgradedConfig.profile, "light");
   assert.deepEqual(upgradedConfig.workspaces, staleConfig.workspaces);
@@ -493,11 +494,20 @@ test("install upgrades a 0.1.10 standard installation to 0.1.13 light without ch
   assert.equal(composeProjectName(root), projectBefore);
   assert.equal(calls.some((spec) => spec.args.includes("down")), false);
   assert.equal(calls.some((spec) => spec.args.includes("--volumes")), false);
+  const browserCleanup = calls.find((spec) =>
+    spec.args.slice(-4).join(" ") === "rm --stop --force spaceapp-browser"
+  );
+  assert.ok(browserCleanup, "light upgrades must remove a browser container left by the standard profile");
+  assert.deepEqual(
+    browserCleanup.args.slice(browserCleanup.args.indexOf("--profile"), -4),
+    ["--profile", "standard"],
+    "browser cleanup must activate the service's standard Compose profile"
+  );
   for (const spec of calls) {
     assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
   }
-  assert.match(stdout.value(), /Launcher version: 0\.1\.13/);
-  assert.match(stdout.value(), /SpaceApp version: 0\.1\.10 -> 0\.1\.13/);
+  assert.match(stdout.value(), /Launcher version: 0\.1\.14/);
+  assert.match(stdout.value(), /SpaceApp version: 0\.1\.10 -> 0\.1\.14/);
   assert.match(stdout.value(), /Profile: standard -> light/);
   assert.match(stdout.value(), /data.*workspaces.*credentials.*secrets.*persistent Docker volumes/i);
 
@@ -508,7 +518,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.13 light without ch
     stdout: refreshOutput.stream
   }), 0);
   const refreshedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(refreshedConfig.version, "0.1.13");
+  assert.equal(refreshedConfig.version, "0.1.14");
   assert.equal(refreshedConfig.previousVersion, "0.1.10");
   assert.equal(refreshedConfig.profile, "light");
   assert.deepEqual(refreshedConfig.workspaces, staleConfig.workspaces);
@@ -520,11 +530,18 @@ test("install upgrades a 0.1.10 standard installation to 0.1.13 light without ch
   const refreshCalls = calls.slice(refreshCallStart);
   assert.equal(refreshCalls.some((spec) => spec.args.includes("down")), false);
   assert.equal(refreshCalls.some((spec) => spec.args.includes("--volumes")), false);
+  assert.equal(
+    refreshCalls.some((spec) =>
+      spec.args.slice(-4).join(" ") === "rm --stop --force spaceapp-browser"
+    ),
+    true,
+    "idempotent light refreshes must also clean up a browser container left by an earlier launcher"
+  );
   assert.equal(stagedStateRoots.size, 2);
   for (const stagedStateRoot of stagedStateRoots) {
     await assert.rejects(() => readFile(join(stagedStateRoot, "runtime.env"), "utf8"));
   }
-  assert.match(refreshOutput.value(), /SpaceApp version: 0\.1\.13 -> 0\.1\.13/);
+  assert.match(refreshOutput.value(), /SpaceApp version: 0\.1\.14 -> 0\.1\.14/);
   assert.match(refreshOutput.value(), /Profile: light -> light/);
 });
 
@@ -563,8 +580,8 @@ test("a failed upgrade preserves the committed installation state", async () => 
   }
 });
 
-test("Docker and readiness failures preserve the committed installation state", async () => {
-  for (const failure of ["pull", "up", "readiness"]) {
+test("Docker, readiness, and browser-cleanup failures preserve the committed installation state", async () => {
+  for (const failure of ["pull", "up", "readiness", "browser-cleanup"]) {
     const root = await mkdtemp(join(tmpdir(), `spaceapp-cli-${failure}-failure-`));
     await initializeInstallation(root, {
       version: "0.1.10",
@@ -601,11 +618,18 @@ test("Docker and readiness failures preserve the committed installation state", 
         }
         if (failure === "pull" && spec.args.at(-1) === "pull") return 41;
         if (failure === "up" && spec.args.includes("--remove-orphans")) return 42;
+        if (
+          failure === "browser-cleanup" &&
+          spec.args.slice(-4).join(" ") === "rm --stop --force spaceapp-browser"
+        ) return 43;
         return 0;
       }
     });
 
-    assert.equal(code, failure === "pull" ? 41 : failure === "up" ? 42 : 1);
+    assert.equal(
+      code,
+      failure === "pull" ? 41 : failure === "up" ? 42 : failure === "browser-cleanup" ? 43 : 1
+    );
     for (const [path, content] of committedState) {
       assert.equal(await readFile(join(root, path), "utf8"), content);
     }

@@ -422,6 +422,24 @@ async function installCommand(args, {
       }
     }
 
+    if (profile === "light") {
+      const removeBrowserCode = await executeWithDockerDiagnostics(
+        execute,
+        composeCommand("removeBrowser", root, {
+          profile: "standard",
+          stateRoot: stagedStateRoot
+        }),
+        { stdin, stdout, stderr },
+        { platform, stderr }
+      );
+      if (removeBrowserCode !== 0) {
+        stderr.write(
+          "SpaceApp is ready, but the managed browser container could not be removed for the light profile.\n"
+        );
+        return removeBrowserCode;
+      }
+    }
+
     await commitInstallation(root, result.config);
     stdout.write(`SpaceApp is ready at ${url}\n`);
     if (setupToken) {

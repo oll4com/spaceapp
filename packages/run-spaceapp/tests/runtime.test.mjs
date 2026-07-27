@@ -55,6 +55,12 @@ test("compose actions map to fixed commands and never invoke a shell", () => {
     "exec", "-T", "--user", "10001:10001", "spaceapp-core",
     "node", "scripts/rotate-owner-setup-token.mjs", "--stdin"
   ]);
+  const removeBrowser = composeCommand("removeBrowser", home, { profile: "standard" });
+  assert.deepEqual(
+    removeBrowser.args.slice(-6),
+    ["--profile", "standard", "rm", "--stop", "--force", "spaceapp-browser"]
+  );
+  assert.equal(removeBrowser.args.includes("--volumes"), false);
   assert.throws(() => composeCommand("arbitrary", home), /unsupported/i);
 });
 
