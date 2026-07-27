@@ -186,7 +186,8 @@ npm audit --audit-level=high
 - Prerequisite tests prove CachyOS/Arch routing uses fixed pacman arguments and
   existing apt/dnf behavior remains unchanged.
 - CLI tests prove non-Linux host-root requests fail before Docker or file
-  mutation, and output reports the access transition.
+  mutation, output reports the access transition, and failed activation restores
+  the previous isolated runtime or stops a failed clean install.
 - Compose contract tests prove the Docker socket and privileged/host namespace
   settings are absent.
 - An isolated CachyOS VM must prove real install, `/host` read/write behavior,
@@ -214,4 +215,3 @@ npm audit --audit-level=high
 5. Existing Ubuntu/Debian/Fedora/RHEL/CentOS launcher tests remain green.
 6. No Docker socket, privileged container, host namespace, or secret is added.
 7. The same npm package and image set serves all supported Linux families.
-

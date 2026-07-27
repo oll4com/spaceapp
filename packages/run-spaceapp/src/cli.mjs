@@ -281,17 +281,17 @@ async function installCommand(args, {
   persistSetupToken
 }) {
   const { requestedProfile, requestedAccessMode, noOpen } = parseInstallArgs(args);
-  if (requestedAccessMode === "host-root" && platform !== "linux") {
-    throw new Error("Host-root access is supported only on Linux.");
-  }
-  await prepareDockerPath({ platform, env });
-  const resources = await inspectResources(root);
-  const profile = resolveInstallProfile(requestedProfile, resources.totalMemoryBytes);
   const existingConfig = await loadExistingInstallation(root);
   const accessMode = resolveInstallAccessMode(
     requestedAccessMode,
     existingConfig?.accessMode ?? "isolated"
   );
+  if (accessMode === "host-root" && platform !== "linux") {
+    throw new Error("Host-root access is supported only on Linux.");
+  }
+  await prepareDockerPath({ platform, env });
+  const resources = await inspectResources(root);
+  const profile = resolveInstallProfile(requestedProfile, resources.totalMemoryBytes);
   if (accessMode === "host-root") {
     stderr.write(
       "WARNING: host-root access lets SpaceApp CLI sessions read and modify the entire Linux host through /host, including credentials and system files.\n"
@@ -370,6 +370,24 @@ async function installCommand(args, {
     return doctorCode;
   }
   const stagedStateRoot = await mkdtemp(join(tmpdir(), "run-spaceapp-install-"));
+  let runtimeMutationAttempted = false;
+  const failAfterRuntimeMutation = async (code) => {
+    if (runtimeMutationAttempted) {
+      await restoreRuntimeAfterFailedInstall({
+        root,
+        stagedStateRoot,
+        existingConfig,
+        attemptedProfile: profile,
+        platform,
+        stdin,
+        stdout,
+        stderr,
+        execute
+      });
+      runtimeMutationAttempted = false;
+    }
+    return code;
+  };
   try {
     await commitInstallation(stagedStateRoot, result.config);
     const stagedComposeCommand = (action) =>
@@ -381,13 +399,14 @@ async function installCommand(args, {
       { platform, stderr }
     );
     if (pullCode !== 0) return pullCode;
+    runtimeMutationAttempted = true;
     const upCode = await executeWithDockerDiagnostics(
       execute,
       stagedComposeCommand("up"),
       { stdin, stdout, stderr },
       { platform, stderr }
     );
-    if (upCode !== 0) return upCode;
+    if (upCode !== 0) return await failAfterRuntimeMutation(upCode);
 
     const url = `http://${result.config.bindHost}:${result.config.port}`;
     stdout.write("Waiting for SpaceApp services to become ready...\n");
@@ -401,7 +420,7 @@ async function installCommand(args, {
         "SpaceApp containers started, but the application did not become ready within 3 minutes.\n" +
         `Run "${UNIVERSAL_COMMAND} status" and "${UNIVERSAL_COMMAND} logs", then run "${UNIVERSAL_COMMAND} install" again.\n`
       );
-      return 1;
+      return await failAfterRuntimeMutation(1);
     }
 
     let setupStatus;
@@ -412,7 +431,7 @@ async function installCommand(args, {
         `SpaceApp is ready, but owner setup status could not be verified: ${error?.message || String(error)}\n` +
         `Run "${UNIVERSAL_COMMAND} status" and "${UNIVERSAL_COMMAND} logs", then run "${UNIVERSAL_COMMAND} install" again.\n`
       );
-      return 1;
+      return await failAfterRuntimeMutation(1);
     }
 
     let setupToken = null;
@@ -433,7 +452,7 @@ async function installCommand(args, {
         stderr.write(
           `SpaceApp is ready, but a fresh owner setup token could not be created. Run "${UNIVERSAL_COMMAND} owner rotate-setup-token".\n`
         );
-        return rotateCode;
+        return await failAfterRuntimeMutation(rotateCode);
       }
     }
 
@@ -451,7 +470,7 @@ async function installCommand(args, {
         stderr.write(
           "SpaceApp is ready, but the managed browser container could not be removed for the light profile.\n"
         );
-        return removeBrowserCode;
+        return await failAfterRuntimeMutation(removeBrowserCode);
       }
     }
 
@@ -463,11 +482,12 @@ async function installCommand(args, {
           "SpaceApp accepted a new setup token, but it could not be saved locally.\n" +
           `Run "${UNIVERSAL_COMMAND} owner rotate-setup-token" to obtain a usable token.\n`
         );
-        return 1;
+        return await failAfterRuntimeMutation(1);
       }
     }
 
     await commitInstallation(root, result.config);
+    runtimeMutationAttempted = false;
     stdout.write(`SpaceApp is ready at ${url}\n`);
     if (setupToken) {
       stdout.write(`One-time setup token: ${setupToken}\n`);
@@ -484,8 +504,77 @@ async function installCommand(args, {
       stderr.write(`Could not open SpaceApp automatically. Open ${url} manually.\n`);
     }
     return 0;
+  } catch (error) {
+    await failAfterRuntimeMutation(1);
+    throw error;
   } finally {
     await rm(stagedStateRoot, { recursive: true, force: true });
+  }
+}
+
+async function restoreRuntimeAfterFailedInstall({
+  root,
+  stagedStateRoot,
+  existingConfig,
+  attemptedProfile,
+  platform,
+  stdin,
+  stdout,
+  stderr,
+  execute
+}) {
+  const runtimeExecute = (spec) => executeWithDockerDiagnostics(
+    execute,
+    spec,
+    { stdin, stdout, stderr },
+    { platform, stderr }
+  );
+  try {
+    if (existingConfig) {
+      await commitInstallation(stagedStateRoot, existingConfig);
+      const restoreCode = await runtimeExecute(
+        composeCommand("up", root, {
+          profile: existingConfig.profile,
+          stateRoot: stagedStateRoot
+        })
+      );
+      if (restoreCode === 0) {
+        if (existingConfig.profile === "light") {
+          const cleanupCode = await runtimeExecute(
+            composeCommand("removeBrowser", root, {
+              profile: "standard",
+              stateRoot: stagedStateRoot
+            })
+          );
+          if (cleanupCode !== 0) {
+            stderr.write(
+              "The previous SpaceApp runtime was restored, but an inactive browser container may remain.\n"
+            );
+          }
+        }
+        stderr.write("The previous SpaceApp runtime and access mode were restored.\n");
+        return;
+      }
+      stderr.write(
+        "The previous SpaceApp runtime could not be restored; stopping the partially updated runtime.\n"
+      );
+    }
+
+    const stopCode = await runtimeExecute(
+      composeCommand("down", root, {
+        profile: existingConfig?.profile ?? attemptedProfile,
+        stateRoot: stagedStateRoot
+      })
+    );
+    if (stopCode !== 0) {
+      stderr.write(
+        "The partially updated SpaceApp runtime could not be stopped automatically. Run the install command again immediately.\n"
+      );
+    }
+  } catch (error) {
+    stderr.write(
+      `SpaceApp could not restore or stop the partially updated runtime: ${error?.message || String(error)}\n`
+    );
   }
 }
 
