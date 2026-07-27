@@ -418,6 +418,125 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
 });
 
+test("host-root install is rejected on non-Linux hosts before Docker or installation state", async () => {
+  for (const platform of ["darwin", "win32"]) {
+    const root = await mkdtemp(join(tmpdir(), `spaceapp-cli-host-root-${platform}-`));
+    const calls = {
+      prepareDockerPath: 0,
+      inspectResources: 0,
+      ensureDocker: 0,
+      execute: 0
+    };
+
+    await assert.rejects(
+      () => run(["install", "--access", "host-root", "--no-open"], {
+        env: { SPACEAPP_HOME: root },
+        platform,
+        stdout: capture().stream,
+        stderr: capture().stream,
+        stdin: Readable.from([]),
+        prepareDockerPath: async () => {
+          calls.prepareDockerPath += 1;
+        },
+        inspectResources: async () => {
+          calls.inspectResources += 1;
+          return eightGigabyteClassLinuxGuest;
+        },
+        ensureDocker: async () => {
+          calls.ensureDocker += 1;
+          return { code: 0, reexecuted: false };
+        },
+        execute: async () => {
+          calls.execute += 1;
+          return 0;
+        }
+      }),
+      /host-root access is supported only on Linux/i
+    );
+
+    assert.deepEqual(calls, {
+      prepareDockerPath: 0,
+      inspectResources: 0,
+      ensureDocker: 0,
+      execute: 0
+    });
+    await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
+  }
+});
+
+test("install enables, preserves, and removes Linux host-root access without deleting secrets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-host-root-transition-"));
+  await initializeInstallation(root, {
+    version: "0.1.14",
+    profile: "light"
+  });
+  const secretBefore = await readFile(join(root, "secrets", "session-secret"), "utf8");
+  const installArgs = [];
+  const options = {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: capture().stream,
+    stderr: capture().stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async (input) => {
+      installArgs.push(input.installArgs);
+      return { code: 0, reexecuted: false };
+    },
+    prepareDockerPath: async () => null,
+    request: async (url) => url.endsWith("/readyz")
+      ? jsonResponse({ ok: true })
+      : jsonResponse({ setupRequired: false, expiresAt: null }),
+    sleep: async () => {},
+    execute: async () => 0
+  };
+
+  const enableOutput = capture();
+  const enableWarning = capture();
+  assert.equal(await run(["install", "--access", "host-root", "--no-open"], {
+    ...options,
+    stdout: enableOutput.stream,
+    stderr: enableWarning.stream
+  }), 0);
+  assert.equal(
+    (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).accessMode,
+    "host-root"
+  );
+  assert.match(await readFile(join(root, "compose.host-access.yml"), "utf8"), /target: "\/host"/);
+  assert.match(enableOutput.value(), /Access: isolated -> host-root/);
+  assert.match(enableWarning.value(), /WARNING.*host-root.*entire Linux host/i);
+  assert.equal(installArgs[0].requestedAccessMode, "host-root");
+
+  const refreshOutput = capture();
+  const refreshWarning = capture();
+  assert.equal(await run(["install", "--no-open"], {
+    ...options,
+    stdout: refreshOutput.stream,
+    stderr: refreshWarning.stream
+  }), 0);
+  assert.equal(
+    (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).accessMode,
+    "host-root"
+  );
+  assert.match(refreshOutput.value(), /Access: host-root -> host-root/);
+  assert.match(refreshWarning.value(), /WARNING.*host-root/i);
+  assert.equal(installArgs[1].requestedAccessMode, undefined);
+
+  const isolateOutput = capture();
+  assert.equal(await run(["install", "--access=isolated", "--no-open"], {
+    ...options,
+    stdout: isolateOutput.stream
+  }), 0);
+  assert.equal(
+    (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).accessMode,
+    "isolated"
+  );
+  assert.equal(await readFile(join(root, "compose.host-access.yml"), "utf8"), "services: {}\n");
+  assert.match(isolateOutput.value(), /Access: host-root -> isolated/);
+  assert.equal(installArgs[2].requestedAccessMode, "isolated");
+  assert.equal(await readFile(join(root, "secrets", "session-secret"), "utf8"), secretBefore);
+});
+
 test("install upgrades a 0.1.10 standard installation to 0.1.14 light without changing persistent state", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-upgrade-"));
   const workspace = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-workspace-"));

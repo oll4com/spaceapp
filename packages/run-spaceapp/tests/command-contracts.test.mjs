@@ -77,6 +77,7 @@ test("help and version aliases expose the complete stable command surface", asyn
       assert.match(stdout.value(), new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
     assert.match(stdout.value(), /Usage: npx --yes run-spaceapp@latest <command>/);
+    assert.match(stdout.value(), /\[--access isolated\|host-root\]/);
     assert.match(stdout.value(), /spaceapp <command>\s+Optional global launcher/);
   }
 

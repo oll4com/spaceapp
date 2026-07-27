@@ -16,6 +16,7 @@ import {
   removeCredential,
   removeWorkspace,
   prepareInstallation,
+  resolveInstallAccessMode,
   resolveInstallProfile,
   resolveSpaceAppHome,
   saveConfig,
@@ -70,11 +71,13 @@ export async function run(argv, {
   sleep = wait,
   persistSetupToken = writeSetupToken
 } = {}) {
-  await prepareDockerPath({ platform, env });
   const [command = "help", ...args] = argv;
   const root = resolveSpaceAppHome({ env, platform });
   const version = await packageVersion();
 
+  if (command !== "install") {
+    await prepareDockerPath({ platform, env });
+  }
   if (command === "help" || command === "--help" || command === "-h") {
     stdout.write(helpText());
     return 0;
@@ -96,6 +99,7 @@ export async function run(argv, {
       execute,
       inspectResources,
       ensureDocker,
+      prepareDockerPath,
       request,
       sleep,
       persistSetupToken
@@ -268,15 +272,29 @@ async function installCommand(args, {
   execute,
   inspectResources,
   ensureDocker,
+  prepareDockerPath,
   request,
   sleep,
   persistSetupToken
 }) {
-  const { requestedProfile, noOpen } = parseInstallArgs(args);
+  const { requestedProfile, requestedAccessMode, noOpen } = parseInstallArgs(args);
+  if (requestedAccessMode === "host-root" && platform !== "linux") {
+    throw new Error("Host-root access is supported only on Linux.");
+  }
+  await prepareDockerPath({ platform, env });
   const resources = await inspectResources(root);
   const profile = resolveInstallProfile(requestedProfile, resources.totalMemoryBytes);
   const existingConfig = await loadExistingInstallation(root);
-  const result = await prepareInstallation(root, { version, profile });
+  const accessMode = resolveInstallAccessMode(
+    requestedAccessMode,
+    existingConfig?.accessMode ?? "isolated"
+  );
+  if (accessMode === "host-root") {
+    stderr.write(
+      "WARNING: host-root access lets SpaceApp CLI sessions read and modify the entire Linux host through /host, including credentials and system files.\n"
+    );
+  }
+  const result = await prepareInstallation(root, { version, profile, accessMode });
 
   stdout.write(`Launcher version: ${version}\n`);
   stdout.write(
@@ -284,6 +302,9 @@ async function installCommand(args, {
   );
   stdout.write(
     `Profile: ${existingConfig?.profile ?? "not configured"} -> ${result.config.profile}\n`
+  );
+  stdout.write(
+    `Access: ${existingConfig?.accessMode ?? "not configured"} -> ${result.config.accessMode}\n`
   );
   stdout.write(existingConfig
     ? "Preserved existing data, workspaces, credentials, secrets, and persistent Docker volumes.\n"
@@ -317,7 +338,7 @@ async function installCommand(args, {
     stdout,
     stderr,
     execute,
-    installArgs: { root, requestedProfile, noOpen }
+    installArgs: { root, requestedProfile, requestedAccessMode, noOpen }
   });
   if (prerequisiteResult.reexecuted || prerequisiteResult.code !== 0) {
     if (prerequisiteResult.code !== 0) {
@@ -467,6 +488,7 @@ async function installCommand(args, {
 
 function parseInstallArgs(args) {
   let requestedProfile = "auto";
+  let requestedAccessMode;
   let noOpen = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -483,16 +505,31 @@ function parseInstallArgs(args) {
       requestedProfile = argument.slice("--profile=".length);
       continue;
     }
+    if (argument === "--access" && index + 1 < args.length) {
+      requestedAccessMode = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--access=")) {
+      requestedAccessMode = argument.slice("--access=".length);
+      continue;
+    }
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--access isolated|host-root] [--no-open]`
     );
   }
-  if (!["auto", "light", "standard"].includes(requestedProfile)) {
+  if (
+    !["auto", "light", "standard"].includes(requestedProfile) ||
+    (
+      requestedAccessMode !== undefined &&
+      !["isolated", "host-root"].includes(requestedAccessMode)
+    )
+  ) {
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--access isolated|host-root] [--no-open]`
     );
   }
-  return { requestedProfile, noOpen };
+  return { requestedProfile, requestedAccessMode, noOpen };
 }
 
 async function loadExistingInstallation(root) {
@@ -1001,7 +1038,7 @@ Usage: ${UNIVERSAL_COMMAND} <command>
        spaceapp <command>             Optional global launcher
 
   init                              Create a local SpaceApp installation
-  install [--profile auto|light|standard] [--no-open]
+  install [--profile auto|light|standard] [--access isolated|host-root] [--no-open]
                                     Install prerequisites, initialize, and start
   up | down | status | logs         Manage the Docker application
   open                              Open the local web application

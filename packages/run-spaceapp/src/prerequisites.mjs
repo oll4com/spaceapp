@@ -786,7 +786,11 @@ async function readLinuxOsRelease() {
   return values;
 }
 
-function linuxReentryCommand({ requestedProfile = "auto", noOpen = false } = {}) {
+function linuxReentryCommand({
+  requestedProfile = "auto",
+  requestedAccessMode,
+  noOpen = false
+} = {}) {
   if (!["auto", "light", "standard"].includes(requestedProfile)) {
     throw new Error("Invalid SpaceApp profile for Docker group re-entry.");
   }
@@ -799,6 +803,7 @@ function linuxReentryCommand({ requestedProfile = "auto", noOpen = false } = {})
     "install",
     "--profile",
     requestedProfile,
+    ...installAccessArgs(requestedAccessMode, "Docker group re-entry"),
     ...(noOpen ? ["--no-open"] : [])
   ].map(shellQuote).join(" ");
 }
@@ -807,6 +812,7 @@ export function windowsResumeScript({
   executable = process.execPath,
   entrypoint = fileURLToPath(new URL("../bin/spaceapp.mjs", import.meta.url)),
   requestedProfile = "auto",
+  requestedAccessMode,
   noOpen = false
 } = {}) {
   if (!["auto", "light", "standard"].includes(requestedProfile)) {
@@ -830,6 +836,7 @@ export function windowsResumeScript({
     "install",
     "--profile",
     requestedProfile,
+    ...installAccessArgs(requestedAccessMode, "Windows resume"),
     ...(noOpen ? ["--no-open"] : [])
   ].join(" ");
   return [
@@ -847,6 +854,7 @@ export function windowsResumeScript({
 async function scheduleWindowsInstallResume({
   root,
   requestedProfile = "auto",
+  requestedAccessMode,
   noOpen = false,
   execute,
   stdin,
@@ -865,7 +873,7 @@ async function scheduleWindowsInstallResume({
   await mkdir(root, { recursive: true, mode: 0o700 });
   await writeFile(
     resumePath,
-    windowsResumeScript({ requestedProfile, noOpen }),
+    windowsResumeScript({ requestedProfile, requestedAccessMode, noOpen }),
     { encoding: "utf8", mode: 0o600 }
   );
   const code = await execute(
@@ -880,6 +888,16 @@ async function scheduleWindowsInstallResume({
     await rm(resumePath, { force: true });
   }
   return code;
+}
+
+function installAccessArgs(requestedAccessMode, context) {
+  if (requestedAccessMode === undefined) {
+    return [];
+  }
+  if (requestedAccessMode === "isolated" || requestedAccessMode === "host-root") {
+    return ["--access", requestedAccessMode];
+  }
+  throw new Error(`Invalid SpaceApp access mode for ${context}.`);
 }
 
 function shellQuote(value) {
