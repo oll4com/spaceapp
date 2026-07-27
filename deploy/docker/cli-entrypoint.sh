@@ -20,4 +20,8 @@ if [ -d /run/spaceapp-secrets/providers ]; then
   done
 fi
 
+if [ "${SPACEAPP_CLI_HOST_ROOT_ACCESS:-false}" = "true" ]; then
+  exec node packages/cli-host/dist/main.js
+fi
+
 exec gosu spaceapp node packages/cli-host/dist/main.js
