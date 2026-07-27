@@ -111,19 +111,29 @@ Installation profiles do not control filesystem permissions. Both `light` and
 `standard` use isolated access by default, where only registered workspaces are
 mounted.
 
-The personal `0.1.15-hostroot.1` prerelease adds an explicit Linux-only mode
-for a trusted owner who wants CLI sessions to change the Linux installation:
+The launcher-only `0.1.15-hostroot.1` personal candidate supports isolated
+access only and reuses the existing `0.1.15-hostroot.0` runtime images:
 
 ```bash
-npx --yes run-spaceapp@personal install --access host-root
+npx --yes run-spaceapp@personal install
 ```
 
-This remains one Docker-based SpaceApp build across Linux distributions. It
-mounts the host `/` at `/host`, read-only in the core service and read/write in
-the CLI service. The CLI service runs its sessions as container root only in
-this mode. On a normal rootful Docker Engine, this is equivalent to host-root
-file access: an agent can read credentials, change boot or package files, or
-destroy the operating system.
+It rejects `--access host-root` until matching runtime images are rebuilt in a
+future full release.
+
+The earlier `0.1.15-hostroot.0` experiment can still be pinned explicitly on a
+disposable, trusted single-owner Linux test machine:
+
+```bash
+npx --yes run-spaceapp@0.1.15-hostroot.0 install --access host-root
+```
+
+That mode remains one Docker-based SpaceApp build across Linux distributions.
+It mounts the host `/` at `/host`, read-only in the core service and read/write
+in the CLI service. The CLI service runs its sessions as container root only
+in this mode. On a normal rootful Docker Engine, this is equivalent to
+host-root file access: an agent can read credentials, change boot or package
+files, or destroy the operating system.
 
 The mode does not mount the Docker socket and does not enable `privileged`,
 host PID, host network, host IPC, or host device access. Those omissions reduce

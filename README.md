@@ -90,33 +90,31 @@ omits managed Chromium. Use
 managed browser container is required and the host has the recommended
 resources.
 
-### Personal Linux host-root prerelease
+### Personal launcher-only candidate
 
-For a trusted single-owner Linux machine that intentionally needs SpaceApp CLI
-sessions to modify the whole host installation, use the personal prerelease:
-
-```bash
-npx --yes run-spaceapp@personal install --access host-root
-```
-
-This is not a separate distro build. The same Docker distribution mounts the
-Linux root filesystem at `/host`: read-only in `spaceapp-core` and read/write
-in `spaceapp-cli`. CLI sessions run as container root in this mode. This can
-read any host credential, replace system files, or make Linux unbootable.
-Use it only on a machine controlled by one trusted owner.
-
-The default remains `isolated`. Return to it without deleting SpaceApp data,
-credentials, workspaces, secrets, or persistent volumes:
+The `0.1.15-hostroot.1` personal candidate contains cross-platform installer
+fixes and deliberately reuses the already published `0.1.15-hostroot.0`
+runtime images:
 
 ```bash
-npx --yes run-spaceapp@personal install --access isolated
+npx --yes run-spaceapp@personal install
 ```
 
-`light` and `standard` select resources and the managed browser; they do not
-grant or remove host access.
+This candidate supports isolated access only. It rejects `--access host-root`
+until matching runtime images are rebuilt in a future full release. The
+launcher prints its own `.1` version separately from the pinned `.0` runtime
+image version.
 
-While the prerelease is installed, use the same `run-spaceapp@personal` prefix
-for `doctor`, `status`, `logs`, credentials, and recovery commands.
+The earlier host-root experiment remains available only by pinning its exact
+launcher version on a disposable, trusted single-owner Linux test machine:
+
+```bash
+npx --yes run-spaceapp@0.1.15-hostroot.0 install --access host-root
+```
+
+Host-root mounts Linux `/` read/write into `spaceapp-cli` and can expose every
+credential or make the operating system unbootable. It is not part of the
+current cross-platform acceptance.
 
 The installer does not create or reserve a separate fixed-size VM. Linux uses
 the native Docker Engine; Windows uses Docker Desktop's WSL2 Linux environment;

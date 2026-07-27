@@ -67,48 +67,51 @@ both npm and Docker tags. Numeric identifiers with leading zeros and SemVer
 build metadata (`+...`) are rejected because the exact version is also the
 immutable GHCR tag.
 
-For `0.1.14`, `latest` must remain `0.1.12` until clean-install acceptance is
-complete.
+The accepted `0.1.14` release remains on both `latest` and `next` during the
+personal candidate test.
 
-## Personal host-root prerelease
+## Personal launcher-only prerelease
 
 For `0.1.15-hostroot.1`, dispatch `release.yml` from `main` with:
 
 - `version`: `0.1.15-hostroot.1`;
+- `runtime_version`: `0.1.15-hostroot.0`;
+- `release_mode`: `launcher-only`;
 - `npm_tag`: `personal`.
 
-The full candidate, audit, Trivy, multi-architecture, SBOM, provenance, and
-artifact-existence gates remain mandatory. Do not change `latest` or `next`.
-After publication, confirm:
+The sanitized source candidate, tests, audit, build, pack, and source Trivy
+gates remain mandatory. The workflow verifies the existing `.0`
+multi-architecture manifests, SBOMs, and provenance, but skips every container
+candidate and container publication job. Do not change `latest` or `next`.
+After npm-only publication, confirm:
 
 - `run-spaceapp@0.1.15-hostroot.1` exists and has the reviewed `gitHead`;
 - `dist-tags.personal` is `0.1.15-hostroot.1`;
 - `latest` and `next` are unchanged;
-- all three exact GHCR tags expose `linux/amd64`, `linux/arm64`, SBOM, and
-  provenance.
+- all three existing `.0` GHCR tags still expose `linux/amd64`, `linux/arm64`,
+  SBOM, and provenance;
+- no `.1` GHCR tag was created.
 
-Run the isolated CachyOS acceptance with the exact user command:
+Run the isolated cross-platform acceptance with:
 
 ```bash
-npx --yes run-spaceapp@personal install --access host-root
+npx --yes run-spaceapp@personal install
 ```
 
-Verify `/host` read/write behavior only with a synthetic temporary host file,
-then run the same command again for idempotency. Finally run
-`npx --yes run-spaceapp@personal install --access isolated` and prove the host
-root mount is absent while application data and volumes remain.
+Verify that the launcher reports `.1`, `runtime.env` pins `.0`, and update
+preserves data and volumes. On Linux, also prove that `--access host-root`
+fails before Docker or image pulls.
 
-If acceptance fails, remove or restore only the `personal` dist-tag and
-deprecate the exact npm version. Exact npm and GHCR version artifacts remain
-immutable. Do not modify `latest`, `next`, or any existing live SpaceApp or
-website installation.
+If acceptance fails, restore `personal` to `0.1.15-hostroot.0` and deprecate
+only the `.1` npm version if necessary. No GHCR rollback is required. Do not
+modify `latest`, `next`, or any existing live SpaceApp or website installation.
 
 ## Staged acceptance and promotion
 
 Verify npm metadata before installation:
 
-- `version` and `next` are `0.1.14`;
-- `latest` is still `0.1.12`;
+- `latest` and `next` are `0.1.14`;
+- `personal` is the candidate under acceptance;
 - `gitHead` equals the released `main` commit;
 - provenance is present and references `.github/workflows/release.yml`.
 

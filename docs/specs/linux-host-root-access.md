@@ -14,7 +14,7 @@ replace npm `latest` until isolated-VM acceptance succeeds.
 The public command contract is additive:
 
 ```sh
-npx --yes run-spaceapp@personal install --access host-root
+npx --yes run-spaceapp@0.1.15-hostroot.0 install --access host-root
 ```
 
 Existing installs and installs without `--access host-root` remain isolated.

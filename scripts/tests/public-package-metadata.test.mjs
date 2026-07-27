@@ -39,6 +39,25 @@ test("public command guards reject forbidden commands inside inline Markdown", (
   assert.match("Use `spaceapp doctor` to diagnose it.", globalFollowUpCommand);
 });
 
+test("active documentation does not route host-root through the launcher-only personal tag", async () => {
+  for (const path of [
+    "README.md",
+    "packages/run-spaceapp/README.md",
+    "docs/clean-room-testing.md",
+    "docs/getting-started.md",
+    "docs/operations.md",
+    "docs/public-release.md",
+    "docs/security-model.md"
+  ]) {
+    const content = await readFile(join(root, path), "utf8");
+    assert.doesNotMatch(
+      content,
+      /npx --yes run-spaceapp@personal install --access host-root/,
+      path
+    );
+  }
+});
+
 test("public test command uses a portable one-file suite that imports every public test", async () => {
   const rootPackage = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   const apiPackage = JSON.parse(
@@ -131,6 +150,8 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
   const launcherPackage = JSON.parse(
     await readFile(join(root, "packages", "run-spaceapp", "package.json"), "utf8")
   );
+  assert.equal(launcherPackage.spaceappRuntimeVersion, "0.1.15-hostroot.0");
+  assert.equal(launcherPackage.spaceappHostRootRuntimeCompatible, false);
   assert.equal(launcherPackage.publishConfig.tag, undefined);
 });
 
