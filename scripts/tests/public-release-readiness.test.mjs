@@ -34,10 +34,25 @@ test("public release readiness blocks version drift", () => {
   ]);
 });
 
-test("public release readiness blocks prerelease version strings", () => {
+test("public release readiness accepts exact semantic prerelease versions", () => {
   const result = evaluatePublicRelease({
-    requestedVersion: "0.1.0-alpha.1",
-    packageVersion: "0.1.0-alpha.1",
+    requestedVersion: "0.1.15-hostroot.0",
+    requestedNpmTag: "personal",
+    packageVersion: "0.1.15-hostroot.0",
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+});
+
+test("public release readiness reserves host-root versions for the personal tag", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.0",
+    requestedNpmTag: "next",
+    packageVersion: "0.1.15-hostroot.0",
     notices,
     dockerfile: "FROM node:22\n",
     distributionPolicy: policy
@@ -45,7 +60,7 @@ test("public release readiness blocks prerelease version strings", () => {
 
   assert.equal(result.ok, false);
   assert.deepEqual(result.blockers, [
-    "Requested version 0.1.0-alpha.1 is not a stable semantic version."
+    "Host-root prereleases must publish only to the npm personal tag."
   ]);
 });
 

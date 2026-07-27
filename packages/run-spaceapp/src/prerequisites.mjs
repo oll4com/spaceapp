@@ -8,10 +8,10 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
-const UNIVERSAL_INSTALL_COMMAND = "npx --yes run-spaceapp@latest install";
 const WINDOWS_DOCKER_DOWNLOADS = Object.freeze({
   x64: "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
   arm64: "https://desktop.docker.com/win/main/arm64/Docker%20Desktop%20Installer.exe"
@@ -644,6 +644,10 @@ async function installLinuxDockerEngine({
   download
 }) {
   const id = String(release?.ID || "").toLowerCase();
+  const idFamily = new Set([
+    id,
+    ...String(release?.ID_LIKE || "").toLowerCase().split(/\s+/).filter(Boolean)
+  ]);
   if (id === "ubuntu" || id === "debian") {
     return installAptDockerEngine({
       arch,
@@ -659,11 +663,35 @@ async function installLinuxDockerEngine({
   if (id === "fedora" || id === "rhel" || id === "centos") {
     return installDnfDockerEngine({ id, stdin, stdout, stderr, execute });
   }
+  if (
+    idFamily.has("arch") ||
+    idFamily.has("archlinux") ||
+    idFamily.has("cachyos")
+  ) {
+    return installPacmanDockerEngine({ stdin, stdout, stderr, execute });
+  }
   stderr.write(
     `Automatic Docker Engine installation is not yet supported for Linux distribution "${id || "unknown"}". ` +
     "Install Docker Engine and the Compose plugin from https://docs.docker.com/engine/install/ and rerun the same command.\n"
   );
   return 1;
+}
+
+function installPacmanDockerEngine({ stdin, stdout, stderr, execute }) {
+  return execute(
+    {
+      command: "sudo",
+      args: [
+        "pacman",
+        "-S",
+        "--needed",
+        "--noconfirm",
+        "docker",
+        "docker-compose"
+      ]
+    },
+    { stdin, stdout, stderr }
+  );
 }
 
 async function installAptDockerEngine({
@@ -786,7 +814,11 @@ async function readLinuxOsRelease() {
   return values;
 }
 
-function linuxReentryCommand({ requestedProfile = "auto", noOpen = false } = {}) {
+function linuxReentryCommand({
+  requestedProfile = "auto",
+  requestedAccessMode,
+  noOpen = false
+} = {}) {
   if (!["auto", "light", "standard"].includes(requestedProfile)) {
     throw new Error("Invalid SpaceApp profile for Docker group re-entry.");
   }
@@ -799,6 +831,7 @@ function linuxReentryCommand({ requestedProfile = "auto", noOpen = false } = {})
     "install",
     "--profile",
     requestedProfile,
+    ...installAccessArgs(requestedAccessMode, "Docker group re-entry"),
     ...(noOpen ? ["--no-open"] : [])
   ].map(shellQuote).join(" ");
 }
@@ -807,6 +840,7 @@ export function windowsResumeScript({
   executable = process.execPath,
   entrypoint = fileURLToPath(new URL("../bin/spaceapp.mjs", import.meta.url)),
   requestedProfile = "auto",
+  requestedAccessMode,
   noOpen = false
 } = {}) {
   if (!["auto", "light", "standard"].includes(requestedProfile)) {
@@ -830,6 +864,7 @@ export function windowsResumeScript({
     "install",
     "--profile",
     requestedProfile,
+    ...installAccessArgs(requestedAccessMode, "Windows resume"),
     ...(noOpen ? ["--no-open"] : [])
   ].join(" ");
   return [
@@ -847,6 +882,7 @@ export function windowsResumeScript({
 async function scheduleWindowsInstallResume({
   root,
   requestedProfile = "auto",
+  requestedAccessMode,
   noOpen = false,
   execute,
   stdin,
@@ -865,7 +901,7 @@ async function scheduleWindowsInstallResume({
   await mkdir(root, { recursive: true, mode: 0o700 });
   await writeFile(
     resumePath,
-    windowsResumeScript({ requestedProfile, noOpen }),
+    windowsResumeScript({ requestedProfile, requestedAccessMode, noOpen }),
     { encoding: "utf8", mode: 0o600 }
   );
   const code = await execute(
@@ -880,6 +916,16 @@ async function scheduleWindowsInstallResume({
     await rm(resumePath, { force: true });
   }
   return code;
+}
+
+function installAccessArgs(requestedAccessMode, context) {
+  if (requestedAccessMode === undefined) {
+    return [];
+  }
+  if (requestedAccessMode === "isolated" || requestedAccessMode === "host-root") {
+    return ["--access", requestedAccessMode];
+  }
+  throw new Error(`Invalid SpaceApp access mode for ${context}.`);
 }
 
 function shellQuote(value) {

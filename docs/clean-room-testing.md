@@ -89,6 +89,33 @@ command a second time.
 This second pass proves the released npm tarball, image manifests, registry
 permissions, and image architecture—not just the repository build.
 
+## Personal CachyOS host-root acceptance
+
+Use an isolated CachyOS VM snapshot, never a workstation with valuable data.
+Run:
+
+```bash
+npx --yes run-spaceapp@personal install --access host-root
+```
+
+Confirm the generated configuration records `accessMode=host-root`, core sees
+`/host` read-only, CLI sees `/host` read/write, and a CLI can create and remove
+only a synthetic file under a temporary host test directory. Confirm the
+Docker socket, privileged mode, host namespaces, and devices are absent.
+From that CLI session, run `id -u` and require the exact output `0` to prove
+that host-root mode uses container root.
+
+Run the same command a second time and confirm readiness and persistent state
+are unchanged. Then run:
+
+```bash
+npx --yes run-spaceapp@personal install --access isolated
+```
+
+Recreate the stack and prove `/host` is no longer mounted while SpaceApp data,
+credentials, workspaces, secrets, backups, and persistent volumes remain.
+Restore the VM snapshot after the evidence is captured.
+
 ## Required checks
 
 For every candidate:

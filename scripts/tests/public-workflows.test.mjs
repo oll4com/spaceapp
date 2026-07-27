@@ -103,9 +103,14 @@ test("release is manual-only on main and publishes only approved sanitized artif
   assert.doesNotMatch(release, /alpha/i);
   assert.doesNotMatch(release, /--allow-review-required/);
   assert.match(trigger, /workflow_dispatch:/);
+  assert.match(trigger, /npm_tag:[\s\S]*type: choice[\s\S]*- next[\s\S]*- personal/);
   assert.doesNotMatch(trigger, /pull_request:|schedule:|\n  push:/);
   assert.match(release, /permissions:\n  contents: read/);
   assert.match(release, /github\.ref == 'refs\/heads\/main'/);
+  assert.match(
+    release,
+    /RELEASE_VERSION: \$\{\{ inputs\.version \}\}[\s\S]*RELEASE_DIST_TAG: \$\{\{ inputs\.npm_tag \}\}[\s\S]*--version "\$RELEASE_VERSION"[\s\S]*--npm-tag "\$RELEASE_DIST_TAG"/
+  );
   assert.match(release, /node scripts\/public-export\.mjs/g);
   assert.match(release, /context: \$\{\{ runner\.temp \}\}\/spaceapp-public-export/);
   assert.match(release, /working-directory: \$\{\{ runner\.temp \}\}\/spaceapp-public-export/g);
@@ -124,8 +129,13 @@ test("release is manual-only on main and publishes only approved sanitized artif
   assert.match(release, /provenance: mode=max/);
   assert.match(release, /npm install --global --ignore-scripts --no-audit --no-fund npm@11\.18\.0/);
   assert.match(release, /npm pkg set "gitHead=\$\{\{ github\.sha \}\}" -w run-spaceapp/);
-  assert.match(release, /npm publish "\$RUNNER_TEMP\/release-artifacts\/run-spaceapp-\$\{\{ inputs\.version \}\}\.tgz" --tag next --provenance/);
+  assert.match(
+    release,
+    /RELEASE_DIST_TAG: \$\{\{ inputs\.npm_tag \}\}[\s\S]*npm publish "\$RUNNER_TEMP\/release-artifacts\/run-spaceapp-\$\{\{ inputs\.version \}\}\.tgz" --tag "\$RELEASE_DIST_TAG" --provenance/
+  );
+  assert.doesNotMatch(release, /--tag "\$\{\{ inputs\.npm_tag \}\}"/);
   assert.match(release, /RELEASE_VERSION: \$\{\{ inputs\.version \}\}/);
+  assert.match(release, /RELEASE_DIST_TAG: \$\{\{ inputs\.npm_tag \}\}/);
   assert.match(release, /RELEASE_GIT_HEAD: \$\{\{ github\.sha \}\}/);
   assert.match(release, /for attempt in \$\(seq 1 12\)/);
   assert.match(release, /sleep 5/);

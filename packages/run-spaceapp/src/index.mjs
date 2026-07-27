@@ -17,8 +17,9 @@ import {
   normalizeWorkspaceName,
   stripTrailingLineEndings
 } from "./string-utils.mjs";
+import { UNIVERSAL_COMMAND } from "./package-info.mjs";
 
-const CONFIG_SCHEMA_VERSION = 2;
+const CONFIG_SCHEMA_VERSION = 3;
 const MIN_INSTALL_CPU_COUNT = 4;
 const MIN_INSTALL_MEMORY_BYTES = 8_000_000_000;
 const MIN_INSTALL_MEMORY_LABEL = "8 GB";
@@ -68,6 +69,7 @@ const CONFIG_KEYS = new Set([
   "port",
   "telemetry",
   "profile",
+  "accessMode",
   "workspaces"
 ]);
 
@@ -99,6 +101,16 @@ export function resolveInstallProfile(requestedProfile, totalMemoryBytes) {
     throw new Error("Total system memory must be available for automatic profile selection.");
   }
   return "light";
+}
+
+export function resolveInstallAccessMode(requestedMode, existingMode = "isolated") {
+  if (requestedMode === undefined) {
+    return existingMode;
+  }
+  if (requestedMode === "isolated" || requestedMode === "host-root") {
+    return requestedMode;
+  }
+  throw new Error("Install access mode must be isolated or host-root.");
 }
 
 export async function inspectSystemResources(root) {
@@ -138,11 +150,16 @@ export function installResourceChecks(resources) {
   ];
 }
 
-export function createDefaultConfig({ version, profile = "light" }) {
+export function createDefaultConfig({
+  version,
+  profile = "light",
+  accessMode = "isolated"
+}) {
   assertVersion(version);
   if (profile !== "light" && profile !== "standard") {
     throw new Error("Default config requires a resolved light or standard profile.");
   }
+  const resolvedAccessMode = resolveInstallAccessMode(accessMode);
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
@@ -151,6 +168,7 @@ export function createDefaultConfig({ version, profile = "light" }) {
     port: 4911,
     telemetry: false,
     profile,
+    accessMode: resolvedAccessMode,
     workspaces: []
   };
 }
@@ -186,6 +204,9 @@ export function validateConfig(config) {
   if (!["light", "standard"].includes(config.profile)) {
     throw new Error("profile must be light or standard.");
   }
+  if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
+    throw new Error("accessMode must be isolated or host-root.");
+  }
   if (!Array.isArray(config.workspaces)) {
     throw new Error("workspaces must be an array.");
   }
@@ -209,6 +230,13 @@ export async function loadConfig(root) {
 }
 
 function migrateConfig(config) {
+  if (config?.schemaVersion === 2) {
+    return {
+      ...config,
+      schemaVersion: CONFIG_SCHEMA_VERSION,
+      accessMode: "isolated"
+    };
+  }
   if (config?.schemaVersion !== 1) {
     return config;
   }
@@ -219,7 +247,8 @@ function migrateConfig(config) {
   return {
     ...config,
     schemaVersion: CONFIG_SCHEMA_VERSION,
-    profile: legacyProfiles[config.profile] ?? config.profile
+    profile: legacyProfiles[config.profile] ?? config.profile,
+    accessMode: "isolated"
   };
 }
 
@@ -351,6 +380,35 @@ export function renderWorkspaceCompose(config) {
   ].join("\n");
 }
 
+export function renderHostAccessCompose(config) {
+  validateConfig(config);
+  if (config.accessMode === "isolated") {
+    return "services: {}\n";
+  }
+  const hostMount = (readOnly) => [
+    "      - type: bind",
+    '        source: "/"',
+    '        target: "/host"',
+    `        read_only: ${readOnly}`,
+    "        bind:",
+    "          propagation: rslave"
+  ];
+  return [
+    "services:",
+    "  spaceapp-core:",
+    "    environment:",
+    '      SPACE_CLI_WORKSPACE_ROOT: "/host"',
+    "    volumes:",
+    ...hostMount(true),
+    "  spaceapp-cli:",
+    "    environment:",
+    '      SPACEAPP_CLI_HOST_ROOT_ACCESS: "true"',
+    "    volumes:",
+    ...hostMount(false),
+    ""
+  ].join("\n");
+}
+
 export function composeCommand(action, root, options = {}) {
   validateHome(root);
   const stateRoot = options.stateRoot ?? root;
@@ -366,6 +424,7 @@ export function composeCommand(action, root, options = {}) {
     "--env-file", join(stateRoot, "runtime.env"),
     "-f", join(stateRoot, "compose.yml"),
     "-f", join(stateRoot, "compose.workspaces.yml"),
+    "-f", join(stateRoot, "compose.host-access.yml"),
     ...(profile === "standard" ? ["--profile", "standard"] : [])
   ];
   const actions = {
@@ -462,7 +521,7 @@ export async function selectLatestBackupId(root) {
     .at(-1);
   if (!backupId) {
     throw new Error(
-      'No portable backup exists. Run "npx --yes run-spaceapp@latest backup" before restore.'
+      `No portable backup exists. Run "${UNIVERSAL_COMMAND} backup" before restore.`
     );
   }
   return backupId;
@@ -474,11 +533,13 @@ export async function writeRuntimeFiles(root, config) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config));
   await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config));
+  await atomicWrite(join(root, "compose.host-access.yml"), renderHostAccessCompose(config));
 }
 
 export async function prepareInstallation(root, {
   version,
-  profile
+  profile,
+  accessMode
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -496,7 +557,11 @@ export async function prepareInstallation(root, {
     if (error?.code !== "ENOENT") {
       throw error;
     }
-    config = createDefaultConfig({ version, profile: resolvedProfile ?? "light" });
+    config = createDefaultConfig({
+      version,
+      profile: resolvedProfile ?? "light",
+      accessMode: resolveInstallAccessMode(accessMode)
+    });
   }
   if (config.version !== version) {
     config = {
@@ -507,6 +572,10 @@ export async function prepareInstallation(root, {
   }
   if (resolvedProfile !== undefined) {
     config = { ...config, profile: resolvedProfile };
+  }
+  const resolvedAccessMode = resolveInstallAccessMode(accessMode, config.accessMode);
+  if (config.accessMode !== resolvedAccessMode) {
+    config = { ...config, accessMode: resolvedAccessMode };
   }
   validateConfig(config);
 

@@ -217,7 +217,7 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
   );
   assert.match(
     stdout.value(),
-    /If it expires, run: npx --yes run-spaceapp@latest owner rotate-setup-token/
+    /If it expires, run: npx --yes run-spaceapp@personal owner rotate-setup-token/
   );
   assert.ok(stdout.value().lastIndexOf(installedToken) > stdout.value().lastIndexOf("SpaceApp is ready"));
   assert.equal(stderr.value(), "");
@@ -303,7 +303,7 @@ test("install explains recovery when the database accepts a token that cannot be
   assert.match(stderr.value(), /accepted a new setup token.*could not be saved locally/is);
   assert.match(
     stderr.value(),
-    /npx --yes run-spaceapp@latest owner rotate-setup-token/i
+    /npx --yes run-spaceapp@personal owner rotate-setup-token/i
   );
 });
 
@@ -363,8 +363,8 @@ test("install fails visibly when application readiness never arrives", async () 
   assert.equal(readinessChecks, 91);
   assert.equal(sleepCalls, 90);
   assert.match(stderr.value(), /did not become ready within 3 minutes/i);
-  assert.match(stderr.value(), /npx --yes run-spaceapp@latest status/);
-  assert.match(stderr.value(), /npx --yes run-spaceapp@latest logs/);
+  assert.match(stderr.value(), /npx --yes run-spaceapp@personal status/);
+  assert.match(stderr.value(), /npx --yes run-spaceapp@personal logs/);
   assert.doesNotMatch(stdout.value(), /SpaceApp is ready/);
 });
 
@@ -395,13 +395,13 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   assert.deepEqual(calls.map((call) => [
     call.command,
     ...call.args.slice(-2).map((argument) =>
-      argument.endsWith("compose.workspaces.yml") ? "compose.workspaces.yml" : argument
+      argument.endsWith("compose.host-access.yml") ? "compose.host-access.yml" : argument
     )
   ]), [
     ["docker", "docker", "--version"].slice(1),
     ["docker", "compose", "version"],
     ["docker", "info"],
-    ["docker", "compose.workspaces.yml", "pull"],
+    ["docker", "compose.host-access.yml", "pull"],
     ["docker", "-d", "--remove-orphans"],
     ["docker", "scripts/rotate-owner-setup-token.mjs", "--stdin"],
     ["docker", "--force", "spaceapp-browser"]
@@ -418,7 +418,178 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
 });
 
-test("install upgrades a 0.1.10 standard installation to 0.1.14 light without changing persistent state", async () => {
+test("host-root install is rejected on non-Linux hosts before Docker or installation state", async () => {
+  for (const platform of ["darwin", "win32"]) {
+    const root = await mkdtemp(join(tmpdir(), `spaceapp-cli-host-root-${platform}-`));
+    const calls = {
+      prepareDockerPath: 0,
+      inspectResources: 0,
+      ensureDocker: 0,
+      execute: 0
+    };
+
+    await assert.rejects(
+      () => run(["install", "--access", "host-root", "--no-open"], {
+        env: { SPACEAPP_HOME: root },
+        platform,
+        stdout: capture().stream,
+        stderr: capture().stream,
+        stdin: Readable.from([]),
+        prepareDockerPath: async () => {
+          calls.prepareDockerPath += 1;
+        },
+        inspectResources: async () => {
+          calls.inspectResources += 1;
+          return eightGigabyteClassLinuxGuest;
+        },
+        ensureDocker: async () => {
+          calls.ensureDocker += 1;
+          return { code: 0, reexecuted: false };
+        },
+        execute: async () => {
+          calls.execute += 1;
+          return 0;
+        }
+      }),
+      /host-root access is supported only on Linux/i
+    );
+
+    assert.deepEqual(calls, {
+      prepareDockerPath: 0,
+      inspectResources: 0,
+      ensureDocker: 0,
+      execute: 0
+    });
+    await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
+  }
+});
+
+test("an existing host-root installation is rejected on non-Linux hosts before Docker preparation", async () => {
+  for (const platform of ["darwin", "win32"]) {
+    const root = await mkdtemp(join(tmpdir(), `spaceapp-cli-existing-host-root-${platform}-`));
+    await initializeInstallation(root, {
+      version: "0.1.15-hostroot.0",
+      profile: "light",
+      accessMode: "host-root"
+    });
+    const configBefore = await readFile(join(root, "config.json"), "utf8");
+    const calls = {
+      prepareDockerPath: 0,
+      inspectResources: 0,
+      ensureDocker: 0,
+      execute: 0
+    };
+
+    await assert.rejects(
+      () => run(["install", "--no-open"], {
+        env: { SPACEAPP_HOME: root },
+        platform,
+        stdout: capture().stream,
+        stderr: capture().stream,
+        stdin: Readable.from([]),
+        prepareDockerPath: async () => {
+          calls.prepareDockerPath += 1;
+        },
+        inspectResources: async () => {
+          calls.inspectResources += 1;
+          return eightGigabyteClassLinuxGuest;
+        },
+        ensureDocker: async () => {
+          calls.ensureDocker += 1;
+          return { code: 0, reexecuted: false };
+        },
+        execute: async () => {
+          calls.execute += 1;
+          return 0;
+        }
+      }),
+      /host-root access is supported only on Linux/i
+    );
+
+    assert.deepEqual(calls, {
+      prepareDockerPath: 0,
+      inspectResources: 0,
+      ensureDocker: 0,
+      execute: 0
+    });
+    assert.equal(await readFile(join(root, "config.json"), "utf8"), configBefore);
+  }
+});
+
+test("install enables, preserves, and removes Linux host-root access without deleting secrets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-host-root-transition-"));
+  await initializeInstallation(root, {
+    version: "0.1.14",
+    profile: "light"
+  });
+  const secretBefore = await readFile(join(root, "secrets", "session-secret"), "utf8");
+  const installArgs = [];
+  const options = {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: capture().stream,
+    stderr: capture().stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async (input) => {
+      installArgs.push(input.installArgs);
+      return { code: 0, reexecuted: false };
+    },
+    prepareDockerPath: async () => null,
+    request: async (url) => url.endsWith("/readyz")
+      ? jsonResponse({ ok: true })
+      : jsonResponse({ setupRequired: false, expiresAt: null }),
+    sleep: async () => {},
+    execute: async () => 0
+  };
+
+  const enableOutput = capture();
+  const enableWarning = capture();
+  assert.equal(await run(["install", "--access", "host-root", "--no-open"], {
+    ...options,
+    stdout: enableOutput.stream,
+    stderr: enableWarning.stream
+  }), 0);
+  assert.equal(
+    (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).accessMode,
+    "host-root"
+  );
+  assert.match(await readFile(join(root, "compose.host-access.yml"), "utf8"), /target: "\/host"/);
+  assert.match(enableOutput.value(), /Access: isolated -> host-root/);
+  assert.match(enableWarning.value(), /WARNING.*host-root.*entire Linux host/i);
+  assert.equal(installArgs[0].requestedAccessMode, "host-root");
+
+  const refreshOutput = capture();
+  const refreshWarning = capture();
+  assert.equal(await run(["install", "--no-open"], {
+    ...options,
+    stdout: refreshOutput.stream,
+    stderr: refreshWarning.stream
+  }), 0);
+  assert.equal(
+    (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).accessMode,
+    "host-root"
+  );
+  assert.match(refreshOutput.value(), /Access: host-root -> host-root/);
+  assert.match(refreshWarning.value(), /WARNING.*host-root/i);
+  assert.equal(installArgs[1].requestedAccessMode, undefined);
+
+  const isolateOutput = capture();
+  assert.equal(await run(["install", "--access=isolated", "--no-open"], {
+    ...options,
+    stdout: isolateOutput.stream
+  }), 0);
+  assert.equal(
+    (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).accessMode,
+    "isolated"
+  );
+  assert.equal(await readFile(join(root, "compose.host-access.yml"), "utf8"), "services: {}\n");
+  assert.match(isolateOutput.value(), /Access: host-root -> isolated/);
+  assert.equal(installArgs[2].requestedAccessMode, "isolated");
+  assert.equal(await readFile(join(root, "secrets", "session-secret"), "utf8"), secretBefore);
+});
+
+test("install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.0 light without changing persistent state", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-upgrade-"));
   const workspace = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-workspace-"));
   const initialized = await initializeInstallation(root, {
@@ -473,7 +644,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.14 light without ch
         );
         assert.match(
           await readFile(join(stagedStateRoot, "runtime.env"), "utf8"),
-          /^SPACEAPP_IMAGE_TAG=0\.1\.14$/m
+          /^SPACEAPP_IMAGE_TAG=0\.1\.15-hostroot\.0$/m
         );
       }
       return 0;
@@ -483,7 +654,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.14 light without ch
   assert.equal(await run(["install", "--no-open"], options), 0);
 
   const upgradedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(upgradedConfig.version, "0.1.14");
+  assert.equal(upgradedConfig.version, "0.1.15-hostroot.0");
   assert.equal(upgradedConfig.previousVersion, "0.1.10");
   assert.equal(upgradedConfig.profile, "light");
   assert.deepEqual(upgradedConfig.workspaces, staleConfig.workspaces);
@@ -506,8 +677,8 @@ test("install upgrades a 0.1.10 standard installation to 0.1.14 light without ch
   for (const spec of calls) {
     assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
   }
-  assert.match(stdout.value(), /Launcher version: 0\.1\.14/);
-  assert.match(stdout.value(), /SpaceApp version: 0\.1\.10 -> 0\.1\.14/);
+  assert.match(stdout.value(), /Launcher version: 0\.1\.15-hostroot\.0/);
+  assert.match(stdout.value(), /SpaceApp version: 0\.1\.10 -> 0\.1\.15-hostroot\.0/);
   assert.match(stdout.value(), /Profile: standard -> light/);
   assert.match(stdout.value(), /data.*workspaces.*credentials.*secrets.*persistent Docker volumes/i);
 
@@ -518,7 +689,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.14 light without ch
     stdout: refreshOutput.stream
   }), 0);
   const refreshedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(refreshedConfig.version, "0.1.14");
+  assert.equal(refreshedConfig.version, "0.1.15-hostroot.0");
   assert.equal(refreshedConfig.previousVersion, "0.1.10");
   assert.equal(refreshedConfig.profile, "light");
   assert.deepEqual(refreshedConfig.workspaces, staleConfig.workspaces);
@@ -541,7 +712,10 @@ test("install upgrades a 0.1.10 standard installation to 0.1.14 light without ch
   for (const stagedStateRoot of stagedStateRoots) {
     await assert.rejects(() => readFile(join(stagedStateRoot, "runtime.env"), "utf8"));
   }
-  assert.match(refreshOutput.value(), /SpaceApp version: 0\.1\.14 -> 0\.1\.14/);
+  assert.match(
+    refreshOutput.value(),
+    /SpaceApp version: 0\.1\.15-hostroot\.0 -> 0\.1\.15-hostroot\.0/
+  );
   assert.match(refreshOutput.value(), /Profile: light -> light/);
 });
 
@@ -555,7 +729,8 @@ test("a failed upgrade preserves the committed installation state", async () => 
     "config.json",
     "runtime.env",
     "compose.yml",
-    "compose.workspaces.yml"
+    "compose.workspaces.yml",
+    "compose.host-access.yml"
   ];
   const committedState = new Map(await Promise.all(
     statePaths.map(async (path) => [path, await readFile(join(root, path), "utf8")])
@@ -592,6 +767,7 @@ test("Docker, readiness, and browser-cleanup failures preserve the committed ins
       "runtime.env",
       "compose.yml",
       "compose.workspaces.yml",
+      "compose.host-access.yml",
       "secrets/setup-token"
     ];
     const committedState = new Map(await Promise.all(
@@ -637,11 +813,89 @@ test("Docker, readiness, and browser-cleanup failures preserve the committed ins
     for (const [path, content] of committedState) {
       assert.equal(await readFile(join(root, path), "utf8"), content);
     }
-    assert.equal(stagedStateRoots.size, 1);
-    for (const stagedStateRoot of stagedStateRoots) {
+    assert.equal(stagedStateRoots.has(root), failure !== "pull");
+    const temporaryStateRoots = [...stagedStateRoots].filter(
+      (stateRoot) => stateRoot !== root
+    );
+    assert.equal(temporaryStateRoots.length, 1);
+    for (const stagedStateRoot of temporaryStateRoots) {
       await assert.rejects(() => readFile(join(stagedStateRoot, "runtime.env"), "utf8"));
     }
   }
+});
+
+test("a failed host-root activation restores the previous isolated runtime", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-host-root-rollback-"));
+  await initializeInstallation(root, {
+    version: "0.1.14",
+    profile: "light",
+    accessMode: "isolated"
+  });
+  const stderr = capture();
+  const upAccessModes = [];
+  const upStateRoots = [];
+
+  const code = await run(["install", "--access", "host-root", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: capture().stream,
+    stderr: stderr.stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    sleep: async () => {},
+    execute: async (spec) => {
+      if (spec.args.includes("--remove-orphans")) {
+        const envFileIndex = spec.args.indexOf("--env-file");
+        const stateRoot = dirname(spec.args[envFileIndex + 1]);
+        upStateRoots.push(stateRoot);
+        const hostAccess = await readFile(join(stateRoot, "compose.host-access.yml"), "utf8");
+        upAccessModes.push(hostAccess.includes('target: "/host"') ? "host-root" : "isolated");
+        return upAccessModes.length === 1 ? 42 : 0;
+      }
+      return 0;
+    }
+  });
+
+  assert.equal(code, 42);
+  assert.deepEqual(upAccessModes, ["host-root", "isolated"]);
+  assert.notEqual(upStateRoots[0], root);
+  assert.equal(upStateRoots[1], root);
+  assert.equal(
+    (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).accessMode,
+    "isolated"
+  );
+  assert.match(stderr.value(), /previous SpaceApp runtime and access mode were restored/i);
+});
+
+test("a failed clean host-root install stops the partially started runtime", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-host-root-clean-failure-"));
+  const composeActions = [];
+
+  const code = await run(["install", "--access", "host-root", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: capture().stream,
+    stderr: capture().stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    request: async (url) => url.endsWith("/readyz")
+      ? jsonResponse({ ok: false }, 503)
+      : jsonResponse({ setupRequired: false, expiresAt: null }),
+    sleep: async () => {},
+    execute: async (spec) => {
+      if (spec.args.includes("--remove-orphans")) composeActions.push("up");
+      if (spec.args.at(-1) === "down") composeActions.push("down");
+      return 0;
+    }
+  });
+
+  assert.equal(code, 1);
+  assert.deepEqual(composeActions, ["up", "down"]);
+  await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
 });
 
 test("install honors an explicit standard profile and uses the native browser opener", async () => {
@@ -899,7 +1153,7 @@ test("Docker-backed commands explain exit 127 instead of failing silently", asyn
     execute: async () => 127
   }), 127);
   assert.match(stderr.value(), /could not find the Docker CLI/i);
-  assert.match(stderr.value(), /npx --yes run-spaceapp@latest install/);
+  assert.match(stderr.value(), /npx --yes run-spaceapp@personal install/);
 });
 
 test("doctor probes Docker CLI, Compose, and Engine once and distinguishes a stopped engine", async () => {

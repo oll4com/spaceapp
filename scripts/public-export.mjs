@@ -68,6 +68,7 @@ const publicScripts = new Set([
   "scripts/portable-restore.mjs",
   "scripts/public-export.mjs",
   "scripts/public-release-readiness.mjs",
+  "scripts/release-version.mjs",
   "scripts/release-artifact-preflight.mjs",
   "scripts/reset-owner-password.mjs",
   "scripts/rotate-owner-setup-token.mjs",
@@ -86,6 +87,7 @@ const publicScripts = new Set([
   "scripts/tests/public-suite.test.mjs",
   "scripts/tests/public-workflows.test.mjs",
   "scripts/tests/release-artifact-preflight.test.mjs",
+  "scripts/tests/release-version.test.mjs",
   "scripts/tests/reset-owner-password.test.mjs",
   "scripts/tests/rotate-owner-setup-token.test.mjs",
   "scripts/tests/trivy-report-summary.test.mjs"

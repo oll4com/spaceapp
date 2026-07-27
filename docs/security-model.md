@@ -41,6 +41,31 @@ SaaS control plane.
 - Telemetry is disabled by default.
 - Mutable owner memory is separate from the immutable generic starter memory.
 
+## Explicit Linux host-root mode
+
+The personal Linux prerelease supports the explicit command
+`npx --yes run-spaceapp@personal install --access host-root`. It mounts the
+host `/` at `/host`, read-only in `spaceapp-core` and read/write in
+`spaceapp-cli`, and runs CLI sessions as container root. With a normal rootful
+Docker Engine, this is equivalent to host-root file access.
+
+This mode can disclose every host credential, overwrite boot and package
+configuration, delete user data, or destroy the operating system. Repository
+instructions, model output, and provider CLI output remain untrusted even when
+the one SpaceApp owner is trusted. There is no per-command approval or
+filesystem policy inside this mode.
+
+Host-root is Linux-only, disabled by default, and never selected by a resource
+profile. New and migrated installations use `isolated`; omitting `--access`
+preserves the existing choice. Run
+`npx --yes run-spaceapp@personal install --access isolated` to remove the host
+root mount without deleting application data or persistent volumes.
+
+The host-root override does not mount the Docker socket and does not enable
+`privileged`, host PID, host network, host IPC, devices, or passwordless
+`sudo`. These controls limit additional container authority but do not reduce
+the read/write `/host` mount to a sandbox.
+
 ## Network exposure
 
 Loopback binding protects only against direct network access. Owners who expose

@@ -10,6 +10,8 @@ import {
   initializeInstallation,
   loadConfig,
   prepareInstallation,
+  renderHostAccessCompose,
+  resolveInstallAccessMode,
   resolveInstallProfile,
   resolveSpaceAppHome,
   saveConfig
@@ -30,16 +32,25 @@ test("resolves an explicit home before platform defaults", () => {
 test("default config is versioned, loopback-only, and contains no secret fields", () => {
   const config = createDefaultConfig({ version: "0.1.0" });
   assert.deepEqual(config, {
-    schemaVersion: 2,
+    schemaVersion: 3,
     version: "0.1.0",
     previousVersion: null,
     bindHost: "127.0.0.1",
     port: 4911,
     telemetry: false,
     profile: "light",
+    accessMode: "isolated",
     workspaces: []
   });
   assert.doesNotMatch(JSON.stringify(config), /password|secret|token|api.?key/i);
+});
+
+test("install access defaults to isolated and host-root remains explicit", () => {
+  assert.equal(resolveInstallAccessMode(undefined), "isolated");
+  assert.equal(resolveInstallAccessMode(undefined, "host-root"), "host-root");
+  assert.equal(resolveInstallAccessMode("isolated", "host-root"), "isolated");
+  assert.equal(resolveInstallAccessMode("host-root", "isolated"), "host-root");
+  assert.throws(() => resolveInstallAccessMode("root", "isolated"), /isolated or host-root/i);
 });
 
 test("auto profile defaults to light at every supported memory size and standard stays explicit", () => {
@@ -68,16 +79,61 @@ test("loads legacy full and core profiles through the stable schema migration", 
     })}\n`);
 
     assert.deepEqual(await loadConfig(root), {
-      schemaVersion: 2,
+      schemaVersion: 3,
       version: "0.1.0",
       previousVersion: null,
       bindHost: "127.0.0.1",
       port: 4911,
       telemetry: false,
       profile: stableProfile,
+      accessMode: "isolated",
       workspaces: []
     });
   }
+});
+
+test("loads schema 2 installations as isolated without changing durable settings", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-config-schema-2-"));
+  await writeFile(join(root, "config.json"), `${JSON.stringify({
+    schemaVersion: 2,
+    version: "0.1.14",
+    previousVersion: "0.1.10",
+    bindHost: "127.0.0.1",
+    port: 4911,
+    telemetry: false,
+    profile: "light",
+    workspaces: []
+  })}\n`);
+
+  assert.deepEqual(await loadConfig(root), {
+    schemaVersion: 3,
+    version: "0.1.14",
+    previousVersion: "0.1.10",
+    bindHost: "127.0.0.1",
+    port: 4911,
+    telemetry: false,
+    profile: "light",
+    accessMode: "isolated",
+    workspaces: []
+  });
+});
+
+test("host-root Compose access is explicit, bounded, and reversible", () => {
+  const isolated = createDefaultConfig({ version: "0.1.15-hostroot.0" });
+  assert.equal(renderHostAccessCompose(isolated), "services: {}\n");
+
+  const hostRoot = {
+    ...isolated,
+    accessMode: "host-root"
+  };
+  const compose = renderHostAccessCompose(hostRoot);
+
+  assert.match(compose, /spaceapp-core:[\s\S]*source: "\/"[\s\S]*target: "\/host"[\s\S]*read_only: true/);
+  assert.match(compose, /spaceapp-cli:[\s\S]*source: "\/"[\s\S]*target: "\/host"[\s\S]*read_only: false/);
+  assert.match(compose, /SPACEAPP_CLI_HOST_ROOT_ACCESS: "true"/);
+  assert.match(compose, /SPACE_CLI_WORKSPACE_ROOT: "\/host"/);
+  assert.match(compose, /propagation: rslave/);
+  assert.doesNotMatch(compose, /docker\.sock|privileged:|network_mode:|pid:|ipc:|devices:/);
 });
 
 test("config persists atomically with owner-only POSIX permissions", async () => {
@@ -161,11 +217,17 @@ test("initialization resolves the auto profile on a clean install", async () => 
   const result = await initializeInstallation(root, {
     version: "0.1.11",
     templateDir,
-    profile: "auto"
+    profile: "auto",
+    accessMode: "host-root"
   });
 
   assert.equal(result.config.profile, "light");
+  assert.equal(result.config.accessMode, "host-root");
   assert.equal((await loadConfig(root)).profile, "light");
+  assert.match(
+    await readFile(join(root, "compose.host-access.yml"), "utf8"),
+    /SPACEAPP_CLI_HOST_ROOT_ACCESS: "true"/
+  );
 });
 
 test("initialization synchronizes an existing install to the launcher version and preserves rollback and secrets", async () => {
@@ -184,12 +246,14 @@ test("initialization synchronizes an existing install to the launcher version an
   const result = await initializeInstallation(root, {
     version: "0.1.11",
     templateDir,
-    profile: "light"
+    profile: "light",
+    accessMode: "host-root"
   });
 
   assert.equal(result.config.version, "0.1.11");
   assert.equal(result.config.previousVersion, "0.1.10");
   assert.equal(result.config.profile, "light");
+  assert.equal(result.config.accessMode, "host-root");
   assert.equal(
     await readFile(join(root, "secrets", "postgres-password"), "utf8"),
     passwordBefore
@@ -212,12 +276,14 @@ test("installation preparation defers committed version and runtime changes", as
 
   const prepared = await prepareInstallation(root, {
     version: "0.1.13",
-    profile: "light"
+    profile: "light",
+    accessMode: "host-root"
   });
 
   assert.equal(prepared.config.version, "0.1.13");
   assert.equal(prepared.config.previousVersion, "0.1.10");
   assert.equal(prepared.config.profile, "light");
+  assert.equal(prepared.config.accessMode, "host-root");
   assert.equal(await readFile(join(root, "config.json"), "utf8"), committedConfig);
   assert.equal(await readFile(join(root, "runtime.env"), "utf8"), committedRuntime);
 

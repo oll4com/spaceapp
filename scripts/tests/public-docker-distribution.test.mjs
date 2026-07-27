@@ -168,7 +168,7 @@ test("public Compose runs without host Docker access or development credentials"
   }
 });
 
-test("container entrypoints load secrets from files and drop root before application processes", async () => {
+test("container entrypoints load secrets and keep CLI root only for explicit host-root access", async () => {
   const core = await readFile(join(root, "deploy", "docker", "core-entrypoint.sh"), "utf8");
   const cli = await readFile(join(root, "deploy", "docker", "cli-entrypoint.sh"), "utf8");
 
@@ -177,8 +177,18 @@ test("container entrypoints load secrets from files and drop root before applica
   assert.match(core, /install -o spaceapp -g spaceapp -m 0400/);
   assert.match(core, /export SPACE_SETUP_TOKEN_FILE/);
   assert.match(core, /gosu spaceapp/);
+  assert.match(
+    cli,
+    /if \[ "\$\{SPACEAPP_CLI_HOST_ROOT_ACCESS:-false\}" = "true" \]; then\s+exec node packages\/cli-host\/dist\/main\.js\s+fi/
+  );
   assert.match(cli, /gosu spaceapp/);
+  assert.match(
+    cli,
+    /chown -hR spaceapp:spaceapp \/var\/lib\/spaceapp-cli \/var\/lib\/spaceapp\/memory/
+  );
+  assert.doesNotMatch(cli, /chown -R[^\n]*\/workspaces/);
   assert.match(cli, /rm -f -- "\$destination"/);
+  assert.doesNotMatch(cli, /(?:-n|-z).*SPACEAPP_CLI_HOST_ROOT_ACCESS/);
   assert.doesNotMatch(`${core}\n${cli}`, /set -x/);
 });
 

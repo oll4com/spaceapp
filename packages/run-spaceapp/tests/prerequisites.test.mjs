@@ -69,12 +69,13 @@ test("Windows resume uses the same pinned launcher entrypoint and validated inst
     executable: "C:\\Program Files\\nodejs\\node.exe",
     entrypoint: "C:\\Users\\Admin\\AppData\\Local\\npm-cache\\spaceapp.mjs",
     requestedProfile: "light",
+    requestedAccessMode: "isolated",
     noOpen: true
   });
 
   assert.match(
     script,
-    /"C:\\Program Files\\nodejs\\node\.exe" "C:\\Users\\Admin\\AppData\\Local\\npm-cache\\spaceapp\.mjs" install --profile light --no-open/
+    /"C:\\Program Files\\nodejs\\node\.exe" "C:\\Users\\Admin\\AppData\\Local\\npm-cache\\spaceapp\.mjs" install --profile light --access isolated --no-open/
   );
   assert.match(script, /SPACEAPP_RESUME_EXIT/);
   assert.match(script, /del \/f \/q "%~f0"/);
@@ -87,6 +88,14 @@ test("Windows resume uses the same pinned launcher entrypoint and validated inst
       noOpen: false
     }),
     /profile/i
+  );
+  assert.throws(
+    () => windowsResumeScript({
+      executable: "C:\\Program Files\\nodejs\\node.exe",
+      entrypoint: "C:\\spaceapp.mjs",
+      requestedAccessMode: "unsafe & whoami"
+    }),
+    /access/i
   );
 });
 
@@ -264,6 +273,7 @@ test("Windows schedules the same install to resume after the WSL2 restart", asyn
     installArgs: {
       root: "C:\\Users\\Admin\\AppData\\Roaming\\SpaceApp",
       requestedProfile: "light",
+      requestedAccessMode: "isolated",
       noOpen: true
     },
     scheduleResume: async (options) => {
@@ -278,6 +288,7 @@ test("Windows schedules the same install to resume after the WSL2 restart", asyn
   assert.equal(scheduled.length, 1);
   assert.equal(scheduled[0].root, "C:\\Users\\Admin\\AppData\\Roaming\\SpaceApp");
   assert.equal(scheduled[0].requestedProfile, "light");
+  assert.equal(scheduled[0].requestedAccessMode, "isolated");
   assert.equal(scheduled[0].noOpen, true);
   assert.ok(calls.some((spec) =>
     spec.command === "powershell.exe" &&
@@ -621,6 +632,7 @@ test("Ubuntu installs Docker Engine from Docker's official repository and re-ent
     },
     installArgs: {
       requestedProfile: "auto",
+      requestedAccessMode: "host-root",
       noOpen: false
     }
   });
@@ -639,8 +651,53 @@ test("Ubuntu installs Docker Engine from Docker's official repository and re-ent
     spec.args[0] === "docker" &&
     spec.args[1] === "-c" &&
     spec.args[2].includes("SPACEAPP_PREREQUISITES_BOOTSTRAPPED=1") &&
-    spec.args[2].includes("'install' '--profile' 'auto'")
+    spec.args[2].includes("'install' '--profile' 'auto' '--access' 'host-root'")
   ));
+});
+
+test("CachyOS and Arch-family derivatives install Docker through fixed pacman arguments", async () => {
+  for (const release of [
+    { ID: "cachyos", ID_LIKE: "arch" },
+    { ID: "custom-desktop", ID_LIKE: "arch linux" }
+  ]) {
+    const calls = [];
+    let serviceStarted = false;
+
+    const result = await ensureDockerAvailable({
+      platform: "linux",
+      arch: "x64",
+      env: { USER: "spaceuser" },
+      stdin: Readable.from([]),
+      stdout: capture().stream,
+      stderr: capture().stream,
+      execute: async (spec) => {
+        calls.push(spec);
+        if (spec.command === "docker") return serviceStarted ? 0 : 127;
+        if (spec.command === "sudo" && spec.args.includes("systemctl")) {
+          serviceStarted = true;
+        }
+        return 0;
+      },
+      download: async () => {
+        throw new Error("Arch-family installation must not download repository bootstrap files.");
+      },
+      sleep: async () => {},
+      osRelease: release,
+      installArgs: { requestedProfile: "auto", requestedAccessMode: "host-root" }
+    });
+
+    assert.deepEqual(result, { code: 0, reexecuted: false });
+    assert.ok(calls.some((spec) =>
+      spec.command === "sudo" &&
+      spec.args.join(" ") ===
+        "pacman -S --needed --noconfirm docker docker-compose"
+    ));
+    assert.ok(calls.some((spec) =>
+      spec.command === "sudo" &&
+      spec.args.join(" ") === "systemctl enable --now docker"
+    ));
+    assert.equal(calls.some((spec) => spec.command === "sg"), false);
+  }
 });
 
 test("Fedora uses Docker's official DNF repository and starts the engine", async () => {

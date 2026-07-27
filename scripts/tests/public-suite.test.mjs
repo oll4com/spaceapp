@@ -9,6 +9,7 @@ import "./public-package-metadata.test.mjs";
 import "./public-release-readiness.test.mjs";
 import "./public-workflows.test.mjs";
 import "./release-artifact-preflight.test.mjs";
+import "./release-version.test.mjs";
 import "./reset-owner-password.test.mjs";
 import "./rotate-owner-setup-token.test.mjs";
 import "./trivy-report-summary.test.mjs";

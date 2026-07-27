@@ -21,6 +21,7 @@ const publicTestModules = [
   "public-release-readiness.test.mjs",
   "public-workflows.test.mjs",
   "release-artifact-preflight.test.mjs",
+  "release-version.test.mjs",
   "reset-owner-password.test.mjs",
   "rotate-owner-setup-token.test.mjs",
   "trivy-report-summary.test.mjs"
@@ -121,7 +122,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
 
   assert.deepEqual(publishable, [{
     name: "run-spaceapp",
-    version: "0.1.14",
+    version: "0.1.15-hostroot.0",
     bin: {
       spaceapp: "bin/spaceapp.mjs",
       "run-spaceapp": "bin/spaceapp.mjs"
@@ -314,6 +315,40 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
   assert.match(gettingStarted, /verifies\s+its\s+Authenticode\s+signature/i);
   assert.match(gettingStarted, /verifies\s+its code signature/i);
   assert.match(gettingStarted, /group grants root-level privileges/i);
+  assert.match(
+    gettingStarted,
+    /npx --yes run-spaceapp@personal install --access host-root/
+  );
+  assert.match(gettingStarted, /--access isolated/);
+  assert.match(gettingStarted, /equivalent to host-root\s+file access/i);
+  assert.match(packageReadme, /run-spaceapp@personal install --access host-root/);
+  assert.match(packageReadme, /core service receives `\/host` read-only/i);
+  for (const command of [
+    "provider install claude",
+    "help",
+    "owner rotate-setup-token",
+    "doctor",
+    "status",
+    "credentials list",
+    "uninstall"
+  ]) {
+    assert.match(
+      packageReadme,
+      new RegExp(
+        `npx --yes run-spaceapp@personal ${command.replace(
+          /[.*+?^${}()|[\]\\]/g,
+          "\\$&"
+        )}`
+      )
+    );
+  }
+  assert.match(readme, /run-spaceapp@personal owner rotate-setup-token/);
+  assert.match(
+    operations,
+    /run-spaceapp@personal rollback[\s\S]*run-spaceapp@personal status/
+  );
+  assert.match(cleanRoom, /id -u[\s\S]*\b0\b/);
+  assert.match(securityModel, /host-root[\s\S]*\/host[\s\S]*destroy the operating system/i);
 });
 
 test("the public release rollback restores both stable npm dist-tags", async () => {

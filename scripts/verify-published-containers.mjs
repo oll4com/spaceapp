@@ -2,9 +2,9 @@
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { isRegistrySafeReleaseVersion } from "./release-version.mjs";
 
 const targets = ["core", "cli", "browser"];
-const stableVersionPattern = /^\d+\.\d+\.\d+$/;
 
 const sbomPredicate = "https://spdx.dev/Document";
 const provenancePredicate = "https://slsa.dev/provenance/v1";
@@ -91,9 +91,13 @@ export function loadPublishedContainerEvidence(image, inspect = inspectRaw) {
 }
 
 function parseArgs(argv) {
-  if (argv.length !== 2 || argv[0] !== "--version" || !stableVersionPattern.test(argv[1])) {
+  if (
+    argv.length !== 2 ||
+    argv[0] !== "--version" ||
+    !isRegistrySafeReleaseVersion(argv[1])
+  ) {
     throw new Error(
-      "Usage: verify-published-containers.mjs --version <major.minor.patch>"
+      "Usage: verify-published-containers.mjs --version <semantic-version>"
     );
   }
   return argv[1];

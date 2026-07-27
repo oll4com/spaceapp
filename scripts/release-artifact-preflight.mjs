@@ -2,9 +2,9 @@
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { isRegistrySafeReleaseVersion } from "./release-version.mjs";
 
 const targets = ["core", "cli", "browser"];
-const stableVersionPattern = /^\d+\.\d+\.\d+$/;
 
 function isNpmNotFound(result) {
   return result.status !== 0 && /\bE404\b|404 Not Found/i.test(result.output);
@@ -51,9 +51,13 @@ function run(command, args) {
 }
 
 function parseArgs(argv) {
-  if (argv.length !== 2 || argv[0] !== "--version" || !stableVersionPattern.test(argv[1])) {
+  if (
+    argv.length !== 2 ||
+    argv[0] !== "--version" ||
+    !isRegistrySafeReleaseVersion(argv[1])
+  ) {
     throw new Error(
-      "Usage: release-artifact-preflight.mjs --version <major.minor.patch>"
+      "Usage: release-artifact-preflight.mjs --version <semantic-version>"
     );
   }
   return argv[1];

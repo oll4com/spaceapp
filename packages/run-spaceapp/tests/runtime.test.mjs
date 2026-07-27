@@ -10,13 +10,14 @@ import {
 
 const home = resolve(tmpdir(), "spaceapp-home");
 const config = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   version: "0.1.0",
   previousVersion: null,
   bindHost: "127.0.0.1",
   port: 4911,
   telemetry: false,
   profile: "standard",
+  accessMode: "isolated",
   workspaces: [
     {
       id: "project-a1b2c3d4",
@@ -74,6 +75,7 @@ test("compose project identity is stable for the same installation root", () => 
       "--env-file", join(home, "runtime.env"),
       "-f", join(home, "compose.yml"),
       "-f", join(home, "compose.workspaces.yml"),
+      "-f", join(home, "compose.host-access.yml"),
       "--profile", "standard",
       "up", "-d", "--remove-orphans"
     ]
@@ -91,6 +93,7 @@ test("compose can use staged state without changing the installation project ide
   assert.equal(command.args[command.args.indexOf("--project-directory") + 1], home);
   assert.equal(command.args[command.args.indexOf("--env-file") + 1], join(stagedStateRoot, "runtime.env"));
   assert.equal(command.args.includes(join(home, "runtime.env")), false);
+  assert.equal(command.args.includes(join(stagedStateRoot, "compose.host-access.yml")), true);
 });
 
 test("compose activates the optional browser only for the standard profile", () => {
