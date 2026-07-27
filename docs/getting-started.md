@@ -32,9 +32,10 @@ Linux runs the containers directly through the host Docker Engine; SpaceApp
 does not create a second guest VM. The launcher runs as the current non-root
 user so the installation remains in that user's config directory. If Docker is
 missing on Ubuntu, Debian, Fedora, RHEL, or CentOS, the launcher adds Docker's
-official repository, installs Engine, Buildx, and Compose, and starts the
-service. Before adding the current user to the `docker` group, it explains that
-the group grants root-level privileges and asks for confirmation.
+official repository. On Arch-family systems, including CachyOS, it installs
+the native `docker` and `docker-compose` packages through `pacman`. It then
+starts the service. Before adding the current user to the `docker` group, it
+explains that the group grants root-level privileges and asks for confirmation.
 
 ## macOS
 
@@ -103,6 +104,42 @@ npx --yes run-spaceapp@latest install --profile standard
 The light limits are 2 GiB for core, 1536 MiB for the CLI service, and 768 MiB
 each for PostgreSQL and Temporal. These are upper bounds, not memory reserved
 at startup.
+
+## Linux host access
+
+Installation profiles do not control filesystem permissions. Both `light` and
+`standard` use isolated access by default, where only registered workspaces are
+mounted.
+
+The personal `0.1.15-hostroot.0` prerelease adds an explicit Linux-only mode
+for a trusted owner who wants CLI sessions to change the Linux installation:
+
+```bash
+npx --yes run-spaceapp@personal install --access host-root
+```
+
+This remains one Docker-based SpaceApp build across Linux distributions. It
+mounts the host `/` at `/host`, read-only in the core service and read/write in
+the CLI service. The CLI service runs its sessions as container root only in
+this mode. On a normal rootful Docker Engine, this is equivalent to host-root
+file access: an agent can read credentials, change boot or package files, or
+destroy the operating system.
+
+The mode does not mount the Docker socket and does not enable `privileged`,
+host PID, host network, host IPC, or host device access. Those omissions reduce
+the attack surface but do not make a writable host root safe from a malicious
+or mistaken CLI command.
+
+Omitting `--access` preserves the current mode. New and migrated installations
+default to `isolated`. To remove the host root mount while preserving SpaceApp
+data, credentials, workspaces, secrets, and persistent volumes, run:
+
+```bash
+npx --yes run-spaceapp@personal install --access isolated
+```
+
+Use `npx --yes run-spaceapp@personal` for all follow-up commands while this
+prerelease is installed.
 
 The `npx` command is the universal one-command installer. To retain a global
 launcher for later operations, optionally run `npm install -g run-spaceapp`;

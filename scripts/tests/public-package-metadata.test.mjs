@@ -314,6 +314,14 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
   assert.match(gettingStarted, /verifies\s+its\s+Authenticode\s+signature/i);
   assert.match(gettingStarted, /verifies\s+its code signature/i);
   assert.match(gettingStarted, /group grants root-level privileges/i);
+  assert.match(
+    gettingStarted,
+    /npx --yes run-spaceapp@personal install --access host-root/
+  );
+  assert.match(gettingStarted, /--access isolated/);
+  assert.match(gettingStarted, /equivalent to host-root\s+file access/i);
+  assert.match(packageReadme, /run-spaceapp@personal install --access host-root/);
+  assert.match(securityModel, /host-root[\s\S]*\/host[\s\S]*destroy the operating system/i);
 });
 
 test("the public release rollback restores both stable npm dist-tags", async () => {

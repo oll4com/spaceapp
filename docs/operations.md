@@ -104,6 +104,25 @@ Do not use an important application as the first test of a new release. Run
 the update and backup/restore sequence in the dedicated clean-room environment
 first.
 
+## Linux access mode
+
+The personal prerelease preserves the current access mode when `--access` is
+omitted. To give trusted CLI sessions read/write access to the full Linux host:
+
+```bash
+npx --yes run-spaceapp@personal install --access host-root
+```
+
+To remove the `/host` mount without deleting SpaceApp state or volumes:
+
+```bash
+npx --yes run-spaceapp@personal install --access isolated
+```
+
+Use the `@personal` prefix for `doctor`, `status`, `logs`, credentials, and
+recovery commands while this prerelease is installed. `light` and `standard`
+do not change the access mode.
+
 ## Rollback
 
 If the new release fails its health or owner workflow checks:

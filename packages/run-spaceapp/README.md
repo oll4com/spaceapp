@@ -19,8 +19,9 @@ The launcher requires Node.js 20.11 or newer, 4 CPUs, 8 GB RAM, and 15 GiB free
 disk. Keep `@latest` in the command so npm resolves the current release instead
 of matching an existing local launcher. If Docker is missing, the universal
 install command automatically installs it from official Docker sources on
-Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and CentOS, starts it, and waits
-for Engine and Compose readiness before pulling images. Windows prefers
+Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and CentOS, or with native
+`pacman` packages on Arch-family Linux including CachyOS. It starts Docker and
+waits for Engine and Compose readiness before pulling images. Windows prefers
 Windows Package Manager's hash-pinned Docker Desktop
 manifest and retains a signed direct-download fallback. Docker Desktop license
 acceptance and Linux `docker` group membership require confirmation inside the
@@ -49,6 +50,26 @@ current user's platform config directory:
 - Windows: `%APPDATA%\SpaceApp`
 
 Set `SPACEAPP_HOME` to an absolute path to use a dedicated installation root.
+
+Linux installations are isolated by default. A trusted single owner can opt
+into the personal host-root prerelease with:
+
+```bash
+npx --yes run-spaceapp@personal install --access host-root
+```
+
+This mounts the Linux `/` at `/host` read/write in the CLI service and runs CLI
+sessions as container root. It can expose every host credential or make the
+operating system unbootable. It does not mount the Docker socket or enable a
+privileged container. Profiles control resources and managed Chromium, not
+access. Return to isolation without deleting persistent data with:
+
+```bash
+npx --yes run-spaceapp@personal install --access isolated
+```
+
+Use the same `npx --yes run-spaceapp@personal` prefix for follow-up commands
+while this prerelease is installed.
 
 Provider API keys are read from masked standard input and written to
 restrictive files outside Git. OAuth and device-code credentials remain in

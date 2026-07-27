@@ -19,6 +19,8 @@ redistributable.
 - one-time first-owner setup with no default password;
 - isolated, persistent provider state and mutable owner memory;
 - explicit host workspace registration, including read-only mounts;
+- an explicit Linux-only host-root mode for a trusted owner's personal
+  installation, disabled by default;
 - portable, checksummed backups for application data, PostgreSQL, and owner
   memory.
 
@@ -65,7 +67,8 @@ database.
 The automatic prerequisite flow uses official Docker sources: Docker Desktop
 through Windows Package Manager's hash-pinned manifest on Windows (with a
 signed direct-download fallback), Docker Desktop on macOS, and Docker Engine
-repositories on Ubuntu, Debian, Fedora, RHEL, and CentOS. Docker Desktop
+repositories on Ubuntu, Debian, Fedora, RHEL, and CentOS, or the native
+`pacman` packages on Arch-family systems including CachyOS. Docker Desktop
 license acceptance and Linux `docker` group membership require confirmation
 inside the same command. Windows may require one restart after WSL2 is enabled;
 SpaceApp registers a one-time resume, asks before scheduling the restart, and
@@ -86,6 +89,34 @@ omits managed Chromium. Use
 `npx --yes run-spaceapp@latest install --profile standard` explicitly when the
 managed browser container is required and the host has the recommended
 resources.
+
+### Personal Linux host-root prerelease
+
+For a trusted single-owner Linux machine that intentionally needs SpaceApp CLI
+sessions to modify the whole host installation, use the personal prerelease:
+
+```bash
+npx --yes run-spaceapp@personal install --access host-root
+```
+
+This is not a separate distro build. The same Docker distribution mounts the
+Linux root filesystem at `/host`: read-only in `spaceapp-core` and read/write
+in `spaceapp-cli`. CLI sessions run as container root in this mode. This can
+read any host credential, replace system files, or make Linux unbootable.
+Use it only on a machine controlled by one trusted owner.
+
+The default remains `isolated`. Return to it without deleting SpaceApp data,
+credentials, workspaces, secrets, or persistent volumes:
+
+```bash
+npx --yes run-spaceapp@personal install --access isolated
+```
+
+`light` and `standard` select resources and the managed browser; they do not
+grant or remove host access.
+
+While the prerelease is installed, use the same `run-spaceapp@personal` prefix
+for `doctor`, `status`, `logs`, credentials, and recovery commands.
 
 The installer does not create or reserve a separate fixed-size VM. Linux uses
 the native Docker Engine; Windows uses Docker Desktop's WSL2 Linux environment;
@@ -119,10 +150,12 @@ mode:
 | `postgres` | PostgreSQL with pgvector |
 | `temporal` | durable workflow orchestration |
 
-Only workspaces added with
+In the default isolated mode, only workspaces added with
 `npx --yes run-spaceapp@latest workspace add` are mounted. Core and CLI
 containers run as an unprivileged application user, secrets are file-mounted,
-and telemetry is disabled by default.
+and telemetry is disabled by default. The explicit Linux host-root prerelease
+changes only this documented access boundary; it still does not mount the
+Docker socket or enable privileged/host namespaces.
 
 ## Common commands
 
@@ -150,6 +183,7 @@ or restore.
 - [Clean-room testing](docs/clean-room-testing.md)
 - [Public release runbook](docs/public-release.md)
 - [Security model](docs/security-model.md)
+- [Linux host-root access decision](docs/decisions/ADR-011-linux-host-root-access.md)
 - [Public distribution decision](docs/decisions/ADR-010-public-distribution.md)
 - [Contributing](CONTRIBUTING.md)
 - [Community support](SUPPORT.md)

@@ -59,11 +59,44 @@ The workflow then:
    provenance attestations for every image;
 3. verifies both architectures and both attestation classes;
 4. verifies the checksum of the npm tarball produced by the candidate job;
-5. publishes that tarball as `run-spaceapp@<version>` with `--tag next
-   --provenance`.
+5. publishes that tarball as `run-spaceapp@<version>` with the explicitly
+   selected `next` or `personal` tag and `--provenance`.
 
 For `0.1.14`, `latest` must remain `0.1.12` until clean-install acceptance is
 complete.
+
+## Personal host-root prerelease
+
+For `0.1.15-hostroot.0`, dispatch `release.yml` from `main` with:
+
+- `version`: `0.1.15-hostroot.0`;
+- `npm_tag`: `personal`.
+
+The full candidate, audit, Trivy, multi-architecture, SBOM, provenance, and
+artifact-existence gates remain mandatory. Do not change `latest` or `next`.
+After publication, confirm:
+
+- `run-spaceapp@0.1.15-hostroot.0` exists and has the reviewed `gitHead`;
+- `dist-tags.personal` is `0.1.15-hostroot.0`;
+- `latest` and `next` are unchanged;
+- all three exact GHCR tags expose `linux/amd64`, `linux/arm64`, SBOM, and
+  provenance.
+
+Run the isolated CachyOS acceptance with the exact user command:
+
+```bash
+npx --yes run-spaceapp@personal install --access host-root
+```
+
+Verify `/host` read/write behavior only with a synthetic temporary host file,
+then run the same command again for idempotency. Finally run
+`npx --yes run-spaceapp@personal install --access isolated` and prove the host
+root mount is absent while application data and volumes remain.
+
+If acceptance fails, remove or restore only the `personal` dist-tag and
+deprecate the exact npm version. Exact npm and GHCR version artifacts remain
+immutable. Do not modify `latest`, `next`, `VM207:/srv/space`, or
+`spaceapp.dev`.
 
 ## Staged acceptance and promotion
 
