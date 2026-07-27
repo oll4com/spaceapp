@@ -106,17 +106,21 @@ first.
 
 ## Linux access mode
 
-The personal prerelease preserves the current access mode when `--access` is
-omitted. To give trusted CLI sessions read/write access to the full Linux host:
+The current `0.1.15-hostroot.1` personal candidate is launcher-only and accepts
+isolated access only. It reuses the `0.1.15-hostroot.0` images and rejects
+`--access host-root` until the next full runtime build.
+
+The earlier host-root experiment must be pinned exactly on a disposable Linux
+test machine:
 
 ```bash
-npx --yes run-spaceapp@personal install --access host-root
+npx --yes run-spaceapp@0.1.15-hostroot.0 install --access host-root
 ```
 
 To remove the `/host` mount without deleting SpaceApp state or volumes:
 
 ```bash
-npx --yes run-spaceapp@personal install --access isolated
+npx --yes run-spaceapp@0.1.15-hostroot.0 install --access isolated
 ```
 
 Use the `@personal` prefix for `doctor`, `status`, `logs`, credentials, and

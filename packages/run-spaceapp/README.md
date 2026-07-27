@@ -24,8 +24,9 @@ Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and CentOS, or with native
 waits for Engine and Compose readiness before pulling images. Windows prefers
 Windows Package Manager's hash-pinned Docker Desktop
 manifest and retains a signed direct-download fallback. Docker Desktop license
-acceptance and Linux `docker` group membership require confirmation inside the
-same command. On Windows, approve any UAC prompt required by WSL2 or Docker
+acceptance still requires confirmation. On Linux, the same command explains
+the root-equivalent `docker` group and adds the current user automatically.
+On Windows, approve any UAC prompt required by WSL2 or Docker
 Desktop. Use the **Command Prompt** profile because a restricted PowerShell
 policy can block npm's `npx.ps1` before SpaceApp starts. On Docker Desktop's
 first launch, select **Skip** in the top-right of the **Welcome to Docker**
@@ -51,23 +52,17 @@ current user's platform config directory:
 
 Set `SPACEAPP_HOME` to an absolute path to use a dedicated installation root.
 
-Linux installations are isolated by default. A trusted single owner can opt
-into the personal host-root prerelease with:
+The `0.1.15-hostroot.1` personal candidate tests installer fixes while reusing
+the existing `0.1.15-hostroot.0` runtime images:
 
 ```bash
-npx --yes run-spaceapp@personal install --access host-root
+npx --yes run-spaceapp@personal install
 ```
 
-This mounts the Linux `/` at `/host` read/write in the CLI service and runs CLI
-sessions as container root. The core service receives `/host` read-only. It can
-expose every host credential or make the operating system unbootable. It does
-not mount the Docker socket or enable a privileged container. Profiles control
-resources and managed Chromium, not access. Return to isolation without
-deleting persistent data with:
-
-```bash
-npx --yes run-spaceapp@personal install --access isolated
-```
+This launcher-only candidate accepts isolated access on Linux, macOS, and
+Windows. It rejects `--access host-root` because no matching runtime images
+were rebuilt. The launcher reports version `.1` while `runtime.env` remains
+pinned to `.0`.
 
 Use the same `npx --yes run-spaceapp@personal` prefix for follow-up commands
 while this prerelease is installed.

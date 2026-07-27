@@ -30,7 +30,8 @@ test("public release readiness blocks version drift", () => {
 
   assert.equal(result.ok, false);
   assert.deepEqual(result.blockers, [
-    "Requested version 0.1.1 does not match run-spaceapp 0.1.0."
+    "Requested version 0.1.1 does not match run-spaceapp 0.1.0.",
+    "Requested runtime version 0.1.1 does not match run-spaceapp runtime 0.1.0."
   ]);
 });
 
@@ -46,6 +47,42 @@ test("public release readiness accepts exact semantic prerelease versions", () =
 
   assert.equal(result.ok, true);
   assert.deepEqual(result.blockers, []);
+});
+
+test("launcher-only readiness accepts a new launcher pinned to an older runtime", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.1",
+    requestedNpmTag: "personal",
+    requestedReleaseMode: "launcher-only",
+    requestedRuntimeVersion: "0.1.15-hostroot.0",
+    packageVersion: "0.1.15-hostroot.1",
+    packageRuntimeVersion: "0.1.15-hostroot.0",
+    packageHostRootRuntimeCompatible: false,
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+});
+
+test("launcher-only readiness blocks runtime input drift", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.1",
+    requestedNpmTag: "personal",
+    requestedReleaseMode: "launcher-only",
+    requestedRuntimeVersion: "0.1.15-hostroot.0",
+    packageVersion: "0.1.15-hostroot.1",
+    packageRuntimeVersion: "0.1.15-hostroot.9",
+    packageHostRootRuntimeCompatible: false,
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.blockers.join("\n"), /runtime.*does not match/i);
 });
 
 test("public release readiness reserves host-root versions for the personal tag", () => {

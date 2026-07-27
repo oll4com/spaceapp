@@ -46,6 +46,17 @@ test("launcher and container matrices cover the declared operating systems and a
   assert.match(containers, /push: false/);
 });
 
+test("launcher-only source and workflow changes cannot trigger the container matrix", async () => {
+  const containers = await workflow("containers.yml");
+  const trigger = containers.match(/\non:\n([\s\S]*?)\npermissions:/)?.[1] || "";
+
+  assert.match(trigger, /pull_request:[\s\S]*paths:/);
+  assert.match(trigger, /push:[\s\S]*branches:[\s\S]*- main[\s\S]*paths:/);
+  assert.match(trigger, /- "packages\/\*\*"/);
+  assert.match(trigger, /- "!packages\/run-spaceapp\/\*\*"/);
+  assert.doesNotMatch(trigger, /\.github\/workflows\/containers\.yml/);
+});
+
 test("container matrices load each image and enforce the public size budgets", async () => {
   for (const name of ["containers.yml", "release.yml"]) {
     const content = await workflow(name);
@@ -60,6 +71,15 @@ test("container matrices load each image and enforce the public size budgets", a
 test("security workflow scans secrets, dependencies, source, images, and emits an SBOM", async () => {
   const security = await workflow("security.yml");
 
+  assert.match(security, /container-changes:[\s\S]*outputs:[\s\S]*required:/);
+  assert.match(
+    security,
+    /git diff --quiet[\s\S]*':\(exclude\)packages\/run-spaceapp\/\*\*'/
+  );
+  assert.match(
+    security,
+    /image:[\s\S]*needs: container-changes[\s\S]*if: needs\.container-changes\.outputs\.required == 'true'/
+  );
   assert.match(security, /npm audit --audit-level=high/);
   assert.match(security, /gitleaks\/gitleaks-action/);
   assert.match(security, /aquasecurity\/trivy-action/);
@@ -104,6 +124,8 @@ test("release is manual-only on main and publishes only approved sanitized artif
   assert.doesNotMatch(release, /--allow-review-required/);
   assert.match(trigger, /workflow_dispatch:/);
   assert.match(trigger, /npm_tag:[\s\S]*type: choice[\s\S]*- next[\s\S]*- personal/);
+  assert.match(trigger, /release_mode:[\s\S]*type: choice[\s\S]*- full[\s\S]*- launcher-only/);
+  assert.match(trigger, /runtime_version:[\s\S]*required: true[\s\S]*type: string/);
   assert.doesNotMatch(trigger, /pull_request:|schedule:|\n  push:/);
   assert.match(release, /permissions:\n  contents: read/);
   assert.match(release, /github\.ref == 'refs\/heads\/main'/);
@@ -117,9 +139,31 @@ test("release is manual-only on main and publishes only approved sanitized artif
   assert.match(release, /actions\/upload-artifact/);
   assert.match(release, /push: false/);
   assert.match(release, /node scripts\/release-artifact-preflight\.mjs/);
+  assert.match(release, /--release-mode "\$\{\{ inputs\.release_mode \}\}"/);
+  assert.match(
+    release,
+    /node scripts\/verify-published-containers\.mjs[\s\S]*--version "\$\{\{ inputs\.runtime_version \}\}"/
+  );
+  assert.match(release, /container-candidate:[\s\S]*if: inputs\.release_mode == 'full'/);
+  assert.match(release, /publish-containers:[\s\S]*if: inputs\.release_mode == 'full'/);
+  assert.match(release, /existing-runtime:[\s\S]*if: inputs\.release_mode == 'launcher-only'/);
+  assert.match(
+    release,
+    /publish-npm:[\s\S]*if: >-[\s\S]*always\(\)[\s\S]*needs\.existing-runtime\.result == 'success'/
+  );
   assert.match(release, /environment: npm/g);
   assert.match(release, /packages: write/g);
   assert.match(release, /id-token: write/g);
+  for (const [job, nextJob] of [
+    ["publish-preflight", "publish-containers"],
+    ["verify-containers", "publish-npm"]
+  ]) {
+    const block = release.match(
+      new RegExp(`\\n  ${job}:\\n([\\s\\S]*?)\\n  ${nextJob}:`)
+    )?.[1] || "";
+    assert.match(block, /packages: read/);
+    assert.doesNotMatch(block, /packages: write|id-token: write/);
+  }
   assert.doesNotMatch(release, /contents: write/);
   assert.match(release, /docker\/login-action/);
   assert.match(release, /platforms: linux\/amd64,linux\/arm64/);

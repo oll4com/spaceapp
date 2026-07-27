@@ -548,58 +548,118 @@ test("Windows with installed WSL and a pending restart schedules resume before D
   assert.equal(stderr.value(), "");
 });
 
-test("macOS installs the official signed Docker Desktop image and starts it", async () => {
+test("macOS Intel and Apple Silicon verify Docker Desktop quietly and use a clear administrator prompt", async () => {
+  for (const [arch, downloadArch] of [["x64", "amd64"], ["arm64", "arm64"]]) {
+    const calls = [];
+    const downloads = [];
+    const stdout = capture();
+    const stderr = capture();
+    let installed = false;
+    let launched = false;
+
+    const result = await ensureDockerAvailable({
+      platform: "darwin",
+      arch,
+      env: { USER: "space-user", PATH: "/usr/bin:/bin" },
+      stdin: Readable.from(["yes\n"]),
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      execute: async (spec, io) => {
+        calls.push({ spec, io });
+        if (spec.command === "docker") return installed && launched ? 0 : 127;
+        if (
+          spec.command === "sudo" &&
+          spec.args.some((argument) => argument.endsWith("/Contents/MacOS/install"))
+        ) {
+          installed = true;
+        }
+        return 0;
+      },
+      download: async (url, target) => {
+        downloads.push({ url, target });
+      },
+      launch: async (spec) => {
+        calls.push({ spec, io: null });
+        launched = true;
+        return 0;
+      },
+      pathExists: async (path) => installed && path === "/Applications/Docker.app",
+      sleep: async () => {}
+    });
+
+    assert.deepEqual(result, { code: 0, reexecuted: false });
+    assert.match(downloads[0].url, new RegExp(`/mac/main/${downloadArch}/`));
+
+    const codesign = calls.find(({ spec }) => spec.command === "codesign");
+    assert.deepEqual(
+      codesign.spec.args,
+      ["--verify", "--deep", "--strict", "/Volumes/Docker/Docker.app"]
+    );
+    assert.equal(codesign.io.stdout, null);
+    assert.equal(codesign.io.stderr, null);
+
+    const gatekeeper = calls.find(({ spec }) => spec.command === "spctl");
+    assert.deepEqual(
+      gatekeeper.spec.args,
+      ["--assess", "--type", "execute", "--verbose=4", "/Volumes/Docker/Docker.app"]
+    );
+    assert.equal(gatekeeper.io.stdout, null);
+    assert.equal(gatekeeper.io.stderr, null);
+
+    const sudo = calls.find(({ spec }) => spec.command === "sudo").spec;
+    assert.equal(sudo.args[0], "-p");
+    assert.match(sudo.args[1], /^SpaceApp.*Mac administrator password.*input hidden/i);
+    assert.ok(sudo.args[2].endsWith("/Contents/MacOS/install"));
+    assert.ok(sudo.args.includes("--accept-license"));
+    assert.ok(sudo.args.includes("--user=space-user"));
+    assert.ok(calls.some(({ spec }) => spec.operation === "open-docker-desktop"));
+
+    assert.match(stdout.value(), /password for your Mac administrator account/i);
+    assert.match(stdout.value(), /not a Docker or SpaceApp password/i);
+    assert.match(stdout.value(), /characters.*not.*displayed/i);
+    assert.match(stdout.value(), /does not read, store, or log/i);
+    assert.match(stdout.value(), /signature and macOS trust verification passed/i);
+    assert.equal(stderr.value(), "");
+  }
+});
+
+test("macOS authorization failure stops before SpaceApp image downloads and names the required account", async () => {
   const calls = [];
-  const downloads = [];
-  let installed = false;
-  let launched = false;
+  const stdout = capture();
+  const stderr = capture();
 
   const result = await ensureDockerAvailable({
     platform: "darwin",
-    arch: "arm64",
+    arch: "x64",
     env: { USER: "space-user", PATH: "/usr/bin:/bin" },
     stdin: Readable.from(["yes\n"]),
-    stdout: capture().stream,
-    stderr: capture().stream,
-    execute: async (spec) => {
-      calls.push(spec);
-      if (spec.command === "docker") return installed && launched ? 0 : 127;
-      if (
-        spec.command === "sudo" &&
-        spec.args[0].endsWith("/Contents/MacOS/install")
-      ) {
-        installed = true;
-      }
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec, io) => {
+      calls.push({ spec, io });
+      if (spec.command === "docker") return 127;
+      if (spec.command === "sudo") return 1;
       return 0;
     },
-    download: async (url, target) => {
-      downloads.push({ url, target });
+    download: async () => {},
+    launch: async () => {
+      throw new Error("Docker Desktop must not launch after authorization failure.");
     },
-    launch: async (spec) => {
-      calls.push(spec);
-      launched = true;
-      return 0;
-    },
-    pathExists: async (path) => installed && path === "/Applications/Docker.app",
+    pathExists: async () => false,
     sleep: async () => {}
   });
 
-  assert.deepEqual(result, { code: 0, reexecuted: false });
-  assert.match(downloads[0].url, /^https:\/\/desktop\.docker\.com\/mac\/main\/arm64\//);
-  assert.ok(calls.some((spec) => spec.command === "codesign" && spec.args.includes("--strict")));
-  assert.ok(calls.some((spec) =>
-    spec.command === "spctl" &&
-    spec.args.join(" ") === "--assess --type execute --verbose=4 /Volumes/Docker/Docker.app"
-  ));
-  assert.ok(calls.some((spec) =>
-    spec.command === "sudo" &&
-    spec.args[0].endsWith("/Contents/MacOS/install") &&
-    spec.args.includes("--accept-license") &&
-    spec.args.includes("--user=space-user")
-  ));
-  assert.ok(calls.some((spec) =>
-    spec.operation === "open-docker-desktop"
-  ));
+  assert.deepEqual(result, { code: 1, reexecuted: false });
+  assert.ok(calls.some(({ spec }) => spec.command === "sudo"));
+  assert.equal(
+    calls.some(({ spec }) => spec.command === "docker" && spec.args.includes("pull")),
+    false
+  );
+  assert.match(stdout.value(), /password for your Mac administrator account/i);
+  assert.match(stderr.value(), /macOS authorization failed/i);
+  assert.match(stderr.value(), /Mac administrator account/i);
+  assert.match(stderr.value(), /not a Docker or SpaceApp password/i);
+  assert.match(stderr.value(), /No SpaceApp images were downloaded/i);
 });
 
 test("Ubuntu installs Docker Engine from Docker's official repository and re-enters the docker group", async () => {
@@ -610,7 +670,7 @@ test("Ubuntu installs Docker Engine from Docker's official repository and re-ent
     platform: "linux",
     arch: "x64",
     env: { USER: "spaceuser", PATH: "/usr/bin:/bin" },
-    stdin: Readable.from(["yes\n"]),
+    stdin: Readable.from([]),
     stdout: capture().stream,
     stderr: capture().stream,
     execute: async (spec) => {
@@ -653,6 +713,61 @@ test("Ubuntu installs Docker Engine from Docker's official repository and re-ent
     spec.args[2].includes("SPACEAPP_PREREQUISITES_BOOTSTRAPPED=1") &&
     spec.args[2].includes("'install' '--profile' 'auto' '--access' 'host-root'")
   ));
+});
+
+test("Linux starts an installed inactive Docker Engine, grants group access, and continues in one command", async () => {
+  const calls = [];
+  const stdout = capture();
+  const stderr = capture();
+
+  const result = await ensureDockerAvailable({
+    platform: "linux",
+    arch: "x64",
+    env: { USER: "spaceuser", PATH: "/usr/bin:/bin" },
+    stdin: Readable.from([]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker") {
+        return spec.args.includes("info") ? 1 : 0;
+      }
+      return 0;
+    },
+    download: async () => {
+      throw new Error("An installed Docker Engine must not trigger a package download.");
+    },
+    sleep: async () => {},
+    installArgs: {
+      requestedProfile: "light",
+      requestedAccessMode: "isolated",
+      noOpen: true
+    }
+  });
+
+  assert.deepEqual(result, { code: 0, reexecuted: true });
+  const serviceIndex = calls.findIndex((spec) =>
+    spec.command === "sudo" &&
+    spec.args.join(" ") === "systemctl enable --now docker"
+  );
+  const groupIndex = calls.findIndex((spec) =>
+    spec.command === "sudo" &&
+    spec.args.join(" ") === "usermod -aG docker spaceuser"
+  );
+  const reentryIndex = calls.findIndex((spec) => spec.command === "sg");
+  assert.ok(serviceIndex >= 0);
+  assert.ok(groupIndex > serviceIndex);
+  assert.ok(reentryIndex > groupIndex);
+  assert.equal(
+    calls.some((spec) =>
+      spec.command === "sudo" &&
+      ["apt-get", "dnf", "pacman"].includes(spec.args[0])
+    ),
+    false
+  );
+  assert.match(stdout.value(), /Membership grants root-level privileges/i);
+  assert.match(stdout.value(), /Continuing SpaceApp installation with the new group membership/i);
+  assert.equal(stderr.value(), "");
 });
 
 test("CachyOS and Arch-family derivatives install Docker through fixed pacman arguments", async () => {

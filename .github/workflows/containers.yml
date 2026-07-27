@@ -5,14 +5,22 @@ on:
     paths:
       - "apps/**"
       - "packages/**"
+      - "!packages/run-spaceapp/**"
       - "deploy/docker/**"
       - "starter-memory/**"
       - "Dockerfile"
       - "package-lock.json"
-      - ".github/workflows/containers.yml"
   push:
     branches:
       - main
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "!packages/run-spaceapp/**"
+      - "deploy/docker/**"
+      - "starter-memory/**"
+      - "Dockerfile"
+      - "package-lock.json"
   workflow_dispatch:
 
 permissions:
