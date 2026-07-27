@@ -34,19 +34,17 @@ test("public release readiness blocks version drift", () => {
   ]);
 });
 
-test("public release readiness blocks prerelease version strings", () => {
+test("public release readiness accepts exact semantic prerelease versions", () => {
   const result = evaluatePublicRelease({
-    requestedVersion: "0.1.0-alpha.1",
-    packageVersion: "0.1.0-alpha.1",
+    requestedVersion: "0.1.15-hostroot.0",
+    packageVersion: "0.1.15-hostroot.0",
     notices,
     dockerfile: "FROM node:22\n",
     distributionPolicy: policy
   });
 
-  assert.equal(result.ok, false);
-  assert.deepEqual(result.blockers, [
-    "Requested version 0.1.0-alpha.1 is not a stable semantic version."
-  ]);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
 });
 
 test("public release readiness requires a positive owner-installed-only Claude record", () => {

@@ -30,12 +30,15 @@ import {
   prepareDockerCliPath,
   windowsPowerShellArgs
 } from "./prerequisites.mjs";
+import {
+  PACKAGE_VERSION,
+  UNIVERSAL_COMMAND
+} from "./package-info.mjs";
 
 const APPLICATION_READY_WAIT_MS = 3 * 60 * 1_000;
 const APPLICATION_READY_POLL_MS = 2_000;
 const APPLICATION_READY_MAX_ATTEMPTS = APPLICATION_READY_WAIT_MS / APPLICATION_READY_POLL_MS;
 const SETUP_STATUS_TIMEOUT_MS = 10_000;
-const UNIVERSAL_COMMAND = "npx --yes run-spaceapp@latest";
 const trustedCommands = new Set([
   "codesign",
   "docker",
@@ -73,7 +76,7 @@ export async function run(argv, {
 } = {}) {
   const [command = "help", ...args] = argv;
   const root = resolveSpaceAppHome({ env, platform });
-  const version = await packageVersion();
+  const version = PACKAGE_VERSION;
 
   if (command !== "install") {
     await prepareDockerPath({ platform, env });
@@ -1024,11 +1027,6 @@ function formatGigabytes(bytes) {
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function packageVersion() {
-  const packageJson = new URL("../package.json", import.meta.url);
-  return JSON.parse(await readFile(packageJson, "utf8")).version;
 }
 
 function helpText() {

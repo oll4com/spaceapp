@@ -5,7 +5,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const versionPattern = /^\d+\.\d+\.\d+$/;
+const versionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 export function evaluatePublicRelease({
   requestedVersion,
@@ -18,7 +18,7 @@ export function evaluatePublicRelease({
   const warnings = [];
   if (!versionPattern.test(requestedVersion)) {
     blockers.push(
-      `Requested version ${requestedVersion} is not a stable semantic version.`
+      `Requested version ${requestedVersion} is not a valid semantic version.`
     );
   } else if (requestedVersion !== packageVersion) {
     blockers.push(
@@ -64,7 +64,7 @@ function parseArgs(argv) {
       index += 1;
     } else {
       throw new Error(
-        "Usage: public-release-readiness.mjs --version <major.minor.patch>"
+        "Usage: public-release-readiness.mjs --version <semantic-version>"
       );
     }
   }

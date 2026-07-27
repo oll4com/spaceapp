@@ -4,7 +4,7 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 const targets = ["core", "cli", "browser"];
-const stableVersionPattern = /^\d+\.\d+\.\d+$/;
+const versionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 const sbomPredicate = "https://spdx.dev/Document";
 const provenancePredicate = "https://slsa.dev/provenance/v1";
@@ -91,9 +91,9 @@ export function loadPublishedContainerEvidence(image, inspect = inspectRaw) {
 }
 
 function parseArgs(argv) {
-  if (argv.length !== 2 || argv[0] !== "--version" || !stableVersionPattern.test(argv[1])) {
+  if (argv.length !== 2 || argv[0] !== "--version" || !versionPattern.test(argv[1])) {
     throw new Error(
-      "Usage: verify-published-containers.mjs --version <major.minor.patch>"
+      "Usage: verify-published-containers.mjs --version <semantic-version>"
     );
   }
   return argv[1];

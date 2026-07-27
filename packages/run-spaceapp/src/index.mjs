@@ -17,6 +17,7 @@ import {
   normalizeWorkspaceName,
   stripTrailingLineEndings
 } from "./string-utils.mjs";
+import { UNIVERSAL_COMMAND } from "./package-info.mjs";
 
 const CONFIG_SCHEMA_VERSION = 3;
 const MIN_INSTALL_CPU_COUNT = 4;
@@ -520,7 +521,7 @@ export async function selectLatestBackupId(root) {
     .at(-1);
   if (!backupId) {
     throw new Error(
-      'No portable backup exists. Run "npx --yes run-spaceapp@latest backup" before restore.'
+      `No portable backup exists. Run "${UNIVERSAL_COMMAND} backup" before restore.`
     );
   }
   return backupId;

@@ -217,7 +217,7 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
   );
   assert.match(
     stdout.value(),
-    /If it expires, run: npx --yes run-spaceapp@latest owner rotate-setup-token/
+    /If it expires, run: npx --yes run-spaceapp@personal owner rotate-setup-token/
   );
   assert.ok(stdout.value().lastIndexOf(installedToken) > stdout.value().lastIndexOf("SpaceApp is ready"));
   assert.equal(stderr.value(), "");
@@ -303,7 +303,7 @@ test("install explains recovery when the database accepts a token that cannot be
   assert.match(stderr.value(), /accepted a new setup token.*could not be saved locally/is);
   assert.match(
     stderr.value(),
-    /npx --yes run-spaceapp@latest owner rotate-setup-token/i
+    /npx --yes run-spaceapp@personal owner rotate-setup-token/i
   );
 });
 
@@ -363,8 +363,8 @@ test("install fails visibly when application readiness never arrives", async () 
   assert.equal(readinessChecks, 91);
   assert.equal(sleepCalls, 90);
   assert.match(stderr.value(), /did not become ready within 3 minutes/i);
-  assert.match(stderr.value(), /npx --yes run-spaceapp@latest status/);
-  assert.match(stderr.value(), /npx --yes run-spaceapp@latest logs/);
+  assert.match(stderr.value(), /npx --yes run-spaceapp@personal status/);
+  assert.match(stderr.value(), /npx --yes run-spaceapp@personal logs/);
   assert.doesNotMatch(stdout.value(), /SpaceApp is ready/);
 });
 
@@ -537,7 +537,7 @@ test("install enables, preserves, and removes Linux host-root access without del
   assert.equal(await readFile(join(root, "secrets", "session-secret"), "utf8"), secretBefore);
 });
 
-test("install upgrades a 0.1.10 standard installation to 0.1.14 light without changing persistent state", async () => {
+test("install upgrades a 0.1.10 standard installation to 0.1.15-hostroot.0 light without changing persistent state", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-upgrade-"));
   const workspace = await mkdtemp(join(tmpdir(), "spaceapp-cli-stale-workspace-"));
   const initialized = await initializeInstallation(root, {
@@ -592,7 +592,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.14 light without ch
         );
         assert.match(
           await readFile(join(stagedStateRoot, "runtime.env"), "utf8"),
-          /^SPACEAPP_IMAGE_TAG=0\.1\.14$/m
+          /^SPACEAPP_IMAGE_TAG=0\.1\.15-hostroot\.0$/m
         );
       }
       return 0;
@@ -602,7 +602,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.14 light without ch
   assert.equal(await run(["install", "--no-open"], options), 0);
 
   const upgradedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(upgradedConfig.version, "0.1.14");
+  assert.equal(upgradedConfig.version, "0.1.15-hostroot.0");
   assert.equal(upgradedConfig.previousVersion, "0.1.10");
   assert.equal(upgradedConfig.profile, "light");
   assert.deepEqual(upgradedConfig.workspaces, staleConfig.workspaces);
@@ -625,8 +625,8 @@ test("install upgrades a 0.1.10 standard installation to 0.1.14 light without ch
   for (const spec of calls) {
     assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
   }
-  assert.match(stdout.value(), /Launcher version: 0\.1\.14/);
-  assert.match(stdout.value(), /SpaceApp version: 0\.1\.10 -> 0\.1\.14/);
+  assert.match(stdout.value(), /Launcher version: 0\.1\.15-hostroot\.0/);
+  assert.match(stdout.value(), /SpaceApp version: 0\.1\.10 -> 0\.1\.15-hostroot\.0/);
   assert.match(stdout.value(), /Profile: standard -> light/);
   assert.match(stdout.value(), /data.*workspaces.*credentials.*secrets.*persistent Docker volumes/i);
 
@@ -637,7 +637,7 @@ test("install upgrades a 0.1.10 standard installation to 0.1.14 light without ch
     stdout: refreshOutput.stream
   }), 0);
   const refreshedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(refreshedConfig.version, "0.1.14");
+  assert.equal(refreshedConfig.version, "0.1.15-hostroot.0");
   assert.equal(refreshedConfig.previousVersion, "0.1.10");
   assert.equal(refreshedConfig.profile, "light");
   assert.deepEqual(refreshedConfig.workspaces, staleConfig.workspaces);
@@ -660,7 +660,10 @@ test("install upgrades a 0.1.10 standard installation to 0.1.14 light without ch
   for (const stagedStateRoot of stagedStateRoots) {
     await assert.rejects(() => readFile(join(stagedStateRoot, "runtime.env"), "utf8"));
   }
-  assert.match(refreshOutput.value(), /SpaceApp version: 0\.1\.14 -> 0\.1\.14/);
+  assert.match(
+    refreshOutput.value(),
+    /SpaceApp version: 0\.1\.15-hostroot\.0 -> 0\.1\.15-hostroot\.0/
+  );
   assert.match(refreshOutput.value(), /Profile: light -> light/);
 });
 
@@ -1020,7 +1023,7 @@ test("Docker-backed commands explain exit 127 instead of failing silently", asyn
     execute: async () => 127
   }), 127);
   assert.match(stderr.value(), /could not find the Docker CLI/i);
-  assert.match(stderr.value(), /npx --yes run-spaceapp@latest install/);
+  assert.match(stderr.value(), /npx --yes run-spaceapp@personal install/);
 });
 
 test("doctor probes Docker CLI, Compose, and Engine once and distinguishes a stopped engine", async () => {

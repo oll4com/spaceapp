@@ -4,15 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Exact stable version from packages/run-spaceapp/package.json
+        description: Exact semantic version from packages/run-spaceapp/package.json
         required: true
         type: string
+      npm_tag:
+        description: npm prerelease channel
+        required: true
+        default: next
+        type: choice
+        options:
+          - next
+          - personal
 
 permissions:
   contents: read
 
 concurrency:
-  group: public-oidc-release-${{ inputs.version }}
+  group: public-oidc-release-${{ inputs.version }}-${{ inputs.npm_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -349,21 +357,22 @@ jobs:
       - name: Install trusted-publishing npm CLI
         run: npm install --global --ignore-scripts --no-audit --no-fund npm@11.18.0
 
-      - name: Publish sanitized tarball to next
-        run: npm publish "$RUNNER_TEMP/release-artifacts/run-spaceapp-${{ inputs.version }}.tgz" --tag next --provenance
+      - name: Publish sanitized tarball to selected prerelease channel
+        run: npm publish "$RUNNER_TEMP/release-artifacts/run-spaceapp-${{ inputs.version }}.tgz" --tag "${{ inputs.npm_tag }}" --provenance
 
       - name: Verify staged npm metadata
         env:
           RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_DIST_TAG: ${{ inputs.npm_tag }}
           RELEASE_GIT_HEAD: ${{ github.sha }}
         run: |
           for attempt in $(seq 1 12); do
             published_version="$(npm view "run-spaceapp@$RELEASE_VERSION" version 2>/dev/null || true)"
-            published_next="$(npm view run-spaceapp dist-tags.next 2>/dev/null || true)"
+            published_tag="$(npm view run-spaceapp "dist-tags.$RELEASE_DIST_TAG" 2>/dev/null || true)"
             published_git_head="$(npm view "run-spaceapp@$RELEASE_VERSION" gitHead 2>/dev/null || true)"
 
             if [[ "$published_version" == "$RELEASE_VERSION" &&
-                  "$published_next" == "$RELEASE_VERSION" &&
+                  "$published_tag" == "$RELEASE_VERSION" &&
                   "$published_git_head" == "$RELEASE_GIT_HEAD" ]]; then
               exit 0
             fi

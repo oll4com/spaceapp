@@ -1,6 +1,6 @@
 {
   "name": "run-spaceapp",
-  "version": "0.1.14",
+  "version": "0.1.15-hostroot.0",
   "description": "Cross-platform Docker launcher for the SpaceApp self-hosted agent workspace",
   "license": "Apache-2.0",
   "type": "module",
@@ -30,7 +30,7 @@
   ],
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check bin/spaceapp.mjs && node --check src/index.mjs && node --check src/cli.mjs && node --check src/prerequisites.mjs",
+    "check": "node --check bin/spaceapp.mjs && node --check src/package-info.mjs && node --check src/index.mjs && node --check src/cli.mjs && node --check src/prerequisites.mjs",
     "pack:dry-run": "npm pack --dry-run"
   },
   "repository": {

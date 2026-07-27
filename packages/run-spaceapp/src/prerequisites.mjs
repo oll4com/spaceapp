@@ -8,10 +8,10 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
-const UNIVERSAL_INSTALL_COMMAND = "npx --yes run-spaceapp@latest install";
 const WINDOWS_DOCKER_DOWNLOADS = Object.freeze({
   x64: "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
   arm64: "https://desktop.docker.com/win/main/arm64/Docker%20Desktop%20Installer.exe"

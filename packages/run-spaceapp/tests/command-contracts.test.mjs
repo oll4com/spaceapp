@@ -76,7 +76,7 @@ test("help and version aliases expose the complete stable command surface", asyn
     ]) {
       assert.match(stdout.value(), new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
-    assert.match(stdout.value(), /Usage: npx --yes run-spaceapp@latest <command>/);
+    assert.match(stdout.value(), /Usage: npx --yes run-spaceapp@personal <command>/);
     assert.match(stdout.value(), /\[--access isolated\|host-root\]/);
     assert.match(stdout.value(), /spaceapp <command>\s+Optional global launcher/);
   }
@@ -90,7 +90,7 @@ test("help and version aliases expose the complete stable command surface", asyn
       stderr: capture().stream,
       prepareDockerPath: async () => null
     }), 0);
-    assert.match(stdout.value(), /^\d+\.\d+\.\d+\n$/);
+    assert.match(stdout.value(), /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\n$/);
   }
 });
 
@@ -202,14 +202,14 @@ test("update and rollback persist version state only after both Docker operation
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.6", previousVersion: "0.1.14" }
+    { version: "0.1.6", previousVersion: "0.1.15-hostroot.0" }
   );
   assert.equal(await run(["rollback"], options), 0);
   assert.deepEqual(
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.14", previousVersion: "0.1.6" }
+    { version: "0.1.15-hostroot.0", previousVersion: "0.1.6" }
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
     "pull",
@@ -218,7 +218,7 @@ test("update and rollback persist version state only after both Docker operation
     "--remove-orphans"
   ]);
   assert.match(stdout.value(), /Updated to SpaceApp 0\.1\.6/);
-  assert.match(stdout.value(), /Rolled back to SpaceApp 0\.1\.14/);
+  assert.match(stdout.value(), /Rolled back to SpaceApp 0\.1\.15-hostroot\.0/);
 });
 
 test("doctor is read-only for installation configuration and generated runtime files", async () => {
@@ -258,15 +258,15 @@ test("invalid and cancelled command paths fail closed with actionable usage", as
   const { options } = await installation();
   const invalid = [
     [["unknown"], /Unknown command/],
-    [["up", "extra"], /Usage: npx --yes run-spaceapp@latest up/],
+    [["up", "extra"], /Usage: npx --yes run-spaceapp@personal up/],
     [["workspace"], /workspace <add\|remove\|list>/],
     [["workspace", "add"], /workspace add/],
     [["credentials"], /credentials <set\|remove\|list>/],
     [["credentials", "set", "gemini", "argv-secret"], /read from stdin/],
     [["provider", "install", "gemini"], /provider install claude/],
     [["owner", "unknown"], /owner <reset-password\|rotate-setup-token>/],
-    [["update", "0.1.6", "extra"], /Usage: npx --yes run-spaceapp@latest update/],
-    [["uninstall", "--unknown"], /Usage: npx --yes run-spaceapp@latest uninstall/]
+    [["update", "0.1.6", "extra"], /Usage: npx --yes run-spaceapp@personal update/],
+    [["uninstall", "--unknown"], /Usage: npx --yes run-spaceapp@personal uninstall/]
   ];
   for (const [args, pattern] of invalid) {
     await assert.rejects(() => run(args, options), pattern);
