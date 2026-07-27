@@ -230,6 +230,49 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
   assert.equal(stderr.value(), "");
 });
 
+test("install cancels non-OK readiness bodies so later checks can use the connection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-readiness-body-"));
+  let firstBodyCanceled = false;
+  let readinessChecks = 0;
+
+  assert.equal(await run(["install", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "win32",
+    stdout: capture().stream,
+    stderr: capture().stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    request: async (url) => {
+      if (!url.endsWith("/readyz")) {
+        return jsonResponse({ setupRequired: false, expiresAt: null });
+      }
+      readinessChecks += 1;
+      if (readinessChecks === 1) {
+        return {
+          ok: false,
+          status: 503,
+          body: {
+            cancel: async () => {
+              firstBodyCanceled = true;
+            }
+          }
+        };
+      }
+      if (!firstBodyCanceled) {
+        throw new Error("The previous response still owns the only available connection.");
+      }
+      return jsonResponse({ ok: true });
+    },
+    sleep: async () => {},
+    execute: async () => 0
+  }), 0);
+
+  assert.equal(firstBodyCanceled, true);
+  assert.equal(readinessChecks, 2);
+});
+
 test("install retains the host token and prints no secret when database rotation fails", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-token-rejected-"));
   await run(["init"], {
