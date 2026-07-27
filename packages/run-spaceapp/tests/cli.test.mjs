@@ -393,6 +393,54 @@ test("install fails visibly when application readiness never arrives", async () 
   assert.doesNotMatch(stdout.value(), /SpaceApp is ready/);
 });
 
+test("readiness progress diagnostics cannot abort an otherwise successful install", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-readiness-diagnostics-"));
+  const stdout = capture();
+  const stderr = capture();
+  let readinessChecks = 0;
+  let statusCalls = 0;
+  let logCalls = 0;
+
+  assert.equal(await run(["install", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    request: async (url) => {
+      if (!url.endsWith("/readyz")) {
+        return jsonResponse({ setupRequired: false, expiresAt: null });
+      }
+      readinessChecks += 1;
+      return readinessChecks >= 61
+        ? jsonResponse({ ok: true })
+        : jsonResponse({ ok: false }, 503);
+    },
+    sleep: async () => {},
+    execute: async (spec) => {
+      if (spec.args.at(-1) === "ps") {
+        statusCalls += 1;
+        if (statusCalls === 1) throw new Error("status transport closed");
+      }
+      if (spec.args.includes("logs")) {
+        logCalls += 1;
+        if (logCalls === 1) throw new Error("logs transport closed");
+      }
+      return 0;
+    }
+  }), 0);
+
+  assert.equal(readinessChecks, 61);
+  assert.equal(statusCalls, 4);
+  assert.equal(logCalls, 1);
+  assert.match(stderr.value(), /could not collect status diagnostics.*status transport closed/i);
+  assert.match(stderr.value(), /could not collect logs diagnostics.*logs transport closed/i);
+  assert.match(stdout.value(), /SpaceApp is ready/i);
+});
+
 test("install accepts 7.4 GiB usable memory on an 8 GB-class CachyOS laptop", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-cachyos-memory-"));
   const stdout = capture();

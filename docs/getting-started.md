@@ -165,7 +165,7 @@ The universal install command performs
 non-secret configuration, fresh database/session secrets, and a one-time setup
 token; installs Docker from official sources when required; checks CPU, RAM,
 free disk, Docker CLI, Compose, and engine readiness; downloads the selected
-images; starts the services; waits up to three minutes for `/readyz`; verifies
+images; starts the services; waits up to ten minutes for `/readyz`; verifies
 first-owner status; and opens `http://127.0.0.1:4911`.
 
 The command is idempotent. Running it again preserves the installation's

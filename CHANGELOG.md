@@ -11,8 +11,12 @@ Semantic Versioning.
   for the default light profile;
 - wait up to ten minutes for first-start readiness, print service status every
   30 seconds, and show recent startup logs every two minutes;
+- keep the host-root CLI daemon at UID 0 while sharing its `0660`,
+  `root:spaceapp` Unix socket with the non-root core service;
 - automatically print final service status and logs before a failed install
   rolls containers back while retaining persistent volumes;
+- keep readiness polling active when an intermediate Docker status or log
+  diagnostic cannot be collected;
 - preserve the real error from Linux Docker-group re-entry instead of adding
   the inaccurate claim that installation stopped before image download.
 

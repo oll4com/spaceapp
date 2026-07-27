@@ -439,28 +439,40 @@ async function installCommand(args, {
           `Still waiting for SpaceApp services (${elapsedSeconds} seconds elapsed; ` +
           `up to ${APPLICATION_READY_WAIT_MINUTES} minutes)...\n`
         );
-        const statusCode = await executeWithDockerDiagnostics(
-          execute,
-          stagedComposeCommand("status"),
-          { stdin, stdout, stderr },
-          { platform, stderr }
-        );
-        if (statusCode !== 0) {
-          stderr.write(`SpaceApp service status check failed with Docker exit ${statusCode}.\n`);
+        try {
+          const statusCode = await executeWithDockerDiagnostics(
+            execute,
+            stagedComposeCommand("status"),
+            { stdin, stdout, stderr },
+            { platform, stderr }
+          );
+          if (statusCode !== 0) {
+            stderr.write(`SpaceApp service status check failed with Docker exit ${statusCode}.\n`);
+          }
+        } catch (error) {
+          stderr.write(
+            `SpaceApp could not collect status diagnostics: ${error?.message || String(error)}.\n`
+          );
         }
         if (
           elapsedSeconds % APPLICATION_READY_LOG_INTERVAL_SECONDS === 0 &&
           elapsedSeconds < APPLICATION_READY_WAIT_MINUTES * 60
         ) {
           stdout.write(`Showing recent startup logs after ${elapsedSeconds} seconds...\n`);
-          const logsCode = await executeWithDockerDiagnostics(
-            execute,
-            stagedComposeCommand("logs", { lines: 50 }),
-            { stdin, stdout, stderr },
-            { platform, stderr }
-          );
-          if (logsCode !== 0) {
-            stderr.write(`SpaceApp startup log check failed with Docker exit ${logsCode}.\n`);
+          try {
+            const logsCode = await executeWithDockerDiagnostics(
+              execute,
+              stagedComposeCommand("logs", { lines: 50 }),
+              { stdin, stdout, stderr },
+              { platform, stderr }
+            );
+            if (logsCode !== 0) {
+              stderr.write(`SpaceApp startup log check failed with Docker exit ${logsCode}.\n`);
+            }
+          } catch (error) {
+            stderr.write(
+              `SpaceApp could not collect logs diagnostics: ${error?.message || String(error)}.\n`
+            );
           }
         }
       }
