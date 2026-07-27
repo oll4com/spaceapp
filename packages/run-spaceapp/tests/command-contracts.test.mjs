@@ -107,8 +107,8 @@ test("up, down, status, logs, backup, and open delegate to their fixed native co
   }
   assert.deepEqual(calls.map((spec) => spec.args.slice(-3)), [
     ["up", "-d", "--remove-orphans"],
-    ["-f", join(root, "compose.workspaces.yml"), "down"],
-    ["-f", join(root, "compose.workspaces.yml"), "ps"],
+    ["-f", join(root, "compose.host-access.yml"), "down"],
+    ["-f", join(root, "compose.host-access.yml"), "ps"],
     ["logs", "--tail", "200"],
     ["spaceapp-core", "node", "scripts/portable-backup.mjs"]
   ]);
@@ -222,7 +222,13 @@ test("update and rollback persist version state only after both Docker operation
 
 test("doctor is read-only for installation configuration and generated runtime files", async () => {
   const { root, options } = await installation();
-  const paths = ["config.json", "runtime.env", "compose.yml", "compose.workspaces.yml"];
+  const paths = [
+    "config.json",
+    "runtime.env",
+    "compose.yml",
+    "compose.workspaces.yml",
+    "compose.host-access.yml"
+  ];
   const before = new Map(await Promise.all(paths.map(async (path) => {
     const target = join(root, path);
     return [path, {

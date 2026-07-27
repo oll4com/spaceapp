@@ -395,13 +395,13 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   assert.deepEqual(calls.map((call) => [
     call.command,
     ...call.args.slice(-2).map((argument) =>
-      argument.endsWith("compose.workspaces.yml") ? "compose.workspaces.yml" : argument
+      argument.endsWith("compose.host-access.yml") ? "compose.host-access.yml" : argument
     )
   ]), [
     ["docker", "docker", "--version"].slice(1),
     ["docker", "compose", "version"],
     ["docker", "info"],
-    ["docker", "compose.workspaces.yml", "pull"],
+    ["docker", "compose.host-access.yml", "pull"],
     ["docker", "-d", "--remove-orphans"],
     ["docker", "scripts/rotate-owner-setup-token.mjs", "--stdin"],
     ["docker", "--force", "spaceapp-browser"]
@@ -555,7 +555,8 @@ test("a failed upgrade preserves the committed installation state", async () => 
     "config.json",
     "runtime.env",
     "compose.yml",
-    "compose.workspaces.yml"
+    "compose.workspaces.yml",
+    "compose.host-access.yml"
   ];
   const committedState = new Map(await Promise.all(
     statePaths.map(async (path) => [path, await readFile(join(root, path), "utf8")])
@@ -592,6 +593,7 @@ test("Docker, readiness, and browser-cleanup failures preserve the committed ins
       "runtime.env",
       "compose.yml",
       "compose.workspaces.yml",
+      "compose.host-access.yml",
       "secrets/setup-token"
     ];
     const committedState = new Map(await Promise.all(
