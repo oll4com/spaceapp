@@ -7,6 +7,18 @@ on:
         description: Exact semantic version from packages/run-spaceapp/package.json
         required: true
         type: string
+      runtime_version:
+        description: Exact existing or newly built SpaceApp runtime image version
+        required: true
+        type: string
+      release_mode:
+        description: Build full runtime images or publish only the launcher
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - launcher-only
       npm_tag:
         description: npm prerelease channel
         required: true
@@ -20,7 +32,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: public-oidc-release-${{ inputs.version }}-${{ inputs.npm_tag }}
+  group: public-oidc-release-${{ inputs.version }}-${{ inputs.runtime_version }}-${{ inputs.release_mode }}-${{ inputs.npm_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -49,11 +61,15 @@ jobs:
       - name: Enforce legal, version, and npm channel readiness
         env:
           RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_RUNTIME_VERSION: ${{ inputs.runtime_version }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
           RELEASE_DIST_TAG: ${{ inputs.npm_tag }}
         run: >-
           node scripts/public-release-readiness.mjs
           --version "$RELEASE_VERSION"
           --npm-tag "$RELEASE_DIST_TAG"
+          --release-mode "$RELEASE_MODE"
+          --runtime-version "$RELEASE_RUNTIME_VERSION"
 
   source-candidate:
     name: Verify sanitized source and npm candidate
@@ -141,6 +157,7 @@ jobs:
   container-candidate:
     name: Sanitized ${{ matrix.target }} / linux-${{ matrix.arch }}
     needs: release-policy
+    if: inputs.release_mode == 'full'
     strategy:
       fail-fast: false
       matrix:
@@ -221,18 +238,15 @@ jobs:
           path: trivy-full-${{ matrix.target }}-${{ matrix.arch }}.json
           if-no-files-found: error
 
-  publish-preflight:
-    name: Approve and prove release tags are new
-    needs:
-      - source-candidate
-      - container-candidate
+  existing-runtime:
+    name: Verify existing runtime manifests and attestations
+    needs: release-policy
+    if: inputs.release_mode == 'launcher-only'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: npm
     permissions:
       contents: read
-      packages: write
-      id-token: write
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -240,7 +254,48 @@ jobs:
 
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
+      - name: Verify existing architectures, SBOMs, and provenance
+        run: >-
+          node scripts/verify-published-containers.mjs
+          --version "${{ inputs.runtime_version }}"
+
+  publish-preflight:
+    name: Approve and prove release tags are new
+    needs:
+      - source-candidate
+      - container-candidate
+      - existing-runtime
+    if: >-
+      always() &&
+      needs.source-candidate.result == 'success' &&
+      (
+        (
+          inputs.release_mode == 'full' &&
+          needs.container-candidate.result == 'success' &&
+          needs.existing-runtime.result == 'skipped'
+        ) ||
+        (
+          inputs.release_mode == 'launcher-only' &&
+          needs.container-candidate.result == 'skipped' &&
+          needs.existing-runtime.result == 'success'
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        if: inputs.release_mode == 'full'
+
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        if: inputs.release_mode == 'full'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -250,10 +305,12 @@ jobs:
         run: >-
           node scripts/release-artifact-preflight.mjs
           --version "${{ inputs.version }}"
+          --release-mode "${{ inputs.release_mode }}"
 
   publish-containers:
     name: Publish ${{ matrix.target }} multi-arch image
     needs: publish-preflight
+    if: inputs.release_mode == 'full'
     strategy:
       fail-fast: false
       matrix:
@@ -305,13 +362,13 @@ jobs:
   verify-containers:
     name: Verify published manifests and attestations
     needs: publish-containers
+    if: inputs.release_mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm
     permissions:
       contents: read
-      packages: write
-      id-token: write
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -332,7 +389,28 @@ jobs:
 
   publish-npm:
     name: Publish run-spaceapp with npm OIDC
-    needs: verify-containers
+    needs:
+      - publish-preflight
+      - publish-containers
+      - verify-containers
+      - existing-runtime
+    if: >-
+      always() &&
+      needs.publish-preflight.result == 'success' &&
+      (
+        (
+          inputs.release_mode == 'full' &&
+          needs.publish-containers.result == 'success' &&
+          needs.verify-containers.result == 'success' &&
+          needs.existing-runtime.result == 'skipped'
+        ) ||
+        (
+          inputs.release_mode == 'launcher-only' &&
+          needs.publish-containers.result == 'skipped' &&
+          needs.verify-containers.result == 'skipped' &&
+          needs.existing-runtime.result == 'success'
+        )
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm

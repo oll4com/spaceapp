@@ -10,7 +10,11 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export function evaluatePublicRelease({
   requestedVersion,
   requestedNpmTag,
+  requestedReleaseMode = "full",
+  requestedRuntimeVersion = requestedVersion,
   packageVersion,
+  packageRuntimeVersion = packageVersion,
+  packageHostRootRuntimeCompatible = true,
   notices,
   dockerfile,
   distributionPolicy
@@ -32,6 +36,34 @@ export function evaluatePublicRelease({
   ) {
     blockers.push(
       "Host-root prereleases must publish only to the npm personal tag."
+    );
+  }
+  if (!["full", "launcher-only"].includes(requestedReleaseMode)) {
+    blockers.push(`Unknown release mode ${requestedReleaseMode}.`);
+  }
+  if (!isRegistrySafeReleaseVersion(requestedRuntimeVersion)) {
+    blockers.push(
+      `Requested runtime version ${requestedRuntimeVersion} is not a valid registry-safe semantic version.`
+    );
+  } else if (requestedRuntimeVersion !== packageRuntimeVersion) {
+    blockers.push(
+      `Requested runtime version ${requestedRuntimeVersion} does not match run-spaceapp runtime ${packageRuntimeVersion}.`
+    );
+  }
+  if (
+    requestedReleaseMode === "full" &&
+    requestedRuntimeVersion !== requestedVersion
+  ) {
+    blockers.push(
+      "Full releases must publish runtime images at the exact launcher version."
+    );
+  }
+  if (
+    requestedReleaseMode === "launcher-only" &&
+    packageHostRootRuntimeCompatible !== false
+  ) {
+    blockers.push(
+      "Launcher-only releases must disable host-root until matching runtime images are rebuilt."
     );
   }
   const claudePolicy = distributionPolicy?.packages?.["@anthropic-ai/claude-code"];
@@ -67,6 +99,8 @@ export function evaluatePublicRelease({
 function parseArgs(argv) {
   let requestedVersion = "";
   let requestedNpmTag = "";
+  let requestedReleaseMode = "";
+  let requestedRuntimeVersion = "";
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--version" && argv[index + 1]) {
@@ -75,21 +109,34 @@ function parseArgs(argv) {
     } else if (argument === "--npm-tag" && argv[index + 1]) {
       requestedNpmTag = argv[index + 1];
       index += 1;
+    } else if (argument === "--release-mode" && argv[index + 1]) {
+      requestedReleaseMode = argv[index + 1];
+      index += 1;
+    } else if (argument === "--runtime-version" && argv[index + 1]) {
+      requestedRuntimeVersion = argv[index + 1];
+      index += 1;
     } else {
       throw new Error(
-        "Usage: public-release-readiness.mjs --version <semantic-version> --npm-tag <next|personal>"
+        "Usage: public-release-readiness.mjs --version <semantic-version> --npm-tag <next|personal> --release-mode <full|launcher-only> --runtime-version <semantic-version>"
       );
     }
   }
   if (
     !requestedVersion ||
-    !["next", "personal"].includes(requestedNpmTag)
+    !["next", "personal"].includes(requestedNpmTag) ||
+    !["full", "launcher-only"].includes(requestedReleaseMode) ||
+    !requestedRuntimeVersion
   ) {
     throw new Error(
-      "Usage: public-release-readiness.mjs --version <semantic-version> --npm-tag <next|personal>"
+      "Usage: public-release-readiness.mjs --version <semantic-version> --npm-tag <next|personal> --release-mode <full|launcher-only> --runtime-version <semantic-version>"
     );
   }
-  return { requestedVersion, requestedNpmTag };
+  return {
+    requestedVersion,
+    requestedNpmTag,
+    requestedReleaseMode,
+    requestedRuntimeVersion
+  };
 }
 
 export async function runCli(argv) {
@@ -105,6 +152,9 @@ export async function runCli(argv) {
   const result = evaluatePublicRelease({
     ...options,
     packageVersion: packageManifest.version,
+    packageRuntimeVersion: packageManifest.spaceappRuntimeVersion,
+    packageHostRootRuntimeCompatible:
+      packageManifest.spaceappHostRootRuntimeCompatible,
     notices,
     dockerfile,
     distributionPolicy

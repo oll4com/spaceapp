@@ -9,6 +9,7 @@ const absent = {
 
 test("artifact preflight accepts only authoritative not-found responses", () => {
   const result = evaluateArtifactAvailability({
+    releaseMode: "full",
     version: "0.1.4",
     npm: { status: 1, output: "npm error code E404" },
     images: {
@@ -23,6 +24,7 @@ test("artifact preflight accepts only authoritative not-found responses", () => 
 
 test("artifact preflight blocks an existing npm version or image tag", () => {
   const result = evaluateArtifactAvailability({
+    releaseMode: "full",
     version: "0.1.4",
     npm: { status: 0, output: "0.1.4" },
     images: {
@@ -40,6 +42,7 @@ test("artifact preflight blocks an existing npm version or image tag", () => {
 
 test("artifact preflight fails closed on registry or network ambiguity", () => {
   const result = evaluateArtifactAvailability({
+    releaseMode: "full",
     version: "0.1.4",
     npm: { status: 1, output: "npm error code ETIMEDOUT" },
     images: {
@@ -56,4 +59,20 @@ test("artifact preflight fails closed on registry or network ambiguity", () => {
     "Could not prove that npm package run-spaceapp@0.1.4 is absent.",
     "Could not prove that GHCR tag ghcr.io/oll4com/spaceapp-core:0.1.4 is absent."
   ]);
+});
+
+test("launcher-only preflight requires a new npm version but reuses existing images", () => {
+  const existing = { status: 0, output: "existing immutable image" };
+  const result = evaluateArtifactAvailability({
+    releaseMode: "launcher-only",
+    version: "0.1.15-hostroot.1",
+    npm: { status: 1, output: "npm error code E404" },
+    images: {
+      core: existing,
+      cli: existing,
+      browser: existing
+    }
+  });
+
+  assert.deepEqual(result, { ok: true, blockers: [] });
 });

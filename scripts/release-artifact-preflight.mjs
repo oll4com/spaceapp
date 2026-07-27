@@ -17,7 +17,12 @@ function isGhcrNotFound(result, image) {
   );
 }
 
-export function evaluateArtifactAvailability({ version, npm, images }) {
+export function evaluateArtifactAvailability({
+  releaseMode = "full",
+  version,
+  npm,
+  images
+}) {
   const blockers = [];
   if (npm.status === 0) {
     blockers.push(`npm package run-spaceapp@${version} already exists.`);
@@ -25,13 +30,15 @@ export function evaluateArtifactAvailability({ version, npm, images }) {
     blockers.push(`Could not prove that npm package run-spaceapp@${version} is absent.`);
   }
 
-  for (const target of targets) {
-    const image = `ghcr.io/oll4com/spaceapp-${target}:${version}`;
-    const result = images[target];
-    if (result.status === 0) {
-      blockers.push(`GHCR tag ${image} already exists.`);
-    } else if (!isGhcrNotFound(result, image)) {
-      blockers.push(`Could not prove that GHCR tag ${image} is absent.`);
+  if (releaseMode === "full") {
+    for (const target of targets) {
+      const image = `ghcr.io/oll4com/spaceapp-${target}:${version}`;
+      const result = images[target];
+      if (result.status === 0) {
+        blockers.push(`GHCR tag ${image} already exists.`);
+      } else if (!isGhcrNotFound(result, image)) {
+        blockers.push(`Could not prove that GHCR tag ${image} is absent.`);
+      }
     }
   }
 
@@ -51,33 +58,54 @@ function run(command, args) {
 }
 
 function parseArgs(argv) {
+  let version = "";
+  let releaseMode = "";
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--version" && argv[index + 1]) {
+      version = argv[index + 1];
+      index += 1;
+    } else if (argv[index] === "--release-mode" && argv[index + 1]) {
+      releaseMode = argv[index + 1];
+      index += 1;
+    } else {
+      throw new Error(
+        "Usage: release-artifact-preflight.mjs --version <semantic-version> --release-mode <full|launcher-only>"
+      );
+    }
+  }
   if (
-    argv.length !== 2 ||
-    argv[0] !== "--version" ||
-    !isRegistrySafeReleaseVersion(argv[1])
+    !isRegistrySafeReleaseVersion(version) ||
+    !["full", "launcher-only"].includes(releaseMode)
   ) {
     throw new Error(
-      "Usage: release-artifact-preflight.mjs --version <semantic-version>"
+      "Usage: release-artifact-preflight.mjs --version <semantic-version> --release-mode <full|launcher-only>"
     );
   }
-  return argv[1];
+  return { version, releaseMode };
 }
 
 export function runCli(argv) {
-  const version = parseArgs(argv);
+  const { version, releaseMode } = parseArgs(argv);
   const npm = run("npm", ["view", `run-spaceapp@${version}`, "version"]);
-  const images = Object.fromEntries(
-    targets.map((target) => [
-      target,
-      run("docker", [
-        "buildx",
-        "imagetools",
-        "inspect",
-        `ghcr.io/oll4com/spaceapp-${target}:${version}`
+  const images = releaseMode === "full"
+    ? Object.fromEntries(
+      targets.map((target) => [
+        target,
+        run("docker", [
+          "buildx",
+          "imagetools",
+          "inspect",
+          `ghcr.io/oll4com/spaceapp-${target}:${version}`
+        ])
       ])
-    ])
-  );
-  const result = evaluateArtifactAvailability({ version, npm, images });
+    )
+    : {};
+  const result = evaluateArtifactAvailability({
+    releaseMode,
+    version,
+    npm,
+    images
+  });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   if (!result.ok) process.exitCode = 1;
   return result;

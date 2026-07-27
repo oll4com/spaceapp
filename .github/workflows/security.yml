@@ -19,6 +19,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  container-changes:
+    name: Detect container source changes
+    runs-on: ubuntu-latest
+    outputs:
+      required: ${{ steps.filter.outputs.required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require image scans only for image source changes
+        id: filter
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+          elif [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- \
+            apps \
+            packages \
+            ':(exclude)packages/run-spaceapp/**' \
+            deploy/docker \
+            starter-memory \
+            Dockerfile \
+            package-lock.json; then
+            echo "required=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "required=true" >> "$GITHUB_OUTPUT"
+          fi
+
   source:
     name: Source, dependencies, and SBOM
     runs-on: ubuntu-latest
@@ -140,6 +175,8 @@ jobs:
 
   image:
     name: Image scan / ${{ matrix.target }}
+    needs: container-changes
+    if: needs.container-changes.outputs.required == 'true'
     strategy:
       fail-fast: false
       matrix:
