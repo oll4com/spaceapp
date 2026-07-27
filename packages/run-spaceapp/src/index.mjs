@@ -413,6 +413,7 @@ export function composeCommand(action, root, options = {}) {
       "scripts/rotate-owner-setup-token.mjs",
       "--stdin"
     ],
+    removeBrowser: ["rm", "--stop", "--force", "spaceapp-browser"],
     purge: ["down", "--volumes", "--remove-orphans"]
   };
   let selected = actions[action];

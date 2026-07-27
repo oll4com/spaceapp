@@ -5,6 +5,17 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-07-27
+
+- remove an already-running managed browser container when an existing
+  `standard` installation moves to the default `light` profile, while
+  preserving browser storage and every other persistent Docker volume;
+- keep the cleanup idempotent so `light` refreshes also repair state left by
+  the superseded, unpromoted `0.1.13` npm candidate without running Compose
+  `down`;
+- supersede `0.1.13`, which remained off npm `latest` after Windows clean-room
+  acceptance exposed Docker Compose retaining a disabled-profile service.
+
 ## [0.1.13] - 2026-07-26
 
 - qualify every universal launcher invocation as
@@ -132,7 +143,8 @@ Initial public release:
 - portable backup, restore, update, and rollback commands;
 - no telemetry by default.
 
-[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/oll4com/spaceapp/compare/v0.1.14...HEAD
+[0.1.14]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.14
 [0.1.13]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.13
 [0.1.12]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.12
 [0.1.11]: https://github.com/oll4com/spaceapp/releases/tag/v0.1.11

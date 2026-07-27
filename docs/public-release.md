@@ -62,14 +62,14 @@ The workflow then:
 5. publishes that tarball as `run-spaceapp@<version>` with `--tag next
    --provenance`.
 
-For `0.1.13`, `latest` must remain `0.1.12` until clean-install acceptance is
+For `0.1.14`, `latest` must remain `0.1.12` until clean-install acceptance is
 complete.
 
 ## Staged acceptance and promotion
 
 Verify npm metadata before installation:
 
-- `version` and `next` are `0.1.13`;
+- `version` and `next` are `0.1.14`;
 - `latest` is still `0.1.12`;
 - `gitHead` equals the released `main` commit;
 - provenance is present and references `.github/workflows/release.yml`.
@@ -96,7 +96,7 @@ Before promotion:
 Promote with a 2FA-protected maintainer session:
 
 ```bash
-npm dist-tag add run-spaceapp@0.1.13 latest
+npm dist-tag add run-spaceapp@0.1.14 latest
 ```
 
 Immediately verify the promoted public path with the exact end-user command:
@@ -114,21 +114,22 @@ add ignores for upstream-unfixed findings.
 
 Published npm versions and GHCR exact tags are immutable.
 
-If `0.1.13` fails after promotion:
+If `0.1.14` fails acceptance or after promotion:
 
 ```bash
 npm dist-tag add run-spaceapp@0.1.12 latest
 npm dist-tag add run-spaceapp@0.1.12 next
-npm deprecate run-spaceapp@0.1.13 "Withdrawn after release verification; use 0.1.12 until a corrected release is available."
+npm deprecate run-spaceapp@0.1.14 "Withdrawn after release verification; use 0.1.12 until a corrected release is available."
 npm view run-spaceapp dist-tags --json
 ```
 
 Verify that both `latest` and `next` report `0.1.12`. Exact version artifacts
 remain immutable and must not be deleted or overwritten.
 
-The failed `0.1.4` staging run already produced immutable GHCR artifacts, so
-preserve those and the unpromoted `0.1.7` and `0.1.8` artifacts as evidence.
-Do not delete or overwrite exact version tags.
+The failed `0.1.4` staging run and superseded, unpromoted `0.1.13` candidate
+already produced immutable artifacts, so preserve those and the unpromoted
+`0.1.7` and `0.1.8` artifacts as evidence. Do not delete or overwrite exact
+version tags.
 
 ## Official references
 

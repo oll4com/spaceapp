@@ -201,14 +201,14 @@ test("update and rollback persist version state only after both Docker operation
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.6", previousVersion: "0.1.13" }
+    { version: "0.1.6", previousVersion: "0.1.14" }
   );
   assert.equal(await run(["rollback"], options), 0);
   assert.deepEqual(
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.13", previousVersion: "0.1.6" }
+    { version: "0.1.14", previousVersion: "0.1.6" }
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
     "pull",
@@ -217,7 +217,7 @@ test("update and rollback persist version state only after both Docker operation
     "--remove-orphans"
   ]);
   assert.match(stdout.value(), /Updated to SpaceApp 0\.1\.6/);
-  assert.match(stdout.value(), /Rolled back to SpaceApp 0\.1\.13/);
+  assert.match(stdout.value(), /Rolled back to SpaceApp 0\.1\.14/);
 });
 
 test("doctor is read-only for installation configuration and generated runtime files", async () => {
