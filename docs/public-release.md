@@ -95,8 +95,8 @@ root mount is absent while application data and volumes remain.
 
 If acceptance fails, remove or restore only the `personal` dist-tag and
 deprecate the exact npm version. Exact npm and GHCR version artifacts remain
-immutable. Do not modify `latest`, `next`, `VM207:/srv/space`, or
-`spaceapp.dev`.
+immutable. Do not modify `latest`, `next`, or any existing live SpaceApp or
+website installation.
 
 ## Staged acceptance and promotion
 
