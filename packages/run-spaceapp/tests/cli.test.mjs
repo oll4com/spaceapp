@@ -1441,15 +1441,15 @@ test("owner password reset passes the password only over container stdin", async
   await run(["init"], { ...options, stdin: Readable.from([]) });
   await run(["owner", "reset-password"], {
     ...options,
-    stdin: Readable.from(["correct horse battery staple\n"])
+    stdin: Readable.from(["abc123\n"])
   });
 
   assert.deepEqual(
     calls[0].spec.args.slice(-8),
     ["exec", "-T", "--user", "10001:10001", "spaceapp-core", "node", "scripts/reset-owner-password.mjs", "--stdin"]
   );
-  assert.equal(calls[0].io.input, "correct horse battery staple\n");
-  assert.doesNotMatch(JSON.stringify(calls[0].spec), /correct horse battery staple/);
+  assert.equal(calls[0].io.input, "abc123\n");
+  assert.doesNotMatch(JSON.stringify(calls[0].spec), /abc123/);
 });
 
 test("owner setup token rotation updates the host secret only after the database accepts it", async () => {

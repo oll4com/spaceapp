@@ -837,8 +837,8 @@ async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute
     );
   }
   const password = await readSecret(stdin, stdout, "New owner password: ");
-  if (password.length < 12) {
-    throw new Error("Owner password must be at least 12 characters.");
+  if (password.length < 6) {
+    throw new Error("Owner password must be at least 6 characters.");
   }
   return execute(composeCommand("resetOwnerPassword", root, { profile: config.profile }), {
     stdin,

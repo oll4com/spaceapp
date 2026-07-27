@@ -143,7 +143,7 @@ pre-update backup.
 npx --yes run-spaceapp@latest owner reset-password
 ```
 
-The new password is read from masked input and must be at least 12 characters.
+The new password is read from masked input and must be at least 6 characters.
 It is sent through standard input to the running core container and is not
 placed in the command line.
 

@@ -17,6 +17,10 @@ Semantic Versioning.
   rolls containers back while retaining persistent volumes;
 - keep readiness polling active when an intermediate Docker status or log
   diagnostic cannot be collected;
+- keep the first-owner setup usable at normal browser zoom on short laptop
+  viewports by making the setup shell vertically scrollable;
+- accept owner passwords from 6 through 500 characters consistently in setup
+  and password reset flows;
 - preserve the real error from Linux Docker-group re-entry instead of adding
   the inaccurate claim that installation stopped before image download.
 

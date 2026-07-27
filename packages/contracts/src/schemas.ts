@@ -5846,7 +5846,7 @@ export const setupStatusSchema = z.object({
 export const setupClaimInputSchema = z.object({
   token: z.string().min(32).max(500),
   email: z.string().trim().email().max(320),
-  password: z.string().min(12).max(500)
+  password: z.string().min(6).max(500)
 }).strict();
 
 export const setupClaimResponseSchema = z.object({
