@@ -157,7 +157,10 @@ test("release is manual-only on main and publishes only approved sanitized artif
     /node scripts\/verify-published-containers\.mjs[\s\S]*--version "\$\{\{ inputs\.runtime_version \}\}"/
   );
   assert.match(release, /container-candidate:[\s\S]*if: inputs\.release_mode == 'full'/);
-  assert.match(release, /publish-containers:[\s\S]*if: inputs\.release_mode == 'full'/);
+  assert.match(
+    release,
+    /publish-containers:[\s\S]*if: >-[\s\S]*always\(\) &&[\s\S]*needs\.publish-preflight\.result == 'success' &&[\s\S]*inputs\.release_mode == 'full'/
+  );
   assert.match(release, /existing-runtime:[\s\S]*if: inputs\.release_mode == 'launcher-only'/);
   assert.match(
     release,
@@ -165,11 +168,19 @@ test("release is manual-only on main and publishes only approved sanitized artif
   );
   assert.match(
     release,
-    /publish-amd64-containers:[\s\S]*if: inputs\.release_mode == 'amd64-core-cli'[\s\S]*target:[\s\S]*- core[\s\S]*- cli[\s\S]*platforms: linux\/amd64/
+    /publish-amd64-containers:[\s\S]*if: >-[\s\S]*always\(\) &&[\s\S]*needs\.publish-preflight\.result == 'success' &&[\s\S]*inputs\.release_mode == 'amd64-core-cli'[\s\S]*target:[\s\S]*- core[\s\S]*- cli[\s\S]*platforms: linux\/amd64/
   );
   assert.match(
     release,
-    /reuse-browser-manifest:[\s\S]*if: inputs\.release_mode == 'amd64-core-cli'[\s\S]*docker buildx imagetools create[\s\S]*spaceapp-browser:\$\{\{ inputs\.version \}\}[\s\S]*spaceapp-browser:\$\{\{ inputs\.browser_source_version \}\}/
+    /reuse-browser-manifest:[\s\S]*if: >-[\s\S]*always\(\) &&[\s\S]*needs\.publish-preflight\.result == 'success' &&[\s\S]*inputs\.release_mode == 'amd64-core-cli'[\s\S]*docker buildx imagetools create[\s\S]*spaceapp-browser:\$\{\{ inputs\.version \}\}[\s\S]*spaceapp-browser:\$\{\{ inputs\.browser_source_version \}\}/
+  );
+  assert.match(
+    release,
+    /verify-containers:[\s\S]*if: >-[\s\S]*always\(\) &&[\s\S]*needs\.publish-containers\.result == 'success' &&[\s\S]*inputs\.release_mode == 'full'/
+  );
+  assert.match(
+    release,
+    /verify-amd64-containers:[\s\S]*if: >-[\s\S]*always\(\) &&[\s\S]*needs\.publish-amd64-containers\.result == 'success' &&[\s\S]*needs\.reuse-browser-manifest\.result == 'success' &&[\s\S]*inputs\.release_mode == 'amd64-core-cli'/
   );
   assert.match(
     release,

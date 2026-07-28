@@ -432,7 +432,10 @@ jobs:
   publish-containers:
     name: Publish ${{ matrix.target }} multi-arch image
     needs: publish-preflight
-    if: inputs.release_mode == 'full'
+    if: >-
+      always() &&
+      needs.publish-preflight.result == 'success' &&
+      inputs.release_mode == 'full'
     strategy:
       fail-fast: false
       matrix:
@@ -484,7 +487,10 @@ jobs:
   publish-amd64-containers:
     name: Publish ${{ matrix.target }} linux-amd64 image
     needs: publish-preflight
-    if: inputs.release_mode == 'amd64-core-cli'
+    if: >-
+      always() &&
+      needs.publish-preflight.result == 'success' &&
+      inputs.release_mode == 'amd64-core-cli'
     strategy:
       fail-fast: false
       matrix:
@@ -534,7 +540,10 @@ jobs:
   reuse-browser-manifest:
     name: Reuse the existing signed browser manifest
     needs: publish-preflight
-    if: inputs.release_mode == 'amd64-core-cli'
+    if: >-
+      always() &&
+      needs.publish-preflight.result == 'success' &&
+      inputs.release_mode == 'amd64-core-cli'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm
@@ -559,7 +568,10 @@ jobs:
   verify-containers:
     name: Verify published manifests and attestations
     needs: publish-containers
-    if: inputs.release_mode == 'full'
+    if: >-
+      always() &&
+      needs.publish-containers.result == 'success' &&
+      inputs.release_mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm
@@ -589,7 +601,11 @@ jobs:
     needs:
       - publish-amd64-containers
       - reuse-browser-manifest
-    if: inputs.release_mode == 'amd64-core-cli'
+    if: >-
+      always() &&
+      needs.publish-amd64-containers.result == 'success' &&
+      needs.reuse-browser-manifest.result == 'success' &&
+      inputs.release_mode == 'amd64-core-cli'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm
