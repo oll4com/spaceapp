@@ -45,7 +45,14 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
-      - run: npm ci
+      - name: Install workspace dependencies on supported hosts
+        if: runner.arch != 'ARM64'
+        run: npm ci
+
+      - name: Install source workspace for the intentional x64 package rejection test
+        if: runner.arch == 'ARM64'
+        run: npm ci --force
+
       - run: npm test -w run-spaceapp
       - run: npm run check -w run-spaceapp
       - run: npm run pack:dry-run -w run-spaceapp

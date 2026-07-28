@@ -36,6 +36,14 @@ test("launcher and container matrices cover the declared operating systems and a
     platform,
     /name: Launcher \/ \$\{\{ matrix\.os \}\} \/ Node \$\{\{ matrix\.node \}\}/
   );
+  assert.match(
+    platform,
+    /if: runner\.arch == 'ARM64'[\s\S]*run: npm ci --force/
+  );
+  assert.match(
+    platform,
+    /if: runner\.arch != 'ARM64'[\s\S]*run: npm ci/
+  );
   assert.match(platform, /- os: windows-latest\s+node: "24"/);
   assert.equal([...platform.matchAll(/- os: windows-latest/g)].length, 2);
   for (const target of ["core", "browser", "cli"]) {
