@@ -30,7 +30,7 @@ export function evaluateArtifactAvailability({
     blockers.push(`Could not prove that npm package run-spaceapp@${version} is absent.`);
   }
 
-  if (releaseMode === "full") {
+  if (releaseMode !== "launcher-only") {
     for (const target of targets) {
       const image = `ghcr.io/oll4com/spaceapp-${target}:${version}`;
       const result = images[target];
@@ -69,16 +69,16 @@ function parseArgs(argv) {
       index += 1;
     } else {
       throw new Error(
-        "Usage: release-artifact-preflight.mjs --version <semantic-version> --release-mode <full|launcher-only>"
+        "Usage: release-artifact-preflight.mjs --version <semantic-version> --release-mode <full|launcher-only|amd64-core-cli>"
       );
     }
   }
   if (
     !isRegistrySafeReleaseVersion(version) ||
-    !["full", "launcher-only"].includes(releaseMode)
+    !["full", "launcher-only", "amd64-core-cli"].includes(releaseMode)
   ) {
     throw new Error(
-      "Usage: release-artifact-preflight.mjs --version <semantic-version> --release-mode <full|launcher-only>"
+      "Usage: release-artifact-preflight.mjs --version <semantic-version> --release-mode <full|launcher-only|amd64-core-cli>"
     );
   }
   return { version, releaseMode };
@@ -87,7 +87,7 @@ function parseArgs(argv) {
 export function runCli(argv) {
   const { version, releaseMode } = parseArgs(argv);
   const npm = run("npm", ["view", `run-spaceapp@${version}`, "version"]);
-  const images = releaseMode === "full"
+  const images = releaseMode !== "launcher-only"
     ? Object.fromEntries(
       targets.map((target) => [
         target,

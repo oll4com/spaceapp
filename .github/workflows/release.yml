@@ -11,14 +11,19 @@ on:
         description: Exact existing or newly built SpaceApp runtime image version
         required: true
         type: string
+      browser_source_version:
+        description: Existing browser image version reused by an amd64 core and CLI release
+        required: false
+        type: string
       release_mode:
-        description: Build full runtime images or publish only the launcher
+        description: Select full, launcher-only, or x64 core and CLI publication
         required: true
         default: full
         type: choice
         options:
           - full
           - launcher-only
+          - amd64-core-cli
       npm_tag:
         description: npm prerelease channel
         required: true
@@ -62,6 +67,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_RUNTIME_VERSION: ${{ inputs.runtime_version }}
+          RELEASE_BROWSER_SOURCE_VERSION: ${{ inputs.browser_source_version }}
           RELEASE_MODE: ${{ inputs.release_mode }}
           RELEASE_DIST_TAG: ${{ inputs.npm_tag }}
         run: >-
@@ -70,6 +76,7 @@ jobs:
           --npm-tag "$RELEASE_DIST_TAG"
           --release-mode "$RELEASE_MODE"
           --runtime-version "$RELEASE_RUNTIME_VERSION"
+          --browser-source-version "$RELEASE_BROWSER_SOURCE_VERSION"
 
   source-candidate:
     name: Verify sanitized source and npm candidate
@@ -238,6 +245,85 @@ jobs:
           path: trivy-full-${{ matrix.target }}-${{ matrix.arch }}.json
           if-no-files-found: error
 
+  amd64-container-candidate:
+    name: Sanitized ${{ matrix.target }} / linux-amd64
+    needs: release-policy
+    if: inputs.release_mode == 'amd64-core-cli'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - core
+          - cli
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create sanitized container context
+        run: >-
+          node scripts/public-export.mjs
+          --output "$RUNNER_TEMP/spaceapp-public-export"
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ runner.temp }}/spaceapp-public-export
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: spaceapp-ci:${{ matrix.target }}-amd64
+          provenance: false
+          cache-from: type=gha,scope=candidate-${{ matrix.target }}-amd64
+          cache-to: type=gha,mode=max,scope=candidate-${{ matrix.target }}-amd64
+
+      - name: Enforce container size budget
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: >-
+          node scripts/container-image-size-budget.mjs
+          --target "${{ matrix.target }}"
+          --image "spaceapp-ci:${{ matrix.target }}-amd64"
+
+      - name: Block fixable container vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: spaceapp-ci:${{ matrix.target }}-amd64
+          format: table
+          severity: MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Capture full candidate image report
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: spaceapp-ci:${{ matrix.target }}-amd64
+          format: json
+          output: trivy-full-${{ matrix.target }}-amd64.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Summarize full candidate image report
+        if: always() && hashFiles(format('trivy-full-{0}-amd64.json', matrix.target)) != ''
+        run: >-
+          node scripts/trivy-report-summary.mjs
+          --input "trivy-full-${{ matrix.target }}-amd64.json"
+          --label "${{ matrix.target }} / linux-amd64"
+          >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload full candidate image report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-full-${{ matrix.target }}-amd64
+          path: trivy-full-${{ matrix.target }}-amd64.json
+          if-no-files-found: error
+
   existing-runtime:
     name: Verify existing runtime manifests and attestations
     needs: release-policy
@@ -259,12 +345,37 @@ jobs:
           node scripts/verify-published-containers.mjs
           --version "${{ inputs.runtime_version }}"
 
+  existing-browser:
+    name: Verify the reused browser manifest and attestations
+    needs: release-policy
+    if: inputs.release_mode == 'amd64-core-cli'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Verify the reusable browser architectures, SBOMs, and provenance
+        run: >-
+          node scripts/verify-published-containers.mjs
+          --version "${{ inputs.browser_source_version }}"
+          --targets browser
+          --architectures amd64,arm64
+
   publish-preflight:
     name: Approve and prove release tags are new
     needs:
       - source-candidate
       - container-candidate
+      - amd64-container-candidate
       - existing-runtime
+      - existing-browser
     if: >-
       always() &&
       needs.source-candidate.result == 'success' &&
@@ -272,12 +383,23 @@ jobs:
         (
           inputs.release_mode == 'full' &&
           needs.container-candidate.result == 'success' &&
-          needs.existing-runtime.result == 'skipped'
+          needs.amd64-container-candidate.result == 'skipped' &&
+          needs.existing-runtime.result == 'skipped' &&
+          needs.existing-browser.result == 'skipped'
         ) ||
         (
           inputs.release_mode == 'launcher-only' &&
           needs.container-candidate.result == 'skipped' &&
-          needs.existing-runtime.result == 'success'
+          needs.amd64-container-candidate.result == 'skipped' &&
+          needs.existing-runtime.result == 'success' &&
+          needs.existing-browser.result == 'skipped'
+        ) ||
+        (
+          inputs.release_mode == 'amd64-core-cli' &&
+          needs.container-candidate.result == 'skipped' &&
+          needs.amd64-container-candidate.result == 'success' &&
+          needs.existing-runtime.result == 'skipped' &&
+          needs.existing-browser.result == 'success'
         )
       )
     runs-on: ubuntu-latest
@@ -292,10 +414,10 @@ jobs:
           persist-credentials: false
 
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-        if: inputs.release_mode == 'full'
+        if: inputs.release_mode != 'launcher-only'
 
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        if: inputs.release_mode == 'full'
+        if: inputs.release_mode != 'launcher-only'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -359,6 +481,81 @@ jobs:
           cache-from: type=gha,scope=publish-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=publish-${{ matrix.target }}
 
+  publish-amd64-containers:
+    name: Publish ${{ matrix.target }} linux-amd64 image
+    needs: publish-preflight
+    if: inputs.release_mode == 'amd64-core-cli'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - core
+          - cli
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    environment: npm
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: public-release-source-candidate-${{ inputs.version }}
+          path: ${{ runner.temp }}/release-artifacts
+
+      - name: Restore verified sanitized source
+        run: |
+          mkdir -p "$RUNNER_TEMP/publish-context"
+          tar -C "$RUNNER_TEMP/publish-context" \
+            -xzf "$RUNNER_TEMP/release-artifacts/spaceapp-public-export-${{ inputs.version }}.tar.gz"
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish immutable exact-version amd64 image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ runner.temp }}/publish-context/spaceapp-public-export
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/oll4com/spaceapp-${{ matrix.target }}:${{ inputs.version }}
+          sbom: true
+          provenance: mode=max,version=v1
+          cache-from: type=gha,scope=candidate-${{ matrix.target }}-amd64
+          cache-to: type=gha,mode=max,scope=publish-${{ matrix.target }}-amd64
+
+  reuse-browser-manifest:
+    name: Reuse the existing signed browser manifest
+    needs: publish-preflight
+    if: inputs.release_mode == 'amd64-core-cli'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Copy the immutable browser manifest without rebuilding it
+        run: >-
+          docker buildx imagetools create
+          --tag "ghcr.io/oll4com/spaceapp-browser:${{ inputs.version }}"
+          "ghcr.io/oll4com/spaceapp-browser:${{ inputs.browser_source_version }}"
+
   verify-containers:
     name: Verify published manifests and attestations
     needs: publish-containers
@@ -387,13 +584,49 @@ jobs:
           node scripts/verify-published-containers.mjs
           --version "${{ inputs.version }}"
 
+  verify-amd64-containers:
+    name: Verify published amd64 manifests and attestations
+    needs:
+      - publish-amd64-containers
+      - reuse-browser-manifest
+    if: inputs.release_mode == 'amd64-core-cli'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify amd64 SBOMs and provenance for every runtime service
+        run: >-
+          node scripts/verify-published-containers.mjs
+          --version "${{ inputs.version }}"
+          --targets core,cli,browser
+          --architectures amd64
+
   publish-npm:
     name: Publish run-spaceapp with npm OIDC
     needs:
       - publish-preflight
       - publish-containers
       - verify-containers
+      - publish-amd64-containers
+      - reuse-browser-manifest
+      - verify-amd64-containers
       - existing-runtime
+      - existing-browser
     if: >-
       always() &&
       needs.publish-preflight.result == 'success' &&
@@ -402,13 +635,31 @@ jobs:
           inputs.release_mode == 'full' &&
           needs.publish-containers.result == 'success' &&
           needs.verify-containers.result == 'success' &&
-          needs.existing-runtime.result == 'skipped'
+          needs.publish-amd64-containers.result == 'skipped' &&
+          needs.reuse-browser-manifest.result == 'skipped' &&
+          needs.verify-amd64-containers.result == 'skipped' &&
+          needs.existing-runtime.result == 'skipped' &&
+          needs.existing-browser.result == 'skipped'
         ) ||
         (
           inputs.release_mode == 'launcher-only' &&
           needs.publish-containers.result == 'skipped' &&
           needs.verify-containers.result == 'skipped' &&
-          needs.existing-runtime.result == 'success'
+          needs.publish-amd64-containers.result == 'skipped' &&
+          needs.reuse-browser-manifest.result == 'skipped' &&
+          needs.verify-amd64-containers.result == 'skipped' &&
+          needs.existing-runtime.result == 'success' &&
+          needs.existing-browser.result == 'skipped'
+        ) ||
+        (
+          inputs.release_mode == 'amd64-core-cli' &&
+          needs.publish-containers.result == 'skipped' &&
+          needs.verify-containers.result == 'skipped' &&
+          needs.publish-amd64-containers.result == 'success' &&
+          needs.reuse-browser-manifest.result == 'success' &&
+          needs.verify-amd64-containers.result == 'success' &&
+          needs.existing-runtime.result == 'skipped' &&
+          needs.existing-browser.result == 'success'
         )
       )
     runs-on: ubuntu-latest

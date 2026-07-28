@@ -5,14 +5,20 @@ import { pathToFileURL } from "node:url";
 import { isRegistrySafeReleaseVersion } from "./release-version.mjs";
 
 const targets = ["core", "cli", "browser"];
+const architectures = ["amd64", "arm64"];
 
 const sbomPredicate = "https://spdx.dev/Document";
 const provenancePredicate = "https://slsa.dev/provenance/v1";
 
-export function evaluatePublishedContainer({ image, manifest, attestations }) {
+export function evaluatePublishedContainer({
+  image,
+  manifest,
+  attestations,
+  architectures: requiredArchitectures = architectures
+}) {
   const blockers = [];
   const manifests = Array.isArray(manifest?.manifests) ? manifest.manifests : [];
-  for (const architecture of ["amd64", "arm64"]) {
+  for (const architecture of requiredArchitectures) {
     const platformManifest = manifests.find(
       (entry) =>
         entry?.platform?.os === "linux" &&
@@ -90,27 +96,70 @@ export function loadPublishedContainerEvidence(image, inspect = inspectRaw) {
   };
 }
 
-function parseArgs(argv) {
+function commaSeparatedValues(value, allowed, label) {
+  const values = value.split(",").filter(Boolean);
   if (
-    argv.length !== 2 ||
-    argv[0] !== "--version" ||
-    !isRegistrySafeReleaseVersion(argv[1])
+    values.length === 0 ||
+    new Set(values).size !== values.length ||
+    values.some((entry) => !allowed.includes(entry))
   ) {
     throw new Error(
-      "Usage: verify-published-containers.mjs --version <semantic-version>"
+      `Invalid ${label}: ${value}.`
     );
   }
-  return argv[1];
+  return values;
+}
+
+function parseArgs(argv) {
+  let version = "";
+  let requestedTargets = targets;
+  let requestedArchitectures = architectures;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--version" && argv[index + 1]) {
+      version = argv[index + 1];
+      index += 1;
+    } else if (argument === "--targets" && argv[index + 1]) {
+      requestedTargets = commaSeparatedValues(argv[index + 1], targets, "targets");
+      index += 1;
+    } else if (argument === "--architectures" && argv[index + 1]) {
+      requestedArchitectures = commaSeparatedValues(
+        argv[index + 1],
+        architectures,
+        "architectures"
+      );
+      index += 1;
+    } else {
+      throw new Error(
+        "Usage: verify-published-containers.mjs --version <semantic-version> [--targets core,cli,browser] [--architectures amd64,arm64]"
+      );
+    }
+  }
+  if (!isRegistrySafeReleaseVersion(version)) {
+    throw new Error(
+      "Usage: verify-published-containers.mjs --version <semantic-version> [--targets core,cli,browser] [--architectures amd64,arm64]"
+    );
+  }
+  return {
+    version,
+    targets: requestedTargets,
+    architectures: requestedArchitectures
+  };
 }
 
 export function runCli(argv) {
-  const version = parseArgs(argv);
+  const {
+    version,
+    targets: requestedTargets,
+    architectures: requestedArchitectures
+  } = parseArgs(argv);
   const blockers = [];
-  for (const target of targets) {
+  for (const target of requestedTargets) {
     const image = `ghcr.io/oll4com/spaceapp-${target}:${version}`;
     const result = evaluatePublishedContainer({
       image,
-      ...loadPublishedContainerEvidence(image)
+      ...loadPublishedContainerEvidence(image),
+      architectures: requestedArchitectures
     });
     blockers.push(...result.blockers);
   }

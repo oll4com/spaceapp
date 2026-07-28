@@ -36,6 +36,14 @@ test("launcher and container matrices cover the declared operating systems and a
     platform,
     /name: Launcher \/ \$\{\{ matrix\.os \}\} \/ Node \$\{\{ matrix\.node \}\}/
   );
+  assert.match(
+    platform,
+    /if: runner\.arch == 'ARM64'[\s\S]*run: npm ci --force/
+  );
+  assert.match(
+    platform,
+    /if: runner\.arch != 'ARM64'[\s\S]*run: npm ci/
+  );
   assert.match(platform, /- os: windows-latest\s+node: "24"/);
   assert.equal([...platform.matchAll(/- os: windows-latest/g)].length, 2);
   for (const target of ["core", "browser", "cli"]) {
@@ -124,8 +132,12 @@ test("release is manual-only on main and publishes only approved sanitized artif
   assert.doesNotMatch(release, /--allow-review-required/);
   assert.match(trigger, /workflow_dispatch:/);
   assert.match(trigger, /npm_tag:[\s\S]*type: choice[\s\S]*- next[\s\S]*- personal/);
-  assert.match(trigger, /release_mode:[\s\S]*type: choice[\s\S]*- full[\s\S]*- launcher-only/);
+  assert.match(
+    trigger,
+    /release_mode:[\s\S]*type: choice[\s\S]*- full[\s\S]*- launcher-only[\s\S]*- amd64-core-cli/
+  );
   assert.match(trigger, /runtime_version:[\s\S]*required: true[\s\S]*type: string/);
+  assert.match(trigger, /browser_source_version:[\s\S]*required: false[\s\S]*type: string/);
   assert.doesNotMatch(trigger, /pull_request:|schedule:|\n  push:/);
   assert.match(release, /permissions:\n  contents: read/);
   assert.match(release, /github\.ref == 'refs\/heads\/main'/);
@@ -147,6 +159,18 @@ test("release is manual-only on main and publishes only approved sanitized artif
   assert.match(release, /container-candidate:[\s\S]*if: inputs\.release_mode == 'full'/);
   assert.match(release, /publish-containers:[\s\S]*if: inputs\.release_mode == 'full'/);
   assert.match(release, /existing-runtime:[\s\S]*if: inputs\.release_mode == 'launcher-only'/);
+  assert.match(
+    release,
+    /amd64-container-candidate:[\s\S]*if: inputs\.release_mode == 'amd64-core-cli'[\s\S]*target:[\s\S]*- core[\s\S]*- cli[\s\S]*platforms: linux\/amd64/
+  );
+  assert.match(
+    release,
+    /publish-amd64-containers:[\s\S]*if: inputs\.release_mode == 'amd64-core-cli'[\s\S]*target:[\s\S]*- core[\s\S]*- cli[\s\S]*platforms: linux\/amd64/
+  );
+  assert.match(
+    release,
+    /reuse-browser-manifest:[\s\S]*if: inputs\.release_mode == 'amd64-core-cli'[\s\S]*docker buildx imagetools create[\s\S]*spaceapp-browser:\$\{\{ inputs\.version \}\}[\s\S]*spaceapp-browser:\$\{\{ inputs\.browser_source_version \}\}/
+  );
   assert.match(
     release,
     /publish-npm:[\s\S]*if: >-[\s\S]*always\(\)[\s\S]*needs\.existing-runtime\.result == 'success'/

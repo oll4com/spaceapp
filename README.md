@@ -91,31 +91,20 @@ omits managed Chromium. Use
 managed browser container is required and the host has the recommended
 resources.
 
-### Personal launcher-only candidate
+### Personal Linux x64 candidate
 
-The `0.1.15-hostroot.1` personal candidate contains cross-platform installer
-fixes and deliberately reuses the already published `0.1.15-hostroot.0`
-runtime images:
-
-```bash
-npx --yes run-spaceapp@personal install
-```
-
-This candidate supports isolated access only. It rejects `--access host-root`
-until matching runtime images are rebuilt in a future full release. The
-launcher prints its own `.1` version separately from the pinned `.0` runtime
-image version.
-
-The earlier host-root experiment remains available only by pinning its exact
-launcher version on a disposable, trusted single-owner Linux test machine:
+The `0.1.15-hostroot.2` personal candidate contains the installer, owner setup,
+and host-root CLI fixes for x64 Linux:
 
 ```bash
-npx --yes run-spaceapp@0.1.15-hostroot.0 install --access host-root
+npx --yes run-spaceapp@personal install --access host-root
 ```
 
 Host-root mounts Linux `/` read/write into `spaceapp-cli` and can expose every
 credential or make the operating system unbootable. It is not part of the
-current cross-platform acceptance.
+stable cross-platform release. The candidate publishes new `core` and `cli`
+images only for `linux/amd64`; it reuses the existing signed browser manifest
+without rebuilding it. npm rejects this candidate on arm64 hosts.
 
 The installer does not create or reserve a separate fixed-size VM. Linux uses
 the native Docker Engine; Windows uses Docker Desktop's WSL2 Linux environment;

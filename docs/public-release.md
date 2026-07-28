@@ -70,7 +70,35 @@ immutable GHCR tag.
 The accepted `0.1.14` release remains on both `latest` and `next` during the
 personal candidate test.
 
-## Personal launcher-only prerelease
+## Personal x64 core and CLI prerelease
+
+For `0.1.15-hostroot.2`, dispatch `release.yml` from `main` with:
+
+- `version`: `0.1.15-hostroot.2`;
+- `runtime_version`: `0.1.15-hostroot.2`;
+- `browser_source_version`: `0.1.15-hostroot.0`;
+- `release_mode`: `amd64-core-cli`;
+- `npm_tag`: `personal`.
+
+The workflow builds and scans only `core` and `cli` for `linux/amd64`. It
+copies the already verified `.0` browser manifest to the new runtime tag
+without rebuilding the browser. It verifies amd64 SBOM and provenance evidence
+for all three published tags before npm OIDC publication. The npm package is
+x64-only and enables host-root because the launcher and runtime versions match.
+Do not change `latest` or `next`.
+
+After publication, run:
+
+```bash
+npx --yes run-spaceapp@personal install --access host-root
+```
+
+Verify launcher and runtime `.2`, `/readyz`, the owner setup at 100% zoom, and
+a host-root CLI session with `id -u` equal to `0`. If acceptance fails, restore
+`personal` to `0.1.15-hostroot.1`; the immutable `.2` image tags remain
+unreferenced. Do not modify any existing live SpaceApp or website installation.
+
+## Historical launcher-only prerelease
 
 For `0.1.15-hostroot.1`, dispatch `release.yml` from `main` with:
 

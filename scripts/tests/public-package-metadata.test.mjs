@@ -39,20 +39,23 @@ test("public command guards reject forbidden commands inside inline Markdown", (
   assert.match("Use `spaceapp doctor` to diagnose it.", globalFollowUpCommand);
 });
 
-test("active documentation does not route host-root through the launcher-only personal tag", async () => {
+test("active documentation routes host-root through the x64 personal candidate", async () => {
   for (const path of [
     "README.md",
     "packages/run-spaceapp/README.md",
-    "docs/clean-room-testing.md",
     "docs/getting-started.md",
     "docs/operations.md",
-    "docs/public-release.md",
     "docs/security-model.md"
   ]) {
     const content = await readFile(join(root, path), "utf8");
-    assert.doesNotMatch(
+    assert.match(
       content,
       /npx --yes run-spaceapp@personal install --access host-root/,
+      path
+    );
+    assert.doesNotMatch(
+      content,
+      /npx --yes run-spaceapp@0\.1\.15-hostroot\.0 install --access host-root/,
       path
     );
   }
@@ -141,7 +144,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
 
   assert.deepEqual(publishable, [{
     name: "run-spaceapp",
-    version: "0.1.15-hostroot.1",
+    version: "0.1.15-hostroot.2",
     bin: {
       spaceapp: "bin/spaceapp.mjs",
       "run-spaceapp": "bin/spaceapp.mjs"
@@ -150,8 +153,9 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
   const launcherPackage = JSON.parse(
     await readFile(join(root, "packages", "run-spaceapp", "package.json"), "utf8")
   );
-  assert.equal(launcherPackage.spaceappRuntimeVersion, "0.1.15-hostroot.0");
-  assert.equal(launcherPackage.spaceappHostRootRuntimeCompatible, false);
+  assert.equal(launcherPackage.spaceappRuntimeVersion, "0.1.15-hostroot.2");
+  assert.equal(launcherPackage.spaceappHostRootRuntimeCompatible, true);
+  assert.deepEqual(launcherPackage.cpu, ["x64"]);
   assert.equal(launcherPackage.publishConfig.tag, undefined);
 });
 
@@ -338,13 +342,19 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
   assert.match(gettingStarted, /group grants root-level privileges/i);
   assert.match(
     gettingStarted,
-    /npx --yes run-spaceapp@0\.1\.15-hostroot\.0 install --access host-root/
+    /npx --yes run-spaceapp@personal install --access host-root/
   );
   assert.match(gettingStarted, /--access isolated/);
   assert.match(gettingStarted, /equivalent to\s+host-root\s+file access/i);
-  assert.match(packageReadme, /run-spaceapp@personal install/);
-  assert.match(packageReadme, /rejects `--access host-root`/i);
-  assert.match(packageReadme, /existing `0\.1\.15-hostroot\.0` runtime images/i);
+  assert.match(
+    packageReadme,
+    /run-spaceapp@personal install --access host-root/
+  );
+  assert.match(
+    packageReadme,
+    /matching `core` and `cli` images for `linux\/amd64`/i
+  );
+  assert.match(packageReadme, /rejects the package on arm64/i);
   for (const command of [
     "provider install claude",
     "help",

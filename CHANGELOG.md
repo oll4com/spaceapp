@@ -5,6 +5,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.15-hostroot.2] - 2026-07-28
+
+- publish matching `core` and `cli` images for `linux/amd64` so the personal
+  candidate can run host-root CLI sessions on x64 Linux;
+- reuse the existing signed browser manifest without rebuilding the browser;
+- reject the personal candidate on arm64 before Docker image pulls.
+
 ## [0.1.15-hostroot.1] - 2026-07-27
 
 - accept the `7.4 GiB` usable memory reported by an 8 GB-class CachyOS laptop
