@@ -43,10 +43,8 @@ SaaS control plane.
 
 ## Explicit Linux host-root mode
 
-The earlier Linux host-root experiment is available only through the exact
-`npx --yes run-spaceapp@0.1.15-hostroot.0 install --access host-root` command.
-The launcher-only `.1` personal candidate rejects this mode until matching
-runtime images are rebuilt. The `.0` experiment mounts the
+The x64-only `.2` personal candidate enables this mode through
+`npx --yes run-spaceapp@personal install --access host-root`. It mounts the
 host `/` at `/host`, read-only in `spaceapp-core` and read/write in
 `spaceapp-cli`, and runs CLI sessions as container root. With a normal rootful
 Docker Engine, this is equivalent to host-root file access.

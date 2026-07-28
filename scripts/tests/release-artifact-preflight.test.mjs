@@ -76,3 +76,18 @@ test("launcher-only preflight requires a new npm version but reuses existing ima
 
   assert.deepEqual(result, { ok: true, blockers: [] });
 });
+
+test("amd64 core and CLI preflight reserves new tags for every runtime service", () => {
+  const result = evaluateArtifactAvailability({
+    releaseMode: "amd64-core-cli",
+    version: "0.1.15-hostroot.2",
+    npm: { status: 1, output: "npm error code E404" },
+    images: {
+      core: absent,
+      cli: absent,
+      browser: absent
+    }
+  });
+
+  assert.deepEqual(result, { ok: true, blockers: [] });
+});

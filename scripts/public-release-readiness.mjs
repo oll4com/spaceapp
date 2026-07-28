@@ -12,9 +12,11 @@ export function evaluatePublicRelease({
   requestedNpmTag,
   requestedReleaseMode = "full",
   requestedRuntimeVersion = requestedVersion,
+  requestedBrowserSourceVersion = "",
   packageVersion,
   packageRuntimeVersion = packageVersion,
   packageHostRootRuntimeCompatible = true,
+  packageCpu,
   notices,
   dockerfile,
   distributionPolicy
@@ -38,7 +40,7 @@ export function evaluatePublicRelease({
       "Host-root prereleases must publish only to the npm personal tag."
     );
   }
-  if (!["full", "launcher-only"].includes(requestedReleaseMode)) {
+  if (!["full", "launcher-only", "amd64-core-cli"].includes(requestedReleaseMode)) {
     blockers.push(`Unknown release mode ${requestedReleaseMode}.`);
   }
   if (!isRegistrySafeReleaseVersion(requestedRuntimeVersion)) {
@@ -51,11 +53,11 @@ export function evaluatePublicRelease({
     );
   }
   if (
-    requestedReleaseMode === "full" &&
+    ["full", "amd64-core-cli"].includes(requestedReleaseMode) &&
     requestedRuntimeVersion !== requestedVersion
   ) {
     blockers.push(
-      "Full releases must publish runtime images at the exact launcher version."
+      "Runtime image releases must publish at the exact launcher version."
     );
   }
   if (
@@ -65,6 +67,30 @@ export function evaluatePublicRelease({
     blockers.push(
       "Launcher-only releases must disable host-root until matching runtime images are rebuilt."
     );
+  }
+  if (requestedReleaseMode === "amd64-core-cli") {
+    if (
+      !isRegistrySafeReleaseVersion(requestedBrowserSourceVersion) ||
+      requestedBrowserSourceVersion === requestedVersion
+    ) {
+      blockers.push(
+        "The amd64 core and CLI release must reuse a different, valid browser source version."
+      );
+    }
+    if (
+      !Array.isArray(packageCpu) ||
+      packageCpu.length !== 1 ||
+      packageCpu[0] !== "x64"
+    ) {
+      blockers.push(
+        "The amd64 core and CLI release must publish an x64-only launcher."
+      );
+    }
+    if (packageHostRootRuntimeCompatible !== true) {
+      blockers.push(
+        "The amd64 core and CLI release must enable the matching host-root runtime."
+      );
+    }
   }
   const claudePolicy = distributionPolicy?.packages?.["@anthropic-ai/claude-code"];
   if (
@@ -101,6 +127,7 @@ function parseArgs(argv) {
   let requestedNpmTag = "";
   let requestedReleaseMode = "";
   let requestedRuntimeVersion = "";
+  let requestedBrowserSourceVersion = "";
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--version" && argv[index + 1]) {
@@ -115,27 +142,34 @@ function parseArgs(argv) {
     } else if (argument === "--runtime-version" && argv[index + 1]) {
       requestedRuntimeVersion = argv[index + 1];
       index += 1;
+    } else if (
+      argument === "--browser-source-version" &&
+      index + 1 < argv.length
+    ) {
+      requestedBrowserSourceVersion = argv[index + 1];
+      index += 1;
     } else {
       throw new Error(
-        "Usage: public-release-readiness.mjs --version <semantic-version> --npm-tag <next|personal> --release-mode <full|launcher-only> --runtime-version <semantic-version>"
+        "Usage: public-release-readiness.mjs --version <semantic-version> --npm-tag <next|personal> --release-mode <full|launcher-only|amd64-core-cli> --runtime-version <semantic-version> [--browser-source-version <semantic-version>]"
       );
     }
   }
   if (
     !requestedVersion ||
     !["next", "personal"].includes(requestedNpmTag) ||
-    !["full", "launcher-only"].includes(requestedReleaseMode) ||
+    !["full", "launcher-only", "amd64-core-cli"].includes(requestedReleaseMode) ||
     !requestedRuntimeVersion
   ) {
     throw new Error(
-      "Usage: public-release-readiness.mjs --version <semantic-version> --npm-tag <next|personal> --release-mode <full|launcher-only> --runtime-version <semantic-version>"
+      "Usage: public-release-readiness.mjs --version <semantic-version> --npm-tag <next|personal> --release-mode <full|launcher-only|amd64-core-cli> --runtime-version <semantic-version> [--browser-source-version <semantic-version>]"
     );
   }
   return {
     requestedVersion,
     requestedNpmTag,
     requestedReleaseMode,
-    requestedRuntimeVersion
+    requestedRuntimeVersion,
+    requestedBrowserSourceVersion
   };
 }
 
@@ -155,6 +189,7 @@ export async function runCli(argv) {
     packageRuntimeVersion: packageManifest.spaceappRuntimeVersion,
     packageHostRootRuntimeCompatible:
       packageManifest.spaceappHostRootRuntimeCompatible,
+    packageCpu: packageManifest.cpu,
     notices,
     dockerfile,
     distributionPolicy

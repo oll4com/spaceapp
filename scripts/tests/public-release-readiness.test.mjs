@@ -85,6 +85,45 @@ test("launcher-only readiness blocks runtime input drift", () => {
   assert.match(result.blockers.join("\n"), /runtime.*does not match/i);
 });
 
+test("amd64 core and CLI readiness accepts a matching host-root runtime for an x64 launcher", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.2",
+    requestedNpmTag: "personal",
+    requestedReleaseMode: "amd64-core-cli",
+    requestedRuntimeVersion: "0.1.15-hostroot.2",
+    requestedBrowserSourceVersion: "0.1.15-hostroot.0",
+    packageVersion: "0.1.15-hostroot.2",
+    packageRuntimeVersion: "0.1.15-hostroot.2",
+    packageHostRootRuntimeCompatible: true,
+    packageCpu: ["x64"],
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+});
+
+test("amd64 core and CLI readiness blocks a launcher that could install on arm64", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.2",
+    requestedNpmTag: "personal",
+    requestedReleaseMode: "amd64-core-cli",
+    requestedRuntimeVersion: "0.1.15-hostroot.2",
+    requestedBrowserSourceVersion: "0.1.15-hostroot.0",
+    packageVersion: "0.1.15-hostroot.2",
+    packageRuntimeVersion: "0.1.15-hostroot.2",
+    packageHostRootRuntimeCompatible: true,
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.blockers.join("\n"), /x64-only/i);
+});
+
 test("public release readiness reserves host-root versions for the personal tag", () => {
   const result = evaluatePublicRelease({
     requestedVersion: "0.1.15-hostroot.0",

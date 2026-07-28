@@ -106,26 +106,24 @@ first.
 
 ## Linux access mode
 
-The current `0.1.15-hostroot.1` personal candidate is launcher-only and accepts
-isolated access only. It reuses the `0.1.15-hostroot.0` images and rejects
-`--access host-root` until the next full runtime build.
-
-The earlier host-root experiment must be pinned exactly on a disposable Linux
-test machine:
+The current `0.1.15-hostroot.2` personal candidate enables host-root on a
+disposable x64 Linux test machine:
 
 ```bash
-npx --yes run-spaceapp@0.1.15-hostroot.0 install --access host-root
+npx --yes run-spaceapp@personal install --access host-root
 ```
 
 To remove the `/host` mount without deleting SpaceApp state or volumes:
 
 ```bash
-npx --yes run-spaceapp@0.1.15-hostroot.0 install --access isolated
+npx --yes run-spaceapp@personal install --access isolated
 ```
 
 Use the `@personal` prefix for `doctor`, `status`, `logs`, credentials, and
 recovery commands while this prerelease is installed. `light` and `standard`
-do not change the access mode.
+do not change the access mode. The candidate is x64-only: core and CLI are
+rebuilt for `linux/amd64`, while the existing signed browser manifest is reused
+without a browser build.
 
 ## Rollback
 

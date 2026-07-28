@@ -1,8 +1,8 @@
 {
   "name": "run-spaceapp",
-  "version": "0.1.15-hostroot.1",
-  "spaceappRuntimeVersion": "0.1.15-hostroot.0",
-  "spaceappHostRootRuntimeCompatible": false,
+  "version": "0.1.15-hostroot.2",
+  "spaceappRuntimeVersion": "0.1.15-hostroot.2",
+  "spaceappHostRootRuntimeCompatible": true,
   "description": "Cross-platform Docker launcher for the SpaceApp self-hosted agent workspace",
   "license": "Apache-2.0",
   "type": "module",
@@ -29,6 +29,9 @@
     "darwin",
     "linux",
     "win32"
+  ],
+  "cpu": [
+    "x64"
   ],
   "scripts": {
     "test": "node --test tests/*.test.mjs",

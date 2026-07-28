@@ -112,21 +112,11 @@ Installation profiles do not control filesystem permissions. Both `light` and
 `standard` use isolated access by default, where only registered workspaces are
 mounted.
 
-The launcher-only `0.1.15-hostroot.1` personal candidate supports isolated
-access only and reuses the existing `0.1.15-hostroot.0` runtime images:
+The `0.1.15-hostroot.2` personal candidate enables host-root on a disposable,
+trusted single-owner x64 Linux test machine:
 
 ```bash
-npx --yes run-spaceapp@personal install
-```
-
-It rejects `--access host-root` until matching runtime images are rebuilt in a
-future full release.
-
-The earlier `0.1.15-hostroot.0` experiment can still be pinned explicitly on a
-disposable, trusted single-owner Linux test machine:
-
-```bash
-npx --yes run-spaceapp@0.1.15-hostroot.0 install --access host-root
+npx --yes run-spaceapp@personal install --access host-root
 ```
 
 That mode remains one Docker-based SpaceApp build across Linux distributions.
@@ -136,7 +126,9 @@ in this mode. On a normal rootful Docker Engine, this is equivalent to
 host-root file access: an agent can read credentials, change boot or package
 files, or destroy the operating system.
 
-The mode does not mount the Docker socket and does not enable `privileged`,
+The candidate publishes new `core` and `cli` images only for `linux/amd64` and
+reuses the existing signed browser manifest without rebuilding it. npm rejects
+the package on arm64. The mode does not mount the Docker socket and does not enable `privileged`,
 host PID, host network, host IPC, or host device access. Those omissions reduce
 the attack surface but do not make a writable host root safe from a malicious
 or mistaken CLI command.

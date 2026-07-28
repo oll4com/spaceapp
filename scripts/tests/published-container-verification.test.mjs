@@ -69,6 +69,25 @@ test("published container verification requires both platforms and attestations"
   );
 });
 
+test("published container verification accepts an explicit amd64-only release", () => {
+  assert.deepEqual(
+    evaluatePublishedContainer({
+      image: "ghcr.io/oll4com/spaceapp-core:0.1.15-hostroot.2",
+      manifest: {
+        manifests: [manifest.manifests[0], manifest.manifests[2]]
+      },
+      attestations: [
+        {
+          descriptor: manifest.manifests[2],
+          manifest: attestationManifest
+        }
+      ],
+      architectures: ["amd64"]
+    }),
+    { ok: true, blockers: [] }
+  );
+});
+
 test("published container verification aggregates split attestations for one platform", () => {
   assert.deepEqual(
     evaluatePublishedContainer({

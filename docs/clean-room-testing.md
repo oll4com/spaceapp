@@ -92,11 +92,10 @@ permissions, and image architecture—not just the repository build.
 ## Pinned CachyOS host-root acceptance
 
 Use an isolated CachyOS VM snapshot, never a workstation with valuable data.
-This is a historical `.0` runtime check, not part of the launcher-only `.1`
-cross-platform acceptance. Pin the exact version:
+Use the x64 `.2` personal candidate:
 
 ```bash
-npx --yes run-spaceapp@0.1.15-hostroot.0 install --access host-root
+npx --yes run-spaceapp@personal install --access host-root
 ```
 
 Confirm the generated configuration records `accessMode=host-root`, core sees
@@ -110,7 +109,7 @@ Run the same command a second time and confirm readiness and persistent state
 are unchanged. Then run:
 
 ```bash
-npx --yes run-spaceapp@0.1.15-hostroot.0 install --access isolated
+npx --yes run-spaceapp@personal install --access isolated
 ```
 
 Recreate the stack and prove `/host` is no longer mounted while SpaceApp data,
