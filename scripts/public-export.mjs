@@ -115,6 +115,10 @@ const publicPackageTests = new Set([
 
 const publicBinaryFiles = new Map([
   [
+    "apps/web/src/assets/autohand-icon.png",
+    "79fea595f2d60a7ba1b6a451ce5b2be51c98e1792c453e7e3a23b3b8b0b4ece0"
+  ],
+  [
     "apps/web/public/brand/space-logo-2048.png",
     "e6b6fc302b75f6ed0d9fb12d3e7f58a56e325f0e9520a2d9d8bbcd5a10711ab3"
   ],
@@ -142,11 +146,19 @@ const textReplacements = [
   [joined("10.", "100.0."), "192.0.2."],
   [joined("olla", ".gr"), "example.invalid"],
   [joined("oll4", ".com"), "example.invalid"],
+  [joined("coder-", "codex-", "rooms"), "spaceapp-rooms"],
+  [joined("VM", "100"), "public-host"],
   [joined("YUN", "WU"), "LEGACY"],
   [joined("Yun", "wu"), "Legacy"],
   [joined("yun", "wu"), "legacy"],
   [joined("proxmox", "usr"), "spaceapp-user"]
 ].map(([from, to]) => [new RegExp(escaped(from), "g"), to]);
+// The private source repo shorthand must not become the public repo name
+// (which appends "app"), so replace it with a negative lookahead rule.
+textReplacements.push([
+  new RegExp(`${escaped(joined("oll4com/", "space"))}(?!app)`, "g"),
+  "spaceapp.example/spaceapp"
+]);
 
 const contentRules = [
   {
