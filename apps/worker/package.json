@@ -22,7 +22,7 @@
     "@temporalio/client": "1.21.0",
     "@temporalio/worker": "1.21.0",
     "@temporalio/workflow": "1.21.0",
-    "undici": "8.7.0"
+    "undici": "8.9.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
