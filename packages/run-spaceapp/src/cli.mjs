@@ -36,6 +36,10 @@ import {
   RUNTIME_VERSION,
   UNIVERSAL_COMMAND
 } from "./package-info.mjs";
+import {
+  INSTALL_PING_TIMEOUT_MS,
+  reportFirstInstallPing
+} from "./telemetry.mjs";
 
 const APPLICATION_READY_WAIT_MINUTES = 10;
 const APPLICATION_READY_WAIT_MS = APPLICATION_READY_WAIT_MINUTES * 60 * 1_000;
@@ -575,6 +579,23 @@ async function installCommand(args, {
 
     await commitInstallation(root, result.config);
     runtimeMutationAttempted = false;
+    try {
+      await reportFirstInstallPing({
+        existingConfig,
+        env,
+        platform,
+        arch,
+        launcherVersion,
+        runtimeVersion
+      }, {
+        request,
+        timeoutMs: INSTALL_PING_TIMEOUT_MS
+      });
+    } catch (error) {
+      stderr.write(
+        `SpaceApp installation report could not be sent: ${error?.message || String(error)}\n`
+      );
+    }
     stdout.write(`SpaceApp is ready at ${url}\n`);
     if (setupToken) {
       stdout.write(`One-time setup token: ${setupToken}\n`);

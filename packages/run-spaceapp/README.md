@@ -41,6 +41,15 @@ The launcher defaults to the `light` profile on every system. Run
 `npx --yes run-spaceapp@latest install --profile standard` explicitly when
 managed Chromium is required and the host has the recommended resources.
 
+### First-install telemetry
+
+On a successful first install (not on upgrades or re-runs), the launcher sends
+one anonymous ping to `spaceapp.dev` with only: a random install ID, operating
+system and CPU architecture, launcher and runtime versions, and the install
+date. No personal data, files, or credentials are transmitted. Disable it with
+the environment variable `SPACEAPP_TELEMETRY=0` (or `false`); telemetry is
+otherwise on by default so the project can measure real adoption.
+
 Light mode retains every bundled CLI and the core data/workflow services while
 omitting managed Chromium. Resource limits are maximums, not immediate RAM or
 disk reservations. The launcher stores only non-secret configuration in the
