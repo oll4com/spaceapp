@@ -9,6 +9,7 @@ export {
 } from "./evaluation.js";
 export { evaluateMemoryPerformanceGates, type MemoryPerformanceGateInput } from "./performance-gates.js";
 export { createMemoryGraphSnapshotStore, type MemoryGraphSnapshotStore } from "./snapshot-store.js";
+export const ALL_MONTHS_SNAPSHOT_FILENAME = "snapshot-all-months.json";
 export type {
   MemoryGraphEdge,
   MemoryGraphEdgeOrigin,

@@ -1,4 +1,4 @@
-import { ExternalLink, Loader2, RefreshCw, X } from "lucide-react";
+import { ExternalLink, Loader2, RefreshCw, X } from "../ui-theme/app-icons.js";
 import { useEffect, useRef, useState } from "react";
 import type { UserLink } from "@space/contracts";
 

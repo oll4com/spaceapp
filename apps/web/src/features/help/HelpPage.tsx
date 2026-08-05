@@ -1,4 +1,4 @@
-import { ArrowLeft, CircleHelp, Search } from "lucide-react";
+import { ArrowLeft, CircleHelp, Search } from "../ui-theme/app-icons.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { helpEntries, helpSections, type HelpEntry, type HelpSection } from "./help-content.js";
 

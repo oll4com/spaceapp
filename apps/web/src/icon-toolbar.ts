@@ -1,4 +1,4 @@
-import type { LucideIcon } from "lucide-react";
+import type { LucideIcon } from "./features/ui-theme/app-icons.js";
 import {
   useCallback,
   useEffect,
@@ -290,6 +290,35 @@ export function usePersistentIconToolbar({
     [actionsById, hiddenActionIds, setHiddenActionIds]
   );
 
+  const showActionInPrimary = useCallback(
+    (actionId: string, primaryActionCount: number) => {
+      if (!actionsById.has(actionId)) return;
+      const normalizedOrder = normalizeActionOrder(actionIds, orderedActionIds, preserveUnknownActionIds);
+      const orderWithoutAction = normalizedOrder.filter((orderedActionId) => orderedActionId !== actionId);
+      const hiddenWithoutAction = new Set(hiddenActionIds.filter((hiddenActionId) => hiddenActionId !== actionId));
+      const visibleWithoutAction = orderWithoutAction.filter(
+        (orderedActionId) => actionsById.has(orderedActionId) && !hiddenWithoutAction.has(orderedActionId)
+      );
+      const targetActionId = visibleWithoutAction[Math.max(0, Math.floor(primaryActionCount) - 1)];
+      const insertionIndex = targetActionId ? orderWithoutAction.indexOf(targetActionId) : orderWithoutAction.length;
+      const nextOrder = [...orderWithoutAction];
+      nextOrder.splice(insertionIndex, 0, actionId);
+      setOrderedActionIds(nextOrder);
+      setHiddenActionIds(hiddenActionIds.filter((hiddenActionId) => hiddenActionId !== actionId));
+      setActionMenu(null);
+      setIsOverflowOpen(false);
+    },
+    [
+      actionIds,
+      actionsById,
+      hiddenActionIds,
+      orderedActionIds,
+      preserveUnknownActionIds,
+      setHiddenActionIds,
+      setOrderedActionIds
+    ]
+  );
+
   const restoreHiddenActions = useCallback(() => {
     setHiddenActionIds([]);
     setIsOverflowOpen(false);
@@ -373,6 +402,7 @@ export function usePersistentIconToolbar({
     setActionMenu,
     setIsOverflowOpen,
     showAction,
+    showActionInPrimary,
     visibleActions
   };
 }

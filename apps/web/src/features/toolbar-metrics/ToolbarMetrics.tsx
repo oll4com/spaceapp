@@ -12,14 +12,16 @@ import type {
   CliSessionReapResponse,
   CliSessionStats,
   CodexEnvironment,
+  CodexResetCreditAvailability,
+  CodexResetCreditRedemptionResponse,
   CodexUsageAccountList,
   HostMemoryDetails,
   MemoryReclaimResponse,
   ProviderSwitchResponse,
   ProviderSwitchTargets,
 } from "@space/contracts";
-import { api } from "../../api.js";
-import { getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
+import { api, SpaceApiError } from "../../api.js";
+import { DEMO_LOCAL_REPLY, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
 import { ConfirmationDialog, MetricPopover } from "./MetricLayers.js";
 import "./toolbar-metrics.css";
 
@@ -34,6 +36,8 @@ export interface ToolbarMetricsHandle {
 export interface ToolbarMetricsClient {
   roundTrip(): Promise<number | null>;
   usageAccounts(): Promise<CodexUsageAccountList>;
+  resetCredits(): Promise<CodexResetCreditAvailability>;
+  redeemResetCredit(accountId: string, idempotencyKey: string): Promise<CodexResetCreditRedemptionResponse>;
   cliSessions(): Promise<CliSessionStats>;
   reapCliSessions(): Promise<CliSessionReapResponse>;
   hostMemory(): Promise<HostMemoryDetails>;
@@ -50,6 +54,8 @@ const defaultClient: ToolbarMetricsClient = {
     return Math.max(0, Math.round(performance.now() - startedAt));
   },
   usageAccounts: () => api.toolbarUsageAccounts(),
+  resetCredits: () => api.toolbarResetCredits(),
+  redeemResetCredit: (accountId, idempotencyKey) => api.redeemToolbarResetCredit(accountId, idempotencyKey),
   cliSessions: () => api.toolbarCliSessions(),
   reapCliSessions: () => api.reapToolbarCliSessions(),
   hostMemory: () => api.toolbarHostMemory(),
@@ -97,6 +103,21 @@ function useLazyResource<T>(loader: () => Promise<T>, ttlMs: number) {
 
 function formatPercent(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? `${Math.round(value)}%` : "--";
+}
+
+function formatWeeklyReset(value: string | null | undefined): string {
+  if (!value) return "week reset unavailable";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "week reset unavailable";
+  const formatted = new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+  return `week resets ${formatted}`;
 }
 
 function formatBytes(value: number | null | undefined): string {
@@ -160,11 +181,12 @@ export interface ToolbarMetricsSnapshot {
 
 export function getToolbarMetricsSnapshot(environment: CodexEnvironment | null): ToolbarMetricsSnapshot {
   const host = environment?.hostStats;
+  const isCodexEnabled = environment?.isCodexEnabled ?? true;
   return {
-    all: formatPercent(environment?.lbUsage?.allAccountsRemainingPercent),
+    all: isCodexEnabled ? formatPercent(environment?.lbUsage?.allAccountsRemainingPercent) : "OFF",
     cli: host ? String(host.cliSessions.active) : "--",
     cpu: formatPercent(host?.cpu.usagePercent),
-    provider: providerBadge(environment),
+    provider: isCodexEnabled ? providerBadge(environment) : "OFF",
     ram: formatPercent(host?.memory.usagePercent),
     swap: formatPercent(host?.swap.usagePercent),
   };
@@ -210,28 +232,42 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   onChanged,
   roomName,
 }, ref) {
+  const isCodexEnabled = environment?.isCodexEnabled ?? true;
   const accounts = useLazyResource(() => client.usageAccounts(), 60_000);
+  const resetCredits = useLazyResource(() => client.resetCredits(), 60_000);
   const cli = useLazyResource(() => client.cliSessions(), 5_000);
   const memory = useLazyResource(() => client.hostMemory(), 10_000);
   const providers = useLazyResource(() => client.providerTargets(), 10_000);
   const anchorsRef = useRef<Record<PanelKey, HTMLButtonElement | null>>({ accounts: null, cli: null, memory: null, provider: null });
   const closeTimerRef = useRef<number | null>(null);
+  const resetInFlightRef = useRef(new Set<string>());
   const actionTriggerRef = useRef<HTMLButtonElement | null>(null);
   const providerMenuRef = useRef<HTMLDivElement | null>(null);
   const [activePanel, setActivePanel] = useState<PanelKey | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmationKind | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [providerPickerOpen, setProviderPickerOpen] = useState(false);
+  const [providerMenuFocusRequested, setProviderMenuFocusRequested] = useState(false);
   const [providerSwitchingId, setProviderSwitchingId] = useState<string | null>(null);
   const [switchedProviderCode, setSwitchedProviderCode] = useState<string | null>(null);
+  const [resetAttempts, setResetAttempts] = useState<Record<string, {
+    idempotencyKey: string;
+    status: "resetting" | "retry";
+  }>>({});
+  const [resetFeedback, setResetFeedback] = useState<{ accountId: string; message: string } | null>(null);
   const [rttMs, setRttMs] = useState<number | null>(null);
   const [rttFailed, setRttFailed] = useState(false);
   const snapshot = getToolbarMetricsSnapshot(environment);
-  const providerCode = switchedProviderCode ?? snapshot.provider;
+  const providerCode = isCodexEnabled ? switchedProviderCode ?? snapshot.provider : "OFF";
+  const visibleProviderTargets = providers.data?.data.filter((provider) => provider.isCurrent || provider.canSwitch) ?? [];
   const rtt = getToolbarRttPresentation(rttMs, rttFailed);
 
   useEffect(() => setSwitchedProviderCode(null), [environment]);
+  useEffect(() => {
+    if (isCodexEnabled) return;
+    setActivePanel((current) => current === "accounts" || current === "provider" ? null : current);
+    setProviderMenuFocusRequested(false);
+  }, [isCodexEnabled]);
   useEffect(() => {
     let disposed = false;
     let inFlight = false;
@@ -276,9 +312,9 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     };
   }, [client]);
   useEffect(() => {
-    if (!providerPickerOpen || !providers.data) return;
+    if (!providerMenuFocusRequested || !providers.data) return;
     providerMenuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-  }, [providerPickerOpen, providers.data]);
+  }, [providerMenuFocusRequested, providers.data]);
   useEffect(() => () => {
     if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
   }, []);
@@ -292,7 +328,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const closePanel = useCallback(() => {
     cancelClose();
     setActivePanel(null);
-    setProviderPickerOpen(false);
+    setProviderMenuFocusRequested(false);
   }, [cancelClose]);
 
   const requestClose = useCallback(() => {
@@ -302,7 +338,9 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
 
   function loadPanel(panel: PanelKey) {
     switch (panel) {
-      case "accounts": return accounts.load();
+      case "accounts":
+        void resetCredits.load();
+        return accounts.load();
       case "cli": return cli.load();
       case "memory": return memory.load();
       case "provider": return providers.load();
@@ -310,6 +348,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   }
 
   function openPanel(panel: PanelKey) {
+    if (!isCodexEnabled && (panel === "accounts" || panel === "provider")) return;
     cancelClose();
     setActivePanel(panel);
     if (canManage) void loadPanel(panel);
@@ -362,7 +401,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   }
 
   async function switchProvider(providerId: string) {
-    if (providerSwitchingId) return;
+    if (!isCodexEnabled || providerSwitchingId) return;
     const target = providers.data?.data.find((item) => item.providerId === providerId);
     setProviderSwitchingId(providerId);
     setActionMessage(null);
@@ -372,7 +411,6 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       setActionMessage(result.status === "SWITCHED"
         ? `Provider switched to ${target?.displayName ?? providerId}.`
         : "Provider route unchanged; no external route was modified.");
-      setProviderPickerOpen(false);
       closePanel();
       await providers.load(true);
       await onChanged?.();
@@ -380,6 +418,92 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       setActionMessage(reason instanceof Error ? reason.message : "Provider switch failed; the previous route remains active.");
     } finally {
       setProviderSwitchingId(null);
+    }
+  }
+
+  function resetLabel(accountId: string): { disabled: boolean; label: string } {
+    const attempt = resetAttempts[accountId];
+    if (attempt?.status === "resetting") return { disabled: true, label: "Resetting…" };
+    if (attempt?.status === "retry") return { disabled: false, label: "Retry reset" };
+    if (resetCredits.loading || (!resetCredits.data && !resetCredits.error)) {
+      return { disabled: true, label: "Resets …" };
+    }
+    const availability = resetCredits.data?.data.find((item) => item.accountId === accountId);
+    if (resetCredits.error || resetCredits.data?.error || availability?.availableCreditCount == null) {
+      return { disabled: true, label: "Resets —" };
+    }
+    return {
+      disabled: availability.availableCreditCount === 0,
+      label: `Resets ${availability.availableCreditCount}`,
+    };
+  }
+
+  function redemptionMessage(result: CodexResetCreditRedemptionResponse): string {
+    if (client === defaultClient && getSpaceRuntimeKind() === "demo") return DEMO_LOCAL_REPLY;
+    switch (result.outcome) {
+      case "RESET": return "Reset credit applied. Usage and credits were refreshed.";
+      case "ALREADY_REDEEMED": return "Reset was already applied. Usage and credits were refreshed.";
+      case "NOTHING_TO_RESET": return "The account no longer needs a reset. Usage and credits were refreshed.";
+      case "NO_CREDIT": return "No reset credit is currently available. Usage and credits were refreshed.";
+    }
+  }
+
+  async function redeemReset(accountId: string) {
+    if (!isCodexEnabled || resetInFlightRef.current.has(accountId)) return;
+    const retainedAttempt = resetAttempts[accountId];
+    const idempotencyKey = retainedAttempt?.status === "retry"
+      ? retainedAttempt.idempotencyKey
+      : globalThis.crypto.randomUUID();
+    resetInFlightRef.current.add(accountId);
+    setResetAttempts((current) => ({
+      ...current,
+      [accountId]: { idempotencyKey, status: "resetting" },
+    }));
+    setResetFeedback(null);
+    try {
+      const result = await client.redeemResetCredit(accountId, idempotencyKey);
+      const successMessage = redemptionMessage(result);
+      setResetFeedback({ accountId, message: successMessage });
+      try {
+        await Promise.all([resetCredits.load(true), accounts.load(true)]);
+        await onChanged?.();
+      } catch (refreshError) {
+        const refreshMessage = refreshError instanceof Error
+          ? refreshError.message
+          : "Latest usage samples could not be refreshed.";
+        setResetFeedback({
+          accountId,
+          message: `${successMessage} Refresh warning: ${refreshMessage}`,
+        });
+      }
+      setResetAttempts((current) => {
+        const next = { ...current };
+        delete next[accountId];
+        return next;
+      });
+    } catch (reason) {
+      if (reason instanceof SpaceApiError && reason.code === "CODEX_RESET_OUTCOME_UNKNOWN") {
+        setResetAttempts((current) => ({
+          ...current,
+          [accountId]: { idempotencyKey, status: "retry" },
+        }));
+        setResetFeedback({
+          accountId,
+          message: "The reset result is unknown. Retry reset to safely check the same request.",
+        });
+      } else {
+        setResetAttempts((current) => {
+          const next = { ...current };
+          delete next[accountId];
+          return next;
+        });
+        setResetFeedback({
+          accountId,
+          message: reason instanceof Error ? reason.message : "Reset credit redemption failed.",
+        });
+      }
+    } finally {
+      resetInFlightRef.current.delete(accountId);
     }
   }
 
@@ -411,11 +535,23 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         {accounts.data?.error ? <p className="toolbar-metric-error">{accounts.data.error}</p> : null}
         {accounts.data ? <ul className="toolbar-metric-list">
           {accounts.data.data.map((account) => <li key={account.id}>
-            <strong>{account.label}</strong>
+            <div className="toolbar-metric-account-heading">
+              <strong>{account.label}</strong>
+              <button
+                type="button"
+                disabled={resetLabel(account.id).disabled}
+                title={resetLabel(account.id).disabled ? undefined : `Use the earliest-expiring reset credit for ${account.label}`}
+                onClick={() => void redeemReset(account.id)}
+              >{resetLabel(account.id).label}</button>
+            </div>
             <span>5h {formatPercent(account.fiveHourRemainingPercent)} · week {formatPercent(account.weeklyRemainingPercent)}</span>
+            <span>{formatWeeklyReset(account.weeklyResetAt)}</span>
           </li>)}
           {!accounts.data.data.length ? <li><span>No enabled account samples.</span></li> : null}
         </ul> : null}
+        {resetFeedback ? <p className="toolbar-metric-reset-status" role="status" aria-live="polite">
+          {resetFeedback.message}
+        </p> : null}
       </>
     );
     if (activePanel === "cli") return (
@@ -467,28 +603,22 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         <header><strong>Codex provider</strong><small>{providerCode}</small></header>
         {providers.loading ? <p className="toolbar-metric-note">Checking provider routes…</p> : null}
         {providers.error ? <p className="toolbar-metric-error" role="alert">{providers.error}</p> : null}
-        {providers.data && !providerPickerOpen ? <ul className="toolbar-metric-list">
-          {providers.data.data.map((provider) => <li key={provider.providerId}>
-            <strong>{provider.displayName}{provider.isCurrent ? " · current" : ""}</strong>
-            <span>{provider.health.toLowerCase()}{provider.reason ? ` · ${provider.reason}` : ""}</span>
-          </li>)}
-        </ul> : null}
-        {providers.data && providerPickerOpen ? <div ref={providerMenuRef} className="toolbar-provider-menu" role="menu" aria-label="Provider quick switch">
-          {providers.data.data.map((provider) => (
+        {providers.data && visibleProviderTargets.length ? <div ref={providerMenuRef} className="toolbar-provider-menu" role="menu" aria-label="Provider quick switch">
+          {visibleProviderTargets.map((provider) => (
             <button
               key={provider.providerId}
               type="button"
               role="menuitemradio"
               aria-checked={provider.isCurrent}
-              disabled={provider.isCurrent || !provider.canSwitch || Boolean(providerSwitchingId)}
+              disabled={provider.isCurrent || Boolean(providerSwitchingId)}
               title={provider.reason ?? undefined}
               onClick={() => void switchProvider(provider.providerId)}
             >
               <span>{provider.displayName}</span>
-              <small>{provider.isCurrent ? "Current" : provider.canSwitch ? provider.health : provider.reason ?? provider.health}</small>
+              <small>{providerSwitchingId === provider.providerId ? "Switching…" : provider.isCurrent ? "Current" : provider.health}</small>
             </button>
           ))}
-        </div> : null}
+        </div> : providers.data ? <p className="toolbar-metric-note">No active provider routes are available.</p> : null}
       </>
     );
   }
@@ -509,6 +639,8 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         aria-label={`ALL ${snapshot.all}`}
         aria-expanded={activePanel === "accounts"}
         aria-controls="toolbar-metric-panel-accounts"
+        disabled={!isCodexEnabled}
+        title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
         {...anchorEvents("accounts")}
       ><small>ALL</small><strong>{snapshot.all}</strong></button>
       <button
@@ -561,9 +693,11 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         aria-label={`Provider ${providerCode}`}
         aria-expanded={activePanel === "provider"}
         aria-controls="toolbar-metric-panel-provider"
+        disabled={!isCodexEnabled}
+        title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
         onClick={() => {
           openPanel("provider");
-          if (canManage) setProviderPickerOpen(true);
+          if (canManage) setProviderMenuFocusRequested(true);
         }}
         {...anchorEvents("provider")}
       ><small>{providerCode}</small></button>

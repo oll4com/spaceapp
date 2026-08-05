@@ -28,8 +28,8 @@ function validateSetup(input: SetupClaimInput, confirmation: string): SetupField
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email)) {
     errors.email = "Enter a valid email address.";
   }
-  if (input.password.length < 6) {
-    errors.password = "The password must contain at least 6 characters.";
+  if (input.password.length < 12) {
+    errors.password = "The password must contain at least 12 characters.";
   }
   if (input.password !== confirmation) {
     errors.confirmation = "The passwords do not match.";
@@ -167,14 +167,14 @@ export function OwnerSetupScreen({ expiresAt, onClaim }: OwnerSetupScreenProps) 
               clearFieldError("confirmation");
             }}
             type="password"
-            minLength={6}
+            minLength={12}
             autoComplete="new-password"
             aria-invalid={Boolean(fieldErrors.password)}
             aria-describedby={fieldErrors.password ? "space-owner-password-error" : "space-owner-password-help"}
             disabled={pending}
           />
         </label>
-        <p id="space-owner-password-help" className="form-help">Use at least 6 characters.</p>
+        <p id="space-owner-password-help" className="form-help">Use at least 12 characters.</p>
         {fieldErrors.password ? <p id="space-owner-password-error" className="form-field-error">{fieldErrors.password}</p> : null}
 
         <label htmlFor="space-owner-password-confirmation">
@@ -188,7 +188,7 @@ export function OwnerSetupScreen({ expiresAt, onClaim }: OwnerSetupScreenProps) 
               clearFieldError("confirmation");
             }}
             type="password"
-            minLength={6}
+            minLength={12}
             autoComplete="new-password"
             aria-invalid={Boolean(fieldErrors.confirmation)}
             aria-describedby={fieldErrors.confirmation ? "space-owner-confirmation-error" : undefined}

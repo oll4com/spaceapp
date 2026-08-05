@@ -1,5 +1,5 @@
 import { canStartAgentRuntimeLogin, type AgentRuntime, type AgentRuntimeRegistry } from "@space/contracts";
-import { Loader2, RefreshCw, Terminal, X } from "lucide-react";
+import { Loader2, RefreshCw, Terminal, X } from "../ui-theme/app-icons.js";
 import { createPortal } from "react-dom";
 import {
   useCallback,
@@ -36,6 +36,7 @@ export function selectCliLauncherRuntimes(runtimes: AgentRuntime[]): AgentRuntim
 
 interface CliLauncherMenuProps {
   atPaneCap?: boolean;
+  isCodexEnabled?: boolean;
   loadRuntimes?: () => Promise<AgentRuntimeRegistry>;
   mobile: boolean;
   onClose: () => void;
@@ -59,6 +60,7 @@ function loadDefaultCliRuntimes(): Promise<AgentRuntimeRegistry> {
 
 export function CliLauncherMenu({
   atPaneCap = false,
+  isCodexEnabled = true,
   loadRuntimes = loadDefaultCliRuntimes,
   mobile,
   onClose,
@@ -70,8 +72,12 @@ export function CliLauncherMenu({
   const popupRef = useRef<HTMLElement | null>(null);
   const closeIntentRef = useRef<"dismissal" | "activation">("dismissal");
   const requestSequenceRef = useRef(0);
-  const [runtimes, setRuntimes] = useState<AgentRuntime[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [initialRuntimeSnapshot] = useState(() => api.cliRuntimesSnapshot());
+  const runtimeSnapshotAvailableRef = useRef(initialRuntimeSnapshot !== null);
+  const [runtimes, setRuntimes] = useState<AgentRuntime[]>(
+    () => selectCliLauncherRuntimes(initialRuntimeSnapshot?.data ?? [])
+  );
+  const [loading, setLoading] = useState(initialRuntimeSnapshot === null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [creationError, setCreationError] = useState<string | null>(null);
   const [creatingRuntimeId, setCreatingRuntimeId] = useState<string | null>(null);
@@ -81,16 +87,19 @@ export function CliLauncherMenu({
   const refreshRuntimes = useCallback(async () => {
     const requestSequence = requestSequenceRef.current + 1;
     requestSequenceRef.current = requestSequence;
-    setLoading(true);
+    if (!runtimeSnapshotAvailableRef.current) setLoading(true);
     setLoadError(null);
     try {
       const registry = await loadRuntimes();
       if (requestSequenceRef.current !== requestSequence) return;
+      runtimeSnapshotAvailableRef.current = true;
       setRuntimes(selectCliLauncherRuntimes(registry.data));
     } catch (error) {
       if (requestSequenceRef.current !== requestSequence) return;
-      setRuntimes([]);
-      setLoadError(errorMessage(error, "CLI runtimes could not be loaded."));
+      if (!runtimeSnapshotAvailableRef.current) {
+        setRuntimes([]);
+        setLoadError(errorMessage(error, "CLI runtimes could not be loaded."));
+      }
     } finally {
       if (requestSequenceRef.current === requestSequence) setLoading(false);
     }
@@ -108,7 +117,7 @@ export function CliLauncherMenu({
       const change = readCliRuntimeVisibilityChange(event);
       if (!change) return;
       api.invalidateCliRuntimes();
-      if (change.runtimeId && change.enabled === false) {
+      if (change.runtimeId && change.enabled === false && change.runtimeId !== "cli:codex") {
         setRuntimes((current) => current.filter((runtime) => runtime.id !== change.runtimeId));
       }
       void refreshRuntimes();
@@ -196,7 +205,11 @@ export function CliLauncherMenu({
 
   async function createRuntime(runtime: AgentRuntime) {
     const authAction = canStartAgentRuntimeLogin(runtime);
-    if (creatingRuntimeId || (!authAction && !isCliRuntimeTerminalLaunchable(runtime))) return;
+    if (
+      creatingRuntimeId
+      || (runtime.id === "cli:codex" && !isCodexEnabled)
+      || (!authAction && !isCliRuntimeTerminalLaunchable(runtime))
+    ) return;
     setCreatingRuntimeId(runtime.id);
     setPendingAction(authAction ? "LOGIN" : "CREATE");
     setCreationError(null);
@@ -283,9 +296,12 @@ export function CliLauncherMenu({
         const isCreating = creatingRuntimeId === runtime.id;
         const launchable = isCliRuntimeTerminalLaunchable(runtime);
         const authAction = canStartAgentRuntimeLogin(runtime);
+        const codexBlocked = runtime.id === "cli:codex" && !isCodexEnabled;
         const paneCapBlocked = atPaneCap && !authAction;
-        const unavailable = paneCapBlocked || (!launchable && !authAction);
-        const statusLabel = paneCapBlocked
+        const unavailable = codexBlocked || paneCapBlocked || (!launchable && !authAction);
+        const statusLabel = codexBlocked
+          ? "OFF"
+          : paneCapBlocked
           ? "Full"
           : runtime.authState === "READY"
           ? "Available"
@@ -299,7 +315,9 @@ export function CliLauncherMenu({
                   ? "Disabled"
                   : "Unavailable";
         const statusReasonId = `cli-launcher-runtime-${runtime.id.replace(/[^a-z0-9_-]+/gi, "-")}-reason`;
-        const statusReason = paneCapBlocked
+        const statusReason = codexBlocked
+          ? "Enable Codex in Settings"
+          : paneCapBlocked
           ? "This room already has the maximum of 16 panes. Login retry remains available for an existing login pane."
           : runtime.statusReason;
         return (
@@ -312,6 +330,7 @@ export function CliLauncherMenu({
             aria-label={`${authAction ? runtime.authState === "SETUP_REQUIRED" ? "Setup" : "Login" : "Add"} ${runtime.displayName}`}
             aria-describedby={statusReasonId}
             disabled={Boolean(creatingRuntimeId) || unavailable}
+            title={codexBlocked ? "Enable Codex in Settings" : undefined}
             onClick={() => void createRuntime(runtime)}
           >
             {presentation ? (

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, appendFile, mkdir, open, readFile, rm } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -56,14 +56,9 @@ export function resolveCanonicalGeminiMemoryPaths(
   env: Record<string, string | undefined>,
   date = new Date()
 ): Required<CanonicalGeminiMemoryPaths> {
-  const memoryRoot = env.SPACE_MEMORY_ROOT?.trim();
-  const defaultIndexPath = memoryRoot ? join(memoryRoot, "gemini_history.md") : "/opt/spaceapp/docs/gemini_history.md";
-  const defaultMonthlyPath = memoryRoot
-    ? join(memoryRoot, `gemini_history_${athensMonthFor(date)}.md`)
-    : `/opt/spaceapp/docs/gemini_history_${athensMonthFor(date)}.md`;
-  const monthlyPath = env.SPACE_GEMINI_MEMORY_MONTHLY_PATH || defaultMonthlyPath;
+  const monthlyPath = env.SPACE_GEMINI_MEMORY_MONTHLY_PATH || `/opt/spaceapp/docs/gemini_history_${athensMonthFor(date)}.md`;
   return {
-    indexPath: env.SPACE_GEMINI_MEMORY_INDEX_PATH || defaultIndexPath,
+    indexPath: env.SPACE_GEMINI_MEMORY_INDEX_PATH || "/opt/spaceapp/docs/gemini_history.md",
     monthlyPath,
     lockPath: env.SPACE_GEMINI_MEMORY_LOCK_PATH || `${monthlyPath}.lock`
   };

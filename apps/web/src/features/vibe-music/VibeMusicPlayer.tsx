@@ -1,4 +1,4 @@
-import { ExternalLink, Pause, Play, Radio, RefreshCw, Volume2, X } from "lucide-react";
+import { ExternalLink, Pause, Play, Radio, RefreshCw, Volume2, X } from "../ui-theme/app-icons.js";
 import { createPortal } from "react-dom";
 import {
   useCallback,

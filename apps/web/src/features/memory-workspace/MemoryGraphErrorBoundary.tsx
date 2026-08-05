@@ -1,5 +1,5 @@
 import { Component, Fragment, type ErrorInfo, type ReactNode } from "react";
-import { AlertTriangle, RotateCcw } from "lucide-react";
+import { AlertTriangle, RotateCcw } from "../ui-theme/app-icons.js";
 
 type MemoryGraphErrorBoundaryProps = {
   children: ReactNode;

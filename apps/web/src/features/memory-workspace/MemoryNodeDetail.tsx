@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Archive, GitMerge, Pencil, TriangleAlert } from "lucide-react";
+import { Archive, GitMerge, Pencil, TriangleAlert, X } from "../ui-theme/app-icons.js";
 import type {
   CreateMemoryNodeChangeSetInput,
   MemoryChangeKind,
@@ -91,10 +91,12 @@ function MemoryIssues({ detail }: { detail: MemoryGraphNodeDetail }) {
 export function MemoryNodeDetail({
   detail,
   loading,
+  onClose,
   onOpenChanges
 }: {
   detail: MemoryGraphNodeDetail | null;
   loading: boolean;
+  onClose: () => void;
   onOpenChanges: () => void;
 }) {
   const panelRef = useRef<HTMLElement>(null);
@@ -168,6 +170,15 @@ export function MemoryNodeDetail({
 
   return (
     <aside ref={panelRef} className="memory-node-detail" aria-label="Memory node detail" tabIndex={-1}>
+      <button
+        type="button"
+        className="memory-node-detail-close"
+        aria-label="Close memory node detail"
+        title="Close memory node detail"
+        onClick={onClose}
+      >
+        <X aria-hidden="true" />
+      </button>
       {loading ? <p role="status">Loading node detail…</p> : detail ? (
         <>
           <span>{readableType(detail.node.type)}</span>

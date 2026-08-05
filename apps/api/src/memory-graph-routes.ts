@@ -28,6 +28,8 @@ import {
   type MemoryGraphIssue,
   type MemoryGraphNode,
   type MemoryGraphRecord,
+  type MemoryGraphSnapshot,
+  type MemoryGraphSummary,
   type MemoryIssueState,
   type MemoryChangeSet,
   type MemoryChangeSetSummary
@@ -168,7 +170,7 @@ function sortNodes(nodes: MemoryGraphNode[], query: ListMemoryGraphQuery): Memor
 
 type MemoryGraphFilterQuery = Pick<
   ListMemoryGraphOverviewQuery,
-  "q" | "nodeType" | "scope" | "roomId" | "sourcePath" | "lifecycleStatus"
+  "q" | "nodeType" | "scope" | "roomId" | "sourcePath" | "lifecycleStatus" | "month"
 >;
 
 function filterNodes(snapshot: Awaited<ReturnType<MemoryGraphApiService["getSnapshot"]>>["snapshot"], query: MemoryGraphFilterQuery) {
@@ -180,11 +182,37 @@ function filterNodes(snapshot: Awaited<ReturnType<MemoryGraphApiService["getSnap
     if (query.scope && record?.scope !== query.scope) return false;
     if (query.roomId && record?.roomId !== query.roomId && !(node.type === "ROOM" && node.label === query.roomId)) return false;
     if (query.sourcePath && node.sourcePath !== query.sourcePath) return false;
+    if (query.month && query.month !== "all") {
+      const expected = `gemini_history_${query.month}.md`;
+      if (!node.sourcePath || node.sourcePath.split(/[\\/]/).at(-1) !== expected) return false;
+    }
     if (query.lifecycleStatus && record?.lifecycleStatus !== query.lifecycleStatus) return false;
     if (!normalizedQuery) return true;
     return [node.id, node.label, node.sourcePath, record?.body, record?.provenance]
       .some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
   });
+}
+
+function monthScopedSummary(
+  snapshot: Awaited<ReturnType<MemoryGraphApiService["getSnapshot"]>>["snapshot"],
+  month: string
+): MemoryGraphSummary {
+  const expected = `gemini_history_${month}.md`;
+  const monthSources = new Set(
+    snapshot.nodes
+      .filter((node) => node.sourcePath?.split(/[\\/]/).at(-1) === expected)
+      .map((node) => node.sourcePath!)
+  );
+  const inMonth = (sourcePath: string | null) => Boolean(sourcePath && monthSources.has(sourcePath));
+  const nodes = snapshot.nodes.filter((node) => inMonth(node.sourcePath));
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  return {
+    sourceCount: monthSources.size,
+    recordCount: snapshot.records.filter((record) => inMonth(record.sourcePath)).length,
+    nodeCount: nodes.length,
+    edgeCount: snapshot.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)).length,
+    issueCount: snapshot.issues.filter((issue) => inMonth(issue.sourcePath)).length
+  };
 }
 
 function sortIssues(issues: MemoryGraphIssue[], query: ListMemoryIssuesQuery): MemoryGraphIssue[] {
@@ -296,8 +324,12 @@ export function registerMemoryGraphRoutes(
   app.get("/api/admin/memory/graph/overview", async (request, reply) => {
     requireMemoryGraph(options.config);
     const query = listMemoryGraphOverviewQuerySchema.parse(request.query);
-    const { snapshot, isStale } = await options.service.getSnapshot();
+    const snapshotData = query.month
+      ? { snapshot: await options.service.getArchiveSnapshot(), isStale: false }
+      : await options.service.getSnapshot();
+    const { snapshot, isStale } = snapshotData;
     if (setSnapshotEtag(request, reply, snapshot.revisionHash ?? snapshot.sourceHash)) return reply.code(304).send();
+    const availableMonths = await options.service.listAvailableMonths();
 
     const anchors = filterNodes(snapshot, query).sort((left, right) => left.id.localeCompare(right.id));
     const anchorIds = new Set(anchors.map((node) => node.id));
@@ -333,7 +365,7 @@ export function registerMemoryGraphRoutes(
       generatedAt: snapshot.generatedAt,
       sourceHash: snapshot.sourceHash,
       isStale,
-      summary: snapshot.summary,
+      summary: query.month && query.month !== "all" ? monthScopedSummary(snapshot, query.month) : snapshot.summary,
       nodes: selectedNodes.map(redactedNode),
       edges: selectedEdges.map(redactedEdge),
       totalMatchingNodes: matchingNodes.length,
@@ -346,8 +378,10 @@ export function registerMemoryGraphRoutes(
         roomId: query.roomId ?? null,
         sourcePath: query.sourcePath ?? null,
         lifecycleStatus: query.lifecycleStatus ?? null,
-        relationMode: query.relationMode
-      }
+        relationMode: query.relationMode,
+        month: query.month ?? null
+      },
+      months: availableMonths
     });
     return { data };
   });
@@ -355,8 +389,12 @@ export function registerMemoryGraphRoutes(
   app.get("/api/admin/memory/graph", async (request, reply) => {
     requireMemoryGraph(options.config);
     const query = listMemoryGraphQuerySchema.parse(request.query);
-    const { snapshot, isStale } = await options.service.getSnapshot();
+    const snapshotData = query.month
+      ? { snapshot: await options.service.getArchiveSnapshot(), isStale: false }
+      : await options.service.getSnapshot();
+    const { snapshot, isStale } = snapshotData;
     if (setSnapshotEtag(request, reply, snapshot.revisionHash ?? snapshot.sourceHash)) return reply.code(304).send();
+    const availableMonths = await options.service.listAvailableMonths();
 
     const filtered = sortNodes(filterNodes(snapshot, query), query);
     const start = (query.page - 1) * query.pageSize;
@@ -388,7 +426,7 @@ export function registerMemoryGraphRoutes(
       generatedAt: snapshot.generatedAt,
       sourceHash: snapshot.sourceHash,
       isStale,
-      summary: snapshot.summary,
+      summary: query.month && query.month !== "all" ? monthScopedSummary(snapshot, query.month) : snapshot.summary,
       nodes,
       edges: edges.map(redactedEdge),
       filters: {
@@ -398,8 +436,10 @@ export function registerMemoryGraphRoutes(
         roomId: query.roomId ?? null,
         sourcePath: query.sourcePath ?? null,
         lifecycleStatus: query.lifecycleStatus ?? null,
-        relationMode: query.relationMode
-      }
+        relationMode: query.relationMode,
+        month: query.month ?? null
+      },
+      months: availableMonths
     });
     return { data, pagination: pagination(query.page, query.pageSize, filtered.length) };
   });
@@ -407,27 +447,34 @@ export function registerMemoryGraphRoutes(
   app.get("/api/admin/memory/nodes/:id", async (request, reply) => {
     requireMemoryGraph(options.config);
     const id = idSchema.parse((request.params as { id?: unknown }).id);
-    const { snapshot } = await options.service.getSnapshot();
-    if (setSnapshotEtag(request, reply, snapshot.revisionHash ?? snapshot.sourceHash)) return reply.code(304).send();
-    const node = snapshot.nodes.find((candidate) => candidate.id === id);
+    const live = await options.service.getSnapshot();
+    let snapshotData: { snapshot: MemoryGraphSnapshot; isStale: boolean } = live;
+    let node = live.snapshot.nodes.find((candidate) => candidate.id === id);
+    if (!node) {
+      const archive = await options.service.getArchiveSnapshot();
+      node = archive.nodes.find((candidate) => candidate.id === id);
+      if (node) snapshotData = { snapshot: archive, isStale: false };
+    }
+    if (setSnapshotEtag(request, reply, snapshotData.snapshot.revisionHash ?? snapshotData.snapshot.sourceHash)) return reply.code(304).send();
+    const activeSnapshot = snapshotData.snapshot;
     if (!node) throw new SpaceNotFoundError(`Memory graph node ${id} was not found.`);
-    const relatedIds = new Set(snapshot.edges.flatMap((edge) => {
+    const relatedIds = new Set(activeSnapshot.edges.flatMap((edge) => {
       if (edge.source === id) return [edge.target];
       if (edge.target === id) return [edge.source];
       return [];
     }));
     const record: MemoryGraphRecord | null = node.recordId
-      ? snapshot.records.find((candidate) => candidate.id === node.recordId) ?? null
+      ? activeSnapshot.records.find((candidate) => candidate.id === node.recordId) ?? null
       : null;
     const { issues } = await applyIssueStateOverlays(
       options.store,
-      snapshot.issues.filter((issue) => issue.recordId === node.recordId).slice(0, 500)
+      activeSnapshot.issues.filter((issue) => issue.recordId === node.recordId).slice(0, 500)
     );
     return memoryGraphNodeDetailSchema.parse({
       node: redactedNode(node),
       record: redactedRecord(record),
-      relatedNodes: snapshot.nodes.filter((candidate) => relatedIds.has(candidate.id)).slice(0, 500).map(redactedNode),
-      relatedEdges: snapshot.edges
+      relatedNodes: activeSnapshot.nodes.filter((candidate) => relatedIds.has(candidate.id)).slice(0, 500).map(redactedNode),
+      relatedEdges: activeSnapshot.edges
         .filter((edge) => edge.source === id || edge.target === id)
         .slice(0, 1000)
         .map(redactedEdge),

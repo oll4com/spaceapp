@@ -2,6 +2,12 @@ import type {
   Artifact,
   AgentPaneHistoryItem,
   AgentPaneSession,
+  ActivityLogEvent,
+  ActivityLogSettings,
+  AppDiagnosticsSegmentListQuery,
+  AppDiagnosticsSegmentMetadata,
+  AppDiagnosticsStatus,
+  AppDiagnosticsVideoLease,
   CollaborationMode,
   AgentRuntimeRegistry,
   AdminOperationRun,
@@ -36,12 +42,23 @@ import type {
   ClipboardSource,
   CreateClipboardItemRequest,
   CreateRoomPanesRequest,
+  DeleteRoomAgentFilesResponse,
   DeleteRoomMediaResponse,
   CliSessionReapResponse,
   CliLoginResponse,
+  CliMaintenanceAuthHandoff,
+  CliMaintenanceEvent,
+  CliTerminalClientEventInput,
+  CliTerminalClientEventResponse,
   CliRuntimeDisablePreview,
+  CliVpnConnection,
+  CliGlobalEgressStatus,
+  CliEgressRouteId,
+  CliVpnProfileId,
+  CliVpnRoutingStatus,
   CliMaintenanceRequest,
   CliRuntimeSettingsResponse,
+  RestartCliRuntimeVpnSessionsResult,
   CliSessionStats,
   CliTaskHistoryResponse,
   CodexEnvironment,
@@ -49,6 +66,8 @@ import type {
   CodexHistoryPurgeExecuteRequest,
   CodexHistoryPurgePreviewResponse,
   CodexHistoryPurgeResponse,
+  CodexResetCreditAvailability,
+  CodexResetCreditRedemptionResponse,
   CodexLbSpeedDefaultsResponse,
   CodexLbSpeedTier,
   CodexUsageAccountList,
@@ -122,15 +141,18 @@ import type {
   CreateBrowserPageInput,
   ResumePaneCliSessionResponse,
   ReleasePreview,
+  Room,
   UpdatePaneCliModelSettingsResult,
   UpdateCodexCliModeDefaultsInput,
   UpdateCliRuntimeSettingInput,
   UpdateCliRuntimeSettingResult,
+  UpdateCliRuntimeVpnInput,
+  UpdateCliRuntimeVpnResult,
+  UpdateCliGlobalEgressResult,
   ReviewCheck,
   ReviewDecision,
   ReviewDiffSummary,
   ReviewRoomState,
-  Room,
   RoomCliActivityResponse,
   RoomPanesResult,
   RoomPaneLayoutResult,
@@ -138,6 +160,11 @@ import type {
   Skill,
   SetupClaimInput,
   SetupClaimResponse,
+  SetupConnection,
+  SetupConnectionCheckReplay,
+  SetupConnectionCheckRun,
+  SetupOverview,
+  SetupStarterRoomResponse,
   SetupStatus,
   StorageReadiness,
   SourceControlConnection,
@@ -178,9 +205,36 @@ export { SpaceApiError } from "./runtime/SpaceRuntime.js";
 
 export type CodexThreadPresentation = "raw" | "chat";
 
+export interface CliMaintenanceReplayPayload {
+  run: AdminOperationRun;
+  events: CliMaintenanceEvent[];
+  authHandoffs: CliMaintenanceAuthHandoff[];
+}
+
+export interface CliMaintenanceRecoveryPayload {
+  status: "NOOP" | "OPENED" | "FAILED";
+  room: Room | null;
+  handoffs: CliMaintenanceAuthHandoff[];
+  loginPanes: Array<{
+    handoffId: string;
+    runtimeId: string;
+    paneId: string | null;
+    status: "OPENED" | "FAILED";
+    safeErrorCode: string | null;
+  }>;
+}
+
 const cliTerminalBrowserClientIdStorageKey = "space.cliTerminal.browserClientId.v1";
+const cliTerminalTabLineageIdStorageKey = "space.cliTerminal.tabLineageId.v1";
+const cliTerminalControlLeaseHeaderName = "x-space-cli-control-lease-id";
+const cliTerminalBrowserClientHeaderName = "x-space-cli-browser-client-id";
+const cliTerminalTabLineageHeaderName = "x-space-cli-tab-lineage-id";
+const cliTerminalPageClientHeaderName = "x-space-cli-page-client-id";
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 let volatileCliTerminalBrowserClientId: string | null = null;
+let volatileCliTerminalTabLineageId: string | null = null;
+let volatileCliTerminalPageClientId: string | null = null;
+const cliTerminalControlLeaseByPane = new Map<string, string>();
 
 function cliTerminalBrowserClientId(): string {
   try {
@@ -193,6 +247,35 @@ function cliTerminalBrowserClientId(): string {
     volatileCliTerminalBrowserClientId ??= window.crypto.randomUUID();
     return volatileCliTerminalBrowserClientId;
   }
+}
+
+function cliTerminalTabLineageId(): string {
+  try {
+    const stored = window.sessionStorage.getItem(cliTerminalTabLineageIdStorageKey);
+    if (stored && uuidPattern.test(stored)) return stored;
+    const created = window.crypto.randomUUID();
+    window.sessionStorage.setItem(cliTerminalTabLineageIdStorageKey, created);
+    return created;
+  } catch {
+    volatileCliTerminalTabLineageId ??= window.crypto.randomUUID();
+    return volatileCliTerminalTabLineageId;
+  }
+}
+
+function cliTerminalPageClientId(): string {
+  volatileCliTerminalPageClientId ??= window.crypto.randomUUID();
+  return volatileCliTerminalPageClientId;
+}
+
+function cliTerminalControlHeaders(paneId: string): Record<string, string> | undefined {
+  const leaseId = cliTerminalControlLeaseByPane.get(paneId);
+  if (!leaseId) return undefined;
+  return {
+    [cliTerminalControlLeaseHeaderName]: leaseId,
+    [cliTerminalBrowserClientHeaderName]: cliTerminalBrowserClientId(),
+    [cliTerminalTabLineageHeaderName]: cliTerminalTabLineageId(),
+    [cliTerminalPageClientHeaderName]: cliTerminalPageClientId()
+  };
 }
 
 interface Paginated<T> {
@@ -569,8 +652,12 @@ function warmCliRuntimes(): void {
   void startCliRuntimeRegistryFlight().catch(() => undefined);
 }
 
+function cliRuntimesSnapshot(): AgentRuntimeRegistry | null {
+  return cliRuntimeRegistryCache?.value ?? null;
+}
+
 function invalidateCliRuntimes(): void {
-  cliRuntimeRegistryCache = null;
+  if (cliRuntimeRegistryCache) cliRuntimeRegistryCache.expiresAt = 0;
 }
 
 export const api = {
@@ -583,6 +670,35 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  setupOverview: () => request<SetupOverview>("/api/setup/overview"),
+  setupStarterRoom: () =>
+    request<SetupStarterRoomResponse>("/api/setup/starter-room", { method: "POST" }),
+  startSetupConnectionChecks: () =>
+    request<SetupConnectionCheckRun>("/api/setup/connection-check-runs", { method: "POST" }),
+  startSetupConnectionCheck: (connectionId: string) =>
+    request<SetupConnectionCheckRun>(
+      `/api/setup/connections/${encodeURIComponent(connectionId)}/check-runs`,
+      { method: "POST" }
+    ),
+  getSetupConnectionCheckReplay: (runId: string, afterSequence = 0) =>
+    request<SetupConnectionCheckReplay>(
+      `/api/setup/connection-check-runs/${encodeURIComponent(runId)}/replay?afterSequence=${Math.max(0, Math.trunc(afterSequence))}`
+    ),
+  openSetupConnectionCheckStream: (runId: string, afterSequence = 0) => {
+    if (typeof window.EventSource === "undefined") return null;
+    return new window.EventSource(
+      `/api/setup/connection-check-runs/${encodeURIComponent(runId)}/stream?afterSequence=${Math.max(0, Math.trunc(afterSequence))}`,
+      { withCredentials: true }
+    );
+  },
+  verifySetupConnection: (connectionId: string) =>
+    request<SetupConnection>(
+      `/api/setup/connections/${encodeURIComponent(connectionId)}/verify`,
+      { method: "POST" }
+    ),
+  verifyAllSetupConnections: () =>
+    request<SetupOverview>("/api/setup/connections/verify-all", { method: "POST" }),
+  finishSetup: () => request<SetupOverview>("/api/setup/finish", { method: "POST" }),
   login: (email: string, password: string) =>
     request<AuthMe>("/api/auth/login", {
       method: "POST",
@@ -645,17 +761,28 @@ export const api = {
     }),
   disconnectTelegramIntegration: () =>
     request<TelegramIntegrationStatus>("/api/integrations/telegram", { method: "DELETE" }),
-  rooms: () => request<Paginated<Room>>("/api/rooms"),
+  rooms: (query: { page?: number; pageSize?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (query.page !== undefined) params.set("page", String(query.page));
+    if (query.pageSize !== undefined) params.set("pageSize", String(query.pageSize));
+    const suffix = params.toString();
+    return request<Paginated<Room>>(`/api/rooms${suffix ? `?${suffix}` : ""}`);
+  },
   roomCliActivity: () => request<RoomCliActivityResponse>("/api/rooms/cli-activity"),
-  createRoom: (name: string, initialPaneCount: number) =>
+  createRoom: (name: string, initialPaneCount: number, reason?: string) =>
     request<Room>("/api/rooms", {
       method: "POST",
-      body: JSON.stringify({ name, initialPaneCount })
+      body: JSON.stringify({ name, initialPaneCount, reason: reason?.trim() || undefined })
     }),
   reorderRooms: (roomIds: string[]) =>
     request<Room[]>("/api/rooms/reorder", {
       method: "POST",
       body: JSON.stringify({ roomIds })
+    }),
+  reorderPanes: (roomId: string, paneIds: string[]) =>
+    request<Pane[]>(`/api/rooms/${encodeURIComponent(roomId)}/panes/reorder`, {
+      method: "POST",
+      body: JSON.stringify({ paneIds })
     }),
   updateRoom: (roomId: string, input: UpdateRoomInput) =>
     request<Room>(`/api/rooms/${encodeURIComponent(roomId)}`, {
@@ -736,12 +863,23 @@ export const api = {
     }
     return request<CliTaskHistoryResponse>(`/api/cli/tasks?${params.toString()}`);
   },
+  recoveryCliTask: (paneId: string) =>
+    request<CliTaskHistoryResponse>(`/api/panes/${encodeURIComponent(paneId)}/cli/recovery-task`),
   codexThread: (threadId: string, presentation?: CodexThreadPresentation) =>
     request<CodexThreadResponse>(
       `/api/codex/threads/${encodeURIComponent(threadId)}${presentation ? `?presentation=${encodeURIComponent(presentation)}` : ""}`
     ),
   codexEnvironment: () => request<CodexEnvironment>("/api/codex/environment"),
   toolbarUsageAccounts: () => request<CodexUsageAccountList>("/api/admin/codex-usage-accounts"),
+  toolbarResetCredits: () => request<CodexResetCreditAvailability>("/api/admin/codex-reset-credits"),
+  redeemToolbarResetCredit: (accountId: string, idempotencyKey: string) =>
+    request<CodexResetCreditRedemptionResponse>(
+      `/api/admin/codex-reset-credits/${encodeURIComponent(accountId)}/redemptions`,
+      {
+        method: "POST",
+        body: JSON.stringify({ idempotencyKey }),
+      }
+    ),
   toolbarCliSessions: () => request<CliSessionStats>("/api/admin/cli-sessions"),
   reapToolbarCliSessions: () => request<CliSessionReapResponse>("/api/admin/cli-session-reaps", {
     method: "POST",
@@ -783,6 +921,24 @@ export const api = {
     }),
   listCliMaintenanceRuns: () =>
     request<{ data: AdminOperationRun[] }>("/api/admin/cli-maintenance/runs"),
+  getCliMaintenanceReplay: (runId: string, afterSequence = 0) =>
+    request<CliMaintenanceReplayPayload>(
+      `/api/admin/cli-maintenance/runs/${encodeURIComponent(runId)}/replay?afterSequence=${Math.max(0, Math.trunc(afterSequence))}`
+    ),
+  openCliMaintenanceStream: (runId: string, afterSequence = 0) => {
+    if (typeof window.EventSource === "undefined") return null;
+    return new window.EventSource(
+      `/api/admin/cli-maintenance/runs/${encodeURIComponent(runId)}/stream?afterSequence=${Math.max(0, Math.trunc(afterSequence))}`,
+      { withCredentials: true }
+    );
+  },
+  cliMaintenanceExportUrl: (runId: string) =>
+    `/api/admin/cli-maintenance/runs/${encodeURIComponent(runId)}/export`,
+  openCliMaintenanceRecovery: () =>
+    request<CliMaintenanceRecoveryPayload>("/api/admin/cli-maintenance/auth-handoffs/open", {
+      method: "POST",
+      body: JSON.stringify({})
+    }),
   startCliMaintenance: (input: CliMaintenanceRequest) =>
     request<AdminOperationRun>("/api/admin/cli-maintenance/runs", {
       method: "POST",
@@ -817,7 +973,10 @@ export const api = {
       `/api/admin/source-control/connections/${encodeURIComponent(provider)}`,
       { method: "DELETE" }
     ),
-  panes: (roomId: string) => request<Paginated<Pane>>(`/api/panes?roomId=${encodeURIComponent(roomId)}`),
+  panes: (roomId: string, options: { includeClosed?: boolean } = {}) =>
+    request<Paginated<Pane>>(
+      `/api/panes?roomId=${encodeURIComponent(roomId)}${options.includeClosed ? "&includeClosed=true" : ""}`
+    ),
   createPane: (
     roomId: string,
     title: string,
@@ -914,9 +1073,133 @@ export const api = {
       method: "DELETE"
     }),
   cliRuntimes: (options?: { allowStale?: boolean }) => loadCliRuntimes(options),
+  cliRuntimesSnapshot,
   warmCliRuntimes,
   invalidateCliRuntimes,
   cliRuntimeSettings: () => request<CliRuntimeSettingsResponse>("/api/cli/runtime-settings"),
+  cliGlobalEgress: () => request<CliGlobalEgressStatus>("/api/cli/egress"),
+  updateCliGlobalEgress: (routeId: CliEgressRouteId) =>
+    request<UpdateCliGlobalEgressResult>("/api/cli/egress/route", {
+      method: "PUT",
+      body: JSON.stringify({ routeId })
+    }),
+  replaceCliEgressProfile: (profileId: CliVpnProfileId, config: string) =>
+    request<CliVpnConnection>(`/api/cli/egress/profiles/${encodeURIComponent(profileId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ config })
+    }),
+  verifyCliEgressProfile: (profileId: CliVpnProfileId) =>
+    request<CliVpnConnection>(`/api/cli/egress/profiles/${encodeURIComponent(profileId)}/verify`, {
+      method: "POST",
+      body: JSON.stringify({})
+    }),
+  removeCliEgressProfile: (profileId: CliVpnProfileId) =>
+    request<CliVpnConnection>(`/api/cli/egress/profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" }),
+  rotateCliMullvadCity: () =>
+    request<CliVpnConnection>("/api/cli/egress/profiles/mullvad/random-city", { method: "POST", body: JSON.stringify({}) }),
+  cliVpnRoutingStatus: () => request<CliVpnRoutingStatus>("/api/cli/vpn/routing-status"),
+  cliVpnStatus: () => request<CliVpnConnection>("/api/cli/vpn"),
+  replaceCliVpnProfile: (config: string) =>
+    request<CliVpnConnection>("/api/cli/vpn/profile", {
+      method: "PUT",
+      body: JSON.stringify({ config })
+    }),
+  verifyCliVpnProfile: () =>
+    request<CliVpnConnection>("/api/cli/vpn/verify", {
+      method: "POST",
+      body: JSON.stringify({})
+    }),
+  removeCliVpnProfile: () =>
+    request<CliVpnConnection>("/api/cli/vpn/profile", { method: "DELETE" }),
+  appDiagnosticsStatus: () => request<AppDiagnosticsStatus>("/api/app-diagnostics"),
+  updateAppDiagnosticsStatus: (isEnabled: boolean) =>
+    request<AppDiagnosticsStatus>("/api/admin/app-diagnostics", {
+      method: "PATCH",
+      body: JSON.stringify({ isEnabled })
+    }),
+  activityLog: (query?: {
+    roomId?: string;
+    action?: string;
+    actorUserId?: string;
+    hasReason?: boolean;
+    page?: number;
+    pageSize?: number;
+  }) => {
+    const params = new URLSearchParams();
+    if (query?.roomId) params.set("roomId", query.roomId);
+    if (query?.action) params.set("action", query.action);
+    if (query?.actorUserId) params.set("actorUserId", query.actorUserId);
+    if (query?.hasReason !== undefined) params.set("hasReason", String(query.hasReason));
+    if (query?.page) params.set("page", String(query.page));
+    if (query?.pageSize) params.set("pageSize", String(query.pageSize));
+    const suffix = params.toString();
+    return request<Paginated<ActivityLogEvent>>(`/api/activity-log${suffix ? `?${suffix}` : ""}`);
+  },
+  activityLogSettings: () => request<ActivityLogSettings>("/api/activity-log/settings"),
+  updateActivityLogSettings: (enabled: boolean) =>
+    request<ActivityLogSettings>("/api/admin/activity-log/settings", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled })
+    }),
+  acquireAppDiagnosticsVideoLease: (input: { clientId: string; pageClientId: string }) =>
+    request<AppDiagnosticsVideoLease>("/api/admin/app-diagnostics/video-leases", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  heartbeatAppDiagnosticsVideoLease: (leaseId: string, captureId: string) =>
+    request<AppDiagnosticsVideoLease>(
+      `/api/admin/app-diagnostics/video-leases/${encodeURIComponent(leaseId)}/heartbeats`,
+      {
+        method: "POST",
+        body: JSON.stringify({ captureId })
+      }
+    ),
+  releaseAppDiagnosticsVideoLease: (leaseId: string) =>
+    request<AppDiagnosticsVideoLease>(
+      `/api/admin/app-diagnostics/video-leases/${encodeURIComponent(leaseId)}`,
+      { method: "DELETE" }
+    ),
+  uploadAppDiagnosticsVideoSegment: (
+    input: {
+      leaseId: string;
+      sequence: number;
+      startedAt: string;
+      endedAt: string;
+      firstEventSequence: number;
+      lastEventSequence: number;
+      mimeType: string;
+    },
+    bytes: Uint8Array
+  ) => {
+    const query = new URLSearchParams({
+      startedAt: input.startedAt,
+      endedAt: input.endedAt,
+      firstEventSequence: String(input.firstEventSequence),
+      lastEventSequence: String(input.lastEventSequence)
+    });
+    const body = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(body).set(bytes);
+    return request<AppDiagnosticsSegmentMetadata>(
+      `/api/admin/app-diagnostics/video-segments/${encodeURIComponent(input.leaseId)}/${input.sequence}?${query}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "video/webm" },
+        body
+      }
+    );
+  },
+  appDiagnosticsSegments: (query: AppDiagnosticsSegmentListQuery = { page: 1, pageSize: 25 }) => {
+    const params = new URLSearchParams({
+      page: String(query.page),
+      pageSize: String(query.pageSize),
+      ...(query.captureId ? { captureId: query.captureId } : {}),
+      ...(query.kind ? { kind: query.kind } : {})
+    });
+    return request<{
+      data: AppDiagnosticsSegmentMetadata[];
+      pagination: { page: number; pageSize: number; totalItems: number; totalPages: number };
+    }>(`/api/admin/app-diagnostics/segments?${params}`);
+  },
   cliRuntimeDisablePreview: (runtimeId: string) =>
     request<CliRuntimeDisablePreview>(
       `/api/cli/runtime-settings/${encodeURIComponent(runtimeId)}/disable-preview`,
@@ -930,6 +1213,16 @@ export const api = {
     invalidateCliRuntimes();
     return result;
   },
+  updateCliRuntimeVpn: (runtimeId: string, input: UpdateCliRuntimeVpnInput) =>
+    request<UpdateCliRuntimeVpnResult>(
+      `/api/cli/runtime-settings/${encodeURIComponent(runtimeId)}/vpn`,
+      { method: "PATCH", body: JSON.stringify(input) }
+    ),
+  restartCliRuntimeVpnSessions: (runtimeId: string) =>
+    request<RestartCliRuntimeVpnSessionsResult>(
+      `/api/cli/runtime-settings/${encodeURIComponent(runtimeId)}/vpn/restart-required`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
   cliLogin: async (roomId: string, runtimeId: string) => {
     const result = await request<CliLoginResponse>(`/api/rooms/${encodeURIComponent(roomId)}/cli-login`, {
       method: "POST",
@@ -944,6 +1237,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
+  reportCliClientEvent: (input: CliTerminalClientEventInput) =>
+    request<CliTerminalClientEventResponse>("/api/cli/client-events", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   activeCliSession: (paneId: string, options: { includeTranscript?: boolean } = {}) =>
     request<PaneCliSessionResponse | null>(
       `/api/panes/${encodeURIComponent(paneId)}/cli/session${options.includeTranscript === false ? "?includeTranscript=false" : ""}`
@@ -952,6 +1250,10 @@ export const api = {
     request<PaneCliModelSettings>(`/api/panes/${encodeURIComponent(paneId)}/cli/model-settings`),
   cliModelSettingsStatus: (paneId: string) =>
     request<PaneCliModelSettingsStatus>(`/api/panes/${encodeURIComponent(paneId)}/cli/model-settings/status`),
+  setCliTerminalControlLease: (paneId: string, leaseId: string | null) => {
+    if (leaseId) cliTerminalControlLeaseByPane.set(paneId, leaseId);
+    else cliTerminalControlLeaseByPane.delete(paneId);
+  },
   updateCliModelSettings: (
     paneId: string,
     input: {
@@ -963,6 +1265,7 @@ export const api = {
   ) =>
     request<UpdatePaneCliModelSettingsResult>(`/api/panes/${encodeURIComponent(paneId)}/cli/model-settings`, {
       method: "PATCH",
+      headers: cliTerminalControlHeaders(paneId),
       body: JSON.stringify(input)
     }),
   cliTurnActivity: (paneId: string, marker: string) =>
@@ -983,16 +1286,19 @@ export const api = {
   ) =>
     request<PaneCliSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/cli/session`, {
       method: "POST",
+      headers: cliTerminalControlHeaders(paneId),
       body: JSON.stringify(input)
     }),
   resumeCliSession: (paneId: string, input: { taskId: string }) =>
     request<ResumePaneCliSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/cli/resume`, {
       method: "POST",
+      headers: cliTerminalControlHeaders(paneId),
       body: JSON.stringify(input)
     }),
   interruptCliSession: (paneId: string, reason?: string) =>
     request<PaneCliSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/cli/interrupt`, {
       method: "POST",
+      headers: cliTerminalControlHeaders(paneId),
       body: JSON.stringify(reason ? { reason } : {})
     }),
   uploadCliFiles: (input: { paneId: string; source: PaneCliUploadSource; files: File[] }) => {
@@ -1001,6 +1307,7 @@ export const api = {
     input.files.forEach((file) => form.append("file", file, file.name || "upload"));
     return request<PaneCliUploadResponse>(`/api/panes/${encodeURIComponent(input.paneId)}/cli/uploads?${params.toString()}`, {
       method: "POST",
+      headers: cliTerminalControlHeaders(input.paneId),
       body: form
     });
   },
@@ -1009,15 +1316,47 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  cliTerminalWebSocketUrl: (ticket: PaneCliWebSocketToken) => {
+  cliTerminalWebSocketUrl: (
+    ticket: PaneCliWebSocketToken,
+    options: {
+      clientMode?: "INTERACTIVE" | "OBSERVER";
+      leaseId?: string | null;
+      initialCols?: number;
+      initialRows?: number;
+    } = {}
+  ) => {
     const params = new URLSearchParams({
       sessionId: ticket.sessionId,
       token: ticket.token
     });
+    const hasInitialCols = options.initialCols !== undefined;
+    const hasInitialRows = options.initialRows !== undefined;
+    if (hasInitialCols !== hasInitialRows) {
+      throw new RangeError("Initial terminal columns and rows must be provided together.");
+    }
+    if (hasInitialCols && hasInitialRows) {
+      if (
+        !Number.isInteger(options.initialCols) ||
+        options.initialCols! < 2 ||
+        options.initialCols! > 400 ||
+        !Number.isInteger(options.initialRows) ||
+        options.initialRows! < 2 ||
+        options.initialRows! > 200
+      ) {
+        throw new RangeError("Initial terminal geometry is outside the supported bounds.");
+      }
+      params.set("initialCols", String(options.initialCols));
+      params.set("initialRows", String(options.initialRows));
+    }
     if (typeof window === "undefined") {
       return `/api/panes/${encodeURIComponent(ticket.paneId)}/cli/terminal?${params.toString()}`;
     }
-    params.set("clientId", cliTerminalBrowserClientId());
+    params.set("protocolVersion", "2");
+    params.set("browserClientId", cliTerminalBrowserClientId());
+    params.set("tabLineageId", cliTerminalTabLineageId());
+    params.set("pageClientId", cliTerminalPageClientId());
+    params.set("clientMode", options.clientMode ?? "INTERACTIVE");
+    if (options.leaseId) params.set("leaseId", options.leaseId);
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${protocol}//${window.location.host}/api/panes/${encodeURIComponent(ticket.paneId)}/cli/terminal?${params.toString()}`;
   },
@@ -1112,6 +1451,19 @@ export const api = {
   },
   browserStreamTicket: (paneId: string) =>
     request<BrowserStreamTicketResponse>(`/api/panes/${encodeURIComponent(paneId)}/browser/stream-ticket`, {
+      method: "POST",
+      body: JSON.stringify({})
+    }),
+  browserAudioWebSocketUrl: (ticket: BrowserFrameToken) => {
+    const params = new URLSearchParams({ sessionId: ticket.sessionId, token: ticket.token });
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    if (!window.location.host) {
+      return `/api/panes/${encodeURIComponent(ticket.paneId)}/browser/audio?${params.toString()}`;
+    }
+    return `${protocol}//${window.location.host}/api/panes/${encodeURIComponent(ticket.paneId)}/browser/audio?${params.toString()}`;
+  },
+  browserAudioStreamTicket: (paneId: string) =>
+    request<BrowserStreamTicketResponse>(`/api/panes/${encodeURIComponent(paneId)}/browser/audio-ticket`, {
       method: "POST",
       body: JSON.stringify({})
     }),
@@ -1237,6 +1589,7 @@ export const api = {
     roomId?: string;
     sourcePath?: string;
     lifecycleStatus?: MemoryLifecycleStatus;
+    month?: string;
     relationMode?: "CLUSTERED" | "RELATIONS";
     page?: number;
     pageSize?: number;
@@ -1248,6 +1601,7 @@ export const api = {
     if (query.roomId) params.set("roomId", query.roomId);
     if (query.sourcePath) params.set("sourcePath", query.sourcePath);
     if (query.lifecycleStatus) params.set("lifecycleStatus", query.lifecycleStatus);
+    if (query.month) params.set("month", query.month);
     if (query.relationMode) params.set("relationMode", query.relationMode);
     if (query.page) params.set("page", String(query.page));
     if (query.pageSize) params.set("pageSize", String(query.pageSize));
@@ -1261,6 +1615,7 @@ export const api = {
     roomId?: string;
     sourcePath?: string;
     lifecycleStatus?: MemoryLifecycleStatus;
+    month?: string;
     relationMode?: "CLUSTERED" | "RELATIONS";
   } = {}) => {
     const params = new URLSearchParams();
@@ -1270,6 +1625,7 @@ export const api = {
     if (query.roomId) params.set("roomId", query.roomId);
     if (query.sourcePath) params.set("sourcePath", query.sourcePath);
     if (query.lifecycleStatus) params.set("lifecycleStatus", query.lifecycleStatus);
+    if (query.month) params.set("month", query.month);
     if (query.relationMode) params.set("relationMode", query.relationMode);
     const suffix = params.toString();
     return request<MemoryGraphOverviewResponse>(`/api/admin/memory/graph/overview${suffix ? `?${suffix}` : ""}`);
@@ -1478,11 +1834,12 @@ export const api = {
       })
     }),
   skills: () => request<Paginated<Skill>>("/api/skills"),
-  artifacts: (query?: { roomId?: string; paneId?: string; kind?: Artifact["kind"]; page?: number; pageSize?: number; sortOrder?: "asc" | "desc" }) => {
+  artifacts: (query?: { roomId?: string; paneId?: string; kind?: Artifact["kind"]; collection?: "ROOM_MEDIA" | "AGENT_FILES"; page?: number; pageSize?: number; sortOrder?: "asc" | "desc" }) => {
     const params = new URLSearchParams();
     if (query?.roomId) params.set("roomId", query.roomId);
     if (query?.paneId) params.set("paneId", query.paneId);
     if (query?.kind) params.set("kind", query.kind);
+    if (query?.collection) params.set("collection", query.collection);
     if (query?.page) params.set("page", String(query.page));
     if (query?.pageSize) params.set("pageSize", String(query.pageSize));
     if (query?.sortOrder) params.set("sortOrder", query.sortOrder);
@@ -1490,6 +1847,8 @@ export const api = {
     return request<Paginated<Artifact>>(`/api/artifacts${suffix ? `?${suffix}` : ""}`);
   },
   artifactFileUrl: (artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/file`,
+  agentFilePreviewUrl: (artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/preview`,
+  agentFileDownloadUrl: (artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/download`,
   browserRecordingManifest: (artifactId: string) =>
     request<BrowserRecordingManifestPayload>(`/api/artifacts/${encodeURIComponent(artifactId)}/file`),
   updateArtifactRetention: (artifactId: string, input: { expiresAt?: string | null; pinnedAt?: string | null }) =>
@@ -1503,6 +1862,10 @@ export const api = {
     }),
   deleteRoomMedia: (roomId: string) =>
     request<DeleteRoomMediaResponse>(`/api/rooms/${encodeURIComponent(roomId)}/media`, {
+      method: "DELETE"
+    }),
+  deleteRoomAgentFiles: (roomId: string) =>
+    request<DeleteRoomAgentFilesResponse>(`/api/rooms/${encodeURIComponent(roomId)}/agent-files`, {
       method: "DELETE"
     }),
   createArtifact: (input: {

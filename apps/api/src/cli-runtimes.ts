@@ -16,11 +16,59 @@ import { cliRuntimeDescriptors, type CliRuntimeDescriptor } from "./cli-runtime-
 
 const execFileAsync = promisify(execFile);
 const credentialStatusTimeoutMs = 5_000;
+const credentialObservationTimeoutMs = 5_000;
+const longCredentialSmokeRuntimeIds = new Set([
+  "cli:codex",
+  "cli:kimi",
+  "cli:grok",
+  "cli:cursor",
+  "cli:copilot"
+]);
+
+export type CliCredentialCheckOutcome =
+  | "VERIFIED"
+  | "QUOTA_LIMITED"
+  | "PROVIDER_FAILED"
+  | "TIMED_OUT";
+
+export interface CliCredentialCheckResult {
+  outcome: CliCredentialCheckOutcome;
+}
+
+export type CliCredentialCommandExecutor = (
+  commandPath: string,
+  args: readonly string[],
+  options: {
+    encoding: "utf8";
+    env: NodeJS.ProcessEnv;
+    timeout: number;
+    maxBuffer: number;
+  }
+) => Promise<{ stdout: string }>;
+
+export function credentialSmokeTimeoutForRuntime(runtimeId: string): number {
+  return longCredentialSmokeRuntimeIds.has(runtimeId) ? 190_000 : 130_000;
+}
+
+function controlledCredentialEnvironment(): NodeJS.ProcessEnv {
+  return {
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+    PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    TERM: "xterm-256color"
+  };
+}
 
 export function isCliRuntimeTerminalLaunchable(
   runtime: Pick<AgentRuntime, "adapterStatus" | "authState" | "status">
 ): boolean {
   return isAgentRuntimeReady(runtime);
+}
+
+export function isCliRuntimeLoginLaunchable(
+  runtime: Pick<AgentRuntime, "adapterStatus" | "detectedCommandPath">
+): boolean {
+  return runtime.adapterStatus === "ENABLED" && Boolean(runtime.detectedCommandPath);
 }
 
 function webChatRuntime(config: SpaceApiConfig, checkedAt: string): AgentRuntime {
@@ -79,6 +127,62 @@ function rootRuntime(config: SpaceApiConfig, checkedAt: string): AgentRuntime {
   });
 }
 
+export function activeCliSessionObserverRuntime(
+  config: SpaceApiConfig,
+  runtimeId: string,
+  checkedAt = nowIso()
+): AgentRuntime | null {
+  const observerReason =
+    "An existing Space-managed CLI process is running; diagnostics observer metadata skips launch and credential probes.";
+  if (runtimeId === "cli:root") {
+    return agentRuntimeSchema.parse({
+      id: "cli:root",
+      providerId: "root",
+      providerName: "Root",
+      agentId: "root",
+      agentName: "Root Shell",
+      displayName: "CLI ROOT",
+      capabilities: ["CLI"],
+      adapterStatus: "ENABLED",
+      authMode: "NONE",
+      authState: "READY",
+      authReason: observerReason,
+      canStartLogin: false,
+      status: "ENABLED",
+      statusReason: observerReason,
+      commandName: "/bin/bash",
+      detectedCommandPath: "/bin/bash",
+      defaultModelId: null,
+      supportedReasoningEfforts: [],
+      checkedAt
+    });
+  }
+
+  const descriptor = cliRuntimeDescriptors.find((candidate) => candidate.id === runtimeId);
+  if (!descriptor) return null;
+  return agentRuntimeSchema.parse({
+    id: descriptor.id,
+    providerId: descriptor.providerId,
+    providerName: descriptor.providerName,
+    agentId: descriptor.key,
+    agentName: descriptor.agentName,
+    displayName: descriptor.agentName,
+    capabilities: ["CLI"],
+    adapterStatus: "ENABLED",
+    authMode: descriptor.authMode,
+    authState: "READY",
+    authReason: observerReason,
+    canStartLogin: false,
+    status: "ENABLED",
+    statusReason: observerReason,
+    commandName: config.cliRuntimeCommands[descriptor.key],
+    detectedCommandPath: null,
+    defaultModelId: descriptor.defaultModelId,
+    supportedReasoningEfforts: [],
+    checkedAt
+  });
+}
+
 function commandNameIsSafe(commandName: string): boolean {
   return commandName === basename(commandName) && !commandName.includes("..") && commandName.trim().length > 0;
 }
@@ -115,7 +219,81 @@ async function readCredentialStatus(commandPath: string): Promise<CliCredentialS
   }
 }
 
-async function cliRuntime(config: SpaceApiConfig, definition: CliRuntimeDescriptor, checkedAt: string): Promise<AgentRuntime> {
+export async function observeCliRuntimeCredential(runtime: AgentRuntime): Promise<string | null> {
+  const definition = cliRuntimeDescriptors.find((candidate) => candidate.id === runtime.id);
+  if (!definition?.credentialObservationAction || !runtime.detectedCommandPath) return null;
+  try {
+    const { stdout } = await execFileAsync(
+      runtime.detectedCommandPath,
+      [definition.credentialObservationAction],
+      {
+        encoding: "utf8",
+        env: controlledCredentialEnvironment(),
+        timeout: credentialObservationTimeoutMs,
+        maxBuffer: 256
+      }
+    );
+    if (stdout === "OBSERVATION:MISSING\n" || stdout === "OBSERVATION:MISSING\r\n") return null;
+    return stdout.match(/^OBSERVATION:([0-9a-f]{64})\r?\n$/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function credentialQuotaMarker(smokeMarker: string): string {
+  return smokeMarker.endsWith("_OK")
+    ? `${smokeMarker.slice(0, -3)}_QUOTA_LIMITED`
+    : `${smokeMarker}_QUOTA_LIMITED`;
+}
+
+function isCredentialCheckTimeout(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; killed?: unknown; signal?: unknown };
+  return candidate.code === "ETIMEDOUT" ||
+    (candidate.killed === true && candidate.signal === "SIGTERM");
+}
+
+export async function checkCliRuntimeCredential(
+  runtime: AgentRuntime,
+  execute: CliCredentialCommandExecutor = execFileAsync as unknown as CliCredentialCommandExecutor
+): Promise<CliCredentialCheckResult> {
+  const definition = cliRuntimeDescriptors.find((candidate) => candidate.id === runtime.id);
+  if (!definition?.credentialSmokeMarker || !runtime.detectedCommandPath) {
+    return { outcome: "PROVIDER_FAILED" };
+  }
+  try {
+    const { stdout } = await execute(runtime.detectedCommandPath, ["credential-smoke"], {
+      encoding: "utf8",
+      env: controlledCredentialEnvironment(),
+      timeout: credentialSmokeTimeoutForRuntime(runtime.id),
+      maxBuffer: 1_024
+    });
+    if (
+      stdout === `${definition.credentialSmokeMarker}\n` ||
+      stdout === `${definition.credentialSmokeMarker}\r\n`
+    ) {
+      return { outcome: "VERIFIED" };
+    }
+    const quotaMarker = credentialQuotaMarker(definition.credentialSmokeMarker);
+    if (stdout === `${quotaMarker}\n` || stdout === `${quotaMarker}\r\n`) {
+      return { outcome: "QUOTA_LIMITED" };
+    }
+    return { outcome: "PROVIDER_FAILED" };
+  } catch (error) {
+    return { outcome: isCredentialCheckTimeout(error) ? "TIMED_OUT" : "PROVIDER_FAILED" };
+  }
+}
+
+export async function smokeCliRuntimeCredential(runtime: AgentRuntime): Promise<boolean> {
+  const result = await checkCliRuntimeCredential(runtime);
+  return result.outcome === "VERIFIED" || result.outcome === "QUOTA_LIMITED";
+}
+
+async function cliRuntime(
+  config: SpaceApiConfig,
+  definition: CliRuntimeDescriptor,
+  checkedAt: string
+): Promise<AgentRuntime> {
   const commandName = config.cliRuntimeCommands[definition.key];
   const commandRoot = config.cliCommandPath;
   const detectedCommandPath = config.cliEnabled && commandRoot ? await detectCommand(commandRoot, commandName) : null;

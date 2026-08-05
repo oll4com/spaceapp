@@ -30,7 +30,7 @@ import {
   UserCheck,
   Video,
   X
-} from "lucide-react";
+} from "../ui-theme/app-icons.js";
 import {
   useEffect,
   useMemo,
@@ -62,10 +62,16 @@ import {
   type BrowserStatusPayload,
   type BrowserStreamMode
 } from "../../api.js";
-import { browserGateway } from "../../runtime/SpaceRuntime.js";
+import { browserGateway, getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { useDismissibleToolbarLayer, usePersistentIconToolbar, type IconToolbarAction } from "../../icon-toolbar.js";
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
+import {
+  migrateModernToolbarPreference,
+  modernPaneToolbarStorageKeys,
+  type UiTheme
+} from "../../ui-theme.js";
 import { BrowserCanvas, type BrowserCanvasHandle, type BrowserCanvasInput } from "./BrowserCanvas.js";
+import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import {
   BROWSER_PANE_ACTION_EVENT,
   parseBrowserPaneActionDetail,
@@ -82,6 +88,8 @@ export {
 interface BrowserPaneProps {
   pane: Pane;
   agentNumber: number;
+  observerOnly?: boolean;
+  uiTheme?: UiTheme;
 }
 
 type BrowserFrameMessage =
@@ -161,7 +169,7 @@ function scrollPaneIntoView(element: HTMLElement | null) {
   element.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
-export function BrowserPane({ pane, agentNumber }: BrowserPaneProps) {
+export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme = "classic" }: BrowserPaneProps) {
   const [status, setStatus] = useState<BrowserStatusPayload | null>(null);
   const [response, setResponse] = useState<PaneBrowserSessionResponse | null>(null);
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
@@ -205,6 +213,8 @@ export function BrowserPane({ pane, agentNumber }: BrowserPaneProps) {
   const [bookmarkNotice, setBookmarkNotice] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
+  useAutoDismiss(captureNotice, setCaptureNotice);
   const canvasRef = useRef<BrowserCanvasHandle | null>(null);
   const paneRef = useRef<HTMLElement | null>(null);
   const browserToolbarRef = useRef<HTMLDivElement | null>(null);
@@ -460,7 +470,8 @@ export function BrowserPane({ pane, agentNumber }: BrowserPaneProps) {
     try {
       const nextStatus = await api.browserStatus();
       setStatus(nextStatus);
-      setUrl((current) => current || nextStatus.defaultUrl);
+      const homeUrl = nextStatus.defaultUrl;
+      setUrl((current) => current || homeUrl);
       if (!nextStatus.enabled) {
         setResponse(null);
         setFrame(null);
@@ -478,9 +489,21 @@ export function BrowserPane({ pane, agentNumber }: BrowserPaneProps) {
           paneMode: pane.mode
         });
       } catch {
+        if (observerOnly) {
+          setResponse(null);
+          setFrame(null);
+          recordLifecycleDebugEvent({
+            type: "session_sync",
+            scope: "BrowserPane",
+            detail: "observer session unavailable",
+            paneId: pane.id,
+            paneMode: pane.mode
+          });
+          return;
+        }
         const nextResponse = await api.startBrowserSession(pane.id, {
           viewport: defaultViewport,
-          targetUrl: nextStatus.defaultUrl,
+          targetUrl: homeUrl,
           ownerAgentId: `agent:${agentNumber}`
         });
         applyResponse(nextResponse);
@@ -536,9 +559,9 @@ export function BrowserPane({ pane, agentNumber }: BrowserPaneProps) {
       const isInitialAttempt = connectionAttempt === 0;
       connectionAttempt += 1;
       updateBrowserStreamTelemetry("ticket");
-      let ticket = null;
+      let ticket = observerOnly ? fallbackTicket : null;
       try {
-        ticket = (await api.browserStreamTicket(pane.id)).websocket;
+        if (!ticket) ticket = (await api.browserStreamTicket(pane.id)).websocket;
       } catch {
         if (isInitialAttempt && isFirstConnectionForSession) ticket = fallbackTicket;
         else {
@@ -603,6 +626,7 @@ export function BrowserPane({ pane, agentNumber }: BrowserPaneProps) {
               if (!message.ok) setError(message.error.message);
               return;
             }
+            if (message.type !== "error") return;
             setError(message.message);
             return;
           }
@@ -1285,7 +1309,7 @@ export function BrowserPane({ pane, agentNumber }: BrowserPaneProps) {
       if (pressed) appendFrame((await api.browserAction(pane.id, { type: "click", x: pressed.x, y: pressed.y, sessionId: session.sessionId })).frame);
       return;
     }
-    if (input.type === "KEY" && input.eventType === "keyDown" && input.text) {
+    if (input.type === "KEY" && (input.eventType === "keyDown" || input.eventType === "char") && input.text) {
       appendFrame((await api.browserAction(pane.id, { type: "type", text: input.text, sessionId: session.sessionId })).frame);
     }
   }
@@ -1433,10 +1457,31 @@ export function BrowserPane({ pane, agentNumber }: BrowserPaneProps) {
     ],
     [bookmarksOpen, debugOpen, pane.title, pending, recording, recordingActionPending, recordingControlsOpen, session, status?.enabled, textInputOpen]
   );
+  const [browserToolbarStorageKeys] = useState(() => {
+    const storageKeys = uiTheme === "modern"
+      ? modernPaneToolbarStorageKeys(pane.mode)
+      : {
+          hidden: BROWSER_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY,
+          order: BROWSER_TOOLBAR_ACTION_ORDER_STORAGE_KEY
+        };
+    if (uiTheme === "modern") {
+      migrateModernToolbarPreference(
+        getSpaceRuntime().platform.localStorage,
+        BROWSER_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY,
+        storageKeys.hidden
+      );
+      migrateModernToolbarPreference(
+        getSpaceRuntime().platform.localStorage,
+        BROWSER_TOOLBAR_ACTION_ORDER_STORAGE_KEY,
+        storageKeys.order
+      );
+    }
+    return storageKeys;
+  });
   const browserToolbar = usePersistentIconToolbar({
     actions: browserToolbarActions,
-    hiddenStorageKey: BROWSER_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY,
-    orderStorageKey: BROWSER_TOOLBAR_ACTION_ORDER_STORAGE_KEY
+    hiddenStorageKey: browserToolbarStorageKeys.hidden,
+    orderStorageKey: browserToolbarStorageKeys.order
   });
   useDismissibleToolbarLayer({
     containerRef: browserToolbarRef,
@@ -2071,8 +2116,22 @@ export function BrowserPane({ pane, agentNumber }: BrowserPaneProps) {
         ) : null}
       </div>
 
-      {captureNotice ? <div className="browser-pane-notice" role="status">{captureNotice}</div> : null}
-      {error ? <div className="browser-pane-error" role="alert">{error}</div> : null}
+      {captureNotice ? (
+        <div className="browser-pane-notice" role="status">
+          <span>{captureNotice}</span>
+          <button type="button" className="browser-pane-notice-close" aria-label="Dismiss message" onClick={() => setCaptureNotice(null)}>
+            <X aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+      {error ? (
+        <div className="browser-pane-error" role="alert">
+          <span>{error}</span>
+          <button type="button" className="browser-pane-notice-close" aria-label="Dismiss message" onClick={() => setError(null)}>
+            <X aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }

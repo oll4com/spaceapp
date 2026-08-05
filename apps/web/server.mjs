@@ -4,10 +4,6 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  localAppSecurityHeadersForRoute,
-  resolveLegacyAppRedirect
-} from "./server-routing.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const host = process.env.SPACE_WEB_HOST ?? "0.0.0.0";
@@ -359,11 +355,8 @@ const demoWorkspaceContentSecurityPolicy = [
 ].join("; ");
 
 function publicHomepageSecurityHeaders(request, filePath) {
-  const fileExtension = path.extname(filePath);
-  if (fileExtension !== ".html") return {};
+  if (path.extname(filePath) !== ".html") return {};
   const pathname = new URL(request.url ?? "/", "http://space.local").pathname.replace(/\/+$/, "") || "/";
-  const localHeaders = localAppSecurityHeadersForRoute(request.url, fileExtension);
-  if (localHeaders) return localHeaders;
   if (pathname === "/demo-workspace") {
     return {
       "content-security-policy": demoWorkspaceContentSecurityPolicy,
@@ -374,6 +367,7 @@ function publicHomepageSecurityHeaders(request, filePath) {
       "x-frame-options": "SAMEORIGIN"
     };
   }
+  if (pathname !== "/homepage") return {};
   return {
     "content-security-policy": publicHomepageContentSecurityPolicy,
     "cross-origin-opener-policy": "same-origin",
@@ -410,11 +404,13 @@ function serveFile(request, response, filePath) {
 
 const server = http.createServer((request, response) => {
   const requestUrl = new URL(request.url ?? "/", "http://space.local");
-  const legacyAppRedirect = resolveLegacyAppRedirect(request.url, request.method);
-  if (legacyAppRedirect) {
+  if (
+    (requestUrl.pathname === "/app" || requestUrl.pathname === "/app/") &&
+    (request.method === "GET" || request.method === "HEAD")
+  ) {
     response.writeHead(308, {
       "cache-control": "no-store",
-      location: legacyAppRedirect
+      location: `/${requestUrl.search}`
     });
     response.end();
     return;

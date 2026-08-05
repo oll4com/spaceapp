@@ -63,11 +63,38 @@ async function writeProjection(path: string | null, defaults: CodexCliModeDefaul
 
 function planPair(
   presets: CodexCollaborationModePreset[],
-  fallback: CodexCliModeDefaultPair
+  fallback: CodexCliModeDefaultPair,
+  models: CodexAppServerSocketModelOption[]
 ): CodexCliModeDefaultPair {
   const preset = presets.find((candidate) => candidate.mode === "plan");
   if (!preset?.model || !preset.reasoning_effort) return fallback;
+  const advertised = models.find((candidate) => candidate.id === preset.model);
+  if (!advertised?.supportedReasoningEfforts.includes(preset.reasoning_effort)) return fallback;
   return { modelId: preset.model, reasoningEffort: preset.reasoning_effort };
+}
+
+function advertisedPair(
+  models: CodexAppServerSocketModelOption[],
+  preferred: CodexCliModeDefaultPair | null
+): CodexCliModeDefaultPair | null {
+  if (preferred) {
+    const advertised = models.find((candidate) => candidate.id === preferred.modelId);
+    if (advertised?.supportedReasoningEfforts.includes(preferred.reasoningEffort)) return preferred;
+  }
+  const selected = models.find((candidate) => candidate.isDefault) ?? models[0];
+  if (!selected) return null;
+  const reasoningEffort = selected.supportedReasoningEfforts.includes(selected.defaultReasoningEffort)
+    ? selected.defaultReasoningEffort
+    : selected.supportedReasoningEfforts[0];
+  return reasoningEffort ? { modelId: selected.id, reasoningEffort } : null;
+}
+
+function pairIsAdvertised(
+  pair: CodexCliModeDefaultPair,
+  models: CodexAppServerSocketModelOption[]
+): boolean {
+  const advertised = models.find((candidate) => candidate.id === pair.modelId);
+  return advertised?.supportedReasoningEfforts.includes(pair.reasoningEffort) ?? false;
 }
 
 export function createCodexCliModeDefaultsService(
@@ -84,8 +111,13 @@ export function createCodexCliModeDefaultsService(
   }
 
   function initialize(): Promise<CodexCliModeDefaults> {
-    initializePromise ??= (async () => {
-      if (!options.legacyBuild) {
+    if (initializePromise) return initializePromise;
+    const attempt = (async () => {
+      const models = options.control
+        ? await options.control.listModels().catch(() => [])
+        : [];
+      const build = advertisedPair(models, options.legacyBuild);
+      if (!build) {
         throw new SpaceFeatureDisabledError(
           "CLI_CODEX_DEFAULTS_UNRESOLVED",
           "Codex CLI launch defaults could not be resolved."
@@ -94,15 +126,28 @@ export function createCodexCliModeDefaultsService(
       const presets = options.control
         ? await options.control.listCollaborationModes().catch(() => [])
         : [];
-      const defaults = await options.store.initializeCodexCliModeDefaults({
-        build: options.legacyBuild,
-        plan: planPair(presets, options.legacyBuild)
-      });
+      const desired = {
+        build,
+        plan: planPair(presets, build, models)
+      };
+      let defaults = await options.store.initializeCodexCliModeDefaults(desired);
+      for (const mode of ["build", "plan"] as const) {
+        if (pairIsAdvertised(defaults[mode], models)) continue;
+        defaults = await options.store.updateCodexCliModeDefaults({
+          mode,
+          modelId: desired[mode].modelId,
+          reasoningEffort: desired[mode].reasoningEffort
+        });
+      }
       currentDefaults = defaults;
       await writeProjection(options.projectionPath, defaults);
       return defaults;
     })();
-    return initializePromise;
+    initializePromise = attempt;
+    void attempt.catch(() => {
+      if (initializePromise === attempt) initializePromise = null;
+    });
+    return attempt;
   }
 
   async function current(): Promise<CodexCliModeDefaults> {

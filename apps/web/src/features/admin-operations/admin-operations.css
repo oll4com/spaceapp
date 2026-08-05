@@ -111,6 +111,10 @@
   gap: 0.65rem;
 }
 
+.admin-operation-actions-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .admin-operation-actions-grid > section,
 .admin-operation-history,
 .admin-release-preparation,
@@ -213,6 +217,12 @@
   gap: 0.55rem;
 }
 
+.admin-operation-history header > svg {
+  width: 1rem;
+  height: 1rem;
+  color: var(--room-muted, #a7a59e);
+}
+
 .admin-operation-run-summary {
   justify-content: flex-start;
 }
@@ -262,6 +272,136 @@
 
 .admin-operation-result-list small {
   grid-column: 1 / -1;
+}
+
+.admin-operation-run-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.4rem;
+}
+
+.admin-operation-run-list > button {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.25rem 0.45rem;
+  border: 1px solid var(--room-border, #303437);
+  border-radius: 6px;
+  background: var(--room-surface, #141617);
+  color: var(--room-text, #f4efe5);
+  padding: 0.5rem;
+  text-align: left;
+}
+
+.admin-operation-run-list > button.selected {
+  border-color: var(--room-accent, #6db7aa);
+  background: #172522;
+}
+
+.admin-operation-run-list > button strong,
+.admin-operation-run-list > button small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-operation-run-list > button small {
+  grid-column: 1 / -1;
+}
+
+.admin-operation-inline-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.admin-operation-inline-actions a,
+.admin-operation-recovery header > button {
+  min-height: 2.1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 6px;
+  background: var(--room-surface, #141617);
+  color: var(--room-text, #f4efe5);
+  padding: 0.35rem 0.5rem;
+  font-size: 0.68rem;
+  text-decoration: none;
+}
+
+.admin-operation-inline-actions svg,
+.admin-operation-recovery header > button svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.admin-operation-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #9ee0d4;
+  font-size: 0.66rem;
+}
+
+.admin-operation-live svg {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+.admin-operation-timeline ol {
+  max-height: 22rem;
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  overflow: auto;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-operation-timeline li {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.45rem;
+  border-left: 2px solid #4d7b70;
+  background: var(--room-surface, #141617);
+  padding: 0.45rem 0.5rem;
+}
+
+.admin-operation-timeline li.warn {
+  border-left-color: #b88b47;
+}
+
+.admin-operation-timeline li.error {
+  border-left-color: #b45d69;
+}
+
+.admin-operation-timeline li > span {
+  color: var(--room-muted, #a7a59e);
+  font: 0.64rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.admin-operation-timeline li > div {
+  min-width: 0;
+  display: grid;
+  gap: 0.12rem;
+}
+
+.admin-operation-timeline li strong,
+.admin-operation-timeline li small,
+.admin-operation-timeline li p {
+  overflow-wrap: anywhere;
+}
+
+.admin-operation-timeline li p {
+  margin: 0;
+  font-size: 0.7rem;
+  line-height: 1.4;
 }
 
 .admin-release-preview dl {
@@ -315,6 +455,12 @@
   font-size: 0.72rem;
 }
 
+.admin-operation-alert.success {
+  border-color: #3f675d;
+  background: #14211f;
+  color: #bce7df;
+}
+
 @media (max-width: 42rem) {
   .admin-operations-backdrop {
     align-items: end;
@@ -336,6 +482,15 @@
   }
 
   .admin-release-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-operation-history header {
+    align-items: flex-start;
+  }
+
+  .admin-operation-inline-actions {
     align-items: stretch;
     flex-direction: column;
   }

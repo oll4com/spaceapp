@@ -6,6 +6,11 @@
   cursor: pointer;
 }
 
+.toolbar-metric-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .toolbar-metric-trigger:hover,
 .toolbar-metric-trigger:focus-visible {
   border-color: #4f746e;
@@ -113,9 +118,45 @@
   font-size: 0.72rem;
 }
 
+.toolbar-metric-account-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.toolbar-metric-account-heading button {
+  flex: none;
+  border: 1px solid #3e5551;
+  border-radius: 5px;
+  background: #17211f;
+  color: #d9eee9;
+  padding: 0.2rem 0.4rem;
+  font: inherit;
+  font-size: 0.66rem;
+}
+
+.toolbar-metric-account-heading button:hover:not(:disabled),
+.toolbar-metric-account-heading button:focus-visible {
+  border-color: #6db7aa;
+  outline: none;
+}
+
+.toolbar-metric-account-heading button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
 .toolbar-metric-note,
-.toolbar-metric-error {
+.toolbar-metric-error,
+.toolbar-metric-reset-status {
   margin: 0;
+}
+
+.toolbar-metric-reset-status {
+  color: #b9d6cf;
+  font-size: 0.7rem;
 }
 
 .toolbar-metric-error {

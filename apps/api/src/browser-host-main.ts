@@ -142,6 +142,10 @@ const handler: BrowserHostRequestHandler = {
       onFrame,
       params.hints as BrowserHostStreamHints | undefined
     );
+  },
+  async startAudioStream(params, onChunk) {
+    if (!manager.startAudioStream) unavailable("startAudioStream");
+    return manager.startAudioStream(String(params.sessionId), onChunk);
   }
 };
 

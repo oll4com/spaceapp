@@ -19,6 +19,8 @@ import { BrowserHostFrameDecoder, encodeBrowserHostFrame } from "./framing.js";
 import type {
   BrowserHostActionContext,
   BrowserHostActorContext,
+  BrowserHostAudioChunk,
+  BrowserHostAudioStreamHandle,
   BrowserHostBinaryFrame,
   BrowserHostCaptureContext,
   BrowserHostDiagnostics,
@@ -35,6 +37,7 @@ interface PendingRequest {
   resolve(value: unknown): void;
   reject(error: Error): void;
   timer: NodeJS.Timeout;
+  socket: Socket;
 }
 
 export class BrowserHostClient {
@@ -44,6 +47,8 @@ export class BrowserHostClient {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly streamListeners = new Map<string, (frame: BrowserHostBinaryFrame) => void | Promise<void>>();
   private readonly earlyFrames = new Map<string, BrowserHostBinaryFrame[]>();
+  private readonly audioListeners = new Map<string, (chunk: BrowserHostAudioChunk) => void | Promise<void>>();
+  private readonly earlyAudio = new Map<string, BrowserHostAudioChunk[]>();
 
   constructor(private readonly options: {
     socketPath: string;
@@ -106,6 +111,27 @@ export class BrowserHostClient {
     };
   }
 
+  async startAudioStream(
+    sessionId: string,
+    onChunk: (chunk: BrowserHostAudioChunk) => void | Promise<void>
+  ): Promise<BrowserHostAudioStreamHandle> {
+    const started = await this.request("startAudioStream", { sessionId }) as { id: string; sampleRate: number; channels: number; format: "s16le" };
+    this.audioListeners.set(started.id, onChunk);
+    for (const chunk of this.earlyAudio.get(started.id) ?? []) void onChunk(chunk);
+    this.earlyAudio.delete(started.id);
+    let stopped = false;
+    return {
+      ...started,
+      stop: async () => {
+        if (stopped) return;
+        stopped = true;
+        this.audioListeners.delete(started.id);
+        this.earlyAudio.delete(started.id);
+        await this.request("stopAudioStream", { subscriptionId: started.id });
+      }
+    };
+  }
+
   async close(): Promise<void> {
     const socket = this.socket;
     this.socket = null;
@@ -127,6 +153,8 @@ export class BrowserHostClient {
     this.rejectPending(new BrowserHostError("BROWSER_HOST_TRANSPORT_CLOSED", "Browser host transport closed."));
     this.streamListeners.clear();
     this.earlyFrames.clear();
+    this.audioListeners.clear();
+    this.earlyAudio.clear();
   }
 
   private async request(method: string, params: Record<string, unknown>, timeoutOverrideMs?: number): Promise<unknown> {
@@ -141,9 +169,14 @@ export class BrowserHostClient {
           `Browser host ${method} request timed out after ${timeoutMs}ms.`,
           { method, timeoutMs }
         ));
+        // The server processes requests serially per connection. If a request
+        // hung (e.g. a CDP call against a crashed Chrome), every later request
+        // on the same socket would keep timing out. Drop the socket so the
+        // next request reconnects on a fresh, unblocked connection.
+        if (this.socket === socket && !socket.destroyed) socket.destroy();
       }, timeoutMs);
       timer.unref();
-      this.pending.set(requestId, { resolve, reject, timer });
+      this.pending.set(requestId, { resolve, reject, timer, socket });
       socket.write(encodeBrowserHostFrame({ kind: "request", requestId, method, params }), (error) => {
         if (!error) return;
         const pending = this.pending.get(requestId);
@@ -192,7 +225,10 @@ export class BrowserHostClient {
     socket.on("error", () => undefined);
     socket.on("close", () => {
       if (this.socket === socket) this.socket = null;
-      this.rejectPending(new BrowserHostError("BROWSER_HOST_TRANSPORT_CLOSED", "Browser host transport closed."));
+      // Reject only the requests that were in flight on this connection. The
+      // client may have already reconnected on a fresh socket after a timeout
+      // drop, so the stale connection must not tear those pending requests down.
+      this.rejectPendingFor(socket, new BrowserHostError("BROWSER_HOST_TRANSPORT_CLOSED", "Browser host transport closed."));
     });
   }
 
@@ -219,7 +255,15 @@ export class BrowserHostClient {
     const event = (envelope.event ?? {}) as Record<string, unknown>;
     const dataBase64 = event.dataBase64;
     if (typeof dataBase64 !== "string") return;
-    const frame = { ...event, data: Buffer.from(dataBase64, "base64") } as unknown as BrowserHostBinaryFrame;
+    const data = Buffer.from(dataBase64, "base64");
+    const audioListener = this.audioListeners.get(envelope.subscriptionId);
+    if (audioListener) {
+      const chunk = { ...event, data } as unknown as BrowserHostAudioChunk;
+      delete (chunk as unknown as Record<string, unknown>).dataBase64;
+      void audioListener(chunk);
+      return;
+    }
+    const frame = { ...event, data } as unknown as BrowserHostBinaryFrame;
     delete (frame as unknown as Record<string, unknown>).dataBase64;
     const listener = this.streamListeners.get(envelope.subscriptionId);
     if (listener) void listener(frame);
@@ -236,5 +280,16 @@ export class BrowserHostClient {
       pending.reject(error);
     }
     this.pending.clear();
+  }
+
+  private rejectPendingFor(socket: Socket, error: Error): void {
+    const keys: string[] = [];
+    for (const [requestId, pending] of this.pending) {
+      if (pending.socket !== socket) continue;
+      clearTimeout(pending.timer);
+      pending.reject(error);
+      keys.push(requestId);
+    }
+    for (const key of keys) this.pending.delete(key);
   }
 }

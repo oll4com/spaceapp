@@ -1,23 +1,31 @@
 import { describe, expect, it } from "vitest";
 import {
   cliRuntimeDescriptors,
-  findCliRuntimeDescriptor,
-  resolveOpenCodeAuthPolicy,
-  resolveCliRuntimeLayout
+  findCliRuntimeDescriptor
 } from "../src/cli-runtime-descriptors.js";
-import { resolveCliParityLayout } from "../src/cli-parity.js";
 
 describe("CLI runtime descriptors", () => {
+  it("requires verified credential observation and smoke support for all setup connections", () => {
+    expect(cliRuntimeDescriptors).toHaveLength(11);
+    for (const descriptor of cliRuntimeDescriptors) {
+      expect(descriptor.credentialObservationAction, descriptor.id).toBe("credential-observation");
+      expect(descriptor.credentialSmokeMarker, descriptor.id).toBe(`SPACE_${descriptor.key.toUpperCase()}_OK`);
+    }
+  });
+
   it("keeps every non-root CLI in the canonical Space UI order", () => {
     expect(cliRuntimeDescriptors.map((descriptor) => descriptor.id)).toEqual([
       "cli:codex",
       "cli:claude",
       "cli:gemini",
       "cli:opencode",
+      "cli:autohand",
       "cli:qwen",
       "cli:kimi",
       "cli:grok",
-      "cli:deepseek"
+      "cli:deepseek",
+      "cli:cursor",
+      "cli:copilot"
     ]);
     expect(cliRuntimeDescriptors.map(({ id, authMode, missingAuthState, loginAction }) => ({
       id,
@@ -26,63 +34,45 @@ describe("CLI runtime descriptors", () => {
       loginAction
     }))).toEqual([
       { id: "cli:codex", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
-      { id: "cli:claude", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
+      { id: "cli:claude", authMode: "MANAGED", missingAuthState: "UNAVAILABLE", loginAction: null },
       { id: "cli:gemini", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:opencode", authMode: "MANAGED", missingAuthState: "UNAVAILABLE", loginAction: null },
+      { id: "cli:autohand", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
       { id: "cli:qwen", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
       { id: "cli:kimi", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:grok", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
-      { id: "cli:deepseek", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" }
+      { id: "cli:deepseek", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
+      { id: "cli:cursor", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
+      { id: "cli:copilot", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" }
     ]);
   });
 
-  it("defines public-safe Claude Code authentication without private routing labels", () => {
-    expect(findCliRuntimeDescriptor("cli:claude")).toMatchObject({
-      key: "claude",
-      id: "cli:claude",
-      providerId: "anthropic",
-      providerName: "Anthropic",
-      agentName: "Claude Code CLI",
-      commandName: "claude-vscode-parity",
-      credentialSmokeEnv: "SPACE_CLI_CLAUDE_CREDENTIAL_SMOKE",
+  it("defines isolated Autohand setup with fixed OpenRouter and no native resume", () => {
+    expect(findCliRuntimeDescriptor("cli:autohand")).toMatchObject({
+      key: "autohand",
+      id: "cli:autohand",
+      providerId: "openrouter",
+      providerName: "OpenRouter",
+      agentName: "Autohand Code CLI",
+      commandName: "autohand-vscode-parity",
+      commandEnv: "SPACE_CLI_AUTOHAND_COMMAND",
+      credentialSmokeEnv: "SPACE_CLI_AUTOHAND_CREDENTIAL_SMOKE",
       authMode: "API_KEY",
       missingAuthState: "SETUP_REQUIRED",
-      loginAction: "login"
+      loginAction: "login",
+      credentialObservationAction: "credential-observation",
+      credentialSmokeMarker: "SPACE_AUTOHAND_OK",
+      stateRoot: "/var/lib/spaceapp-user/.codex/space-autohand",
+      tempDir: "/var/lib/spaceapp-user/.codex/space-autohand/tmp",
+      environment: {
+        AUTOHAND_HOME: "/var/lib/spaceapp-user/.codex/space-autohand"
+      },
+      nativeResumeArgs: null,
+      defaultModelId: "openrouter/auto"
     });
   });
 
-  it("maps every public runtime to generic container-owned state and workspace roots", () => {
-    const runtime = resolveCliRuntimeLayout({ SPACE_PUBLIC_DISTRIBUTION: "true" });
-    expect(runtime).toMatchObject({
-      runtimeHome: "/var/lib/spaceapp-cli",
-      codexHome: "/var/lib/spaceapp-cli/providers/codex"
-    });
-    expect(runtime.providerRoots).toEqual({
-      codex: "/var/lib/spaceapp-cli/providers/codex",
-      claude: "/var/lib/spaceapp-cli/providers/claude",
-      gemini: "/var/lib/spaceapp-cli/providers/gemini",
-      opencode: "/var/lib/spaceapp-cli/providers/opencode",
-      qwen: "/var/lib/spaceapp-cli/providers/qwen",
-      kimi: "/var/lib/spaceapp-cli/providers/kimi",
-      grok: "/var/lib/spaceapp-cli/providers/grok",
-      deepseek: "/var/lib/spaceapp-cli/providers/deepseek"
-    });
-    expect(resolveCliParityLayout({ SPACE_PUBLIC_DISTRIBUTION: "true" })).toMatchObject({
-      cwd: "/workspaces",
-      home: "/var/lib/spaceapp-cli",
-      codexHome: "/var/lib/spaceapp-cli/providers/codex",
-      claudeRoot: "/var/lib/spaceapp-cli/providers/claude",
-      deepseekRoot: "/var/lib/spaceapp-cli/providers/deepseek"
-    });
-    expect(resolveOpenCodeAuthPolicy({ SPACE_PUBLIC_DISTRIBUTION: "true" })).toEqual({
-      authMode: "API_KEY",
-      missingAuthState: "SETUP_REQUIRED",
-      missingAuthReason: "OpenCode provider authentication is required. Open the official login flow to continue.",
-      loginAction: "login"
-    });
-  });
-
-  it("defines Gemini browser authentication without a special bootstrap mode", () => {
+  it("routes the stable Gemini runtime id through supported Antigravity browser authentication", () => {
     expect(findCliRuntimeDescriptor("cli:gemini")).toMatchObject({
       key: "gemini",
       id: "cli:gemini",
@@ -101,9 +91,9 @@ describe("CLI runtime descriptors", () => {
       stateRoot: "/var/lib/spaceapp-user/.codex/space-gemini",
       tempDir: "/var/lib/spaceapp-user/.codex/space-gemini/tmp",
       environment: {
-        GEMINI_CLI_HOME: "/var/lib/spaceapp-user/.codex/space-gemini"
+        ANTIGRAVITY_HOME: "/var/lib/spaceapp-user/.codex/space-gemini/home"
       },
-      nativeResumeArgs: ["--resume", "latest"]
+      nativeResumeArgs: ["--continue"]
     });
   });
 
@@ -132,7 +122,7 @@ describe("CLI runtime descriptors", () => {
     });
   });
 
-  it("defines DeepSeek as fixed-model text chat without native resume", () => {
+  it("defines DeepSeek as provider-catalog text chat without a Space model default", () => {
     expect(findCliRuntimeDescriptor("cli:deepseek")).toMatchObject({
       key: "deepseek",
       id: "cli:deepseek",
@@ -151,7 +141,56 @@ describe("CLI runtime descriptors", () => {
         DEEPSEEK_HOME: "/var/lib/spaceapp-user/.codex/space-deepseek"
       },
       nativeResumeArgs: null,
-      defaultModelId: "deepseek-v4-flash"
+      defaultModelId: null
+    });
+  });
+
+  it("defines isolated Cursor browser OAuth and native recovery", () => {
+    expect(findCliRuntimeDescriptor("cli:cursor")).toMatchObject({
+      key: "cursor",
+      id: "cli:cursor",
+      providerId: "cursor",
+      providerName: "Cursor",
+      agentName: "Cursor CLI",
+      commandName: "cursor-vscode-parity",
+      commandEnv: "SPACE_CLI_CURSOR_COMMAND",
+      credentialSmokeEnv: "SPACE_CLI_CURSOR_CREDENTIAL_SMOKE",
+      authMode: "BROWSER_OAUTH",
+      missingAuthState: "LOGIN_REQUIRED",
+      loginAction: "login",
+      credentialObservationAction: "credential-observation",
+      credentialSmokeMarker: "SPACE_CURSOR_OK",
+      stateRoot: "/var/lib/spaceapp-user/.codex/space-cursor",
+      tempDir: "/var/lib/spaceapp-user/.codex/space-cursor/tmp",
+      environment: {
+        CURSOR_CONFIG_DIR: "/var/lib/spaceapp-user/.codex/space-cursor",
+        AGENT_CLI_CREDENTIAL_STORE: "file"
+      },
+      nativeResumeArgs: ["--continue"]
+    });
+  });
+
+  it("defines isolated GitHub Copilot device login and native recovery", () => {
+    expect(findCliRuntimeDescriptor("cli:copilot")).toMatchObject({
+      key: "copilot",
+      id: "cli:copilot",
+      providerId: "github",
+      providerName: "GitHub",
+      agentName: "GitHub Copilot CLI",
+      commandName: "copilot-vscode-parity",
+      commandEnv: "SPACE_CLI_COPILOT_COMMAND",
+      credentialSmokeEnv: "SPACE_CLI_COPILOT_CREDENTIAL_SMOKE",
+      authMode: "DEVICE_CODE",
+      missingAuthState: "LOGIN_REQUIRED",
+      loginAction: "login",
+      credentialObservationAction: "credential-observation",
+      credentialSmokeMarker: "SPACE_COPILOT_OK",
+      stateRoot: "/var/lib/spaceapp-user/.codex/space-copilot",
+      tempDir: "/var/lib/spaceapp-user/.codex/space-copilot/tmp",
+      environment: {
+        COPILOT_HOME: "/var/lib/spaceapp-user/.codex/space-copilot"
+      },
+      nativeResumeArgs: ["--continue"]
     });
   });
 });

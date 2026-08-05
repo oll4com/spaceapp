@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, RotateCcw, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, Check, RotateCcw, ShieldAlert, X } from "../ui-theme/app-icons.js";
 import { useState } from "react";
 import type { MemoryChangeSet } from "@space/contracts";
 

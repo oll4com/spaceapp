@@ -20,6 +20,7 @@ export interface NullAgentMessageDiagnostic {
 
 export interface FindRecentNullAgentMessageDiagnosticOptions {
   codexHome: string;
+  threadId: string;
   cwd?: string | null;
   inputText?: string | null;
   sinceMs: number;
@@ -525,6 +526,7 @@ export async function findRecentNullAgentMessageDiagnostic(
     } catch {
       continue;
     }
+    if (rolloutThreadId(content) !== options.threadId) continue;
     const inputText = options.inputText?.trim();
     if (inputText && !content.includes(inputText)) continue;
     const diagnostic = detectNullAgentMessageRollout(file.path, content, { sinceMs: options.sinceMs });

@@ -1,4 +1,4 @@
-import { ArrowUp, Bot, CircleStop, File, FileVideo, Mic, Trash2, X } from "lucide-react";
+import { ArrowUp, Bot, CircleStop, File, FileVideo, Mic, Trash2, X } from "../ui-theme/app-icons.js";
 import { useEffect, useMemo, useRef, type FormEvent, type KeyboardEvent } from "react";
 import type { PaneCliModelSettings } from "@space/contracts";
 import { CodexModelPicker } from "../codex-model-picker/CodexModelPicker.js";
@@ -13,6 +13,7 @@ type CodexModelCatalog = PaneCliModelSettings["models"];
 
 export interface CodexComposerProps {
   paneTitle: string;
+  disabledReason?: string | null;
   prompt: string;
   onPromptChange: (value: string) => void;
   attachments: CodexComposerAttachment[];
@@ -56,6 +57,7 @@ function attachmentKind(attachment: CodexComposerAttachment): "image" | "video" 
 
 export function CodexComposer({
   paneTitle,
+  disabledReason = null,
   prompt,
   onPromptChange,
   attachments,
@@ -89,6 +91,8 @@ export function CodexComposer({
       isTurnActive: isRunning
     };
   }, [isRunning, modelCatalog, modelOptions, selectedModelConfigId]);
+  const isDisabled = Boolean(disabledReason);
+  const disabledTitle = disabledReason ?? undefined;
 
   useEffect(() => {
     const textarea = promptRef.current;
@@ -105,7 +109,7 @@ export function CodexComposer({
 
   function submit(event?: FormEvent) {
     event?.preventDefault();
-    if (canSend && !pending && !isRunning) {
+    if (!isDisabled && canSend && !pending && !isRunning) {
       restorePromptFocusRef.current = true;
       onSend();
     }
@@ -118,6 +122,9 @@ export function CodexComposer({
   }
 
   async function switchModel(modelId: string, reasoningEffort: string) {
+    if (isDisabled) {
+      throw new Error(disabledReason ?? "Codex is disabled.");
+    }
     const option = modelOptions.find(
       (candidate) => codexModelName(candidate) === modelId && candidate.reasoningKey === reasoningEffort
     );
@@ -138,7 +145,7 @@ export function CodexComposer({
   }
 
   return (
-    <form className="codex-composer" onSubmit={submit}>
+    <form className="codex-composer" onSubmit={submit} title={disabledTitle}>
       {attachments.length ? (
         <div className="codex-attachments" aria-label={"Attachments " + paneTitle}>
           {attachments.map((artifact) => {
@@ -155,13 +162,29 @@ export function CodexComposer({
                     <span><strong>{name}</strong><small>{extension} · {artifact.byteSize.toLocaleString()} bytes</small></span>
                   </div>
                 )}
-                <button type="button" className="codex-attachment-remove" onClick={() => onRemoveAttachment(artifact.id)} aria-label={`Remove attachment ${name}`} title="Remove attachment">
+                <button
+                  type="button"
+                  className="codex-attachment-remove"
+                  onClick={() => onRemoveAttachment(artifact.id)}
+                  aria-label={`Remove attachment ${name}`}
+                  title={disabledTitle ?? "Remove attachment"}
+                  disabled={isDisabled}
+                >
                   <X aria-hidden="true" />
                 </button>
               </div>
             );
           })}
-          <button type="button" className="codex-attachments-clear" onClick={onClearAttachments} aria-label="Clear all attachments" title="Clear all attachments"><Trash2 aria-hidden="true" /></button>
+          <button
+            type="button"
+            className="codex-attachments-clear"
+            onClick={onClearAttachments}
+            aria-label="Clear all attachments"
+            title={disabledTitle ?? "Clear all attachments"}
+            disabled={isDisabled}
+          >
+            <Trash2 aria-hidden="true" />
+          </button>
         </div>
       ) : null}
       <textarea
@@ -173,24 +196,38 @@ export function CodexComposer({
         onKeyDown={handlePromptKeyDown}
         placeholder="Ask Codex"
         rows={3}
-        disabled={pending}
+        disabled={pending || isDisabled}
+        title={disabledTitle}
       />
       <div className="codex-composer-toolbar" aria-label={"Agent composer controls " + paneTitle}>
         <div className="codex-composer-spacer" />
-        <button type="button" className={voiceActive ? "codex-voice recording" : "codex-voice"} onClick={onVoice} disabled={voiceDisabled} aria-label={(voiceActive ? "Stop" : "Start") + " voice input " + paneTitle} aria-pressed={voiceActive}><Mic aria-hidden="true" /></button>
+        <button
+          type="button"
+          className={voiceActive ? "codex-voice recording" : "codex-voice"}
+          onClick={onVoice}
+          disabled={voiceDisabled || isDisabled}
+          aria-label={(voiceActive ? "Stop" : "Start") + " voice input " + paneTitle}
+          aria-pressed={voiceActive}
+          title={disabledTitle}
+        >
+          <Mic aria-hidden="true" />
+        </button>
         {modelSettings ? (
-          <CodexModelPicker
-            settings={modelSettings}
-            disabled={pending || isRunning || !canSelectModel}
-            allowSelectionWithoutCurrent
-            onSwitch={switchModel}
-          />
-        ) : <button type="button" className="codex-model-unavailable" aria-label={`Codex model unavailable ${paneTitle}`} title="Codex model catalog unavailable" disabled><Bot aria-hidden="true" /></button>}
+          <span title={disabledTitle}>
+            <CodexModelPicker
+              settings={modelSettings}
+              disabled={isDisabled || pending || isRunning || !canSelectModel}
+              allowSelectionWithoutCurrent
+              onSwitch={switchModel}
+            />
+          </span>
+        ) : <button type="button" className="codex-model-unavailable" aria-label={`Codex model unavailable ${paneTitle}`} title={disabledTitle ?? "Codex model catalog unavailable"} disabled><Bot aria-hidden="true" /></button>}
         <button
           type={isRunning ? "button" : "submit"}
           className="codex-send"
           onClick={isRunning ? onStop : undefined}
-          disabled={isRunning ? !canInterrupt || pending : !canSend || pending}
+          disabled={isDisabled || (isRunning ? !canInterrupt || pending : !canSend || pending)}
+          title={disabledTitle}
           aria-label={(isRunning ? "Stop" : "Send") + " " + paneTitle}
         >{isRunning ? <CircleStop aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}</button>
       </div>

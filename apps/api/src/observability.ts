@@ -1,8 +1,13 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { ObservabilitySnapshot } from "@space/contracts";
+import type {
+  CliTerminalTelemetryOutcome,
+  CliTerminalTelemetryReason,
+  ObservabilitySnapshot
+} from "@space/contracts";
 
 const bucketsSeconds = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10] as const;
 const maxSamplesPerEndpoint = 240;
+const maxCliTerminalMetricSeries = 128;
 
 type StatusClass = "1xx" | "2xx" | "3xx" | "4xx" | "5xx";
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
@@ -19,6 +24,13 @@ interface EndpointStats {
   minDurationMs: number | null;
   maxDurationMs: number | null;
   lastSeenAt: string | null;
+}
+
+export interface CliTerminalTelemetryObservation {
+  source: "CLIENT" | "SERVER";
+  event: string;
+  outcome: CliTerminalTelemetryOutcome;
+  reason: CliTerminalTelemetryReason;
 }
 
 function statusClass(statusCode: number): StatusClass {
@@ -67,6 +79,8 @@ export function createHttpObservability(input: { serviceName: "space-api" }) {
   const startedAt = new Date();
   const starts = new WeakMap<FastifyRequest, bigint>();
   const endpoints = new Map<string, EndpointStats>();
+  const cliTerminalEvents = new Map<string, CliTerminalTelemetryObservation & { count: number }>();
+  let droppedCliTerminalMetricSeries = 0;
 
   function getEndpoint(method: HttpMethod, route: string, klass: StatusClass): EndpointStats {
     const key = `${method}\u0000${route}\u0000${klass}`;
@@ -169,6 +183,20 @@ export function createHttpObservability(input: { serviceName: "space-api" }) {
     };
   }
 
+  function observeCliTerminalEvent(input: CliTerminalTelemetryObservation): void {
+    const key = `${input.source}\u0000${input.event}\u0000${input.outcome}\u0000${input.reason}`;
+    const existing = cliTerminalEvents.get(key);
+    if (existing) {
+      existing.count += 1;
+      return;
+    }
+    if (cliTerminalEvents.size >= maxCliTerminalMetricSeries) {
+      droppedCliTerminalMetricSeries += 1;
+      return;
+    }
+    cliTerminalEvents.set(key, { ...input, count: 1 });
+  }
+
   function renderPrometheus(): string {
     const lines = [
       "# HELP space_http_requests_total Total HTTP requests by method, route template and status class.",
@@ -204,6 +232,22 @@ export function createHttpObservability(input: { serviceName: "space-api" }) {
       lines.push(`space_http_request_duration_seconds_count{${labels}} ${endpoint.requestCount}`);
     }
 
+    lines.push(
+      "# HELP space_cli_terminal_events_total CLI terminal lifecycle events by bounded source, event, outcome and reason.",
+      "# TYPE space_cli_terminal_events_total counter"
+    );
+    for (const event of cliTerminalEvents.values()) {
+      const labels =
+        `source="${event.source}",event="${labelValue(event.event)}",` +
+        `outcome="${event.outcome}",reason="${event.reason}"`;
+      lines.push(`space_cli_terminal_events_total{${labels}} ${event.count}`);
+    }
+    lines.push(
+      "# HELP space_cli_terminal_metric_series_dropped_total CLI terminal telemetry observations dropped after the bounded series limit.",
+      "# TYPE space_cli_terminal_metric_series_dropped_total counter",
+      `space_cli_terminal_metric_series_dropped_total ${droppedCliTerminalMetricSeries}`
+    );
+
     const memory = process.memoryUsage();
     lines.push(
       "# HELP space_process_uptime_seconds Process uptime in seconds.",
@@ -226,6 +270,7 @@ export function createHttpObservability(input: { serviceName: "space-api" }) {
       starts.set(request, process.hrtime.bigint());
     },
     onResponse: observe,
+    observeCliTerminalEvent,
     snapshot,
     renderPrometheus
   };

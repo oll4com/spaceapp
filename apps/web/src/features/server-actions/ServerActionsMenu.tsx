@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { X, type LucideIcon } from "lucide-react";
+import { X, type LucideIcon } from "../ui-theme/app-icons.js";
 import {
   useEffect,
   useLayoutEffect,
@@ -18,6 +18,7 @@ export interface ServerActionCommand {
   icon: LucideIcon;
   onSelect: () => void;
   disabled?: boolean;
+  title?: string;
 }
 
 interface ServerActionsMenuProps {
@@ -98,6 +99,7 @@ export function ServerActionsMenu({ actions, mobile, onClose, triggerRef }: Serv
   }
 
   function runAction(action: ServerActionCommand) {
+    if (action.disabled) return;
     closeIntentRef.current = "activation";
     onClose();
     window.requestAnimationFrame(action.onSelect);
@@ -149,6 +151,7 @@ export function ServerActionsMenu({ actions, mobile, onClose, triggerRef }: Serv
         className={mobile ? "mobile-action-sheet-main" : undefined}
         aria-label={action.label}
         disabled={action.disabled}
+        title={action.title}
         onClick={() => runAction(action)}
       >
         <ActionIcon aria-hidden="true" />

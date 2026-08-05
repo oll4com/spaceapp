@@ -1,4 +1,4 @@
-import { Check, Loader2 } from "lucide-react";
+import { Check, Loader2 } from "../ui-theme/app-icons.js";
 import { useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent, type RefObject } from "react";
 import type { Room } from "@space/contracts";
 

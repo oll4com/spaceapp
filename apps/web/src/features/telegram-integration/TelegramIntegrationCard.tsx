@@ -9,7 +9,7 @@ import {
   Send,
   Unplug,
   X
-} from "lucide-react";
+} from "../ui-theme/app-icons.js";
 import type { FormEvent, RefObject } from "react";
 import { api } from "../../api.js";
 import { resolveExternalResource } from "../../runtime/SpaceRuntime.js";
@@ -47,6 +47,7 @@ function pairingExpiryLabel(value: string): string {
 
 function TelegramSetupGuide({
   botToken,
+  disabled,
   hasPairedBot,
   isBusy,
   pendingAction,
@@ -55,6 +56,7 @@ function TelegramSetupGuide({
   onCancel
 }: {
   botToken: string;
+  disabled: boolean;
   hasPairedBot: boolean;
   isBusy: boolean;
   pendingAction: TelegramPendingAction;
@@ -68,7 +70,18 @@ function TelegramSetupGuide({
       <div className="telegram-setup-step">
         <span aria-hidden="true">1</span>
         <p>Create a dedicated bot, then copy its HTTP API token.</p>
-        <a href={botFatherHref} target="_blank" rel="noreferrer" className="compact-action">
+        <a
+          href={botFatherHref}
+          target="_blank"
+          rel="noreferrer"
+          className="compact-action"
+          aria-disabled={disabled}
+          tabIndex={disabled ? -1 : undefined}
+          title={disabled ? "Enable Codex in Settings" : undefined}
+          onClick={(event) => {
+            if (disabled) event.preventDefault();
+          }}
+        >
           Open BotFather
           <ExternalLink aria-hidden="true" />
         </a>
@@ -87,7 +100,8 @@ function TelegramSetupGuide({
             maxLength={256}
             value={botToken}
             onChange={(event) => onTokenChange(event.target.value)}
-            disabled={isBusy}
+            disabled={disabled || isBusy}
+            title={disabled ? "Enable Codex in Settings" : undefined}
             placeholder="Paste token once"
           />
         </label>
@@ -96,14 +110,21 @@ function TelegramSetupGuide({
           <button
             className="compact-action primary-action"
             type="submit"
-            disabled={isBusy || !botToken.trim()}
+            disabled={disabled || isBusy || !botToken.trim()}
+            title={disabled ? "Enable Codex in Settings" : undefined}
             aria-label={hasPairedBot ? "Submit Telegram reconnect token" : "Connect Telegram bot"}
           >
             {pendingAction === "connect" ? <Loader2 className="telegram-spinner" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
             <span>{hasPairedBot ? "Reconnect" : "Connect"}</span>
           </button>
           {hasPairedBot ? (
-            <button className="compact-action" type="button" onClick={onCancel} disabled={isBusy}>
+            <button
+              className="compact-action"
+              type="button"
+              onClick={onCancel}
+              disabled={disabled || isBusy}
+              title={disabled ? "Enable Codex in Settings" : undefined}
+            >
               <X aria-hidden="true" />
               <span>Cancel</span>
             </button>
@@ -115,6 +136,7 @@ function TelegramSetupGuide({
 }
 
 function TelegramPairingPanel({
+  disabled,
   pairing,
   pairingId,
   pairingExpiresAt,
@@ -123,6 +145,7 @@ function TelegramPairingPanel({
   onCheck,
   onReconnect
 }: {
+  disabled: boolean;
   pairing: TelegramPairingResponse["pairing"] | null;
   pairingId: string | null;
   pairingExpiresAt: string | null;
@@ -144,7 +167,18 @@ function TelegramPairingPanel({
         </small>
       ) : null}
       {pairing ? (
-        <a href={pairingHref ?? "#"} target="_blank" rel="noreferrer" className="compact-action primary-action">
+        <a
+          href={pairingHref ?? "#"}
+          target="_blank"
+          rel="noreferrer"
+          className="compact-action primary-action"
+          aria-disabled={disabled}
+          tabIndex={disabled ? -1 : undefined}
+          title={disabled ? "Enable Codex in Settings" : undefined}
+          onClick={(event) => {
+            if (disabled) event.preventDefault();
+          }}
+        >
           <Send aria-hidden="true" />
           <span>Open private Telegram pairing</span>
         </a>
@@ -156,7 +190,8 @@ function TelegramPairingPanel({
           className="compact-action"
           type="button"
           onClick={onCheck}
-          disabled={isBusy || !pairingId}
+          disabled={disabled || isBusy || !pairingId}
+          title={disabled ? "Enable Codex in Settings" : undefined}
           aria-label="Check Telegram pairing"
         >
           {pendingAction === "check" ? <Loader2 className="telegram-spinner" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
@@ -166,7 +201,8 @@ function TelegramPairingPanel({
           className="compact-action"
           type="button"
           onClick={onReconnect}
-          disabled={isBusy}
+          disabled={disabled || isBusy}
+          title={disabled ? "Enable Codex in Settings" : undefined}
           aria-label="Reconnect Telegram bot"
         >
           <RotateCw aria-hidden="true" />
@@ -178,6 +214,7 @@ function TelegramPairingPanel({
 }
 
 function TelegramConnectedControls({
+  disabled,
   status,
   isBusy,
   pendingAction,
@@ -191,6 +228,7 @@ function TelegramConnectedControls({
   onConfirmDisconnect,
   onCancelDisconnect
 }: {
+  disabled: boolean;
   status: TelegramIntegrationStatus;
   isBusy: boolean;
   pendingAction: TelegramPendingAction;
@@ -212,18 +250,33 @@ function TelegramConnectedControls({
           name="telegram-completion-notifications"
           checked={status.isEnabled}
           onChange={(event) => onToggle(event.target.checked)}
-          disabled={isBusy}
+          disabled={disabled || isBusy}
+          title={disabled ? "Enable Codex in Settings" : undefined}
           aria-label="Enable completion notifications"
         />
         <span>Enable completion notifications</span>
       </label>
       <div className="telegram-action-row">
-        <button className="compact-action" type="button" onClick={onTest} disabled={isBusy} aria-label="Send Telegram test message">
+        <button
+          className="compact-action"
+          type="button"
+          onClick={onTest}
+          disabled={disabled || isBusy}
+          title={disabled ? "Enable Codex in Settings" : undefined}
+          aria-label="Send Telegram test message"
+        >
           {pendingAction === "test" ? <Loader2 className="telegram-spinner" aria-hidden="true" /> : <Send aria-hidden="true" />}
           <span>Send test</span>
         </button>
         {showReconnect ? (
-          <button className="compact-action" type="button" onClick={onReconnect} disabled={isBusy} aria-label="Reconnect Telegram bot">
+          <button
+            className="compact-action"
+            type="button"
+            onClick={onReconnect}
+            disabled={disabled || isBusy}
+            title={disabled ? "Enable Codex in Settings" : undefined}
+            aria-label="Reconnect Telegram bot"
+          >
             <RotateCw aria-hidden="true" />
             <span>Reconnect</span>
           </button>
@@ -232,7 +285,8 @@ function TelegramConnectedControls({
           className="compact-action telegram-danger-action"
           type="button"
           onClick={onRequestDisconnect}
-          disabled={isBusy || confirmingDisconnect}
+          disabled={disabled || isBusy || confirmingDisconnect}
+          title={disabled ? "Enable Codex in Settings" : undefined}
           aria-label="Disconnect Telegram"
         >
           <Unplug aria-hidden="true" />
@@ -248,13 +302,20 @@ function TelegramConnectedControls({
               className="compact-action telegram-danger-action"
               type="button"
               onClick={onConfirmDisconnect}
-              disabled={isBusy}
+              disabled={disabled || isBusy}
+              title={disabled ? "Enable Codex in Settings" : undefined}
               aria-label="Confirm Telegram disconnect"
             >
               {pendingAction === "disconnect" ? <Loader2 className="telegram-spinner" aria-hidden="true" /> : <Unplug aria-hidden="true" />}
               <span>Disconnect</span>
             </button>
-            <button className="compact-action" type="button" onClick={onCancelDisconnect} disabled={isBusy}>
+            <button
+              className="compact-action"
+              type="button"
+              onClick={onCancelDisconnect}
+              disabled={disabled || isBusy}
+              title={disabled ? "Enable Codex in Settings" : undefined}
+            >
               <X aria-hidden="true" />
               <span>Cancel</span>
             </button>
@@ -267,10 +328,12 @@ function TelegramConnectedControls({
 
 export function TelegramIntegrationCard({
   canManage,
-  client = api
+  client = api,
+  isCodexEnabled = true
 }: {
   canManage: boolean;
   client?: TelegramIntegrationClient;
+  isCodexEnabled?: boolean;
 }) {
   const integration = useTelegramIntegration(client);
   const { status, pairing, pendingAction } = integration;
@@ -293,12 +356,13 @@ export function TelegramIntegrationCard({
           <strong>Telegram notifications</strong>
           <small>{connectionSummary(status, pendingAction === "load")}</small>
         </span>
+        {!isCodexEnabled ? <span className="status muted">OFF</span> : null}
         <button
           className="icon-action"
           type="button"
           onClick={() => void integration.loadStatus()}
-          disabled={isBusy}
-          title="Refresh Telegram status"
+          disabled={!isCodexEnabled || isBusy}
+          title={isCodexEnabled ? "Refresh Telegram status" : "Enable Codex in Settings"}
           aria-label="Refresh Telegram status"
         >
           {pendingAction === "load" ? <Loader2 className="telegram-spinner" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
@@ -325,24 +389,38 @@ export function TelegramIntegrationCard({
         <div className="validation-result bad" role="alert">
           <strong>TELEGRAM_INTEGRATION_ERROR</strong>
           <small>{integration.actionError}</small>
+          <button type="button" className="notice-close" aria-label="Dismiss message" onClick={integration.dismissActionError}><X aria-hidden="true" /></button>
         </div>
       ) : null}
-      <div className="telegram-feedback" role="status" aria-live="polite">{integration.feedback}</div>
+      {integration.feedback ? (
+        <div className="telegram-feedback" role="status" aria-live="polite">
+          <span>{integration.feedback}</span>
+          <button type="button" className="notice-close" aria-label="Dismiss message" onClick={integration.dismissFeedback}><X aria-hidden="true" /></button>
+        </div>
+      ) : null}
 
       {!canManage ? <p className="telegram-admin-note">Admin access is required to change this integration.</p> : null}
       {canManage && (isDisconnected || integration.showTokenForm) ? (
         <TelegramSetupGuide
           botToken={integration.botToken}
+          disabled={!isCodexEnabled}
           hasPairedBot={hasPairedBot}
           isBusy={isBusy}
           pendingAction={pendingAction}
           onTokenChange={integration.setBotToken}
-          onSubmit={(event) => void integration.connectBot(event)}
+          onSubmit={(event) => {
+            if (!isCodexEnabled) {
+              event.preventDefault();
+              return;
+            }
+            void integration.connectBot(event);
+          }}
           onCancel={() => integration.setShowTokenForm(false)}
         />
       ) : null}
       {canManage && hasPendingPairing ? (
         <TelegramPairingPanel
+          disabled={!isCodexEnabled}
           pairing={pairing}
           pairingId={pairing?.id ?? status?.pairingId ?? null}
           pairingExpiresAt={pairingExpiresAt}
@@ -354,6 +432,7 @@ export function TelegramIntegrationCard({
       ) : null}
       {canManage && hasPairedBot && status ? (
         <TelegramConnectedControls
+          disabled={!isCodexEnabled}
           status={status}
           isBusy={isBusy}
           pendingAction={pendingAction}

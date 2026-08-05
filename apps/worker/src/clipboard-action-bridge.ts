@@ -1,6 +1,7 @@
 import {
   listClipboardItemsQuerySchema,
   saveAgentClipboardItemInputSchema,
+  saveAgentClipboardPlanInputSchema,
   spaceAgentClipboardActionEnvelopeSchema,
   spaceClipboardToolIdSchema,
   type ClipboardItem,
@@ -176,6 +177,26 @@ export async function executeClipboardActionBridge(input: {
           continue;
         }
         lines.push(`- EXECUTED clipboard:get; ${formatClipboardItem(item, getTextCharacters)}`);
+        executedActionCount += 1;
+        continue;
+      }
+
+      if (request.action.type === "save-plan") {
+        const agentPlan = saveAgentClipboardPlanInputSchema.parse({
+          text: request.action.text,
+          title: request.action.title,
+          roomId: input.turnInput.roomId,
+          paneId: input.turnInput.paneId,
+          paneTitle: await paneTitleForTurn(input.store, input.turnInput)
+        });
+        const item = await input.store.upsertClipboardItem({
+          ...agentPlan,
+          ownerUserId: input.turnInput.operatorUserId,
+          source: "PLAN"
+        });
+        lines.push(
+          `- EXECUTED clipboard:save-plan; id=${item.id}; title=${item.title ?? "(untitled)"}; characters=${item.characterCount}; occurrences=${item.occurrenceCount}`
+        );
         executedActionCount += 1;
         continue;
       }

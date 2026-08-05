@@ -194,12 +194,12 @@ describe("first-owner setup", () => {
 
     expect(await screen.findByText(/token must contain at least 32 characters/i)).toBeTruthy();
     expect(screen.getByText(/enter a valid email address/i)).toBeTruthy();
-    expect(screen.getByText(/password must contain at least 6 characters/i)).toBeTruthy();
+    expect(screen.getByText(/password must contain at least 12 characters/i)).toBeTruthy();
     expect(screen.getByText(/passwords do not match/i)).toBeTruthy();
     expect(onClaim).not.toHaveBeenCalled();
   });
 
-  it("accepts an owner password with exactly six characters", async () => {
+  it("accepts an owner password with exactly twelve characters", async () => {
     const onClaim = vi.fn(async () => undefined);
     render(<OwnerSetupScreen expiresAt={null} onClaim={onClaim} />);
 
@@ -210,10 +210,10 @@ describe("first-owner setup", () => {
       target: { value: "owner@example.com" }
     });
     fireEvent.change(screen.getByLabelText("New password"), {
-      target: { value: "abc123" }
+      target: { value: "abc123ABCxyz" }
     });
     fireEvent.change(screen.getByLabelText("Confirm password"), {
-      target: { value: "abc123" }
+      target: { value: "abc123ABCxyz" }
     });
     fireEvent.click(screen.getByRole("button", { name: "Create owner account" }));
 
@@ -221,7 +221,7 @@ describe("first-owner setup", () => {
       expect(onClaim).toHaveBeenCalledWith({
         token: "setup-token-value-with-at-least-thirty-two-characters",
         email: "owner@example.com",
-        password: "abc123"
+        password: "abc123ABCxyz"
       });
     });
   });
@@ -260,7 +260,19 @@ describe("first-owner setup", () => {
           return jsonResponse({
             user: { id: "user:owner", email: "owner@example.com", role: "ADMIN" },
             isAuthenticated: true,
-            isSetupRequired: false
+            isSetupRequired: false,
+            onboardingVersion: 1,
+            isOnboardingComplete: false,
+            starterRoomId: "room:getting-started"
+          });
+        }
+        if (url === "/api/setup/overview") {
+          return jsonResponse({
+            onboardingVersion: 1,
+            isComplete: false,
+            completedAt: null,
+            starterRoomId: "room:getting-started",
+            connections: []
           });
         }
         if (url === "/api/rooms") {
@@ -290,6 +302,7 @@ describe("first-owner setup", () => {
     await waitFor(() => {
       expect(screen.queryByRole("heading", { name: "Create your Space owner" })).toBeNull();
     });
+    expect(await screen.findByRole("heading", { name: "Setup & connections" })).toBeTruthy();
     const claim = requests.find((request) => request.url === "/api/setup/claim");
     expect(claim?.init?.method).toBe("POST");
     expect(JSON.parse(String(claim?.init?.body))).toEqual({

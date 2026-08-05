@@ -60,6 +60,24 @@ export interface BrowserHostStreamHandle {
   stop(): Promise<void>;
 }
 
+export interface BrowserHostAudioChunk {
+  sessionId: string;
+  sequence: number;
+  data: Buffer;
+  sampleRate: number;
+  channels: number;
+  format: "s16le";
+  capturedAt: string;
+}
+
+export interface BrowserHostAudioStreamHandle {
+  id: string;
+  sampleRate: number;
+  channels: number;
+  format: "s16le";
+  stop(): Promise<void>;
+}
+
 export type BrowserHostRuntimeInput = BrowserRuntimeInput;
 
 export interface BrowserHostCaptureContext {
@@ -138,6 +156,10 @@ export interface BrowserHostRuntime {
     onFrame: (frame: BrowserHostBinaryFrame) => void | Promise<void>,
     hints?: BrowserHostStreamHints
   ): Promise<BrowserHostStreamHandle>;
+  startAudioStream?(
+    sessionId: string,
+    onChunk: (chunk: BrowserHostAudioChunk) => void | Promise<void>
+  ): Promise<BrowserHostAudioStreamHandle>;
   closeAll(): Promise<void>;
 }
 
@@ -167,13 +189,19 @@ export type BrowserHostMethod =
   | "cancelCapture"
   | "diagnostics"
   | "startFrameStream"
-  | "stopFrameStream";
+  | "stopFrameStream"
+  | "startAudioStream"
+  | "stopAudioStream";
 
 export interface BrowserHostRequestHandler {
   health(): Promise<BrowserHostHealth>;
-  request(method: Exclude<BrowserHostMethod, "health" | "startFrameStream" | "stopFrameStream">, params: Record<string, unknown>): Promise<unknown>;
+  request(method: Exclude<BrowserHostMethod, "health" | "startFrameStream" | "stopFrameStream" | "startAudioStream" | "stopAudioStream">, params: Record<string, unknown>): Promise<unknown>;
   startFrameStream(
     params: Record<string, unknown>,
     onFrame: (frame: BrowserHostBinaryFrame) => void | Promise<void>
   ): Promise<BrowserHostStreamHandle>;
+  startAudioStream(
+    params: Record<string, unknown>,
+    onChunk: (chunk: BrowserHostAudioChunk) => void | Promise<void>
+  ): Promise<BrowserHostAudioStreamHandle>;
 }

@@ -14,12 +14,16 @@ import {
   buildRoomAgentSupervisorWorkflowId,
   browserHandoffRequestSchema,
   clipboardItemSchema,
+  cliMaintenanceAuthHandoffSchema,
+  cliMaintenanceEventSchema,
   cliRuntimeSettingSchema,
   cliToggleRuntimeIdSchema,
   cliToggleRuntimeIds,
   codexCliModeDefaultsSchema,
   codexCliModeDefaultPairsSchema,
   createAdminOperationRunInputSchema,
+  createCliMaintenanceAuthHandoffInputSchema,
+  createCliMaintenanceEventInputSchema,
   createUserLinkRequestSchema,
   codexAppServerHandshakeCheckSchema,
   codexAppServerTurnSmokeCheckSchema,
@@ -30,6 +34,7 @@ import {
   createBrowserHandoffRequestInputSchema,
   createPaneCliSessionInputSchema,
   createPaneCliHostOutputInputSchema,
+  createPaneCliTerminalControlLeaseInputSchema,
   createPaneCliTranscriptChunkInputSchema,
   createRoomAgentActionInputSchema,
   createRoomAgentMissionInputSchema,
@@ -68,6 +73,7 @@ import {
   paneSchema,
   paneBrowserSessionSchema,
   paneCliSessionSchema,
+  paneCliTerminalControlLeaseSchema,
   paneCliCodexThreadOwnershipSchema,
   paneCliTranscriptChunkSchema,
   providerSchema,
@@ -82,12 +88,15 @@ import {
   roomAgentRequestRecordSchema,
   roomAgentTaskRunRecordSchema,
   roomAgentSupervisorQueueItemSchema,
+  setupConnectionCheckEventSchema,
+  setupConnectionCheckRunSchema,
   spaceAgentMessageRecordSchema,
   spaceAgentRunRecordSchema,
   spaceAgentSessionRecordSchema,
   sourceControlConnectionSchema,
   sourceControlProviderSchema,
   updatePaneCliSessionInputSchema,
+  updatePaneCliTerminalControlLeaseInputSchema,
   updatePaneBrowserSessionInputSchema,
   updateBrowserCaptureJobInputSchema,
   updateBrowserCaptureSegmentInputSchema,
@@ -103,7 +112,9 @@ import {
   updateProviderSettingsInputSchema,
   updateCodexCliModeDefaultsInputSchema,
   updateCliRuntimeSettingInputSchema,
+  updateCliRuntimeVpnInputSchema,
   updateAdminOperationRunInputSchema,
+  updateCliMaintenanceAuthHandoffInputSchema,
   swarmLockSchema,
   swarmMessageSchema,
   swarmReconcileSchema,
@@ -136,6 +147,8 @@ import {
   type AuthUser,
   type Capability,
   type ClipboardItem,
+  type CliMaintenanceAuthHandoff,
+  type CliMaintenanceEvent,
   type CliRuntimeSetting,
   type CliToggleRuntimeId,
   type CreateUserLinkRequest,
@@ -150,6 +163,8 @@ import {
   type CreateBrowserCaptureSegmentInput,
   type CreateBrowserControlLeaseInput,
   type CreateBrowserHandoffRequestInput,
+  type CreateCliMaintenanceAuthHandoffInput,
+  type CreateCliMaintenanceEventInput,
   type CreateImportCandidateInput,
   type CreateMemoryChangeSetInput,
   type ClaimMemoryCommandInput,
@@ -161,6 +176,7 @@ import {
   type CreatePaneBrowserSessionInput,
   type CreatePaneCliSessionInput,
   type CreatePaneCliHostOutputInput,
+  type CreatePaneCliTerminalControlLeaseInput,
   type CreatePaneCliTranscriptChunkInput,
   type CreateProviderInput,
   type CreateReviewCheckInput,
@@ -214,6 +230,7 @@ import {
   type Pane,
   type PaneBrowserSession,
   type PaneCliSession,
+  type PaneCliTerminalControlLease,
   type PaneCliCodexThreadOwnership,
   type PaneCliCodexThreadOwnershipSource,
   type PaneCliTranscriptChunk,
@@ -222,6 +239,8 @@ import {
   type ProviderSettings,
   type ProviderValidationResult,
   type ReleasePreview,
+  type SetupConnectionCheckEvent,
+  type SetupConnectionCheckRun,
   type ReleaseSwarmLockInput,
   type ReviewCheck,
   type ReviewDecision,
@@ -246,6 +265,7 @@ import {
   type Turn,
   type UpdateAgentPaneBindingInput,
   type UpdateAdminOperationRunInput,
+  type UpdateCliMaintenanceAuthHandoffInput,
   type UpdateArtifactRetentionInput,
   type UpdateUserLinkRequest,
   type UpdateBrowserCaptureJobInput,
@@ -259,12 +279,14 @@ import {
   type UpsertMemoryIssueStateInput,
   type UpdatePaneBrowserSessionInput,
   type UpdatePaneCliSessionInput,
+  type UpdatePaneCliTerminalControlLeaseInput,
   type UpdatePaneLayoutInput,
   type UpdateRoomInput,
   type UpdateProviderInput,
   type UpdateProviderSettingsInput,
   type UpdateCodexCliModeDefaultsInput,
   type UpdateCliRuntimeSettingInput,
+  type UpdateCliRuntimeVpnInput,
   type UpdateSpaceAgentMessageInput,
   type UpdateSpaceAgentRunInput,
   type UpdateSpaceAgentSessionInput,
@@ -313,6 +335,7 @@ import {
   normalizeSkillProposalInput,
   replaceMcpCapabilities,
   redactArtifactMetadata,
+  redactCliMaintenanceDiagnostics,
   redactMemoryText,
   type CompleteTurnInput,
   type ClipboardItemListResult,
@@ -368,12 +391,24 @@ import {
   type ClaimOwnerSetupInput,
   type InitializeOwnerSetupInput,
   type OwnerCredentials,
+  type OwnerSetupClaimResult,
   type OwnerSetupStatus,
+  type PersistedSetupConnectionState,
+  type SetupConnectionVerification,
+  type CreateSetupConnectionCheckEventInput,
+  type CreateSetupConnectionCheckRunInput,
+  type UpdateSetupConnectionCheckRunInput,
+  type UpsertSetupConnectionVerificationInput,
+  createSetupConnectionCheckEventInputSchema,
+  createSetupConnectionCheckRunInputSchema,
+  currentSetupOnboardingVersion,
+  updateSetupConnectionCheckRunRecord,
   type UpdateCliTaskRevisionInput,
   type UserLinkListResult,
   type UpsertSourceControlConnectionInput,
   type StaticCatalogOptions
 } from "@space/runtime";
+import type { SetupOnboarding } from "@space/contracts";
 import type { TelegramOutboxPersistence, TelegramPersistence } from "@space/runtime";
 import { PostgresTelegramPersistence } from "./telegram-persistence.js";
 
@@ -399,6 +434,28 @@ export interface PostgresPoolOptions {
   connectionTimeoutMillis?: number;
 }
 
+export function createSpacePgPool(
+  connectionString: string,
+  poolOptions: PostgresPoolOptions = {},
+  defaultMax = 10
+): pg.Pool {
+  const pool = new Pool({
+    connectionString,
+    max: poolOptions.max ?? defaultMax,
+    idleTimeoutMillis: poolOptions.idleTimeoutMillis ?? 30_000,
+    connectionTimeoutMillis: poolOptions.connectionTimeoutMillis ?? 5_000,
+    onConnect: (client) => {
+      client.on("error", (error: Error) => {
+        console.error("[db] Postgres pool client connection error:", error?.message ?? error);
+      });
+    }
+  });
+  pool.on("error", (error: Error) => {
+    console.error("[db] Postgres pool connection error:", error?.message ?? error);
+  });
+  return pool;
+}
+
 type RoomRow = {
   id: string;
   name: string;
@@ -417,6 +474,7 @@ type ClipboardItemRow = {
   id: string;
   text: string;
   source: ClipboardItem["source"];
+  title: string | null;
   roomId: string | null;
   paneId: string | null;
   paneTitle: string | null;
@@ -603,6 +661,16 @@ type PaneCliSessionRow = {
   endedAt: Date | string | null;
 };
 
+type PaneCliTerminalControlLeaseRow = Omit<
+  PaneCliTerminalControlLease,
+  "acquiredAt" | "heartbeatAt" | "expiresAt" | "releasedAt"
+> & {
+  acquiredAt: Date | string;
+  heartbeatAt: Date | string;
+  expiresAt: Date | string;
+  releasedAt: Date | string | null;
+};
+
 type PaneCliTaskHistoryRow = PaneCliSessionRow & {
   taskId: string;
   revisionId: string;
@@ -713,6 +781,9 @@ type PaneBrowserSessionRow = {
   activePageId: string | null;
   workerHeartbeatAt: Date | string | null;
   queuePosition: number | null;
+  restoreScrollX: number | null;
+  restoreScrollY: number | null;
+  restoreVideoPaused: boolean | null;
   isActive: boolean;
   startedAt: Date | string;
   updatedAt: Date | string;
@@ -858,6 +929,7 @@ type CodexCliModeDefaultsRow = {
 type CliRuntimeSettingRow = {
   runtimeId: string;
   enabled: boolean;
+  vpnEnabled: boolean;
   updatedAt: Date | string;
   updatedBy: string | null;
 };
@@ -875,10 +947,42 @@ type AdminOperationRunRow = {
   updatedAt: Date | string;
 };
 
+type SetupConnectionCheckRunRow = Omit<
+  SetupConnectionCheckRun,
+  "totalCount" | "completedCount" | "createdAt" | "updatedAt" | "finishedAt"
+> & {
+  totalCount: number | string;
+  completedCount: number | string;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  finishedAt: Date | string | null;
+};
+
+type SetupConnectionCheckEventRow = Omit<
+  SetupConnectionCheckEvent,
+  "sequence" | "createdAt"
+> & {
+  sequence: number | string;
+  createdAt: Date | string;
+};
+
+type CliMaintenanceEventRow = Omit<CliMaintenanceEvent, "createdAt"> & {
+  createdAt: Date | string;
+};
+
+type CliMaintenanceAuthHandoffRow = Omit<
+  CliMaintenanceAuthHandoff,
+  "createdAt" | "updatedAt" | "completedAt"
+> & {
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  completedAt: Date | string | null;
+};
+
 type SourceControlConnectionRow = {
   provider: SourceControlProvider;
-  repositoryOwner: string;
-  repositoryName: string;
+  repositoryOwner: "oll4com";
+  repositoryName: "space";
   accountLogin: string | null;
   connectionStatus: SourceControlConnectionRecord["status"];
   secretRef: string | null;
@@ -1248,6 +1352,7 @@ const clipboardItemSelect = `
     id,
     text,
     source,
+    title,
     room_id AS "roomId",
     pane_id AS "paneId",
     pane_title AS "paneTitle",
@@ -1398,6 +1503,24 @@ const paneCliSessionSelect = `
   FROM pane_cli_sessions
 `;
 
+const paneCliTerminalControlLeaseSelect = `
+  SELECT
+    lease_id AS "leaseId",
+    session_id AS "sessionId",
+    pane_id AS "paneId",
+    room_id AS "roomId",
+    user_id AS "userId",
+    browser_client_id AS "browserClientId",
+    tab_lineage_id AS "tabLineageId",
+    page_client_id AS "pageClientId",
+    status,
+    acquired_at AS "acquiredAt",
+    heartbeat_at AS "heartbeatAt",
+    expires_at AS "expiresAt",
+    released_at AS "releasedAt"
+  FROM pane_cli_terminal_control_leases
+`;
+
 const cliTaskSelect = `
   SELECT
     task_id AS "taskId",
@@ -1503,6 +1626,9 @@ const paneBrowserSessionSelect = `
     active_page_id AS "activePageId",
     worker_heartbeat_at AS "workerHeartbeatAt",
     queue_position AS "queuePosition",
+    restore_scroll_x AS "restoreScrollX",
+    restore_scroll_y AS "restoreScrollY",
+    restore_video_paused AS "restoreVideoPaused",
     is_active AS "isActive",
     started_at AS "startedAt",
     updated_at AS "updatedAt",
@@ -1710,6 +1836,7 @@ const cliRuntimeSettingsSelect = `
   SELECT
     runtime_id AS "runtimeId",
     enabled,
+    vpn_enabled AS "vpnEnabled",
     updated_at AS "updatedAt",
     updated_by AS "updatedBy"
   FROM cli_runtime_settings
@@ -1728,6 +1855,73 @@ const adminOperationRunsSelect = `
     finished_at AS "finishedAt",
     updated_at AS "updatedAt"
   FROM admin_operation_runs
+`;
+
+const setupConnectionCheckRunsSelect = `
+  SELECT
+    id,
+    scope,
+    connection_ids AS "connectionIds",
+    status,
+    total_count AS "totalCount",
+    completed_count AS "completedCount",
+    created_at AS "createdAt",
+    updated_at AS "updatedAt",
+    finished_at AS "finishedAt"
+  FROM space_setup_connection_check_runs
+`;
+
+const setupConnectionCheckEventsSelect = `
+  SELECT
+    id,
+    run_id AS "runId",
+    sequence,
+    connection_id AS "connectionId",
+    stage,
+    state,
+    functional_state AS "functionalState",
+    live_verification_state AS "liveVerificationState",
+    reason_code AS "reasonCode",
+    created_at AS "createdAt"
+  FROM space_setup_connection_check_events
+`;
+
+const cliMaintenanceEventsSelect = `
+  SELECT
+    id,
+    run_id AS "runId",
+    sequence,
+    runtime_id AS "runtimeId",
+    phase,
+    state,
+    severity,
+    code,
+    message,
+    attempt,
+    installed_version AS "installedVersion",
+    available_version AS "availableVersion",
+    target_version AS "targetVersion",
+    duration_ms AS "durationMs",
+    outcome,
+    rollback,
+    diagnostics,
+    created_at AS "createdAt"
+  FROM cli_maintenance_events
+`;
+
+const cliMaintenanceAuthHandoffsSelect = `
+  SELECT
+    id,
+    run_id AS "runId",
+    runtime_id AS "runtimeId",
+    room_id AS "roomId",
+    status,
+    attempt_count AS "attemptCount",
+    safe_error_code AS "safeErrorCode",
+    created_at AS "createdAt",
+    updated_at AS "updatedAt",
+    completed_at AS "completedAt"
+  FROM cli_maintenance_auth_handoffs
 `;
 
 const sourceControlConnectionsSelect = `
@@ -2459,6 +2653,16 @@ function mapPaneCliSession(row: PaneCliSessionRow): PaneCliSession {
   });
 }
 
+function mapPaneCliTerminalControlLease(row: PaneCliTerminalControlLeaseRow): PaneCliTerminalControlLease {
+  return paneCliTerminalControlLeaseSchema.parse({
+    ...row,
+    acquiredAt: toIso(row.acquiredAt),
+    heartbeatAt: toIso(row.heartbeatAt),
+    expiresAt: toIso(row.expiresAt),
+    releasedAt: toIso(row.releasedAt)
+  });
+}
+
 function mapPaneCliTranscriptChunk(row: PaneCliTranscriptChunkRow): PaneCliTranscriptChunk {
   return paneCliTranscriptChunkSchema.parse({
     chunkId: row.chunkId,
@@ -2521,6 +2725,9 @@ function mapPaneBrowserSession(row: PaneBrowserSessionRow): PaneBrowserSession {
     activePageId: row.activePageId,
     workerHeartbeatAt: toIso(row.workerHeartbeatAt),
     queuePosition: row.queuePosition,
+    restoreScrollX: row.restoreScrollX,
+    restoreScrollY: row.restoreScrollY,
+    restoreVideoPaused: row.restoreVideoPaused,
     isActive: row.isActive,
     startedAt: toIso(row.startedAt),
     updatedAt: toIso(row.updatedAt),
@@ -2691,6 +2898,7 @@ function mapCliRuntimeSetting(row: CliRuntimeSettingRow): CliRuntimeSetting {
   return cliRuntimeSettingSchema.parse({
     runtimeId: row.runtimeId,
     enabled: row.enabled,
+    vpnEnabled: row.vpnEnabled,
     updatedAt: toIso(row.updatedAt),
     updatedBy: row.updatedBy
   });
@@ -2703,6 +2911,43 @@ function mapAdminOperationRun(row: AdminOperationRunRow): AdminOperationRun {
     startedAt: toIso(row.startedAt),
     finishedAt: toIso(row.finishedAt),
     updatedAt: toIso(row.updatedAt)
+  });
+}
+
+function mapSetupConnectionCheckRun(row: SetupConnectionCheckRunRow): SetupConnectionCheckRun {
+  return setupConnectionCheckRunSchema.parse({
+    ...row,
+    totalCount: Number(row.totalCount),
+    completedCount: Number(row.completedCount),
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+    finishedAt: toIso(row.finishedAt)
+  });
+}
+
+function mapSetupConnectionCheckEvent(row: SetupConnectionCheckEventRow): SetupConnectionCheckEvent {
+  return setupConnectionCheckEventSchema.parse({
+    ...row,
+    sequence: Number(row.sequence),
+    createdAt: toIso(row.createdAt)
+  });
+}
+
+function mapCliMaintenanceEvent(row: CliMaintenanceEventRow): CliMaintenanceEvent {
+  return cliMaintenanceEventSchema.parse({
+    ...row,
+    sequence: Number(row.sequence),
+    createdAt: toIso(row.createdAt)
+  });
+}
+
+function mapCliMaintenanceAuthHandoff(row: CliMaintenanceAuthHandoffRow): CliMaintenanceAuthHandoff {
+  return cliMaintenanceAuthHandoffSchema.parse({
+    ...row,
+    attemptCount: Number(row.attemptCount),
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+    completedAt: toIso(row.completedAt)
   });
 }
 
@@ -3219,12 +3464,7 @@ export class PostgresSpaceStore implements SpaceStore {
     options: StaticCatalogOptions = {},
     poolOptions: PostgresPoolOptions = {}
   ): PostgresSpaceStore {
-    return new PostgresSpaceStore(new Pool({
-      connectionString,
-      max: poolOptions.max ?? 10,
-      idleTimeoutMillis: poolOptions.idleTimeoutMillis ?? 30_000,
-      connectionTimeoutMillis: poolOptions.connectionTimeoutMillis ?? 5_000
-    }), options);
+    return new PostgresSpaceStore(createSpacePgPool(connectionString, poolOptions), options);
   }
 
   createTelegramPersistence(): TelegramPersistence & TelegramOutboxPersistence {
@@ -3300,7 +3540,7 @@ export class PostgresSpaceStore implements SpaceStore {
     };
   }
 
-  async claimOwnerSetup(input: ClaimOwnerSetupInput): Promise<AuthUser> {
+  async claimOwnerSetup(input: ClaimOwnerSetupInput): Promise<OwnerSetupClaimResult> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -3347,6 +3587,7 @@ export class PostgresSpaceStore implements SpaceStore {
         `,
         [owner.id, owner.email, owner.role, input.passwordHash, input.now]
       );
+      const starterRoom = await this.createStarterRoom(client, makeSpaceId("trace"));
       await client.query(
         `
           UPDATE space_owner_setup
@@ -3355,19 +3596,475 @@ export class PostgresSpaceStore implements SpaceStore {
             setup_token_expires_at = NULL,
             owner_user_id = $1,
             claimed_at = $2,
+            onboarding_version = $3,
+            onboarding_completed_at = NULL,
+            starter_room_id = $4,
             updated_at = $2
           WHERE singleton = true
         `,
-        [owner.id, input.now]
+        [owner.id, input.now, currentSetupOnboardingVersion, starterRoom.id]
       );
       await client.query("COMMIT");
-      return owner;
+      return {
+        user: owner,
+        onboarding: {
+          onboardingVersion: currentSetupOnboardingVersion,
+          isComplete: false,
+          completedAt: null,
+          starterRoomId: starterRoom.id
+        }
+      };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
     } finally {
       client.release?.();
     }
+  }
+
+  async getOwnerOnboarding(): Promise<SetupOnboarding> {
+    const result = await this.pool.query<{
+      ownerUserId: string | null;
+      onboardingVersion: number | string;
+      onboardingCompletedAt: Date | string | null;
+      starterRoomId: string | null;
+    }>(
+      `
+        SELECT
+          owner_user_id AS "ownerUserId",
+          onboarding_version AS "onboardingVersion",
+          onboarding_completed_at AS "onboardingCompletedAt",
+          starter_room_id AS "starterRoomId"
+        FROM space_owner_setup
+        WHERE singleton = true
+      `
+    );
+    const row = result.rows[0];
+    if (!row?.ownerUserId) {
+      throw new SpaceConflictError("SpaceApp owner setup has not been claimed.");
+    }
+    return {
+      onboardingVersion: Number.parseInt(String(row.onboardingVersion), 10),
+      isComplete: row.onboardingCompletedAt !== null,
+      completedAt: row.onboardingCompletedAt === null ? null : toIso(row.onboardingCompletedAt),
+      starterRoomId: row.starterRoomId
+    };
+  }
+
+  async ensureOwnerStarterRoom(traceId = makeSpaceId("trace")): Promise<{ room: Room; onboarding: SetupOnboarding }> {
+    return this.withTransaction(async (client) => {
+      const setup = await client.query<{
+        ownerUserId: string | null;
+        starterRoomId: string | null;
+      }>(
+        `
+          SELECT
+            owner_user_id AS "ownerUserId",
+            starter_room_id AS "starterRoomId"
+          FROM space_owner_setup
+          WHERE singleton = true
+          FOR UPDATE
+        `
+      );
+      const row = setup.rows[0];
+      if (!row?.ownerUserId) {
+        throw new SpaceConflictError("SpaceApp owner setup has not been claimed.");
+      }
+
+      let room: Room | null = null;
+      if (row.starterRoomId) {
+        const existing = await client.query<RoomRow>(`${roomSelect} WHERE id = $1`, [row.starterRoomId]);
+        room = existing.rows[0] ? mapRoom(existing.rows[0]) : null;
+      }
+      if (!room) {
+        room = await this.createStarterRoom(client, traceId);
+        await client.query(
+          `
+            UPDATE space_owner_setup
+            SET starter_room_id = $1, updated_at = now()
+            WHERE singleton = true
+          `,
+          [room.id]
+        );
+      }
+
+      const onboarding = await client.query<{
+        onboardingVersion: number | string;
+        onboardingCompletedAt: Date | string | null;
+        starterRoomId: string | null;
+      }>(
+        `
+          SELECT
+            onboarding_version AS "onboardingVersion",
+            onboarding_completed_at AS "onboardingCompletedAt",
+            starter_room_id AS "starterRoomId"
+          FROM space_owner_setup
+          WHERE singleton = true
+        `
+      );
+      const state = onboarding.rows[0]!;
+      return {
+        room,
+        onboarding: {
+          onboardingVersion: Number.parseInt(String(state.onboardingVersion), 10),
+          isComplete: state.onboardingCompletedAt !== null,
+          completedAt: state.onboardingCompletedAt === null ? null : toIso(state.onboardingCompletedAt),
+          starterRoomId: state.starterRoomId
+        }
+      };
+    });
+  }
+
+  async completeOwnerOnboarding(completedAt: string): Promise<SetupOnboarding> {
+    const parsedCompletedAt = toIso(completedAt);
+    const result = await this.pool.query<{
+      onboardingVersion: number | string;
+      onboardingCompletedAt: Date | string;
+      starterRoomId: string | null;
+    }>(
+      `
+        UPDATE space_owner_setup
+        SET
+          onboarding_version = $1,
+          onboarding_completed_at = $2,
+          updated_at = $2
+        WHERE singleton = true
+          AND owner_user_id IS NOT NULL
+        RETURNING
+          onboarding_version AS "onboardingVersion",
+          onboarding_completed_at AS "onboardingCompletedAt",
+          starter_room_id AS "starterRoomId"
+      `,
+      [currentSetupOnboardingVersion, parsedCompletedAt]
+    );
+    const row = firstOrNotFound(result.rows, "SpaceApp owner setup has not been claimed.");
+    return {
+      onboardingVersion: Number.parseInt(String(row.onboardingVersion), 10),
+      isComplete: true,
+      completedAt: toIso(row.onboardingCompletedAt),
+      starterRoomId: row.starterRoomId
+    };
+  }
+
+  async listSetupConnectionVerifications(): Promise<SetupConnectionVerification[]> {
+    const result = await this.pool.query<{
+      connectionId: string;
+      state: PersistedSetupConnectionState;
+      reasonCode: string | null;
+      fingerprintHash: string | null;
+      verifiedAt: Date | string | null;
+      updatedAt: Date | string;
+    }>(
+      `
+        SELECT
+          connection_id AS "connectionId",
+          state,
+          reason_code AS "reasonCode",
+          fingerprint_hash AS "fingerprintHash",
+          verified_at AS "verifiedAt",
+          updated_at AS "updatedAt"
+        FROM space_setup_connection_verifications
+        ORDER BY connection_id ASC
+      `
+    );
+    return result.rows.map((row) => ({
+      ...row,
+      verifiedAt: row.verifiedAt === null ? null : toIso(row.verifiedAt),
+      updatedAt: toIso(row.updatedAt)
+    }));
+  }
+
+  async getSetupConnectionVerification(
+    connectionId: string
+  ): Promise<SetupConnectionVerification | null> {
+    const result = await this.pool.query<{
+      connectionId: string;
+      state: PersistedSetupConnectionState;
+      reasonCode: string | null;
+      fingerprintHash: string | null;
+      verifiedAt: Date | string | null;
+      updatedAt: Date | string;
+    }>(
+      `
+        SELECT
+          connection_id AS "connectionId",
+          state,
+          reason_code AS "reasonCode",
+          fingerprint_hash AS "fingerprintHash",
+          verified_at AS "verifiedAt",
+          updated_at AS "updatedAt"
+        FROM space_setup_connection_verifications
+        WHERE connection_id = $1
+      `,
+      [connectionId]
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          ...row,
+          verifiedAt: row.verifiedAt === null ? null : toIso(row.verifiedAt),
+          updatedAt: toIso(row.updatedAt)
+        }
+      : null;
+  }
+
+  async upsertSetupConnectionVerification(
+    input: UpsertSetupConnectionVerificationInput
+  ): Promise<SetupConnectionVerification> {
+    const result = await this.pool.query<{
+      connectionId: string;
+      state: PersistedSetupConnectionState;
+      reasonCode: string | null;
+      fingerprintHash: string | null;
+      verifiedAt: Date | string | null;
+      updatedAt: Date | string;
+    }>(
+      `
+        INSERT INTO space_setup_connection_verifications (
+          connection_id,
+          state,
+          reason_code,
+          fingerprint_hash,
+          verified_at,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (connection_id)
+        DO UPDATE SET
+          state = EXCLUDED.state,
+          reason_code = EXCLUDED.reason_code,
+          fingerprint_hash = EXCLUDED.fingerprint_hash,
+          verified_at = EXCLUDED.verified_at,
+          updated_at = EXCLUDED.updated_at
+        RETURNING
+          connection_id AS "connectionId",
+          state,
+          reason_code AS "reasonCode",
+          fingerprint_hash AS "fingerprintHash",
+          verified_at AS "verifiedAt",
+          updated_at AS "updatedAt"
+      `,
+      [
+        input.connectionId,
+        input.state,
+        input.reasonCode,
+        input.fingerprintHash,
+        input.verifiedAt,
+        input.updatedAt
+      ]
+    );
+    const row = firstOrNotFound(result.rows, `Setup connection ${input.connectionId} was not found.`);
+    return {
+      ...row,
+      verifiedAt: row.verifiedAt === null ? null : toIso(row.verifiedAt),
+      updatedAt: toIso(row.updatedAt)
+    };
+  }
+
+  async createSetupConnectionCheckRun(
+    input: CreateSetupConnectionCheckRunInput
+  ): Promise<SetupConnectionCheckRun> {
+    const parsed = createSetupConnectionCheckRunInputSchema.parse(input);
+    const runId = makeSpaceId("setup_check_run");
+    const timestamp = nowIso();
+    const result = await this.pool.query<SetupConnectionCheckRunRow>(
+      `
+        INSERT INTO space_setup_connection_check_runs (
+          id,
+          scope,
+          connection_ids,
+          actor_user_id,
+          status,
+          total_count,
+          completed_count,
+          created_at,
+          updated_at,
+          finished_at
+        )
+        VALUES ($1, $2, $3, $4, 'RUNNING', $5, 0, $6, $6, NULL)
+        RETURNING
+          id,
+          scope,
+          connection_ids AS "connectionIds",
+          status,
+          total_count AS "totalCount",
+          completed_count AS "completedCount",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          finished_at AS "finishedAt"
+      `,
+      [
+        runId,
+        parsed.scope,
+        parsed.connectionIds,
+        parsed.actorUserId,
+        parsed.connectionIds.length,
+        timestamp
+      ]
+    );
+    return mapSetupConnectionCheckRun(
+      firstOrNotFound(result.rows, `Setup connection check run ${runId} was not created.`)
+    );
+  }
+
+  async getSetupConnectionCheckRun(runId: string): Promise<SetupConnectionCheckRun | null> {
+    const parsedRunId = idSchema.parse(runId);
+    const result = await this.pool.query<SetupConnectionCheckRunRow>(
+      `${setupConnectionCheckRunsSelect} WHERE id = $1`,
+      [parsedRunId]
+    );
+    return result.rows[0] ? mapSetupConnectionCheckRun(result.rows[0]) : null;
+  }
+
+  async listSetupConnectionCheckRuns(limit = 50): Promise<SetupConnectionCheckRun[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      throw new Error("Setup connection check run limit is invalid.");
+    }
+    const result = await this.pool.query<SetupConnectionCheckRunRow>(
+      `${setupConnectionCheckRunsSelect} ORDER BY created_at DESC, id DESC LIMIT $1`,
+      [limit]
+    );
+    return result.rows.map(mapSetupConnectionCheckRun);
+  }
+
+  async updateSetupConnectionCheckRun(
+    runId: string,
+    input: UpdateSetupConnectionCheckRunInput
+  ): Promise<SetupConnectionCheckRun> {
+    const parsedRunId = idSchema.parse(runId);
+    return this.withTransaction(async (client) => {
+      const currentResult = await client.query<SetupConnectionCheckRunRow>(
+        `${setupConnectionCheckRunsSelect} WHERE id = $1 FOR UPDATE`,
+        [parsedRunId]
+      );
+      const current = mapSetupConnectionCheckRun(
+        firstOrNotFound(currentResult.rows, `Setup connection check run ${parsedRunId} was not found.`)
+      );
+      const next = updateSetupConnectionCheckRunRecord(current, input);
+      const result = await client.query<SetupConnectionCheckRunRow>(
+        `
+          UPDATE space_setup_connection_check_runs
+          SET
+            status = $2,
+            completed_count = $3,
+            updated_at = $4,
+            finished_at = $5
+          WHERE id = $1
+          RETURNING
+            id,
+            scope,
+            connection_ids AS "connectionIds",
+            status,
+            total_count AS "totalCount",
+            completed_count AS "completedCount",
+            created_at AS "createdAt",
+            updated_at AS "updatedAt",
+            finished_at AS "finishedAt"
+        `,
+        [parsedRunId, next.status, next.completedCount, next.updatedAt, next.finishedAt]
+      );
+      return mapSetupConnectionCheckRun(
+        firstOrNotFound(result.rows, `Setup connection check run ${parsedRunId} was not updated.`)
+      );
+    });
+  }
+
+  async appendSetupConnectionCheckEvent(
+    input: CreateSetupConnectionCheckEventInput
+  ): Promise<SetupConnectionCheckEvent> {
+    const parsed = createSetupConnectionCheckEventInputSchema.parse(input);
+    return this.withTransaction(async (client) => {
+      const runResult = await client.query<{ connectionIds: string[] }>(
+        `
+          SELECT connection_ids AS "connectionIds"
+          FROM space_setup_connection_check_runs
+          WHERE id = $1
+          FOR SHARE
+        `,
+        [parsed.runId]
+      );
+      if (!runResult.rows[0]?.connectionIds.includes(parsed.connectionId)) {
+        throw new SpaceNotFoundError(`Setup connection check run ${parsed.runId} was not found.`);
+      }
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [parsed.runId]);
+      const createdAt = nowIso();
+      const result = await client.query<SetupConnectionCheckEventRow>(
+        `
+          INSERT INTO space_setup_connection_check_events (
+            id,
+            run_id,
+            sequence,
+            connection_id,
+            stage,
+            state,
+            functional_state,
+            live_verification_state,
+            reason_code,
+            created_at
+          )
+          SELECT
+            $1,
+            $2,
+            COALESCE(MAX(sequence), 0) + 1,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            $8,
+            $9
+          FROM space_setup_connection_check_events
+          WHERE run_id = $2
+          RETURNING
+            id,
+            run_id AS "runId",
+            sequence,
+            connection_id AS "connectionId",
+            stage,
+            state,
+            functional_state AS "functionalState",
+            live_verification_state AS "liveVerificationState",
+            reason_code AS "reasonCode",
+            created_at AS "createdAt"
+        `,
+        [
+          makeSpaceId("setup_check_event"),
+          parsed.runId,
+          parsed.connectionId,
+          parsed.stage,
+          parsed.state,
+          parsed.functionalState,
+          parsed.liveVerificationState,
+          parsed.reasonCode,
+          createdAt
+        ]
+      );
+      return mapSetupConnectionCheckEvent(
+        firstOrNotFound(result.rows, `Setup connection check event for ${parsed.runId} was not created.`)
+      );
+    });
+  }
+
+  async listSetupConnectionCheckEvents(
+    runId: string,
+    afterSequence = 0,
+    limit = 500
+  ): Promise<SetupConnectionCheckEvent[]> {
+    const parsedRunId = idSchema.parse(runId);
+    if (!Number.isInteger(afterSequence) || afterSequence < 0) {
+      throw new Error("Setup connection check event cursor is invalid.");
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new Error("Setup connection check event limit is invalid.");
+    }
+    const result = await this.pool.query<SetupConnectionCheckEventRow>(
+      `${setupConnectionCheckEventsSelect}
+       WHERE run_id = $1 AND sequence > $2
+       ORDER BY sequence ASC, id ASC
+       LIMIT $3`,
+      [parsedRunId, afterSequence, limit]
+    );
+    return result.rows.map(mapSetupConnectionCheckEvent);
   }
 
   async getOwnerCredentials(): Promise<OwnerCredentials | null> {
@@ -3460,14 +4157,15 @@ export class PostgresSpaceStore implements SpaceStore {
       const result = await client.query<ClipboardItemRow>(
         `
           INSERT INTO clipboard_items (
-            id, owner_user_id, content_hash, text, source, room_id, pane_id, pane_title,
+            id, owner_user_id, content_hash, text, source, title, room_id, pane_id, pane_title,
             occurrence_count, character_count, created_at, last_used_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, char_length($4), clock_timestamp(), clock_timestamp())
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, char_length($4), clock_timestamp(), clock_timestamp())
           ON CONFLICT (owner_user_id, content_hash)
           DO UPDATE SET
             text = EXCLUDED.text,
             source = EXCLUDED.source,
+            title = EXCLUDED.title,
             room_id = EXCLUDED.room_id,
             pane_id = EXCLUDED.pane_id,
             pane_title = EXCLUDED.pane_title,
@@ -3478,6 +4176,7 @@ export class PostgresSpaceStore implements SpaceStore {
             id,
             text,
             source,
+            title,
             room_id AS "roomId",
             pane_id AS "paneId",
             pane_title AS "paneTitle",
@@ -3492,6 +4191,7 @@ export class PostgresSpaceStore implements SpaceStore {
           contentHash,
           parsed.text,
           parsed.source,
+          parsed.title ?? null,
           parsed.roomId ?? null,
           parsed.paneId ?? null,
           parsed.paneTitle ?? null
@@ -3705,6 +4405,7 @@ export class PostgresSpaceStore implements SpaceStore {
     return cliToggleRuntimeIds.map((runtimeId) => stored.get(runtimeId) ?? cliRuntimeSettingSchema.parse({
       runtimeId,
       enabled: true,
+      vpnEnabled: false,
       updatedAt: "1970-01-01T00:00:00.000Z",
       updatedBy: null
     }));
@@ -3716,6 +4417,7 @@ export class PostgresSpaceStore implements SpaceStore {
     return result.rows[0] ? mapCliRuntimeSetting(result.rows[0]) : cliRuntimeSettingSchema.parse({
       runtimeId: parsedRuntimeId,
       enabled: true,
+      vpnEnabled: false,
       updatedAt: "1970-01-01T00:00:00.000Z",
       updatedBy: null
     });
@@ -3741,12 +4443,42 @@ export class PostgresSpaceStore implements SpaceStore {
         RETURNING
           runtime_id AS "runtimeId",
           enabled,
+          vpn_enabled AS "vpnEnabled",
           updated_at AS "updatedAt",
           updated_by AS "updatedBy"
       `,
       [parsedRuntimeId, parsed.enabled, updatedAt, actorId]
     );
     return mapCliRuntimeSetting(firstOrNotFound(result.rows, `CLI runtime setting ${parsedRuntimeId} was not updated.`));
+  }
+
+  async updateCliRuntimeVpnSetting(
+    runtimeId: CliToggleRuntimeId,
+    input: UpdateCliRuntimeVpnInput,
+    updatedBy: string
+  ): Promise<CliRuntimeSetting> {
+    const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
+    const parsed = updateCliRuntimeVpnInputSchema.parse(input);
+    const actorId = idSchema.parse(updatedBy);
+    const updatedAt = nowIso();
+    const result = await this.pool.query<CliRuntimeSettingRow>(
+      `
+        INSERT INTO cli_runtime_settings (runtime_id, enabled, vpn_enabled, updated_at, updated_by)
+        VALUES ($1, true, $2, $3, $4)
+        ON CONFLICT (runtime_id) DO UPDATE SET
+          vpn_enabled = EXCLUDED.vpn_enabled,
+          updated_at = EXCLUDED.updated_at,
+          updated_by = EXCLUDED.updated_by
+        RETURNING
+          runtime_id AS "runtimeId",
+          enabled,
+          vpn_enabled AS "vpnEnabled",
+          updated_at AS "updatedAt",
+          updated_by AS "updatedBy"
+      `,
+      [parsedRuntimeId, parsed.enabled, updatedAt, actorId]
+    );
+    return mapCliRuntimeSetting(firstOrNotFound(result.rows, `CLI VPN setting ${parsedRuntimeId} was not updated.`));
   }
 
   async createAdminOperationRun(input: CreateAdminOperationRunInput): Promise<AdminOperationRun> {
@@ -3829,6 +4561,219 @@ export class PostgresSpaceStore implements SpaceStore {
     return mapAdminOperationRun(firstOrNotFound(result.rows, `Admin operation ${parsedRunId} was not updated.`));
   }
 
+  async appendCliMaintenanceEvent(input: CreateCliMaintenanceEventInput): Promise<CliMaintenanceEvent> {
+    const parsed = createCliMaintenanceEventInputSchema.parse({
+      ...input,
+      diagnostics: redactCliMaintenanceDiagnostics(input.diagnostics)
+    });
+    return this.withTransaction(async (client) => {
+      const runResult = await client.query<{ operationType: AdminOperationRun["operationType"] }>(
+        `SELECT operation_type AS "operationType" FROM admin_operation_runs WHERE id = $1 FOR SHARE`,
+        [parsed.runId]
+      );
+      const operationType = runResult.rows[0]?.operationType;
+      if (!operationType?.startsWith("CLI_MAINTENANCE_")) {
+        throw new SpaceNotFoundError(`CLI maintenance run ${parsed.runId} was not found.`);
+      }
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [parsed.runId]);
+      const result = await client.query<CliMaintenanceEventRow>(
+        `
+          INSERT INTO cli_maintenance_events (
+            id, run_id, sequence, runtime_id, phase, state, severity, code, message,
+            attempt, installed_version, available_version, target_version, duration_ms,
+            outcome, rollback, diagnostics, created_at
+          )
+          SELECT
+            $1,
+            $2,
+            COALESCE(MAX(sequence), 0) + 1,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            $8,
+            $9,
+            $10,
+            $11,
+            $12,
+            $13,
+            $14,
+            $15,
+            $16,
+            $17
+          FROM cli_maintenance_events
+          WHERE run_id = $2
+          RETURNING
+            id,
+            run_id AS "runId",
+            sequence,
+            runtime_id AS "runtimeId",
+            phase,
+            state,
+            severity,
+            code,
+            message,
+            attempt,
+            installed_version AS "installedVersion",
+            available_version AS "availableVersion",
+            target_version AS "targetVersion",
+            duration_ms AS "durationMs",
+            outcome,
+            rollback,
+            diagnostics,
+            created_at AS "createdAt"
+        `,
+        [
+          makeSpaceId("cli_maintenance_event"),
+          parsed.runId,
+          parsed.runtimeId,
+          parsed.phase,
+          parsed.state,
+          parsed.severity,
+          parsed.code,
+          parsed.message,
+          parsed.attempt,
+          parsed.installedVersion,
+          parsed.availableVersion,
+          parsed.targetVersion,
+          parsed.durationMs,
+          parsed.outcome,
+          parsed.rollback,
+          parsed.diagnostics,
+          nowIso()
+        ]
+      );
+      return mapCliMaintenanceEvent(
+        firstOrNotFound(result.rows, `CLI maintenance event for ${parsed.runId} was not created.`)
+      );
+    });
+  }
+
+  async listCliMaintenanceEvents(
+    runId: string,
+    afterSequence = 0,
+    limit = 500
+  ): Promise<CliMaintenanceEvent[]> {
+    const parsedRunId = idSchema.parse(runId);
+    const parsedAfterSequence = Math.max(0, Math.trunc(afterSequence));
+    const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 1_000));
+    const result = await this.pool.query<CliMaintenanceEventRow>(
+      `${cliMaintenanceEventsSelect}
+       WHERE run_id = $1 AND sequence > $2
+       ORDER BY sequence ASC, id ASC
+       LIMIT $3`,
+      [parsedRunId, parsedAfterSequence, boundedLimit]
+    );
+    return result.rows.map(mapCliMaintenanceEvent);
+  }
+
+  async createCliMaintenanceAuthHandoff(
+    input: CreateCliMaintenanceAuthHandoffInput
+  ): Promise<CliMaintenanceAuthHandoff> {
+    const parsed = createCliMaintenanceAuthHandoffInputSchema.parse(input);
+    const run = await this.getAdminOperationRun(parsed.runId);
+    if (!run || !run.operationType.startsWith("CLI_MAINTENANCE_")) {
+      throw new SpaceNotFoundError(`CLI maintenance run ${parsed.runId} was not found.`);
+    }
+    const timestamp = nowIso();
+    const result = await this.pool.query<CliMaintenanceAuthHandoffRow>(
+      `
+        INSERT INTO cli_maintenance_auth_handoffs (
+          id, run_id, runtime_id, room_id, status, attempt_count,
+          safe_error_code, created_at, updated_at, completed_at
+        )
+        VALUES ($1, $2, $3, $4, 'PENDING', 0, NULL, $5, $5, NULL)
+        RETURNING
+          id,
+          run_id AS "runId",
+          runtime_id AS "runtimeId",
+          room_id AS "roomId",
+          status,
+          attempt_count AS "attemptCount",
+          safe_error_code AS "safeErrorCode",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          completed_at AS "completedAt"
+      `,
+      [makeSpaceId("cli_auth_handoff"), parsed.runId, parsed.runtimeId, parsed.roomId, timestamp]
+    );
+    return mapCliMaintenanceAuthHandoff(
+      firstOrNotFound(result.rows, `CLI auth handoff for ${parsed.runtimeId} was not created.`)
+    );
+  }
+
+  async updateCliMaintenanceAuthHandoff(
+    handoffId: string,
+    input: UpdateCliMaintenanceAuthHandoffInput
+  ): Promise<CliMaintenanceAuthHandoff> {
+    const parsedHandoffId = idSchema.parse(handoffId);
+    const parsed = updateCliMaintenanceAuthHandoffInputSchema.parse(input);
+    const existingResult = await this.pool.query<CliMaintenanceAuthHandoffRow>(
+      `${cliMaintenanceAuthHandoffsSelect} WHERE id = $1`,
+      [parsedHandoffId]
+    );
+    const existing = mapCliMaintenanceAuthHandoff(
+      firstOrNotFound(existingResult.rows, `CLI auth handoff ${parsedHandoffId} was not found.`)
+    );
+    const timestamp = nowIso();
+    const nextStatus = parsed.status ?? existing.status;
+    const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(nextStatus);
+    const next = cliMaintenanceAuthHandoffSchema.parse({
+      ...existing,
+      ...parsed,
+      status: nextStatus,
+      updatedAt: timestamp,
+      completedAt: terminal ? (existing.completedAt ?? timestamp) : null
+    });
+    const result = await this.pool.query<CliMaintenanceAuthHandoffRow>(
+      `
+        UPDATE cli_maintenance_auth_handoffs
+        SET room_id = $2,
+            status = $3,
+            attempt_count = $4,
+            safe_error_code = $5,
+            updated_at = $6,
+            completed_at = $7
+        WHERE id = $1
+        RETURNING
+          id,
+          run_id AS "runId",
+          runtime_id AS "runtimeId",
+          room_id AS "roomId",
+          status,
+          attempt_count AS "attemptCount",
+          safe_error_code AS "safeErrorCode",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          completed_at AS "completedAt"
+      `,
+      [
+        parsedHandoffId,
+        next.roomId,
+        next.status,
+        next.attemptCount,
+        next.safeErrorCode,
+        next.updatedAt,
+        next.completedAt
+      ]
+    );
+    return mapCliMaintenanceAuthHandoff(
+      firstOrNotFound(result.rows, `CLI auth handoff ${parsedHandoffId} was not updated.`)
+    );
+  }
+
+  async listCliMaintenanceAuthHandoffs(runId: string): Promise<CliMaintenanceAuthHandoff[]> {
+    const parsedRunId = idSchema.parse(runId);
+    const result = await this.pool.query<CliMaintenanceAuthHandoffRow>(
+      `${cliMaintenanceAuthHandoffsSelect}
+       WHERE run_id = $1
+       ORDER BY created_at ASC, id ASC`,
+      [parsedRunId]
+    );
+    return result.rows.map(mapCliMaintenanceAuthHandoff);
+  }
+
   async listSourceControlConnections(): Promise<SourceControlConnectionRecord[]> {
     const result = await this.pool.query<SourceControlConnectionRow>(
       `${sourceControlConnectionsSelect} ORDER BY provider ASC`
@@ -3850,8 +4795,8 @@ export class PostgresSpaceStore implements SpaceStore {
     return {
       ...sourceControlConnectionSchema.parse({
         provider,
-        repositoryOwner: "spaceapp-owner",
-        repositoryName: "spaceapp",
+        repositoryOwner: "oll4com",
+        repositoryName: "space",
         accountLogin: null,
         status: "DISCONNECTED",
         secretConfigured: false,
@@ -3872,6 +4817,7 @@ export class PostgresSpaceStore implements SpaceStore {
         : (() => {
             throw new Error("Invalid source-control secret reference.");
           })();
+    const repositoryName = "space";
     const updatedAt = nowIso();
     const result = await this.pool.query<SourceControlConnectionRow>(
       `
@@ -3879,7 +4825,7 @@ export class PostgresSpaceStore implements SpaceStore {
           provider, repository_owner, repository_name, account_login, connection_status,
           secret_ref, last_verified_at, last_verification_code, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, 'oll4com', $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (provider) DO UPDATE SET
           repository_owner = EXCLUDED.repository_owner,
           repository_name = EXCLUDED.repository_name,
@@ -3902,8 +4848,7 @@ export class PostgresSpaceStore implements SpaceStore {
       `,
       [
         provider,
-        "spaceapp-owner",
-        "spaceapp",
+        repositoryName,
         input.accountLogin,
         input.connectionStatus,
         secretRef,
@@ -4139,6 +5084,50 @@ export class PostgresSpaceStore implements SpaceStore {
     });
   }
 
+  async reorderPanes(roomId: string, paneIds: string[], traceId = makeSpaceId("trace")): Promise<Pane[]> {
+    return this.withTransaction(async (client) => {
+      await this.getRoomForUpdate(client, roomId);
+      const currentResult = await client.query<{ id: string }>(
+        "SELECT id FROM panes WHERE room_id = $1 AND is_closed = false FOR UPDATE",
+        [roomId]
+      );
+      const currentIds = currentResult.rows.map((row) => row.id);
+      const nextIds = new Set(paneIds);
+      if (
+        paneIds.length !== currentIds.length ||
+        nextIds.size !== paneIds.length ||
+        currentIds.some((paneId) => !nextIds.has(paneId))
+      ) {
+        throw new SpaceConflictError("Pane reorder payload must include every active pane of the room exactly once.");
+      }
+
+      await client.query(
+        `
+          WITH ordered AS (
+            SELECT id, ordinality - 1 AS pane_order
+            FROM unnest($2::text[]) WITH ORDINALITY AS item(id, ordinality)
+          )
+          UPDATE panes
+          SET
+            pane_order = -ordered.pane_order - 1
+          FROM ordered
+          WHERE panes.id = ordered.id AND panes.room_id = $1
+        `,
+        [roomId, paneIds]
+      );
+      await client.query(
+        "UPDATE panes SET pane_order = -pane_order - 1 WHERE room_id = $1 AND is_closed = false",
+        [roomId]
+      );
+
+      const result = await client.query<PaneRow>(
+        `${paneSelect} WHERE room_id = $1 AND is_closed = false ORDER BY pane_order ASC, created_at ASC`,
+        [roomId]
+      );
+      return result.rows.map(mapPane);
+    });
+  }
+
   async deleteRoom(roomId: string): Promise<Room> {
     return this.withTransaction(async (client) => {
       const room = await this.getRoomForUpdate(client, roomId);
@@ -4156,7 +5145,7 @@ export class PostgresSpaceStore implements SpaceStore {
         `
       );
       return room;
-    });
+    }, { deadlockRetries: 1 });
   }
 
   async listPanes(roomId: string, includeClosed = false): Promise<Pane[]> {
@@ -6456,6 +7445,17 @@ export class PostgresSpaceStore implements SpaceStore {
     return result.rows.map(mapPaneCliSession);
   }
 
+  async listActivePaneCliSessions(runtimeId: string): Promise<PaneCliSession[]> {
+    const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
+    const result = await this.pool.query<PaneCliSessionRow>(
+      `${paneCliSessionSelect}
+       WHERE runtime_id = $1 AND is_active = true AND status = 'RUNNING'
+       ORDER BY started_at ASC`,
+      [parsedRuntimeId]
+    );
+    return result.rows.map(mapPaneCliSession);
+  }
+
   async getCliTask(taskId: string): Promise<CliTaskRecord | null> {
     const result = await this.pool.query<CliTaskRow>(`${cliTaskSelect} WHERE task_id = $1`, [taskId]);
     return result.rows[0] ? mapCliTask(result.rows[0]) : null;
@@ -6909,6 +7909,201 @@ export class PostgresSpaceStore implements SpaceStore {
   async getPaneCliSession(sessionId: string): Promise<PaneCliSession | null> {
     const result = await this.pool.query<PaneCliSessionRow>(`${paneCliSessionSelect} WHERE session_id = $1`, [sessionId]);
     return result.rows[0] ? mapPaneCliSession(result.rows[0]) : null;
+  }
+
+  async getActivePaneCliTerminalControlLease(sessionId: string): Promise<PaneCliTerminalControlLease | null> {
+    await this.pool.query(
+      `
+        UPDATE pane_cli_terminal_control_leases
+        SET status = 'EXPIRED', released_at = COALESCE(released_at, clock_timestamp())
+        WHERE session_id = $1 AND status = 'ACTIVE' AND expires_at <= clock_timestamp()
+      `,
+      [sessionId]
+    );
+    const result = await this.pool.query<PaneCliTerminalControlLeaseRow>(
+      `${paneCliTerminalControlLeaseSelect}
+       WHERE session_id = $1 AND status = 'ACTIVE' AND expires_at > clock_timestamp()
+       ORDER BY acquired_at DESC
+       LIMIT 1`,
+      [sessionId]
+    );
+    return result.rows[0] ? mapPaneCliTerminalControlLease(result.rows[0]) : null;
+  }
+
+  async getPaneCliTerminalControlLease(leaseId: string): Promise<PaneCliTerminalControlLease | null> {
+    await this.pool.query(
+      `
+        UPDATE pane_cli_terminal_control_leases
+        SET status = 'EXPIRED', released_at = COALESCE(released_at, clock_timestamp())
+        WHERE lease_id = $1 AND status = 'ACTIVE' AND expires_at <= clock_timestamp()
+      `,
+      [leaseId]
+    );
+    const result = await this.pool.query<PaneCliTerminalControlLeaseRow>(
+      `${paneCliTerminalControlLeaseSelect} WHERE lease_id = $1`,
+      [leaseId]
+    );
+    return result.rows[0] ? mapPaneCliTerminalControlLease(result.rows[0]) : null;
+  }
+
+  async createPaneCliTerminalControlLease(
+    input: CreatePaneCliTerminalControlLeaseInput
+  ): Promise<PaneCliTerminalControlLease> {
+    const parsed = createPaneCliTerminalControlLeaseInputSchema.parse(input);
+    return this.withTransaction(async (client) => {
+      const sessionResult = await client.query<PaneCliSessionRow>(
+        `${paneCliSessionSelect} WHERE session_id = $1 FOR UPDATE`,
+        [parsed.sessionId]
+      );
+      const session = mapPaneCliSession(
+        firstOrNotFound(sessionResult.rows, `CLI session ${parsed.sessionId} was not found.`)
+      );
+      if (session.paneId !== parsed.paneId || session.roomId !== parsed.roomId) {
+        throw new SpaceNotFoundError(`CLI session ${parsed.sessionId} was not found.`);
+      }
+      await client.query(
+        `
+          UPDATE pane_cli_terminal_control_leases
+          SET status = 'EXPIRED', released_at = COALESCE(released_at, clock_timestamp())
+          WHERE session_id = $1 AND status = 'ACTIVE' AND expires_at <= clock_timestamp()
+        `,
+        [parsed.sessionId]
+      );
+      const activeResult = await client.query<PaneCliTerminalControlLeaseRow>(
+        `${paneCliTerminalControlLeaseSelect}
+         WHERE session_id = $1 AND status = 'ACTIVE'
+         LIMIT 1
+         FOR UPDATE`,
+        [parsed.sessionId]
+      );
+      const active = activeResult.rows[0] ? mapPaneCliTerminalControlLease(activeResult.rows[0]) : null;
+      if (parsed.expectedActiveLeaseId === null ? active !== null : active?.leaseId !== parsed.expectedActiveLeaseId) {
+        throw new SpaceConflictError(`CLI terminal control for session ${parsed.sessionId} changed before acquisition.`);
+      }
+      const leaseId = parsed.leaseId ?? makeSpaceId("cli_terminal_lease");
+      if (active) {
+        await client.query(
+          `
+            UPDATE pane_cli_terminal_control_leases
+            SET status = 'REVOKED', released_at = COALESCE(released_at, clock_timestamp())
+            WHERE lease_id = $1 AND status = 'ACTIVE'
+          `,
+          [active.leaseId]
+        );
+      }
+      const result = await client.query<PaneCliTerminalControlLeaseRow>(
+        `
+          WITH lease_clock AS (
+            SELECT clock_timestamp() AS acquired_at
+          )
+          INSERT INTO pane_cli_terminal_control_leases (
+            lease_id, session_id, pane_id, room_id, user_id,
+            browser_client_id, tab_lineage_id, page_client_id, status,
+            acquired_at, heartbeat_at, expires_at, released_at
+          )
+          SELECT
+            $1, $2, $3, $4, $5, $6, $7, $8, 'ACTIVE',
+            lease_clock.acquired_at,
+            lease_clock.acquired_at,
+            lease_clock.acquired_at + ($9::integer * interval '1 second'),
+            NULL
+          FROM lease_clock
+          RETURNING
+            lease_id AS "leaseId", session_id AS "sessionId", pane_id AS "paneId", room_id AS "roomId",
+            user_id AS "userId", browser_client_id AS "browserClientId",
+            tab_lineage_id AS "tabLineageId", page_client_id AS "pageClientId", status,
+            acquired_at AS "acquiredAt", heartbeat_at AS "heartbeatAt", expires_at AS "expiresAt",
+            released_at AS "releasedAt"
+        `,
+        [
+          leaseId,
+          parsed.sessionId,
+          parsed.paneId,
+          parsed.roomId,
+          parsed.userId,
+          parsed.browserClientId,
+          parsed.tabLineageId,
+          parsed.pageClientId,
+          parsed.ttlSeconds
+        ]
+      );
+      return mapPaneCliTerminalControlLease(
+        firstOrNotFound(result.rows, `CLI terminal control lease ${leaseId} was not stored.`)
+      );
+    }, { deadlockRetries: 1 });
+  }
+
+  async updatePaneCliTerminalControlLease(
+    leaseId: string,
+    input: UpdatePaneCliTerminalControlLeaseInput
+  ): Promise<PaneCliTerminalControlLease> {
+    const parsed = updatePaneCliTerminalControlLeaseInputSchema.parse(input);
+    const outcome = await this.withTransaction(async (client) => {
+      const currentResult = await client.query<PaneCliTerminalControlLeaseRow>(
+        `${paneCliTerminalControlLeaseSelect} WHERE lease_id = $1 FOR UPDATE`,
+        [leaseId]
+      );
+      let current = mapPaneCliTerminalControlLease(
+        firstOrNotFound(currentResult.rows, `CLI terminal control lease ${leaseId} was not found.`)
+      );
+      const expiredResult = await client.query<PaneCliTerminalControlLeaseRow>(
+        `
+          UPDATE pane_cli_terminal_control_leases
+          SET status = 'EXPIRED', released_at = COALESCE(released_at, clock_timestamp())
+          WHERE lease_id = $1 AND status = 'ACTIVE' AND expires_at <= clock_timestamp()
+          RETURNING
+            lease_id AS "leaseId", session_id AS "sessionId", pane_id AS "paneId", room_id AS "roomId",
+            user_id AS "userId", browser_client_id AS "browserClientId",
+            tab_lineage_id AS "tabLineageId", page_client_id AS "pageClientId", status,
+            acquired_at AS "acquiredAt", heartbeat_at AS "heartbeatAt", expires_at AS "expiresAt",
+            released_at AS "releasedAt"
+        `,
+        [leaseId]
+      );
+      if (expiredResult.rows[0]) current = mapPaneCliTerminalControlLease(expiredResult.rows[0]);
+      if (current.status !== parsed.expectedStatus) return { lease: current, updated: false as const };
+
+      const status = parsed.status ?? current.status;
+      const result = await client.query<PaneCliTerminalControlLeaseRow>(
+        `
+          WITH lease_clock AS (
+            SELECT clock_timestamp() AS now_at
+          )
+          UPDATE pane_cli_terminal_control_leases AS lease
+          SET status = $2,
+              heartbeat_at = CASE
+                WHEN $3::integer IS NULL THEN lease.heartbeat_at
+                ELSE lease_clock.now_at
+              END,
+              expires_at = CASE
+                WHEN $3::integer IS NULL THEN lease.expires_at
+                ELSE lease_clock.now_at + ($3::integer * interval '1 second')
+              END,
+              released_at = CASE
+                WHEN $2 = 'ACTIVE' THEN NULL
+                ELSE COALESCE(lease.released_at, lease_clock.now_at)
+              END
+          FROM lease_clock
+          WHERE lease.lease_id = $1 AND lease.status = $4
+          RETURNING
+            lease.lease_id AS "leaseId", lease.session_id AS "sessionId",
+            lease.pane_id AS "paneId", lease.room_id AS "roomId",
+            lease.user_id AS "userId", lease.browser_client_id AS "browserClientId",
+            lease.tab_lineage_id AS "tabLineageId", lease.page_client_id AS "pageClientId", lease.status,
+            lease.acquired_at AS "acquiredAt", lease.heartbeat_at AS "heartbeatAt",
+            lease.expires_at AS "expiresAt", lease.released_at AS "releasedAt"
+        `,
+        [leaseId, status, parsed.ttlSeconds ?? null, parsed.expectedStatus]
+      );
+      const row = result.rows[0];
+      return row
+        ? { lease: mapPaneCliTerminalControlLease(row), updated: true as const }
+        : { lease: current, updated: false as const };
+    }, { deadlockRetries: 1 });
+    if (!outcome.updated) {
+      throw new SpaceConflictError(`CLI terminal control lease ${leaseId} is no longer active.`);
+    }
+    return outcome.lease;
   }
 
   async getPaneCliCodexThreadOwnership(codexThreadId: string): Promise<PaneCliCodexThreadOwnership | null> {
@@ -7799,6 +8994,14 @@ export class PostgresSpaceStore implements SpaceStore {
     return result.rows[0] ? mapPaneBrowserSession(result.rows[0]) : null;
   }
 
+  async getLatestPaneBrowserSession(paneId: string): Promise<PaneBrowserSession | null> {
+    const result = await this.pool.query<PaneBrowserSessionRow>(
+      `${paneBrowserSessionSelect} WHERE pane_id = $1 ORDER BY started_at DESC LIMIT 1`,
+      [paneId]
+    );
+    return result.rows[0] ? mapPaneBrowserSession(result.rows[0]) : null;
+  }
+
   async listActivePaneBrowserSessions(roomId?: string): Promise<PaneBrowserSession[]> {
     const result = await this.pool.query<PaneBrowserSessionRow>(
       `${paneBrowserSessionSelect} WHERE is_active = true AND ($1::text IS NULL OR room_id = $1) ORDER BY started_at ASC`,
@@ -7814,8 +9017,8 @@ export class PostgresSpaceStore implements SpaceStore {
       if (pane.roomId !== parsed.roomId) {
         throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
       }
-      if (pane.mode !== "BROWSER") {
-        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER panes.`);
+      if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE") {
+        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER or YOUTUBE panes.`);
       }
       if (pane.isClosed) {
         throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -7918,6 +9121,9 @@ export class PostgresSpaceStore implements SpaceStore {
             active_page_id AS "activePageId",
             worker_heartbeat_at AS "workerHeartbeatAt",
             queue_position AS "queuePosition",
+            restore_scroll_x AS "restoreScrollX",
+            restore_scroll_y AS "restoreScrollY",
+            restore_video_paused AS "restoreVideoPaused",
             is_active AS "isActive",
             started_at AS "startedAt",
             updated_at AS "updatedAt",
@@ -7998,9 +9204,12 @@ export class PostgresSpaceStore implements SpaceStore {
               active_page_id = $15,
               worker_heartbeat_at = $16,
               queue_position = $17,
-              is_active = $18,
-              updated_at = $19,
-              ended_at = $20
+              restore_scroll_x = $18,
+              restore_scroll_y = $19,
+              restore_video_paused = $20,
+              is_active = $21,
+              updated_at = $22,
+              ended_at = $23
           WHERE session_id = $1
           RETURNING
             session_id AS "sessionId",
@@ -8026,6 +9235,9 @@ export class PostgresSpaceStore implements SpaceStore {
             active_page_id AS "activePageId",
             worker_heartbeat_at AS "workerHeartbeatAt",
             queue_position AS "queuePosition",
+            restore_scroll_x AS "restoreScrollX",
+            restore_scroll_y AS "restoreScrollY",
+            restore_video_paused AS "restoreVideoPaused",
             is_active AS "isActive",
             started_at AS "startedAt",
             updated_at AS "updatedAt",
@@ -8049,6 +9261,9 @@ export class PostgresSpaceStore implements SpaceStore {
           parsed.activePageId === undefined ? current.activePageId : parsed.activePageId,
           parsed.workerHeartbeatAt === undefined ? current.workerHeartbeatAt : parsed.workerHeartbeatAt,
           parsed.queuePosition === undefined ? current.queuePosition : parsed.queuePosition,
+          parsed.restoreScrollX === undefined ? current.restoreScrollX : parsed.restoreScrollX,
+          parsed.restoreScrollY === undefined ? current.restoreScrollY : parsed.restoreScrollY,
+          parsed.restoreVideoPaused === undefined ? current.restoreVideoPaused : parsed.restoreVideoPaused,
           isActive,
           timestamp,
           parsed.endedAt === undefined ? (terminal ? timestamp : current.endedAt) : parsed.endedAt
@@ -9181,7 +10396,7 @@ export class PostgresSpaceStore implements SpaceStore {
     const result = await this.pool.query<ProviderSettingsRow>(`${providerSettingsSelect} WHERE id = 'global' LIMIT 1`);
     if (result.rows[0]) return mapProviderSettings(result.rows[0]);
     return providerSettingsSchema.parse({
-      defaultProviderId: "codex-lb",
+      defaultProviderId: "headroom-gateway",
       titleGenerationModelId: null,
       titleGenerationReasoningEffort: "low",
       updatedAt: nowIso()
@@ -9239,11 +10454,7 @@ export class PostgresSpaceStore implements SpaceStore {
       `${codexCliModeDefaultsSelect} WHERE id = 'global' LIMIT 1`
     );
     if (result.rows[0]) return mapCodexCliModeDefaults(result.rows[0]);
-    return codexCliModeDefaultsSchema.parse({
-      build: { modelId: "gpt-5.6-sol", reasoningEffort: "xhigh" },
-      plan: { modelId: "gpt-5.6-sol", reasoningEffort: "xhigh" },
-      updatedAt: nowIso()
-    });
+    throw new SpaceNotFoundError("Codex CLI mode defaults were not initialized from a provider catalog.");
   }
 
   async initializeCodexCliModeDefaults(input: CodexCliModeDefaultPairs): Promise<CodexCliModeDefaults> {
@@ -11346,6 +12557,16 @@ export class PostgresSpaceStore implements SpaceStore {
       values.push(query.kind);
       where.push(`kind = $${values.length}`);
     }
+    if (query.collection === "AGENT_FILES") {
+      where.push("storage_uri LIKE 'space-artifact://agent-files/%'");
+    }
+    if (query.collection === "ROOM_MEDIA") {
+      where.push(
+        "(storage_uri LIKE 'space-artifact://user-uploads/%' OR " +
+        "storage_uri LIKE 'space-artifact://cli-uploads/%' OR " +
+        "(storage_uri LIKE 'space-artifact://browser-evidence/%' AND kind IN ('IMAGE', 'SCREENSHOT', 'VIDEO')))"
+      );
+    }
     const orderDirection = query.sortOrder === "asc" ? "ASC" : "DESC";
     const result = await this.pool.query<ArtifactRow>(
       `${artifactSelect}${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at ${orderDirection}`,
@@ -12140,6 +13361,10 @@ export class PostgresSpaceStore implements SpaceStore {
       targetRoomId,
       timestamp
     ]);
+    await client.query(`UPDATE pane_cli_terminal_control_leases SET room_id = $2 WHERE pane_id = $1`, [
+      paneId,
+      targetRoomId
+    ]);
     await client.query(`UPDATE pane_cli_transcript_chunks SET room_id = $2 WHERE pane_id = $1`, [paneId, targetRoomId]);
     await client.query(`UPDATE pane_cli_codex_thread_ownerships SET room_id = $2, updated_at = $3 WHERE pane_id = $1`, [
       paneId,
@@ -12180,6 +13405,50 @@ export class PostgresSpaceStore implements SpaceStore {
       ? await client.query<SwarmLockRow>(`${swarmLockSelect} WHERE id = $1 AND room_id = $2 FOR UPDATE`, [lockId, roomId])
       : await client.query<SwarmLockRow>(`${swarmLockSelect} WHERE id = $1 FOR UPDATE`, [lockId]);
     return mapSwarmLock(firstOrNotFound(result.rows, `Swarm lock ${lockId} was not found.`));
+  }
+
+  private async createStarterRoom(client: PgClientLike, traceId: string): Promise<Room> {
+    const timestamp = nowIso();
+    const roomId = makeSpaceId("room");
+    const orderResult = await client.query<OrderRow>(
+      "SELECT COALESCE(MAX(room_order), -1) + 1 AS \"nextOrder\" FROM rooms"
+    );
+    const result = await client.query<RoomRow>(
+      `
+        INSERT INTO rooms (id, name, description, room_order, pane_cap, trace_id, created_at, updated_at, kind)
+        VALUES ($1, 'Getting Started', 'SpaceApp setup and connection workspace.', $2, $3, $4, $5, $5, 'WORKSPACE')
+        RETURNING
+          id,
+          name,
+          description,
+          kind,
+          room_order AS "order",
+          pane_layout_columns AS "paneLayoutColumns",
+          pane_cap AS "paneCap",
+          trace_id AS "traceId",
+          archived_at AS "archivedAt",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+      `,
+      [
+        roomId,
+        Number.parseInt(String(orderResult.rows[0]?.nextOrder ?? 0), 10),
+        ACTIVE_PANE_CAP,
+        traceId,
+        timestamp
+      ]
+    );
+    const room = mapRoom(firstOrNotFound(result.rows, `Room ${roomId} was not created.`));
+    await this.appendEvent(client, {
+      roomId: room.id,
+      paneId: null,
+      turnId: null,
+      traceId,
+      type: "ROOM_CREATED",
+      message: `Room ${room.name} created.`,
+      payload: { initialPaneCount: 0 }
+    });
+    return room;
   }
 
   private async insertPane(

@@ -1,10 +1,11 @@
-import { Bot, CircleStop, MessageSquareX, Pause, Play, Send } from "lucide-react";
+import { Bot, CircleStop, MessageSquareX, Pause, Play, Send } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { Room, RoomAgentSession, RoomAgentTaskResult } from "@space/contracts";
 import { api } from "../../api.js";
 
 interface RoomAgentDockProps {
   activeRoom: Room | null;
+  isCodexEnabled?: boolean;
   refreshKey?: string | null;
 }
 
@@ -60,7 +61,11 @@ function TaskMetricsCard({ result }: { result: RoomAgentTaskResult }) {
   );
 }
 
-export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockProps) {
+export function RoomAgentDock({
+  activeRoom,
+  isCodexEnabled = true,
+  refreshKey = null
+}: RoomAgentDockProps) {
   const [session, setSession] = useState<RoomAgentSession | null>(null);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
@@ -138,7 +143,7 @@ export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockPr
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
-    if (!activeRoom || sending || !draft.trim()) return;
+    if (!isCodexEnabled || !activeRoom || sending || !draft.trim()) return;
     const roomId = activeRoom.id;
     const sequence = ++sendSequenceRef.current;
     const content = draft.trim();
@@ -164,7 +169,7 @@ export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockPr
   }
 
   async function stop() {
-    if (!activeRoom || stopping || !session?.capabilities.canStop) return;
+    if (!isCodexEnabled || !activeRoom || stopping || !session?.capabilities.canStop) return;
     const roomId = activeRoom.id;
     const sequence = ++stopSequenceRef.current;
     setStopping(true);
@@ -182,7 +187,7 @@ export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockPr
   }
 
   async function control(action: "PAUSE" | "RESUME") {
-    if (!activeRoom || controlling || stopping) return;
+    if (!isCodexEnabled || !activeRoom || controlling || stopping) return;
     if (action === "PAUSE" && !session?.capabilities.canPause) return;
     if (action === "RESUME" && !session?.capabilities.canResume) return;
     const roomId = activeRoom.id;
@@ -205,7 +210,7 @@ export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockPr
   }
 
   async function clearConversation() {
-    if (!activeRoom || clearing || session?.capabilities.canClear === false) return;
+    if (!isCodexEnabled || !activeRoom || clearing || session?.capabilities.canClear === false) return;
     if (!window.confirm("Clear the visible Room Agent history? The active goal and its durable evidence will be preserved.")) return;
     const roomId = activeRoom.id;
     const sequence = ++clearSequenceRef.current;
@@ -229,6 +234,9 @@ export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockPr
     void submit();
   }
 
+  const codexDisabledReason = "Enable Codex in Settings";
+  const codexDisabledTitle = isCodexEnabled ? undefined : codexDisabledReason;
+
   return (
     <section className="dock-panel room-agent-dock" aria-label="Room Agent chat">
       <header className="room-agent-head">
@@ -239,15 +247,15 @@ export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockPr
         </span>
         <span className="room-agent-head-actions">
           <span className={`room-agent-status is-${(session?.status ?? "IDLE").toLowerCase()}`}>
-            {loading ? "Loading" : session?.status ?? "Idle"}
+            {!isCodexEnabled ? "OFF" : loading ? "Loading" : session?.status ?? "Idle"}
           </span>
           <button
             type="button"
             className="room-agent-clear"
             onClick={() => void clearConversation()}
-            disabled={!activeRoom || clearing || session?.capabilities.canClear === false}
+            disabled={!isCodexEnabled || !activeRoom || clearing || session?.capabilities.canClear === false}
             aria-label="Clear Room Agent history"
-            title="Clear visible Room Agent history"
+            title={codexDisabledTitle ?? "Clear visible Room Agent history"}
           >
             <MessageSquareX aria-hidden="true" />
           </button>
@@ -317,7 +325,8 @@ export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockPr
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={handleComposerKeyDown}
           placeholder={activeRoom ? "Assign room work or add a follow-up…" : "Select a room first"}
-          disabled={!activeRoom || sending}
+          disabled={!isCodexEnabled || !activeRoom || sending}
+          title={codexDisabledTitle}
           rows={3}
         />
         <div className="room-agent-composer-actions">
@@ -327,8 +336,9 @@ export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockPr
                 type="button"
                 className="room-agent-pause"
                 onClick={() => void control("PAUSE")}
-                disabled={!activeRoom || controlling !== null || stopping}
+                disabled={!isCodexEnabled || !activeRoom || controlling !== null || stopping}
                 aria-label="Pause Room Agent"
+                title={codexDisabledTitle}
               >
                 <Pause aria-hidden="true" />
                 <span>{controlling === "PAUSE" ? "Pausing" : "Pause"}</span>
@@ -339,8 +349,9 @@ export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockPr
                 type="button"
                 className="room-agent-resume"
                 onClick={() => void control("RESUME")}
-                disabled={!activeRoom || controlling !== null || stopping}
+                disabled={!isCodexEnabled || !activeRoom || controlling !== null || stopping}
                 aria-label="Resume Room Agent"
+                title={codexDisabledTitle}
               >
                 <Play aria-hidden="true" />
                 <span>{controlling === "RESUME" ? "Resuming" : "Resume"}</span>
@@ -350,8 +361,9 @@ export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockPr
               type="button"
               className="room-agent-stop"
               onClick={() => void stop()}
-              disabled={!activeRoom || stopping || controlling !== null || !session?.capabilities.canStop}
+              disabled={!isCodexEnabled || !activeRoom || stopping || controlling !== null || !session?.capabilities.canStop}
               aria-label="Stop Room Agent"
+              title={codexDisabledTitle}
             >
               <CircleStop aria-hidden="true" />
               <span>{stopping ? "Stopping" : "Stop"}</span>
@@ -360,8 +372,9 @@ export function RoomAgentDock({ activeRoom, refreshKey = null }: RoomAgentDockPr
           <button
             type="submit"
             className="room-agent-send"
-            disabled={!activeRoom || sending || !draft.trim() || session?.capabilities.canSend === false}
+            disabled={!isCodexEnabled || !activeRoom || sending || !draft.trim() || session?.capabilities.canSend === false}
             aria-label="Send to Room Agent"
+            title={codexDisabledTitle}
           >
             <Send aria-hidden="true" />
             <span>{sending ? "Queueing" : "Send"}</span>

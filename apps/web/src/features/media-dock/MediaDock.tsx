@@ -1,9 +1,11 @@
-import { File, Film, Images, Maximize2, Minimize2, RefreshCw, Trash2, X } from "lucide-react";
+import { File, Film, Images, Maximize2, Minimize2, RefreshCw, Trash2, X } from "../ui-theme/app-icons.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isRoomMediaArtifact, type Artifact, type Room } from "@space/contracts";
 import { api } from "../../api.js";
 import { ARTIFACTS_UPDATED_EVENT, isArtifactsUpdatedDetail } from "../../artifact-events.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
+import { setArtifactDragData } from "../artifacts/artifact-drag.js";
+import { useAutoDismiss } from "../../use-auto-dismiss.js";
 
 interface MediaDockProps {
   activeRoom: Room | null;
@@ -95,6 +97,9 @@ export function MediaDock({ activeRoom, refreshKey = null }: MediaDockProps) {
   activeRoomId.current = activeRoom?.id ?? null;
   const entries = useMemo(() => mediaEntries(artifacts), [artifacts]);
   const mediaLayout = isFullscreen ? "gallery" : "list";
+
+  useAutoDismiss(error, setError);
+  useAutoDismiss(notice, setNotice);
 
   async function loadMedia(roomId: string) {
     if (activeRoomId.current !== roomId) return;
@@ -247,8 +252,26 @@ export function MediaDock({ activeRoom, refreshKey = null }: MediaDockProps) {
           <small>Uploads sent to agents and terminal panes are collected here automatically.</small>
         </span>
       </section>
-      {error ? <div className="banner bad">{error}</div> : null}
-      {notice ? <div className="banner warn" role="status">{notice}</div> : null}
+      {error ? (
+        <div className="banner bad">
+          <div className="notice-row">
+            <span role="alert">{error}</span>
+            <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setError(null)}>
+              <X aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {notice ? (
+        <div className="banner warn">
+          <div className="notice-row">
+            <span role="status">{notice}</span>
+            <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setNotice(null)}>
+              <X aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      ) : null}
       {!activeRoom ? (
         <div className="empty-state" role="status">
           <Images aria-hidden="true" />
@@ -257,7 +280,14 @@ export function MediaDock({ activeRoom, refreshKey = null }: MediaDockProps) {
       ) : entries.length ? (
         <div className={`media-grid ${isFullscreen ? "is-gallery" : "is-list"}`} role="list" aria-label="Room media" data-layout={mediaLayout}>
           {entries.map((entry) => (
-            <article className="media-card" role="listitem" key={entry.artifact.id}>
+            <article
+              className="media-card"
+              role="listitem"
+              key={entry.artifact.id}
+              draggable
+              onDragStart={(event) => setArtifactDragData(event, entry.artifact)}
+              aria-label={`Drag ${entry.label}`}
+            >
               <button
                 className="media-preview-button"
                 onClick={() => openMedia(entry)}

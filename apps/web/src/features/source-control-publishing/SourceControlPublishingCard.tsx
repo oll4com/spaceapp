@@ -2,7 +2,7 @@ import type {
   SourceControlConnection,
   SourceControlProvider
 } from "@space/contracts";
-import { CheckCircle2, GitBranch, Loader2, RefreshCw, Unplug } from "lucide-react";
+import { CheckCircle2, GitBranch, Loader2, RefreshCw, Unplug } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api.js";
 import "./source-control-publishing.css";
@@ -160,11 +160,7 @@ export function SourceControlPublishingCard({
               <div className="source-control-provider-heading">
                 <span>
                   <strong>{label}</strong>
-                  <small>
-                    {connection
-                      ? `${connection.repositoryOwner}/${connection.repositoryName}`
-                      : "Repository target unavailable"}
-                  </small>
+                  <small>spaceapp.example/spaceapp</small>
                 </span>
                 <span className={`source-control-status ${connection?.status.toLowerCase() ?? "disconnected"}`}>
                   {connected ? <CheckCircle2 aria-hidden="true" /> : <Unplug aria-hidden="true" />}

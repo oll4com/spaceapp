@@ -58,8 +58,9 @@ export function createDurableEventRelay(options: {
   };
 }
 
-export function formatSseMessage(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+export function formatSseMessage(event: string, data: unknown, id?: string | number): string {
+  const idFrame = id === undefined ? "" : `id: ${String(id)}\n`;
+  return `${idFrame}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
 export function formatSseHeartbeat(): string {

@@ -16,6 +16,15 @@ const nodeStyles: Record<MemoryGraphNode["type"], MemoryGraphVisualStyle> = {
   CACHE_RECORD: { color: "#8d9298", size: 3.5, label: "Cache record" }
 };
 
+const CANONICAL_INDEX_STYLE: MemoryGraphVisualStyle = { color: "#e8c05f", size: 11, label: "Canonical index" };
+
+export function isCanonicalIndexNode(node: MemoryGraphNode): boolean {
+  return node.type === "SOURCE" && (
+    node.label === "gemini_history.md" ||
+    node.sourcePath?.split(/[\\/]/).at(-1) === "gemini_history.md"
+  );
+}
+
 const nodeTypePriority: Record<MemoryGraphNode["type"], number> = {
   SOURCE: 0,
   TOPIC: 1,
@@ -25,6 +34,7 @@ const nodeTypePriority: Record<MemoryGraphNode["type"], number> = {
   PROVENANCE: 5,
   CACHE_RECORD: 6
 };
+const MAX_FORCED_HUB_LABELS = 4;
 
 function stableFraction(value: string): number {
   let hash = 2_166_136_261;
@@ -43,6 +53,7 @@ export function memoryGraphNodeStyle(
   node: MemoryGraphNode,
   topicOrigin: MemoryGraphTopicOrigin | null = null
 ): MemoryGraphVisualStyle {
+  if (isCanonicalIndexNode(node)) return CANONICAL_INDEX_STYLE;
   if (node.type === "TOPIC" && topicOrigin === "EXPLICIT_TAG") {
     return { color: "#f2c66d", size: 7.25, label: "Explicit tag" };
   }
@@ -54,10 +65,11 @@ export function memoryGraphNodeStyle(
 
 export function shouldForceMemoryGraphLabel(
   node: MemoryGraphNode,
-  topicOrigin: MemoryGraphTopicOrigin | null
+  _topicOrigin: MemoryGraphTopicOrigin | null,
+  degree: number,
+  degreeRank: number
 ): boolean {
-  return node.type === "SOURCE" || node.type === "ROOM" ||
-    (node.type === "TOPIC" && topicOrigin === "EXPLICIT_TAG");
+  return isCanonicalIndexNode(node) || (degree >= 3 && degreeRank < MAX_FORCED_HUB_LABELS);
 }
 
 export function memoryGraphTaxonomySummary(
@@ -128,6 +140,7 @@ export function orderMemoryGraphNodes(nodes: MemoryGraphNode[], edges: MemoryGra
     if (degree.has(edge.target)) degree.set(edge.target, degree.get(edge.target)! + 1);
   }
   return [...nodes].sort((left, right) =>
+    Number(isCanonicalIndexNode(right)) - Number(isCanonicalIndexNode(left)) ||
     (degree.get(right.id) ?? 0) - (degree.get(left.id) ?? 0) ||
     nodeTypePriority[left.type] - nodeTypePriority[right.type] ||
     left.id.localeCompare(right.id)

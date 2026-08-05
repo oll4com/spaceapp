@@ -5,9 +5,10 @@ import {
   type CreateRoomPanesRequest,
   type Room
 } from "@space/contracts";
-import { Loader2, Minus, Plus, RefreshCw } from "lucide-react";
+import { ChevronRight, Loader2, Minus, Plus, RefreshCw, X } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api.js";
+import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import { CLI_RUNTIME_PRESENTATIONS } from "../../cli-runtime-presentation.js";
 import {
   CLI_RUNTIME_VISIBILITY_EVENT,
@@ -24,10 +25,13 @@ const emptyCounts = (): PaneCounts => ({
   "cli:claude": 0,
   "cli:gemini": 0,
   "cli:opencode": 0,
+  "cli:autohand": 0,
   "cli:qwen": 0,
   "cli:kimi": 0,
   "cli:grok": 0,
   "cli:deepseek": 0,
+  "cli:cursor": 0,
+  "cli:copilot": 0,
   chat: 0
 });
 
@@ -57,16 +61,26 @@ export function RoomPaneComposer({
   room
 }: RoomPaneComposerProps) {
   const requestSequenceRef = useRef(0);
+  const [initialRuntimeSnapshot] = useState(() => api.cliRuntimesSnapshot());
+  const runtimeSnapshotAvailableRef = useRef(initialRuntimeSnapshot !== null);
   const [counts, setCounts] = useState<PaneCounts>(emptyCounts);
-  const [runtimes, setRuntimes] = useState<AgentRuntime[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [runtimes, setRuntimes] = useState<AgentRuntime[]>(
+    () => (initialRuntimeSnapshot?.data ?? [])
+      .filter((runtime) => runtime.id !== "cli:root" && runtime.capabilities.includes("CLI"))
+  );
+  const [loading, setLoading] = useState(initialRuntimeSnapshot === null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
   const availableSlots = Math.max(0, (room?.paneCap ?? 0) - activePaneCount);
   const assigned = Object.values(counts).reduce((sum, count) => sum + count, 0);
   const slotsAfterAdd = Math.max(0, availableSlots - assigned);
+
+  useAutoDismiss(loadError, setLoadError);
+  useAutoDismiss(applyError, setApplyError);
+  useAutoDismiss(notice, setNotice);
 
   useEffect(() => {
     setApplyError(null);
@@ -76,21 +90,24 @@ export function RoomPaneComposer({
   const refreshRuntimes = useCallback(async () => {
     const sequence = requestSequenceRef.current + 1;
     requestSequenceRef.current = sequence;
-    setLoading(true);
+    if (!runtimeSnapshotAvailableRef.current) setLoading(true);
     setLoadError(null);
     try {
       const registry = await loadRuntimes();
       if (requestSequenceRef.current !== sequence) return;
       const nextRuntimes = registry.data.filter((runtime) => runtime.id !== "cli:root" && runtime.capabilities.includes("CLI"));
       const nextRuntimeIds = new Set(nextRuntimes.map((runtime) => runtime.id));
+      runtimeSnapshotAvailableRef.current = true;
       setRuntimes(nextRuntimes);
       setCounts((current) => Object.fromEntries(
         Object.entries(current).map(([id, count]) => [id, id === chatId || nextRuntimeIds.has(id) ? count : 0])
       ) as PaneCounts);
     } catch (error) {
       if (requestSequenceRef.current !== sequence) return;
-      setRuntimes([]);
-      setLoadError(runtimeError(error));
+      if (!runtimeSnapshotAvailableRef.current) {
+        setRuntimes([]);
+        setLoadError(runtimeError(error));
+      }
     } finally {
       if (requestSequenceRef.current === sequence) setLoading(false);
     }
@@ -179,15 +196,30 @@ export function RoomPaneComposer({
   }
 
   return (
-    <form className="room-pane-composer" onSubmit={submit} aria-labelledby="room-pane-composer-title">
+    <form
+      className="room-pane-composer"
+      data-collapsed={collapsed ? "true" : "false"}
+      onSubmit={submit}
+      aria-labelledby="room-pane-composer-title"
+    >
       <div className="room-pane-composer-heading">
         <div>
           <strong id="room-pane-composer-title">Add panes</strong>
           <small>{room ? `Pane target: ${room.name}` : "Select a room target"}</small>
         </div>
+        <button
+          type="button"
+          className="room-pane-composer-toggle"
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? "Expand Add panes" : "Collapse Add panes"}
+          title={collapsed ? "Expand Add panes" : "Collapse Add panes"}
+          onClick={() => setCollapsed((current) => !current)}
+        >
+          <ChevronRight aria-hidden="true" />
+        </button>
       </div>
 
-      <div className="room-pane-mix" aria-label="Pane mix">
+      {!collapsed ? <div className="room-pane-mix" aria-label="Pane mix">
         {visibleRuntimeDefinitions.map(({ brand, iconSrc, id, shortLabel: label }) => {
           const runtime = runtimeById.get(id);
           const available = !loading && !loadError && Boolean(runtime && isAgentRuntimeReady(runtime));
@@ -244,38 +276,55 @@ export function RoomPaneComposer({
             </button>
           </div>
         </div>
-      </div>
+      </div> : null}
 
-      {loading ? <p className="room-pane-runtime-state" role="status"><Loader2 className="spin" aria-hidden="true" />Loading CLI runtimes…</p> : null}
-      {loadError ? (
+      {!collapsed && loading ? <p className="room-pane-runtime-state" role="status"><Loader2 className="spin" aria-hidden="true" />Loading CLI runtimes…</p> : null}
+      {!collapsed && loadError ? (
         <div className="room-pane-runtime-error" role="alert">
           <span>{loadError}</span>
           <button type="button" onClick={() => void refreshRuntimes()} disabled={loading} aria-label="Retry CLI runtimes">
             <RefreshCw aria-hidden="true" /> Retry
           </button>
+          <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setLoadError(null)}>
+            <X aria-hidden="true" />
+          </button>
         </div>
       ) : null}
 
-      <p className="room-pane-assignment" aria-live="polite">
+      {!collapsed ? <p className="room-pane-assignment" aria-live="polite">
         {assigned === 0 ? (
           <><strong>0</strong> panes selected · <strong>{availableSlots}</strong> {availableSlots === 1 ? "room slot" : "room slots"} available</>
         ) : (
           <><strong>{assigned}</strong> {assigned === 1 ? "pane" : "panes"} selected · <strong>{slotsAfterAdd}</strong> {slotsAfterAdd === 1 ? "slot" : "slots"} left after add</>
         )}
-      </p>
-      {room && (availableSlots === 0 || assigned > availableSlots) ? (
+      </p> : null}
+      {!collapsed && room && (availableSlots === 0 || assigned > availableSlots) ? (
         <p className="room-pane-capacity-warning">
           {availableSlots === 0
             ? "This room has no available pane slots."
             : `This room has only ${availableSlots} available pane ${availableSlots === 1 ? "slot" : "slots"}.`}
         </p>
       ) : null}
-      {applyError ? <p className="room-pane-apply-message is-error" role="alert">{applyError}</p> : null}
-      {notice ? <p className="room-pane-apply-message" role="status">{notice}</p> : null}
-      <button type="submit" className="room-pane-apply" disabled={!canApply}>
+      {!collapsed && applyError ? (
+        <div className="room-pane-apply-message is-error">
+          <span role="alert">{applyError}</span>
+          <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setApplyError(null)}>
+            <X aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+      {!collapsed && notice ? (
+        <div className="room-pane-apply-message">
+          <span role="status">{notice}</span>
+          <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setNotice(null)}>
+            <X aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+      {!collapsed ? <button type="submit" className="room-pane-apply" disabled={!canApply}>
         {applying ? <Loader2 className="spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
         {applyLabel}
-      </button>
+      </button> : null}
     </form>
   );
 }

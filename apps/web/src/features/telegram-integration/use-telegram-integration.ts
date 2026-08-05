@@ -5,6 +5,7 @@ import type {
 } from "@space/contracts";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { DEMO_LOCAL_REPLY, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
+import { useAutoDismiss } from "../../use-auto-dismiss.js";
 
 export interface TelegramIntegrationClient {
   telegramIntegration(): Promise<TelegramIntegrationStatus>;
@@ -29,9 +30,12 @@ export function useTelegramIntegration(client: TelegramIntegrationClient) {
   const [showTokenForm, setShowTokenForm] = useState(false);
   const [pendingAction, setPendingAction] = useState<TelegramPendingAction>("load");
   const [actionError, setActionError] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState("");
+  const [feedback, setFeedback] = useState<string | null>(null);
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
   const confirmDisconnectRef = useRef<HTMLButtonElement>(null);
+
+  useAutoDismiss(actionError, setActionError);
+  useAutoDismiss(feedback, setFeedback);
 
   async function loadStatus() {
     setPendingAction("load");
@@ -160,6 +164,8 @@ export function useTelegramIntegration(client: TelegramIntegrationClient) {
     pendingAction,
     actionError,
     feedback,
+    dismissActionError: () => setActionError(null),
+    dismissFeedback: () => setFeedback(""),
     confirmingDisconnect,
     setConfirmingDisconnect,
     confirmDisconnectRef,

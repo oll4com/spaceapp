@@ -133,11 +133,20 @@ export function createBrowserHostProxy(options: {
     startFrameStream(sessionId, mode, onFrame, hints) {
       return hostCall(() => client.startFrameStream(sessionId, mode, onFrame, hints));
     },
+    startAudioStream(sessionId, onChunk) {
+      return hostCall(() => client.startAudioStream(sessionId, onChunk));
+    },
     async closeAll() {
       await client.close();
     },
     issueFrameTicket,
+    issueAudioTicket: issueFrameTicket,
     acceptFrameTicket(paneId, sessionId, token) {
+      const ticket = tickets.get(token);
+      tickets.delete(token);
+      return Boolean(ticket && ticket.paneId === paneId && ticket.sessionId === sessionId && ticket.expiresAt > Date.now());
+    },
+    acceptAudioTicket(paneId, sessionId, token) {
       const ticket = tickets.get(token);
       tickets.delete(token);
       return Boolean(ticket && ticket.paneId === paneId && ticket.sessionId === sessionId && ticket.expiresAt > Date.now());

@@ -1,0 +1,70 @@
+.ui-theme-settings-card {
+  gap: 0.75rem;
+}
+
+.ui-theme-options {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.ui-theme-options legend {
+  margin-bottom: 0.35rem;
+  color: #cfc8ba;
+  font-size: 0.76rem;
+}
+
+.ui-theme-options label {
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.55rem;
+  border: 1px solid #343638;
+  border-radius: 7px;
+  background: #121415;
+  padding: 0.6rem;
+  cursor: pointer;
+}
+
+.ui-theme-options label:has(input:checked) {
+  border-color: #6db7aa;
+  background: #17211f;
+}
+
+.ui-theme-options input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: #6db7aa;
+}
+
+.ui-theme-options label > span {
+  min-width: 0;
+  display: grid;
+  gap: 0.12rem;
+}
+
+.ui-theme-options small {
+  color: #9da39f;
+  font-size: 0.68rem;
+}
+
+.ui-theme-modern-options {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.ui-theme-apply {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+}
+
+@media (max-width: 30rem) {
+  .ui-theme-modern-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

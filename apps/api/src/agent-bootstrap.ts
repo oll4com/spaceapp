@@ -57,6 +57,15 @@ function webChatSkillBridgeLine(channel: SpaceAgentBootstrapInput["channel"]): s
   ].join("\n");
 }
 
+function cliAgentFilesLine(channel: SpaceAgentBootstrapInput["channel"]): string | null {
+  if (channel !== "CLI") return null;
+  return [
+    "- Agent Files delivery: after creating a final user-requested file, run `space-publish-file <absolute-path> [more-paths...]` before the final response.",
+    "  Publish only final deliverables. Never publish credentials, secrets, user inputs, temporary files, caches, logs, or whole source trees.",
+    "  Confirm the command returned an Agent Files artifact id. If it fails, report the exact gate and do not claim the file is downloadable."
+  ].join("\n");
+}
+
 export function buildSpaceAgentBootstrapPrompt(input: SpaceAgentBootstrapInput): string {
   const memoryMonth = input.currentMemoryMonth ?? currentMemoryMonth();
   const browserState = input.browserToolsEnabled
@@ -66,6 +75,7 @@ export function buildSpaceAgentBootstrapPrompt(input: SpaceAgentBootstrapInput):
   const memoryBridgeLine = webChatMemoryBridgeLine(input.channel);
   const mcpBridgeLine = webChatMcpBridgeLine(input.channel);
   const skillBridgeLine = webChatSkillBridgeLine(input.channel);
+  const agentFilesLine = cliAgentFilesLine(input.channel);
 
   return [
     "Space Agent Bootstrap:",
@@ -76,7 +86,8 @@ export function buildSpaceAgentBootstrapPrompt(input: SpaceAgentBootstrapInput):
     "- Memory parity: read/search/save through Space memory bridge or Space API memory endpoints. Treat /opt/spaceapp/docs Gemini history as canonical operational memory; Codex ad-hoc notes are fallback only.",
     "- Task/goal parity: Codex goals live in /var/lib/spaceapp-user/.codex/goals_1.sqlite and are exposed through GET /api/tasks?source=codex_goal plus bounded PATCH /api/tasks/codex-goals/:threadId.",
     "- Skills parity: shared skills live under /var/lib/spaceapp-user/.codex/skills and plugin skill roots, exposed through skills:list and skills:read. Read the relevant SKILL.md before using a skill.",
-    "- MCP/tool parity: discover/use tools through Space MCP policy only. Shared on-demand catalog context is documented in /opt/spaceapp/docs/gemini_session_coder_rooms.md.",
+    "- MCP/tool parity: discover/use tools through Space MCP policy only.",
+    agentFilesLine,
     "- Secret policy: never write raw provider credentials, cookies, browser profile data, private keys, or unredacted tokens to docs, chat, logs, memory, or transcripts.",
     "- Space API capability access: GET /api/memory and POST /api/memory for canonical Gemini memory; GET /api/tasks for shared Space/Codex tasks; GET /api/mcp and POST /api/mcp/tools/execute for approved MCP actions; GET /api/skills for skills.",
     skillBridgeLine,
@@ -119,7 +130,6 @@ Operational workspace:
 Tool and skill access:
 
 - Shared skills live under /var/lib/spaceapp-user/.codex/skills. Read the relevant SKILL.md on demand before using a skill.
-- Shared MCP/tool catalog context is documented in /opt/spaceapp/docs/gemini_session_coder_rooms.md.
 - Do not install per-session tool copies. Call shared tools only when the task needs them.
 `;
 }

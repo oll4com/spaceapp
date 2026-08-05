@@ -4,7 +4,7 @@ import type {
   CreateReleaseRequest,
   ReleasePreview
 } from "@space/contracts";
-import { GitBranch, Loader2, RefreshCw, Rocket, ShieldCheck } from "lucide-react";
+import { GitBranch, Loader2, RefreshCw, Rocket, ShieldCheck } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   activeOperationStatuses,

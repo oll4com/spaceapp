@@ -137,6 +137,24 @@ export interface BrowserFrameStreamHandle {
   stop(): Promise<void>;
 }
 
+export interface BrowserAudioChunk {
+  sessionId: string;
+  sequence: number;
+  data: Buffer;
+  sampleRate: number;
+  channels: number;
+  format: "s16le";
+  capturedAt: string;
+}
+
+export interface BrowserAudioStreamHandle {
+  id: string;
+  sampleRate: number;
+  channels: number;
+  format: "s16le";
+  stop(): Promise<void>;
+}
+
 export interface BrowserCaptureRequestContext {
   requestedByType: "AGENT" | "OPERATOR";
   requestedById: string;
@@ -152,6 +170,8 @@ interface BrowserStreamSubscriber {
 
 interface BrowserRuntime {
   process: ChildProcessWithoutNullStreams;
+  xvfb?: ChildProcessWithoutNullStreams;
+  display?: number;
   client: CdpClient;
   targetId: string;
   cdpSessionId: string;
@@ -194,6 +214,12 @@ export interface BrowserSessionManager {
   closeAll(): Promise<void>;
   issueFrameTicket(paneId: string, sessionId: string, ttlMs: number): BrowserFrameToken;
   acceptFrameTicket(paneId: string, sessionId: string, token: string): boolean;
+  issueAudioTicket(paneId: string, sessionId: string, ttlMs: number): BrowserFrameToken;
+  acceptAudioTicket(paneId: string, sessionId: string, token: string): boolean;
+  startAudioStream?(
+    sessionId: string,
+    onChunk: (chunk: BrowserAudioChunk) => void | Promise<void>
+  ): Promise<BrowserAudioStreamHandle>;
   startFrameStream?(
     sessionId: string,
     mode: BrowserStreamMode,
@@ -225,6 +251,69 @@ const viewportSizes: Record<BrowserSessionViewport, ViewportSize> = {
   tablet: { width: 834, height: 1112, deviceScaleFactor: 2, mobile: true },
   desktop: { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }
 };
+
+const displayBase = 100;
+const displayCapacity = 8;
+const usedDisplays = new Set<number>();
+
+export const browserSessionDisplayBase = displayBase;
+export const browserSessionDisplayCapacity = displayCapacity;
+
+export function allocateDisplay(): number | null {
+  for (let offset = 0; offset < displayCapacity; offset += 1) {
+    const candidate = displayBase + offset;
+    if (!usedDisplays.has(candidate)) {
+      usedDisplays.add(candidate);
+      return candidate;
+    }
+  }
+  return null;
+}
+
+export function releaseDisplay(display: number): void {
+  usedDisplays.delete(display);
+}
+
+async function waitForDisplaySocket(display: number, timeoutMs: number): Promise<void> {
+  const socketPath = `/tmp/.X11-unix/X${display}`;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      accessSync(socketPath);
+      return;
+    } catch {
+      await sleep(100);
+    }
+  }
+  throw new Error(`Timed out waiting for Xvfb display ${display}.`);
+}
+
+async function startXvfb(display: number, width: number, height: number, xvfbPath: string): Promise<ChildProcessWithoutNullStreams> {
+  const xvfb = spawn(xvfbPath, [
+    `:${display}`,
+    "-screen",
+    "0",
+    `${width}x${height}x24`,
+    "-nolisten",
+    "tcp",
+    "-ac"
+  ], {});
+  xvfb.stdout?.on("data", () => undefined);
+  xvfb.stderr.on("data", () => undefined);
+  try {
+    await waitForDisplaySocket(display, 8_000);
+    return xvfb;
+  } catch (error) {
+    stopXvfbBestEffort(xvfb);
+    throw error;
+  }
+}
+
+function stopXvfbBestEffort(process: ChildProcessWithoutNullStreams): void {
+  if (process.exitCode === null && process.signalCode === null) {
+    process.kill("SIGTERM");
+  }
+}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -837,7 +926,7 @@ export function browserSessionRestoreUrls(
 
 export async function browserAgentNumberForPane(store: SpaceStore, pane: Pane): Promise<number> {
   const panes = await store.listPanes(pane.roomId, false);
-  const browserPanes = panes.filter((candidate) => candidate.mode === "BROWSER" && !candidate.isClosed);
+  const browserPanes = panes.filter((candidate) => (candidate.mode === "BROWSER" || candidate.mode === "YOUTUBE") && !candidate.isClosed);
   return Math.max(1, browserPanes.findIndex((candidate) => candidate.id === pane.id) + 1);
 }
 
@@ -1071,6 +1160,49 @@ export interface BrowserRuntimeCommandClient {
   send(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<unknown>;
 }
 
+function windowsVirtualKeyCodeFor(key: string, code: string | undefined): number {
+  const named: Record<string, number> = {
+    Backspace: 8,
+    Tab: 9,
+    Enter: 13,
+    Shift: 16,
+    Control: 17,
+    Alt: 18,
+    Pause: 19,
+    CapsLock: 20,
+    Escape: 27,
+    Space: 32,
+    PageUp: 33,
+    PageDown: 34,
+    End: 35,
+    Home: 36,
+    ArrowLeft: 37,
+    ArrowUp: 38,
+    ArrowRight: 39,
+    ArrowDown: 40,
+    PrintScreen: 44,
+    Insert: 45,
+    Delete: 46,
+    NumLock: 144,
+    ScrollLock: 145
+  };
+  const namedCode = named[key];
+  if (namedCode !== undefined) return namedCode;
+  if (key.length === 1) return key.toUpperCase().charCodeAt(0);
+  if (code) {
+    if (code.length === 4 && code.startsWith("Key")) return code.charCodeAt(3);
+    if (code.length === 6 && code.startsWith("Digit")) return code.charCodeAt(5);
+    if (code.length === 7 && code.startsWith("Numpad")) return 96 + Number(code.slice(6));
+    const functionKey = /^F([1-9]|1[0-9]|2[0-4])$/.exec(code);
+    if (functionKey) return 111 + Number(functionKey[1]);
+  }
+  return 0;
+}
+
+export function browserProfilePathFor(profileRoot: string, roomId: string, paneId: string): string {
+  return join(profileRoot, sanitizeSegment(roomId), sanitizeSegment(paneId));
+}
+
 export async function dispatchBrowserRuntimeInput(
   client: BrowserRuntimeCommandClient,
   cdpSessionId: string,
@@ -1081,9 +1213,34 @@ export async function dispatchBrowserRuntimeInput(
       await client.send("Input.insertText", { text: input.text }, cdpSessionId);
       return;
     }
+    const modifiers = input.modifiers ?? 0;
+    const windowsVirtualKeyCode = windowsVirtualKeyCodeFor(input.key, input.code);
+    const shortcutOrSpecialKey = input.eventType === "keyDown" && (!input.text || (modifiers & (1 | 2 | 4)) !== 0);
+    if (input.eventType === "keyDown" && windowsVirtualKeyCode === 27) {
+      await client.send(
+        "Runtime.evaluate",
+        {
+          expression:
+            "if (document.fullscreenElement) { document.exitFullscreen(); 'exited-fullscreen' } else { 'not-fullscreen' }",
+          returnByValue: true
+        },
+        cdpSessionId
+      ).catch(() => undefined);
+    }
     await client.send(
       "Input.dispatchKeyEvent",
-      { type: input.eventType, key: input.key, code: input.code, text: input.text, modifiers: input.modifiers ?? 0 },
+      {
+        type: shortcutOrSpecialKey ? "rawKeyDown" : input.eventType,
+        key: input.key,
+        code: input.code,
+        ...(shortcutOrSpecialKey
+          ? { text: "" }
+          : input.text !== undefined
+            ? { text: input.text }
+            : {}),
+        modifiers,
+        ...(windowsVirtualKeyCode > 0 ? { windowsVirtualKeyCode } : {})
+      },
       cdpSessionId
     );
   } else if (input.type === "POINTER") {
@@ -1157,61 +1314,90 @@ function readRuntimeValue<T>(result: { result?: { value?: T } }): T | null {
   return result.result && "value" in result.result ? (result.result.value ?? null) : null;
 }
 
-interface ElementScreenshotClip {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  scale: number;
+export interface BrowserPageMetadata {
+  currentUrl: string | null;
+  title: string | null;
+  scrollX?: number;
+  scrollY?: number;
+  videoPaused?: boolean;
 }
 
-interface CdpCommandSender {
-  send(
-    method: string,
-    params?: Record<string, unknown>,
-    sessionId?: string
-  ): Promise<unknown>;
+export interface BrowserCdpClientLike {
+  send(method: string, params: Record<string, unknown>, sessionId?: string): Promise<unknown>;
 }
 
-export async function resolveElementScreenshotClip(
-  client: CdpCommandSender,
+export async function readPageMetadata(client: BrowserCdpClientLike, cdpSessionId: string): Promise<BrowserPageMetadata> {
+  const result = (await client.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "(() => { const v = document.querySelector('video'); const t = v && v.currentTime > 5 ? Math.floor(v.currentTime) : null; return { href: location.href && location.href !== 'about:blank' ? location.href : null, title: document.title || null, videoTime: t, scrollX: window.scrollX, scrollY: window.scrollY, videoPaused: v ? v.paused : undefined }; })()",
+      returnByValue: true
+    },
+    cdpSessionId
+  )) as { result?: { value?: { href?: string; title?: string; videoTime?: number; scrollX?: number; scrollY?: number; videoPaused?: boolean } } };
+  const value = readRuntimeValue(result);
+  const href = value?.href ?? null;
+  let currentUrl = href;
+  if (href && value?.videoTime) {
+    const t = value.videoTime;
+    try {
+      const url = new URL(href);
+      if (/^(www\.)?(m\.)?youtube\.com$/i.test(url.hostname) && (url.pathname === "/watch" || url.pathname === "/watch/")) {
+        url.searchParams.set("t", `${t}s`);
+        currentUrl = url.toString();
+      }
+    } catch {
+      currentUrl = href;
+    }
+  }
+  return {
+    currentUrl,
+    title: value?.title ?? null,
+    ...(typeof value?.scrollX === "number" && Number.isFinite(value.scrollX) ? { scrollX: Math.max(0, Math.floor(value.scrollX)) } : {}),
+    ...(typeof value?.scrollY === "number" && Number.isFinite(value.scrollY) ? { scrollY: Math.max(0, Math.floor(value.scrollY)) } : {}),
+    ...(typeof value?.videoPaused === "boolean" ? { videoPaused: value.videoPaused } : {})
+  };
+}
+
+export async function applyRestoreState(
+  client: BrowserCdpClientLike,
   cdpSessionId: string,
-  selector: string
-): Promise<ElementScreenshotClip | null> {
-  const documentResult = await client.send(
-    "DOM.getDocument",
-    { depth: 0, pierce: true },
-    cdpSessionId
-  ) as { root?: { nodeId?: number } };
-  const rootNodeId = documentResult.root?.nodeId;
-  if (!Number.isInteger(rootNodeId) || !rootNodeId || rootNodeId <= 0) return null;
-
-  const queryResult = await client.send(
-    "DOM.querySelector",
-    { nodeId: rootNodeId, selector },
-    cdpSessionId
-  ) as { nodeId?: number };
-  if (!Number.isInteger(queryResult.nodeId) || !queryResult.nodeId || queryResult.nodeId <= 0) {
-    return null;
+  restore: { scrollX?: number | null; scrollY?: number | null; videoPaused?: boolean | null }
+): Promise<void> {
+  const scrollY = restore.scrollY ?? null;
+  const scrollX = restore.scrollX ?? null;
+  const paused = restore.videoPaused;
+  if (scrollY === null && paused === undefined) return;
+  const deadline = Date.now() + 8_000;
+  for (;;) {
+    const expression = [
+      "(() => {",
+      `const sx = ${scrollX === null ? "null" : String(scrollX)};`,
+      `const sy = ${scrollY === null ? "null" : String(scrollY)};`,
+      `const paused = ${paused === undefined ? "null" : paused ? "true" : "false"};`,
+      "const ok = { scrolled: false, media: false };",
+      "if (sy !== null && Number.isFinite(window.scrollY)) { window.scrollTo(sx === null ? 0 : sx, sy); ok.scrolled = true; }",
+      "const v = document.querySelector('video');",
+      "if (v) { if (paused === true) { v.pause(); ok.media = true; } else if (paused === false) { void v.play().catch(() => undefined); ok.media = true; } else { ok.media = true; } }",
+      "return ok;",
+      "})()"
+    ].join(" ");
+    let ready = false;
+    try {
+      const result = (await client.send(
+        "Runtime.evaluate",
+        { expression, returnByValue: true },
+        cdpSessionId
+      )) as { result?: { value?: { scrolled?: boolean; media?: boolean } } };
+      const value = readRuntimeValue(result);
+      ready = value?.scrolled === true && value?.media === true;
+    } catch {
+      ready = false;
+    }
+    if (ready || Date.now() >= deadline) return;
+    await sleep(250);
   }
-
-  const boxResult = await client.send(
-    "DOM.getBoxModel",
-    { nodeId: queryResult.nodeId },
-    cdpSessionId
-  ) as { model?: { border?: number[] } };
-  const border = boxResult.model?.border;
-  if (!Array.isArray(border) || border.length < 8 || border.some((value) => !Number.isFinite(value))) {
-    return null;
-  }
-  const xCoordinates = border.filter((_value, index) => index % 2 === 0);
-  const yCoordinates = border.filter((_value, index) => index % 2 === 1);
-  const x = Math.min(...xCoordinates);
-  const y = Math.min(...yCoordinates);
-  const width = Math.max(...xCoordinates) - x;
-  const height = Math.max(...yCoordinates) - y;
-  if (width <= 0 || height <= 0) return null;
-  return { x, y, width, height, scale: 1 };
 }
 
 export function createBrowserSessionManager(options: { store: SpaceStore; config: SpaceApiConfig }): BrowserSessionManager {
@@ -1248,6 +1434,14 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         { urlPattern: "https://*/*", requestStage: "Request" }
       ]
     }, cdpSessionId);
+    await client.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: [
+        "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });",
+        "Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });",
+        "Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });",
+        "window.chrome = window.chrome || { runtime: {} };"
+      ].join(" ")
+    }, cdpSessionId).catch(() => undefined);
   }
 
   async function handlePausedRequest(runtime: BrowserRuntime, event: CdpEvent): Promise<void> {
@@ -1306,7 +1500,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   async function createStoredSession(input: StartBrowserSessionInput): Promise<PaneBrowserSession> {
     const sessionId = makeSpaceId("browser_session");
     const profileId = `profile:${sanitizeSegment(input.pane.roomId)}:${sanitizeSegment(input.pane.id)}`;
-    const profilePath = join(config.browserSessionsProfileRoot, sanitizeSegment(input.pane.roomId), sanitizeSegment(input.pane.id), sanitizeSegment(sessionId));
+    const profilePath = browserProfilePathFor(config.browserSessionsProfileRoot, input.pane.roomId, input.pane.id);
     return store.createPaneBrowserSession({
       sessionId,
       paneId: input.pane.id,
@@ -1340,22 +1534,6 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     );
   }
 
-  async function readPageMetadata(runtime: BrowserRuntime): Promise<{ currentUrl: string | null; title: string | null }> {
-    const result = await runtime.client.send<{ result?: { value?: { href?: string; title?: string } } }>(
-      "Runtime.evaluate",
-      {
-        expression: "({ href: location.href && location.href !== 'about:blank' ? location.href : null, title: document.title || null })",
-        returnByValue: true
-      },
-      runtime.cdpSessionId
-    );
-    const value = readRuntimeValue(result);
-    return {
-      currentUrl: value?.href ?? null,
-      title: value?.title ?? null
-    };
-  }
-
   async function ensureRuntime(session: PaneBrowserSession): Promise<BrowserRuntime> {
     const existing = runtimes.get(session.sessionId);
     if (existing && existing.process.exitCode === null && existing.process.signalCode === null) return existing;
@@ -1365,10 +1543,36 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     }
     await mkdir(session.profilePath, { recursive: true, mode: 0o750 });
     const viewport = viewportSizes[session.viewport];
+    const audioEnv = config.browserSessionsAudioEnabled
+      ? {
+          PULSE_SERVER: config.browserSessionsPulseServer,
+          PULSE_SINK: config.browserSessionsPulseSink
+        }
+      : {};
+    let xvfb: ChildProcessWithoutNullStreams | undefined;
+    let display: number | null = null;
+    if (config.browserSessionsXvfbEnabled) {
+      display = allocateDisplay();
+      if (display === null) {
+        capacity.releaseSession(session.sessionId);
+        throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "No Xvfb display is available for a headed browser session.", capacity.snapshot());
+      }
+      try {
+        xvfb = await startXvfb(display, viewport.width, viewport.height, config.browserSessionsXvfbPath);
+      } catch (error) {
+        releaseDisplay(display);
+        capacity.releaseSession(session.sessionId);
+        throw new SpaceFeatureDisabledError(
+          "BROWSER_XVFB_UNAVAILABLE",
+          `Headed browser sessions require Xvfb (${config.browserSessionsXvfbPath}). ${error instanceof Error ? error.message : String(error)}`,
+          { display }
+        );
+      }
+    }
     const chrome = spawn(
       config.browserSessionsChromePath,
       [
-        "--headless=new",
+        "--no-sandbox",
         "--remote-debugging-address=127.0.0.1",
         "--remote-debugging-port=0",
         `--user-data-dir=${session.profilePath}`,
@@ -1376,11 +1580,17 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-dev-shm-usage",
-        "--mute-audio",
+        "--autoplay-policy=no-user-gesture-required",
         "--noerrdialogs",
+        "--disable-blink-features=AutomationControlled",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--disable-features=Vulkan",
+        "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
         "about:blank"
       ],
-      { env: { ...process.env, HOME: session.profilePath } }
+      { env: { ...process.env, HOME: session.profilePath, ...audioEnv, ...(xvfb ? { DISPLAY: `:${display}` } : {}) } }
     );
     try {
       const wsUrl = await waitForChromeWebSocket(chrome, 10_000);
@@ -1389,6 +1599,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       const attached = await client.send<{ sessionId: string }>("Target.attachToTarget", { targetId: target.targetId, flatten: true });
       const runtime: BrowserRuntime = {
         process: chrome,
+        ...(xvfb ? { xvfb } : {}),
+        ...(display !== null ? { display } : {}),
         client,
         targetId: target.targetId,
         cdpSessionId: attached.sessionId,
@@ -1486,6 +1698,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       return runtime;
     } catch (error) {
       capacity.releaseSession(session.sessionId);
+      if (xvfb) stopXvfbBestEffort(xvfb);
+      if (display !== null) releaseDisplay(display);
       await stopChromeBestEffort(chrome);
       throw error;
     }
@@ -1545,6 +1759,84 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     const session = await store.getActivePaneBrowserSession(pane.id);
     if (!session) throw new SpaceNotFoundError(`Active browser session for pane ${pane.id} was not found.`);
     return session;
+  }
+
+  async function startAudioStream(
+    sessionId: string,
+    onChunk: (chunk: BrowserAudioChunk) => void | Promise<void>
+  ): Promise<BrowserAudioStreamHandle> {
+    if (!config.browserSessionsAudioEnabled) {
+      throw new SpaceFeatureDisabledError("BROWSER_AUDIO_UNAVAILABLE", "Browser session audio is not enabled on this runtime.");
+    }
+    const session = await store.getPaneBrowserSession(sessionId);
+    if (!session || !session.isActive) throw new SpaceNotFoundError(`Active browser session ${sessionId} was not found.`);
+    const sinkName = config.browserSessionsPulseSink;
+    const monitorName = `${sinkName}.monitor`;
+    const parecPath = "/usr/bin/parec";
+    const sampleRate = 48000;
+    const channels = 2;
+    const chunkMs = 40;
+    const blockBytes = Math.round((sampleRate * channels * 2 * chunkMs) / 1000);
+    const proc = spawn(
+      parecPath,
+      [
+        `--device=${monitorName}`,
+        `--rate=${sampleRate}`,
+        `--channels=${channels}`,
+        "--format=s16le",
+        "--raw",
+        "--latency-msec=40"
+      ],
+      {
+        env: {
+          ...process.env,
+          PULSE_SERVER: config.browserSessionsPulseServer
+        }
+      }
+    );
+    let sequence = 0;
+    let stopped = false;
+    const id = makeSpaceId("browser_audio_stream");
+    const pump = async () => {
+      let tail: Buffer = Buffer.alloc(0);
+      for await (const chunk of proc.stdout) {
+        if (stopped) break;
+        tail = tail.byteLength > 0 ? Buffer.concat([tail, chunk]) : chunk;
+        if (tail.byteLength >= blockBytes) {
+          const alignedBytes = Math.floor(tail.byteLength / blockBytes) * blockBytes;
+          if (alignedBytes > 0) {
+            const aligned = tail.subarray(0, alignedBytes);
+            tail = tail.subarray(alignedBytes);
+            sequence += 1;
+            await onChunk({
+              sessionId,
+              sequence,
+              data: Buffer.from(aligned),
+              sampleRate,
+              channels,
+              format: "s16le",
+              capturedAt: nowIso()
+            });
+          }
+        }
+      }
+    };
+    const pumpPromise = pump();
+    proc.on("error", () => {
+      if (!stopped) void pumpPromise.catch(() => undefined);
+    });
+    return {
+      id,
+      sampleRate,
+      channels,
+      format: "s16le",
+      async stop() {
+        if (stopped) return;
+        stopped = true;
+        proc.kill("SIGTERM");
+        await pumpPromise.catch(() => undefined);
+      }
+    };
   }
 
   function safePageUrl(raw: unknown): string | null {
@@ -1723,7 +2015,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     await runtime.client.send("Page.navigate", { url: targetUrl }, runtime.cdpSessionId);
     await load;
     await sleep(350);
-    const meta = await readPageMetadata(runtime);
+    const meta = await readPageMetadata(runtime.client, runtime.cdpSessionId);
     current = await store.updatePaneBrowserSession(session.sessionId, {
       currentUrl: meta.currentUrl,
       title: meta.title,
@@ -1755,7 +2047,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       { format: "png", captureBeyondViewport: false },
       runtime.cdpSessionId
     );
-    const meta = await readPageMetadata(runtime);
+    const meta = await readPageMetadata(runtime.client, runtime.cdpSessionId);
     const updated = await store.updatePaneBrowserSession(session.sessionId, {
       currentUrl: meta.currentUrl,
       title: meta.title,
@@ -1866,13 +2158,17 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       const size = metrics.contentSize;
       if (size?.width && size.height) clip = { x: size.x ?? 0, y: size.y ?? 0, width: size.width, height: size.height, scale: 1 };
     } else if (job.options.target === "ELEMENT" && job.options.selector) {
-      const value = await resolveElementScreenshotClip(
-        runtime.client,
-        runtime.cdpSessionId,
-        job.options.selector
+      const result = await runtime.client.send<{ result?: { value?: { x: number; y: number; width: number; height: number } | null } }>(
+        "Runtime.evaluate",
+        {
+          expression: `(() => { const element = document.querySelector(${JSON.stringify(job.options.selector)}); if (!element) return null; const r = element.getBoundingClientRect(); return { x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height }; })()`,
+          returnByValue: true
+        },
+        runtime.cdpSessionId
       );
-      if (!value) throw new SpaceNotFoundError(`Browser element ${job.options.selector} was not found.`);
-      clip = value;
+      const value = readRuntimeValue(result);
+      if (!value || value.width <= 0 || value.height <= 0) throw new SpaceNotFoundError(`Browser element ${job.options.selector} was not found.`);
+      clip = { ...value, scale: 1 };
     }
     const screenshot = await runtime.client.send<{ data: string }>(
       "Page.captureScreenshot",
@@ -2160,6 +2456,21 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     runtimes.delete(active.sessionId);
     capacity.releaseSession(active.sessionId);
     capacity.releaseLive(`stream:${active.sessionId}`);
+    let lastKnownUrl: string | null = active.currentUrl;
+    let restoreScrollX: number | null = null;
+    let restoreScrollY: number | null = null;
+    let restoreVideoPaused: boolean | null = null;
+    try {
+      if (runtime && runtime.process.exitCode === null && runtime.process.signalCode === null) {
+        const meta = await readPageMetadata(runtime.client, runtime.cdpSessionId);
+        if (meta.currentUrl) lastKnownUrl = meta.currentUrl;
+        restoreScrollX = meta.scrollX ?? null;
+        restoreScrollY = meta.scrollY ?? null;
+        restoreVideoPaused = meta.videoPaused ?? null;
+      }
+    } catch {
+      // Best effort: the stored currentUrl is the fallback restore target.
+    }
     try {
       runtime?.detachDiagnostics();
       runtime?.client.close();
@@ -2167,13 +2478,19 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       // Best effort: process termination below is the authoritative cleanup.
     }
     if (runtime) await stopChromeBestEffort(runtime.process);
+    if (runtime?.xvfb) stopXvfbBestEffort(runtime.xvfb);
+    if (runtime?.display !== undefined) releaseDisplay(runtime.display);
     await store.updatePaneBrowserSession(active.sessionId, {
       status: "CLOSED",
       statusReason: "Browser session closed.",
       runtimeState: "STOPPED",
       controlState: "UNCONTROLLED",
       isActive: false,
-      endedAt: nowIso()
+      endedAt: nowIso(),
+      restoreScrollX,
+      restoreScrollY,
+      restoreVideoPaused,
+      ...(lastKnownUrl ? { currentUrl: lastKnownUrl } : {})
     });
   }
 
@@ -2230,8 +2547,24 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       assertEnabled();
       let session = await store.getActivePaneBrowserSession(input.pane.id);
       if (session) await assertCanMutate(session, context);
+      let restore: { scrollX?: number | null; scrollY?: number | null; videoPaused?: boolean | null } = {};
       if (!session) {
-        const targetUrl = await assertSafeBrowserTargetUrl(input.targetUrl ?? config.browserSessionsDefaultUrl, config.browserEvidenceTargetOrigin);
+        const prior = await store.getLatestPaneBrowserSession(input.pane.id);
+        const restoreUrl =
+          prior && (prior.status === "CLOSED" || prior.status === "ERROR")
+            ? (prior.currentUrl ?? prior.targetUrl)
+            : null;
+        const targetUrl = await assertSafeBrowserTargetUrl(
+          restoreUrl ?? input.targetUrl ?? config.browserSessionsDefaultUrl,
+          config.browserEvidenceTargetOrigin
+        );
+        if (prior && (prior.status === "CLOSED" || prior.status === "ERROR")) {
+          restore = {
+            scrollX: prior.restoreScrollX,
+            scrollY: prior.restoreScrollY,
+            videoPaused: prior.restoreVideoPaused
+          };
+        }
         session = await createStoredSession({ ...input, targetUrl });
       } else if (input.viewport && input.viewport !== session.viewport) {
         session = await store.updatePaneBrowserSession(session.sessionId, { viewport: input.viewport });
@@ -2244,6 +2577,14 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       }
       if (browserSessionNeedsNavigation(session)) {
         session = await navigateSession(session, session.targetUrl);
+        if (restore.scrollY != null || restore.scrollX != null || restore.videoPaused !== undefined) {
+          try {
+            const runtime = await ensureRuntime(session);
+            await applyRestoreState(runtime.client, runtime.cdpSessionId, restore);
+          } catch {
+            // Restoring the exact visual position is best effort after navigation.
+          }
+        }
       } else {
         await ensureRuntime(session);
         session = await store.updatePaneBrowserSession(session.sessionId, {
@@ -2412,6 +2753,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
             // Closing the API should not hang on CDP socket state.
           }
           if (runtime) await stopChromeBestEffort(runtime.process);
+          if (runtime?.xvfb) stopXvfbBestEffort(runtime.xvfb);
+          if (runtime?.display !== undefined) releaseDisplay(runtime.display);
         })
       );
     },
@@ -2424,6 +2767,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       return recovery;
     },
     issueFrameTicket,
+    issueAudioTicket: issueFrameTicket,
     acceptFrameTicket(paneId, sessionId, token) {
       const ticket = tickets.get(token);
       if (!ticket || ticket.paneId !== paneId || ticket.sessionId !== sessionId || ticket.expiresAt < Date.now()) {
@@ -2432,6 +2776,16 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       }
       tickets.delete(token);
       return true;
-    }
+    },
+    acceptAudioTicket(paneId, sessionId, token) {
+      const ticket = tickets.get(token);
+      if (!ticket || ticket.paneId !== paneId || ticket.sessionId !== sessionId || ticket.expiresAt < Date.now()) {
+        tickets.delete(token);
+        return false;
+      }
+      tickets.delete(token);
+      return true;
+    },
+    startAudioStream
   };
 }

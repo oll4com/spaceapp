@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Eye, EyeOff, RotateCcw } from "lucide-react";
+import { AlertTriangle, Eye, EyeOff, RotateCcw } from "../ui-theme/app-icons.js";
 import { MultiDirectedGraph } from "graphology";
 import Sigma from "sigma";
 import type { NodeHoverDrawingFunction, NodeLabelDrawingFunction } from "sigma/rendering";
@@ -21,6 +21,9 @@ const MEMORY_GRAPH_HIGHLIGHT_BACKGROUND = "#f4e6c1";
 const MEMORY_GRAPH_HIGHLIGHT_TEXT = "#222627";
 const MEMORY_GRAPH_SELECTED_COLOR = "#e05252";
 const MEMORY_GRAPH_HOVER_COLOR = "#f5d78b";
+let memoryGraphRendererSerial = 0;
+
+export type MemoryGraphDisplayMode = "SEMANTIC" | "FOCUSED";
 
 const drawMemoryGraphLabel: NodeLabelDrawingFunction = (context, data, settings) => {
   if (!data.label) return;
@@ -87,6 +90,7 @@ const legend = [
 export default function DesktopMemoryGraph({
   nodes,
   edges,
+  displayMode,
   relationMode,
   selectedNodeId,
   onSelectNode,
@@ -98,6 +102,7 @@ export default function DesktopMemoryGraph({
 }: {
   nodes: MemoryGraphNode[];
   edges: MemoryGraphEdge[];
+  displayMode: MemoryGraphDisplayMode;
   relationMode: "CLUSTERED" | "RELATIONS";
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string) => void;
@@ -112,9 +117,11 @@ export default function DesktopMemoryGraph({
   const selectedNodeRef = useRef<string | null>(selectedNodeId);
   const hoveredNodeRef = useRef<string | null>(null);
   const onSelectNodeRef = useRef(onSelectNode);
+  const displayModeRef = useRef<MemoryGraphDisplayMode>(displayMode);
   const labelsVisibleRef = useRef(true);
   const neighborsRef = useRef(new Map<string, Set<string>>());
   const graphGenerationRef = useRef(0);
+  const lastCameraFocusRef = useRef<string | null>(null);
   const rendererFailedRef = useRef(false);
   const [revealedCount, setRevealedCount] = useState(0);
   const [renderError, setRenderError] = useState<string | null>(null);
@@ -124,6 +131,7 @@ export default function DesktopMemoryGraph({
 
   selectedNodeRef.current = selectedNodeId;
   onSelectNodeRef.current = onSelectNode;
+  displayModeRef.current = displayMode;
   labelsVisibleRef.current = labelsVisible;
 
   useEffect(() => {
@@ -175,7 +183,12 @@ export default function DesktopMemoryGraph({
             : null;
           const traceNodeId = hoveredNodeId ?? selectedNodeId;
           if (!traceNodeId) {
-            return labelsVisibleRef.current
+            if (displayModeRef.current === "SEMANTIC") {
+              return labelsVisibleRef.current
+                ? attributes
+                : { ...attributes, forceLabel: false, label: null };
+            }
+            return attributes.importantHub === true
               ? attributes
               : { ...attributes, forceLabel: false, label: null };
           }
@@ -203,10 +216,13 @@ export default function DesktopMemoryGraph({
             };
           }
           if (neighbors.get(traceNodeId)?.has(nodeId)) {
+            const keepLabel = displayModeRef.current === "SEMANTIC"
+              ? labelsVisibleRef.current
+              : attributes.importantHub === true;
             return {
               ...attributes,
-              forceLabel: labelsVisibleRef.current,
-              label: labelsVisibleRef.current ? attributes.label : null,
+              forceLabel: keepLabel,
+              label: keepLabel ? attributes.label : null,
               size: Number(attributes.size ?? 5) * 1.12,
               zIndex: 2
             };
@@ -236,6 +252,8 @@ export default function DesktopMemoryGraph({
             : { ...attributes, color: "#272c2d", size: Math.max(0.35, Number(attributes.size ?? 1) * 0.55), zIndex: 0 };
         }
       });
+      memoryGraphRendererSerial += 1;
+      container.dataset.sigmaRendererInstance = String(memoryGraphRendererSerial);
       rendererRef.current = renderer;
       renderer.on("clickNode", ({ node }) => onSelectNodeRef.current(node));
       renderer.on("enterNode", ({ node }) => {
@@ -292,9 +310,12 @@ export default function DesktopMemoryGraph({
       if (edge.origin === "EXPLICIT_TAG" || !topicOrigins.has(edge.target)) topicOrigins.set(edge.target, edge.origin);
     }
     const neighbors = new Map(nodes.map((node) => [node.id, new Set<string>()]));
+    const degrees = new Map(nodes.map((node) => [node.id, 0]));
     for (const edge of edges) {
       neighbors.get(edge.source)?.add(edge.target);
       neighbors.get(edge.target)?.add(edge.source);
+      if (degrees.has(edge.source)) degrees.set(edge.source, degrees.get(edge.source)! + 1);
+      if (degrees.has(edge.target)) degrees.set(edge.target, degrees.get(edge.target)! + 1);
     }
     neighborsRef.current = neighbors;
 
@@ -332,13 +353,20 @@ export default function DesktopMemoryGraph({
         const position = resolveMemoryGraphPosition(node, index, relationMode);
         const topicOrigin = topicOrigins.get(node.id) ?? null;
         const style = memoryGraphNodeStyle(node, topicOrigin);
+        const importantHub = shouldForceMemoryGraphLabel(
+          node,
+          topicOrigin,
+          degrees.get(node.id) ?? 0,
+          index
+        );
         graph.addNode(node.id, {
           label: node.label,
           x: position.x,
           y: position.y,
           size: style.size,
           color: style.color,
-          forceLabel: shouldForceMemoryGraphLabel(node, topicOrigin),
+          forceLabel: importantHub,
+          importantHub,
           nodeType: node.type,
           topicOrigin
         });
@@ -380,16 +408,23 @@ export default function DesktopMemoryGraph({
     const renderer = rendererRef.current;
     if (!renderer || rendererFailedRef.current) return;
     renderer.refresh();
-    if (!selectedNodeId || !renderer.getGraph().hasNode(selectedNodeId)) return;
+    if (!selectedNodeId) {
+      lastCameraFocusRef.current = null;
+      return;
+    }
+    if (!renderer.getGraph().hasNode(selectedNodeId)) return;
+    const focusKey = `${graphGenerationRef.current}:${selectedNodeId}`;
+    if (lastCameraFocusRef.current === focusKey) return;
     const displayData = renderer.getNodeDisplayData(selectedNodeId);
     if (displayData) {
+      lastCameraFocusRef.current = focusKey;
       void renderer.getCamera().animate({ x: displayData.x, y: displayData.y, ratio: 0.24 }, { duration: 360 });
     }
-  }, [nodes, rendererRevision, selectedNodeId]);
+  }, [nodes, rendererRevision, revealedCount, selectedNodeId]);
 
   useEffect(() => {
     rendererRef.current?.refresh();
-  }, [labelsVisible]);
+  }, [displayMode, labelsVisible]);
 
   const visibleEdges = revealedCount >= nodes.length
     ? edges.length
@@ -410,32 +445,38 @@ export default function DesktopMemoryGraph({
             {taxonomy.explicitTags.toLocaleString()} explicit tags · {taxonomy.derivedTopics.toLocaleString()} derived topics · {taxonomy.semanticLinks.toLocaleString()} semantic links
           </small>
         </div>
-        <label className="memory-graph-node-picker">
-          <span>Focus node</span>
-          <select
-            aria-label="Focus graph node"
-            name="memoryGraphFocusNode"
-            disabled={nodes.length === 0}
-            value={selectedNodeId ?? ""}
-            onChange={(event) => { if (event.currentTarget.value) onSelectNode(event.currentTarget.value); }}
-          >
-            <option value="">Choose a node…</option>
-            {[...nodes].sort((left, right) => left.label.localeCompare(right.label)).map((node) => (
-              <option key={node.id} value={node.id}>{node.label}</option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="button"
-          className="memory-graph-label-toggle"
-          aria-label={labelsVisible ? "Hide map labels" : "Show map labels"}
-          aria-pressed={!labelsVisible}
-          title={labelsVisible ? "Hide map labels" : "Show map labels"}
-          onClick={() => setLabelsVisible((visible) => !visible)}
-        >
-          {labelsVisible ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
-          <span>{labelsVisible ? "Hide labels" : "Show labels"}</span>
-        </button>
+        {displayMode === "SEMANTIC" ? (
+          <>
+            <label className="memory-graph-node-picker">
+              <span>Focus node</span>
+              <select
+                aria-label="Focus graph node"
+                name="memoryGraphFocusNode"
+                disabled={nodes.length === 0}
+                value={selectedNodeId ?? ""}
+                onChange={(event) => {
+                  if (event.currentTarget.value) onSelectNode(event.currentTarget.value);
+                }}
+              >
+                <option value="">Choose a node…</option>
+                {[...nodes].sort((left, right) => left.label.localeCompare(right.label)).map((node) => (
+                  <option key={node.id} value={node.id}>{node.label}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="memory-graph-label-toggle"
+              aria-label={labelsVisible ? "Hide map labels" : "Show map labels"}
+              aria-pressed={!labelsVisible}
+              title={labelsVisible ? "Hide map labels" : "Show map labels"}
+              onClick={() => setLabelsVisible((visible) => !visible)}
+            >
+              {labelsVisible ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+              <span>{labelsVisible ? "Hide labels" : "Show labels"}</span>
+            </button>
+          </>
+        ) : null}
         <button
           type="button"
           className="memory-graph-reset"
@@ -460,6 +501,7 @@ export default function DesktopMemoryGraph({
         role="img"
         aria-label={`Canonical memory graph with ${nodes.length} visible nodes and ${edges.length} visible relationships`}
         aria-busy={loading || (!effectiveError && revealedCount < nodes.length)}
+        data-graph-mode={displayMode}
         data-relation-mode={relationMode}
       >
         {renderError ? (

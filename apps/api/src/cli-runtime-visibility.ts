@@ -19,6 +19,10 @@ import {
 interface CliRuntimeImpact {
   sessionIds: string[];
   paneIds: string[];
+  chatRunPaneIds: string[];
+  chatRunIds: string[];
+  chatPaneIds: string[];
+  roomAgentMissions: Array<{ roomId: string; missionId: string }>;
 }
 
 interface DisableConfirmation extends CliRuntimeImpact {
@@ -29,6 +33,8 @@ interface DisableConfirmation extends CliRuntimeImpact {
 export interface CliRuntimeVisibilityPolicyOptions {
   store: SpaceStore;
   terminateSession: (sessionId: string) => Promise<boolean>;
+  interruptChatPane?: (paneId: string, reason: string, traceId: string) => Promise<boolean>;
+  stopRoomAgentMission?: (roomId: string, missionId: string, reason: string, traceId: string) => Promise<boolean>;
   publishEvent?: (event: Event) => void;
   now?: () => number;
   confirmationTtlMs?: number;
@@ -75,8 +81,10 @@ export class CliRuntimeVisibilityPolicy {
     const parsed = cliToggleRuntimeIdSchema.safeParse(runtimeId);
     if (!parsed.success || await this.isEnabled(parsed.data)) return;
     throw new SpaceFeatureDisabledError(
-      "CLI_RUNTIME_DISABLED",
-      `${parsed.data} is disabled by the global CLI runtime policy.`,
+      parsed.data === "cli:codex" ? "CODEX_MASTER_DISABLED" : "CLI_RUNTIME_DISABLED",
+      parsed.data === "cli:codex"
+        ? "Codex is disabled by the global master switch."
+        : `${parsed.data} is disabled by the global CLI runtime policy.`,
       { runtimeId: parsed.data }
     );
   }
@@ -111,7 +119,13 @@ export class CliRuntimeVisibilityPolicy {
       confirmation.runtimeId !== parsedRuntimeId ||
       confirmation.expiresAtMs < this.now() ||
       !sameIdentities(confirmation.sessionIds, impact.sessionIds) ||
-      !sameIdentities(confirmation.paneIds, impact.paneIds)
+      !sameIdentities(confirmation.paneIds, impact.paneIds) ||
+      !sameIdentities(confirmation.chatRunIds, impact.chatRunIds) ||
+      !sameIdentities(confirmation.chatPaneIds, impact.chatPaneIds) ||
+      !sameIdentities(
+        confirmation.roomAgentMissions.map((mission) => mission.missionId),
+        impact.roomAgentMissions.map((mission) => mission.missionId)
+      )
     ) {
       throw new CliRuntimeDisableConfirmationStaleError(this.issuePreview(parsedRuntimeId, impact));
     }
@@ -148,6 +162,39 @@ export class CliRuntimeVisibilityPolicy {
       }
     }
 
+    const interruptedChatPaneIds: string[] = [];
+    const unresolvedChatPaneIds = new Set<string>();
+    for (const paneId of impact.chatRunPaneIds) {
+      try {
+        const interrupted = await this.options.interruptChatPane?.(
+          paneId,
+          "Codex disabled by an administrator.",
+          traceId
+        );
+        if (interrupted) interruptedChatPaneIds.push(paneId);
+        else unresolvedChatPaneIds.add(paneId);
+      } catch {
+        unresolvedChatPaneIds.add(paneId);
+      }
+    }
+
+    const stoppedRoomAgentMissionIds: string[] = [];
+    const unresolvedRoomAgentMissionIds: string[] = [];
+    for (const mission of impact.roomAgentMissions) {
+      try {
+        const stopped = await this.options.stopRoomAgentMission?.(
+          mission.roomId,
+          mission.missionId,
+          "Codex disabled by an administrator.",
+          traceId
+        );
+        if (stopped) stoppedRoomAgentMissionIds.push(mission.missionId);
+        else unresolvedRoomAgentMissionIds.push(mission.missionId);
+      } catch {
+        unresolvedRoomAgentMissionIds.push(mission.missionId);
+      }
+    }
+
     const closedPaneIds: string[] = [];
     const unresolvedPaneIds: string[] = [];
     for (const paneId of impact.paneIds) {
@@ -165,12 +212,36 @@ export class CliRuntimeVisibilityPolicy {
       }
     }
 
+    const closedChatPaneIds: string[] = [];
+    for (const paneId of impact.chatPaneIds) {
+      try {
+        const pane = await this.options.store.updatePane(
+          paneId,
+          { isClosed: true, status: "CLOSED" },
+          traceId
+        );
+        closedChatPaneIds.push(paneId);
+        const paneEvent = await this.options.store.getLatestEvent(pane.roomId);
+        if (paneEvent) this.options.publishEvent?.(paneEvent);
+      } catch {
+        unresolvedChatPaneIds.add(paneId);
+      }
+    }
+
     const cleanup = {
       requestedActiveSessionCount: impact.sessionIds.length,
       requestedOpenPaneCount: impact.paneIds.length,
+      requestedActiveChatRunCount: impact.chatRunIds.length,
+      requestedOpenChatPaneCount: impact.chatPaneIds.length,
+      requestedRoomAgentMissionCount: impact.roomAgentMissions.length,
       terminatedSessionIds,
+      interruptedChatPaneIds,
+      stoppedRoomAgentMissionIds,
       closedPaneIds,
+      closedChatPaneIds,
       unresolvedSessionIds,
+      unresolvedChatPaneIds: [...unresolvedChatPaneIds].sort(),
+      unresolvedRoomAgentMissionIds,
       unresolvedPaneIds
     };
     this.publishVisibilityEvent(parsedRuntimeId, false, traceId, cleanup);
@@ -198,9 +269,35 @@ export class CliRuntimeVisibilityPolicy {
       )
       .map((session) => session!.sessionId)
       .sort();
+    const allChatPanes = runtimeId === "cli:codex"
+      ? panes.filter((pane) => pane.mode === "CHAT")
+      : [];
+    const chatPanes = allChatPanes.filter((pane) => !pane.isClosed);
+    const chatRuns = await Promise.all(allChatPanes.map(async (pane) => {
+      const session = await this.options.store.getActiveSpaceAgentSession(pane.id);
+      if (!session?.isActive) return null;
+      const run = await this.options.store.getLatestSpaceAgentRun(session.sessionId);
+      return run && (run.status === "QUEUED" || run.status === "RUNNING")
+        ? { paneId: pane.id, runId: run.runId }
+        : null;
+    }));
+    const roomAgentMissions = runtimeId === "cli:codex"
+      ? (await Promise.all(rooms.map(async (room) =>
+          (await this.options.store.listRoomAgentMissions(room.id, 500))
+            .filter((mission) => mission.status === "QUEUED" || mission.status === "RUNNING" || mission.status === "PAUSED")
+            .map((mission) => ({ roomId: room.id, missionId: mission.id }))
+        ))).flat().sort((left, right) => left.missionId.localeCompare(right.missionId))
+      : [];
+    const activeChatRuns = chatRuns.flatMap((run) => run ? [run] : []).sort((left, right) =>
+      left.runId.localeCompare(right.runId)
+    );
     return {
       sessionIds: [...new Set(sessionIds)],
-      paneIds: [...new Set(paneIds)]
+      paneIds: [...new Set(paneIds)],
+      chatRunPaneIds: activeChatRuns.map((run) => run.paneId),
+      chatRunIds: activeChatRuns.map((run) => run.runId),
+      chatPaneIds: [...new Set(chatPanes.map((pane) => pane.id))].sort(),
+      roomAgentMissions
     };
   }
 
@@ -212,6 +309,9 @@ export class CliRuntimeVisibilityPolicy {
       runtimeId,
       activeSessionCount: impact.sessionIds.length,
       openPaneCount: impact.paneIds.length,
+      activeChatRunCount: impact.chatRunIds.length,
+      openChatPaneCount: impact.chatPaneIds.length,
+      activeRoomAgentMissionCount: impact.roomAgentMissions.length,
       confirmationToken,
       expiresAt: new Date(expiresAtMs).toISOString()
     });

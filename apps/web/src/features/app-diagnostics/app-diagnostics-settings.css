@@ -1,0 +1,160 @@
+.app-diagnostics-card {
+  position: relative;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.app-diagnostics-card.is-enabled {
+  border-color: color-mix(in srgb, var(--room-danger, #df6d68) 68%, var(--room-border, #343638));
+}
+
+.app-diagnostics-title > .status {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.app-diagnostics-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin: 0;
+}
+
+.app-diagnostics-metrics > div {
+  min-width: 0;
+  display: grid;
+  gap: 0.12rem;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 5px;
+  background: var(--room-surface-soft, #151718);
+  padding: 0.4rem 0.45rem;
+}
+
+.app-diagnostics-metrics dt {
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.66rem;
+}
+
+.app-diagnostics-metrics dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--room-text, #f4efe5);
+  font-size: 0.74rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-diagnostics-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.app-diagnostics-actions .compact-action {
+  width: 100%;
+  justify-content: center;
+}
+
+.app-diagnostics-consent {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid var(--room-accent, #6db7aa);
+  border-radius: 6px;
+  background: var(--room-terminal-bg, #101112);
+  padding: 0.65rem;
+}
+
+.app-diagnostics-consent-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.app-diagnostics-consent-heading svg {
+  width: 1rem;
+  height: 1rem;
+  color: var(--room-accent, #6db7aa);
+}
+
+.app-diagnostics-consent p {
+  margin: 0;
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.app-diagnostics-consent > div:last-child {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.app-diagnostics-error {
+  margin: 0;
+  color: var(--room-danger, #df6d68);
+  font-size: 0.72rem;
+}
+
+.app-diagnostics-indicators {
+  position: fixed;
+  top: 0.55rem;
+  right: 0.65rem;
+  z-index: 220;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  pointer-events: none;
+}
+
+.app-diagnostics-indicators > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 1.55rem;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  color: #fff;
+  font-size: 0.66rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.32);
+}
+
+.app-diagnostics-debug-badge {
+  background: #9f341f;
+}
+
+.app-diagnostics-rec-badge {
+  background: #b21620;
+}
+
+.app-diagnostics-rec-badge i {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: currentColor;
+  animation: app-diagnostics-rec-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes app-diagnostics-rec-pulse {
+  50% { opacity: 0.35; }
+}
+
+@media (max-width: 520px) {
+  .app-diagnostics-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-diagnostics-indicators {
+    top: 0.35rem;
+    right: 0.4rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-diagnostics-rec-badge i {
+    animation: none;
+  }
+}

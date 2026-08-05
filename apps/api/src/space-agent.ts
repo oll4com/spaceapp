@@ -250,6 +250,20 @@ const clipboardToolOptions: AgentPaneToolOption[] = [
     isAvailable: true,
     statusReason: null,
     isForceOn: true
+  },
+  {
+    id: "clipboard:save-plan",
+    displayName: "Clipboard save plan",
+    description: "Save the full plan an agent designed to the private Space clipboard so it can be dragged into any CLI pane.",
+    category: "memory",
+    slug: "clipboard.save-plan",
+    availability: "force_on",
+    authType: "space-clipboard",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
   }
 ];
 
@@ -357,11 +371,11 @@ function clipboardToolContext(selectedToolIds: string[] | null | undefined): str
   return [
     "Space private clipboard tools selected:",
     `tools=${selected.join(", ")}`,
-    "Use these tools only when the operator explicitly asks to list, read, or save Space clipboard history. Never add clipboard history to an ordinary prompt.",
+    "Use these tools only when the operator explicitly asks to list, read, or save Space clipboard history or a designed plan. Never add clipboard history to an ordinary prompt.",
     "To request a clipboard action, include one fenced block named space-clipboard-actions with JSON only:",
     '```space-clipboard-actions\n{"version":1,"actions":[{"toolId":"clipboard:list","action":{"type":"list","pageSize":10}}]}\n```',
-    "Action bodies: clipboard:list uses type=list with optional q/source/pageSize; clipboard:get uses type=get with clipboardItemId; clipboard:save uses type=save with text.",
-    "V1 allows at most 3 actions per turn. clipboard:save creates an AGENT_NOTE and accepts at most 10,000 characters. CLI agents do not have clipboard API access."
+    "Action bodies: clipboard:list uses type=list with optional q/source/pageSize; clipboard:get uses type=get with clipboardItemId; clipboard:save uses type=save with text; clipboard:save-plan uses type=save-plan with text and an optional title.",
+    "V1 allows at most 3 actions per turn. clipboard:save creates an AGENT_NOTE and accepts at most 10,000 characters. clipboard:save-plan stores a PLAN (the full designed plan) and accepts up to 100,000 characters. CLI agents do not have clipboard API access."
   ].join("\n");
 }
 

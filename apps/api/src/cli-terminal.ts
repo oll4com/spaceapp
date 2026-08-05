@@ -21,16 +21,23 @@ import {
 } from "@space/cli-host";
 import {
   canStartAgentRuntimeLogin,
+  cliToggleRuntimeIdSchema,
   reasoningEffortSchema,
   paneCliWebSocketClientMessageSchema,
   paneCliWebSocketServerMessageSchema,
   type AgentRuntime,
   type AgentRuntimeRegistry,
+  type CliTerminalTelemetryOutcome,
+  type CliTerminalTelemetryReason,
   type CodexCliModeDefaultPair,
   type Pane,
+  type PaneCliClientMode,
   type PaneCliSession,
+  type PaneCliTerminalControlLease,
+  type PaneCliTerminalControlState,
   type PaneCliTranscriptChunk,
   type PaneCliTurnActivityResponse,
+  type PaneCliWebSocketClientMessage,
   type PaneCliWebSocketServerMessage,
   type PaneCliWebSocketToken
 } from "@space/contracts";
@@ -43,6 +50,11 @@ import {
   type SpaceStore
 } from "@space/runtime";
 import type { SpaceApiConfig } from "./config.js";
+import {
+  cliAgentFilesApiBaseUrl,
+  cliAgentFilesEnabled,
+  issueCliAgentFilesToken
+} from "./cli-agent-files.js";
 import { cliBrowserBridgeApiBaseUrl, cliBrowserBridgeEnabled, issueCliBrowserBridgeToken } from "./cli-browser-bridge.js";
 import {
   codexDirectParityCodexHome,
@@ -53,7 +65,11 @@ import {
   resolveDirectOperatorParityCwd
 } from "./cli-parity.js";
 import { findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
-import { isCliRuntimeTerminalLaunchable } from "./cli-runtimes.js";
+import { opencodeNativeSessionIdPattern } from "./opencode-native-session.js";
+import {
+  activeCliSessionObserverRuntime,
+  isCliRuntimeTerminalLaunchable
+} from "./cli-runtimes.js";
 import {
   findCurrentCodexCliTurnActivity,
   findRecentCodexCliTurnActivity,
@@ -73,6 +89,7 @@ const cliLoginTimeoutMs = 15 * 60_000;
 const cliLoginObservationIntervalMs = 1_000;
 const cliCredentialObservationTimeoutMs = 5_000;
 const cliCredentialSmokeTimeoutMs = 190_000;
+const cliCredentialNotReadyObservation = "NOT_READY";
 const cliHostMainConnectionCount = 32;
 const codexInputReadySettleMs = 100;
 const codexModelSelectionTimeoutMs = 8_000;
@@ -81,11 +98,21 @@ const codexModelNavigationRepaintSettleMs = 25;
 const qwenAuthBootstrapSettleMs = 250;
 const cliHostOutputBatchDelayMs = 20;
 const cliHostOutputBatchMaxBytes = 32 * 1024;
-const cliTerminalSupersededCloseCode = 4001;
-const cliTerminalSupersededCloseReason = "Superseded by a newer browser connection";
+const cliTerminalControlLeaseTtlSeconds = 30;
+const cliTerminalControlHeartbeatIntervalMs = 10_000;
+const cliTerminalControlReconnectGraceSeconds = 5;
 const codexHomeKey = "\u001b[H";
 const codexArrowDownKey = "\u001b[B";
 const codexControlAnsiPattern = /\u001b(?:\][^\u0007]*(?:\u0007|\u001b\\)|[PX^_][\s\S]*?\u001b\\|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/g;
+
+function cliControlDeniedTelemetryReason(code: string): CliTerminalTelemetryReason {
+  if (code === "CLI_CONTROL_REQUIRED") return "CONTROL_REQUIRED";
+  if (code === "CLI_LEASE_STALE") return "LEASE_STALE";
+  if (code === "CLI_CONTROL_HELD") return "CONTROL_HELD";
+  if (code === "CLI_OBSERVER_MUTATION_DENIED") return "OBSERVER_DENIED";
+  if (code === "CLI_PROTOCOL_REQUIRED") return "PROTOCOL_REQUIRED";
+  return "UNKNOWN";
+}
 
 class CliLoginConnectionReconciledError extends Error {
   constructor() {
@@ -138,7 +165,14 @@ function codexStartupBusy(output: string): boolean {
 
 export function codexInputReady(output: string): boolean {
   const modelState = latestCodexModelState(output);
-  if (!modelState || modelState.status === "loading") return false;
+  if (!modelState) {
+    const normalized = output.replace(codexControlAnsiPattern, "").toLowerCase();
+    const promptIndex = normalized.lastIndexOf("›");
+    return normalized.lastIndexOf("openai codex") < 0 &&
+      promptIndex >= 0 &&
+      promptIndex > codexStartupProgressIndex(normalized);
+  }
+  if (modelState.status === "loading") return false;
   const promptIndex = modelState.normalizedOutput.lastIndexOf("›");
   return promptIndex > modelState.headerEndIndex &&
     promptIndex > codexStartupProgressIndex(modelState.normalizedOutput);
@@ -154,6 +188,27 @@ interface TicketRecord {
   paneId: string;
   sessionId: string;
   expiresAtMs: number;
+}
+
+interface CliTerminalSocketContext {
+  protocolVersion: 1 | 2;
+  userId: string;
+  clientId: string | null;
+  browserClientId: string | null;
+  tabLineageId: string | null;
+  pageClientId: string | null;
+  clientMode: PaneCliClientMode;
+  requestedLeaseId: string | null;
+  proofScope: "READ_ONLY" | null;
+  leaseId: string | null;
+  requestId: string;
+  connectionOrder: number;
+  detached: boolean;
+}
+
+interface CliTerminalResolvedControl {
+  controlState: PaneCliTerminalControlState;
+  lease: PaneCliTerminalControlLease | null;
 }
 
 interface CliHostOutputBatch {
@@ -181,6 +236,8 @@ interface ManagedCliSession {
   cwd: string | null;
   sockets: Set<WebSocket>;
   clientSockets: Map<string, { socket: WebSocket; connectionOrder: number }>;
+  socketClients: Map<WebSocket, CliTerminalSocketContext>;
+  legacyControllerSocket: WebSocket | null;
   socketReplayBuffers: Map<WebSocket, string[]>;
   closed: boolean;
   detached: boolean;
@@ -428,6 +485,10 @@ interface CliTerminalConnection {
   detach(): Promise<void>;
 }
 
+export interface CliLoginVerificationEvidence {
+  fingerprintHash: string;
+}
+
 export interface CliTerminalManagerOptions {
   store: SpaceStore;
   config: SpaceApiConfig;
@@ -436,6 +497,7 @@ export interface CliTerminalManagerOptions {
   findCodexThreadResumeSettings?: CodexThreadResumeSettingsFinder;
   findCodexCliTurnActivity?: CodexCliTurnActivityFinder;
   findCurrentCodexCliTurnActivity?: CodexCliCurrentTurnActivityFinder;
+  findRecentNullAgentMessageDiagnostic?: typeof findRecentNullAgentMessageDiagnostic;
   hostClient?: CliHostGateway;
   adminHostClient?: CliHostGateway;
   startupReadyTimeoutMs?: number;
@@ -443,11 +505,38 @@ export interface CliTerminalManagerOptions {
   loginTimeoutMs?: number;
   loginObservationIntervalMs?: number;
   codexBuildDefaultsProvider?: () => Promise<CodexCliModeDefaultPair>;
-  onLoginSucceeded?: (loginSession: PaneCliSession) => Promise<string>;
+  onLoginSucceeded?: (
+    loginSession: PaneCliSession,
+    evidence?: CliLoginVerificationEvidence
+  ) => Promise<string>;
   onLoginFailed?: (
     loginSession: PaneCliSession,
     outcome: "CANCELLED" | "TIMEOUT" | "PROVIDER_FAILURE"
   ) => Promise<void>;
+  onTelemetry?: (event: CliTerminalManagerTelemetryEvent) => void;
+}
+
+export interface CliTerminalManagerTelemetryEvent {
+  event:
+    | "SOCKET_ATTACHED"
+    | "SOCKET_DETACHED"
+    | "RECONNECT_GRACE_STARTED"
+    | "CONTROL_ACQUIRED"
+    | "CONTROL_RENEWED"
+    | "CONTROL_RELEASED"
+    | "CONTROL_TAKEN_OVER"
+    | "CONTROL_DENIED";
+  outcome: CliTerminalTelemetryOutcome;
+  reason: CliTerminalTelemetryReason;
+  paneId: string;
+  roomId: string;
+  sessionId: string;
+  runtimeId: string;
+  protocolVersion?: 1 | 2;
+  clientMode?: PaneCliClientMode;
+  controlState?: PaneCliTerminalControlState;
+  socketCount: number;
+  requestId?: string;
 }
 
 export interface CliHostGateway {
@@ -560,6 +649,7 @@ type CliSpawnSession = Pick<PaneCliSession, "codexThreadId" | "modelId"> & {
   codexForkThreadId?: string | null;
   codexResumeModelId?: string | null;
   codexResumeReasoningEffort?: string | null;
+  nativeTaskRef?: string | null;
 };
 
 export function supportsNativeCliResume(runtimeId: string): boolean {
@@ -615,6 +705,10 @@ function chunkTerminalOutput(data: string): string[] {
   return chunks.length ? chunks : [data];
 }
 
+function sanitizeCliTerminalInput(runtimeId: string, data: string): string {
+  return isCodexDirectParityRuntime(runtimeId) ? data.replaceAll("\0", "") : data;
+}
+
 function normalizedLocale(value: string | undefined): string {
   if (!value || value === "undefined" || value === "null") return "C.UTF-8";
   return value;
@@ -622,13 +716,24 @@ function normalizedLocale(value: string | undefined): string {
 
 export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironmentContext = {}): Record<string, string | undefined> {
   if (context.runtimeId === "cli:root") {
+    const agentFilesToken = context.purpose === "LOGIN" ? null : issueCliAgentFilesToken(config, context);
+    const commandPath = config.cliCommandPath ?? "/opt/spaceapp/bin";
     return {
       HOME: "/root",
       LANG: normalizedLocale(process.env.LANG),
       LC_ALL: normalizedLocale(process.env.LC_ALL),
       LOGNAME: "root",
-      PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      PATH: `${commandPath}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       SHELL: "/bin/bash",
+      SPACE_AGENT_CHANNEL: "CLI",
+      SPACE_AGENT_FILES_ENABLED: agentFilesToken ? "true" : cliAgentFilesEnabled(config) ? "unavailable" : "false",
+      SPACE_AGENT_FILES_ENDPOINT: agentFilesToken ? `${cliAgentFilesApiBaseUrl(config)}/api/cli/agent-files` : undefined,
+      SPACE_AGENT_FILES_TOKEN: agentFilesToken ?? undefined,
+      SPACE_AGENT_RUNTIME_ID: context.runtimeId ?? undefined,
+      SPACE_CLI_RUNTIME_ID: context.runtimeId ?? undefined,
+      SPACE_CLI_SESSION_ID: context.cliSessionId ?? undefined,
+      SPACE_PANE_ID: context.paneId ?? undefined,
+      SPACE_ROOM_ID: context.roomId ?? undefined,
       TERM: "xterm-256color",
       USER: "root"
     };
@@ -689,6 +794,14 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
   } else {
     env.SPACE_BROWSER_BRIDGE_ENABLED = cliBrowserBridgeEnabled(config) ? "unavailable" : "false";
   }
+  const cliAgentFilesToken = context.purpose === "LOGIN" ? null : issueCliAgentFilesToken(config, context);
+  if (cliAgentFilesToken) {
+    env.SPACE_AGENT_FILES_ENABLED = "true";
+    env.SPACE_AGENT_FILES_ENDPOINT = `${cliAgentFilesApiBaseUrl(config)}/api/cli/agent-files`;
+    env.SPACE_AGENT_FILES_TOKEN = cliAgentFilesToken;
+  } else {
+    env.SPACE_AGENT_FILES_ENABLED = cliAgentFilesEnabled(config) ? "unavailable" : "false";
+  }
   const keyFile = config.codexAppServerKeyFile ?? config.codexLbKeyFile;
   if (!directOperatorParity && keyFile) {
     env[config.codexAppServerKeyEnv] = readFileSync(keyFile, "utf8").trim();
@@ -706,6 +819,14 @@ export function buildCliSpawnArgs(runtime: AgentRuntime, session?: CliSpawnSessi
       );
     }
     return [runtimeDescriptor.loginAction];
+  }
+  if (
+    session?.launchMode === "RESUME" &&
+    runtime.id === "cli:opencode" &&
+    session.nativeTaskRef &&
+    opencodeNativeSessionIdPattern.test(session.nativeTaskRef)
+  ) {
+    return ["--session", session.nativeTaskRef];
   }
   if (session?.launchMode === "RESUME" && runtimeDescriptor?.nativeResumeArgs) {
     return [...runtimeDescriptor.nativeResumeArgs];
@@ -753,6 +874,21 @@ export function buildCliSpawnArgs(runtime: AgentRuntime, session?: CliSpawnSessi
     ];
   }
   return [];
+}
+
+export function buildCliProcessLaunch(
+  config: Pick<SpaceApiConfig, "cliVpnEnabled" | "cliVpnLauncherPath">,
+  runtime: Pick<AgentRuntime, "id" | "detectedCommandPath">,
+  args: string[]
+): { command: string; args: string[] } {
+  const runtimeId = cliToggleRuntimeIdSchema.safeParse(runtime.id);
+  if (config.cliVpnEnabled && runtimeId.success) {
+    return {
+      command: config.cliVpnLauncherPath,
+      args: [runtimeId.data, ...args]
+    };
+  }
+  return { command: runtime.detectedCommandPath ?? "", args };
 }
 
 function isCliSessionRuntimeAttachable(runtime: AgentRuntime, session: Pick<PaneCliSession, "purpose">): boolean {
@@ -889,6 +1025,7 @@ function cliHostLaneIndex(sessionId: string, laneCount: number): number {
 export class CliTerminalManager {
   private readonly tickets = new Map<string, TicketRecord>();
   private readonly sessions = new Map<string, ManagedCliSession>();
+  private readonly terminalMutationQueues = new Map<string, Promise<void>>();
   private readonly sessionAttachPromises = new Map<string, Promise<ManagedCliSessionAttach>>();
   private readonly sessionAllocations = new Map<string, CliSessionAllocationRecord>();
   private readonly loginTimeoutTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -912,8 +1049,53 @@ export class CliTerminalManager {
     this.adminHostClient = options.adminHostClient ?? new CliHostClient({ socketPath: options.config.cliAdminHostSocketPath });
   }
 
+  private reportTelemetry(
+    managed: ManagedCliSession,
+    event: CliTerminalManagerTelemetryEvent["event"],
+    outcome: CliTerminalTelemetryOutcome,
+    reason: CliTerminalTelemetryReason,
+    details: Partial<Pick<
+      CliTerminalManagerTelemetryEvent,
+      "protocolVersion" | "clientMode" | "controlState" | "requestId"
+    >> = {}
+  ): void {
+    try {
+      this.options.onTelemetry?.({
+        event,
+        outcome,
+        reason,
+        paneId: managed.paneId,
+        roomId: managed.roomId,
+        sessionId: managed.sessionId,
+        runtimeId: managed.runtimeId,
+        socketCount: managed.sockets.size,
+        ...details
+      });
+    } catch {
+      // Telemetry is best-effort and must never disturb an active terminal.
+    }
+  }
+
   hostHealth(runtimeId = "cli:codex"): Promise<CliHostHealth> {
     return this.hostForRuntime(runtimeId).health();
+  }
+
+  async inspectSessionHost(session: PaneCliSession): Promise<CliHostSessionSummary | null> {
+    const identity = await this.buildHostIdentity(session);
+    return this.hostForRuntime(session.runtimeId, session.sessionId).inspect(identity);
+  }
+
+  async reconcileNormalSessionHostState(session: PaneCliSession): Promise<PaneCliSession> {
+    if (session.purpose !== "NORMAL") return session;
+    let inspected: CliHostSessionSummary | null;
+    try {
+      inspected = await this.inspectSessionHost(session);
+    } catch (error) {
+      if (cliHostSessionUnavailable(error)) return session;
+      throw error;
+    }
+    if (!inspected || inspected.status === "RUNNING") return session;
+    return this.persistClosedNormalHostSession(session, inspected);
   }
 
   recordSessionAllocation(sessionId: string, allocatedAtNs = process.hrtime.bigint()): void {
@@ -1008,13 +1190,22 @@ export class CliTerminalManager {
     const descriptor = findCliRuntimeDescriptor(runtime.id);
     if (!descriptor?.credentialObservationAction || !runtime.detectedCommandPath) return null;
     try {
-      const { stdout } = await execFileAsync(runtime.detectedCommandPath, [descriptor.credentialObservationAction], {
+      const launch = buildCliProcessLaunch(this.options.config, runtime, [descriptor.credentialObservationAction]);
+      const { stdout } = await execFileAsync(launch.command, launch.args, {
         encoding: "utf8",
         env: this.controlledCredentialActionEnvironment(),
         timeout: cliCredentialObservationTimeoutMs,
         maxBuffer: 256
       });
-      return /^OBSERVATION:[0-9a-f]{64}\r?\n$/.test(stdout) ? stdout.trim() : null;
+      if (
+        stdout === `${cliCredentialNotReadyObservation}\n` ||
+        stdout === `${cliCredentialNotReadyObservation}\r\n`
+      ) {
+        return cliCredentialNotReadyObservation;
+      }
+      return /^(?:OBSERVATION:[0-9a-f]{64}|OBSERVATION:MISSING)\r?\n$/.test(stdout)
+        ? stdout.trim()
+        : null;
     } catch {
       return null;
     }
@@ -1024,7 +1215,8 @@ export class CliTerminalManager {
     const descriptor = findCliRuntimeDescriptor(runtime.id);
     if (!descriptor?.credentialSmokeMarker || !runtime.detectedCommandPath) return false;
     try {
-      const { stdout } = await execFileAsync(runtime.detectedCommandPath, ["credential-smoke"], {
+      const launch = buildCliProcessLaunch(this.options.config, runtime, ["credential-smoke"]);
+      const { stdout } = await execFileAsync(launch.command, launch.args, {
         encoding: "utf8",
         env: this.controlledCredentialActionEnvironment(),
         timeout: cliCredentialSmokeTimeoutMs,
@@ -1071,7 +1263,18 @@ export class CliTerminalManager {
       this.scheduleLoginObservation(managed, runtime);
       return;
     }
-    managed.credentialObservation = observation;
+    const verifiedObservation = await this.readCredentialObservation(runtime);
+    if (verifiedObservation !== observation) {
+      this.broadcast(managed, {
+        type: "output",
+        stream: "stdout",
+        data: "\r\nCredentials changed during verification. SpaceApp is retrying with the latest provider state.\r\n"
+      });
+      managed.credentialSmokeRetryObservation = observation;
+      this.scheduleLoginObservation(managed, runtime);
+      return;
+    }
+    managed.credentialObservation = verifiedObservation;
     managed.credentialSmokeRetryObservation = null;
     await this.completeObservedLogin(managed);
   }
@@ -1085,6 +1288,10 @@ export class CliTerminalManager {
         // Credential verification already succeeded; a concurrently exiting TUI is safe to reconcile below.
       }
     }
+    await this.finishObservedLogin(managed);
+  }
+
+  private async finishObservedLogin(managed: ManagedCliSession): Promise<void> {
     try {
       await this.options.store.updatePaneCliSession(
         managed.sessionId,
@@ -1099,7 +1306,11 @@ export class CliTerminalManager {
       );
       const loginSession = await this.options.store.getPaneCliSession(managed.sessionId);
       if (!loginSession || !this.options.onLoginSucceeded) throw new Error("CLI login completion handler is unavailable.");
-      const sessionId = await this.options.onLoginSucceeded(loginSession);
+      const fingerprintHash = managed.credentialObservation?.match(
+        /^OBSERVATION:([0-9a-f]{64})$/
+      )?.[1];
+      if (!fingerprintHash) throw new Error("CLI credential fingerprint evidence is unavailable.");
+      const sessionId = await this.options.onLoginSucceeded(loginSession, { fingerprintHash });
       this.broadcast(managed, { type: "session_replaced", sessionId });
       return;
     } catch {
@@ -1185,7 +1396,24 @@ export class CliTerminalManager {
     };
   }
 
-  handleSocket(socket: WebSocket, input: { paneId: string; pane: Pane | Promise<Pane>; sessionId: string; token: string; clientId?: string; requestId: string }) {
+  handleSocket(socket: WebSocket, input: {
+    paneId: string;
+    pane: Pane | Promise<Pane>;
+    sessionId: string;
+    token: string;
+    clientId?: string;
+    protocolVersion?: 2;
+    browserClientId?: string;
+    tabLineageId?: string;
+    pageClientId?: string;
+    clientMode?: PaneCliClientMode;
+    requestedLeaseId?: string;
+    initialCols?: number;
+    initialRows?: number;
+    userId: string;
+    proofScope?: "READ_ONLY";
+    requestId: string;
+  }) {
     const connectionPromise = this.openConnection(socket, {
       ...input,
       connectionOrder: ++this.nextSocketConnectionOrder
@@ -1262,11 +1490,63 @@ export class CliTerminalManager {
     return interrupted;
   }
 
+  async replaceSessionForPolicyRestart(
+    sessionId: string,
+    runtime: AgentRuntime,
+    traceId: string,
+    createReplacement: () => Promise<PaneCliSession>
+  ): Promise<PaneCliSession> {
+    const previousManaged = this.sessions.get(sessionId) ?? null;
+    const interrupted = await this.interrupt(sessionId, {
+      content: "CLI session stopped for an explicit network policy restart.",
+      traceId
+    });
+    if (!interrupted) {
+      const previous = await this.options.store.getPaneCliSession(sessionId);
+      if (previous) {
+        const inspected = await this.hostForRuntime(previous.runtimeId, previous.sessionId).inspect(
+          await this.buildHostIdentity(previous)
+        ).catch((error: unknown) => {
+          if (cliHostSessionUnavailable(error)) return null;
+          throw error;
+        });
+        if (inspected?.status === "RUNNING") {
+          throw new SpaceConflictError(`CLI session ${sessionId} is still running and was not replaced.`);
+        }
+      }
+    }
+
+    const replacement = await createReplacement();
+    await this.getOrSpawnSession(replacement, runtime, traceId);
+    if (previousManaged) {
+      this.broadcast(previousManaged, { type: "session_replaced", sessionId: replacement.sessionId });
+    }
+    return replacement;
+  }
+
   listRuntimes(): Promise<AgentRuntimeRegistry> {
     return this.options.discoverRuntimes();
   }
 
-  async ensurePaneTransportReady(pane: Pane, traceId: string): Promise<PaneCliSession> {
+  async activeSessionPids(sessions: readonly PaneCliSession[]): Promise<Map<string, number>> {
+    const resolved = await Promise.all(sessions.map(async (session) => {
+      try {
+        const summary = await this.hostForRuntime(session.runtimeId, session.sessionId).inspect(
+          await this.buildHostIdentity(session)
+        );
+        return summary?.status === "RUNNING" ? [session.sessionId, summary.pid] as const : null;
+      } catch {
+        return null;
+      }
+    }));
+    return new Map(resolved.filter((item): item is readonly [string, number] => item !== null));
+  }
+
+  async ensurePaneTransportReady(
+    pane: Pane,
+    traceId: string,
+    selection: { modelId?: string | null; reasoningEffort?: string } = {}
+  ): Promise<PaneCliSession> {
     if (pane.mode !== "TERMINAL") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
     const runtimeId = pane.terminalRuntimeId ?? "cli:codex";
     const registry = await this.options.discoverRuntimes();
@@ -1294,7 +1574,8 @@ export class CliTerminalManager {
             cliCodexDefaultModel: buildDefaults.modelId,
             cliCodexDefaultReasoningEffort: buildDefaults.reasoningEffort
           },
-          pane
+          pane,
+          selection
         );
         if (!resolved) {
           throw new SpaceFeatureDisabledError(
@@ -1375,14 +1656,18 @@ export class CliTerminalManager {
     };
     let managed = (await this.getOrSpawnSession(session, runtime, traceId)).managed;
     activateTransport(managed);
-    if (data.length > 0) await this.waitForInputReady(managed);
+    const terminalData = sanitizeCliTerminalInput(managed.runtimeId, data);
+    if (data.length > 0 && terminalData.length === 0) {
+      return { turnMarker: null, markerAtMs: Date.now() };
+    }
+    if (terminalData.length > 0) await this.waitForInputReady(managed);
     await this.flushHostOutput(managed);
 
     const sendToHost = (candidate: ManagedCliSession) => {
       const host = this.hostForRuntime(candidate.runtimeId, candidate.sessionId);
       return inputIdempotencyKey
-        ? host.input(candidate.identity, candidate.attachmentId, data, "visible", inputIdempotencyKey)
-        : host.input(candidate.identity, candidate.attachmentId, data, "visible");
+        ? host.input(candidate.identity, candidate.attachmentId, terminalData, "visible", inputIdempotencyKey)
+        : host.input(candidate.identity, candidate.attachmentId, terminalData, "visible");
     };
     let inputResult;
     try {
@@ -1394,7 +1679,7 @@ export class CliTerminalManager {
       if (this.sessions.get(session.sessionId) === managed) this.sessions.delete(session.sessionId);
       managed = (await this.getOrSpawnSession(session, runtime, traceId)).managed;
       activateTransport(managed);
-      if (data.length > 0) await this.waitForInputReady(managed);
+      if (terminalData.length > 0) await this.waitForInputReady(managed);
       await this.flushHostOutput(managed);
       inputResult = await sendToHost(managed);
     }
@@ -1408,10 +1693,10 @@ export class CliTerminalManager {
       });
     }
     if (session.purpose === "NORMAL" && inputResult?.accepted !== false) {
-      await this.appendTranscript(managed, "stdin", data, traceId);
+      await this.appendTranscript(managed, "stdin", terminalData, traceId);
     }
-    if (session.purpose === "NORMAL" && inputResult?.accepted !== false && data.trim()) {
-      this.scheduleCodexNullAgentMessageCheck(managed, markerAtMs - 1000, data);
+    if (session.purpose === "NORMAL" && inputResult?.accepted !== false && terminalData.trim()) {
+      this.scheduleCodexNullAgentMessageCheck(managed, markerAtMs - 1000, terminalData);
       this.scheduleCodexThreadBind(managed, markerAtMs - 1000);
     }
     return { turnMarker, markerAtMs };
@@ -1614,6 +1899,16 @@ export class CliTerminalManager {
       sessionId: string;
       token: string;
       clientId?: string;
+      protocolVersion?: 2;
+      browserClientId?: string;
+      tabLineageId?: string;
+      pageClientId?: string;
+      clientMode?: PaneCliClientMode;
+      requestedLeaseId?: string;
+      initialCols?: number;
+      initialRows?: number;
+      userId: string;
+      proofScope?: "READ_ONLY";
       requestId: string;
       connectionOrder: number;
     }
@@ -1631,12 +1926,17 @@ export class CliTerminalManager {
       throw new SpaceConflictError("CLI session is not active.");
     }
 
-    const registry = await this.options.discoverRuntimes();
-    const runtime = registry.data.find((candidate) => candidate.id === session.runtimeId);
+    const readOnlyObserver = input.proofScope === "READ_ONLY";
+    const runtime = readOnlyObserver
+      ? activeCliSessionObserverRuntime(this.options.config, session.runtimeId)
+      : (await this.options.discoverRuntimes()).data.find((candidate) => candidate.id === session.runtimeId);
     if (!runtime) {
       throw new SpaceNotFoundError(`CLI runtime ${session.runtimeId} was not found.`);
     }
-    if (!isCliSessionRuntimeAttachable(runtime, session) || !runtime.detectedCommandPath) {
+    if (
+      !isCliSessionRuntimeAttachable(runtime, session) ||
+      (!readOnlyObserver && !runtime.detectedCommandPath)
+    ) {
       throw new SpaceFeatureDisabledError("CLI_RUNTIME_DISABLED", runtime?.statusReason ?? "CLI runtime is not enabled.", {
         runtimeId: session.runtimeId
       });
@@ -1644,7 +1944,16 @@ export class CliTerminalManager {
 
     let attach: ManagedCliSessionAttach;
     try {
-      attach = await this.getOrSpawnSession(session, runtime, input.requestId, socket);
+      attach = await this.getOrSpawnSession(
+        session,
+        runtime,
+        input.requestId,
+        socket,
+        input.initialCols !== undefined && input.initialRows !== undefined
+          ? { cols: input.initialCols, rows: input.initialRows }
+          : undefined,
+        { existingOnly: readOnlyObserver }
+      );
     } catch (error) {
       if (!(error instanceof CliLoginConnectionReconciledError)) throw error;
       return {
@@ -1653,64 +1962,105 @@ export class CliTerminalManager {
       };
     }
     const managed = attach.managed;
-    const shouldReplay = !attach.spawned || attach.restoredTransport || attach.recreatedAfterHostLoss;
-    if (shouldReplay) managed.socketReplayBuffers.set(socket, []);
-    managed.sockets.add(socket);
-    if (input.clientId) {
-      const current = managed.clientSockets.get(input.clientId);
-      if (current && current.connectionOrder > input.connectionOrder) {
-        this.unregisterSocket(managed, socket, input.clientId);
-        if (socketIsOpen(socket)) socket.close(cliTerminalSupersededCloseCode, cliTerminalSupersededCloseReason);
-        throw new SpaceConflictError("CLI terminal socket was superseded by a newer browser connection.");
+    const protocolVersion = input.protocolVersion === 2 ? 2 : 1;
+    const client: CliTerminalSocketContext = {
+      protocolVersion,
+      userId: input.userId,
+      clientId: input.clientId ?? null,
+      browserClientId: input.browserClientId ?? input.clientId ?? null,
+      tabLineageId: input.tabLineageId ?? null,
+      pageClientId: input.pageClientId ?? null,
+      clientMode: input.proofScope === "READ_ONLY"
+        ? "OBSERVER"
+        : input.clientMode ?? "INTERACTIVE",
+      requestedLeaseId: input.requestedLeaseId ?? null,
+      proofScope: input.proofScope ?? null,
+      leaseId: null,
+      requestId: input.requestId,
+      connectionOrder: input.connectionOrder,
+      detached: false
+    };
+    managed.socketClients.set(socket, client);
+    try {
+      const control = await this.enqueueTerminalMutation(
+        managed.sessionId,
+        () => this.resolveInitialControl(managed, client)
+      );
+      const shouldReplay = !attach.spawned || attach.restoredTransport || attach.recreatedAfterHostLoss;
+      if (shouldReplay) managed.socketReplayBuffers.set(socket, []);
+      managed.sockets.add(socket);
+      if (protocolVersion === 1 && (
+        !managed.legacyControllerSocket ||
+        !socketIsOpen(managed.legacyControllerSocket) ||
+        (managed.socketClients.get(managed.legacyControllerSocket)?.connectionOrder ?? -1) <= input.connectionOrder
+      )) {
+        managed.legacyControllerSocket = socket;
       }
-      if (current && current.socket !== socket) {
-        this.unregisterSocket(managed, current.socket, input.clientId);
-      }
-      managed.clientSockets.set(input.clientId, { socket, connectionOrder: input.connectionOrder });
-      if (current && current.socket !== socket) {
-        if (socketIsOpen(current.socket)) {
-          current.socket.close(cliTerminalSupersededCloseCode, cliTerminalSupersededCloseReason);
+      if (input.clientId) {
+        const current = managed.clientSockets.get(input.clientId);
+        if (!current || current.connectionOrder <= input.connectionOrder) {
+          managed.clientSockets.set(input.clientId, { socket, connectionOrder: input.connectionOrder });
         }
       }
-    }
-    this.send(socket, { type: "ready", paneId: managed.paneId, sessionId: managed.sessionId, runtimeId: managed.runtimeId });
-    try {
+      this.reportTelemetry(
+        managed,
+        "SOCKET_ATTACHED",
+        "SUCCESS",
+        attach.spawned ? "INITIAL_ATTACH" : "SESSION_REFRESH",
+        {
+          protocolVersion,
+          clientMode: client.clientMode,
+          controlState: control.controlState,
+          requestId: input.requestId
+        }
+      );
+      this.sendReady(socket, managed, client, control);
       if (shouldReplay) await this.replayTranscript(managed, socket, attach.transcriptSeed ?? undefined);
+      managed.transportReady = true;
+      const pendingHostEvents = managed.pendingHostEvents.splice(0);
+      for (const event of pendingHostEvents) this.handleHostEvent(managed, event);
+      if (!managed.closed) {
+        this.send(socket, {
+          type: "status",
+          status: "RUNNING",
+          statusReason:
+            attach.replayContinuity === "TRUNCATED"
+              ? "CLI terminal reconnected with a truncated replay."
+              : attach.restoredTransport
+                ? "CLI terminal transport restored after API restart; persisted transcript replayed."
+                : attach.recreatedAfterHostLoss
+                  ? "CLI host process recreated with exact resume after host loss."
+                  : "Attached to CLI process.",
+          replayContinuity: attach.replayContinuity
+        });
+      }
+
+      return {
+        handleMessage: (raw) => this.enqueueTerminalMutation(
+          managed.sessionId,
+          () => this.handleClientMessage(managed, socket, client, raw)
+        ),
+        detach: async () => {
+          await this.detachClient(managed, socket, client);
+          if (managed.sockets.size === 0) await this.detachTransport(managed);
+        }
+      };
     } catch (error) {
-      this.unregisterSocket(managed, socket, input.clientId);
+      await this.detachClient(managed, socket, client);
+      if (managed.sockets.size === 0) await this.detachTransport(managed).catch(() => undefined);
       throw error;
     }
-    managed.transportReady = true;
-    const pendingHostEvents = managed.pendingHostEvents.splice(0);
-    for (const event of pendingHostEvents) this.handleHostEvent(managed, event);
-    if (!managed.closed) {
-      this.send(socket, {
-        type: "status",
-        status: "RUNNING",
-        statusReason:
-          attach.replayContinuity === "TRUNCATED"
-            ? "CLI terminal reconnected with a truncated replay."
-            : attach.restoredTransport
-              ? "CLI terminal transport restored after API restart; persisted transcript replayed."
-              : attach.recreatedAfterHostLoss
-                ? "CLI host process recreated with exact resume after host loss."
-                : "Attached to CLI process.",
-        replayContinuity: attach.replayContinuity
-      });
-    }
-
-    return {
-      handleMessage: (raw) => this.handleClientMessage(managed, socket, raw),
-      detach: async () => {
-        this.unregisterSocket(managed, socket, input.clientId);
-        if (managed.sockets.size === 0) await this.detachTransport(managed);
-      }
-    };
   }
 
   private unregisterSocket(managed: ManagedCliSession, socket: WebSocket, clientId?: string): void {
     managed.sockets.delete(socket);
     managed.socketReplayBuffers.delete(socket);
+    managed.socketClients.delete(socket);
+    if (managed.legacyControllerSocket === socket) {
+      managed.legacyControllerSocket = [...managed.socketClients.entries()]
+        .filter(([, client]) => client.protocolVersion === 1 && !client.detached)
+        .sort((left, right) => right[1].connectionOrder - left[1].connectionOrder)[0]?.[0] ?? null;
+    }
     if (clientId && managed.clientSockets.get(clientId)?.socket === socket) {
       managed.clientSockets.delete(clientId);
     }
@@ -1741,7 +2091,9 @@ export class CliTerminalManager {
     session: PaneCliSession,
     runtime: AgentRuntime,
     traceId: string,
-    initialSocket?: WebSocket
+    initialSocket?: WebSocket,
+    initialGeometry?: { cols: number; rows: number },
+    options: { existingOnly?: boolean } = {}
   ): Promise<ManagedCliSessionAttach> {
     const inFlight = this.sessionAttachPromises.get(session.sessionId);
     if (inFlight) {
@@ -1760,7 +2112,14 @@ export class CliTerminalManager {
       };
     }
 
-    const attach = this.createOrRestoreSession(session, runtime, traceId, initialSocket);
+    const attach = this.createOrRestoreSession(
+      session,
+      runtime,
+      traceId,
+      initialSocket,
+      initialGeometry,
+      options
+    );
     this.sessionAttachPromises.set(session.sessionId, attach);
     try {
       return await attach;
@@ -1775,7 +2134,9 @@ export class CliTerminalManager {
     session: PaneCliSession,
     runtime: AgentRuntime,
     traceId: string,
-    initialSocket?: WebSocket
+    initialSocket?: WebSocket,
+    initialGeometry?: { cols: number; rows: number },
+    options: { existingOnly?: boolean } = {}
   ): Promise<ManagedCliSessionAttach> {
     const transcript = session.purpose === "LOGIN"
       ? []
@@ -1785,17 +2146,25 @@ export class CliTerminalManager {
       .map((chunk) => chunk.content)
       .join("")
       .slice(-16_000);
-    const codexForkThreadId = await this.codexHistoryTransferForkThreadId(session);
+    const codexForkThreadId = options.existingOnly
+      ? null
+      : await this.codexHistoryTransferForkThreadId(session);
     const baseSession = codexForkThreadId ? { ...session, codexThreadId: null } : session;
     const baseIdentity = await this.buildHostIdentity(baseSession);
     const hostClient = this.hostForRuntime(session.runtimeId, session.sessionId);
     const inspected = await hostClient.inspect(baseIdentity);
+    if (!inspected && options.existingOnly) {
+      throw new SpaceNotFoundError(
+        `Running CLI host session ${session.sessionId} was not found for a read-only observer.`
+      );
+    }
     const restoredTransport = inspected?.status === "RUNNING";
     if (inspected && !restoredTransport) {
       if (session.purpose === "LOGIN") {
         await this.reconcileClosedLoginHostSession(session, inspected, initialSocket);
         throw new CliLoginConnectionReconciledError();
       }
+      await this.persistClosedNormalHostSession(session, inspected);
       throw new SpaceConflictError(`CLI host session ${session.sessionId} is ${inspected.status}.`);
     }
     const credentialObservation = session.purpose === "LOGIN"
@@ -1817,11 +2186,15 @@ export class CliTerminalManager {
       : restoringAfterHostLoss
         ? await this.bindCodexThreadIdBeforeResume(session, traceId)
         : session;
-    const spawnSession: CliSpawnSession = codexForkThreadId
+    const nativeTaskRef = session.cliTaskRevisionId
+      ? (await this.options.store.getCliTaskRevision(session.cliTaskRevisionId))?.nativeTaskRef ?? null
+      : null;
+    const baseSpawnSession: CliSpawnSession = codexForkThreadId
       ? await this.withCodexHistoryForkSettings(session, codexForkThreadId)
       : restoringAfterHostLoss
         ? await this.withCodexResumeSettings(boundSession)
         : boundSession;
+    const spawnSession: CliSpawnSession = { ...baseSpawnSession, nativeTaskRef };
     const env = buildCliEnvironment(this.options.config, {
       roomId: session.roomId,
       paneId: session.paneId,
@@ -1852,17 +2225,22 @@ export class CliTerminalManager {
     const afterSequence = inspected
       ? await this.options.store.getPaneCliHostOutputCursor(session.sessionId, inspected.generationId)
       : -1;
+    const processLaunch = buildCliProcessLaunch(
+      this.options.config,
+      runtime,
+      buildCliSpawnArgs(runtime, spawnSession)
+    );
     const attachInput: CliHostAttachInput = {
       identity,
       spawn: inspected
         ? undefined
         : {
-            command: runtime.detectedCommandPath ?? "",
-            args: buildCliSpawnArgs(runtime, spawnSession),
+            command: processLaunch.command,
+            args: processLaunch.args,
             cwd: session.cwd ?? this.options.config.cliWorkspaceRoot,
             env,
-            cols: 100,
-            rows: 30
+            cols: initialGeometry?.cols ?? 100,
+            rows: initialGeometry?.rows ?? 30
           },
       afterSequence
     };
@@ -1927,6 +2305,8 @@ export class CliTerminalManager {
       cwd: session.cwd,
       sockets: new Set(initialSocket ? [initialSocket] : []),
       clientSockets: new Map(),
+      socketClients: new Map(),
+      legacyControllerSocket: null,
       socketReplayBuffers: new Map(),
       closed: false,
       detached: false,
@@ -2074,7 +2454,486 @@ export class CliTerminalManager {
     }
   }
 
-  private async handleClientMessage(managed: ManagedCliSession, socket: WebSocket, raw: WebSocket.RawData): Promise<void> {
+  private enqueueTerminalMutation<T>(
+    sessionId: string,
+    operation: () => Promise<T> | T
+  ): Promise<T> {
+    const previous = this.terminalMutationQueues.get(sessionId) ?? Promise.resolve();
+    const next = previous.then(operation);
+    const settled = next.then(() => undefined, () => undefined);
+    this.terminalMutationQueues.set(sessionId, settled);
+    void settled.then(() => {
+      if (this.terminalMutationQueues.get(sessionId) === settled) {
+        this.terminalMutationQueues.delete(sessionId);
+      }
+    });
+    return next;
+  }
+
+  runSerializedTerminalMutation<T>(
+    sessionIds: string | readonly string[],
+    operation: () => Promise<T> | T
+  ): Promise<T> {
+    const orderedSessionIds = [...new Set(typeof sessionIds === "string" ? [sessionIds] : sessionIds)].sort();
+    const run = (index: number): Promise<T> => {
+      const sessionId = orderedSessionIds[index];
+      return sessionId
+        ? this.enqueueTerminalMutation(sessionId, () => run(index + 1))
+        : Promise.resolve().then(operation);
+    };
+    return run(0);
+  }
+
+  private leaseBelongsToClient(
+    lease: PaneCliTerminalControlLease,
+    client: CliTerminalSocketContext
+  ): boolean {
+    return client.protocolVersion === 2 &&
+      client.browserClientId !== null &&
+      client.tabLineageId !== null &&
+      client.pageClientId !== null &&
+      lease.userId === client.userId &&
+      lease.browserClientId === client.browserClientId &&
+      lease.tabLineageId === client.tabLineageId &&
+      lease.pageClientId === client.pageClientId;
+  }
+
+  private createControlLease(
+    managed: ManagedCliSession,
+    client: CliTerminalSocketContext,
+    expectedActiveLeaseId: string | null
+  ): Promise<PaneCliTerminalControlLease> | PaneCliTerminalControlLease {
+    if (!client.browserClientId || !client.tabLineageId || !client.pageClientId) {
+      throw new SpaceConflictError("Protocol-v2 CLI control requires page identity.");
+    }
+    return this.options.store.createPaneCliTerminalControlLease({
+      sessionId: managed.sessionId,
+      paneId: managed.paneId,
+      roomId: managed.roomId,
+      userId: client.userId,
+      browserClientId: client.browserClientId,
+      tabLineageId: client.tabLineageId,
+      pageClientId: client.pageClientId,
+      expectedActiveLeaseId,
+      ttlSeconds: cliTerminalControlLeaseTtlSeconds
+    });
+  }
+
+  private async resolveInitialControl(
+    managed: ManagedCliSession,
+    client: CliTerminalSocketContext
+  ): Promise<CliTerminalResolvedControl> {
+    if (client.protocolVersion !== 2) return { controlState: "AVAILABLE", lease: null };
+    if (client.clientMode === "OBSERVER" || client.proofScope === "READ_ONLY") {
+      return { controlState: "OBSERVER", lease: null };
+    }
+
+    let active = await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId);
+    if (active) {
+      if (client.requestedLeaseId !== active.leaseId || !this.leaseBelongsToClient(active, client)) {
+        this.reportTelemetry(managed, "CONTROL_DENIED", "DENIED", "CONTROL_HELD", {
+          protocolVersion: client.protocolVersion,
+          clientMode: client.clientMode,
+          controlState: "HELD_BY_OTHER",
+          requestId: client.requestId
+        });
+        return { controlState: "HELD_BY_OTHER", lease: active };
+      }
+      try {
+        active = await this.options.store.updatePaneCliTerminalControlLease(active.leaseId, {
+          expectedStatus: "ACTIVE",
+          ttlSeconds: cliTerminalControlLeaseTtlSeconds
+        });
+        client.leaseId = active.leaseId;
+        this.reportTelemetry(managed, "CONTROL_RENEWED", "SUCCESS", "CONTROL_RENEWED", {
+          protocolVersion: client.protocolVersion,
+          clientMode: client.clientMode,
+          controlState: "CONTROLLER",
+          requestId: client.requestId
+        });
+        return { controlState: "CONTROLLER", lease: active };
+      } catch {
+        const latest = await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId);
+        this.reportTelemetry(managed, "CONTROL_DENIED", "DENIED", latest ? "RACE_LOST" : "LEASE_STALE", {
+          protocolVersion: client.protocolVersion,
+          clientMode: client.clientMode,
+          controlState: latest ? "HELD_BY_OTHER" : "AVAILABLE",
+          requestId: client.requestId
+        });
+        return latest
+          ? { controlState: "HELD_BY_OTHER", lease: latest }
+          : { controlState: "AVAILABLE", lease: null };
+      }
+    }
+
+    try {
+      const acquired = await this.createControlLease(managed, client, null);
+      client.leaseId = acquired.leaseId;
+      this.reportTelemetry(managed, "CONTROL_ACQUIRED", "SUCCESS", "CONTROL_ACQUIRED", {
+        protocolVersion: client.protocolVersion,
+        clientMode: client.clientMode,
+        controlState: "CONTROLLER",
+        requestId: client.requestId
+      });
+      return { controlState: "CONTROLLER", lease: acquired };
+    } catch (error) {
+      const raced = await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId);
+      if (!raced) throw error;
+      this.reportTelemetry(managed, "CONTROL_DENIED", "DENIED", "RACE_LOST", {
+        protocolVersion: client.protocolVersion,
+        clientMode: client.clientMode,
+        controlState: "HELD_BY_OTHER",
+        requestId: client.requestId
+      });
+      return { controlState: "HELD_BY_OTHER", lease: raced };
+    }
+  }
+
+  private sendReady(
+    socket: WebSocket,
+    managed: ManagedCliSession,
+    client: CliTerminalSocketContext,
+    control: CliTerminalResolvedControl
+  ): void {
+    if (client.protocolVersion !== 2) {
+      this.send(socket, {
+        type: "ready",
+        paneId: managed.paneId,
+        sessionId: managed.sessionId,
+        runtimeId: managed.runtimeId
+      });
+      return;
+    }
+    this.send(socket, {
+      type: "ready",
+      paneId: managed.paneId,
+      sessionId: managed.sessionId,
+      runtimeId: managed.runtimeId,
+      protocolVersion: 2,
+      clientMode: client.clientMode,
+      controlState: control.controlState,
+      ...(control.controlState === "CONTROLLER" && control.lease
+        ? {
+            leaseId: control.lease.leaseId,
+            expiresAt: control.lease.expiresAt
+          }
+        : {}),
+      ...(control.controlState === "HELD_BY_OTHER" && control.lease
+        ? {
+            holderPageClientId: control.lease.pageClientId,
+            expiresAt: control.lease.expiresAt
+          }
+        : {}),
+      heartbeatIntervalMs: cliTerminalControlHeartbeatIntervalMs
+    });
+    this.sendControlState(socket, control.controlState, control.lease);
+  }
+
+  private sendControlState(
+    socket: WebSocket,
+    controlState: PaneCliTerminalControlState,
+    lease: PaneCliTerminalControlLease | null
+  ): void {
+    this.send(socket, {
+      type: "control_state",
+      controlState,
+      ...(lease
+        ? {
+            leaseId: lease.leaseId,
+            holderPageClientId: controlState === "HELD_BY_OTHER" ? lease.pageClientId : undefined,
+            expiresAt: lease.expiresAt
+          }
+        : {})
+    });
+  }
+
+  private async broadcastControlStates(managed: ManagedCliSession): Promise<void> {
+    const active = await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId);
+    for (const [socket, client] of managed.socketClients) {
+      if (client.protocolVersion !== 2 || !socketIsOpen(socket)) continue;
+      if (client.clientMode === "OBSERVER" || client.proofScope === "READ_ONLY") {
+        client.leaseId = null;
+        this.sendControlState(socket, "OBSERVER", null);
+      } else if (active && this.leaseBelongsToClient(active, client)) {
+        client.leaseId = active.leaseId;
+        this.sendControlState(socket, "CONTROLLER", active);
+      } else {
+        client.leaseId = null;
+        this.sendControlState(socket, active ? "HELD_BY_OTHER" : "AVAILABLE", active);
+      }
+    }
+  }
+
+  private sendControlDenied(
+    managed: ManagedCliSession,
+    client: CliTerminalSocketContext,
+    socket: WebSocket,
+    code: string,
+    message: string
+  ): void {
+    this.reportTelemetry(managed, "CONTROL_DENIED", "DENIED", cliControlDeniedTelemetryReason(code), {
+      protocolVersion: client.protocolVersion,
+      clientMode: client.clientMode,
+      controlState: client.clientMode === "OBSERVER"
+        ? "OBSERVER"
+        : client.leaseId
+          ? "CONTROLLER"
+          : "AVAILABLE",
+      requestId: client.requestId
+    });
+    this.send(socket, { type: "control_denied", code, message });
+  }
+
+  private async activeLeaseForClient(
+    managed: ManagedCliSession,
+    client: CliTerminalSocketContext,
+    leaseId: string
+  ): Promise<PaneCliTerminalControlLease | null> {
+    const active = await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId);
+    return active && active.leaseId === leaseId && this.leaseBelongsToClient(active, client)
+      ? active
+      : null;
+  }
+
+  private async handleControlMessage(
+    managed: ManagedCliSession,
+    socket: WebSocket,
+    client: CliTerminalSocketContext,
+    message: Extract<PaneCliWebSocketClientMessage, {
+      type: "control_upgrade" | "control_request" | "control_takeover" | "control_heartbeat" | "control_release";
+    }>
+  ): Promise<void> {
+    if (client.protocolVersion !== 2) {
+      this.sendControlDenied(managed, client, socket, "CLI_PROTOCOL_REQUIRED", "CLI control requires protocol version 2.");
+      return;
+    }
+    if (message.type === "control_upgrade") {
+      if (client.proofScope === "READ_ONLY") {
+        this.sendControlDenied(managed, client, socket, "CLI_OBSERVER_MUTATION_DENIED", "Observer clients cannot request terminal control.");
+        return;
+      }
+      client.clientMode = "INTERACTIVE";
+      this.send(socket, { type: "control_upgraded" });
+      return;
+    }
+    if (client.clientMode === "OBSERVER" || client.proofScope === "READ_ONLY") {
+      this.sendControlDenied(managed, client, socket, "CLI_OBSERVER_MUTATION_DENIED", "Observer clients cannot request terminal control.");
+      return;
+    }
+
+    if (message.type === "control_request") {
+      const active = await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId);
+      if (active) {
+        if (!this.leaseBelongsToClient(active, client)) {
+          this.sendControlDenied(managed, client, socket, "CLI_CONTROL_HELD", "CLI terminal control is held by another page.");
+          this.sendControlState(socket, "HELD_BY_OTHER", active);
+          return;
+        }
+        const renewed = await this.options.store.updatePaneCliTerminalControlLease(active.leaseId, {
+          expectedStatus: "ACTIVE",
+          ttlSeconds: cliTerminalControlLeaseTtlSeconds
+        });
+        client.leaseId = renewed.leaseId;
+        this.reportTelemetry(managed, "CONTROL_RENEWED", "SUCCESS", "CONTROL_RENEWED", {
+          protocolVersion: client.protocolVersion,
+          clientMode: client.clientMode,
+          controlState: "CONTROLLER",
+          requestId: client.requestId
+        });
+        this.send(socket, { type: "control_granted", leaseId: renewed.leaseId, expiresAt: renewed.expiresAt });
+        await this.broadcastControlStates(managed);
+        return;
+      }
+      try {
+        const acquired = await this.createControlLease(managed, client, null);
+        client.leaseId = acquired.leaseId;
+        this.reportTelemetry(managed, "CONTROL_ACQUIRED", "SUCCESS", "CONTROL_ACQUIRED", {
+          protocolVersion: client.protocolVersion,
+          clientMode: client.clientMode,
+          controlState: "CONTROLLER",
+          requestId: client.requestId
+        });
+        this.send(socket, { type: "control_granted", leaseId: acquired.leaseId, expiresAt: acquired.expiresAt });
+        await this.broadcastControlStates(managed);
+      } catch (error) {
+        const raced = await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId);
+        if (!raced) throw error;
+        this.sendControlDenied(managed, client, socket, "CLI_CONTROL_HELD", "CLI terminal control is held by another page.");
+        this.sendControlState(socket, "HELD_BY_OTHER", raced);
+      }
+      return;
+    }
+
+    if (message.type === "control_takeover") {
+      const previous = await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId);
+      if (!previous || previous.leaseId !== message.expectedLeaseId) {
+        this.sendControlDenied(managed, client, socket, "CLI_LEASE_STALE", "CLI terminal control changed before takeover.");
+        return;
+      }
+      let acquired: PaneCliTerminalControlLease;
+      try {
+        acquired = await this.createControlLease(managed, client, previous.leaseId);
+      } catch (error) {
+        const latest = await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId);
+        if (!latest || latest.leaseId !== previous.leaseId) {
+          this.sendControlDenied(managed, client, socket, "CLI_LEASE_STALE", "CLI terminal control changed before takeover.");
+          return;
+        }
+        throw error;
+      }
+      for (const [currentSocket, current] of managed.socketClients) {
+        if (current.leaseId !== previous.leaseId && !this.leaseBelongsToClient(previous, current)) continue;
+        current.leaseId = null;
+        this.send(currentSocket, {
+          type: "control_revoked",
+          leaseId: previous.leaseId,
+          reason: "TAKEN_OVER"
+        });
+      }
+      client.leaseId = acquired.leaseId;
+      this.reportTelemetry(managed, "CONTROL_TAKEN_OVER", "SUCCESS", "TAKEN_OVER", {
+        protocolVersion: client.protocolVersion,
+        clientMode: client.clientMode,
+        controlState: "CONTROLLER",
+        requestId: client.requestId
+      });
+      this.send(socket, { type: "control_granted", leaseId: acquired.leaseId, expiresAt: acquired.expiresAt });
+      await this.broadcastControlStates(managed);
+      return;
+    }
+
+    const active = await this.activeLeaseForClient(managed, client, message.leaseId);
+    if (!active) {
+      client.leaseId = null;
+      this.sendControlDenied(managed, client, socket, "CLI_LEASE_STALE", "CLI terminal control lease is stale.");
+      return;
+    }
+    if (message.type === "control_heartbeat") {
+      try {
+        const renewed = await this.options.store.updatePaneCliTerminalControlLease(active.leaseId, {
+          expectedStatus: "ACTIVE",
+          ttlSeconds: cliTerminalControlLeaseTtlSeconds
+        });
+        client.leaseId = renewed.leaseId;
+        this.reportTelemetry(managed, "CONTROL_RENEWED", "SUCCESS", "CONTROL_RENEWED", {
+          protocolVersion: client.protocolVersion,
+          clientMode: client.clientMode,
+          controlState: "CONTROLLER",
+          requestId: client.requestId
+        });
+      } catch {
+        client.leaseId = null;
+        this.sendControlDenied(managed, client, socket, "CLI_LEASE_STALE", "CLI terminal control lease is stale.");
+      }
+      return;
+    }
+
+    try {
+      await this.options.store.updatePaneCliTerminalControlLease(active.leaseId, {
+        expectedStatus: "ACTIVE",
+        status: "RELEASED"
+      });
+    } catch {
+      client.leaseId = null;
+      this.sendControlDenied(managed, client, socket, "CLI_LEASE_STALE", "CLI terminal control lease is stale.");
+      return;
+    }
+    this.reportTelemetry(managed, "CONTROL_RELEASED", "SUCCESS", "CONTROL_RELEASED", {
+      protocolVersion: client.protocolVersion,
+      clientMode: client.clientMode,
+      controlState: "AVAILABLE",
+      requestId: client.requestId
+    });
+    for (const current of managed.socketClients.values()) {
+      if (current.leaseId === active.leaseId) current.leaseId = null;
+    }
+    await this.broadcastControlStates(managed);
+  }
+
+  private async authorizeHostMutation(
+    managed: ManagedCliSession,
+    socket: WebSocket,
+    client: CliTerminalSocketContext,
+    leaseId: string | undefined,
+    mutation: "input" | "resize" | "interrupt"
+  ): Promise<boolean> {
+    if (client.protocolVersion === 1) {
+      if (await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId)) {
+        this.sendControlDenied(managed, client, socket, "CLI_CONTROL_REQUIRED", "Terminal control is held by a protocol-v2 page.");
+        return false;
+      }
+      if (mutation === "resize" && managed.legacyControllerSocket !== socket) return false;
+      if (mutation !== "resize") managed.legacyControllerSocket = socket;
+      return true;
+    }
+    if (client.clientMode === "OBSERVER" || client.proofScope === "READ_ONLY" || !leaseId) {
+      this.sendControlDenied(managed, client, socket, "CLI_CONTROL_REQUIRED", "Take control before mutating the terminal.");
+      return false;
+    }
+    const active = await this.activeLeaseForClient(managed, client, leaseId);
+    if (!active) {
+      client.leaseId = null;
+      this.sendControlDenied(managed, client, socket, "CLI_CONTROL_REQUIRED", "Take control before mutating the terminal.");
+      return false;
+    }
+    client.leaseId = active.leaseId;
+    return true;
+  }
+
+  private async detachClient(
+    managed: ManagedCliSession,
+    socket: WebSocket,
+    client: CliTerminalSocketContext
+  ): Promise<void> {
+    if (client.detached) return;
+    client.detached = true;
+    const leaseId = client.leaseId;
+    this.unregisterSocket(managed, socket, client.clientId ?? undefined);
+    this.reportTelemetry(managed, "SOCKET_DETACHED", "INFO", "CLIENT_DETACH", {
+      protocolVersion: client.protocolVersion,
+      clientMode: client.clientMode,
+      controlState: client.clientMode === "OBSERVER"
+        ? "OBSERVER"
+        : leaseId
+          ? "CONTROLLER"
+          : "AVAILABLE",
+      requestId: client.requestId
+    });
+    if (
+      leaseId &&
+      ![...managed.socketClients.values()].some((current) =>
+        current.leaseId === leaseId &&
+        current.userId === client.userId &&
+        current.pageClientId === client.pageClientId
+      )
+    ) {
+      const active = await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId);
+      if (active && active.leaseId === leaseId && this.leaseBelongsToClient(active, client)) {
+        try {
+          await this.options.store.updatePaneCliTerminalControlLease(active.leaseId, {
+            expectedStatus: "ACTIVE",
+            ttlSeconds: cliTerminalControlReconnectGraceSeconds
+          });
+          this.reportTelemetry(managed, "RECONNECT_GRACE_STARTED", "INFO", "RECONNECT_GRACE", {
+            protocolVersion: client.protocolVersion,
+            clientMode: client.clientMode,
+            controlState: "CONTROLLER",
+            requestId: client.requestId
+          });
+        } catch {
+          // A concurrent release or takeover already settled authority.
+        }
+      }
+    }
+  }
+
+  private async handleClientMessage(
+    managed: ManagedCliSession,
+    socket: WebSocket,
+    client: CliTerminalSocketContext,
+    raw: WebSocket.RawData
+  ): Promise<void> {
+    if (client.detached) return;
     if (managed.closed) {
       this.send(socket, { type: "error", code: "CLI_SESSION_CLOSED", message: "CLI session is closed." });
       return;
@@ -2091,8 +2950,21 @@ export class CliTerminalManager {
       this.send(socket, { type: "error", code: "BAD_MESSAGE", message: "WebSocket message failed schema validation." });
       return;
     }
+    if (
+      parsed.data.type === "control_upgrade" ||
+      parsed.data.type === "control_request" ||
+      parsed.data.type === "control_takeover" ||
+      parsed.data.type === "control_heartbeat" ||
+      parsed.data.type === "control_release"
+    ) {
+      await this.handleControlMessage(managed, socket, client, parsed.data);
+      return;
+    }
     if (parsed.data.type === "input") {
       const message = parsed.data;
+      if (!await this.authorizeHostMutation(managed, socket, client, message.leaseId, "input")) return;
+      const terminalData = sanitizeCliTerminalInput(managed.runtimeId, message.data);
+      if (!terminalData) return;
       const receivedAtMs = Date.now();
       const diagnosticSinceMs = receivedAtMs - 1000;
       const hiddenInput = message.display === "hidden";
@@ -2101,7 +2973,7 @@ export class CliTerminalManager {
         this.hostForRuntime(managed.runtimeId, managed.sessionId).input(
           managed.identity,
           managed.attachmentId,
-          message.data,
+          terminalData,
           message.display
         )
       );
@@ -2125,16 +2997,17 @@ export class CliTerminalManager {
         this.scheduleCodexThreadBind(managed, diagnosticSinceMs);
       }
       if (!hiddenInput && managed.purpose !== "LOGIN") {
-        await this.appendTranscript(managed, "stdin", message.data);
+        await this.appendTranscript(managed, "stdin", terminalData);
       }
-      if (!hiddenInput && managed.purpose !== "LOGIN" && message.data.trim()) {
-        this.scheduleCodexNullAgentMessageCheck(managed, diagnosticSinceMs, message.data);
+      if (!hiddenInput && managed.purpose !== "LOGIN" && terminalData.trim()) {
+        this.scheduleCodexNullAgentMessageCheck(managed, diagnosticSinceMs, terminalData);
         this.scheduleCodexThreadBind(managed, diagnosticSinceMs);
       }
       return;
     }
     if (parsed.data.type === "resize") {
       const message = parsed.data;
+      if (!await this.authorizeHostMutation(managed, socket, client, message.leaseId, "resize")) return;
       await this.withFreshHostAttachment(managed, () =>
         this.hostForRuntime(managed.runtimeId, managed.sessionId).resize(
           managed.identity,
@@ -2145,6 +3018,7 @@ export class CliTerminalManager {
       );
       return;
     }
+    if (!await this.authorizeHostMutation(managed, socket, client, parsed.data.leaseId, "interrupt")) return;
     await this.flushHostOutput(managed);
     if (managed.purpose === "LOGIN") {
       await this.failLoginSession(managed.sessionId, "CANCELLED", managed, true);
@@ -2635,6 +3509,23 @@ export class CliTerminalManager {
     }
   }
 
+  private async persistClosedNormalHostSession(
+    session: PaneCliSession,
+    hostSession: CliHostSessionSummary
+  ): Promise<PaneCliSession> {
+    return this.options.store.updatePaneCliSession(
+      session.sessionId,
+      {
+        status: hostSession.status,
+        statusReason: hostSession.statusReason ?? "CLI process exited.",
+        exitCode: hostSession.exitCode,
+        isActive: false,
+        endedAt: hostSession.endedAt ?? nowIso()
+      },
+      "req:cli-host-status-reconcile"
+    );
+  }
+
   private async failLoginSession(
     sessionId: string,
     outcome: "CANCELLED" | "TIMEOUT" | "PROVIDER_FAILURE",
@@ -3002,9 +3893,12 @@ export class CliTerminalManager {
   }
 
   private async surfaceCodexNullAgentMessageDiagnostic(managed: ManagedCliSession, sinceMs: number): Promise<void> {
-    if (managed.closed) return;
-    const diagnostic = await findRecentNullAgentMessageDiagnostic({
+    if (managed.closed || !managed.codexThreadId) return;
+    const diagnostic = await (
+      this.options.findRecentNullAgentMessageDiagnostic ?? findRecentNullAgentMessageDiagnostic
+    )({
       codexHome: codexDirectParityCodexHome,
+      threadId: managed.codexThreadId,
       cwd: codexDirectParityCwd,
       inputText: managed.nullAgentMessageCheckInputText,
       sinceMs
@@ -3017,22 +3911,22 @@ export class CliTerminalManager {
     await this.options.store.updatePaneCliSession(
       managed.sessionId,
       {
-        status: "ERROR",
+        status: "RUNNING",
         statusReason: diagnostic.message,
         isActive: true
       },
       "req:cli-null-agent-message"
     );
     this.broadcast(managed, {
+      type: "status",
+      status: "RUNNING",
+      statusReason: diagnostic.message,
+      exitCode: null
+    });
+    this.broadcast(managed, {
       type: "error",
       code: "CODEX_EMPTY_ASSISTANT_MESSAGE",
       message: diagnostic.message
-    });
-    this.broadcast(managed, {
-      type: "status",
-      status: "ERROR",
-      statusReason: diagnostic.message,
-      exitCode: null
     });
   }
 }

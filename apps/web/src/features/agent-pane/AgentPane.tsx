@@ -1,9 +1,10 @@
-import { Crosshair, X } from "lucide-react";
+import { Crosshair, X } from "../ui-theme/app-icons.js";
 import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type UIEvent } from "react";
 import type { AgentPaneGoal, AgentPaneSession, Artifact, CodexEnvironment, CodexThreadResponse, CollaborationMode, Pane, PaneCliModelSettings, VoiceTranscriptionSettings } from "@space/contracts";
 import { api } from "../../api.js";
 import { dispatchArtifactsUpdated } from "../../artifact-events.js";
 import { SPACE_CLIPBOARD_ITEM_MIME, captureClipboardText, writeClipboardText } from "../clipboard-dock/clipboard-events.js";
+import { readArtifactDragPayload, resolveArtifactDragFile, type ArtifactDragPayload } from "../artifacts/artifact-drag.js";
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
 import { clearAgentPaneDraft, readAgentPaneDraft, writeAgentPaneDraft } from "./agent-pane-draft.js";
 import { openVoiceRealtimeSession, type VoiceRealtimeSessionHandle } from "../../voice-realtime.js";
@@ -15,6 +16,7 @@ import {
 } from "../../voice-settings.js";
 import { CodexComposer } from "./CodexComposer.js";
 import { CodexNotification, CodexTranscript, copyableCodexTranscript } from "./CodexTranscript.js";
+import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import {
   AGENT_PANE_ACTION_EVENT,
   AGENT_PANE_ATTACHMENTS_EVENT,
@@ -194,6 +196,8 @@ function CodexGoalDialog({
 }
 
 export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPaneProps) {
+  const isCodexEnabled = codexEnvironment?.isCodexEnabled ?? true;
+  const codexDisabledReason = "Enable Codex in Settings";
   const initialDraft = readAgentPaneDraft(pane.id);
   const [session, setSession] = useState<AgentPaneSession | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
@@ -225,8 +229,17 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   const followTranscriptRef = useRef(true);
   const trimmedPrompt = prompt.trim();
   const hasAttachments = attachments.length > 0;
-  const canSend = Boolean(session?.capabilities.canSend) && !pending && (trimmedPrompt.length > 0 || hasAttachments);
+  const canSend =
+    isCodexEnabled &&
+    Boolean(session?.capabilities.canSend) &&
+    !pending &&
+    (trimmedPrompt.length > 0 || hasAttachments);
   const isRunning = Boolean(session && runningStatuses.includes(session.runStatus));
+
+  useAutoDismiss(notice, setNotice);
+  useAutoDismiss(error, setError);
+  useAutoDismiss(codexError, setCodexError);
+  useAutoDismiss(voiceError, setVoiceError);
 
   async function loadSession(showLoading = true) {
     if (showLoading) setLoading(true);
@@ -249,7 +262,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   async function reconnectChat() {
-    if (pending) return;
+    if (!isCodexEnabled || pending) return;
     setError(null);
     setNotice(null);
     try {
@@ -290,7 +303,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
     setThreadLoading(true);
     setCodexError(null);
     try {
-      if (bindToSession && session && !isRunning && session.threadId !== threadId) {
+      if (bindToSession && isCodexEnabled && session && !isRunning && session.threadId !== threadId) {
         setPending(true);
         try {
           setSession(
@@ -347,6 +360,10 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
 
   useEffect(() => {
     let disposed = false;
+    if (!isCodexEnabled) {
+      setVoiceServerSettings(null);
+      return;
+    }
     api
       .voiceTranscriptionSettings()
       .then((settings) => {
@@ -361,7 +378,15 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [isCodexEnabled]);
+
+  useEffect(() => {
+    if (isCodexEnabled) return;
+    setGoalDialogOpen(false);
+    setDragActive(false);
+    closeVoiceRealtimeSession();
+    setVoiceStatus("idle");
+  }, [isCodexEnabled]);
 
   useEffect(() => {
     const handleVoiceSettingsUpdate = () => setVoiceSettings(readVoiceComposerSettings());
@@ -430,7 +455,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   async function updateCollaborationMode(collaborationMode: CollaborationMode) {
-    if (!session) return;
+    if (!isCodexEnabled || !session) return;
     setPending(true);
     setError(null);
     try {
@@ -443,6 +468,9 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   async function updateModelConfig(selectedModelConfigId: string): Promise<string | null> {
+    if (!isCodexEnabled) {
+      throw new Error(codexDisabledReason);
+    }
     if (!session?.capabilities.canSelectModel) {
       throw new Error("Model selection is unavailable for this Chat session.");
     }
@@ -462,6 +490,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   async function saveGoal(objective: string) {
+    if (!isCodexEnabled) return;
     setPending(true);
     setError(null);
     try {
@@ -475,6 +504,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   async function clearGoal() {
+    if (!isCodexEnabled) return;
     setPending(true);
     setError(null);
     try {
@@ -490,7 +520,12 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   async function submitMessage(content: string) {
     const promptToRestore = prompt;
     const attachmentsToSend = attachments.slice();
-    if ((!content && attachmentsToSend.length === 0) || pending || session?.capabilities.canSend === false) return;
+    if (
+      !isCodexEnabled ||
+      (!content && attachmentsToSend.length === 0) ||
+      pending ||
+      session?.capabilities.canSend === false
+    ) return;
     followTranscriptRef.current = true;
     setPending(true);
     setHomePinned(false);
@@ -525,7 +560,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   async function submitQuickMessage(content: string, options: { selectedModelConfigId?: string | null } = {}) {
-    if (!content.trim() || pending || session?.capabilities.canSend === false) return;
+    if (!isCodexEnabled || !content.trim() || pending || session?.capabilities.canSend === false) return;
     setPending(true);
     setHomePinned(false);
     setError(null);
@@ -561,7 +596,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   async function startNewTask() {
-    if (pending || isRunning) return;
+    if (!isCodexEnabled || pending || isRunning) return;
     setPending(true);
     setError(null);
     try {
@@ -587,7 +622,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   async function uploadFiles(files: File[], source: "USER_UPLOAD" | "CLIPBOARD" | "DROP") {
-    if (!files.length) return;
+    if (!isCodexEnabled || !files.length) return;
     setUploading(true);
     setError(null);
     try {
@@ -607,6 +642,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   function handlePaste(event: ClipboardEvent<HTMLElement>) {
+    if (!isCodexEnabled) return;
     const files = extractClipboardFiles(event);
     if (!files.length) return;
     event.preventDefault();
@@ -614,12 +650,31 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
     void uploadFiles(files, "CLIPBOARD");
   }
 
+  async function dropArtifactFile(payload: ArtifactDragPayload) {
+    try {
+      const file = await resolveArtifactDragFile(payload);
+      await uploadFiles([file], "DROP");
+    } catch (err) {
+      setDragActive(false);
+      setError(err instanceof Error ? err.message : "Agent file drop failed");
+    }
+  }
+
   function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.stopPropagation();
+    if (!isCodexEnabled) {
+      setDragActive(false);
+      return;
+    }
     const files = Array.from(event.dataTransfer?.files ?? []);
     if (files.length) {
       void uploadFiles(files, "DROP");
+      return;
+    }
+    const artifactPayload = readArtifactDragPayload(event.dataTransfer ?? null);
+    if (artifactPayload) {
+      void dropArtifactFile(artifactPayload);
       return;
     }
     const clipboardItemId = event.dataTransfer?.getData(SPACE_CLIPBOARD_ITEM_MIME) ?? "";
@@ -631,6 +686,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   useEffect(() => {
     function handleAgentPaneAction(event: Event) {
       if (!(event instanceof CustomEvent) || !isAgentPaneAction(event.detail) || event.detail.paneId !== pane.id) return;
+      if (!isCodexEnabled && event.detail.action !== "copy") return;
       if (event.detail.action === "upload") {
         fileInputRef.current?.click();
         return;
@@ -681,6 +737,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
     }
     function handleAgentPaneAttachments(event: Event) {
       if (!(event instanceof CustomEvent) || !isAgentPaneAttachments(event.detail) || event.detail.paneId !== pane.id) return;
+      if (!isCodexEnabled) return;
       setAttachments((current) => mergeArtifacts(current, event.detail.artifacts));
     }
     window.addEventListener(AGENT_PANE_ACTION_EVENT, handleAgentPaneAction);
@@ -691,7 +748,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
       window.removeEventListener(AGENT_PANE_ACTION_EVENT, handleAgentPaneAction);
       window.removeEventListener(AGENT_PANE_ATTACHMENTS_EVENT, handleAgentPaneAttachments);
     };
-  }, [activeThreadId, isRunning, pane.id, pane.title, pending, session, thread]);
+  }, [activeThreadId, isCodexEnabled, isRunning, pane.id, pane.title, pending, session, thread]);
 
   function clearVoiceStopTimer() {
     if (!voiceStopTimerRef.current) return;
@@ -706,7 +763,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   async function startVoiceCapture() {
-    if (!voiceSettings.enabled) return;
+    if (!isCodexEnabled || !voiceSettings.enabled) return;
     if (!voiceServerSettings?.enabled) {
       setVoiceError(voiceServerSettings?.statusReason ?? "Voice transcription is not configured.");
       return;
@@ -769,6 +826,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   function toggleVoiceCapture() {
+    if (!isCodexEnabled) return;
     if (voiceStatus === "recording") {
       stopVoiceCapture();
       return;
@@ -779,7 +837,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   async function interrupt() {
-    if (pending || !session?.capabilities.canInterrupt) return;
+    if (!isCodexEnabled || pending || !session?.capabilities.canInterrupt) return;
     setPending(true);
     setError(null);
     try {
@@ -792,6 +850,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }
 
   const voiceDisabled =
+    !isCodexEnabled ||
     !voiceSettings.enabled ||
     !voiceServerSettings?.enabled ||
     voiceStatus === "connecting" ||
@@ -818,13 +877,14 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
       className={dragActive ? "coder-agent-pane vscode-codex-pane drag-active" : "coder-agent-pane vscode-codex-pane"}
       aria-label={`Native agent ${pane.title}`}
       data-agent-pane-id={pane.id}
+      data-codex-enabled={isCodexEnabled ? "true" : "false"}
       data-workspace-text-size={workspaceTextSize}
       style={{ "--codex-workspace-text-size": `${workspaceTextSize}px` } as CSSProperties}
-      onPasteCapture={handlePaste}
-      onDrop={handleDrop}
+      onPasteCapture={isCodexEnabled ? handlePaste : undefined}
+      onDrop={isCodexEnabled ? handleDrop : undefined}
       onDragOver={(event) => {
         event.preventDefault();
-        setDragActive(true);
+        if (isCodexEnabled) setDragActive(true);
       }}
       onDragLeave={() => setDragActive(false)}
     >
@@ -834,6 +894,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
         name={`agent-files-${pane.id}`}
         multiple
         hidden
+        disabled={!isCodexEnabled}
         onChange={(event) => {
           const files = event.currentTarget.files ? Array.from(event.currentTarget.files) : [];
           event.currentTarget.value = "";
@@ -849,6 +910,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
         name={`agent-folders-${pane.id}`}
         multiple
         hidden
+        disabled={!isCodexEnabled}
         onChange={(event) => {
           const files = event.currentTarget.files ? Array.from(event.currentTarget.files) : [];
           event.currentTarget.value = "";
@@ -887,6 +949,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
         </div>
         <CodexComposer
           paneTitle={pane.title}
+          disabledReason={isCodexEnabled ? null : codexDisabledReason}
           prompt={prompt}
           onPromptChange={setPrompt}
           attachments={attachments}

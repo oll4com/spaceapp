@@ -1,4 +1,4 @@
-import { ChevronRight, Clock3, Loader2, RotateCw, Wrench, X } from "lucide-react";
+import { ChevronRight, Clock3, Loader2, RotateCw, Wrench, X } from "../ui-theme/app-icons.js";
 import type { CodexThreadItem } from "@space/contracts";
 
 export function visibleCodexThreadItems(items: CodexThreadItem[]): CodexThreadItem[] {

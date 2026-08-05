@@ -51,8 +51,11 @@ export interface SpaceApiConfig {
   cliCodexDefaultModel: string | null;
   cliCodexDefaultReasoningEffort: string | null;
   cliRuntimeCommands: Record<CliRuntimeKey, string>;
+  cliVpnEnabled: boolean;
+  cliVpnLauncherPath: string;
   cliCredentialSmoke: Record<CliRuntimeKey, boolean>;
   cliLoginBootstrap: Record<CliRuntimeKey, boolean>;
+  cliMaintenanceRepairEnabled: boolean;
   cliKimiLoginBootstrapEnabled: boolean;
   cliGrokLoginBootstrapEnabled: boolean;
   mcpServerConfigs?: McpServerConfig[];
@@ -90,11 +93,17 @@ export interface SpaceApiConfig {
   browserEvidenceArtifactRoot: string;
   browserEvidenceTargetOrigin: string;
   browserEvidenceTimeoutMs: number;
+  appDiagnosticsRoot: string;
   browserSessionsEnabled: boolean;
   browserSessionsChromePath: string;
+  browserSessionsXvfbPath: string;
+  browserSessionsXvfbEnabled: boolean;
   browserSessionsProfileRoot: string;
   browserSessionsDefaultUrl: string;
   browserSessionsTokenTtlMs: number;
+  browserSessionsAudioEnabled: boolean;
+  browserSessionsPulseServer: string;
+  browserSessionsPulseSink: string;
   browserToolBridgeEnabled: boolean;
   browserHostTransport: "in-process" | "unix";
   browserHostSocketPath: string;
@@ -186,11 +195,14 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     cliHostSocketPath: env.SPACE_CLI_HOST_SOCKET || "/run/space-codex-pane-host/pane-host.sock",
     cliRootEnabled: env.SPACE_CLI_ROOT_ENABLED === "true",
     cliAdminHostSocketPath: env.SPACE_CLI_ADMIN_HOST_SOCKET || "/run/space-admin-pane-host/pane-host.sock",
-    cliCodexDefaultModel: env.SPACE_CLI_CODEX_DEFAULT_MODEL || "gpt-5.6-sol",
-    cliCodexDefaultReasoningEffort: env.SPACE_CLI_CODEX_DEFAULT_REASONING_EFFORT || "xhigh",
+    cliCodexDefaultModel: env.SPACE_CLI_CODEX_DEFAULT_MODEL || null,
+    cliCodexDefaultReasoningEffort: env.SPACE_CLI_CODEX_DEFAULT_REASONING_EFFORT || null,
     cliRuntimeCommands: configuredCliRuntimeCommands(env),
+    cliVpnEnabled: env.SPACE_CLI_VPN_ENABLED === "true",
+    cliVpnLauncherPath: env.SPACE_CLI_VPN_LAUNCHER || "/opt/spaceapp/bin/space-cli-vpn-launcher",
     cliCredentialSmoke: configuredCliCredentialSmoke(env),
     cliLoginBootstrap: configuredCliLoginBootstrap(env),
+    cliMaintenanceRepairEnabled: env.SPACE_CLI_MAINTENANCE_REPAIR_ENABLED === "true",
     cliKimiLoginBootstrapEnabled: env.SPACE_CLI_KIMI_LOGIN_BOOTSTRAP === "true",
     cliGrokLoginBootstrapEnabled: env.SPACE_CLI_GROK_LOGIN_BOOTSTRAP === "true",
     mcpServerConfigs: mcpConfig.configs,
@@ -228,11 +240,17 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     browserEvidenceArtifactRoot: artifactRoot,
     browserEvidenceTargetOrigin: env.SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN || "http://127.0.0.1:4911",
     browserEvidenceTimeoutMs: Number.parseInt(env.SPACE_BROWSER_EVIDENCE_TIMEOUT_MS ?? "20000", 10),
+    appDiagnosticsRoot: env.SPACE_APP_DIAGNOSTICS_ROOT || "/opt/spaceapp/var/app-diagnostics",
     browserSessionsEnabled: env.SPACE_BROWSER_SESSIONS_ENABLED === "true",
     browserSessionsChromePath: env.SPACE_BROWSER_SESSIONS_CHROME_PATH || env.SPACE_BROWSER_CHROME_PATH || "/usr/bin/google-chrome",
+    browserSessionsXvfbPath: env.SPACE_BROWSER_SESSIONS_XVFB_PATH || "/usr/bin/Xvfb",
+    browserSessionsXvfbEnabled: env.SPACE_BROWSER_SESSIONS_XVFB_ENABLED !== "false",
     browserSessionsProfileRoot: env.SPACE_BROWSER_SESSIONS_PROFILE_ROOT || join(artifactRoot, "browser-profiles"),
     browserSessionsDefaultUrl: env.SPACE_BROWSER_SESSIONS_DEFAULT_URL || "https://www.example.invalid/",
     browserSessionsTokenTtlMs: Math.min(parsePositiveInt(env.SPACE_BROWSER_SESSIONS_TOKEN_TTL_MS, 60000), 5 * 60 * 1000),
+    browserSessionsAudioEnabled: env.SPACE_BROWSER_SESSIONS_AUDIO_ENABLED !== "false",
+    browserSessionsPulseServer: env.SPACE_BROWSER_SESSIONS_PULSE_SERVER || "unix:/run/pulse/native",
+    browserSessionsPulseSink: env.SPACE_BROWSER_SESSIONS_PULSE_SINK || "space_audio",
     browserToolBridgeEnabled: env.SPACE_BROWSER_TOOL_BRIDGE_ENABLED === "true",
     browserHostTransport: env.SPACE_BROWSER_HOST_TRANSPORT === "unix" ? "unix" : "in-process",
     browserHostSocketPath: env.SPACE_BROWSER_HOST_SOCKET || "/run/space-browser-host/browser-host.sock",

@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, scrypt as scryptCallback, timingSafeEqual, type ScryptOptions } from "node:crypto";
-import type { AuthUser, LoginInput } from "@space/contracts";
+import { authUserSchema, type AuthUser, type LoginInput } from "@space/contracts";
 import { persistentOperatorSessionTtlSeconds, signPersistentOperatorSessionToken, signSessionTokenWithTtl } from "@space/runtime";
 
 const SESSION_COOKIE = "space_session";
@@ -140,7 +140,7 @@ export function verifySession(token: string | undefined, secret: string): AuthUs
     if (parsed.exp <= Math.floor(Date.now() / 1000)) {
       return null;
     }
-    return parsed.user;
+    return authUserSchema.parse(parsed.user);
   } catch {
     return null;
   }

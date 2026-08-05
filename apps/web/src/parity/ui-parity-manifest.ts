@@ -10,7 +10,7 @@ export const UI_PARITY_VIEWPORTS = [
 ] as const;
 
 export const UI_PARITY_PANE_MODES = [
-  "CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL"
+  "CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE"
 ] as const satisfies readonly Pane["mode"][];
 
 export const UI_PARITY_REACHABLE_STATES = [
@@ -22,7 +22,7 @@ export const UI_PARITY_REACHABLE_STATES = [
 ] as const;
 
 export type UiParitySurface =
-  | "auth" | "rooms" | "toolbar" | "pane" | "chat" | "cli" | "browser"
+  | "auth" | "rooms" | "toolbar" | "pane" | "chat" | "cli" | "browser" | "youtube"
   | "review" | "code" | "swarm" | "design" | "media" | "clipboard" | "links"
   | "settings" | "health" | "memory" | "quick-links" | "help" | "music"
   | "admin" | "responsive";
@@ -43,6 +43,7 @@ export const UI_PARITY_SURFACE_EVIDENCE = {
   chat: ["tests/agent-pane.test.tsx", "tests/codex-chat-ui.test.tsx", "tests/demo-app.test.tsx"],
   cli: ["tests/terminal-pane.test.tsx", "tests/terminal-pane-upload.test.tsx", "tests/cli-launcher-menu.test.tsx"],
   browser: ["tests/browser-pane.test.tsx", "tests/browser-canvas.test.tsx"],
+  youtube: ["tests/youtube-pane.test.tsx"],
   review: ["tests/smoke.test.tsx", "tests/demo-app.test.tsx"],
   code: ["tests/smoke.test.tsx", "tests/demo-app.test.tsx"],
   swarm: ["tests/smoke.test.tsx", "tests/demo-app.test.tsx"],
@@ -84,7 +85,7 @@ export const UI_PARITY_ACTIONS = [
     "toggle-rooms", "toggle-room-agent", "toggle-media", "toggle-clipboard", "toggle-links",
     "toggle-settings", "toggle-health", "open-memory", "open-quick-links", "pane-layout",
     "room-theme", "toggle-cli-floats", "workspace-text-size", "add-chat", "add-cli",
-    "add-browser", "add-review", "reload", "clip-tool", "print", "add-root-cli",
+    "add-browser", "add-youtube", "add-review", "reload", "clip-tool", "print", "add-root-cli",
     "server-actions", "more-actions", "music", "help", "maximize-room", "restore-room"
   ]),
   ...actions("pane", [
@@ -108,6 +109,9 @@ export const UI_PARITY_ACTIONS = [
     "stream-preview", "stream-interactive", "stream-realtime", "join", "release-control",
     "expand", "bookmarks", "bookmark-add", "bookmark-open", "bookmark-import", "bookmark-export",
     "capture", "record", "record-stop", "record-cancel", "diagnostics", "playback"
+  ]),
+  ...actions("youtube", [
+    "render-pane-mode", "start", "url-lock", "stream-realtime", "live", "input", "reload", "retry", "empty"
   ]),
   ...actions("review", [
     "render-pane-mode", "empty", "latest-turn", "running", "completed", "error"
@@ -133,7 +137,7 @@ export const UI_PARITY_ACTIONS = [
   ]),
   ...actions("settings", [
     "provider", "telegram-refresh", "voice-refresh", "voice-enabled", "voice-language",
-    "voice-insert", "warm-pane-limit", "cli-preview-limit", "agent-refresh", "agent-tools",
+    "voice-insert", "cli-preview-limit", "agent-refresh", "agent-tools",
     "toolbar-customize", "reset-local-settings", "error"
   ]),
   ...actions("health", [

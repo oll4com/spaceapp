@@ -5,7 +5,11 @@ import type {
   CreateReleaseRequest,
   ReleasePreview
 } from "@space/contracts";
-import { Rocket, Wrench, X } from "lucide-react";
+import type {
+  CliMaintenanceRecoveryPayload,
+  CliMaintenanceReplayPayload
+} from "../../live-api.js";
+import { Rocket, Wrench, X } from "../ui-theme/app-icons.js";
 import {
   useCallback,
   useEffect,
@@ -22,6 +26,10 @@ export type AdminOperationTool = "maintenance" | "release";
 
 export interface AdminOperationsClient {
   listCliMaintenanceRuns(): Promise<{ data: AdminOperationRun[] }>;
+  getCliMaintenanceReplay(runId: string, afterSequence?: number): Promise<CliMaintenanceReplayPayload>;
+  openCliMaintenanceStream(runId: string, afterSequence?: number): EventSource | null;
+  cliMaintenanceExportUrl(runId: string): string;
+  openCliMaintenanceRecovery(): Promise<CliMaintenanceRecoveryPayload>;
   startCliMaintenance(input: CliMaintenanceRequest): Promise<AdminOperationRun>;
   createReleasePreview(input: CreateReleasePreviewInput): Promise<ReleasePreview>;
   publishRelease(input: CreateReleaseRequest): Promise<AdminOperationRun>;
@@ -42,7 +50,7 @@ export function AdminOperationsDialog({
   const [busy, setBusy] = useState(false);
   const title = initialTool === "maintenance" ? "Space & CLI maintenance" : "Publish Space release";
   const description = initialTool === "maintenance"
-    ? "Check Space health and every managed CLI, or update all CLI apps through the guarded sequential flow."
+    ? "Repair Space and every managed CLI with live stages, durable history, safe rollback and provider-login handoff."
     : "Preview and publish the clean live Space version to the fixed Gitea and GitHub repositories.";
   const HeaderIcon = initialTool === "maintenance" ? Wrench : Rocket;
 

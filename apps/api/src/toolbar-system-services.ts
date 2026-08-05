@@ -29,6 +29,7 @@ const codexUsageSnapshotSchema = z.object({
     label: z.string().min(1).max(200),
     fiveHourRemainingPercent: z.number().min(0).max(100).nullable(),
     weeklyRemainingPercent: z.number().min(0).max(100).nullable(),
+    weeklyResetAt: z.string().datetime().nullable().optional(),
     sampledAt: z.string().datetime().nullable()
   }).strict()).max(100)
 }).strict();
@@ -105,6 +106,7 @@ export function parseCodexUsageAccounts(raw: string, checkedAt: Date): CodexUsag
     label: account.label,
     fiveHourRemainingPercent: percentOrNull(account.fiveHourRemainingPercent),
     weeklyRemainingPercent: percentOrNull(account.weeklyRemainingPercent),
+    weeklyResetAt: validIso(account.weeklyResetAt),
     sampledAt: validIso(account.sampledAt)
   }));
   return codexUsageAccountListSchema.parse({

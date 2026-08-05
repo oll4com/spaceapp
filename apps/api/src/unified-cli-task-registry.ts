@@ -47,13 +47,16 @@ const runtimeProviderLabels: Record<string, string> = {
   "cli:claude": "Claude Code",
   "cli:gemini": "Gemini",
   "cli:opencode": "OpenCode",
+  "cli:autohand": "Autohand",
   "cli:qwen": "Qwen Code",
   "cli:kimi": "Kimi Code",
   "cli:grok": "Grok Build",
-  "cli:deepseek": "DeepSeek"
+  "cli:deepseek": "DeepSeek",
+  "cli:cursor": "Cursor",
+  "cli:copilot": "GitHub Copilot"
 };
 
-const ansiEscapePattern = /\u001b(?:[@-_]|\[[0-?]*[ -/]*[@-~])/g;
+const ansiEscapePattern = /\u001b(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g;
 
 function cleanTaskText(value: string, maxLength: number): string {
   return redactMemoryText(value)
@@ -101,6 +104,20 @@ function normalizeTask(record: PaneCliTaskHistoryRecord): UnifiedCliTask {
 
 export class UnifiedCliTaskRegistry {
   constructor(private readonly store: SpaceStore) {}
+
+  async findLatestTaskForPane(paneId: string, runtimeIds?: string[]): Promise<UnifiedCliTask | null> {
+    const sessions = await this.store.listPaneCliSessions(paneId, 100);
+    for (const session of sessions) {
+      if (session.purpose !== "NORMAL") continue;
+      try {
+        const task = await this.getTask(session.cliTaskId ?? session.sessionId, runtimeIds);
+        if (task.session.paneId === paneId) return task;
+      } catch (error) {
+        if (!(error instanceof SpaceNotFoundError)) throw error;
+      }
+    }
+    return null;
+  }
 
   async listAllTasks(options?: {
     page?: number;
@@ -151,7 +168,10 @@ export class UnifiedCliTaskRegistry {
     const transcriptFirstUserMessage = transcript.find(
       (chunk) => chunk.stream === "stdin" && chunk.content.trim()
     )?.content;
-    const firstUserMessage = transcriptFirstUserMessage ?? revision?.firstUserMessage ?? "";
+    const firstUserMessage = cleanTaskText(
+      transcriptFirstUserMessage ?? revision?.firstUserMessage ?? "",
+      2_000
+    );
     if (!firstUserMessage && !revision?.nativeTaskRef) {
       throw new SpaceNotFoundError(`Space CLI task ${taskIdOrLegacyThreadId} has no resumable transcript.`);
     }

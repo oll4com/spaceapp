@@ -96,7 +96,7 @@ export const paginated = <T extends z.ZodType>(item: T) =>
   });
 
 export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"]);
-export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL"]);
+export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
 export const paneColumnSpanSchema = z.number().int().min(1).max(3);
 export const paneSplitSchema = z.object({
@@ -105,7 +105,7 @@ export const paneSplitSchema = z.object({
   size: z.number().min(5).max(95).nullable()
 });
 export const reasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
-export const cliModelIdentifierSchema = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+export const cliModelIdentifierSchema = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:\/-]*$/);
 export const cliReasoningEffortSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
 const agentModelConfigIdSchema = z.string().trim().min(1).max(260);
 export const workflowStatusSchema = z.enum(["PENDING", "RUNNING", "PAUSED", "CANCELLED", "FAILED", "COMPLETED"]);
@@ -152,7 +152,7 @@ export const eventTypeSchema = z.enum([
   "ROOM_AGENT_UPDATED"
 ]);
 
-export const roomKindSchema = z.enum(["WORKSPACE", "AGENT_PROOF"]);
+export const roomKindSchema = z.enum(["WORKSPACE", "AGENT_PROOF", "CLI_RECOVERY"]);
 
 export const roomSchema = z.object({
   id: idSchema,
@@ -171,7 +171,8 @@ export const roomSchema = z.object({
 export const createRoomInputSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(1000).optional(),
-  initialPaneCount: z.number().int().min(0).max(16).default(4)
+  initialPaneCount: z.number().int().min(0).max(16).default(4),
+  reason: z.string().trim().max(500).optional()
 });
 
 export const proofRoomPaneCountSchema = z.union([
@@ -181,10 +182,102 @@ export const proofRoomPaneCountSchema = z.union([
   z.literal(4)
 ]);
 
+export const cliToggleRuntimeIds = [
+  "cli:codex",
+  "cli:claude",
+  "cli:gemini",
+  "cli:opencode",
+  "cli:autohand",
+  "cli:qwen",
+  "cli:kimi",
+  "cli:grok",
+  "cli:deepseek",
+  "cli:cursor",
+  "cli:copilot"
+] as const;
+
+export const cliToggleRuntimeIdSchema = z.enum(cliToggleRuntimeIds);
+
+export const proofRoomProfileSchema = z.enum(["STANDARD", "ACTIVE_AGENT_STRESS", "CLI_INPUT"]);
+
 export const createProofRoomInputSchema = z
   .object({
-    paneCount: proofRoomPaneCountSchema.default(1),
+    profile: proofRoomProfileSchema.optional(),
+    paneCount: z.number().int().min(0).max(6).default(1),
+    runtimeId: cliToggleRuntimeIdSchema.optional(),
     roomLabel: z.string().trim().min(1).max(80).optional()
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.profile === "ACTIVE_AGENT_STRESS") {
+      if (input.paneCount < 1 || input.paneCount > 6) {
+        context.addIssue({
+          code: "custom",
+          path: ["paneCount"],
+          message: "Active-agent stress proof rooms support 1 through 6 panes."
+        });
+      }
+      return;
+    }
+    if (input.profile === "CLI_INPUT") {
+      if (input.paneCount !== 1) {
+        context.addIssue({
+          code: "custom",
+          path: ["paneCount"],
+          message: "CLI input proof rooms require exactly one pane."
+        });
+      }
+      if (!input.runtimeId) {
+        context.addIssue({
+          code: "custom",
+          path: ["runtimeId"],
+          message: "CLI input proof rooms require an allowlisted runtime."
+        });
+      }
+      return;
+    }
+    if (input.runtimeId !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["runtimeId"],
+        message: "Proof room runtime is valid only for the CLI input profile."
+      });
+    }
+    if (![0, 1, 2, 4].includes(input.paneCount)) {
+      context.addIssue({
+        code: "custom",
+        path: ["paneCount"],
+        message: "Standard proof rooms support 0, 1, 2, or 4 panes."
+      });
+    }
+  });
+
+export const activeAgentTurnsInputSchema = z
+  .object({
+    paneIds: z
+      .array(idSchema)
+      .min(1)
+      .max(6)
+      .refine((paneIds) => new Set(paneIds).size === paneIds.length, "Pane ids must be unique."),
+    cycle: z.number().int().min(0).max(3)
+  })
+  .strict();
+
+export const activeAgentTurnsResponseSchema = z
+  .object({
+    roomId: idSchema,
+    paneIds: z.array(idSchema).min(1).max(6),
+    cycle: z.number().int().min(0).max(3),
+    acceptedCount: z.number().int().min(1).max(6)
+  })
+  .strict();
+
+export const proofRoomCliIdentitySchema = z
+  .object({
+    sessionId: idSchema,
+    pid: z.number().int().positive(),
+    generationId: z.string().uuid(),
+    sampledAt: isoDateTimeSchema
   })
   .strict();
 
@@ -221,6 +314,14 @@ export const reorderRoomsInputSchema = z.object({
     .refine((roomIds) => new Set(roomIds).size === roomIds.length, "Room ids must be unique.")
 });
 
+export const reorderPanesInputSchema = z.object({
+  paneIds: z
+    .array(idSchema)
+    .min(1)
+    .max(500)
+    .refine((paneIds) => new Set(paneIds).size === paneIds.length, "Pane ids must be unique.")
+});
+
 export const paneSchema = z.object({
   id: idSchema,
   roomId: idSchema,
@@ -244,22 +345,34 @@ export const paneSchema = z.object({
 
 export const proofRoomSchema = z
   .object({
+    profile: proofRoomProfileSchema.optional(),
+    runtimeId: cliToggleRuntimeIdSchema.optional(),
     room: roomSchema,
-    panes: z.array(paneSchema).max(4),
-    sessionIds: z.array(idSchema).max(4)
+    panes: z.array(paneSchema).max(6),
+    sessionIds: z.array(idSchema).max(6)
   })
   .strict()
   .superRefine((value, context) => {
     if (value.room.kind !== "AGENT_PROOF") {
       context.addIssue({ code: "custom", path: ["room", "kind"], message: "Proof rooms must use AGENT_PROOF kind." });
     }
-    if (![0, 1, 2, 4].includes(value.panes.length)) {
+    if (value.profile === "ACTIVE_AGENT_STRESS" && (value.panes.length < 1 || value.panes.length > 6)) {
+      context.addIssue({ code: "custom", path: ["panes"], message: "Active-agent stress proof rooms support 1 through 6 panes." });
+    } else if (value.profile === "CLI_INPUT" && value.panes.length !== 1) {
+      context.addIssue({ code: "custom", path: ["panes"], message: "CLI input proof rooms require exactly one pane." });
+    } else if (value.profile !== "ACTIVE_AGENT_STRESS" && ![0, 1, 2, 4].includes(value.panes.length)) {
       context.addIssue({ code: "custom", path: ["panes"], message: "Proof rooms support 0, 1, 2, or 4 panes." });
+    }
+    if (value.profile === "CLI_INPUT" && !value.runtimeId) {
+      context.addIssue({ code: "custom", path: ["runtimeId"], message: "CLI input proof rooms require an allowlisted runtime." });
+    } else if (value.profile !== "CLI_INPUT" && value.runtimeId !== undefined) {
+      context.addIssue({ code: "custom", path: ["runtimeId"], message: "Proof room runtime is valid only for the CLI input profile." });
     }
     const paneIds = new Set<string>();
     for (const pane of value.panes) {
-      if (pane.roomId !== value.room.id || pane.mode !== "TERMINAL" || pane.terminalRuntimeId !== "cli:codex") {
-        context.addIssue({ code: "custom", path: ["panes"], message: "Proof room panes must be independent Codex terminals in the proof room." });
+      const expectedRuntimeId = value.profile === "CLI_INPUT" ? value.runtimeId : "cli:codex";
+      if (pane.roomId !== value.room.id || pane.mode !== "TERMINAL" || pane.terminalRuntimeId !== expectedRuntimeId) {
+        context.addIssue({ code: "custom", path: ["panes"], message: "Proof room panes must be independent terminals with the profile runtime." });
         break;
       }
       if (paneIds.has(pane.id)) {
@@ -329,6 +442,7 @@ const persistedTranscriptLabeledSecretPattern =
 
 export function redactPersistedTranscriptContent(value: string): string {
   return value
+    .replaceAll("\0", "")
     .replace(persistedTranscriptTokenPattern, "[REDACTED]")
     .replace(persistedTranscriptLabeledSecretPattern, (match, label: string, secretValue: string) =>
       secretValue === "[REDACTED]" ? match : `${label}:[REDACTED]`
@@ -943,11 +1057,11 @@ export const codexModelCatalogOptionSchema = z.object({
   description: z.string().trim().max(500).optional(),
   isDefault: z.boolean().default(false),
   defaultReasoningEffort: cliReasoningEffortSchema,
-  supportedReasoningEfforts: z.array(cliReasoningEffortSchema).min(1).max(20),
+  supportedReasoningEfforts: z.array(cliReasoningEffortSchema).max(20),
   reasoningOptions: z.array(z.object({
     reasoningEffort: cliReasoningEffortSchema,
     description: z.string().trim().max(500).optional()
-  })).min(1).max(20).optional()
+  })).max(20).optional()
 });
 
 export const agentPaneToolOptionSchema = z.object({
@@ -1105,6 +1219,17 @@ export const paneCliSessionLaunchModeSchema = z.enum(["FRESH", "RESUME"]);
 export const paneCliSessionPurposeSchema = z.enum(["NORMAL", "LOGIN"]);
 export const paneCliTranscriptStreamSchema = z.enum(["stdin", "stdout", "stderr", "system"]);
 export const paneCliCodexThreadOwnershipSourceSchema = z.enum(["AUTO", "HISTORY_TRANSFER", "MIGRATION"]);
+export const paneCliClientModeSchema = z.enum(["INTERACTIVE", "OBSERVER"]);
+export const paneCliTerminalControlStateSchema = z.enum(["CONTROLLER", "HELD_BY_OTHER", "AVAILABLE", "OBSERVER"]);
+export const paneCliTerminalControlLeaseStatusSchema = z.enum(["ACTIVE", "RELEASED", "EXPIRED", "REVOKED"]);
+export const paneCliTerminalControlRevocationReasonSchema = z.enum([
+  "TAKEN_OVER",
+  "RELEASED",
+  "EXPIRED",
+  "SESSION_ENDED"
+]);
+export const paneCliProofScopeSchema = z.literal("READ_ONLY");
+export const appDiagnosticsAutomationScopeSchema = z.literal("APP_DIAGNOSTICS");
 export const browserSessionViewportSchema = z.enum(["mobile", "tablet", "desktop"]);
 export const browserSessionStatusSchema = z.enum(["STARTING", "READY", "NAVIGATING", "ERROR", "CLOSED"]);
 export const browserStreamModeSchema = z.enum(["AUTO", "SILENT", "PREVIEW", "INTERACTIVE", "REALTIME"]);
@@ -1204,19 +1329,6 @@ export const agentRuntimeRegistrySchema = z.object({
   checkedAt: isoDateTimeSchema
 });
 
-export const cliToggleRuntimeIds = [
-  "cli:codex",
-  "cli:claude",
-  "cli:gemini",
-  "cli:opencode",
-  "cli:qwen",
-  "cli:kimi",
-  "cli:grok",
-  "cli:deepseek"
-] as const;
-
-export const cliToggleRuntimeIdSchema = z.enum(cliToggleRuntimeIds);
-
 export const cliTaskHistoryQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).optional(),
@@ -1240,14 +1352,9 @@ export const cliTaskHistoryQuerySchema = z
 export const cliRuntimeSettingSchema = z.object({
   runtimeId: cliToggleRuntimeIdSchema,
   enabled: z.boolean(),
+  vpnEnabled: z.boolean().default(false),
   updatedAt: isoDateTimeSchema,
   updatedBy: idSchema.nullable()
-});
-
-export const cliRuntimeSettingsResponseSchema = z.object({
-  settings: z.array(cliRuntimeSettingSchema).length(cliToggleRuntimeIds.length),
-  runtimes: z.array(agentRuntimeSchema).max(cliToggleRuntimeIds.length),
-  checkedAt: isoDateTimeSchema
 });
 
 const cliRuntimeDisableConfirmationTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{24,96}$/);
@@ -1256,6 +1363,9 @@ export const cliRuntimeDisablePreviewSchema = z.object({
   runtimeId: cliToggleRuntimeIdSchema,
   activeSessionCount: z.number().int().min(0).max(10_000),
   openPaneCount: z.number().int().min(0).max(10_000),
+  activeChatRunCount: z.number().int().min(0).max(10_000).default(0),
+  openChatPaneCount: z.number().int().min(0).max(10_000).default(0),
+  activeRoomAgentMissionCount: z.number().int().min(0).max(10_000).default(0),
   confirmationToken: cliRuntimeDisableConfirmationTokenSchema,
   expiresAt: isoDateTimeSchema
 });
@@ -1286,9 +1396,17 @@ export const updateCliRuntimeSettingInputSchema = z
 export const cliRuntimeCleanupResultSchema = z.object({
   requestedActiveSessionCount: z.number().int().min(0),
   requestedOpenPaneCount: z.number().int().min(0),
+  requestedActiveChatRunCount: z.number().int().min(0).default(0),
+  requestedOpenChatPaneCount: z.number().int().min(0).default(0),
+  requestedRoomAgentMissionCount: z.number().int().min(0).default(0),
   terminatedSessionIds: z.array(idSchema).max(10_000),
+  interruptedChatPaneIds: z.array(idSchema).max(10_000).default([]),
+  stoppedRoomAgentMissionIds: z.array(idSchema).max(10_000).default([]),
   closedPaneIds: z.array(idSchema).max(10_000),
+  closedChatPaneIds: z.array(idSchema).max(10_000).default([]),
   unresolvedSessionIds: z.array(idSchema).max(10_000),
+  unresolvedChatPaneIds: z.array(idSchema).max(10_000).default([]),
+  unresolvedRoomAgentMissionIds: z.array(idSchema).max(10_000).default([]),
   unresolvedPaneIds: z.array(idSchema).max(10_000)
 });
 
@@ -1296,6 +1414,153 @@ export const updateCliRuntimeSettingResultSchema = z.object({
   setting: cliRuntimeSettingSchema,
   cleanup: cliRuntimeCleanupResultSchema.nullable()
 });
+
+export const cliVpnConnectionStatusSchema = z.enum(["NOT_CONFIGURED", "CONNECTED", "ERROR", "BLOCKED"]);
+export const cliVpnVerificationCodeSchema = z.enum([
+  "NOT_CONFIGURED",
+  "VERIFIED",
+  "INVALID_CONFIG",
+  "TOOLING_UNAVAILABLE",
+  "HANDSHAKE_FAILED",
+  "DNS_FAILED",
+  "EGRESS_FAILED",
+  "APPLY_FAILED"
+]);
+
+const cliVpnIpAddressSchema = z.string().trim().min(2).max(64).regex(/^[0-9A-Fa-f:.]+$/);
+
+export const cliMullvadRelaySchema = z
+  .object({
+    hostname: z.string().trim().min(3).max(128).regex(/^[a-z0-9][a-z0-9-]*$/i),
+    cityCode: z.string().trim().min(2).max(24).regex(/^[a-z0-9-]+$/i),
+    cityName: z.string().trim().min(2).max(96),
+    countryCode: z.string().trim().length(2).regex(/^[a-z]{2}$/i),
+    countryName: z.string().trim().min(2).max(96)
+  })
+  .strict();
+
+export const cliVpnConnectionSchema = z
+  .object({
+    profileConfigured: z.boolean(),
+    status: cliVpnConnectionStatusSchema,
+    endpoint: z.string().trim().min(3).max(320).nullable(),
+    dnsServers: z.array(cliVpnIpAddressSchema).max(4),
+    profileFingerprint: z.string().regex(/^[0-9a-f]{16}$/).nullable(),
+    relay: cliMullvadRelaySchema.nullable(),
+    egressIpv4: cliVpnIpAddressSchema.nullable(),
+    egressIpv6: cliVpnIpAddressSchema.nullable(),
+    lastHandshakeAt: isoDateTimeSchema.nullable(),
+    lastVerifiedAt: isoDateTimeSchema.nullable(),
+    lastVerificationCode: cliVpnVerificationCodeSchema,
+    updatedAt: isoDateTimeSchema
+  })
+  .strict();
+
+export const replaceCliVpnProfileInputSchema = z
+  .object({
+    config: z.string().min(64).max(65_536)
+  })
+  .strict();
+
+export const cliEgressRouteIdSchema = z.enum(["direct", "greece", "thailand", "mullvad"]);
+export const cliVpnProfileIdSchema = z.enum(["greece", "thailand", "mullvad"]);
+
+export const cliEgressRuntimeStatusSchema = z
+  .object({
+    runtimeId: cliToggleRuntimeIdSchema,
+    routeId: cliEgressRouteIdSchema,
+    appliedSessionIds: z.array(idSchema).max(10_000),
+    restartRequiredSessionIds: z.array(idSchema).max(10_000)
+  })
+  .strict();
+
+export const cliGlobalEgressStatusSchema = z
+  .object({
+    supported: z.boolean(),
+    selectedRoute: cliEgressRouteIdSchema,
+    directEgressIpv4: cliVpnIpAddressSchema.nullable(),
+    removedProfiles: z.array(cliVpnProfileIdSchema).max(3),
+    profiles: z.object({
+      greece: cliVpnConnectionSchema,
+      thailand: cliVpnConnectionSchema,
+      mullvad: cliVpnConnectionSchema
+    }).strict(),
+    applications: z.array(cliEgressRuntimeStatusSchema).max(cliToggleRuntimeIds.length),
+    checkedAt: isoDateTimeSchema
+  })
+  .strict();
+
+export const updateCliGlobalEgressInputSchema = z.object({
+  routeId: cliEgressRouteIdSchema
+}).strict();
+
+export const updateCliGlobalEgressResultSchema = z.object({
+  status: cliGlobalEgressStatusSchema,
+  requestedRestartSessionIds: z.array(idSchema).max(10_000),
+  restartedSessionIds: z.array(idSchema).max(10_000),
+  replacementSessionIds: z.array(idSchema).max(10_000),
+  failedSessionIds: z.array(idSchema).max(10_000)
+}).strict();
+
+export const updateCliRuntimeVpnInputSchema = z
+  .object({
+    enabled: z.boolean()
+  })
+  .strict();
+
+export const cliRuntimeVpnApplicationSchema = z
+  .object({
+    effectiveMode: z.enum(["DIRECT", "VPN", "BLOCKED"]),
+    appliedSessionIds: z.array(idSchema).max(10_000),
+    restartRequiredSessionIds: z.array(idSchema).max(10_000)
+  })
+  .strict();
+
+export const cliRuntimeVpnStatusSchema = cliRuntimeVpnApplicationSchema.extend({
+  runtimeId: cliToggleRuntimeIdSchema
+}).strict();
+
+export const cliRuntimeSettingsResponseSchema = z.object({
+  settings: z.array(cliRuntimeSettingSchema).length(cliToggleRuntimeIds.length),
+  runtimes: z.array(agentRuntimeSchema).max(cliToggleRuntimeIds.length),
+  vpnSupported: z.boolean().default(false),
+  vpnConnection: cliVpnConnectionSchema.optional(),
+  vpnApplications: z.array(cliRuntimeVpnStatusSchema).max(cliToggleRuntimeIds.length).default([]),
+  egress: cliGlobalEgressStatusSchema.optional(),
+  checkedAt: isoDateTimeSchema
+});
+
+export const cliVpnRoutingStatusSchema = z
+  .object({
+    vpnSupported: z.boolean(),
+    selectedRoute: cliEgressRouteIdSchema.default("direct"),
+    connectionStatus: cliVpnConnectionStatusSchema,
+    egressIpv4: cliVpnIpAddressSchema.nullable(),
+    egressIpv6: cliVpnIpAddressSchema.nullable(),
+    applications: z.array(cliRuntimeVpnStatusSchema).max(cliToggleRuntimeIds.length),
+    checkedAt: isoDateTimeSchema
+  })
+  .strict();
+
+export const updateCliRuntimeVpnResultSchema = z
+  .object({
+    setting: cliRuntimeSettingSchema,
+    connection: cliVpnConnectionSchema,
+    application: cliRuntimeVpnApplicationSchema
+  })
+  .strict();
+
+export const restartCliRuntimeVpnSessionsResultSchema = z
+  .object({
+    runtimeId: cliToggleRuntimeIdSchema,
+    requestedSessionIds: z.array(idSchema).max(10_000),
+    restartedSessionIds: z.array(idSchema).max(10_000),
+    replacementSessionIds: z.array(idSchema).max(10_000),
+    failedSessionIds: z.array(idSchema).max(10_000),
+    connection: cliVpnConnectionSchema,
+    application: cliRuntimeVpnApplicationSchema
+  })
+  .strict();
 
 export function isAgentRuntimeReady(
   runtime: Pick<AgentRuntime, "adapterStatus" | "authState" | "status">
@@ -1374,6 +1639,48 @@ export const updatePaneCliSessionInputSchema = z
     cliTaskRevisionId: idSchema.nullable().optional()
   })
   .refine((input) => Object.keys(input).length > 0, "CLI session update must include at least one field.");
+
+export const paneCliTerminalControlLeaseSchema = z.object({
+  leaseId: idSchema,
+  sessionId: idSchema,
+  paneId: idSchema,
+  roomId: idSchema,
+  userId: idSchema,
+  browserClientId: z.string().uuid(),
+  tabLineageId: z.string().uuid(),
+  pageClientId: z.string().uuid(),
+  status: paneCliTerminalControlLeaseStatusSchema,
+  acquiredAt: isoDateTimeSchema,
+  heartbeatAt: isoDateTimeSchema,
+  expiresAt: isoDateTimeSchema,
+  releasedAt: isoDateTimeSchema.nullable()
+});
+
+export const createPaneCliTerminalControlLeaseInputSchema = paneCliTerminalControlLeaseSchema
+  .omit({
+    leaseId: true,
+    status: true,
+    acquiredAt: true,
+    heartbeatAt: true,
+    expiresAt: true,
+    releasedAt: true
+  })
+  .extend({
+    leaseId: idSchema.optional(),
+    expectedActiveLeaseId: idSchema.nullable(),
+    ttlSeconds: z.number().int().min(5).max(300).default(30)
+  });
+
+export const updatePaneCliTerminalControlLeaseInputSchema = z
+  .object({
+    expectedStatus: z.literal("ACTIVE"),
+    status: z.enum(["RELEASED", "EXPIRED", "REVOKED"]).optional(),
+    ttlSeconds: z.number().int().min(5).max(300).optional()
+  })
+  .refine(
+    (input) => input.status !== undefined || input.ttlSeconds !== undefined,
+    "CLI terminal control lease update must include a status or heartbeat lifetime."
+  );
 
 export const paneCliTranscriptChunkSchema = z.object({
   chunkId: idSchema,
@@ -1456,8 +1763,78 @@ export const paneCliWebSocketTokenSchema = z.object({
   paneId: idSchema,
   sessionId: idSchema,
   token: z.string().min(24).max(512),
-  expiresAt: isoDateTimeSchema
+  expiresAt: isoDateTimeSchema,
+  proofScope: paneCliProofScopeSchema.optional()
 });
+
+export const cliTerminalClientEventTypeSchema = z.enum([
+  "SOCKET_READY",
+  "SOCKET_DISCONNECTED",
+  "RECONNECT_SCHEDULED",
+  "RECONNECT_SUCCEEDED",
+  "RECONNECT_STOPPED",
+  "CONTROL_STATE_CHANGED",
+  "CONTROL_GRANTED",
+  "CONTROL_REVOKED",
+  "CONTROL_DENIED"
+]);
+
+export const cliTerminalTelemetryOutcomeSchema = z.enum([
+  "INFO",
+  "SUCCESS",
+  "RETRY",
+  "DENIED",
+  "REVOKED",
+  "FAILURE"
+]);
+
+export const cliTerminalTelemetryReasonSchema = z.enum([
+  "NONE",
+  "INITIAL_ATTACH",
+  "SOCKET_CLOSE",
+  "SOCKET_ERROR",
+  "SESSION_REFRESH",
+  "SESSION_CLOSED",
+  "UNRECOVERABLE_SESSION",
+  "PERMANENT_ERROR",
+  "SUPERSEDED",
+  "SERVER_STATE",
+  "CONTROL_ACQUIRED",
+  "CONTROL_RENEWED",
+  "CONTROL_RELEASED",
+  "CONTROL_REQUIRED",
+  "CONTROL_HELD",
+  "TAKEN_OVER",
+  "LEASE_STALE",
+  "OBSERVER_DENIED",
+  "PROTOCOL_REQUIRED",
+  "RACE_LOST",
+  "RECONNECT_GRACE",
+  "CLIENT_DETACH",
+  "UNKNOWN"
+]);
+
+export const cliTerminalClientEventInputSchema = z.object({
+  event: cliTerminalClientEventTypeSchema,
+  outcome: cliTerminalTelemetryOutcomeSchema,
+  reason: cliTerminalTelemetryReasonSchema,
+  paneId: idSchema,
+  sessionId: idSchema.nullable().optional(),
+  runtimeId: z.string().trim().min(1).max(160).nullable().optional(),
+  controlState: paneCliTerminalControlStateSchema.nullable().optional(),
+  protocolVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  clientMode: paneCliClientModeSchema.nullable().optional(),
+  socketGeneration: z.number().int().min(0).max(1_000_000).optional(),
+  attempt: z.number().int().min(1).max(20).optional(),
+  delayMs: z.number().int().min(0).max(30_000).optional(),
+  closeCode: z.number().int().min(0).max(4_999).optional(),
+  wasClean: z.boolean().optional(),
+  clientAt: isoDateTimeSchema
+}).strict();
+
+export const cliTerminalClientEventResponseSchema = z.object({
+  accepted: z.literal(true)
+}).strict();
 
 export const paneCliTurnActivityStatusSchema = z.enum(["PENDING", "RUNNING", "COMPLETED", "ABORTED", "UNAVAILABLE"]);
 
@@ -1472,15 +1849,36 @@ export const paneCliWebSocketClientMessageSchema = z.discriminatedUnion("type", 
     type: z.literal("input"),
     data: z.string().min(1).max(16000),
     display: z.enum(["visible", "hidden"]).default("visible"),
-    turnMarker: z.string().uuid().optional()
+    turnMarker: z.string().uuid().optional(),
+    leaseId: idSchema.optional()
   }),
   z.object({
     type: z.literal("resize"),
     cols: z.number().int().min(2).max(400),
-    rows: z.number().int().min(2).max(200)
+    rows: z.number().int().min(2).max(200),
+    leaseId: idSchema.optional()
   }),
   z.object({
-    type: z.literal("interrupt")
+    type: z.literal("interrupt"),
+    leaseId: idSchema.optional()
+  }),
+  z.object({
+    type: z.literal("control_upgrade")
+  }),
+  z.object({
+    type: z.literal("control_request")
+  }),
+  z.object({
+    type: z.literal("control_takeover"),
+    expectedLeaseId: idSchema
+  }),
+  z.object({
+    type: z.literal("control_heartbeat"),
+    leaseId: idSchema
+  }),
+  z.object({
+    type: z.literal("control_release"),
+    leaseId: idSchema
   })
 ]);
 
@@ -1489,7 +1887,14 @@ export const paneCliWebSocketServerMessageSchema = z.discriminatedUnion("type", 
     type: z.literal("ready"),
     paneId: idSchema,
     sessionId: idSchema,
-    runtimeId: z.string().min(1).max(160)
+    runtimeId: z.string().min(1).max(160),
+    protocolVersion: z.literal(2).optional(),
+    clientMode: paneCliClientModeSchema.optional(),
+    controlState: paneCliTerminalControlStateSchema.optional(),
+    leaseId: idSchema.nullable().optional(),
+    holderPageClientId: z.string().uuid().nullable().optional(),
+    expiresAt: isoDateTimeSchema.nullable().optional(),
+    heartbeatIntervalMs: z.number().int().min(1_000).max(300_000).optional()
   }),
   z.object({
     type: z.literal("output"),
@@ -1511,6 +1916,31 @@ export const paneCliWebSocketServerMessageSchema = z.discriminatedUnion("type", 
     type: z.literal("error"),
     code: z.string().min(1).max(80),
     message: z.string().min(1).max(500)
+  }),
+  z.object({
+    type: z.literal("control_upgraded")
+  }),
+  z.object({
+    type: z.literal("control_state"),
+    controlState: paneCliTerminalControlStateSchema,
+    leaseId: idSchema.nullable().optional(),
+    holderPageClientId: z.string().uuid().nullable().optional(),
+    expiresAt: isoDateTimeSchema.nullable().optional()
+  }),
+  z.object({
+    type: z.literal("control_granted"),
+    leaseId: idSchema,
+    expiresAt: isoDateTimeSchema
+  }),
+  z.object({
+    type: z.literal("control_denied"),
+    code: z.string().min(1).max(80),
+    message: z.string().min(1).max(500)
+  }),
+  z.object({
+    type: z.literal("control_revoked"),
+    leaseId: idSchema,
+    reason: paneCliTerminalControlRevocationReasonSchema
   })
 ]);
 
@@ -1537,7 +1967,7 @@ export const paneCliModelSettingsSchema = z.object({
     reasoningEffort: cliReasoningEffortSchema
   }).nullable(),
   models: z.array(paneCliModelOptionSchema).min(1).max(200),
-  controlMode: z.literal("DIRECT"),
+  controlMode: z.enum(["DIRECT", "OPENCODE"]),
   isTurnActive: z.boolean()
 });
 
@@ -1548,7 +1978,12 @@ export const paneCliModelSettingsStatusSchema = z.discriminatedUnion("status", [
   }),
   z.object({
     status: z.literal("UNAVAILABLE"),
-    reasonCode: z.enum(["CODEX_SESSION_CONTROL_UNAVAILABLE", "CODEX_MODEL_CATALOG_UNAVAILABLE"]),
+    reasonCode: z.enum([
+      "CODEX_SESSION_CONTROL_UNAVAILABLE",
+      "CODEX_MODEL_CATALOG_UNAVAILABLE",
+      "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+      "OPENCODE_MODEL_CATALOG_UNAVAILABLE"
+    ]),
     reason: z.string().min(1).max(500)
   })
 ]);
@@ -1567,7 +2002,7 @@ export const updatePaneCliModelSettingsResultSchema = z.object({
   wasActive: z.boolean(),
   interrupted: z.boolean(),
   continuation: z.enum(["NOT_NEEDED", "SENT"]),
-  transport: z.literal("DIRECT"),
+  transport: z.enum(["DIRECT", "OPENCODE"]),
   warning: z.string().min(1).max(500).nullable()
 });
 
@@ -1667,6 +2102,9 @@ export const paneBrowserSessionSchema = z.object({
   activePageId: z.string().min(1).max(200).nullable().default(null),
   workerHeartbeatAt: isoDateTimeSchema.nullable().default(null),
   queuePosition: z.number().int().min(1).max(10000).nullable().default(null),
+  restoreScrollX: z.number().int().min(0).max(10_000_000).nullable().default(null),
+  restoreScrollY: z.number().int().min(0).max(10_000_000).nullable().default(null),
+  restoreVideoPaused: z.boolean().nullable().default(null),
   isActive: z.boolean(),
   startedAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
@@ -1681,6 +2119,9 @@ export const createPaneBrowserSessionInputSchema = paneBrowserSessionSchema
     status: true,
     statusReason: true,
     lastFrameAt: true,
+    restoreScrollX: true,
+    restoreScrollY: true,
+    restoreVideoPaused: true,
     isActive: true,
     startedAt: true,
     updatedAt: true,
@@ -1703,6 +2144,9 @@ export const createPaneBrowserSessionInputSchema = paneBrowserSessionSchema
     activePageId: z.string().trim().min(1).max(200).nullable().optional(),
     workerHeartbeatAt: isoDateTimeSchema.nullable().optional(),
     queuePosition: z.number().int().min(1).max(10000).nullable().optional(),
+    restoreScrollX: z.number().int().min(0).max(10_000_000).nullable().optional(),
+    restoreScrollY: z.number().int().min(0).max(10_000_000).nullable().optional(),
+    restoreVideoPaused: z.boolean().nullable().optional(),
     isActive: z.boolean().optional()
   });
 
@@ -1724,6 +2168,9 @@ export const updatePaneBrowserSessionInputSchema = z
     activePageId: z.string().trim().min(1).max(200).nullable().optional(),
     workerHeartbeatAt: isoDateTimeSchema.nullable().optional(),
     queuePosition: z.number().int().min(1).max(10000).nullable().optional(),
+    restoreScrollX: z.number().int().min(0).max(10_000_000).nullable().optional(),
+    restoreScrollY: z.number().int().min(0).max(10_000_000).nullable().optional(),
+    restoreVideoPaused: z.boolean().nullable().optional(),
     isActive: z.boolean().optional(),
     endedAt: isoDateTimeSchema.nullable().optional()
   })
@@ -2161,6 +2608,17 @@ export const browserStreamWebSocketServerMessageSchema = z.union([
     })
     .strict(),
   browserStreamInputAckSchema,
+  z
+    .object({
+      type: z.literal("audioReady"),
+      paneId: idSchema,
+      sessionId: idSchema,
+      streamId: idSchema,
+      encoding: z.literal("pcm_s16le"),
+      sampleRate: z.number().int().min(8000).max(192000),
+      channels: z.number().int().min(1).max(2)
+    })
+    .strict(),
   z
     .object({
       type: z.literal("error"),
@@ -3011,6 +3469,7 @@ export const codexEnvironmentHostStatsSchema = z.object({
 export const codexEnvironmentSchema = z.object({
   codexHome: z.string().min(1).max(1000),
   stateDbPath: z.string().min(1).max(1000),
+  isCodexEnabled: z.boolean().optional(),
   config: z.object({
     modelProvider: z.string().min(1).max(120).nullable(),
     model: z.string().min(1).max(160).nullable(),
@@ -3042,6 +3501,7 @@ export const codexUsageAccountSchema = z
     label: z.string().min(1).max(200),
     fiveHourRemainingPercent: nullableToolbarPercentSchema,
     weeklyRemainingPercent: nullableToolbarPercentSchema,
+    weeklyResetAt: isoDateTimeSchema.nullable().optional(),
     sampledAt: isoDateTimeSchema.nullable()
   })
   .strict();
@@ -3054,6 +3514,44 @@ export const codexUsageAccountListSchema = z
     isStale: z.boolean(),
     error: z.string().min(1).max(500).nullable(),
     checkedAt: isoDateTimeSchema
+  })
+  .strict();
+
+export const codexResetCreditAvailabilityAccountSchema = z
+  .object({
+    accountId: z.string().min(1).max(160),
+    availableCreditCount: z.number().int().min(0).max(100).nullable()
+  })
+  .strict();
+
+export const codexResetCreditAvailabilitySchema = z
+  .object({
+    data: z.array(codexResetCreditAvailabilityAccountSchema).max(100),
+    source: z.literal("vm214-codex-lb"),
+    isStale: z.boolean(),
+    error: z.string().min(1).max(500).nullable(),
+    checkedAt: isoDateTimeSchema
+  })
+  .strict();
+
+export const codexResetCreditRedemptionInputSchema = z
+  .object({
+    idempotencyKey: z.string().uuid()
+  })
+  .strict();
+
+export const codexResetCreditRedemptionOutcomeSchema = z.enum([
+  "RESET",
+  "ALREADY_REDEEMED",
+  "NOTHING_TO_RESET",
+  "NO_CREDIT"
+]);
+
+export const codexResetCreditRedemptionResponseSchema = z
+  .object({
+    accountId: z.string().min(1).max(160),
+    outcome: codexResetCreditRedemptionOutcomeSchema,
+    completedAt: isoDateTimeSchema
   })
   .strict();
 
@@ -3210,22 +3708,18 @@ export const codexLbSpeedDefaultUpdateRequestSchema = z
 
 export const codexLbSpeedDefaultsResponseSchema = z
   .object({
-    models: z.tuple([
-      z
-        .object({
-          modelId: z.literal("gpt-5.5"),
-          displayName: z.literal("GPT-5.5"),
-          tier: codexLbSpeedTierSchema
-        })
-        .strict(),
-      z
-        .object({
-          modelId: z.literal("gpt-5.4"),
-          displayName: z.literal("GPT-5.4"),
-          tier: codexLbSpeedTierSchema
-        })
-        .strict()
-    ]),
+    models: z
+      .array(
+        z
+          .object({
+            modelId: cliModelIdentifierSchema,
+            displayName: z.string().trim().min(1).max(240),
+            tier: codexLbSpeedTierSchema
+          })
+          .strict()
+      )
+      .min(1)
+      .max(5_000),
     updatedAt: isoDateTimeSchema.nullable(),
     checkedAt: isoDateTimeSchema
   })
@@ -3318,6 +3812,7 @@ export const serviceRestartResponseSchema = z.object({
 export const adminOperationTypeSchema = z.enum([
   "CLI_MAINTENANCE_CHECK",
   "CLI_MAINTENANCE_UPDATE",
+  "CLI_MAINTENANCE_REPAIR",
   "SPACE_RELEASE"
 ]);
 export const adminOperationStatusSchema = z.enum(["QUEUED", "RUNNING", "SUCCEEDED", "PARTIAL", "FAILED"]);
@@ -3358,6 +3853,7 @@ export const updateAdminOperationRunInputSchema = z
 
 export const cliMaintenanceRequestSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("CHECK") }).strict(),
+  z.object({ mode: z.literal("REPAIR") }).strict(),
   z
     .object({
       mode: z.literal("UPDATE"),
@@ -3367,6 +3863,133 @@ export const cliMaintenanceRequestSchema = z.discriminatedUnion("mode", [
 ]);
 
 export const cliMaintenanceCheckStatusSchema = z.enum(["PASS", "WARN", "FAIL", "SKIPPED"]);
+export const cliMaintenancePhaseSchema = z.enum([
+  "DISCOVER",
+  "CHECK",
+  "PLAN",
+  "CONFIG_REPAIR",
+  "STAGE",
+  "VERIFY",
+  "ACTIVATE",
+  "POST_CHECK",
+  "ROLLBACK",
+  "AUTH_HANDOFF",
+  "COMPLETE"
+]);
+export const cliMaintenanceEventStateSchema = z.enum([
+  "STARTED",
+  "PROGRESS",
+  "SUCCEEDED",
+  "WARNING",
+  "FAILED",
+  "SKIPPED",
+  "RETRYING"
+]);
+export const cliMaintenanceSeveritySchema = z.enum(["INFO", "WARN", "ERROR"]);
+export const cliMaintenanceRuntimeOutcomeSchema = z.enum([
+  "HEALTHY",
+  "REPAIRED",
+  "DEGRADED",
+  "ACTION_REQUIRED",
+  "FAILED_ROLLED_BACK",
+  "FAILED_UNSAFE"
+]);
+export const cliMaintenanceRollbackSchema = z
+  .object({
+    performed: z.boolean(),
+    verified: z.boolean(),
+    summary: z.string().trim().min(1).max(1000)
+  })
+  .strict();
+export const cliMaintenanceDiagnosticsSchema = z
+  .record(z.string().trim().min(1).max(80), z.unknown())
+  .superRefine((value, context) => {
+    let serialized = "";
+    try {
+      serialized = JSON.stringify(value);
+    } catch {
+      context.addIssue({
+        code: "custom",
+        message: "CLI maintenance diagnostics must be JSON serializable."
+      });
+      return;
+    }
+    if (serialized.length > 16_384) {
+      context.addIssue({
+        code: "too_big",
+        origin: "string",
+        maximum: 16_384,
+        inclusive: true,
+        message: "CLI maintenance diagnostics exceed the safe persistence limit."
+      });
+    }
+  });
+const cliMaintenanceVersionSchema = z.string().trim().min(1).max(160).nullable();
+export const createCliMaintenanceEventInputSchema = z
+  .object({
+    runId: idSchema,
+    runtimeId: cliToggleRuntimeIdSchema.nullable(),
+    phase: cliMaintenancePhaseSchema,
+    state: cliMaintenanceEventStateSchema,
+    severity: cliMaintenanceSeveritySchema,
+    code: z.string().trim().min(1).max(80).regex(/^[A-Z0-9_]+$/),
+    message: z.string().trim().min(1).max(1000),
+    attempt: z.number().int().min(1).max(10),
+    installedVersion: cliMaintenanceVersionSchema,
+    availableVersion: cliMaintenanceVersionSchema,
+    targetVersion: cliMaintenanceVersionSchema,
+    durationMs: z.number().int().min(0).max(3_600_000).nullable(),
+    outcome: cliMaintenanceRuntimeOutcomeSchema.nullable(),
+    rollback: cliMaintenanceRollbackSchema.nullable(),
+    diagnostics: cliMaintenanceDiagnosticsSchema.default({})
+  })
+  .strict();
+export const cliMaintenanceEventSchema = createCliMaintenanceEventInputSchema
+  .extend({
+    id: idSchema,
+    sequence: z.number().int().min(1),
+    createdAt: isoDateTimeSchema
+  })
+  .strict();
+
+export const cliMaintenanceAuthHandoffStatusSchema = z.enum([
+  "PENDING",
+  "OPENED",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED"
+]);
+export const createCliMaintenanceAuthHandoffInputSchema = z
+  .object({
+    runId: idSchema,
+    runtimeId: cliToggleRuntimeIdSchema,
+    roomId: idSchema.nullable()
+  })
+  .strict();
+export const updateCliMaintenanceAuthHandoffInputSchema = z
+  .object({
+    status: cliMaintenanceAuthHandoffStatusSchema.optional(),
+    roomId: idSchema.nullable().optional(),
+    attemptCount: z.number().int().min(0).max(10).optional(),
+    safeErrorCode: z.string().trim().min(1).max(80).regex(/^[A-Z0-9_]+$/).nullable().optional()
+  })
+  .strict()
+  .refine((input) => Object.keys(input).length > 0, "A CLI auth handoff update must change at least one field.");
+export const cliMaintenanceAuthHandoffSchema = z
+  .object({
+    id: idSchema,
+    runId: idSchema,
+    runtimeId: cliToggleRuntimeIdSchema,
+    roomId: idSchema.nullable(),
+    status: cliMaintenanceAuthHandoffStatusSchema,
+    attemptCount: z.number().int().min(0).max(10),
+    safeErrorCode: z.string().trim().min(1).max(80).regex(/^[A-Z0-9_]+$/).nullable(),
+    createdAt: isoDateTimeSchema,
+    updatedAt: isoDateTimeSchema,
+    completedAt: isoDateTimeSchema.nullable()
+  })
+  .strict();
+
 export const cliMaintenanceRuntimeResultSchema = z
   .object({
     runtimeId: cliToggleRuntimeIdSchema,
@@ -3404,8 +4027,8 @@ export const sourceControlVerificationCodeSchema = z.enum([
 export const sourceControlConnectionSchema = z
   .object({
     provider: sourceControlProviderSchema,
-    repositoryOwner: z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9_.-]+$/),
-    repositoryName: z.string().trim().min(1).max(240).regex(/^[A-Za-z0-9_.-]+$/),
+    repositoryOwner: z.literal("oll4com"),
+    repositoryName: z.literal("space"),
     accountLogin: z.string().trim().min(1).max(160).nullable(),
     status: sourceControlConnectionStatusSchema,
     secretConfigured: z.boolean(),
@@ -3413,7 +4036,16 @@ export const sourceControlConnectionSchema = z
     lastVerificationCode: sourceControlVerificationCodeSchema,
     updatedAt: isoDateTimeSchema
   })
-  .strict();
+  .strict()
+  .superRefine((connection, context) => {
+    if (connection.repositoryName !== "space") {
+      context.addIssue({
+        code: "custom",
+        path: ["repositoryName"],
+        message: `${connection.provider} is bound to the fixed space repository.`
+      });
+    }
+  });
 
 export const updateSourceControlConnectionInputSchema = z
   .object({
@@ -4010,12 +4642,18 @@ export const artifactSchema = z.object({
   createdAt: isoDateTimeSchema
 });
 
+export const artifactCollectionSchema = z.enum(["ROOM_MEDIA", "AGENT_FILES"]);
+
 const roomMediaBrowserKinds = new Set<z.infer<typeof artifactKindSchema>>(["IMAGE", "SCREENSHOT", "VIDEO"]);
 
 export function isRoomMediaArtifact(artifact: z.infer<typeof artifactSchema>): boolean {
   if (artifact.storageUri.startsWith("space-artifact://user-uploads/")) return true;
   if (artifact.storageUri.startsWith("space-artifact://cli-uploads/")) return true;
   return artifact.storageUri.startsWith("space-artifact://browser-evidence/") && roomMediaBrowserKinds.has(artifact.kind);
+}
+
+export function isAgentFileArtifact(artifact: z.infer<typeof artifactSchema>): boolean {
+  return artifact.storageUri.startsWith("space-artifact://agent-files/");
 }
 
 export const deleteRoomMediaResponseSchema = z
@@ -4036,6 +4674,27 @@ export const deleteRoomMediaResponseSchema = z
     }
     if (result.ok !== (result.failedCount === 0)) {
       context.addIssue({ code: "custom", message: "Room media deletion is successful only when no artifacts failed." });
+    }
+  });
+
+export const deleteRoomAgentFilesResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    roomId: idSchema,
+    matchedCount: z.number().int().min(0),
+    deletedCount: z.number().int().min(0),
+    failedCount: z.number().int().min(0),
+    failedArtifactIds: z.array(idSchema)
+  })
+  .superRefine((result, context) => {
+    if (result.matchedCount !== result.deletedCount + result.failedCount) {
+      context.addIssue({ code: "custom", message: "Matched agent files must equal deleted plus failed counts." });
+    }
+    if (result.failedCount !== result.failedArtifactIds.length) {
+      context.addIssue({ code: "custom", message: "Failed agent file count must equal the failed artifact ID count." });
+    }
+    if (result.ok !== (result.failedCount === 0)) {
+      context.addIssue({ code: "custom", message: "Room agent file deletion is successful only when no artifacts failed." });
     }
   });
 
@@ -4075,7 +4734,8 @@ export const listArtifactsQuerySchema = paginationRequestSchema.extend({
   roomId: idSchema.optional(),
   paneId: idSchema.optional(),
   workflowId: idSchema.optional(),
-  kind: artifactKindSchema.optional()
+  kind: artifactKindSchema.optional(),
+  collection: artifactCollectionSchema.optional()
 });
 
 export const updateArtifactRetentionInputSchema = z
@@ -4514,6 +5174,8 @@ export const memoryGraphSnapshotSchema = z
     }
   });
 
+export const memoryGraphMonthSchema = z.string().regex(/^(?:20\d{2}-(?:0[1-9]|1[0-2])|all)$/);
+
 export const memoryGraphFiltersSchema = z.object({
   q: z.string().max(200).nullable(),
   nodeType: memoryGraphNodeTypeSchema.nullable(),
@@ -4521,7 +5183,8 @@ export const memoryGraphFiltersSchema = z.object({
   roomId: idSchema.nullable(),
   sourcePath: z.string().max(1000).nullable(),
   lifecycleStatus: memoryLifecycleStatusSchema.nullable(),
-  relationMode: z.enum(["CLUSTERED", "RELATIONS"]).optional()
+  relationMode: z.enum(["CLUSTERED", "RELATIONS"]).optional(),
+  month: memoryGraphMonthSchema.nullable().optional()
 });
 
 export const memoryGraphPayloadSchema = z.object({
@@ -4535,7 +5198,8 @@ export const memoryGraphPayloadSchema = z.object({
   edges: z.array(memoryGraphEdgeSchema).max(2000),
   layoutVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   taxonomyVersion: z.union([z.literal(1), z.literal(2)]).optional(),
-  filters: memoryGraphFiltersSchema
+  filters: memoryGraphFiltersSchema,
+  months: z.array(z.string().max(7)).default([])
 });
 
 export const memoryGraphOverviewPayloadSchema = memoryGraphPayloadSchema
@@ -4564,6 +5228,7 @@ export const listMemoryGraphQuerySchema = paginationRequestSchema.extend({
   roomId: idSchema.optional(),
   sourcePath: z.string().trim().min(1).max(1000).optional(),
   lifecycleStatus: memoryLifecycleStatusSchema.optional(),
+  month: memoryGraphMonthSchema.optional(),
   relationMode: z.enum(["CLUSTERED", "RELATIONS"]).default("RELATIONS")
 });
 
@@ -5176,10 +5841,11 @@ export const listMemoryQuerySchema = paginationRequestSchema
     }
   });
 
-export const clipboardSourceSchema = z.enum(["COPY", "PASTE", "MANUAL_NOTE", "AGENT_NOTE"]);
+export const clipboardSourceSchema = z.enum(["COPY", "PASTE", "MANUAL_NOTE", "AGENT_NOTE", "PLAN"]);
 export const clipboardOperatorSourceSchema = z.enum(["COPY", "PASTE", "MANUAL_NOTE"]);
 export const clipboardTextMaxCharacters = 100_000;
 export const agentClipboardNoteMaxCharacters = 10_000;
+export const clipboardPlanTitleMaxCharacters = 160;
 
 const nonBlankExactText = (maxCharacters: number) =>
   z
@@ -5190,7 +5856,7 @@ const nonBlankExactText = (maxCharacters: number) =>
     })
     .refine((text) => text.trim().length > 0, { message: "Clipboard text must contain a non-whitespace character." });
 
-export const spaceClipboardToolIdSchema = z.enum(["clipboard:list", "clipboard:get", "clipboard:save"]);
+export const spaceClipboardToolIdSchema = z.enum(["clipboard:list", "clipboard:get", "clipboard:save", "clipboard:save-plan"]);
 
 export const spaceAgentClipboardListActionSchema = z.object({
   type: z.literal("list"),
@@ -5209,10 +5875,17 @@ export const spaceAgentClipboardSaveActionSchema = z.object({
   text: nonBlankExactText(agentClipboardNoteMaxCharacters)
 });
 
+export const spaceAgentClipboardSavePlanActionSchema = z.object({
+  type: z.literal("save-plan"),
+  text: nonBlankExactText(clipboardTextMaxCharacters),
+  title: z.string().trim().min(1).max(clipboardPlanTitleMaxCharacters).optional()
+});
+
 export const spaceAgentClipboardActionInputSchema = z.discriminatedUnion("type", [
   spaceAgentClipboardListActionSchema,
   spaceAgentClipboardGetActionSchema,
-  spaceAgentClipboardSaveActionSchema
+  spaceAgentClipboardSaveActionSchema,
+  spaceAgentClipboardSavePlanActionSchema
 ]);
 
 function expectedClipboardToolIdForAction(
@@ -5225,6 +5898,8 @@ function expectedClipboardToolIdForAction(
       return "clipboard:get";
     case "save":
       return "clipboard:save";
+    case "save-plan":
+      return "clipboard:save-plan";
   }
 }
 
@@ -5824,8 +6499,10 @@ export const updateCodexGoalTaskInputSchema = z
 export const authUserSchema = z.object({
   id: idSchema,
   email: z.string().email(),
-  role: z.enum(["OPERATOR", "ADMIN"])
-});
+  role: z.enum(["OPERATOR", "ADMIN"]),
+  proofScope: paneCliProofScopeSchema.optional(),
+  automationScope: appDiagnosticsAutomationScopeSchema.optional()
+}).strict();
 
 export const authMeSchema = z.object({
   user: authUserSchema.nullable(),
@@ -5846,13 +6523,112 @@ export const setupStatusSchema = z.object({
 export const setupClaimInputSchema = z.object({
   token: z.string().min(32).max(500),
   email: z.string().trim().email().max(320),
-  password: z.string().min(6).max(500)
+  password: z.string().min(12).max(500)
 }).strict();
 
 export const setupClaimResponseSchema = z.object({
   user: authUserSchema,
   isAuthenticated: z.literal(true),
-  isSetupRequired: z.literal(false)
+  isSetupRequired: z.literal(false),
+  onboardingVersion: z.number().int().positive(),
+  isOnboardingComplete: z.boolean(),
+  starterRoomId: idSchema
+});
+
+export const setupConnectionStateSchema = z.enum(["CONNECTED", "NEEDS_SETUP", "UNAVAILABLE", "CHECKING"]);
+export const setupConnectionFunctionalStateSchema = z.enum(["FUNCTIONAL", "NEEDS_SETUP", "UNAVAILABLE"]);
+export const setupConnectionLiveVerificationStateSchema = z.enum([
+  "VERIFIED",
+  "QUOTA_LIMITED",
+  "NOT_CHECKED",
+  "PROVIDER_FAILED",
+  "TIMED_OUT",
+  "CREDENTIAL_CHANGED"
+]);
+export const setupConnectionReasonCodeSchema = z.string().regex(/^[A-Z0-9_]{1,80}$/);
+export const setupConnectionActionSchema = z.enum([
+  "OPEN_LOGIN_PANE",
+  "ENTER_SECRET",
+  "SELECT_REPOSITORY",
+  "RUN_HOST_LAUNCHER",
+  "VERIFY"
+]);
+export const setupConnectionSchema = z.object({
+  id: z.string().trim().min(1).max(160),
+  label: z.string().trim().min(1).max(160),
+  providerName: z.string().trim().min(1).max(160),
+  category: z.string().trim().min(1).max(80),
+  state: setupConnectionStateSchema,
+  functionalState: setupConnectionFunctionalStateSchema,
+  liveVerificationState: setupConnectionLiveVerificationStateSchema,
+  reasonCode: setupConnectionReasonCodeSchema.nullable(),
+  verifiedAt: isoDateTimeSchema.nullable(),
+  staleAt: isoDateTimeSchema.nullable(),
+  actions: z.array(setupConnectionActionSchema).max(8)
+});
+export const setupOnboardingSchema = z.object({
+  onboardingVersion: z.number().int().positive(),
+  isComplete: z.boolean(),
+  completedAt: isoDateTimeSchema.nullable(),
+  starterRoomId: idSchema.nullable()
+});
+export const setupOverviewSummarySchema = z.object({
+  total: z.number().int().min(0).max(100),
+  functional: z.number().int().min(0).max(100),
+  liveVerified: z.number().int().min(0).max(100),
+  needsSetup: z.number().int().min(0).max(100)
+}).strict();
+export const setupOverviewSchema = setupOnboardingSchema.extend({
+  summary: setupOverviewSummarySchema,
+  connections: z.array(setupConnectionSchema).max(100)
+});
+export const setupConnectionCheckStageSchema = z.enum([
+  "Detecting CLI",
+  "Checking saved credential",
+  "Sending live provider challenge",
+  "Confirming credential identity",
+  "Saving result",
+  "Verified",
+  "Quota limited",
+  "Timed out",
+  "Needs setup",
+  "Provider failed",
+  "Credential changed",
+  "CLI unavailable"
+]);
+export const setupConnectionCheckRunStatusSchema = z.enum(["RUNNING", "COMPLETED"]);
+export const setupConnectionCheckRunScopeSchema = z.enum(["ALL", "SINGLE"]);
+export const setupConnectionCheckRunSchema = z.object({
+  id: idSchema,
+  scope: setupConnectionCheckRunScopeSchema,
+  connectionIds: z.array(z.string().trim().min(1).max(160)).min(1).max(11),
+  status: setupConnectionCheckRunStatusSchema,
+  totalCount: z.number().int().min(1).max(11),
+  completedCount: z.number().int().min(0).max(11),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  finishedAt: isoDateTimeSchema.nullable()
+}).strict();
+export const setupConnectionCheckEventSchema = z.object({
+  id: idSchema,
+  runId: idSchema,
+  sequence: z.number().int().positive(),
+  connectionId: z.string().trim().min(1).max(160),
+  stage: setupConnectionCheckStageSchema,
+  state: z.enum(["RUNNING", "COMPLETED"]),
+  functionalState: setupConnectionFunctionalStateSchema.nullable(),
+  liveVerificationState: setupConnectionLiveVerificationStateSchema.nullable(),
+  reasonCode: setupConnectionReasonCodeSchema.nullable(),
+  createdAt: isoDateTimeSchema
+}).strict();
+export const setupConnectionCheckReplaySchema = z.object({
+  run: setupConnectionCheckRunSchema,
+  events: z.array(setupConnectionCheckEventSchema).max(1_000),
+  overview: setupOverviewSchema
+}).strict();
+export const setupStarterRoomResponseSchema = z.object({
+  room: roomSchema,
+  onboarding: setupOnboardingSchema
 });
 
 export function canonicalizeUserLinkUrl(value: string): string {
@@ -5931,6 +6707,7 @@ export const clipboardItemSchema = z
     id: idSchema,
     text: nonBlankExactText(clipboardTextMaxCharacters),
     source: clipboardSourceSchema,
+    title: z.string().trim().min(1).max(clipboardPlanTitleMaxCharacters).nullable().default(null),
     roomId: idSchema.nullable().default(null),
     paneId: idSchema.nullable().default(null),
     paneTitle: z.string().min(1).max(160).nullable().default(null),
@@ -5960,11 +6737,22 @@ export const saveAgentClipboardItemInputSchema = z
   })
   .strict();
 
+export const saveAgentClipboardPlanInputSchema = z
+  .object({
+    text: nonBlankExactText(clipboardTextMaxCharacters),
+    title: z.string().trim().min(1).max(clipboardPlanTitleMaxCharacters).optional(),
+    roomId: idSchema.nullable().optional(),
+    paneId: idSchema.nullable().optional(),
+    paneTitle: z.string().min(1).max(160).nullable().optional()
+  })
+  .strict();
+
 export const upsertClipboardItemInputSchema = z
   .object({
     ownerUserId: idSchema,
     text: nonBlankExactText(clipboardTextMaxCharacters),
     source: clipboardSourceSchema,
+    title: z.string().trim().min(1).max(clipboardPlanTitleMaxCharacters).nullable().optional(),
     roomId: idSchema.nullable().optional(),
     paneId: idSchema.nullable().optional(),
     paneTitle: z.string().min(1).max(160).nullable().optional()
@@ -5979,6 +6767,13 @@ export const upsertClipboardItemInputSchema = z
         inclusive: true,
         path: ["text"],
         message: `Agent notes may contain at most ${agentClipboardNoteMaxCharacters} characters.`
+      });
+    }
+    if (input.source !== "PLAN" && input.title != null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["title"],
+        message: "Clipboard item titles are allowed only for PLAN items."
       });
     }
   });
@@ -5999,6 +6794,7 @@ export type ClipboardOperatorSource = z.infer<typeof clipboardOperatorSourceSche
 export type ClipboardItem = z.infer<typeof clipboardItemSchema>;
 export type CreateClipboardItemRequest = z.infer<typeof createClipboardItemRequestSchema>;
 export type SaveAgentClipboardItemInput = z.infer<typeof saveAgentClipboardItemInputSchema>;
+export type SaveAgentClipboardPlanInput = z.infer<typeof saveAgentClipboardPlanInputSchema>;
 export type UpsertClipboardItemInput = z.infer<typeof upsertClipboardItemInputSchema>;
 export type ListClipboardItemsQuery = z.infer<typeof listClipboardItemsQuerySchema>;
 export type ClipboardItemListResponse = z.infer<typeof clipboardItemListResponseSchema>;
@@ -6011,13 +6807,18 @@ export type RoomKind = z.infer<typeof roomKindSchema>;
 export type Room = z.infer<typeof roomSchema>;
 export type CreateRoomInput = z.infer<typeof createRoomInputSchema>;
 export type ProofRoomPaneCount = z.infer<typeof proofRoomPaneCountSchema>;
+export type ProofRoomProfile = z.infer<typeof proofRoomProfileSchema>;
 export type CreateProofRoomInput = z.infer<typeof createProofRoomInputSchema>;
 export type ProofRoom = z.infer<typeof proofRoomSchema>;
+export type ProofRoomCliIdentity = z.infer<typeof proofRoomCliIdentitySchema>;
+export type ActiveAgentTurnsInput = z.infer<typeof activeAgentTurnsInputSchema>;
+export type ActiveAgentTurnsResponse = z.infer<typeof activeAgentTurnsResponseSchema>;
 export type RoomCliActivity = z.infer<typeof roomCliActivitySchema>;
 export type RoomCliActivityResponse = z.infer<typeof roomCliActivityResponseSchema>;
 export type UpdateRoomInput = z.infer<typeof updateRoomInputSchema>;
 export type UpdatePaneLayoutInput = z.infer<typeof updatePaneLayoutInputSchema>;
 export type ReorderRoomsInput = z.infer<typeof reorderRoomsInputSchema>;
+export type ReorderPanesInput = z.infer<typeof reorderPanesInputSchema>;
 export type Pane = z.infer<typeof paneSchema>;
 export type CreatePaneInput = z.infer<typeof createPaneInputSchema>;
 export type RoomPaneBatchItem = z.infer<typeof roomPaneBatchItemSchema>;
@@ -6110,6 +6911,23 @@ export type CliRuntimeDisablePreview = z.infer<typeof cliRuntimeDisablePreviewSc
 export type UpdateCliRuntimeSettingInput = z.infer<typeof updateCliRuntimeSettingInputSchema>;
 export type CliRuntimeCleanupResult = z.infer<typeof cliRuntimeCleanupResultSchema>;
 export type UpdateCliRuntimeSettingResult = z.infer<typeof updateCliRuntimeSettingResultSchema>;
+export type CliVpnConnectionStatus = z.infer<typeof cliVpnConnectionStatusSchema>;
+export type CliVpnVerificationCode = z.infer<typeof cliVpnVerificationCodeSchema>;
+export type CliMullvadRelay = z.infer<typeof cliMullvadRelaySchema>;
+export type CliVpnConnection = z.infer<typeof cliVpnConnectionSchema>;
+export type ReplaceCliVpnProfileInput = z.infer<typeof replaceCliVpnProfileInputSchema>;
+export type CliEgressRouteId = z.infer<typeof cliEgressRouteIdSchema>;
+export type CliVpnProfileId = z.infer<typeof cliVpnProfileIdSchema>;
+export type CliEgressRuntimeStatus = z.infer<typeof cliEgressRuntimeStatusSchema>;
+export type CliGlobalEgressStatus = z.infer<typeof cliGlobalEgressStatusSchema>;
+export type UpdateCliGlobalEgressInput = z.infer<typeof updateCliGlobalEgressInputSchema>;
+export type UpdateCliGlobalEgressResult = z.infer<typeof updateCliGlobalEgressResultSchema>;
+export type UpdateCliRuntimeVpnInput = z.infer<typeof updateCliRuntimeVpnInputSchema>;
+export type CliRuntimeVpnApplication = z.infer<typeof cliRuntimeVpnApplicationSchema>;
+export type CliRuntimeVpnStatus = z.infer<typeof cliRuntimeVpnStatusSchema>;
+export type CliVpnRoutingStatus = z.infer<typeof cliVpnRoutingStatusSchema>;
+export type UpdateCliRuntimeVpnResult = z.infer<typeof updateCliRuntimeVpnResultSchema>;
+export type RestartCliRuntimeVpnSessionsResult = z.infer<typeof restartCliRuntimeVpnSessionsResultSchema>;
 export type AdminOperationType = z.infer<typeof adminOperationTypeSchema>;
 export type AdminOperationStatus = z.infer<typeof adminOperationStatusSchema>;
 export type AdminOperationRun = z.infer<typeof adminOperationRunSchema>;
@@ -6117,6 +6935,18 @@ export type CreateAdminOperationRunInput = z.infer<typeof createAdminOperationRu
 export type UpdateAdminOperationRunInput = z.infer<typeof updateAdminOperationRunInputSchema>;
 export type CliMaintenanceRequest = z.infer<typeof cliMaintenanceRequestSchema>;
 export type CliMaintenanceCheckStatus = z.infer<typeof cliMaintenanceCheckStatusSchema>;
+export type CliMaintenancePhase = z.infer<typeof cliMaintenancePhaseSchema>;
+export type CliMaintenanceEventState = z.infer<typeof cliMaintenanceEventStateSchema>;
+export type CliMaintenanceSeverity = z.infer<typeof cliMaintenanceSeveritySchema>;
+export type CliMaintenanceRuntimeOutcome = z.infer<typeof cliMaintenanceRuntimeOutcomeSchema>;
+export type CliMaintenanceRollback = z.infer<typeof cliMaintenanceRollbackSchema>;
+export type CliMaintenanceDiagnostics = z.infer<typeof cliMaintenanceDiagnosticsSchema>;
+export type CreateCliMaintenanceEventInput = z.infer<typeof createCliMaintenanceEventInputSchema>;
+export type CliMaintenanceEvent = z.infer<typeof cliMaintenanceEventSchema>;
+export type CliMaintenanceAuthHandoffStatus = z.infer<typeof cliMaintenanceAuthHandoffStatusSchema>;
+export type CreateCliMaintenanceAuthHandoffInput = z.infer<typeof createCliMaintenanceAuthHandoffInputSchema>;
+export type UpdateCliMaintenanceAuthHandoffInput = z.infer<typeof updateCliMaintenanceAuthHandoffInputSchema>;
+export type CliMaintenanceAuthHandoff = z.infer<typeof cliMaintenanceAuthHandoffSchema>;
 export type CliMaintenanceRuntimeResult = z.infer<typeof cliMaintenanceRuntimeResultSchema>;
 export type SourceControlProvider = z.infer<typeof sourceControlProviderSchema>;
 export type SourceControlConnectionStatus = z.infer<typeof sourceControlConnectionStatusSchema>;
@@ -6131,9 +6961,17 @@ export type PaneCliSessionStatus = z.infer<typeof paneCliSessionStatusSchema>;
 export type PaneCliSessionLaunchMode = z.infer<typeof paneCliSessionLaunchModeSchema>;
 export type PaneCliSessionPurpose = z.infer<typeof paneCliSessionPurposeSchema>;
 export type PaneCliTranscriptStream = z.infer<typeof paneCliTranscriptStreamSchema>;
+export type PaneCliClientMode = z.infer<typeof paneCliClientModeSchema>;
+export type PaneCliTerminalControlState = z.infer<typeof paneCliTerminalControlStateSchema>;
+export type PaneCliTerminalControlLeaseStatus = z.infer<typeof paneCliTerminalControlLeaseStatusSchema>;
+export type PaneCliTerminalControlRevocationReason = z.infer<typeof paneCliTerminalControlRevocationReasonSchema>;
+export type PaneCliProofScope = z.infer<typeof paneCliProofScopeSchema>;
 export type PaneCliSession = z.infer<typeof paneCliSessionSchema>;
 export type CreatePaneCliSessionInput = z.input<typeof createPaneCliSessionInputSchema>;
 export type UpdatePaneCliSessionInput = z.infer<typeof updatePaneCliSessionInputSchema>;
+export type PaneCliTerminalControlLease = z.infer<typeof paneCliTerminalControlLeaseSchema>;
+export type CreatePaneCliTerminalControlLeaseInput = z.input<typeof createPaneCliTerminalControlLeaseInputSchema>;
+export type UpdatePaneCliTerminalControlLeaseInput = z.infer<typeof updatePaneCliTerminalControlLeaseInputSchema>;
 export type PaneCliTranscriptChunk = z.infer<typeof paneCliTranscriptChunkSchema>;
 export type CreatePaneCliTranscriptChunkInput = z.input<typeof createPaneCliTranscriptChunkInputSchema>;
 export type CreatePaneCliHostOutputInput = z.infer<typeof createPaneCliHostOutputInputSchema>;
@@ -6144,6 +6982,11 @@ export type CliLoginRequest = z.infer<typeof cliLoginRequestSchema>;
 export type ResumePaneCliSessionRequest = z.infer<typeof resumePaneCliSessionRequestSchema>;
 export type PaneCliInterruptInput = z.infer<typeof paneCliInterruptInputSchema>;
 export type PaneCliWebSocketToken = z.infer<typeof paneCliWebSocketTokenSchema>;
+export type CliTerminalClientEventType = z.infer<typeof cliTerminalClientEventTypeSchema>;
+export type CliTerminalTelemetryOutcome = z.infer<typeof cliTerminalTelemetryOutcomeSchema>;
+export type CliTerminalTelemetryReason = z.infer<typeof cliTerminalTelemetryReasonSchema>;
+export type CliTerminalClientEventInput = z.infer<typeof cliTerminalClientEventInputSchema>;
+export type CliTerminalClientEventResponse = z.infer<typeof cliTerminalClientEventResponseSchema>;
 export type PaneCliTurnActivityStatus = z.infer<typeof paneCliTurnActivityStatusSchema>;
 export type PaneCliTurnActivityResponse = z.infer<typeof paneCliTurnActivityResponseSchema>;
 export type PaneCliWebSocketClientMessage = z.infer<typeof paneCliWebSocketClientMessageSchema>;
@@ -6309,6 +7152,11 @@ export type CodexThreadResponse = z.infer<typeof codexThreadResponseSchema>;
 export type CodexEnvironment = z.infer<typeof codexEnvironmentSchema>;
 export type CodexUsageAccount = z.infer<typeof codexUsageAccountSchema>;
 export type CodexUsageAccountList = z.infer<typeof codexUsageAccountListSchema>;
+export type CodexResetCreditAvailabilityAccount = z.infer<typeof codexResetCreditAvailabilityAccountSchema>;
+export type CodexResetCreditAvailability = z.infer<typeof codexResetCreditAvailabilitySchema>;
+export type CodexResetCreditRedemptionInput = z.infer<typeof codexResetCreditRedemptionInputSchema>;
+export type CodexResetCreditRedemptionOutcome = z.infer<typeof codexResetCreditRedemptionOutcomeSchema>;
+export type CodexResetCreditRedemptionResponse = z.infer<typeof codexResetCreditRedemptionResponseSchema>;
 export type CliSessionDetail = z.infer<typeof cliSessionDetailSchema>;
 export type CliSessionStats = z.infer<typeof cliSessionStatsSchema>;
 export type CliSessionReapResponse = z.infer<typeof cliSessionReapResponseSchema>;
@@ -6371,7 +7219,9 @@ export type WorkflowRun = z.infer<typeof workflowRunSchema>;
 export type Turn = z.infer<typeof turnSchema>;
 export type TurnRuntime = z.infer<typeof turnRuntimeSchema>;
 export type Artifact = z.infer<typeof artifactSchema>;
+export type ArtifactCollection = z.infer<typeof artifactCollectionSchema>;
 export type DeleteRoomMediaResponse = z.infer<typeof deleteRoomMediaResponseSchema>;
+export type DeleteRoomAgentFilesResponse = z.infer<typeof deleteRoomAgentFilesResponseSchema>;
 export type CreateArtifactInput = z.infer<typeof createArtifactInputSchema>;
 export type ListArtifactsQuery = z.infer<typeof listArtifactsQuerySchema>;
 export type UpdateArtifactRetentionInput = z.infer<typeof updateArtifactRetentionInputSchema>;
@@ -6412,6 +7262,7 @@ export type MemoryGraphNode = z.infer<typeof memoryGraphNodeSchema>;
 export type MemoryGraphEdge = z.infer<typeof memoryGraphEdgeSchema>;
 export type MemoryGraphIssue = z.infer<typeof memoryGraphIssueSchema>;
 export type MemoryGraphSummary = z.infer<typeof memoryGraphSummarySchema>;
+export type MemoryGraphMonth = z.infer<typeof memoryGraphMonthSchema>;
 export type MemoryGraphPayload = z.infer<typeof memoryGraphPayloadSchema>;
 export type MemoryGraphOverviewPayload = z.infer<typeof memoryGraphOverviewPayloadSchema>;
 export type MemoryGraphSnapshot = z.infer<typeof memoryGraphSnapshotSchema>;
@@ -6539,6 +7390,21 @@ export type LoginInput = z.infer<typeof loginInputSchema>;
 export type SetupStatus = z.infer<typeof setupStatusSchema>;
 export type SetupClaimInput = z.infer<typeof setupClaimInputSchema>;
 export type SetupClaimResponse = z.infer<typeof setupClaimResponseSchema>;
+export type SetupConnectionState = z.infer<typeof setupConnectionStateSchema>;
+export type SetupConnectionFunctionalState = z.infer<typeof setupConnectionFunctionalStateSchema>;
+export type SetupConnectionLiveVerificationState = z.infer<typeof setupConnectionLiveVerificationStateSchema>;
+export type SetupConnectionAction = z.infer<typeof setupConnectionActionSchema>;
+export type SetupConnection = z.infer<typeof setupConnectionSchema>;
+export type SetupOnboarding = z.infer<typeof setupOnboardingSchema>;
+export type SetupOverviewSummary = z.infer<typeof setupOverviewSummarySchema>;
+export type SetupOverview = z.infer<typeof setupOverviewSchema>;
+export type SetupConnectionCheckStage = z.infer<typeof setupConnectionCheckStageSchema>;
+export type SetupConnectionCheckRunStatus = z.infer<typeof setupConnectionCheckRunStatusSchema>;
+export type SetupConnectionCheckRunScope = z.infer<typeof setupConnectionCheckRunScopeSchema>;
+export type SetupConnectionCheckRun = z.infer<typeof setupConnectionCheckRunSchema>;
+export type SetupConnectionCheckEvent = z.infer<typeof setupConnectionCheckEventSchema>;
+export type SetupConnectionCheckReplay = z.infer<typeof setupConnectionCheckReplaySchema>;
+export type SetupStarterRoomResponse = z.infer<typeof setupStarterRoomResponseSchema>;
 export type UserLinkOpenMode = z.infer<typeof userLinkOpenModeSchema>;
 export type UserLink = z.infer<typeof userLinkSchema>;
 export type CreateUserLinkRequest = z.infer<typeof createUserLinkRequestSchema>;

@@ -15,61 +15,21 @@ export const geminiDirectParityRuntimeId = "cli:gemini";
 export const geminiDirectParityCommand = "gemini-vscode-parity";
 export const qwenDirectParityRuntimeId = "cli:qwen";
 export const qwenDirectParityCommand = "qwen-vscode-parity";
-
-export interface CliParityLayout {
-  publicDistribution: boolean;
-  cwd: string;
-  home: string;
-  codexHome: string;
-  claudeRoot: string;
-  opencodeRoot: string;
-  kimiRoot: string;
-  grokRoot: string;
-  geminiRoot: string;
-  qwenRoot: string;
-  deepseekRoot: string;
-}
-
-export function resolveCliParityLayout(
-  env: Record<string, string | undefined> = process.env
-): CliParityLayout {
-  const publicDistribution = env.SPACE_PUBLIC_DISTRIBUTION === "true";
-  const home = publicDistribution ? "/var/lib/spaceapp-cli" : "/var/lib/spaceapp-user";
-  const codexHome = publicDistribution ? `${home}/providers/codex` : `${home}/.codex`;
-  const providerRoot = (key: string) =>
-    publicDistribution ? `${home}/providers/${key}` : `${codexHome}/space-${key}`;
-  return {
-    publicDistribution,
-    cwd: publicDistribution ? "/workspaces" : "/etc",
-    home,
-    codexHome,
-    claudeRoot: providerRoot("claude"),
-    opencodeRoot: providerRoot("opencode"),
-    kimiRoot: providerRoot("kimi"),
-    grokRoot: providerRoot("grok"),
-    geminiRoot: providerRoot("gemini"),
-    qwenRoot: providerRoot("qwen"),
-    deepseekRoot: providerRoot("deepseek")
-  };
-}
-
-const cliParityLayout = resolveCliParityLayout();
-
-export const codexDirectParityCwd = cliParityLayout.cwd;
-export const codexDirectParityHome = cliParityLayout.home;
-export const codexDirectParityCodexHome = cliParityLayout.codexHome;
-export const codexDirectParityTmp = `${cliParityLayout.codexHome}/tmp`;
-export const claudeDirectParityRoot = cliParityLayout.claudeRoot;
+export const codexDirectParityCwd = "/etc";
+export const codexDirectParityHome = "/var/lib/spaceapp-user";
+export const codexDirectParityCodexHome = "/var/lib/spaceapp-user/.codex";
+export const codexDirectParityTmp = "/var/lib/spaceapp-user/.codex/tmp";
+export const claudeDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-claude";
 export const claudeDirectParityTmp = `${claudeDirectParityRoot}/tmp`;
-export const opencodeDirectParityRoot = cliParityLayout.opencodeRoot;
+export const opencodeDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-opencode";
 export const opencodeDirectParityTmp = `${opencodeDirectParityRoot}/tmp`;
-export const kimiDirectParityRoot = cliParityLayout.kimiRoot;
+export const kimiDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-kimi";
 export const kimiDirectParityTmp = `${kimiDirectParityRoot}/tmp`;
-export const grokDirectParityRoot = cliParityLayout.grokRoot;
+export const grokDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-grok";
 export const grokDirectParityTmp = `${grokDirectParityRoot}/tmp`;
-export const geminiDirectParityRoot = cliParityLayout.geminiRoot;
+export const geminiDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-gemini";
 export const geminiDirectParityTmp = `${geminiDirectParityRoot}/tmp`;
-export const qwenDirectParityRoot = cliParityLayout.qwenRoot;
+export const qwenDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-qwen";
 export const qwenDirectParityTmp = `${qwenDirectParityRoot}/tmp`;
 
 export function isCodexDirectParityRuntime(runtimeId: string | null | undefined): boolean {
@@ -78,6 +38,10 @@ export function isCodexDirectParityRuntime(runtimeId: string | null | undefined)
 
 export function isClaudeDirectParityRuntime(runtimeId: string | null | undefined): boolean {
   return runtimeId === claudeDirectParityRuntimeId;
+}
+
+export function isOpenCodeDirectParityRuntime(runtimeId: string | null | undefined): boolean {
+  return runtimeId === opencodeDirectParityRuntimeId;
 }
 
 export function isKimiDirectParityRuntime(runtimeId: string | null | undefined): boolean {
@@ -101,12 +65,7 @@ export function pathInside(root: string, candidate: string): boolean {
 export function isLegacyCodexCliCwd(cwd: string | null | undefined, workspaceRoot: string): boolean {
   if (!cwd) return true;
   const resolved = resolve(cwd);
-  return (
-    resolved === "/opt/spaceapp" ||
-    pathInside(workspaceRoot, resolved) ||
-    (cliParityLayout.publicDistribution &&
-      (resolved === "/etc" || pathInside("/var/lib/spaceapp-user", resolved)))
-  );
+  return resolved === "/opt/spaceapp" || pathInside(workspaceRoot, resolved);
 }
 
 export function resolveCodexDirectParityCwd(cwd: string | null | undefined, workspaceRoot: string): string {

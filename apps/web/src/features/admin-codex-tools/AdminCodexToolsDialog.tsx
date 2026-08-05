@@ -5,7 +5,7 @@ import {
   useState,
   type KeyboardEvent
 } from "react";
-import { Gauge, ShieldAlert, Trash2, X } from "lucide-react";
+import { Gauge, ShieldAlert, Trash2, X } from "../ui-theme/app-icons.js";
 import type {
   CodexHistoryPurgeExecuteRequest,
   CodexHistoryPurgePreviewResponse,
@@ -66,16 +66,18 @@ function PurgeCounts({ counts }: {
 export function AdminCodexToolsDialog({
   client = defaultClient,
   initialTool,
+  isCodexEnabled = true,
   onClose
 }: {
   client?: AdminCodexToolsClient;
   initialTool: AdminCodexTool;
+  isCodexEnabled?: boolean;
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [speed, setSpeed] = useState<CodexLbSpeedDefaultsResponse | null>(null);
-  const [speedLoading, setSpeedLoading] = useState(initialTool === "speed");
+  const [speedLoading, setSpeedLoading] = useState(initialTool === "speed" && isCodexEnabled);
   const [speedUpdatingModel, setSpeedUpdatingModel] = useState<string | null>(null);
   const [speedError, setSpeedError] = useState<string | null>(null);
   const [speedMessage, setSpeedMessage] = useState<string | null>(null);
@@ -87,6 +89,7 @@ export function AdminCodexToolsDialog({
   const busy = speedLoading || Boolean(speedUpdatingModel) || purgeBusy;
 
   const loadSpeed = useCallback(async () => {
+    if (!isCodexEnabled) return;
     setSpeedLoading(true);
     setSpeedError(null);
     try {
@@ -96,13 +99,14 @@ export function AdminCodexToolsDialog({
     } finally {
       setSpeedLoading(false);
     }
-  }, [client]);
+  }, [client, isCodexEnabled]);
 
   useEffect(() => {
     const focusFrame = window.requestAnimationFrame(() => closeRef.current?.focus());
-    if (initialTool === "speed") void loadSpeed();
+    if (initialTool === "speed" && isCodexEnabled) void loadSpeed();
+    if (!isCodexEnabled) setSpeedLoading(false);
     return () => window.cancelAnimationFrame(focusFrame);
-  }, [initialTool, loadSpeed]);
+  }, [initialTool, isCodexEnabled, loadSpeed]);
 
   function close() {
     if (!busy) onClose();
@@ -137,7 +141,7 @@ export function AdminCodexToolsDialog({
     displayName: string,
     tier: CodexLbSpeedTier
   ) {
-    if (speedUpdatingModel) return;
+    if (!isCodexEnabled || speedUpdatingModel) return;
     setSpeedUpdatingModel(modelId);
     setSpeedError(null);
     setSpeedMessage(null);
@@ -154,7 +158,7 @@ export function AdminCodexToolsDialog({
   }
 
   async function previewPurge() {
-    if (purgeBusy) return;
+    if (!isCodexEnabled || purgeBusy) return;
     setPurgeBusy(true);
     setPurgeError(null);
     setPurgeResult(null);
@@ -170,7 +174,7 @@ export function AdminCodexToolsDialog({
   }
 
   async function executePurge() {
-    if (purgeBusy || preview?.status !== "READY" || confirmation !== purgeConfirmation) return;
+    if (!isCodexEnabled || purgeBusy || preview?.status !== "READY" || confirmation !== purgeConfirmation) return;
     setPurgeBusy(true);
     setPurgeError(null);
     try {
@@ -210,6 +214,7 @@ export function AdminCodexToolsDialog({
               ? "Choose the global Standard or Fast default for each supported model."
               : "Remove inactive task history only after a fresh server-side preview."}</p>
           </div>
+          {!isCodexEnabled ? <span className="status muted">OFF</span> : null}
           <button ref={closeRef} type="button" aria-label={`Close ${title}`} disabled={busy} onClick={close}>
             <X aria-hidden="true" />
           </button>
@@ -217,10 +222,20 @@ export function AdminCodexToolsDialog({
 
         {isSpeed ? (
           <div className="admin-codex-tools-content">
+            {!isCodexEnabled ? <p role="status">Enable Codex in Settings to use speed controls.</p> : null}
             {speedLoading ? <p role="status">Loading Codex-LB speed defaults…</p> : null}
             {speedError ? <div className="admin-codex-alert error" role="alert">
               <span>{speedError}</span>
-              {!speed ? <button type="button" onClick={() => void loadSpeed()}>Retry</button> : null}
+              {!speed ? (
+                <button
+                  type="button"
+                  disabled={!isCodexEnabled}
+                  title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
+                  onClick={() => void loadSpeed()}
+                >
+                  Retry
+                </button>
+              ) : null}
             </div> : null}
             {speed ? <div className="admin-codex-speed-list">
               {speed.models.map((model) => (
@@ -233,7 +248,8 @@ export function AdminCodexToolsDialog({
                         type="button"
                         aria-label={`Set ${model.displayName} to ${tier === "FAST" ? "Fast" : "Standard"}`}
                         aria-pressed={model.tier === tier}
-                        disabled={Boolean(speedUpdatingModel) || model.tier === tier}
+                        disabled={!isCodexEnabled || Boolean(speedUpdatingModel) || model.tier === tier}
+                        title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
                         onClick={() => void updateSpeed(model.modelId, model.displayName, tier)}
                       >
                         {tier === "FAST" ? "Fast" : "Standard"}
@@ -244,7 +260,7 @@ export function AdminCodexToolsDialog({
               ))}
             </div> : null}
             {speedMessage ? <p className="admin-codex-alert success" role="status" aria-live="polite">{speedMessage}</p> : null}
-            <p className="admin-codex-tools-note">Changes are global and apply only to the exact GPT-5.5 or GPT-5.4 model default selected here.</p>
+            <p className="admin-codex-tools-note">Changes are global and apply only to the currently advertised provider model selected here.</p>
           </div>
         ) : (
           <div className="admin-codex-tools-content">
@@ -253,7 +269,13 @@ export function AdminCodexToolsDialog({
               <p>Active Space CLI and Chat threads stay protected. The server rechecks them again immediately before purge.</p>
             </div>
             {!preview && !purgeResult ? (
-              <button className="admin-codex-primary" type="button" disabled={purgeBusy} onClick={() => void previewPurge()}>
+              <button
+                className="admin-codex-primary"
+                type="button"
+                disabled={!isCodexEnabled || purgeBusy}
+                title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
+                onClick={() => void previewPurge()}
+              >
                 {purgeBusy ? "Preparing preview…" : "Preview history purge"}
               </button>
             ) : null}
@@ -274,13 +296,15 @@ export function AdminCodexToolsDialog({
                 autoComplete="off"
                 spellCheck={false}
                 value={confirmation}
-                disabled={purgeBusy}
+                disabled={!isCodexEnabled || purgeBusy}
+                title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
                 onChange={(event) => setConfirmation(event.currentTarget.value)}
               />
               <button
                 type="button"
                 className="danger"
-                disabled={purgeBusy || confirmation !== purgeConfirmation}
+                disabled={!isCodexEnabled || purgeBusy || confirmation !== purgeConfirmation}
+                title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
                 onClick={() => void executePurge()}
               >
                 {purgeBusy ? "Purging…" : "Purge history"}

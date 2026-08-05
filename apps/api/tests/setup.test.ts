@@ -1,20 +1,59 @@
 import { describe, expect, it } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
-import { hashPassword } from "../src/auth.js";
+import {
+  cookieName,
+  createCsrfToken,
+  csrfHeaderName,
+  hashPassword,
+  signSession
+} from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
 import { createOwnerSetupBootstrap } from "../src/owner-setup.js";
+import type { SetupConnectionsService } from "../src/setup-connections.js";
 
 describe("public single-owner setup API", () => {
   it("claims an expiring token once, creates a session, and enables later owner login", async () => {
     const token = "setup-token-value-with-at-least-thirty-two-characters";
     const legacyPassword = "legacy operator password";
-    const ownerPassword = "abc123";
+    const sessionSecret = "test-session-secret-with-enough-length";
     const store = new InMemorySpaceStore();
+    let connectionState: "NEEDS_SETUP" | "CONNECTED" = "NEEDS_SETUP";
+    let verifyAllCalls = 0;
+    const setupConnections: SetupConnectionsService = {
+      overview: async () => [{
+        id: "cli:codex",
+        label: "Codex CLI",
+        providerName: "Codex",
+        category: "AI coding CLI",
+        state: connectionState,
+        functionalState: connectionState === "CONNECTED" ? "FUNCTIONAL" : "NEEDS_SETUP",
+        liveVerificationState: connectionState === "CONNECTED" ? "VERIFIED" : "NOT_CHECKED",
+        reasonCode: connectionState === "CONNECTED" ? null : "CREDENTIAL_REQUIRED",
+        verifiedAt: connectionState === "CONNECTED" ? "2026-07-29T10:00:00.000Z" : null,
+        staleAt: connectionState === "CONNECTED" ? "2026-08-28T10:00:00.000Z" : null,
+        actions: connectionState === "CONNECTED" ? ["VERIFY"] : ["OPEN_LOGIN_PANE", "VERIFY"]
+      }],
+      verify: async (connectionId) => {
+        expect(connectionId).toBe("cli:codex");
+        connectionState = "CONNECTED";
+        return (await setupConnections.overview())[0]!;
+      },
+      verifyAll: async () => {
+        verifyAllCalls += 1;
+        connectionState = "CONNECTED";
+        return setupConnections.overview();
+      },
+      recordVerifiedEvidence: async () => {
+        connectionState = "CONNECTED";
+        return (await setupConnections.overview())[0]!;
+      }
+    };
     const app = await createApp({
       store,
+      setupConnections,
       auth: {
-        sessionSecret: "test-session-secret-with-enough-length",
+        sessionSecret,
         operatorEmail: "legacy@example.com",
         operatorPasswordHash: await hashPassword(legacyPassword),
         devLogin: false,
@@ -23,37 +62,8 @@ describe("public single-owner setup API", () => {
       setup: createOwnerSetupBootstrap(token, "2099-07-23T12:15:00.000Z"),
       config: getApiConfig({
         SPACE_BROWSER_EVIDENCE_ENABLED: "false",
-        SPACE_BROWSER_HOST_TRANSPORT: "unix",
-        SPACE_BROWSER_SESSIONS_ENABLED: "false",
-        SPACE_DATABASE_URL: "postgres://spaceapp:test@postgres/spaceapp",
-        SPACE_RUNTIME_STORE: "postgres"
-      }),
-      workerReadinessChecker: async () => ({
-        id: "space-worker",
-        status: "RUNNING",
-        statusReason: "Test worker is ready.",
-        address: "temporal:7233",
-        namespace: "default",
-        taskQueue: "space",
-        reachable: true,
-        workflowPollerCount: 1,
-        activityPollerCount: 1,
-        pollerCount: 2,
-        workflowBacklogCount: 0,
-        activityBacklogCount: 0,
-        pollerIdentities: ["test-worker"],
-        lastPollerAccessAt: "2026-07-24T00:00:00.000Z",
-        checkedAt: "2026-07-24T00:00:00.000Z"
+        SPACE_BROWSER_SESSIONS_ENABLED: "false"
       })
-    });
-
-    const readiness = await app.inject({ method: "GET", url: "/readyz" });
-    expect(readiness.statusCode).toBe(200);
-    expect(readiness.json()).toMatchObject({
-      ok: true,
-      dependencies: {
-        browserHost: "DISABLED"
-      }
     });
 
     const initial = await app.inject({ method: "GET", url: "/api/setup/status" });
@@ -67,6 +77,35 @@ describe("public single-owner setup API", () => {
       isAuthenticated: false,
       isSetupRequired: true
     });
+
+    const operatorToken = signSession(
+      { id: "user:read-only-operator", email: "operator@example.com", role: "OPERATOR" },
+      sessionSecret
+    );
+    const operatorCookie = `${cookieName}=${operatorToken}`;
+    const operatorCsrfToken = createCsrfToken(operatorToken, sessionSecret)!;
+    const operatorOverview = await app.inject({
+      method: "GET",
+      url: "/api/setup/overview",
+      headers: { cookie: operatorCookie }
+    });
+    expect(operatorOverview.statusCode).toBe(403);
+    for (const url of [
+      "/api/setup/starter-room",
+      "/api/setup/connections/cli:codex/verify",
+      "/api/setup/connections/verify-all",
+      "/api/setup/finish"
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url,
+        headers: {
+          cookie: operatorCookie,
+          [csrfHeaderName]: operatorCsrfToken
+        }
+      });
+      expect(response.statusCode).toBe(403);
+    }
 
     const rejected = await app.inject({
       method: "POST",
@@ -86,7 +125,7 @@ describe("public single-owner setup API", () => {
       payload: {
         token,
         email: "owner@example.com",
-        password: ownerPassword
+        password: "correct horse battery staple"
       }
     });
     expect(claimed.statusCode).toBe(200);
@@ -94,7 +133,113 @@ describe("public single-owner setup API", () => {
     expect(claimed.json()).toMatchObject({
       user: { id: "user:owner", email: "owner@example.com", role: "ADMIN" },
       isAuthenticated: true,
-      isSetupRequired: false
+      isSetupRequired: false,
+      onboardingVersion: 1,
+      isOnboardingComplete: false
+    });
+    const starterRoomId = claimed.json().starterRoomId as string;
+    expect(starterRoomId).toMatch(/^room:/);
+    expect(store.listRooms()).toEqual([
+      expect.objectContaining({
+        id: starterRoomId,
+        name: "Getting Started"
+      })
+    ]);
+    expect(store.listPanes(starterRoomId)).toEqual([]);
+
+    const sessionCookie = `${claimed.cookies[0]!.name}=${claimed.cookies[0]!.value}`;
+    const csrf = await app.inject({
+      method: "GET",
+      url: "/api/auth/csrf",
+      headers: { cookie: sessionCookie }
+    });
+    expect(csrf.statusCode).toBe(200);
+    const csrfPayload = csrf.json() as { csrfToken: string; headerName: string };
+
+    const overview = await app.inject({
+      method: "GET",
+      url: "/api/setup/overview",
+      headers: { cookie: sessionCookie }
+    });
+    expect(overview.statusCode).toBe(200);
+    expect(overview.json()).toEqual({
+      onboardingVersion: 1,
+      isComplete: false,
+      completedAt: null,
+      starterRoomId,
+      summary: {
+        total: 1,
+        functional: 0,
+        liveVerified: 0,
+        needsSetup: 1
+      },
+      connections: [
+        expect.objectContaining({
+          id: "cli:codex",
+          state: "NEEDS_SETUP",
+          reasonCode: "CREDENTIAL_REQUIRED"
+        })
+      ]
+    });
+
+    const verified = await app.inject({
+      method: "POST",
+      url: "/api/setup/connections/cli:codex/verify",
+      headers: {
+        cookie: sessionCookie,
+        [csrfPayload.headerName]: csrfPayload.csrfToken
+      }
+    });
+    expect(verified.statusCode).toBe(200);
+    expect(verified.json()).toMatchObject({
+      id: "cli:codex",
+      state: "CONNECTED",
+      reasonCode: null
+    });
+
+    const verifiedAll = await app.inject({
+      method: "POST",
+      url: "/api/setup/connections/verify-all",
+      headers: {
+        cookie: sessionCookie,
+        [csrfPayload.headerName]: csrfPayload.csrfToken
+      }
+    });
+    expect(verifiedAll.statusCode).toBe(200);
+    expect(verifiedAll.json()).toMatchObject({
+      connections: [expect.objectContaining({ id: "cli:codex", state: "CONNECTED" })]
+    });
+    expect(verifyAllCalls).toBe(1);
+
+    const ensured = await app.inject({
+      method: "POST",
+      url: "/api/setup/starter-room",
+      headers: {
+        cookie: sessionCookie,
+        [csrfPayload.headerName]: csrfPayload.csrfToken
+      }
+    });
+    expect(ensured.statusCode).toBe(200);
+    expect(ensured.json()).toMatchObject({
+      room: { id: starterRoomId, name: "Getting Started" },
+      onboarding: { starterRoomId }
+    });
+    expect(store.listRooms()).toHaveLength(1);
+
+    const finished = await app.inject({
+      method: "POST",
+      url: "/api/setup/finish",
+      headers: {
+        cookie: sessionCookie,
+        [csrfPayload.headerName]: csrfPayload.csrfToken
+      }
+    });
+    expect(finished.statusCode).toBe(200);
+    expect(finished.json()).toMatchObject({
+      onboardingVersion: 1,
+      isComplete: true,
+      starterRoomId,
+      connections: [expect.objectContaining({ id: "cli:codex", state: "CONNECTED" })]
     });
 
     const status = await app.inject({ method: "GET", url: "/api/setup/status" });
@@ -110,7 +255,7 @@ describe("public single-owner setup API", () => {
       url: "/api/auth/login",
       payload: {
         email: "owner@example.com",
-        password: ownerPassword
+        password: "correct horse battery staple"
       }
     });
     expect(login.statusCode).toBe(200);

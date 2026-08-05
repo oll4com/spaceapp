@@ -102,7 +102,7 @@ import {
   X,
   Zap,
   type LucideIcon
-} from "lucide-react";
+} from "../ui-theme/app-icons.js";
 
 export type HelpBadge = "ADMIN" | "CONDITIONAL" | "INFORMATIONAL";
 
@@ -174,6 +174,7 @@ export const helpSections: HelpSection[] = [
       entry("surface-rooms", "Rooms", PanelRight, "Room toolbar", "Shows or hides the persistent room list and its room creation action."),
       entry("surface-room-agent", "Room Agent", Bot, "Room toolbar", "Opens the persistent supervisor that can coordinate work across the current room."),
       entry("surface-media", "Media dock", Images, "Room toolbar", "Opens room images, recordings, uploaded files, and browser evidence artifacts."),
+      entry("surface-agent-files", "Agent Files", FolderOpen, "Room toolbar", "Opens room-scoped final deliverables published by agents, with safe preview, download, and permanent deletion controls."),
       entry("surface-clipboard", "Clipboard", Clipboard, "Room toolbar", "Opens private Space-wide clipboard history, notes, search, and insertion controls."),
       entry("surface-links", "Links", Link, "Room toolbar", "Opens your synchronized personal link library with search, add, edit, delete, and Quick Link controls."),
       entry("surface-settings", "Settings dock", Settings2, "Room toolbar", "Opens provider, Telegram, voice, CLI preview, agent model, reasoning, and tool settings."),
@@ -185,15 +186,18 @@ export const helpSections: HelpSection[] = [
       entry("cli-floats", "Hide or show CLI floats", EyeOff, "Room toolbar", "Hides or restores the END, model, and Send or Stop overlays in every CLI pane, and remembers the choice in this browser."),
       entry("font-down", "Workspace text size", ALargeSmall, "Room toolbar", "Opens the 10–20 px wheel picker and applies the selected size immediately to every chat and CLI pane."),
       entry("add-chat", "Add chat pane", MessageSquare, "Room toolbar", "Adds a Codex chat pane to the room when fewer than 16 panes are open."),
-      entry("add-cli", "Add CLI pane", Terminal, "Room toolbar", "Opens the shared non-root CLI launcher with Codex, Claude Code, Gemini, OpenCode, Qwen Code, Kimi Code, Grok Build, and DeepSeek choices."),
+      entry("add-cli", "Add CLI pane", Terminal, "Room toolbar", "Opens the shared non-root CLI launcher with Codex, Claude Code, Gemini, OpenCode, Autohand Code, Qwen Code, Kimi Code, Grok Build, DeepSeek, Cursor, and GitHub Copilot choices."),
       entry("add-codex", "Add Codex CLI", Terminal, "Add CLI pane selector", "Adds a standard Codex terminal through the existing default CLI N pane flow."),
       entry("add-claude", "Add Claude Code CLI", Terminal, "Add CLI pane selector", "Adds a CLI pane configured to run the available Claude Code runtime.", ["CONDITIONAL"]),
       entry("add-gemini", "Add Gemini CLI", Terminal, "Add CLI pane selector", "Adds a CLI pane configured to run the authenticated Gemini CLI runtime.", ["CONDITIONAL"]),
       entry("add-opencode", "Add OpenCode CLI", Terminal, "Add CLI pane selector", "Adds a CLI pane configured to run the available OpenCode runtime.", ["CONDITIONAL"]),
+      entry("add-autohand", "Add Autohand Code CLI", Terminal, "Add CLI pane selector", "Opens the controlled Autohand account and OpenRouter setup flow, then adds its CLI pane when authentication is ready.", ["CONDITIONAL"]),
       entry("add-qwen", "Add Qwen Code CLI", Terminal, "Add CLI pane selector", "Adds a CLI pane configured to use the authenticated Alibaba Coding Plan International runtime.", ["CONDITIONAL"]),
       entry("add-kimi", "Add Kimi Code CLI", Terminal, "Add CLI pane selector", "Adds a CLI pane configured to use the authenticated Kimi Code subscription runtime.", ["CONDITIONAL"]),
       entry("add-grok", "Add Grok Build CLI", Terminal, "Add CLI pane selector", "Adds a CLI pane configured to use the authenticated xAI Grok Build account runtime.", ["CONDITIONAL"]),
-      entry("add-deepseek", "Add DeepSeek CLI", Terminal, "Add CLI pane selector", "Adds a text-chat CLI pane pinned to deepseek-v4-flash after protected API-key setup.", ["CONDITIONAL"]),
+      entry("add-deepseek", "Add DeepSeek CLI", Terminal, "Add CLI pane selector", "Adds a text-chat CLI pane that resolves a provider-advertised model after protected API-key setup.", ["CONDITIONAL"]),
+      entry("add-cursor", "Add Cursor CLI", Terminal, "Add CLI pane selector", "Adds a CLI pane that uses the authenticated Cursor account and its native provider model catalog.", ["CONDITIONAL"]),
+      entry("add-copilot", "Add GitHub Copilot CLI", Terminal, "Add CLI pane selector", "Adds a CLI pane that uses the authenticated GitHub Copilot account and its native provider model catalog.", ["CONDITIONAL"]),
       entry("add-root", "Add CLI ROOT", ShieldCheck, "Room toolbar", "Adds a protected root shell pane rooted at /etc for privileged administration.", ["ADMIN", "CONDITIONAL"]),
       entry("restart-server", "Server restart", ServerCog, "Room toolbar", "Opens a confirmation that restarts Space web, API, and worker services while protecting pane hosts.", ["ADMIN", "CONDITIONAL"]),
       entry("add-browser", "Add browser pane", Eye, "Room toolbar", "Adds a managed Chrome browser pane to the current room."),

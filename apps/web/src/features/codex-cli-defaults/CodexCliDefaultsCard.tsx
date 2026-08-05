@@ -1,4 +1,4 @@
-import { SlidersHorizontal } from "lucide-react";
+import { SlidersHorizontal } from "../ui-theme/app-icons.js";
 import { useEffect, useState } from "react";
 import type {
   CodexCliModeDefaultPair,
@@ -32,14 +32,21 @@ function effortLabel(value: string): string {
   return labels[value] ?? value;
 }
 
-export function CodexCliDefaultsCard({ client }: { client: CodexCliDefaultsClient }) {
+export function CodexCliDefaultsCard({
+  client,
+  isCodexEnabled = true
+}: {
+  client: CodexCliDefaultsClient;
+  isCodexEnabled?: boolean;
+}) {
   const [response, setResponse] = useState<CodexCliModeDefaultsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(isCodexEnabled);
   const [savingMode, setSavingMode] = useState<Mode | null>(null);
   const [savedMode, setSavedMode] = useState<Mode | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
+    if (!isCodexEnabled) return;
     setLoading(true);
     setError(null);
     try {
@@ -53,6 +60,12 @@ export function CodexCliDefaultsCard({ client }: { client: CodexCliDefaultsClien
   }
 
   useEffect(() => {
+    if (!isCodexEnabled) {
+      setLoading(false);
+      setError(null);
+      setSavedMode(null);
+      return;
+    }
     let disposed = false;
     setLoading(true);
     setError(null);
@@ -71,10 +84,10 @@ export function CodexCliDefaultsCard({ client }: { client: CodexCliDefaultsClien
     return () => {
       disposed = true;
     };
-  }, [client]);
+  }, [client, isCodexEnabled]);
 
   async function save(mode: Mode, pair: CodexCliModeDefaultPair) {
-    if (!response || response.catalog.status !== "AVAILABLE" || savingMode) return;
+    if (!isCodexEnabled || !response || response.catalog.status !== "AVAILABLE" || savingMode) return;
     const previous = response;
     setResponse({
       ...response,
@@ -95,7 +108,7 @@ export function CodexCliDefaultsCard({ client }: { client: CodexCliDefaultsClien
   }
 
   function changeModel(mode: Mode, modelId: string) {
-    if (!response || response.catalog.status !== "AVAILABLE") return;
+    if (!isCodexEnabled || !response || response.catalog.status !== "AVAILABLE") return;
     const model = response.catalog.models.find((candidate) => candidate.id === modelId);
     if (!model) return;
     const reasoningEffort = model.supportedReasoningEfforts.includes(model.defaultReasoningEffort)
@@ -106,8 +119,10 @@ export function CodexCliDefaultsCard({ client }: { client: CodexCliDefaultsClien
   }
 
   const catalogAvailable = response?.catalog.status === "AVAILABLE";
-  const controlsDisabled = loading || Boolean(savingMode) || !catalogAvailable;
-  const statusText = savingMode
+  const controlsDisabled = !isCodexEnabled || loading || Boolean(savingMode) || !catalogAvailable;
+  const statusText = !isCodexEnabled
+    ? "OFF"
+    : savingMode
     ? `Saving ${modeLabel(savingMode)} defaults…`
     : savedMode
       ? `Saved ${modeLabel(savedMode)} defaults`
@@ -120,7 +135,7 @@ export function CodexCliDefaultsCard({ client }: { client: CodexCliDefaultsClien
   return (
     <section
       className="agent-settings-card codex-cli-defaults-card"
-      aria-busy={loading || Boolean(savingMode)}
+      aria-busy={isCodexEnabled && (loading || Boolean(savingMode))}
       aria-label="Codex CLI defaults"
     >
       <div className="agent-settings-section-title">
@@ -144,7 +159,12 @@ export function CodexCliDefaultsCard({ client }: { client: CodexCliDefaultsClien
               : null;
             const efforts = selectedModel?.supportedReasoningEfforts ?? [];
             return (
-              <fieldset key={mode} className="codex-cli-defaults-mode" disabled={controlsDisabled}>
+              <fieldset
+                key={mode}
+                className="codex-cli-defaults-mode"
+                disabled={controlsDisabled}
+                title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
+              >
                 <legend>{modeLabel(mode)}</legend>
                 <label>
                   <span>Model</span>
@@ -186,6 +206,31 @@ export function CodexCliDefaultsCard({ client }: { client: CodexCliDefaultsClien
               </fieldset>
             );
           })}
+        </div>
+      ) : !isCodexEnabled ? (
+        <div className="codex-cli-defaults-grid">
+          {(["build", "plan"] as const).map((mode) => (
+            <fieldset
+              key={mode}
+              className="codex-cli-defaults-mode"
+              disabled
+              title="Enable Codex in Settings"
+            >
+              <legend>{modeLabel(mode)}</legend>
+              <label>
+                <span>Model</span>
+                <select aria-label={`${modeLabel(mode)} model`} value="" disabled>
+                  <option value="">OFF</option>
+                </select>
+              </label>
+              <label>
+                <span>Reasoning</span>
+                <select aria-label={`${modeLabel(mode)} reasoning`} value="" disabled>
+                  <option value="">OFF</option>
+                </select>
+              </label>
+            </fieldset>
+          ))}
         </div>
       ) : null}
 

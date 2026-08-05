@@ -14,12 +14,17 @@ import {
   browserControlLeaseSchema,
   browserHandoffRequestSchema,
   clipboardItemSchema,
+  cliMaintenanceAuthHandoffSchema,
+  cliMaintenanceDiagnosticsSchema,
+  cliMaintenanceEventSchema,
   cliRuntimeSettingSchema,
   cliToggleRuntimeIdSchema,
   cliToggleRuntimeIds,
   codexCliModeDefaultsSchema,
   codexCliModeDefaultPairsSchema,
   createAdminOperationRunInputSchema,
+  createCliMaintenanceAuthHandoffInputSchema,
+  createCliMaintenanceEventInputSchema,
   createUserLinkRequestSchema,
   createBrowserCaptureJobInputSchema,
   createBrowserCaptureSegmentInputSchema,
@@ -31,10 +36,13 @@ import {
   createMemoryConsolidationOperationInputSchema,
   createMemoryConsolidationRunInputSchema,
   idSchema,
+  isAgentFileArtifact,
+  isRoomMediaArtifact,
   isoDateTimeSchema,
   createPaneBrowserSessionInputSchema,
   createPaneCliSessionInputSchema,
   createPaneCliHostOutputInputSchema,
+  createPaneCliTerminalControlLeaseInputSchema,
   createPaneCliTranscriptChunkInputSchema,
   createRoomAgentActionInputSchema,
   createRoomAgentMissionInputSchema,
@@ -60,6 +68,7 @@ import {
   paneBrowserSessionSchema,
   paneSchema,
   paneCliSessionSchema,
+  paneCliTerminalControlLeaseSchema,
   paneCliCodexThreadOwnershipSchema,
   paneCliTranscriptChunkSchema,
   providerSettingsSchema,
@@ -71,6 +80,8 @@ import {
   roomAgentTaskRunRecordSchema,
   roomAgentSupervisorQueueItemSchema,
   redactPersistedTranscriptContent,
+  setupConnectionCheckEventSchema,
+  setupConnectionCheckRunSchema,
   spaceAgentMessageRecordSchema,
   spaceAgentRunRecordSchema,
   spaceAgentSessionRecordSchema,
@@ -80,8 +91,11 @@ import {
   updateProviderSettingsInputSchema,
   updateCodexCliModeDefaultsInputSchema,
   updateCliRuntimeSettingInputSchema,
+  updateCliRuntimeVpnInputSchema,
   updateAdminOperationRunInputSchema,
+  updateCliMaintenanceAuthHandoffInputSchema,
   updatePaneCliSessionInputSchema,
+  updatePaneCliTerminalControlLeaseInputSchema,
   updateRoomAgentActionInputSchema,
   updateRoomAgentMissionInputSchema,
   upsertRoomAgentTaskRunInputSchema,
@@ -121,6 +135,9 @@ import type {
   BrowserHandoffStatus,
   Capability,
   ClipboardItem,
+  CliMaintenanceAuthHandoff,
+  CliMaintenanceDiagnostics,
+  CliMaintenanceEvent,
   CliRuntimeSetting,
   CliToggleRuntimeId,
   CreateUserLinkRequest,
@@ -135,6 +152,8 @@ import type {
   CreateBrowserCaptureSegmentInput,
   CreateBrowserControlLeaseInput,
   CreateBrowserHandoffRequestInput,
+  CreateCliMaintenanceAuthHandoffInput,
+  CreateCliMaintenanceEventInput,
   CreateImportCandidateInput,
   CreateMemoryChangeSetInput,
   CreateMemoryEntryInput,
@@ -142,6 +161,7 @@ import type {
   CreatePaneBrowserSessionInput,
   CreatePaneCliSessionInput,
   CreatePaneCliHostOutputInput,
+  CreatePaneCliTerminalControlLeaseInput,
   CreatePaneCliTranscriptChunkInput,
   CreateProviderInput,
   CreateRoomAgentActionInput,
@@ -196,6 +216,7 @@ import type {
   Pane,
   PaneBrowserSession,
   PaneCliSession,
+  PaneCliTerminalControlLease,
   PaneCliCodexThreadOwnership,
   PaneCliCodexThreadOwnershipSource,
   PaneCliTranscriptChunk,
@@ -204,6 +225,10 @@ import type {
   ProviderValidationResult,
   PublicWaitlistSource,
   ReleasePreview,
+  SetupConnectionCheckEvent,
+  SetupConnectionCheckRun,
+  SetupConnectionState,
+  SetupOnboarding,
   PostSwarmMessageInput,
   ReleaseSwarmLockInput,
   ReviewDecision,
@@ -233,6 +258,7 @@ import type {
   TurnRuntime,
   UpdateAgentPaneBindingInput,
   UpdateAdminOperationRunInput,
+  UpdateCliMaintenanceAuthHandoffInput,
   UpdateArtifactRetentionInput,
   UpdateUserLinkRequest,
   UpdateBrowserCaptureJobInput,
@@ -245,12 +271,14 @@ import type {
   UpdateMemoryConsolidationRunInput,
   UpdatePaneBrowserSessionInput,
   UpdatePaneCliSessionInput,
+  UpdatePaneCliTerminalControlLeaseInput,
   UpdatePaneLayoutInput,
   UpdateRoomInput,
   UpdateProviderInput,
   UpdateProviderSettingsInput,
   UpdateCodexCliModeDefaultsInput,
   UpdateCliRuntimeSettingInput,
+  UpdateCliRuntimeVpnInput,
   UpdateRoomAgentActionInput,
   UpdateRoomAgentMissionInput,
   UpdateSpaceAgentMessageInput,
@@ -635,6 +663,8 @@ export interface OwnerSetupStatus {
   expiresAt: string | null;
 }
 
+export const currentSetupOnboardingVersion = 1;
+
 export interface InitializeOwnerSetupInput {
   tokenHash: string;
   expiresAt: string;
@@ -652,11 +682,116 @@ export interface OwnerCredentials {
   passwordHash: string;
 }
 
+export interface OwnerSetupClaimResult {
+  user: AuthUser;
+  onboarding: SetupOnboarding;
+}
+
+export type PersistedSetupConnectionState = Exclude<SetupConnectionState, "CHECKING">;
+
+export interface SetupConnectionVerification {
+  connectionId: string;
+  state: PersistedSetupConnectionState;
+  reasonCode: string | null;
+  fingerprintHash: string | null;
+  verifiedAt: string | null;
+  updatedAt: string;
+}
+
+export type UpsertSetupConnectionVerificationInput = SetupConnectionVerification;
+
+export const createSetupConnectionCheckRunInputSchema = z.object({
+  scope: setupConnectionCheckRunSchema.shape.scope,
+  connectionIds: setupConnectionCheckRunSchema.shape.connectionIds,
+  actorUserId: idSchema
+}).strict().superRefine((input, context) => {
+  if (new Set(input.connectionIds).size !== input.connectionIds.length) {
+    context.addIssue({
+      code: "custom",
+      path: ["connectionIds"],
+      message: "Setup connection ids must be unique."
+    });
+  }
+  if (input.scope === "SINGLE" && input.connectionIds.length !== 1) {
+    context.addIssue({
+      code: "custom",
+      path: ["connectionIds"],
+      message: "A single-connection check run must contain exactly one connection."
+    });
+  }
+});
+export type CreateSetupConnectionCheckRunInput = z.infer<typeof createSetupConnectionCheckRunInputSchema>;
+
+export const updateSetupConnectionCheckRunInputSchema = z.object({
+  status: setupConnectionCheckRunSchema.shape.status.optional(),
+  completedCount: setupConnectionCheckRunSchema.shape.completedCount.optional(),
+  finishedAt: isoDateTimeSchema.nullable().optional()
+}).strict();
+export type UpdateSetupConnectionCheckRunInput = z.infer<typeof updateSetupConnectionCheckRunInputSchema>;
+
+export const createSetupConnectionCheckEventInputSchema = setupConnectionCheckEventSchema.omit({
+  id: true,
+  sequence: true,
+  createdAt: true
+});
+export type CreateSetupConnectionCheckEventInput = z.infer<typeof createSetupConnectionCheckEventInputSchema>;
+
+export function updateSetupConnectionCheckRunRecord(
+  existing: SetupConnectionCheckRun,
+  input: UpdateSetupConnectionCheckRunInput,
+  updatedAt = nowIso()
+): SetupConnectionCheckRun {
+  const parsed = updateSetupConnectionCheckRunInputSchema.parse(input);
+  const next = setupConnectionCheckRunSchema.parse({
+    ...existing,
+    ...parsed,
+    updatedAt
+  });
+  if (next.completedCount < existing.completedCount || next.completedCount > next.totalCount) {
+    throw new Error("Setup connection check progress is invalid.");
+  }
+  if (existing.status === "COMPLETED" && next.status !== "COMPLETED") {
+    throw new Error("A completed setup connection check run cannot be reopened.");
+  }
+  if (next.status === "COMPLETED" && (next.completedCount !== next.totalCount || next.finishedAt === null)) {
+    throw new Error("A completed setup connection check run requires complete progress and a finish time.");
+  }
+  if (next.status === "RUNNING" && next.finishedAt !== null) {
+    throw new Error("A running setup connection check run cannot have a finish time.");
+  }
+  return next;
+}
+
 export interface SpaceStore {
   upsertUser(user: AuthUser): MaybePromise<AuthUser>;
   initializeOwnerSetup(input: InitializeOwnerSetupInput): MaybePromise<OwnerSetupStatus>;
   getOwnerSetupStatus(): MaybePromise<OwnerSetupStatus>;
-  claimOwnerSetup(input: ClaimOwnerSetupInput): MaybePromise<AuthUser>;
+  claimOwnerSetup(input: ClaimOwnerSetupInput): MaybePromise<OwnerSetupClaimResult>;
+  getOwnerOnboarding(): MaybePromise<SetupOnboarding>;
+  ensureOwnerStarterRoom(traceId?: string): MaybePromise<{ room: Room; onboarding: SetupOnboarding }>;
+  completeOwnerOnboarding(completedAt: string): MaybePromise<SetupOnboarding>;
+  listSetupConnectionVerifications(): MaybePromise<SetupConnectionVerification[]>;
+  getSetupConnectionVerification(connectionId: string): MaybePromise<SetupConnectionVerification | null>;
+  upsertSetupConnectionVerification(
+    input: UpsertSetupConnectionVerificationInput
+  ): MaybePromise<SetupConnectionVerification>;
+  createSetupConnectionCheckRun(
+    input: CreateSetupConnectionCheckRunInput
+  ): MaybePromise<SetupConnectionCheckRun>;
+  getSetupConnectionCheckRun(runId: string): MaybePromise<SetupConnectionCheckRun | null>;
+  listSetupConnectionCheckRuns(limit?: number): MaybePromise<SetupConnectionCheckRun[]>;
+  updateSetupConnectionCheckRun(
+    runId: string,
+    input: UpdateSetupConnectionCheckRunInput
+  ): MaybePromise<SetupConnectionCheckRun>;
+  appendSetupConnectionCheckEvent(
+    input: CreateSetupConnectionCheckEventInput
+  ): MaybePromise<SetupConnectionCheckEvent>;
+  listSetupConnectionCheckEvents(
+    runId: string,
+    afterSequence?: number,
+    limit?: number
+  ): MaybePromise<SetupConnectionCheckEvent[]>;
   getOwnerCredentials(): MaybePromise<OwnerCredentials | null>;
   updateOwnerPassword(passwordHash: string): MaybePromise<AuthUser>;
   upsertPublicWaitlistSignup(input: PublicWaitlistSignupInput): MaybePromise<PublicWaitlistSignupOutcome>;
@@ -678,10 +813,29 @@ export interface SpaceStore {
     input: UpdateCliRuntimeSettingInput,
     updatedBy: string
   ): MaybePromise<CliRuntimeSetting>;
+  updateCliRuntimeVpnSetting(
+    runtimeId: CliToggleRuntimeId,
+    input: UpdateCliRuntimeVpnInput,
+    updatedBy: string
+  ): MaybePromise<CliRuntimeSetting>;
   createAdminOperationRun(input: CreateAdminOperationRunInput): MaybePromise<AdminOperationRun>;
   getAdminOperationRun(runId: string): MaybePromise<AdminOperationRun | null>;
   listAdminOperationRuns(limit?: number): MaybePromise<AdminOperationRun[]>;
   updateAdminOperationRun(runId: string, input: UpdateAdminOperationRunInput): MaybePromise<AdminOperationRun>;
+  appendCliMaintenanceEvent(input: CreateCliMaintenanceEventInput): MaybePromise<CliMaintenanceEvent>;
+  listCliMaintenanceEvents(
+    runId: string,
+    afterSequence?: number,
+    limit?: number
+  ): MaybePromise<CliMaintenanceEvent[]>;
+  createCliMaintenanceAuthHandoff(
+    input: CreateCliMaintenanceAuthHandoffInput
+  ): MaybePromise<CliMaintenanceAuthHandoff>;
+  updateCliMaintenanceAuthHandoff(
+    handoffId: string,
+    input: UpdateCliMaintenanceAuthHandoffInput
+  ): MaybePromise<CliMaintenanceAuthHandoff>;
+  listCliMaintenanceAuthHandoffs(runId: string): MaybePromise<CliMaintenanceAuthHandoff[]>;
   listSourceControlConnections(): MaybePromise<SourceControlConnectionRecord[]>;
   getSourceControlConnection(provider: SourceControlProvider): MaybePromise<SourceControlConnectionRecord>;
   upsertSourceControlConnection(input: UpsertSourceControlConnectionInput): MaybePromise<SourceControlConnectionRecord>;
@@ -696,6 +850,7 @@ export interface SpaceStore {
     traceId?: string
   ): MaybePromise<RoomPaneLayoutResult>;
   reorderRooms(roomIds: string[], traceId?: string): MaybePromise<Room[]>;
+  reorderPanes(roomId: string, paneIds: string[], traceId?: string): MaybePromise<Pane[]>;
   deleteRoom(roomId: string): MaybePromise<Room>;
   getPane(paneId: string): MaybePromise<Pane>;
   listPanes(roomId: string, includeClosed?: boolean): MaybePromise<Pane[]>;
@@ -765,6 +920,7 @@ export interface SpaceStore {
   getActivePaneCliSessionByCodexThreadId(codexThreadId: string): MaybePromise<PaneCliSession | null>;
   getLatestPaneCliSessionByCodexThreadId(codexThreadId: string): MaybePromise<PaneCliSession | null>;
   listPaneCliSessions(paneId: string, limit?: number): MaybePromise<PaneCliSession[]>;
+  listActivePaneCliSessions(runtimeId: string): MaybePromise<PaneCliSession[]>;
   getCliTask(taskId: string): MaybePromise<CliTaskRecord | null>;
   getCliTaskRevision(revisionId: string): MaybePromise<CliTaskRevisionRecord | null>;
   getCliTaskRevisionByNativeRef(runtimeId: string, nativeTaskRef: string): MaybePromise<CliTaskRevisionRecord | null>;
@@ -780,6 +936,15 @@ export interface SpaceStore {
   restorePaneCliTasks(taskIds: string[]): MaybePromise<void>;
   getPaneTitlesByCodexThreadIds(codexThreadIds: string[]): MaybePromise<Map<string, string>>;
   getPaneCliSession(sessionId: string): MaybePromise<PaneCliSession | null>;
+  getActivePaneCliTerminalControlLease(sessionId: string): MaybePromise<PaneCliTerminalControlLease | null>;
+  getPaneCliTerminalControlLease(leaseId: string): MaybePromise<PaneCliTerminalControlLease | null>;
+  createPaneCliTerminalControlLease(
+    input: CreatePaneCliTerminalControlLeaseInput
+  ): MaybePromise<PaneCliTerminalControlLease>;
+  updatePaneCliTerminalControlLease(
+    leaseId: string,
+    input: UpdatePaneCliTerminalControlLeaseInput
+  ): MaybePromise<PaneCliTerminalControlLease>;
   getPaneCliCodexThreadOwnership(codexThreadId: string): MaybePromise<PaneCliCodexThreadOwnership | null>;
   claimPaneCliCodexThread(
     sessionId: string,
@@ -828,6 +993,7 @@ export interface SpaceStore {
   }): MaybePromise<void>;
   getActivePaneBrowserSession(paneId: string): MaybePromise<PaneBrowserSession | null>;
   getPaneBrowserSession(sessionId: string): MaybePromise<PaneBrowserSession | null>;
+  getLatestPaneBrowserSession(paneId: string): MaybePromise<PaneBrowserSession | null>;
   listActivePaneBrowserSessions(roomId?: string): MaybePromise<PaneBrowserSession[]>;
   createPaneBrowserSession(input: CreatePaneBrowserSessionInput, traceId?: string): MaybePromise<PaneBrowserSession>;
   updatePaneBrowserSession(
@@ -1008,6 +1174,66 @@ export const hashPrompt = (prompt: string) => createHash("sha256").update(prompt
 
 export function redactMemoryText(value: string): string {
   return redactPersistedTranscriptContent(value);
+}
+
+const cliMaintenanceSensitiveKeyPattern =
+  /(?:authorization|cookie|credential|password|refresh[_-]?token|access[_-]?token|session|secret|api[_-]?key)/i;
+const cliMaintenanceSensitiveValuePatterns = [
+  /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi,
+  /\bsk-[A-Za-z0-9_-]{8,}\b/g,
+  /\bspace_session=[^;\s]+/gi
+];
+
+function redactCliMaintenanceString(value: string): string {
+  let redacted = value;
+  for (const pattern of cliMaintenanceSensitiveValuePatterns) {
+    redacted = redacted.replace(pattern, "[REDACTED]");
+  }
+  return redacted.length <= 2_000 ? redacted : `${redacted.slice(0, 1_980)}…[TRUNCATED]`;
+}
+
+export function redactCliMaintenanceDiagnostics(
+  value: Record<string, unknown>
+): CliMaintenanceDiagnostics {
+  const seen = new WeakSet<object>();
+  let remainingEntries = 128;
+  let remainingCharacters = 9_000;
+  const sanitize = (candidate: unknown, depth: number): unknown => {
+    if (candidate === null || typeof candidate === "boolean" || typeof candidate === "number") return candidate;
+    if (typeof candidate === "string") {
+      const safe = redactCliMaintenanceString(candidate);
+      const bounded = safe.slice(0, Math.max(0, Math.min(2_000, remainingCharacters)));
+      remainingCharacters -= bounded.length;
+      return bounded;
+    }
+    if (typeof candidate === "bigint") return candidate.toString().slice(0, 80);
+    if (depth >= 6 || remainingEntries <= 0 || remainingCharacters <= 0) return null;
+    if (Array.isArray(candidate)) {
+      if (seen.has(candidate)) return "[REDACTED_CIRCULAR]";
+      seen.add(candidate);
+      return candidate.slice(0, 64).map((entry) => {
+        remainingEntries -= 1;
+        return sanitize(entry, depth + 1);
+      });
+    }
+    if (typeof candidate === "object") {
+      if (seen.has(candidate)) return "[REDACTED_CIRCULAR]";
+      seen.add(candidate);
+      const result: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(candidate).slice(0, 64)) {
+        if (remainingEntries <= 0 || remainingCharacters <= 0) break;
+        remainingEntries -= 1;
+        const safeKey = key.slice(0, Math.max(1, Math.min(80, remainingCharacters)));
+        remainingCharacters -= safeKey.length;
+        result[safeKey] = cliMaintenanceSensitiveKeyPattern.test(key)
+          ? "[REDACTED]"
+          : sanitize(entry, depth + 1);
+      }
+      return result;
+    }
+    return `[UNSUPPORTED_${typeof candidate}]`;
+  };
+  return cliMaintenanceDiagnosticsSchema.parse(sanitize(value, 0));
 }
 
 const memoryChangeStatusTransitions: Record<MemoryChangeSet["status"], readonly MemoryChangeSet["status"][]> = {
@@ -1318,6 +1544,7 @@ export interface SpaceStoreSnapshot {
   spaceAgentMessages: SpaceAgentMessageRecord[];
   spaceAgentRuns: SpaceAgentRunRecord[];
   paneCliSessions: PaneCliSession[];
+  paneCliTerminalControlLeases: PaneCliTerminalControlLease[];
   cliTasks: CliTaskRecord[];
   cliTaskRevisions: CliTaskRevisionRecord[];
   paneCliTranscriptChunks: PaneCliTranscriptChunk[];
@@ -1330,9 +1557,11 @@ export interface SpaceStoreSnapshot {
   codexAppServerTurnSmokeChecks: CodexAppServerTurnSmokeCheck[];
   providers: Provider[];
   providerSettings: ProviderSettings;
-  codexCliModeDefaults: CodexCliModeDefaults;
+  codexCliModeDefaults: CodexCliModeDefaults | null;
   cliRuntimeSettings: CliRuntimeSetting[];
   adminOperationRuns: AdminOperationRun[];
+  cliMaintenanceEvents: CliMaintenanceEvent[];
+  cliMaintenanceAuthHandoffs: CliMaintenanceAuthHandoff[];
   sourceControlConnections: SourceControlConnectionRecord[];
   releasePreviews: ReleasePreviewRecord[];
   models: Model[];
@@ -1371,11 +1600,7 @@ export interface StaticCatalogOptions {
 }
 
 const mcpTargetSpecVersion = "2025-11-25";
-const defaultProviderId = "codex-lb";
-const defaultSourceControlRepository = {
-  repositoryOwner: "spaceapp-owner",
-  repositoryName: "spaceapp"
-} as const;
+const defaultProviderId = "headroom-gateway";
 const defaultTitleGenerationReasoningEffort: ProviderSettings["titleGenerationReasoningEffort"] = "low";
 const spaceDefaultMcpMetadata: Array<Pick<McpServer, "id" | "displayName" | "transport">> = [
   { id: "capturelab", displayName: "CaptureLab", transport: "stdio" },
@@ -1751,24 +1976,72 @@ export function createStaticCatalog(options: StaticCatalogOptions = {}) {
 
   const providers: Provider[] = [
     {
-      id: "codex-lb",
-      displayName: "Codex-LB",
+      id: "headroom-gateway",
+      displayName: "Headroom Gateway",
       type: "CODEX_LB",
       status: "DISABLED",
       statusReason: codexConfigured
-        ? "Codex-LB config is present, but Space keeps the provider disabled until an explicit credential smoke passes."
+        ? "Headroom route is registered, but Space keeps it disabled until an explicit credential smoke passes."
         : "Dedicated Space Codex-LB key has not been verified yet.",
       healthCheckedAt: null,
       maskedKeyPrefix: null,
-      baseUrl: options.codexLbBaseUrl ?? "http://127.0.0.1:2458/v1",
-      routeProfile: "custom",
-      backingProviderId: null,
+      baseUrl: "https://headroom.example.invalid:8787/v1",
+      routeProfile: "headroom",
+      backingProviderId: "codex-lb",
       credentialRef: null,
       isBuiltIn: true
     },
     {
-      id: "openai",
-      displayName: "OpenAI",
+      id: "direct-246-primary",
+      displayName: "Direct .246 Primary",
+      type: "CODEX_LB",
+      status: "DISABLED",
+      statusReason: codexConfigured
+        ? "Direct .246 route is registered, but Space keeps it disabled until an explicit credential smoke passes."
+        : "Dedicated Space Codex-LB key has not been verified yet.",
+      healthCheckedAt: null,
+      maskedKeyPrefix: null,
+      baseUrl: "http://192.0.2.246:2455/v1",
+      routeProfile: "direct-primary",
+      backingProviderId: "codex-lb",
+      credentialRef: null,
+      isBuiltIn: true
+    },
+    {
+      id: "direct-auto-failover",
+      displayName: "Direct Auto Failover",
+      type: "CODEX_LB",
+      status: "DISABLED",
+      statusReason: codexConfigured
+        ? "Direct auto-failover route is registered, but Space keeps it disabled until an explicit credential smoke passes."
+        : "Dedicated Space Codex-LB key has not been verified yet.",
+      healthCheckedAt: null,
+      maskedKeyPrefix: null,
+      baseUrl: options.codexLbBaseUrl ?? "http://127.0.0.1:2458/v1",
+      routeProfile: "direct-auto",
+      backingProviderId: "codex-lb",
+      credentialRef: null,
+      isBuiltIn: true
+    },
+    {
+      id: "strict-234-direct",
+      displayName: "Strict .234 Direct",
+      type: "CODEX_LB",
+      status: "DISABLED",
+      statusReason: codexConfigured
+        ? "Strict .234 route is registered, but Space keeps it disabled until an explicit credential smoke passes."
+        : "Dedicated Space Codex-LB key has not been verified yet.",
+      healthCheckedAt: null,
+      maskedKeyPrefix: null,
+      baseUrl: "http://192.0.2.234:2455/v1",
+      routeProfile: "direct-fallback",
+      backingProviderId: "codex-lb",
+      credentialRef: null,
+      isBuiltIn: true
+    },
+    {
+      id: "openai-chatgpt-plus-pro",
+      displayName: "OpenAI / ChatGPT Plus-Pro",
       type: "OPENAI",
       status: "DISABLED",
       statusReason: "OpenAI direct route remains disabled until an explicit Space credential/config smoke passes.",
@@ -1779,6 +2052,22 @@ export function createStaticCatalog(options: StaticCatalogOptions = {}) {
       backingProviderId: "openai",
       credentialRef: null,
       isBuiltIn: true
+    },
+    {
+      id: "codex-lb",
+      displayName: "Codex-LB",
+      type: "CODEX_LB",
+      status: "DISABLED",
+      statusReason: codexConfigured
+        ? "Codex-LB config is present, but Space keeps the provider disabled until an explicit credential smoke passes."
+        : "Dedicated Space Codex-LB key has not been verified yet.",
+      healthCheckedAt: null,
+      maskedKeyPrefix: null,
+      baseUrl: options.codexLbBaseUrl ?? null,
+      routeProfile: "custom",
+      backingProviderId: null,
+      credentialRef: null,
+      isBuiltIn: false
     },
     {
       id: "anthropic",
@@ -1896,9 +2185,12 @@ interface InMemoryUserLinkRecord {
   item: UserLink;
 }
 
-export const defaultUserLinks: Array<
-  Omit<UserLink, "id" | "sortOrder" | "createdAt" | "updatedAt">
-> = [];
+export const defaultUserLinks = [
+  { title: "Codex LB", description: "Codex load-balancer dashboard and account routing.", url: "https://codex-lb.example.invalid:2455/", openMode: "EMBEDDED" as const, isQuick: true },
+  { title: "Headroom", description: "Headroom capacity and routing dashboard.", url: "https://headroom.example.invalid:8787/dashboard", openMode: "EMBEDDED" as const, isQuick: true },
+  { title: "Will Codex Quota Reset?", description: "Track Codex quota reset timing.", url: "https://www.willcodexquotareset.com/", openMode: "EMBEDDED" as const, isQuick: false },
+  { title: "OpenAI Status", description: "Official OpenAI service status.", url: "https://status.openai.com/", openMode: "NEW_TAB" as const, isQuick: false }
+];
 
 export class InMemorySpaceStore implements SpaceStore {
   private rooms = new Map<string, Room>();
@@ -1916,6 +2208,7 @@ export class InMemorySpaceStore implements SpaceStore {
   private spaceAgentMessages = new Map<string, SpaceAgentMessageRecord>();
   private spaceAgentRuns = new Map<string, SpaceAgentRunRecord>();
   private paneCliSessions = new Map<string, PaneCliSession>();
+  private paneCliTerminalControlLeases = new Map<string, PaneCliTerminalControlLease>();
   private cliTasks = new Map<string, CliTaskRecord>();
   private cliTaskRevisions = new Map<string, CliTaskRevisionRecord>();
   private hiddenPaneCliTaskIds = new Set<string>();
@@ -1941,7 +2234,13 @@ export class InMemorySpaceStore implements SpaceStore {
     tokenHash: string | null;
     expiresAt: string | null;
     ownerUserId: string | null;
+    onboardingVersion: number;
+    onboardingCompletedAt: string | null;
+    starterRoomId: string | null;
   } | null = null;
+  private setupConnectionVerifications = new Map<string, SetupConnectionVerification>();
+  private setupConnectionCheckRuns = new Map<string, SetupConnectionCheckRun>();
+  private setupConnectionCheckEvents = new Map<string, SetupConnectionCheckEvent>();
   private publicWaitlistSignups = new Map<string, PublicWaitlistSignupInput>();
   private clipboardItems = new Map<string, InMemoryClipboardRecord>();
   private clipboardSequence = 0;
@@ -1949,9 +2248,11 @@ export class InMemorySpaceStore implements SpaceStore {
   private initializedUserLinkLibraries = new Set<string>();
   private providers: Provider[];
   private providerSettings: ProviderSettings;
-  private codexCliModeDefaults: CodexCliModeDefaults;
+  private codexCliModeDefaults: CodexCliModeDefaults | null = null;
   private cliRuntimeSettings = new Map<CliToggleRuntimeId, CliRuntimeSetting>();
   private adminOperationRuns = new Map<string, AdminOperationRun>();
+  private cliMaintenanceEvents = new Map<string, CliMaintenanceEvent>();
+  private cliMaintenanceAuthHandoffs = new Map<string, CliMaintenanceAuthHandoff>();
   private sourceControlConnections = new Map<SourceControlProvider, SourceControlConnectionRecord>();
   private releasePreviews = new Map<string, ReleasePreviewRecord>();
   private readonly cliRuntimeSettingsDefaultUpdatedAt = nowIso();
@@ -1998,14 +2299,18 @@ export class InMemorySpaceStore implements SpaceStore {
       titleGenerationReasoningEffort: defaultTitleGenerationReasoningEffort,
       updatedAt: nowIso()
     });
-    this.codexCliModeDefaults = codexCliModeDefaultsSchema.parse({
-      build: { modelId: "gpt-5.6-sol", reasoningEffort: "xhigh" },
-      plan: { modelId: "gpt-5.6-sol", reasoningEffort: "xhigh" },
-      updatedAt: nowIso()
-    });
   }
 
   snapshot(): SpaceStoreSnapshot {
+    const snapshotTimestamp = nowIso();
+    for (const [leaseId, lease] of this.paneCliTerminalControlLeases) {
+      if (lease.status !== "ACTIVE" || lease.expiresAt > snapshotTimestamp) continue;
+      this.paneCliTerminalControlLeases.set(leaseId, paneCliTerminalControlLeaseSchema.parse({
+        ...lease,
+        status: "EXPIRED",
+        releasedAt: lease.releasedAt ?? snapshotTimestamp
+      }));
+    }
     return {
       rooms: this.listRooms(),
       panes: [...this.panes.values()],
@@ -2027,6 +2332,7 @@ export class InMemorySpaceStore implements SpaceStore {
       spaceAgentMessages: [...this.spaceAgentMessages.values()],
       spaceAgentRuns: [...this.spaceAgentRuns.values()],
       paneCliSessions: [...this.paneCliSessions.values()],
+      paneCliTerminalControlLeases: [...this.paneCliTerminalControlLeases.values()],
       cliTasks: [...this.cliTasks.values()],
       cliTaskRevisions: [...this.cliTaskRevisions.values()],
       paneCliTranscriptChunks: [...this.paneCliTranscriptChunks.values()],
@@ -2042,6 +2348,10 @@ export class InMemorySpaceStore implements SpaceStore {
       codexCliModeDefaults: this.codexCliModeDefaults,
       cliRuntimeSettings: this.listCliRuntimeSettings(),
       adminOperationRuns: this.listAdminOperationRuns(500),
+      cliMaintenanceEvents: [...this.cliMaintenanceEvents.values()]
+        .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id)),
+      cliMaintenanceAuthHandoffs: [...this.cliMaintenanceAuthHandoffs.values()]
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)),
       sourceControlConnections: this.listSourceControlConnections(),
       releasePreviews: [...this.releasePreviews.values()],
       models: [...this.models],
@@ -2089,7 +2399,10 @@ export class InMemorySpaceStore implements SpaceStore {
       this.ownerSetup = {
         tokenHash: input.tokenHash,
         expiresAt: input.expiresAt,
-        ownerUserId: null
+        ownerUserId: null,
+        onboardingVersion: currentSetupOnboardingVersion,
+        onboardingCompletedAt: null,
+        starterRoomId: null
       };
     }
     return this.getOwnerSetupStatus();
@@ -2102,7 +2415,7 @@ export class InMemorySpaceStore implements SpaceStore {
     };
   }
 
-  claimOwnerSetup(input: ClaimOwnerSetupInput): AuthUser {
+  claimOwnerSetup(input: ClaimOwnerSetupInput): OwnerSetupClaimResult {
     if (this.ownerSetup?.ownerUserId) {
       throw new SpaceConflictError("SpaceApp owner setup is already claimed.");
     }
@@ -2117,14 +2430,175 @@ export class InMemorySpaceStore implements SpaceStore {
       email: input.email,
       role: "ADMIN"
     });
+    const starterRoom = this.createRoom({
+      name: "Getting Started",
+      description: "SpaceApp setup and connection workspace.",
+      initialPaneCount: 0
+    });
     this.users.set(owner.id, owner);
     this.userPasswordHashes.set(owner.id, input.passwordHash);
     this.ownerSetup = {
       tokenHash: null,
       expiresAt: null,
-      ownerUserId: owner.id
+      ownerUserId: owner.id,
+      onboardingVersion: currentSetupOnboardingVersion,
+      onboardingCompletedAt: null,
+      starterRoomId: starterRoom.id
     };
-    return owner;
+    return { user: owner, onboarding: this.getOwnerOnboarding() };
+  }
+
+  getOwnerOnboarding(): SetupOnboarding {
+    if (!this.ownerSetup?.ownerUserId) {
+      throw new SpaceConflictError("SpaceApp owner setup has not been claimed.");
+    }
+    return {
+      onboardingVersion: this.ownerSetup.onboardingVersion,
+      isComplete: this.ownerSetup.onboardingCompletedAt !== null,
+      completedAt: this.ownerSetup.onboardingCompletedAt,
+      starterRoomId: this.ownerSetup.starterRoomId
+    };
+  }
+
+  ensureOwnerStarterRoom(traceId = makeSpaceId("trace")): { room: Room; onboarding: SetupOnboarding } {
+    if (!this.ownerSetup?.ownerUserId) {
+      throw new SpaceConflictError("SpaceApp owner setup has not been claimed.");
+    }
+    const existing = this.ownerSetup.starterRoomId
+      ? this.rooms.get(this.ownerSetup.starterRoomId)
+      : null;
+    const room = existing ?? this.createRoom(
+      {
+        name: "Getting Started",
+        description: "SpaceApp setup and connection workspace.",
+        initialPaneCount: 0
+      },
+      traceId
+    );
+    this.ownerSetup.starterRoomId = room.id;
+    return { room, onboarding: this.getOwnerOnboarding() };
+  }
+
+  completeOwnerOnboarding(completedAt: string): SetupOnboarding {
+    if (!this.ownerSetup?.ownerUserId) {
+      throw new SpaceConflictError("SpaceApp owner setup has not been claimed.");
+    }
+    this.ownerSetup.onboardingVersion = currentSetupOnboardingVersion;
+    this.ownerSetup.onboardingCompletedAt = isoDateTimeSchema.parse(completedAt);
+    return this.getOwnerOnboarding();
+  }
+
+  listSetupConnectionVerifications(): SetupConnectionVerification[] {
+    return [...this.setupConnectionVerifications.values()]
+      .sort((left, right) => left.connectionId.localeCompare(right.connectionId));
+  }
+
+  getSetupConnectionVerification(connectionId: string): SetupConnectionVerification | null {
+    return this.setupConnectionVerifications.get(connectionId) ?? null;
+  }
+
+  upsertSetupConnectionVerification(
+    input: UpsertSetupConnectionVerificationInput
+  ): SetupConnectionVerification {
+    if (!/^[a-z0-9][a-z0-9:_-]{0,159}$/.test(input.connectionId)) {
+      throw new Error("Setup connection id is invalid.");
+    }
+    if (!["CONNECTED", "NEEDS_SETUP", "UNAVAILABLE"].includes(input.state)) {
+      throw new Error("Setup connection verification state is invalid.");
+    }
+    if (input.reasonCode !== null && !/^[A-Z0-9_]{1,80}$/.test(input.reasonCode)) {
+      throw new Error("Setup connection reason code is invalid.");
+    }
+    if (input.fingerprintHash !== null && !/^[a-f0-9]{64}$/.test(input.fingerprintHash)) {
+      throw new Error("Setup connection fingerprint must be a SHA-256 hex digest.");
+    }
+    const persisted = {
+      ...input,
+      verifiedAt: input.verifiedAt === null ? null : isoDateTimeSchema.parse(input.verifiedAt),
+      updatedAt: isoDateTimeSchema.parse(input.updatedAt)
+    };
+    this.setupConnectionVerifications.set(persisted.connectionId, persisted);
+    return persisted;
+  }
+
+  createSetupConnectionCheckRun(
+    input: CreateSetupConnectionCheckRunInput
+  ): SetupConnectionCheckRun {
+    const parsed = createSetupConnectionCheckRunInputSchema.parse(input);
+    const timestamp = nowIso();
+    const run = setupConnectionCheckRunSchema.parse({
+      id: makeSpaceId("setup_check_run"),
+      scope: parsed.scope,
+      connectionIds: parsed.connectionIds,
+      status: "RUNNING",
+      totalCount: parsed.connectionIds.length,
+      completedCount: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      finishedAt: null
+    });
+    this.setupConnectionCheckRuns.set(run.id, run);
+    return run;
+  }
+
+  getSetupConnectionCheckRun(runId: string): SetupConnectionCheckRun | null {
+    return this.setupConnectionCheckRuns.get(idSchema.parse(runId)) ?? null;
+  }
+
+  listSetupConnectionCheckRuns(limit = 50): SetupConnectionCheckRun[] {
+    const boundedLimit = z.number().int().min(1).max(500).parse(Math.trunc(limit));
+    return [...this.setupConnectionCheckRuns.values()]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+      .slice(0, boundedLimit);
+  }
+
+  updateSetupConnectionCheckRun(
+    runId: string,
+    input: UpdateSetupConnectionCheckRunInput
+  ): SetupConnectionCheckRun {
+    const parsedRunId = idSchema.parse(runId);
+    const existing = this.setupConnectionCheckRuns.get(parsedRunId);
+    if (!existing) {
+      throw new SpaceNotFoundError(`Setup connection check run ${parsedRunId} was not found.`);
+    }
+    const run = updateSetupConnectionCheckRunRecord(existing, input);
+    this.setupConnectionCheckRuns.set(parsedRunId, run);
+    return run;
+  }
+
+  appendSetupConnectionCheckEvent(
+    input: CreateSetupConnectionCheckEventInput
+  ): SetupConnectionCheckEvent {
+    const parsed = createSetupConnectionCheckEventInputSchema.parse(input);
+    const run = this.setupConnectionCheckRuns.get(parsed.runId);
+    if (!run || !run.connectionIds.includes(parsed.connectionId)) {
+      throw new SpaceNotFoundError(`Setup connection check run ${parsed.runId} was not found.`);
+    }
+    const sequence = [...this.setupConnectionCheckEvents.values()]
+      .filter((event) => event.runId === parsed.runId)
+      .reduce((highest, event) => Math.max(highest, event.sequence), 0) + 1;
+    const event = setupConnectionCheckEventSchema.parse({
+      ...parsed,
+      id: makeSpaceId("setup_check_event"),
+      sequence,
+      createdAt: nowIso()
+    });
+    this.setupConnectionCheckEvents.set(event.id, event);
+    return event;
+  }
+
+  listSetupConnectionCheckEvents(
+    runId: string,
+    afterSequence = 0,
+    limit = 500
+  ): SetupConnectionCheckEvent[] {
+    const parsedRunId = idSchema.parse(runId);
+    const parsedAfterSequence = z.number().int().min(0).parse(afterSequence);
+    const boundedLimit = z.number().int().min(1).max(1_000).parse(Math.trunc(limit));
+    return [...this.setupConnectionCheckEvents.values()]
+      .filter((event) => event.runId === parsedRunId && event.sequence > parsedAfterSequence)
+      .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id))
+      .slice(0, boundedLimit);
   }
 
   getOwnerCredentials(): OwnerCredentials | null {
@@ -2163,6 +2637,7 @@ export class InMemorySpaceStore implements SpaceStore {
       id: existing?.item.id ?? makeSpaceId("clipboard"),
       text: parsed.text,
       source: parsed.source,
+      title: parsed.title ?? null,
       roomId: parsed.roomId ?? null,
       paneId: parsed.paneId ?? null,
       paneTitle: parsed.paneTitle ?? null,
@@ -2309,6 +2784,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return this.cliRuntimeSettings.get(parsedRuntimeId) ?? cliRuntimeSettingSchema.parse({
       runtimeId: parsedRuntimeId,
       enabled: true,
+      vpnEnabled: false,
       updatedAt: this.cliRuntimeSettingsDefaultUpdatedAt,
       updatedBy: null
     });
@@ -2324,6 +2800,25 @@ export class InMemorySpaceStore implements SpaceStore {
     const setting = cliRuntimeSettingSchema.parse({
       runtimeId: parsedRuntimeId,
       enabled: parsed.enabled,
+      vpnEnabled: this.getCliRuntimeSetting(parsedRuntimeId).vpnEnabled,
+      updatedAt: nowIso(),
+      updatedBy: idSchema.parse(updatedBy)
+    });
+    this.cliRuntimeSettings.set(parsedRuntimeId, setting);
+    return setting;
+  }
+
+  updateCliRuntimeVpnSetting(
+    runtimeId: CliToggleRuntimeId,
+    input: UpdateCliRuntimeVpnInput,
+    updatedBy: string
+  ): CliRuntimeSetting {
+    const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
+    const parsed = updateCliRuntimeVpnInputSchema.parse(input);
+    const current = this.getCliRuntimeSetting(parsedRuntimeId);
+    const setting = cliRuntimeSettingSchema.parse({
+      ...current,
+      vpnEnabled: parsed.enabled,
       updatedAt: nowIso(),
       updatedBy: idSchema.parse(updatedBy)
     });
@@ -2377,6 +2872,96 @@ export class InMemorySpaceStore implements SpaceStore {
     return run;
   }
 
+  appendCliMaintenanceEvent(input: CreateCliMaintenanceEventInput): CliMaintenanceEvent {
+    const parsed = createCliMaintenanceEventInputSchema.parse({
+      ...input,
+      diagnostics: redactCliMaintenanceDiagnostics(input.diagnostics)
+    });
+    const run = this.adminOperationRuns.get(parsed.runId);
+    if (!run || !run.operationType.startsWith("CLI_MAINTENANCE_")) {
+      throw new SpaceNotFoundError(`CLI maintenance run ${parsed.runId} was not found.`);
+    }
+    const sequence = [...this.cliMaintenanceEvents.values()]
+      .filter((event) => event.runId === parsed.runId)
+      .reduce((highest, event) => Math.max(highest, event.sequence), 0) + 1;
+    const event = cliMaintenanceEventSchema.parse({
+      ...parsed,
+      id: makeSpaceId("cli_maintenance_event"),
+      sequence,
+      createdAt: nowIso()
+    });
+    this.cliMaintenanceEvents.set(event.id, event);
+    return event;
+  }
+
+  listCliMaintenanceEvents(runId: string, afterSequence = 0, limit = 500): CliMaintenanceEvent[] {
+    const parsedRunId = idSchema.parse(runId);
+    const parsedAfterSequence = z.number().int().min(0).parse(afterSequence);
+    const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 1_000));
+    return [...this.cliMaintenanceEvents.values()]
+      .filter((event) => event.runId === parsedRunId && event.sequence > parsedAfterSequence)
+      .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id))
+      .slice(0, boundedLimit);
+  }
+
+  createCliMaintenanceAuthHandoff(input: CreateCliMaintenanceAuthHandoffInput): CliMaintenanceAuthHandoff {
+    const parsed = createCliMaintenanceAuthHandoffInputSchema.parse(input);
+    const run = this.adminOperationRuns.get(parsed.runId);
+    if (!run || !run.operationType.startsWith("CLI_MAINTENANCE_")) {
+      throw new SpaceNotFoundError(`CLI maintenance run ${parsed.runId} was not found.`);
+    }
+    const duplicate = [...this.cliMaintenanceAuthHandoffs.values()].find(
+      (handoff) => handoff.runId === parsed.runId && handoff.runtimeId === parsed.runtimeId
+    );
+    if (duplicate) {
+      throw new SpaceConflictError(`CLI auth handoff for ${parsed.runtimeId} already exists in ${parsed.runId}.`);
+    }
+    const timestamp = nowIso();
+    const handoff = cliMaintenanceAuthHandoffSchema.parse({
+      ...parsed,
+      id: makeSpaceId("cli_auth_handoff"),
+      status: "PENDING",
+      attemptCount: 0,
+      safeErrorCode: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      completedAt: null
+    });
+    this.cliMaintenanceAuthHandoffs.set(handoff.id, handoff);
+    return handoff;
+  }
+
+  updateCliMaintenanceAuthHandoff(
+    handoffId: string,
+    input: UpdateCliMaintenanceAuthHandoffInput
+  ): CliMaintenanceAuthHandoff {
+    const parsedHandoffId = idSchema.parse(handoffId);
+    const existing = this.cliMaintenanceAuthHandoffs.get(parsedHandoffId);
+    if (!existing) {
+      throw new SpaceNotFoundError(`CLI auth handoff ${parsedHandoffId} was not found.`);
+    }
+    const parsed = updateCliMaintenanceAuthHandoffInputSchema.parse(input);
+    const timestamp = nowIso();
+    const nextStatus = parsed.status ?? existing.status;
+    const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(nextStatus);
+    const handoff = cliMaintenanceAuthHandoffSchema.parse({
+      ...existing,
+      ...parsed,
+      status: nextStatus,
+      updatedAt: timestamp,
+      completedAt: terminal ? (existing.completedAt ?? timestamp) : null
+    });
+    this.cliMaintenanceAuthHandoffs.set(handoff.id, handoff);
+    return handoff;
+  }
+
+  listCliMaintenanceAuthHandoffs(runId: string): CliMaintenanceAuthHandoff[] {
+    const parsedRunId = idSchema.parse(runId);
+    return [...this.cliMaintenanceAuthHandoffs.values()]
+      .filter((handoff) => handoff.runId === parsedRunId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+  }
+
   listSourceControlConnections(): SourceControlConnectionRecord[] {
     return (["gitea", "github"] as const).map((provider) => this.getSourceControlConnection(provider));
   }
@@ -2385,10 +2970,12 @@ export class InMemorySpaceStore implements SpaceStore {
     const parsedProvider = sourceControlProviderSchema.parse(provider);
     const existing = this.sourceControlConnections.get(parsedProvider);
     if (existing) return existing;
+    const repositoryName = "space";
     return {
       ...sourceControlConnectionSchema.parse({
         provider: parsedProvider,
-        ...defaultSourceControlRepository,
+        repositoryOwner: "oll4com",
+        repositoryName,
         accountLogin: null,
         status: "DISCONNECTED",
         secretConfigured: false,
@@ -2408,7 +2995,8 @@ export class InMemorySpaceStore implements SpaceStore {
     const connection = {
       ...sourceControlConnectionSchema.parse({
         provider,
-        ...defaultSourceControlRepository,
+        repositoryOwner: "oll4com",
+        repositoryName: "space",
         accountLogin: input.accountLogin,
         status: input.connectionStatus,
         secretConfigured: secretRef !== null,
@@ -2553,6 +3141,24 @@ export class InMemorySpaceStore implements SpaceStore {
     return this.listRooms();
   }
 
+  reorderPanes(roomId: string, paneIds: string[], traceId = makeSpaceId("trace")): Pane[] {
+    this.getRoom(roomId);
+    const currentActive = this.listPanes(roomId, false);
+    const currentIds = currentActive.map((pane) => pane.id);
+    if (paneIds.length !== currentIds.length) {
+      throw new SpaceConflictError("Pane reorder payload must include every active pane of the room exactly once.");
+    }
+    const nextIds = new Set(paneIds);
+    if (nextIds.size !== paneIds.length || currentIds.some((paneId) => !nextIds.has(paneId))) {
+      throw new SpaceConflictError("Pane reorder payload must include every active pane of the room exactly once.");
+    }
+    paneIds.forEach((paneId, index) => {
+      const pane = this.getPane(paneId);
+      this.panes.set(paneId, { ...pane, order: index });
+    });
+    return this.listPanes(roomId, false);
+  }
+
   deleteRoom(roomId: string): Room {
     const room = this.getRoom(roomId);
     const paneIds = new Set(
@@ -2594,6 +3200,11 @@ export class InMemorySpaceStore implements SpaceStore {
     );
     this.paneCliSessions = new Map(
       [...this.paneCliSessions.entries()].filter(([, session]) => !removedCliSessionIds.has(session.sessionId))
+    );
+    this.paneCliTerminalControlLeases = new Map(
+      [...this.paneCliTerminalControlLeases.entries()].filter(
+        ([, lease]) => !removedCliSessionIds.has(lease.sessionId)
+      )
     );
     this.paneCliTranscriptChunks = new Map(
       [...this.paneCliTranscriptChunks.entries()].filter(([, chunk]) => !removedCliSessionIds.has(chunk.sessionId))
@@ -3211,6 +3822,12 @@ export class InMemorySpaceStore implements SpaceStore {
       [...this.paneCliSessions.entries()].map(([sessionId, session]) => [
         sessionId,
         session.paneId === paneId ? { ...session, roomId: targetRoomId, updatedAt: timestamp } : session
+      ])
+    );
+    this.paneCliTerminalControlLeases = new Map(
+      [...this.paneCliTerminalControlLeases.entries()].map(([leaseId, lease]) => [
+        leaseId,
+        lease.paneId === paneId ? { ...lease, roomId: targetRoomId } : lease
       ])
     );
     this.paneCliTranscriptChunks = new Map(
@@ -3936,6 +4553,12 @@ export class InMemorySpaceStore implements SpaceStore {
       .slice(0, boundedLimit);
   }
 
+  listActivePaneCliSessions(runtimeId: string): PaneCliSession[] {
+    return [...this.paneCliSessions.values()]
+      .filter((session) => session.runtimeId === runtimeId && session.isActive && session.status === "RUNNING")
+      .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  }
+
   listPaneCliTaskHistory(input: ListPaneCliTaskHistoryInput): StorePageResult<PaneCliTaskHistoryRecord> {
     const page = Math.max(1, Math.trunc(input.page));
     const pageSize = Math.min(100, Math.max(1, Math.trunc(input.pageSize)));
@@ -4051,6 +4674,98 @@ export class InMemorySpaceStore implements SpaceStore {
 
   getPaneCliSession(sessionId: string): PaneCliSession | null {
     return this.paneCliSessions.get(sessionId) ?? null;
+  }
+
+  getActivePaneCliTerminalControlLease(sessionId: string): PaneCliTerminalControlLease | null {
+    const active = [...this.paneCliTerminalControlLeases.values()].find(
+      (lease) => lease.sessionId === sessionId && lease.status === "ACTIVE"
+    );
+    if (!active) return null;
+    const timestamp = nowIso();
+    if (active.expiresAt > timestamp) return active;
+    const expired = paneCliTerminalControlLeaseSchema.parse({
+      ...active,
+      status: "EXPIRED",
+      releasedAt: active.releasedAt ?? timestamp
+    });
+    this.paneCliTerminalControlLeases.set(expired.leaseId, expired);
+    return null;
+  }
+
+  getPaneCliTerminalControlLease(leaseId: string): PaneCliTerminalControlLease | null {
+    const lease = this.paneCliTerminalControlLeases.get(leaseId);
+    if (!lease) return null;
+    if (lease.status !== "ACTIVE" || lease.expiresAt > nowIso()) return lease;
+    this.getActivePaneCliTerminalControlLease(lease.sessionId);
+    return this.paneCliTerminalControlLeases.get(leaseId) ?? null;
+  }
+
+  createPaneCliTerminalControlLease(
+    input: CreatePaneCliTerminalControlLeaseInput
+  ): PaneCliTerminalControlLease {
+    const parsed = createPaneCliTerminalControlLeaseInputSchema.parse(input);
+    const session = this.paneCliSessions.get(parsed.sessionId);
+    if (!session || session.paneId !== parsed.paneId || session.roomId !== parsed.roomId) {
+      throw new SpaceNotFoundError(`CLI session ${parsed.sessionId} was not found.`);
+    }
+    const active = this.getActivePaneCliTerminalControlLease(parsed.sessionId);
+    if (parsed.expectedActiveLeaseId === null ? active !== null : active?.leaseId !== parsed.expectedActiveLeaseId) {
+      throw new SpaceConflictError(`CLI terminal control for session ${parsed.sessionId} changed before acquisition.`);
+    }
+    const leaseId = parsed.leaseId ?? makeSpaceId("cli_terminal_lease");
+    if (this.paneCliTerminalControlLeases.has(leaseId)) {
+      throw new SpaceConflictError(`CLI terminal control lease ${leaseId} already exists.`);
+    }
+    const timestamp = nowIso();
+    if (active) {
+      this.paneCliTerminalControlLeases.set(active.leaseId, paneCliTerminalControlLeaseSchema.parse({
+        ...active,
+        status: "REVOKED",
+        releasedAt: active.releasedAt ?? timestamp
+      }));
+    }
+    const lease = paneCliTerminalControlLeaseSchema.parse({
+      leaseId,
+      sessionId: parsed.sessionId,
+      paneId: parsed.paneId,
+      roomId: parsed.roomId,
+      userId: parsed.userId,
+      browserClientId: parsed.browserClientId,
+      tabLineageId: parsed.tabLineageId,
+      pageClientId: parsed.pageClientId,
+      status: "ACTIVE",
+      acquiredAt: timestamp,
+      heartbeatAt: timestamp,
+      expiresAt: new Date(Date.parse(timestamp) + parsed.ttlSeconds * 1_000).toISOString(),
+      releasedAt: null
+    });
+    this.paneCliTerminalControlLeases.set(lease.leaseId, lease);
+    return lease;
+  }
+
+  updatePaneCliTerminalControlLease(
+    leaseId: string,
+    input: UpdatePaneCliTerminalControlLeaseInput
+  ): PaneCliTerminalControlLease {
+    const parsed = updatePaneCliTerminalControlLeaseInputSchema.parse(input);
+    const current = this.getPaneCliTerminalControlLease(leaseId);
+    if (!current) throw new SpaceNotFoundError(`CLI terminal control lease ${leaseId} was not found.`);
+    if (current.status !== parsed.expectedStatus) {
+      throw new SpaceConflictError(`CLI terminal control lease ${leaseId} is no longer active.`);
+    }
+    const timestamp = nowIso();
+    const status = parsed.status ?? current.status;
+    const updated = paneCliTerminalControlLeaseSchema.parse({
+      ...current,
+      status,
+      heartbeatAt: parsed.ttlSeconds === undefined ? current.heartbeatAt : timestamp,
+      expiresAt: parsed.ttlSeconds === undefined
+        ? current.expiresAt
+        : new Date(Date.parse(timestamp) + parsed.ttlSeconds * 1_000).toISOString(),
+      releasedAt: status === "ACTIVE" ? null : current.releasedAt ?? timestamp
+    });
+    this.paneCliTerminalControlLeases.set(leaseId, updated);
+    return updated;
   }
 
   getPaneCliCodexThreadOwnership(codexThreadId: string): PaneCliCodexThreadOwnership | null {
@@ -4520,6 +5235,14 @@ export class InMemorySpaceStore implements SpaceStore {
     return this.paneBrowserSessions.get(sessionId) ?? null;
   }
 
+  getLatestPaneBrowserSession(paneId: string): PaneBrowserSession | null {
+    return (
+      [...this.paneBrowserSessions.values()]
+        .filter((session) => session.paneId === paneId)
+        .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))[0] ?? null
+    );
+  }
+
   listActivePaneBrowserSessions(roomId?: string): PaneBrowserSession[] {
     return [...this.paneBrowserSessions.values()]
       .filter((session) => session.isActive && (!roomId || session.roomId === roomId))
@@ -4532,8 +5255,8 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!pane || pane.roomId !== parsed.roomId) {
       throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
     }
-    if (pane.mode !== "BROWSER") {
-      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER panes.`);
+    if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE") {
+      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER or YOUTUBE panes.`);
     }
     if (pane.isClosed) {
       throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -5239,12 +5962,15 @@ export class InMemorySpaceStore implements SpaceStore {
   }
 
   getCodexCliModeDefaults(): CodexCliModeDefaults {
+    if (!this.codexCliModeDefaults) {
+      throw new SpaceNotFoundError("Codex CLI mode defaults were not initialized from a provider catalog.");
+    }
     return this.codexCliModeDefaults;
   }
 
   initializeCodexCliModeDefaults(input: CodexCliModeDefaultPairs): CodexCliModeDefaults {
     const parsed = codexCliModeDefaultPairsSchema.parse(input);
-    if (this.codexCliModeDefaultsRuntimeInitialized) return this.codexCliModeDefaults;
+    if (this.codexCliModeDefaultsRuntimeInitialized && this.codexCliModeDefaults) return this.codexCliModeDefaults;
     this.codexCliModeDefaultsRuntimeInitialized = true;
     this.codexCliModeDefaults = codexCliModeDefaultsSchema.parse({ ...parsed, updatedAt: nowIso() });
     return this.codexCliModeDefaults;
@@ -5252,6 +5978,9 @@ export class InMemorySpaceStore implements SpaceStore {
 
   updateCodexCliModeDefaults(input: UpdateCodexCliModeDefaultsInput): CodexCliModeDefaults {
     const parsed = updateCodexCliModeDefaultsInputSchema.parse(input);
+    if (!this.codexCliModeDefaults) {
+      throw new SpaceNotFoundError("Codex CLI mode defaults were not initialized from a provider catalog.");
+    }
     const pair = { modelId: parsed.modelId, reasoningEffort: parsed.reasoningEffort };
     this.codexCliModeDefaultsRuntimeInitialized = true;
     this.codexCliModeDefaults = codexCliModeDefaultsSchema.parse({
@@ -6104,6 +6833,11 @@ export class InMemorySpaceStore implements SpaceStore {
       .filter((artifact) => !query.paneId || artifact.paneId === query.paneId)
       .filter((artifact) => !query.workflowId || artifact.workflowId === query.workflowId)
       .filter((artifact) => !query.kind || artifact.kind === query.kind)
+      .filter((artifact) => {
+        if (query.collection === "AGENT_FILES") return isAgentFileArtifact(artifact);
+        if (query.collection === "ROOM_MEDIA") return isRoomMediaArtifact(artifact);
+        return true;
+      })
       .sort((a, b) =>
         query.sortOrder === "asc" ? a.createdAt.localeCompare(b.createdAt) : b.createdAt.localeCompare(a.createdAt)
       );

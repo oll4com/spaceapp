@@ -1,6 +1,9 @@
 import { isAgentRuntimeReady, type AgentRuntime } from "@space/contracts";
+import autohandIconUrl from "./assets/autohand-icon.png";
 import claudeLogoUrl from "./assets/claude-logo.svg";
 import codexLogoUrl from "./assets/codex-logo.svg";
+import copilotLogoUrl from "./assets/copilot-logo.svg";
+import cursorLogoUrl from "./assets/cursor-logo.svg";
 import deepseekLogoUrl from "./assets/deepseek-logo.svg";
 import geminiLogoUrl from "./assets/gemini-logo.svg";
 import grokLogoUrl from "./assets/grok-logo.svg";
@@ -21,10 +24,13 @@ export const CLI_RUNTIME_PRESENTATIONS = Object.freeze([
   { id: "cli:claude", brand: "claude", displayName: "Claude Code CLI", shortLabel: "Claude Code", iconSrc: claudeLogoUrl },
   { id: "cli:gemini", brand: "gemini", displayName: "Gemini CLI", shortLabel: "Gemini", iconSrc: geminiLogoUrl },
   { id: "cli:opencode", brand: "opencode", displayName: "OpenCode CLI", shortLabel: "OpenCode", iconSrc: openCodeLogoUrl },
+  { id: "cli:autohand", brand: "autohand", displayName: "Autohand Code CLI", shortLabel: "Autohand Code", iconSrc: autohandIconUrl },
   { id: "cli:qwen", brand: "qwen", displayName: "Qwen Code CLI", shortLabel: "Qwen Code", iconSrc: qwenCodeLogoUrl },
   { id: "cli:kimi", brand: "kimi", displayName: "Kimi Code CLI", shortLabel: "Kimi Code", iconSrc: kimiLogoUrl },
   { id: "cli:grok", brand: "grok", displayName: "Grok Build CLI", shortLabel: "Grok Build", iconSrc: grokLogoUrl },
-  { id: "cli:deepseek", brand: "deepseek", displayName: "DeepSeek CLI", shortLabel: "DeepSeek", iconSrc: deepseekLogoUrl }
+  { id: "cli:deepseek", brand: "deepseek", displayName: "DeepSeek CLI", shortLabel: "DeepSeek", iconSrc: deepseekLogoUrl },
+  { id: "cli:cursor", brand: "cursor", displayName: "Cursor CLI", shortLabel: "Cursor", iconSrc: cursorLogoUrl },
+  { id: "cli:copilot", brand: "copilot", displayName: "GitHub Copilot CLI", shortLabel: "Copilot", iconSrc: copilotLogoUrl }
 ] as const satisfies readonly CliRuntimePresentation[]);
 
 const runtimePresentationById = new Map(

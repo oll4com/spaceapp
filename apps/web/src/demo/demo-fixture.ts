@@ -13,6 +13,7 @@ import type {
   CodexHistoryPurgePreviewResponse,
   CodexHistoryPurgeResponse,
   CodexLbSpeedDefaultsResponse,
+  CodexResetCreditAvailability,
   CodexUsageAccountList,
   Event,
   HostMemoryDetails,
@@ -71,6 +72,7 @@ export type DemoFixture = {
   skills: Skill[];
   codexEnvironment: CodexEnvironment;
   codexUsageAccounts: CodexUsageAccountList;
+  codexResetCredits: CodexResetCreditAvailability;
   cliSessionStats: CliSessionStats;
   cliSessionReap: CliSessionReapResponse;
   hostMemoryDetails: HostMemoryDetails;
@@ -154,6 +156,40 @@ function createDemoMemoryWorkspace(): DemoFixture["memoryWorkspace"] {
     recordId: null,
     position: { clustered: { x: 14, y: -12 }, relations: { x: 22, y: -8 } }
   };
+  const juneSourcePath = "/demo/memory/gemini_history_2026-06.md";
+  const julySourcePath = "/demo/memory/gemini_history_2026-07.md";
+  const juneSourceNode = {
+    id: "source:demo-gemini-history-2026-06",
+    type: "SOURCE" as const,
+    label: "gemini_history_2026-06.md",
+    sourcePath: juneSourcePath,
+    recordId: null,
+    position: { clustered: { x: -34, y: -26 }, relations: { x: -40, y: -20 } }
+  };
+  const julySourceNode = {
+    id: "source:demo-gemini-history-2026-07",
+    type: "SOURCE" as const,
+    label: "gemini_history_2026-07.md",
+    sourcePath: julySourcePath,
+    recordId: null,
+    position: { clustered: { x: 30, y: 18 }, relations: { x: 36, y: 16 } }
+  };
+  const juneMemoryNode = {
+    id: "memory:demo-gemini-history-2026-06",
+    type: "MEMORY" as const,
+    label: "June canonical memory",
+    sourcePath: juneSourcePath,
+    recordId: "memory:demo-gemini-history-2026-06",
+    position: { clustered: { x: -28, y: -18 }, relations: { x: -30, y: -14 } }
+  };
+  const julyMemoryNode = {
+    id: "memory:demo-gemini-history-2026-07",
+    type: "MEMORY" as const,
+    label: "July canonical memory",
+    sourcePath: julySourcePath,
+    recordId: "memory:demo-gemini-history-2026-07",
+    position: { clustered: { x: 24, y: 12 }, relations: { x: 28, y: 10 } }
+  };
   const edges = [
     { id: "memory_edge:demo-source", type: "CONTAINS" as const, source: sourceNode.id, target: memoryNode.id },
     {
@@ -164,7 +200,9 @@ function createDemoMemoryWorkspace(): DemoFixture["memoryWorkspace"] {
       origin: "EXPLICIT_TAG" as const,
       confidence: 1,
       evidence: "Sanitized fixture tag: ui parity."
-    }
+    },
+    { id: "memory_edge:demo-june-source", type: "CONTAINS" as const, source: juneSourceNode.id, target: juneMemoryNode.id },
+    { id: "memory_edge:demo-july-source", type: "CONTAINS" as const, source: julySourceNode.id, target: julyMemoryNode.id }
   ];
   const issue: MemoryGraphIssue = {
     id: "memory_issue:demo-review",
@@ -205,6 +243,20 @@ function createDemoMemoryWorkspace(): DemoFixture["memoryWorkspace"] {
     node,
     record: null,
     relatedNodes: [memoryNode],
+    relatedEdges: edges.filter((edge) => edge.source === node.id || edge.target === node.id),
+    issues: []
+  });
+  const monthlyMemoryDetail = (node: typeof juneMemoryNode | typeof julyMemoryNode): MemoryGraphNodeDetail => ({
+    node,
+    record: null,
+    relatedNodes: [],
+    relatedEdges: edges.filter((edge) => edge.source === node.id || edge.target === node.id),
+    issues: []
+  });
+  const monthlySourceDetail = (node: typeof juneSourceNode | typeof julySourceNode): MemoryGraphNodeDetail => ({
+    node,
+    record: null,
+    relatedNodes: [node.id === juneSourceNode.id ? juneMemoryNode : julyMemoryNode],
     relatedEdges: edges.filter((edge) => edge.source === node.id || edge.target === node.id),
     issues: []
   });
@@ -272,8 +324,8 @@ function createDemoMemoryWorkspace(): DemoFixture["memoryWorkspace"] {
       sourceHash,
       revisionHash: "d".repeat(64),
       isStale: false,
-      summary: { sourceCount: 1, recordCount: 1, nodeCount: 3, edgeCount: 2, issueCount: 1 },
-      nodes: [sourceNode, memoryNode, topicNode],
+      summary: { sourceCount: 3, recordCount: 3, nodeCount: 7, edgeCount: 4, issueCount: 1 },
+      nodes: [sourceNode, memoryNode, topicNode, juneSourceNode, juneMemoryNode, julySourceNode, julyMemoryNode],
       edges,
       layoutVersion: 2,
       taxonomyVersion: 2,
@@ -284,14 +336,20 @@ function createDemoMemoryWorkspace(): DemoFixture["memoryWorkspace"] {
         roomId: null,
         sourcePath: null,
         lifecycleStatus: null,
-        relationMode: "RELATIONS"
-      }
+        relationMode: "RELATIONS",
+        month: null
+      },
+      months: ["2026-06", "2026-07"]
     },
     issues: [issue],
     nodeDetails: {
       [sourceNode.id]: structuralDetail(sourceNode),
       [memoryNode.id]: detail,
-      [topicNode.id]: structuralDetail(topicNode)
+      [topicNode.id]: structuralDetail(topicNode),
+      [juneSourceNode.id]: monthlySourceDetail(juneSourceNode),
+      [juneMemoryNode.id]: monthlyMemoryDetail(juneMemoryNode),
+      [julySourceNode.id]: monthlySourceDetail(julySourceNode),
+      [julyMemoryNode.id]: monthlyMemoryDetail(julyMemoryNode)
     },
     changeSets: [changeSet],
     maintenanceCommand: {
@@ -460,11 +518,24 @@ export function createDemoFixture(): DemoFixture {
       id: "clipboard:demo-safety-note",
       text: clipboardSafetyText,
       source: "AGENT_NOTE",
+      title: null,
       roomId: rooms[0]!.id,
       paneId: "pane:demo-chat",
       paneTitle: "Product Copilot",
       occurrenceCount: 1,
       characterCount: Array.from(clipboardSafetyText).length,
+      createdAt: DEMO_FIXED_AT,
+      lastUsedAt: DEMO_FIXED_AT
+    }, {
+      id: "clipboard:demo-plan",
+      text: "# Demo rollout plan\n\n1. Enable the feature flag.\n2. Run scoped tests.\n3. Deploy and verify.",
+      source: "PLAN",
+      title: "Demo rollout plan",
+      roomId: rooms[0]!.id,
+      paneId: "pane:demo-chat",
+      paneTitle: "Product Copilot",
+      occurrenceCount: 1,
+      characterCount: 98,
       createdAt: DEMO_FIXED_AT,
       lastUsedAt: DEMO_FIXED_AT
     }],
@@ -614,6 +685,7 @@ export function createDemoFixture(): DemoFixture {
       updatedAt: DEMO_FIXED_AT
     }],
     codexEnvironment: {
+      isCodexEnabled: true,
       codexHome: "/demo/codex-home",
       stateDbPath: "/demo/codex-home/state.sqlite",
       config: {
@@ -661,10 +733,18 @@ export function createDemoFixture(): DemoFixture {
         label: "Demo account",
         fiveHourRemainingPercent: 91,
         weeklyRemainingPercent: 84,
+        weeklyResetAt: "2026-08-02T09:30:00.000Z",
         sampledAt: DEMO_FIXED_AT
       }],
       pagination: { page: 1, pageSize: 1, totalItems: 1, totalPages: 1 },
       source: "deterministic-demo-fixture",
+      isStale: false,
+      error: null,
+      checkedAt: DEMO_FIXED_AT
+    },
+    codexResetCredits: {
+      data: [{ accountId: "account:demo-public", availableCreditCount: 2 }],
+      source: "vm214-codex-lb",
       isStale: false,
       error: null,
       checkedAt: DEMO_FIXED_AT

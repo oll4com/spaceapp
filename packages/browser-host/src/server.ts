@@ -4,7 +4,9 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { dirname } from "node:path";
 import { BrowserHostError } from "./errors.js";
 import { BrowserHostFrameDecoder, encodeBrowserHostFrame } from "./framing.js";
-import type { BrowserHostBinaryFrame, BrowserHostMethod, BrowserHostRequestHandler, BrowserHostStreamHandle } from "./types.js";
+import type { BrowserHostAudioChunk, BrowserHostAudioStreamHandle, BrowserHostBinaryFrame, BrowserHostMethod, BrowserHostRequestHandler, BrowserHostStreamHandle } from "./types.js";
+
+type BrowserHostAnyStreamHandle = BrowserHostStreamHandle | BrowserHostAudioStreamHandle;
 
 interface BrowserHostRequest {
   kind: "request";
@@ -29,7 +31,8 @@ function parseRequest(value: unknown): BrowserHostRequest {
   const methods: BrowserHostMethod[] = [
     "health", "startOrRestore", "getActive", "navigate", "setViewport", "setStreamMode", "action", "captureFrame", "stopPane",
     "stopRoom", "listPages", "createPage", "activatePage", "closePage", "acquireControl", "heartbeatControl", "releaseControl",
-    "dispatchInput", "input", "createCapture", "getCapture", "stopCapture", "cancelCapture", "diagnostics", "startFrameStream", "stopFrameStream"
+    "dispatchInput", "input", "createCapture", "getCapture", "stopCapture", "cancelCapture", "diagnostics", "startFrameStream",
+    "stopFrameStream", "startAudioStream", "stopAudioStream"
   ];
   if (!methods.includes(value.method as BrowserHostMethod)) {
     throw new BrowserHostError("BROWSER_HOST_BAD_REQUEST", `Unsupported Browser host IPC method ${value.method}.`);
@@ -44,6 +47,30 @@ function parseRequest(value: unknown): BrowserHostRequest {
 
 function send(socket: Socket, value: unknown): void {
   if (!socket.destroyed) socket.write(encodeBrowserHostFrame(value));
+}
+
+// The server processes requests serially per connection. A single hung
+// handler call (e.g. a CDP request against a crashed Chrome) would otherwise
+// block every later request on the same socket for its full client timeout.
+// Race each handler call against a bound so the queue can move on and the
+// caller receives a timeout instead of hanging until the client aborts.
+async function withRequestTimeout(run: () => Promise<unknown>, method: string, params: Record<string, unknown>, configuredMs?: number): Promise<unknown> {
+  let timer: NodeJS.Timeout | undefined;
+  const isLongRunningAction = method === "action" && isRecord(params.input) && params.input.type === "record";
+  const timeoutMs = isLongRunningAction ? 60 * 60_000 : (configuredMs ?? 30_000);
+  try {
+    return await Promise.race([
+      run(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new BrowserHostError("BROWSER_HOST_TIMEOUT", `Browser host ${method} request timed out after ${timeoutMs}ms.`, { method, timeoutMs }));
+        }, timeoutMs);
+        timer.unref();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function serializedError(error: unknown) {
@@ -88,6 +115,7 @@ export async function createBrowserHostServer(options: {
   socketPath: string;
   socketMode?: number;
   handler: BrowserHostRequestHandler;
+  requestTimeoutMs?: number;
 }): Promise<BrowserHostServer> {
   await mkdir(dirname(options.socketPath), { recursive: true, mode: 0o700 });
   await removeStaleSocket(options.socketPath);
@@ -95,7 +123,7 @@ export async function createBrowserHostServer(options: {
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
-    handleConnection(socket, options.handler);
+    handleConnection(socket, options.handler, options.requestTimeoutMs);
   });
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => { server.off("listening", onListening); reject(error); };
@@ -117,9 +145,9 @@ export async function createBrowserHostServer(options: {
   };
 }
 
-function handleConnection(socket: Socket, handler: BrowserHostRequestHandler): void {
+function handleConnection(socket: Socket, handler: BrowserHostRequestHandler, requestTimeoutMs?: number): void {
   const decoder = new BrowserHostFrameDecoder();
-  const streams = new Map<string, BrowserHostStreamHandle>();
+  const streams = new Map<string, BrowserHostAnyStreamHandle>();
   let queue = Promise.resolve();
   socket.on("data", (chunk) => {
     let messages: unknown[];
@@ -130,7 +158,7 @@ function handleConnection(socket: Socket, handler: BrowserHostRequestHandler): v
       socket.destroy();
       return;
     }
-    for (const message of messages) queue = queue.then(() => handleRequest(socket, handler, streams, message)).catch(() => undefined);
+    for (const message of messages) queue = queue.then(() => handleRequest(socket, handler, streams, message, requestTimeoutMs)).catch(() => undefined);
   });
   socket.once("close", () => {
     for (const stream of streams.values()) void stream.stop();
@@ -142,8 +170,9 @@ function handleConnection(socket: Socket, handler: BrowserHostRequestHandler): v
 async function handleRequest(
   socket: Socket,
   handler: BrowserHostRequestHandler,
-  streams: Map<string, BrowserHostStreamHandle>,
-  raw: unknown
+  streams: Map<string, BrowserHostAnyStreamHandle>,
+  raw: unknown,
+  requestTimeoutMs?: number
 ): Promise<void> {
   let request: BrowserHostRequest;
   try {
@@ -186,8 +215,39 @@ async function handleRequest(
       if (stream) await stream.stop();
       streams.delete(id);
       result = { stopped: Boolean(stream) };
+    } else if (request.method === "startAudioStream") {
+      let streamId: string | null = null;
+      const earlyChunks: BrowserHostAudioChunk[] = [];
+      const stream = await handler.startAudioStream(request.params, (chunk: BrowserHostAudioChunk) => {
+        if (!streamId) {
+          if (earlyChunks.length < 4) earlyChunks.push(chunk);
+          return;
+        }
+        send(socket, {
+          kind: "event",
+          subscriptionId: streamId,
+          event: { ...chunk, dataBase64: chunk.data.toString("base64"), data: undefined }
+        });
+      });
+      streamId = stream.id;
+      streams.set(stream.id, stream);
+      result = { id: stream.id, sampleRate: stream.sampleRate, channels: stream.channels, format: stream.format };
+      for (const chunk of earlyChunks) {
+        send(socket, {
+          kind: "event",
+          subscriptionId: stream.id,
+          event: { ...chunk, dataBase64: chunk.data.toString("base64"), data: undefined }
+        });
+      }
+    } else if (request.method === "stopAudioStream") {
+      const id = String(request.params.subscriptionId ?? "");
+      const stream = streams.get(id);
+      if (stream) await stream.stop();
+      streams.delete(id);
+      result = { stopped: Boolean(stream) };
     } else {
-      result = await handler.request(request.method, request.params);
+      const method = request.method as Exclude<BrowserHostMethod, "health" | "startFrameStream" | "stopFrameStream" | "startAudioStream" | "stopAudioStream">;
+      result = await withRequestTimeout(() => handler.request(method, request.params), method, request.params, requestTimeoutMs);
     }
     send(socket, { kind: "response", requestId: request.requestId, ok: true, result });
   } catch (error) {

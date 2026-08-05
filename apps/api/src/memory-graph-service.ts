@@ -1,9 +1,12 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type { MemoryGraphSnapshot, MemoryGraphSource } from "@space/memory-graph";
 
 export interface MemoryGraphApiService {
   getSnapshot(): Promise<{ snapshot: MemoryGraphSnapshot; isStale: boolean }>;
   getCachedSnapshot(): Promise<MemoryGraphSnapshot | null>;
+  getArchiveSnapshot(): Promise<MemoryGraphSnapshot>;
+  listAvailableMonths(): Promise<string[]>;
   getSourceContent(sourcePath: string): Promise<string>;
   invalidateCachedSnapshot(): Promise<void>;
 }
@@ -31,10 +34,48 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
   let initialLoad: Promise<MemoryGraphSnapshot> | null = null;
   let graphModule: Promise<typeof import("@space/memory-graph")> | null = null;
   let invalidatedSourceHash: string | null = null;
+  let archiveSnapshot: MemoryGraphSnapshot | null = null;
+  let archiveBuild: Promise<MemoryGraphSnapshot> | null = null;
+  const memoryDir = dirname(options.indexPath);
+  const monthlyMemoryPattern = /^gemini_history_(\d{4}-\d{2})\.md$/;
 
   const loadGraphModule = () => {
     graphModule ??= import("@space/memory-graph");
     return graphModule;
+  };
+  const listMonthlyPaths = async (): Promise<string[]> => {
+    const entries = await readdir(memoryDir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && monthlyMemoryPattern.test(entry.name))
+      .map((entry) => join(memoryDir, entry.name))
+      .sort();
+  };
+  const readArchiveSources = async (): Promise<MemoryGraphSource[]> => {
+    const monthlyPaths = await listMonthlyPaths();
+    const [indexContent, ...monthlyContents] = await Promise.all([
+      readFile(options.indexPath, "utf8"),
+      ...monthlyPaths.map((path) => readFile(path, "utf8"))
+    ]);
+    return [
+      { path: options.indexPath, kind: "INDEX", content: indexContent },
+      ...monthlyPaths.map((path, index) => ({ path, kind: "MONTHLY" as const, content: monthlyContents[index]! }))
+    ];
+  };
+  const buildAndPersistArchiveSnapshot = async (
+    previousSnapshot: MemoryGraphSnapshot | null
+  ): Promise<MemoryGraphSnapshot> => {
+    const graph = await loadGraphModule();
+    const store = graph.createMemoryGraphSnapshotStore({
+      rootDir: options.rootDir,
+      filename: graph.ALL_MONTHS_SNAPSHOT_FILENAME
+    });
+    const built = graph.buildMemoryGraphSnapshot({
+      sources: await readArchiveSources(),
+      generatedAt: (options.now?.() ?? new Date()).toISOString(),
+      previousSnapshot
+    });
+    await store.write(built);
+    return built;
   };
   const readSources = async (): Promise<MemoryGraphSource[]> => [
     { path: options.indexPath, kind: "INDEX", content: await readFile(options.indexPath, "utf8") },
@@ -69,6 +110,28 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
       return invalidatedSourceHash === "*" || persisted?.sourceHash === invalidatedSourceHash || !isCurrentSnapshot(persisted)
         ? null
         : persisted;
+    },
+    async getArchiveSnapshot() {
+      if (archiveSnapshot) return archiveSnapshot;
+      const graph = await loadGraphModule();
+      const store = graph.createMemoryGraphSnapshotStore({
+        rootDir: options.rootDir,
+        filename: graph.ALL_MONTHS_SNAPSHOT_FILENAME
+      });
+      const persisted = await store.read();
+      if (persisted && isCurrentSnapshot(persisted)) {
+        archiveSnapshot = persisted;
+        return archiveSnapshot;
+      }
+      archiveBuild ??= buildAndPersistArchiveSnapshot(persisted);
+      archiveSnapshot = await archiveBuild;
+      return archiveSnapshot;
+    },
+    async listAvailableMonths() {
+      const paths = await listMonthlyPaths();
+      return paths
+        .map((path) => monthlyMemoryPattern.exec(basename(path))?.[1])
+        .filter((month): month is string => Boolean(month));
     },
     async invalidateCachedSnapshot() {
       const graph = await loadGraphModule();

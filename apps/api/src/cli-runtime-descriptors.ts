@@ -1,6 +1,17 @@
 import type { AgentRuntimeAuthMode, AgentRuntimeAuthState } from "@space/contracts";
 
-export type CliRuntimeKey = "codex" | "claude" | "gemini" | "opencode" | "qwen" | "kimi" | "grok" | "deepseek";
+export type CliRuntimeKey =
+  | "codex"
+  | "claude"
+  | "gemini"
+  | "opencode"
+  | "autohand"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "deepseek"
+  | "cursor"
+  | "copilot";
 
 export interface CliRuntimeDescriptor {
   key: CliRuntimeKey;
@@ -28,69 +39,8 @@ export interface CliRuntimeDescriptor {
   loginBootstrapReason: string | null;
 }
 
-export interface CliRuntimeLayout {
-  publicDistribution: boolean;
-  runtimeHome: string;
-  codexHome: string;
-  providerRoots: Readonly<Record<CliRuntimeKey, string>>;
-}
-
-export type CliRuntimeAuthPolicy = Pick<
-  CliRuntimeDescriptor,
-  "authMode" | "missingAuthState" | "missingAuthReason" | "loginAction"
->;
-
-export function resolveOpenCodeAuthPolicy(
-  env: Record<string, string | undefined> = process.env
-): CliRuntimeAuthPolicy {
-  if (env.SPACE_PUBLIC_DISTRIBUTION === "true") {
-    return {
-      authMode: "API_KEY",
-      missingAuthState: "SETUP_REQUIRED",
-      missingAuthReason: "OpenCode provider authentication is required. Open the official login flow to continue.",
-      loginAction: "login"
-    };
-  }
-  return {
-    authMode: "MANAGED",
-    missingAuthState: "UNAVAILABLE",
-    missingAuthReason: "OpenCode managed credentials have not been verified by the operator.",
-    loginAction: null
-  };
-}
-
-export function resolveCliRuntimeLayout(
-  env: Record<string, string | undefined> = process.env
-): CliRuntimeLayout {
-  const publicDistribution = env.SPACE_PUBLIC_DISTRIBUTION === "true";
-  const runtimeHome = publicDistribution ? "/var/lib/spaceapp-cli" : "/var/lib/spaceapp-user";
-  const codexHome = publicDistribution
-    ? `${runtimeHome}/providers/codex`
-    : `${runtimeHome}/.codex`;
-  const providerRoot = (key: CliRuntimeKey, legacyName = `space-${key}`) =>
-    publicDistribution ? `${runtimeHome}/providers/${key}` : `${codexHome}/${legacyName}`;
-
-  return {
-    publicDistribution,
-    runtimeHome,
-    codexHome,
-    providerRoots: {
-      codex: codexHome,
-      claude: providerRoot("claude", "space-claude-legacy"),
-      gemini: providerRoot("gemini"),
-      opencode: providerRoot("opencode"),
-      qwen: providerRoot("qwen"),
-      kimi: providerRoot("kimi"),
-      grok: providerRoot("grok"),
-      deepseek: providerRoot("deepseek")
-    }
-  };
-}
-
-const cliRuntimeLayout = resolveCliRuntimeLayout();
-const { runtimeHome, codexHome, providerRoots } = cliRuntimeLayout;
-const parityCwdLabel = cliRuntimeLayout.publicDistribution ? "container workspace" : "/etc cwd";
-const openCodeAuthPolicy = resolveOpenCodeAuthPolicy();
+const proxmoxHome = "/var/lib/spaceapp-user";
+const codexHome = `${proxmoxHome}/.codex`;
 
 export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
   {
@@ -106,8 +56,8 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     missingAuthState: "LOGIN_REQUIRED",
     missingAuthReason: "Codex CLI sign-in is required. Open its device-code login in Space to continue.",
     loginAction: "login",
-    credentialObservationAction: null,
-    credentialSmokeMarker: null,
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_CODEX_OK",
     loginBootstrapEnv: null,
     loginBootstrapRuntimeEnv: null,
     stateRoot: codexHome,
@@ -115,32 +65,32 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     environment: { CODEX_HOME: codexHome },
     nativeResumeArgs: null,
     defaultModelId: null,
-    credentialVerifiedReason: `Codex CLI direct VS Code/Codex parity wrapper, ${parityCwdLabel}, and credential smoke are verified.`,
+    credentialVerifiedReason: "Codex CLI direct VS Code/Codex parity wrapper, /etc cwd, and credential smoke are verified.",
     loginBootstrapReason: null
   },
   {
     key: "claude",
     id: "cli:claude",
     providerId: "anthropic",
-    providerName: "Anthropic",
+    providerName: "Claude Code via Legacy",
     agentName: "Claude Code CLI",
     commandName: "claude-vscode-parity",
     commandEnv: "SPACE_CLI_CLAUDE_COMMAND",
-    credentialSmokeEnv: "SPACE_CLI_CLAUDE_CREDENTIAL_SMOKE",
-    authMode: "API_KEY",
-    missingAuthState: "SETUP_REQUIRED",
-    missingAuthReason: "Claude Code authentication is required. Add an Anthropic API key or use the official login flow.",
-    loginAction: "login",
-    credentialObservationAction: null,
-    credentialSmokeMarker: null,
+    credentialSmokeEnv: "SPACE_CLI_CLAUDE_LEGACY_CREDENTIAL_SMOKE",
+    authMode: "MANAGED",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "Claude Code managed credentials have not been verified by the operator.",
+    loginAction: null,
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_CLAUDE_OK",
     loginBootstrapEnv: null,
     loginBootstrapRuntimeEnv: null,
-    stateRoot: providerRoots.claude,
-    tempDir: `${providerRoots.claude}/tmp`,
-    environment: { CLAUDE_CONFIG_DIR: providerRoots.claude, DISABLE_UPDATES: "1" },
+    stateRoot: `${codexHome}/space-claude-legacy`,
+    tempDir: `${codexHome}/space-claude-legacy/tmp`,
+    environment: { CLAUDE_CONFIG_DIR: `${codexHome}/space-claude-legacy` },
     nativeResumeArgs: ["--resume"],
     defaultModelId: null,
-    credentialVerifiedReason: `Claude Code direct Anthropic parity wrapper, ${parityCwdLabel}, and credential smoke are verified.`,
+    credentialVerifiedReason: "Claude Code via Legacy direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
   {
@@ -154,18 +104,18 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     credentialSmokeEnv: "SPACE_CLI_GEMINI_CREDENTIAL_SMOKE",
     authMode: "BROWSER_OAUTH",
     missingAuthState: "LOGIN_REQUIRED",
-    missingAuthReason: "Gemini CLI Google OAuth login is required. Open its terminal-only login in Space to continue.",
+    missingAuthReason: "Gemini now requires Google Antigravity OAuth. Open its terminal login in Space to continue.",
     loginAction: "login",
     credentialObservationAction: "credential-observation",
     credentialSmokeMarker: "SPACE_GEMINI_OK",
     loginBootstrapEnv: null,
     loginBootstrapRuntimeEnv: null,
-    stateRoot: providerRoots.gemini,
-    tempDir: `${providerRoots.gemini}/tmp`,
-    environment: { GEMINI_CLI_HOME: providerRoots.gemini },
-    nativeResumeArgs: ["--resume", "latest"],
+    stateRoot: `${codexHome}/space-gemini`,
+    tempDir: `${codexHome}/space-gemini/tmp`,
+    environment: { ANTIGRAVITY_HOME: `${codexHome}/space-gemini/home` },
+    nativeResumeArgs: ["--continue"],
     defaultModelId: null,
-    credentialVerifiedReason: `Gemini CLI direct operator parity wrapper, Google browser OAuth, ${parityCwdLabel}, MCP access, and credential smoke are verified.`,
+    credentialVerifiedReason: "Google Antigravity CLI migration wrapper, browser OAuth, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
   {
@@ -177,24 +127,50 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     commandName: "opencode-vscode-parity",
     commandEnv: "SPACE_CLI_OPENCODE_COMMAND",
     credentialSmokeEnv: "SPACE_CLI_OPENCODE_CREDENTIAL_SMOKE",
-    ...openCodeAuthPolicy,
-    credentialObservationAction: null,
-    credentialSmokeMarker: null,
+    authMode: "MANAGED",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "OpenCode managed credentials have not been verified by the operator.",
+    loginAction: null,
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_OPENCODE_OK",
     loginBootstrapEnv: null,
     loginBootstrapRuntimeEnv: null,
-    stateRoot: providerRoots.opencode,
-    tempDir: `${providerRoots.opencode}/tmp`,
+    stateRoot: `${codexHome}/space-opencode`,
+    tempDir: `${codexHome}/space-opencode/tmp`,
     environment: {
-      XDG_CONFIG_HOME: cliRuntimeLayout.publicDistribution
-        ? `${providerRoots.opencode}/config`
-        : `${runtimeHome}/.config`,
-      XDG_DATA_HOME: `${providerRoots.opencode}/data`,
-      XDG_CACHE_HOME: `${providerRoots.opencode}/cache`,
-      XDG_STATE_HOME: `${providerRoots.opencode}/state`
+      XDG_CONFIG_HOME: `${proxmoxHome}/.config`,
+      XDG_DATA_HOME: `${codexHome}/space-opencode/data`,
+      XDG_CACHE_HOME: `${codexHome}/space-opencode/cache`,
+      XDG_STATE_HOME: `${codexHome}/space-opencode/state`
     },
     nativeResumeArgs: ["--continue"],
     defaultModelId: null,
-    credentialVerifiedReason: `OpenCode CLI direct operator parity wrapper, ${parityCwdLabel}, MCP access, and credential smoke are verified.`,
+    credentialVerifiedReason: "OpenCode CLI direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "autohand",
+    id: "cli:autohand",
+    providerId: "openrouter",
+    providerName: "OpenRouter",
+    agentName: "Autohand Code CLI",
+    commandName: "autohand-vscode-parity",
+    commandEnv: "SPACE_CLI_AUTOHAND_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_AUTOHAND_CREDENTIAL_SMOKE",
+    authMode: "API_KEY",
+    missingAuthState: "SETUP_REQUIRED",
+    missingAuthReason: "Autohand account and OpenRouter API key setup are required. Open its protected setup terminal in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_AUTOHAND_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-autohand`,
+    tempDir: `${codexHome}/space-autohand/tmp`,
+    environment: { AUTOHAND_HOME: `${codexHome}/space-autohand` },
+    nativeResumeArgs: null,
+    defaultModelId: "openrouter/auto",
+    credentialVerifiedReason: "Autohand Code CLI patched distribution, isolated account and OpenRouter credentials, /etc parity, approved MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
   {
@@ -214,15 +190,15 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     credentialSmokeMarker: "SPACE_QWEN_OK",
     loginBootstrapEnv: null,
     loginBootstrapRuntimeEnv: null,
-    stateRoot: providerRoots.qwen,
-    tempDir: `${providerRoots.qwen}/tmp`,
+    stateRoot: `${codexHome}/space-qwen`,
+    tempDir: `${codexHome}/space-qwen/tmp`,
     environment: {
-      QWEN_HOME: providerRoots.qwen,
-      QWEN_RUNTIME_DIR: `${providerRoots.qwen}/runtime`
+      QWEN_HOME: `${codexHome}/space-qwen`,
+      QWEN_RUNTIME_DIR: `${codexHome}/space-qwen/runtime`
     },
     nativeResumeArgs: ["--continue"],
     defaultModelId: null,
-    credentialVerifiedReason: `Qwen Code CLI direct operator parity wrapper, selected provider credentials, ${parityCwdLabel}, MCP access, and credential smoke are verified.`,
+    credentialVerifiedReason: "Qwen Code CLI direct operator parity wrapper, selected provider credentials, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
   {
@@ -238,16 +214,16 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     missingAuthState: "LOGIN_REQUIRED",
     missingAuthReason: "Kimi Code OAuth login is required. Open its login in Space to continue.",
     loginAction: "login",
-    credentialObservationAction: null,
-    credentialSmokeMarker: null,
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_KIMI_OK",
     loginBootstrapEnv: "SPACE_CLI_KIMI_LOGIN_BOOTSTRAP",
     loginBootstrapRuntimeEnv: "SPACE_KIMI_LOGIN_BOOTSTRAP",
-    stateRoot: providerRoots.kimi,
-    tempDir: `${providerRoots.kimi}/tmp`,
-    environment: { KIMI_CODE_HOME: providerRoots.kimi },
+    stateRoot: `${codexHome}/space-kimi`,
+    tempDir: `${codexHome}/space-kimi/tmp`,
+    environment: { KIMI_CODE_HOME: `${codexHome}/space-kimi` },
     nativeResumeArgs: ["--session"],
     defaultModelId: null,
-    credentialVerifiedReason: `Kimi Code subscription direct operator parity wrapper, ${parityCwdLabel}, MCP access, and credential smoke are verified.`,
+    credentialVerifiedReason: "Kimi Code subscription direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: "Kimi Code CLI is enabled only for first-run Kimi Code OAuth login; subscription credential smoke is still pending."
   },
   {
@@ -263,16 +239,16 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     missingAuthState: "LOGIN_REQUIRED",
     missingAuthReason: "Grok Build sign-in is required. Open its device-code login in Space to continue.",
     loginAction: "login",
-    credentialObservationAction: null,
-    credentialSmokeMarker: null,
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_GROK_OK",
     loginBootstrapEnv: "SPACE_CLI_GROK_LOGIN_BOOTSTRAP",
     loginBootstrapRuntimeEnv: "SPACE_GROK_LOGIN_BOOTSTRAP",
-    stateRoot: providerRoots.grok,
-    tempDir: `${providerRoots.grok}/tmp`,
-    environment: { GROK_HOME: providerRoots.grok },
+    stateRoot: `${codexHome}/space-grok`,
+    tempDir: `${codexHome}/space-grok/tmp`,
+    environment: { GROK_HOME: `${codexHome}/space-grok` },
     nativeResumeArgs: ["--resume"],
     defaultModelId: null,
-    credentialVerifiedReason: `Grok Build account direct operator parity wrapper, ${parityCwdLabel}, MCP access, and credential smoke are verified.`,
+    credentialVerifiedReason: "Grok Build account direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: "Grok Build CLI is enabled only for first-run xAI device-code login; account credential smoke is still pending."
   },
   {
@@ -288,16 +264,69 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     missingAuthState: "SETUP_REQUIRED",
     missingAuthReason: "DeepSeek API key setup is required. Open its protected setup terminal in Space to continue.",
     loginAction: "login",
-    credentialObservationAction: null,
+    credentialObservationAction: "credential-observation",
     credentialSmokeMarker: "SPACE_DEEPSEEK_OK",
     loginBootstrapEnv: null,
     loginBootstrapRuntimeEnv: null,
-    stateRoot: providerRoots.deepseek,
-    tempDir: `${providerRoots.deepseek}/tmp`,
-    environment: { DEEPSEEK_HOME: providerRoots.deepseek },
+    stateRoot: `${codexHome}/space-deepseek`,
+    tempDir: `${codexHome}/space-deepseek/tmp`,
+    environment: { DEEPSEEK_HOME: `${codexHome}/space-deepseek` },
     nativeResumeArgs: null,
-    defaultModelId: "deepseek-v4-flash",
-    credentialVerifiedReason: "DeepSeek CLI 0.1.1 text-chat wrapper, fixed deepseek-v4-flash model, and credential smoke are verified.",
+    defaultModelId: null,
+    credentialVerifiedReason: "DeepSeek CLI 0.1.1 text-chat wrapper, live provider model catalog, and credential smoke are verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "cursor",
+    id: "cli:cursor",
+    providerId: "cursor",
+    providerName: "Cursor",
+    agentName: "Cursor CLI",
+    commandName: "cursor-vscode-parity",
+    commandEnv: "SPACE_CLI_CURSOR_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_CURSOR_CREDENTIAL_SMOKE",
+    authMode: "BROWSER_OAUTH",
+    missingAuthState: "LOGIN_REQUIRED",
+    missingAuthReason: "Cursor CLI OAuth login is required. Open its browser login in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_CURSOR_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-cursor`,
+    tempDir: `${codexHome}/space-cursor/tmp`,
+    environment: {
+      CURSOR_CONFIG_DIR: `${codexHome}/space-cursor`,
+      AGENT_CLI_CREDENTIAL_STORE: "file"
+    },
+    nativeResumeArgs: ["--continue"],
+    defaultModelId: null,
+    credentialVerifiedReason: "Cursor CLI direct operator parity wrapper, browser OAuth, /etc cwd, MCP access, and credential smoke are verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "copilot",
+    id: "cli:copilot",
+    providerId: "github",
+    providerName: "GitHub",
+    agentName: "GitHub Copilot CLI",
+    commandName: "copilot-vscode-parity",
+    commandEnv: "SPACE_CLI_COPILOT_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_COPILOT_CREDENTIAL_SMOKE",
+    authMode: "DEVICE_CODE",
+    missingAuthState: "LOGIN_REQUIRED",
+    missingAuthReason: "GitHub Copilot CLI login is required. Open its device-code login in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_COPILOT_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-copilot`,
+    tempDir: `${codexHome}/space-copilot/tmp`,
+    environment: { COPILOT_HOME: `${codexHome}/space-copilot` },
+    nativeResumeArgs: ["--continue"],
+    defaultModelId: null,
+    credentialVerifiedReason: "GitHub Copilot CLI direct operator parity wrapper, GitHub device login, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   }
 ];
@@ -317,11 +346,7 @@ export function configuredCliRuntimeCommands(env: NodeJS.ProcessEnv): Record<Cli
 
 export function configuredCliCredentialSmoke(env: NodeJS.ProcessEnv): Record<CliRuntimeKey, boolean> {
   return Object.fromEntries(
-    cliRuntimeDescriptors.map((descriptor) => [
-      descriptor.key,
-      env[descriptor.credentialSmokeEnv] === "true" ||
-        (descriptor.key === "claude" && env.SPACE_CLI_CLAUDE_LEGACY_CREDENTIAL_SMOKE === "true")
-    ])
+    cliRuntimeDescriptors.map((descriptor) => [descriptor.key, env[descriptor.credentialSmokeEnv] === "true"])
   ) as Record<CliRuntimeKey, boolean>;
 }
 

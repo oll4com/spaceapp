@@ -1,11 +1,13 @@
 import { canonicalizeUserLinkUrl, cliToggleRuntimeIds } from "@space/contracts";
 import type {
   AgentRuntime,
+  AgentRuntimeRegistry,
   AgentPaneSession,
   AgentPaneSettingsInput,
   Artifact,
   ClipboardItem,
   CliToggleRuntimeId,
+  CodexResetCreditRedemptionResponse,
   UpdateCodexCliModeDefaultsInput,
   CreateClipboardItemRequest,
   CreateRoomPanesRequest,
@@ -17,6 +19,11 @@ import type {
   Pane,
   Room,
   RoomAgentSession,
+  SetupConnection,
+  SetupConnectionCheckEvent,
+  SetupConnectionCheckReplay,
+  SetupConnectionCheckRun,
+  SetupOverview,
   UpdateProviderSettingsInput,
   UpdateTelegramIntegrationInput,
   UpdateUserLinkRequest,
@@ -60,6 +67,7 @@ type DemoMemoryGraphQuery = {
   roomId?: string;
   sourcePath?: string;
   lifecycleStatus?: "ACTIVE" | "ARCHIVED";
+  month?: string;
   relationMode?: "CLUSTERED" | "RELATIONS";
   page?: number;
   pageSize?: number;
@@ -70,6 +78,48 @@ function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSumm
   return summary;
 }
 
+type DemoSetupConnectionResult = Pick<
+  SetupConnection,
+  "functionalState" | "liveVerificationState" | "reasonCode"
+>;
+
+interface DemoSetupCheckRunState {
+  events: SetupConnectionCheckEvent[];
+  nextConnectionIndex: number;
+  run: SetupConnectionCheckRun;
+}
+
+const demoProviderNames: Readonly<Record<string, string>> = {
+  "cli:codex": "Codex",
+  "cli:claude": "Claude Code via Legacy",
+  "cli:gemini": "Google Gemini",
+  "cli:opencode": "OpenCode",
+  "cli:autohand": "OpenRouter",
+  "cli:qwen": "Alibaba Coding Plan International",
+  "cli:kimi": "Moonshot AI",
+  "cli:grok": "xAI",
+  "cli:deepseek": "DeepSeek",
+  "cli:cursor": "Cursor",
+  "cli:copilot": "GitHub Copilot"
+};
+
+function initialSetupConnectionResults(): Map<string, DemoSetupConnectionResult> {
+  return new Map(CLI_RUNTIME_PRESENTATIONS.map(({ id }, index) => [
+    id,
+    id === "cli:autohand"
+      ? {
+          functionalState: "NEEDS_SETUP",
+          liveVerificationState: "NOT_CHECKED",
+          reasonCode: "CREDENTIAL_REQUIRED"
+        }
+      : {
+          functionalState: "FUNCTIONAL",
+          liveVerificationState: index < 4 ? "VERIFIED" : "NOT_CHECKED",
+          reasonCode: index < 4 ? null : "NOT_VERIFIED"
+        }
+  ]));
+}
+
 export class DemoStore {
   private fixture = cloneFixture();
   private sequence = 0;
@@ -78,13 +128,17 @@ export class DemoStore {
   );
   private agentMessages = new Map<string, AgentPaneSession["messages"]>();
   private agentSelectedToolIds = new Map<string, string[]>();
+  private resetRedemptions = new Map<string, CodexResetCreditRedemptionResponse>();
+  private setupConnectionResults = initialSetupConnectionResults();
+  private setupCheckRuns = new Map<string, DemoSetupCheckRunState>();
+  private setupCheckSequence = 0;
   readonly api: SpaceApiClient;
 
   constructor() {
     this.api = new Proxy({} as SpaceApiClient, {
       get: (_target, property) => (...args: unknown[]) => {
         const method = String(property);
-        if (["artifactFileUrl", "browserBookmarksExportUrl", "browserFrameWebSocketUrl", "browserStreamWebSocketUrl", "cliTerminalWebSocketUrl", "eventStreamUrl"].includes(method)) {
+        if (["artifactFileUrl", "agentFilePreviewUrl", "agentFileDownloadUrl", "browserBookmarksExportUrl", "browserFrameWebSocketUrl", "browserStreamWebSocketUrl", "cliRuntimesSnapshot", "cliTerminalWebSocketUrl", "eventStreamUrl", "invalidateCliRuntimes", "openSetupConnectionCheckStream", "setCliTerminalControlLease", "warmCliRuntimes"].includes(method)) {
           return this.invoke(method, args);
         }
         return Promise.resolve().then(() => this.invoke(method, args));
@@ -98,6 +152,10 @@ export class DemoStore {
     this.cliRuntimeEnabled = new Map(cliToggleRuntimeIds.map((runtimeId) => [runtimeId, true]));
     this.agentMessages.clear();
     this.agentSelectedToolIds.clear();
+    this.resetRedemptions.clear();
+    this.setupConnectionResults = initialSetupConnectionResults();
+    this.setupCheckRuns.clear();
+    this.setupCheckSequence = 0;
   }
 
   private nextId(prefix: string): string {
@@ -123,8 +181,22 @@ export class DemoStore {
       statusReason: "Available in the local deterministic demo.",
       commandName: runtimeId === "cli:root" ? "/bin/bash" : runtimeId.replace(/^cli:/, ""),
       detectedCommandPath: runtimeId === "cli:root" ? "/bin/bash" : `/demo/bin/${runtimeId.replace(/^cli:/, "")}`,
-      defaultModelId: runtimeId === "cli:deepseek" ? "deepseek-v4-flash" : "gpt-5.6-sol",
+      defaultModelId: null,
       supportedReasoningEfforts: runtimeId === "cli:deepseek" ? [] : ["medium", "high", "xhigh"],
+      checkedAt: DEMO_FIXED_AT
+    };
+  }
+
+  private cliRuntimeRegistry(): AgentRuntimeRegistry {
+    return {
+      data: [
+        ...CLI_RUNTIME_PRESENTATIONS
+          .filter(({ id }) =>
+            id === "cli:codex" || this.cliRuntimeEnabled.get(id as CliToggleRuntimeId) !== false
+          )
+          .map(({ id, displayName }) => this.demoCliRuntime(id, displayName)),
+        this.demoCliRuntime("cli:root", "CLI ROOT")
+      ],
       checkedAt: DEMO_FIXED_AT
     };
   }
@@ -379,12 +451,16 @@ export class DemoStore {
     const needle = query.q?.trim().toLowerCase();
     const nodes = base.nodes.filter((node) => {
       const record = node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;
+      const expectedMonthPath = query.month && query.month !== "all"
+        ? `gemini_history_${query.month}.md`
+        : null;
       return (!needle || [node.label, node.sourcePath, record?.body].some((value) => value?.toLowerCase().includes(needle))) &&
         (!query.nodeType || node.type === query.nodeType) &&
         (!query.sourcePath || node.sourcePath === query.sourcePath) &&
         (!query.scope || record?.scope === query.scope) &&
         (!query.roomId || record?.roomId === query.roomId) &&
-        (!query.lifecycleStatus || record?.lifecycleStatus === query.lifecycleStatus);
+        (!query.lifecycleStatus || record?.lifecycleStatus === query.lifecycleStatus) &&
+        (!expectedMonthPath || node.sourcePath?.split("/").at(-1) === expectedMonthPath);
     });
     const nodeIds = new Set(nodes.map((node) => node.id));
     const edges = base.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
@@ -407,7 +483,8 @@ export class DemoStore {
         roomId: query.roomId ?? null,
         sourcePath: query.sourcePath ?? null,
         lifecycleStatus: query.lifecycleStatus ?? null,
-        relationMode: query.relationMode ?? "RELATIONS"
+        relationMode: query.relationMode ?? "RELATIONS",
+        month: query.month ?? null
       }
     });
   }
@@ -417,7 +494,62 @@ export class DemoStore {
     switch (method) {
       case "me": return Promise.resolve(structuredClone(this.fixture.auth));
       case "setupStatus": return Promise.resolve({ setupRequired: false, expiresAt: null });
-      case "claimSetup": return Promise.resolve(structuredClone(this.fixture.auth));
+      case "claimSetup": {
+        const onboarding = this.setupOverview();
+        return Promise.resolve({
+          ...structuredClone(this.fixture.auth),
+          onboardingVersion: onboarding.onboardingVersion,
+          isOnboardingComplete: onboarding.isComplete,
+          starterRoomId: onboarding.starterRoomId
+        });
+      }
+      case "setupOverview": return Promise.resolve(this.setupOverview());
+      case "setupStarterRoom": return Promise.resolve({
+        room: structuredClone(this.fixture.rooms[0]),
+        onboarding: {
+          onboardingVersion: 1,
+          isComplete: true,
+          completedAt: DEMO_FIXED_AT,
+          starterRoomId: this.fixture.rooms[0]?.id ?? null
+        }
+      });
+      case "startSetupConnectionChecks":
+        return Promise.resolve(this.startSetupCheckRun(
+          CLI_RUNTIME_PRESENTATIONS.map(({ id }) => id),
+          "ALL"
+        ));
+      case "startSetupConnectionCheck":
+        return Promise.resolve(this.startSetupCheckRun([String(args[0])], "SINGLE"));
+      case "getSetupConnectionCheckReplay":
+        return Promise.resolve(this.setupCheckReplay(
+          String(args[0]),
+          Number(args[1] ?? 0)
+        ));
+      case "openSetupConnectionCheckStream": return null;
+      case "verifySetupConnection": {
+        const connectionId = String(args[0]);
+        this.setupConnectionResults.set(connectionId, {
+          functionalState: "FUNCTIONAL",
+          liveVerificationState: "VERIFIED",
+          reasonCode: null
+        });
+        return Promise.resolve(this.setupOverview().connections.find(({ id }) => id === connectionId));
+      }
+      case "verifyAllSetupConnections":
+        for (const connectionId of this.setupConnectionResults.keys()) {
+          if (connectionId === "cli:autohand") continue;
+          this.setupConnectionResults.set(connectionId, {
+            functionalState: "FUNCTIONAL",
+            liveVerificationState: "VERIFIED",
+            reasonCode: null
+          });
+        }
+        return Promise.resolve(this.setupOverview());
+      case "finishSetup": return Promise.resolve({
+        ...this.setupOverview(),
+        isComplete: true,
+        completedAt: DEMO_FIXED_AT
+      });
       case "login": this.fixture.auth.isAuthenticated = true; return Promise.resolve(structuredClone(this.fixture.auth));
       case "logout": this.fixture.auth.isAuthenticated = false; return Promise.resolve({ ok: true });
       case "readyz": return Promise.resolve({
@@ -529,8 +661,34 @@ export class DemoStore {
       case "launchReadiness": return Promise.resolve(structuredClone(this.fixture.launchReadiness));
       case "observability": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.observability));
       case "worker": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.worker));
-      case "codexEnvironment": return Promise.resolve(structuredClone(this.fixture.codexEnvironment));
+      case "codexEnvironment": return Promise.resolve(structuredClone({
+        ...this.fixture.codexEnvironment,
+        isCodexEnabled: this.cliRuntimeEnabled.get("cli:codex") !== false
+      }));
       case "toolbarUsageAccounts": return Promise.resolve(structuredClone(this.fixture.codexUsageAccounts));
+      case "toolbarResetCredits": return Promise.resolve(structuredClone(this.fixture.codexResetCredits));
+      case "redeemToolbarResetCredit": {
+        const accountId = String(args[0] ?? "");
+        const idempotencyKey = String(args[1] ?? "");
+        const requestKey = `${accountId}:${idempotencyKey}`;
+        const existing = this.resetRedemptions.get(requestKey);
+        if (existing) return Promise.resolve(structuredClone(existing));
+        const availability = this.fixture.codexResetCredits.data.find((item) => item.accountId === accountId);
+        const outcome = availability?.availableCreditCount && availability.availableCreditCount > 0
+          ? "RESET" as const
+          : "NO_CREDIT" as const;
+        if (outcome === "RESET" && availability?.availableCreditCount != null) {
+          availability.availableCreditCount -= 1;
+          this.fixture.codexResetCredits.checkedAt = DEMO_FIXED_AT;
+        }
+        const result: CodexResetCreditRedemptionResponse = {
+          accountId,
+          outcome,
+          completedAt: DEMO_FIXED_AT
+        };
+        this.resetRedemptions.set(requestKey, result);
+        return Promise.resolve(structuredClone(result));
+      }
       case "toolbarCliSessions": return Promise.resolve(structuredClone(this.fixture.cliSessionStats));
       case "reapToolbarCliSessions": return Promise.resolve(structuredClone(this.fixture.cliSessionReap));
       case "toolbarHostMemory": return Promise.resolve(structuredClone(this.fixture.hostMemoryDetails));
@@ -544,11 +702,42 @@ export class DemoStore {
       case "restartCoreServices": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.serviceRestart));
       case "listCliMaintenanceRuns":
       case "listReleaseRuns": return Promise.resolve({ data: [] });
+      case "getCliMaintenanceReplay": {
+        const runId = String(args[0] ?? this.nextId("admin_run"));
+        return Promise.resolve({
+          run: {
+            id: runId,
+            operationType: "CLI_MAINTENANCE_REPAIR",
+            status: "SUCCEEDED",
+            actorUserId: "user:demo-admin",
+            summary: DEMO_LOCAL_REPLY,
+            result: {},
+            createdAt: DEMO_FIXED_AT,
+            startedAt: DEMO_FIXED_AT,
+            finishedAt: DEMO_FIXED_AT,
+            updatedAt: DEMO_FIXED_AT
+          },
+          events: [],
+          authHandoffs: []
+        });
+      }
+      case "openCliMaintenanceStream": return null;
+      case "cliMaintenanceExportUrl": return "#demo-cli-maintenance-export";
+      case "openCliMaintenanceRecovery": return Promise.resolve({
+        status: "NOOP",
+        room: null,
+        handoffs: [],
+        loginPanes: []
+      });
       case "startCliMaintenance": {
-        const mode = (args[0] as { mode?: "CHECK" | "UPDATE" })?.mode ?? "CHECK";
+        const mode = (args[0] as { mode?: "CHECK" | "UPDATE" | "REPAIR" })?.mode ?? "REPAIR";
         return Promise.resolve({
           id: this.nextId("admin_run"),
-          operationType: mode === "CHECK" ? "CLI_MAINTENANCE_CHECK" : "CLI_MAINTENANCE_UPDATE",
+          operationType: mode === "CHECK"
+            ? "CLI_MAINTENANCE_CHECK"
+            : mode === "REPAIR"
+              ? "CLI_MAINTENANCE_REPAIR"
+              : "CLI_MAINTENANCE_UPDATE",
           status: "QUEUED",
           actorUserId: "user:demo-admin",
           summary: DEMO_LOCAL_REPLY,
@@ -595,8 +784,8 @@ export class DemoStore {
       case "listSourceControlConnections": return Promise.resolve({
         data: (["gitea", "github"] as const).map((provider) => ({
           provider,
-          repositoryOwner: "spaceapp-owner",
-          repositoryName: "spaceapp",
+          repositoryOwner: "oll4com",
+          repositoryName: "space",
           accountLogin: null,
           status: "DISCONNECTED",
           secretConfigured: false,
@@ -610,8 +799,8 @@ export class DemoStore {
         const provider = String(args[0]) === "gitea" ? "gitea" : "github";
         return Promise.resolve({
           provider,
-          repositoryOwner: "spaceapp-owner",
-          repositoryName: "spaceapp",
+          repositoryOwner: "oll4com",
+          repositoryName: "space",
           accountLogin: "demo-admin",
           status: "CONNECTED",
           secretConfigured: true,
@@ -624,8 +813,8 @@ export class DemoStore {
         const provider = String(args[0]) === "gitea" ? "gitea" : "github";
         return Promise.resolve({
           provider,
-          repositoryOwner: "spaceapp-owner",
-          repositoryName: "spaceapp",
+          repositoryOwner: "oll4com",
+          repositoryName: "space",
           accountLogin: null,
           status: "DISCONNECTED",
           secretConfigured: false,
@@ -757,32 +946,103 @@ export class DemoStore {
       case "stopRoomAgent":
       case "controlRoomAgent":
       case "clearRoomAgentTranscript": return Promise.resolve(this.roomAgent(roomId ?? this.fixture.rooms[0]!.id));
-      case "cliRuntimes": return Promise.resolve({
-        data: [
-          ...CLI_RUNTIME_PRESENTATIONS
-            .filter(({ id }) => this.cliRuntimeEnabled.get(id as CliToggleRuntimeId) !== false)
-            .map(({ id, displayName }) => this.demoCliRuntime(id, displayName)),
-          this.demoCliRuntime("cli:root", "CLI ROOT")
-        ],
-        checkedAt: DEMO_FIXED_AT
-      });
-      case "invalidateCliRuntimes": return undefined;
+      case "cliRuntimes": return Promise.resolve(this.cliRuntimeRegistry());
+      case "cliRuntimesSnapshot": return this.cliRuntimeRegistry();
+      case "invalidateCliRuntimes":
+      case "warmCliRuntimes": return undefined;
       case "cliRuntimeSettings": return Promise.resolve({
         settings: cliToggleRuntimeIds.map((runtimeId) => ({
           runtimeId,
           enabled: this.cliRuntimeEnabled.get(runtimeId) !== false,
+          vpnEnabled: false,
           updatedAt: DEMO_FIXED_AT,
           updatedBy: "user:demo-admin"
         })),
         runtimes: CLI_RUNTIME_PRESENTATIONS.map(({ id, displayName }) => this.demoCliRuntime(id, displayName)),
+        vpnSupported: true,
+        vpnConnection: {
+          profileConfigured: false,
+          status: "NOT_CONFIGURED",
+          endpoint: null,
+          dnsServers: [],
+          profileFingerprint: null,
+          relay: null,
+          egressIpv4: null,
+          egressIpv6: null,
+          lastHandshakeAt: null,
+          lastVerifiedAt: null,
+          lastVerificationCode: "NOT_CONFIGURED",
+          updatedAt: DEMO_FIXED_AT
+        },
+        vpnApplications: cliToggleRuntimeIds.map((runtimeId) => ({
+          runtimeId,
+          effectiveMode: "DIRECT",
+          appliedSessionIds: [],
+          restartRequiredSessionIds: []
+        })),
         checkedAt: DEMO_FIXED_AT
       });
-      case "cliRuntimeDisablePreview": {
+      case "cliVpnRoutingStatus": return Promise.resolve({
+        vpnSupported: true,
+        connectionStatus: "NOT_CONFIGURED",
+        egressIpv4: null,
+        egressIpv6: null,
+        applications: cliToggleRuntimeIds.map((runtimeId) => ({
+          runtimeId,
+          effectiveMode: "DIRECT",
+          appliedSessionIds: [],
+          restartRequiredSessionIds: []
+        })),
+        checkedAt: DEMO_FIXED_AT
+      });
+      case "restartCliRuntimeVpnSessions": {
         const runtimeId = String(args[0]) as CliToggleRuntimeId;
         return Promise.resolve({
           runtimeId,
-          activeSessionCount: 0,
-          openPaneCount: 0,
+          requestedSessionIds: [],
+          restartedSessionIds: [],
+          replacementSessionIds: [],
+          failedSessionIds: [],
+          connection: {
+            profileConfigured: false,
+            status: "NOT_CONFIGURED",
+            endpoint: null,
+            dnsServers: [],
+            profileFingerprint: null,
+            relay: null,
+            egressIpv4: null,
+            egressIpv6: null,
+            lastHandshakeAt: null,
+            lastVerifiedAt: null,
+            lastVerificationCode: "NOT_CONFIGURED",
+            updatedAt: DEMO_FIXED_AT
+          },
+          application: {
+            effectiveMode: "DIRECT",
+            appliedSessionIds: [],
+            restartRequiredSessionIds: []
+          }
+        });
+      }
+      case "cliRuntimeDisablePreview": {
+        const runtimeId = String(args[0]) as CliToggleRuntimeId;
+        const codexPanes = runtimeId === "cli:codex"
+          ? this.fixture.panes.filter((pane) =>
+              !pane.isClosed
+              && pane.mode === "TERMINAL"
+              && (pane.terminalRuntimeId === "codex" || pane.terminalRuntimeId === "cli:codex")
+            )
+          : [];
+        const chatPanes = runtimeId === "cli:codex"
+          ? this.fixture.panes.filter((pane) => !pane.isClosed && pane.mode === "CHAT")
+          : [];
+        return Promise.resolve({
+          runtimeId,
+          activeSessionCount: codexPanes.length,
+          openPaneCount: codexPanes.length,
+          activeChatRunCount: 0,
+          openChatPaneCount: chatPanes.length,
+          activeRoomAgentMissionCount: 0,
           confirmationToken: `demo_disable_confirmation_${runtimeId.replace(/[^a-z0-9]/gi, "_")}`,
           expiresAt: "2026-07-22T23:59:59.000Z"
         });
@@ -790,27 +1050,62 @@ export class DemoStore {
       case "updateCliRuntimeSetting": {
         const runtimeId = String(args[0]) as CliToggleRuntimeId;
         const input = args[1] as { enabled: boolean };
+        const codexPanes = runtimeId === "cli:codex" && !input.enabled
+          ? this.fixture.panes.filter((pane) =>
+              !pane.isClosed
+              && pane.mode === "TERMINAL"
+              && (pane.terminalRuntimeId === "codex" || pane.terminalRuntimeId === "cli:codex")
+            )
+          : [];
+        const chatPanes = runtimeId === "cli:codex" && !input.enabled
+          ? this.fixture.panes.filter((pane) => !pane.isClosed && pane.mode === "CHAT")
+          : [];
+        for (const pane of [...codexPanes, ...chatPanes]) {
+          pane.isClosed = true;
+          pane.status = "CLOSED";
+          pane.updatedAt = DEMO_FIXED_AT;
+        }
         this.cliRuntimeEnabled.set(runtimeId, input.enabled);
         return Promise.resolve({
           setting: {
             runtimeId,
             enabled: input.enabled,
+            vpnEnabled: false,
             updatedAt: DEMO_FIXED_AT,
             updatedBy: "user:demo-admin"
           },
           cleanup: input.enabled ? null : {
-            requestedActiveSessionCount: 0,
-            requestedOpenPaneCount: 0,
-            terminatedSessionIds: [],
-            closedPaneIds: [],
+            requestedActiveSessionCount: codexPanes.length,
+            requestedOpenPaneCount: codexPanes.length,
+            requestedActiveChatRunCount: 0,
+            requestedOpenChatPaneCount: chatPanes.length,
+            requestedRoomAgentMissionCount: 0,
+            terminatedSessionIds: codexPanes.map((pane) => `cli_session:${pane.id}`),
+            interruptedChatPaneIds: [],
+            stoppedRoomAgentMissionIds: [],
+            closedPaneIds: codexPanes.map((pane) => pane.id),
+            closedChatPaneIds: chatPanes.map((pane) => pane.id),
             unresolvedSessionIds: [],
+            unresolvedChatPaneIds: [],
+            unresolvedRoomAgentMissionIds: [],
             unresolvedPaneIds: []
           }
         });
       }
+      case "cliLogin": {
+        const targetRoomId = String(args[0]);
+        const runtimeId = String(args[1]);
+        const pane = this.addPane(targetRoomId, cliRuntimeLabel(runtimeId) ?? runtimeId, "TERMINAL", {
+          cwd: "/etc",
+          terminalRuntimeId: runtimeId
+        });
+        return Promise.resolve({ pane, session: this.cliSession(pane.id), reused: false });
+      }
       case "activeCliSession":
       case "createCliSession":
       case "interruptCliSession": return Promise.resolve(this.cliSession(roomId ?? "pane:demo-codex"));
+      case "reportCliClientEvent": return Promise.resolve({ accepted: true });
+      case "setCliTerminalControlLease": return undefined;
       case "cliModelSettingsStatus": return Promise.resolve({ status: "AVAILABLE", settings: { sessionId: `cli_session:${roomId}`, threadId: null, current: { modelId: "gpt-5.6-sol", reasoningEffort: "high" }, models: [{ id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: ["medium", "high", "xhigh"] }], controlMode: "DIRECT", isTurnActive: false } });
       case "updateCliModelSettings": return Promise.resolve({ current: { modelId: String((args[1] as { modelId?: string })?.modelId ?? "gpt-5.6-sol"), reasoningEffort: String((args[1] as { reasoningEffort?: string })?.reasoningEffort ?? "high") }, message: DEMO_LOCAL_REPLY });
       case "cliTurnActivity": return Promise.resolve({ marker: String(args[1]), status: "COMPLETED", turnId: null });
@@ -840,6 +1135,7 @@ export class DemoStore {
           roomId?: string;
           paneId?: string;
           kind?: Artifact["kind"];
+          collection?: "ROOM_MEDIA" | "AGENT_FILES";
           page?: number;
           pageSize?: number;
           sortOrder?: "asc" | "desc";
@@ -848,7 +1144,9 @@ export class DemoStore {
           .filter((artifact) =>
             (query.roomId === undefined || artifact.roomId === query.roomId) &&
             (query.paneId === undefined || artifact.paneId === query.paneId) &&
-            (query.kind === undefined || artifact.kind === query.kind)
+            (query.kind === undefined || artifact.kind === query.kind) &&
+            (query.collection !== "AGENT_FILES" || artifact.storageUri.startsWith("space-artifact://agent-files/")) &&
+            (query.collection !== "ROOM_MEDIA" || !artifact.storageUri.startsWith("space-artifact://agent-files/"))
           )
           .sort((left, right) => {
             const direction = query.sortOrder === "asc" ? 1 : -1;
@@ -858,6 +1156,14 @@ export class DemoStore {
       }
       case "deleteArtifact": return Promise.resolve({ ok: true as const, artifactId: roomId! });
       case "deleteRoomMedia": return Promise.resolve({
+        ok: true,
+        roomId: roomId!,
+        matchedCount: 0,
+        deletedCount: 0,
+        failedCount: 0,
+        failedArtifactIds: []
+      });
+      case "deleteRoomAgentFiles": return Promise.resolve({
         ok: true,
         roomId: roomId!,
         matchedCount: 0,
@@ -923,6 +1229,7 @@ export class DemoStore {
           id: this.nextId("clipboard"),
           text: input.text,
           source: input.source,
+          title: null,
           roomId: input.roomId ?? null,
           paneId: input.paneId ?? null,
           paneTitle: input.paneTitle ?? null,
@@ -1014,6 +1321,8 @@ export class DemoStore {
         return Promise.resolve(structuredClone(pane));
       }
       case "artifactFileUrl": return "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='450'%3E%3Crect width='100%25' height='100%25' fill='%23101413'/%3E%3Ctext x='50%25' y='50%25' fill='%2371c3b3' text-anchor='middle'%3ESpace demo fixture%3C/text%3E%3C/svg%3E";
+      case "agentFilePreviewUrl": return "data:text/plain,Agent%20Files%20preview";
+      case "agentFileDownloadUrl": return "data:text/plain,Agent%20Files%20download";
       case "eventStreamUrl": return "demo://events";
       default: return Promise.resolve(this.fallback(method));
     }
@@ -1033,6 +1342,217 @@ export class DemoStore {
     };
     this.fixture.panes.push(pane);
     return structuredClone(pane);
+  }
+
+  private startSetupCheckRun(
+    connectionIds: string[],
+    scope: SetupConnectionCheckRun["scope"]
+  ): SetupConnectionCheckRun {
+    for (const connectionId of connectionIds) {
+      if (!CLI_RUNTIME_PRESENTATIONS.some((presentation) => presentation.id === connectionId)) {
+        throw new SpaceApiError("Setup connection not found.", {
+          status: 404,
+          code: "NOT_FOUND"
+        });
+      }
+    }
+    const active = [...this.setupCheckRuns.values()].find(({ run }) =>
+      run.status === "RUNNING" &&
+      (scope === "ALL"
+        ? run.scope === "ALL"
+        : run.connectionIds.includes(connectionIds[0]!))
+    );
+    if (active) return structuredClone(active.run);
+
+    const startedAt = new Date().toISOString();
+    const run: SetupConnectionCheckRun = {
+      id: this.nextId("setup_check_run"),
+      scope,
+      connectionIds,
+      status: "RUNNING",
+      totalCount: connectionIds.length,
+      completedCount: 0,
+      createdAt: startedAt,
+      updatedAt: startedAt,
+      finishedAt: null
+    };
+    const state: DemoSetupCheckRunState = {
+      run,
+      events: [],
+      nextConnectionIndex: 0
+    };
+    this.setupCheckRuns.set(run.id, state);
+    for (const connectionId of connectionIds) {
+      this.appendSetupCheckEvent(state, connectionId, "Detecting CLI");
+    }
+    return structuredClone(run);
+  }
+
+  private setupCheckReplay(
+    runId: string,
+    afterSequence: number
+  ): SetupConnectionCheckReplay {
+    const state = this.setupCheckRuns.get(runId);
+    if (!state) {
+      throw new SpaceApiError("Setup connection check run not found.", {
+        status: 404,
+        code: "NOT_FOUND"
+      });
+    }
+    this.advanceSetupCheckRun(state);
+    return structuredClone({
+      run: state.run,
+      events: state.events.filter((event) => event.sequence > Math.max(0, afterSequence)),
+      overview: this.setupOverview()
+    });
+  }
+
+  private advanceSetupCheckRun(state: DemoSetupCheckRunState): void {
+    if (state.run.status === "COMPLETED") return;
+    const chunkSize = state.run.scope === "SINGLE" ? 1 : 4;
+    const endIndex = Math.min(
+      state.run.connectionIds.length,
+      state.nextConnectionIndex + chunkSize
+    );
+    while (state.nextConnectionIndex < endIndex) {
+      const connectionId = state.run.connectionIds[state.nextConnectionIndex]!;
+      const result = this.checkedSetupConnectionResult(connectionId);
+      this.appendSetupCheckEvent(state, connectionId, "Checking saved credential");
+      if (result.functionalState === "FUNCTIONAL") {
+        this.appendSetupCheckEvent(state, connectionId, "Sending live provider challenge");
+        this.appendSetupCheckEvent(state, connectionId, "Confirming credential identity");
+      }
+      this.appendSetupCheckEvent(state, connectionId, "Saving result");
+      this.setupConnectionResults.set(connectionId, result);
+      const terminalStage =
+        result.functionalState === "NEEDS_SETUP"
+          ? "Needs setup"
+          : result.functionalState === "UNAVAILABLE"
+            ? "CLI unavailable"
+            : result.liveVerificationState === "VERIFIED"
+              ? "Verified"
+              : result.liveVerificationState === "QUOTA_LIMITED"
+                ? "Quota limited"
+                : result.liveVerificationState === "TIMED_OUT"
+                  ? "Timed out"
+                  : "Provider failed";
+      this.appendSetupCheckEvent(state, connectionId, terminalStage, "COMPLETED", result);
+      state.nextConnectionIndex += 1;
+    }
+    state.run = {
+      ...state.run,
+      completedCount: state.nextConnectionIndex,
+      status: state.nextConnectionIndex === state.run.totalCount ? "COMPLETED" : "RUNNING",
+      updatedAt: new Date().toISOString(),
+      finishedAt: state.nextConnectionIndex === state.run.totalCount
+        ? new Date().toISOString()
+        : null
+    };
+  }
+
+  private checkedSetupConnectionResult(connectionId: string): DemoSetupConnectionResult {
+    if (connectionId === "cli:autohand") {
+      return {
+        functionalState: "NEEDS_SETUP",
+        liveVerificationState: "NOT_CHECKED",
+        reasonCode: "CREDENTIAL_REQUIRED"
+      };
+    }
+    if (["cli:codex", "cli:claude", "cli:gemini", "cli:opencode"].includes(connectionId)) {
+      return {
+        functionalState: "FUNCTIONAL",
+        liveVerificationState: "VERIFIED",
+        reasonCode: null
+      };
+    }
+    if (connectionId === "cli:kimi") {
+      return {
+        functionalState: "FUNCTIONAL",
+        liveVerificationState: "QUOTA_LIMITED",
+        reasonCode: "PROVIDER_QUOTA_LIMITED"
+      };
+    }
+    if (connectionId === "cli:cursor") {
+      return {
+        functionalState: "FUNCTIONAL",
+        liveVerificationState: "TIMED_OUT",
+        reasonCode: "PROVIDER_CHECK_TIMED_OUT"
+      };
+    }
+    return {
+      functionalState: "FUNCTIONAL",
+      liveVerificationState: "PROVIDER_FAILED",
+      reasonCode: "PROVIDER_CHECK_FAILED"
+    };
+  }
+
+  private appendSetupCheckEvent(
+    state: DemoSetupCheckRunState,
+    connectionId: string,
+    stage: SetupConnectionCheckEvent["stage"],
+    eventState: SetupConnectionCheckEvent["state"] = "RUNNING",
+    result?: DemoSetupConnectionResult
+  ): void {
+    this.setupCheckSequence += 1;
+    state.events.push({
+      id: `setup_check_event:demo-${String(this.setupCheckSequence).padStart(4, "0")}`,
+      runId: state.run.id,
+      sequence: this.setupCheckSequence,
+      connectionId,
+      stage,
+      state: eventState,
+      functionalState: result?.functionalState ?? null,
+      liveVerificationState: result?.liveVerificationState ?? null,
+      reasonCode: result?.reasonCode ?? null,
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  private setupOverview(): SetupOverview {
+    const connections: SetupConnection[] = CLI_RUNTIME_PRESENTATIONS.map(({ id, displayName }) => {
+      const result = this.setupConnectionResults.get(id) ?? {
+        functionalState: "UNAVAILABLE",
+        liveVerificationState: "NOT_CHECKED",
+        reasonCode: "CLI_RUNTIME_UNAVAILABLE"
+      };
+      return {
+        id,
+        label: displayName,
+        providerName: demoProviderNames[id] ?? displayName,
+        category: "AI coding CLI",
+        state: result.functionalState === "FUNCTIONAL"
+          ? "CONNECTED"
+          : result.functionalState,
+        functionalState: result.functionalState,
+        liveVerificationState: result.liveVerificationState,
+        reasonCode: result.reasonCode,
+        verifiedAt: result.liveVerificationState === "VERIFIED" ? DEMO_FIXED_AT : null,
+        staleAt: result.liveVerificationState === "VERIFIED" ? "2026-08-21T20:00:00.000Z" : null,
+        actions: result.functionalState === "FUNCTIONAL"
+          ? ["VERIFY"]
+          : result.functionalState === "UNAVAILABLE"
+            ? ["RUN_HOST_LAUNCHER"]
+            : ["OPEN_LOGIN_PANE", "VERIFY"]
+      };
+    });
+    const functional = connections.filter((connection) =>
+      connection.functionalState === "FUNCTIONAL"
+    ).length;
+    return {
+      onboardingVersion: 1,
+      isComplete: true,
+      completedAt: DEMO_FIXED_AT,
+      starterRoomId: this.fixture.rooms[0]?.id ?? null,
+      summary: {
+        total: connections.length,
+        functional,
+        liveVerified: connections.filter((connection) =>
+          connection.liveVerificationState === "VERIFIED"
+        ).length,
+        needsSetup: connections.length - functional
+      },
+      connections
+    };
   }
 
   private fallback(method: string): unknown {

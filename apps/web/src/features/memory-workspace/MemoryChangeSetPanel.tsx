@@ -1,8 +1,9 @@
-import { ChevronLeft, ChevronRight, ShieldAlert } from "lucide-react";
+import { ChevronLeft, ChevronRight, ShieldAlert, X } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MemoryChangeSet, MemoryChangeSetSummary } from "@space/contracts";
 import { api, type MemoryChangeSetListResponse } from "../../api.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
+import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import { MemoryChangeSetDetail } from "./MemoryChangeSetDetail.js";
 
 function summaryOf(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
@@ -36,6 +37,9 @@ export function MemoryChangeSetPanel() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const detailRequest = useRef(0);
+
+  useAutoDismiss(error, setError);
+  useAutoDismiss(notice, setNotice);
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -154,8 +158,22 @@ export function MemoryChangeSetPanel() {
           <button type="button" aria-label="Next change-set page" disabled={!payload?.pagination.hasNext} onClick={() => setPage((value) => value + 1)}><ChevronRight aria-hidden="true" /></button>
         </div>
       </div>
-      {error ? <p className="memory-workspace-error" role="alert">{error}</p> : null}
-      {notice ? <p className="memory-change-notice" role="status" aria-live="polite">{notice}</p> : null}
+      {error ? (
+        <div className="memory-workspace-error">
+          <span role="alert">{error}</span>
+          <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setError(null)}>
+            <X aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+      {notice ? (
+        <div className="memory-change-notice" aria-live="polite">
+          <span role="status">{notice}</span>
+          <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setNotice(null)}>
+            <X aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
       <div className="memory-change-layout">
         <section className="memory-change-list" aria-label="Memory change-set summaries">
           {loading ? <p role="status">Loading change-set summaries…</p> : null}

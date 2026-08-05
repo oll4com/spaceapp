@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import {
   memoryConsolidationWorkflowInputSchema,
   memoryMaintenanceInputSchema,
@@ -28,6 +29,7 @@ import {
   type UpdateMemoryConsolidationRunInput
 } from "@space/contracts";
 import {
+  ALL_MONTHS_SNAPSHOT_FILENAME,
   buildMemoryGraphSnapshot,
   calculateMemoryGraphSourceHash,
   createMemoryGraphSnapshotStore,
@@ -42,6 +44,7 @@ const DEFAULT_INDEX_PATH = "/opt/spaceapp/docs/gemini_history.md";
 const DEFAULT_GRAPH_ROOT = "/opt/spaceapp/var/memory-graph";
 const ATHENS_TIME_ZONE = "Europe/Athens";
 const CACHE_BATCH_LIMIT = 500;
+const MONTHLY_MEMORY_PATTERN = /^gemini_history_(\d{4}-\d{2})\.md$/;
 
 interface MemoryMaintenanceCacheStore {
   listMemoryEntries(query: ListMemoryQuery, options: { limit: number }): Promise<MemoryEntry[]> | MemoryEntry[];
@@ -104,6 +107,15 @@ export interface RefreshMemoryGraphSnapshotOptions {
   rootDir?: string;
   indexPath?: string;
   monthlyPath?: string;
+  now?: () => Date;
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  store?: MemoryMaintenanceCacheStore;
+}
+
+export interface RefreshAllMonthsMemoryGraphSnapshotOptions {
+  rootDir?: string;
+  indexPath?: string;
+  memoryDir?: string;
   now?: () => Date;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   store?: MemoryMaintenanceCacheStore;
@@ -676,6 +688,48 @@ function athensYearMonth(date: Date): string {
   const month = parts.find((part) => part.type === "month")?.value;
   if (!year || !month) throw new Error("Unable to resolve the Athens calendar month.");
   return `${year}-${month}`;
+}
+
+async function listMonthlyMemoryPaths(memoryDir: string): Promise<string[]> {
+  const entries = await readdir(memoryDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && MONTHLY_MEMORY_PATTERN.test(entry.name))
+    .map((entry) => join(memoryDir, entry.name))
+    .sort();
+}
+
+export async function refreshAllMonthsMemoryGraphSnapshot(
+  rawInput: MemoryMaintenanceInput,
+  options: RefreshAllMonthsMemoryGraphSnapshotOptions = {}
+): Promise<MemoryMaintenanceResult> {
+  const input = memoryMaintenanceInputSchema.parse(rawInput);
+  const startedAt = Date.now();
+  const now = options.now ?? (() => new Date());
+  const generatedAt = now().toISOString();
+  const indexPath = options.indexPath ?? DEFAULT_INDEX_PATH;
+  const memoryDir = options.memoryDir ?? "/opt/spaceapp/docs";
+  const rootDir = options.rootDir ?? process.env.SPACE_MEMORY_GRAPH_ROOT ?? DEFAULT_GRAPH_ROOT;
+  const indexContent = await readFile(indexPath, "utf8");
+  const monthlyPaths = await listMonthlyMemoryPaths(memoryDir);
+  const monthlyContents = await Promise.all(monthlyPaths.map((path) => readFile(path, "utf8")));
+  const sources: MemoryGraphSource[] = [
+    { path: indexPath, kind: "INDEX", content: indexContent },
+    ...monthlyPaths.map((path, index) => ({ path, kind: "MONTHLY" as const, content: monthlyContents[index]! }))
+  ];
+  const store = createMemoryGraphSnapshotStore({ rootDir, filename: ALL_MONTHS_SNAPSHOT_FILENAME });
+  const previous = await store.read();
+  const snapshot = buildMemoryGraphSnapshot({ sources, generatedAt, previousSnapshot: previous });
+  const status = previous && snapshotContentsMatch(previous, snapshot) ? "UNCHANGED" : "REFRESHED";
+  if (status === "REFRESHED") await store.write(snapshot);
+
+  return memoryMaintenanceResultSchema.parse({
+    status,
+    generatedAt,
+    sourceHash: snapshot.sourceHash,
+    previousSourceHash: previous?.sourceHash ?? null,
+    summary: snapshot.summary,
+    durationMs: Math.max(0, Date.now() - startedAt)
+  });
 }
 
 export async function refreshMemoryGraphSnapshot(

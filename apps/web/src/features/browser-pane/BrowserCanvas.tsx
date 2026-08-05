@@ -24,7 +24,7 @@ interface RectLike {
 export type BrowserCanvasInput =
   | {
       type: "KEY";
-      eventType: "keyDown" | "keyUp";
+      eventType: "keyDown" | "keyUp" | "char";
       key: string;
       code?: string;
       text?: string;
@@ -126,7 +126,7 @@ export function mapClientPointToViewport(
   };
 }
 
-export function modifierMaskFromEvent(event: Pick<KeyboardEvent | PointerEvent | WheelEvent, "altKey" | "ctrlKey" | "metaKey" | "shiftKey">): number {
+export function modifierMaskFromEvent(event: { altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }): number {
   return (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
 }
 
@@ -381,6 +381,9 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
         }}
         onKeyDown={(event) => {
           if (!interactive || event.nativeEvent.isComposing) return;
+          const isPasteShortcut =
+            (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v";
+          if (isPasteShortcut) return;
           event.preventDefault();
           inputRef.current({
             type: "KEY",
@@ -389,6 +392,20 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
             code: event.code || undefined,
             ...(event.key.length === 1 ? { text: event.key } : {}),
             modifiers: modifierMaskFromEvent(event)
+          });
+        }}
+        onPaste={(event) => {
+          if (!interactive) return;
+          const text = event.clipboardData?.getData("text");
+          if (!text) return;
+          event.preventDefault();
+          const native = event.nativeEvent as { altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean };
+          inputRef.current({
+            type: "KEY",
+            eventType: "char",
+            key: "Unidentified",
+            text,
+            modifiers: modifierMaskFromEvent(native)
           });
         }}
         onKeyUp={(event) => {

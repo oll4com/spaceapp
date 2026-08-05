@@ -7,14 +7,14 @@ import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { chmod, mkdir, readFile, stat, statfs, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 import { z, ZodError, type ZodTypeAny } from "zod";
-import { headerString, secureTokenMatches } from "./security/constant-time-token.js";
 import {
   buildCodexAppServerProcessEnv,
   createCodexAppServerControlService,
@@ -29,6 +29,11 @@ import {
   agentPaneInterruptInputSchema,
   agentPaneSendMessageInputSchema,
   agentPaneSettingsInputSchema,
+  acquireAppDiagnosticsVideoLeaseInputSchema,
+  appDiagnosticsEventBatchMaxBytes,
+  appDiagnosticsEventBatchSchema,
+  appDiagnosticsVideoSegmentMaxBytes,
+  appDiagnosticsVideoSegmentQuerySchema,
   acquireBrowserControlInputSchema,
   browserCaptureJobResponseSchema,
   browserCaptureSegmentListResponseSchema,
@@ -74,7 +79,16 @@ import {
   cliTaskHistoryQuerySchema,
   cliRuntimeDisablePreviewSchema,
   cliRuntimeSettingsResponseSchema,
+  cliRuntimeVpnStatusSchema,
+  cliGlobalEgressStatusSchema,
+  cliEgressRouteIdSchema,
+  cliVpnProfileIdSchema,
+  updateCliGlobalEgressInputSchema,
+  updateCliGlobalEgressResultSchema,
+  cliVpnRoutingStatusSchema,
+  cliToggleRuntimeIds,
   cliToggleRuntimeIdSchema,
+  cliVpnConnectionSchema,
   clipboardItemListResponseSchema,
   codexEnvironmentSchema,
   codexLbSpeedDefaultUpdateRequestSchema,
@@ -83,6 +97,9 @@ import {
   codexHistoryPurgePreviewRequestSchema,
   codexHistoryPurgePreviewResponseSchema,
   codexHistoryPurgeResponseSchema,
+  codexResetCreditAvailabilitySchema,
+  codexResetCreditRedemptionInputSchema,
+  codexResetCreditRedemptionResponseSchema,
   codexUsageAccountListSchema,
   codexHistoryResponseSchema,
   codexAppServerTurnSmokeInputSchema,
@@ -95,27 +112,39 @@ import {
   createReviewCheckInputSchema,
   createReviewDecisionInputSchema,
   createReviewDiffSummaryInputSchema,
+  activeAgentTurnsInputSchema,
+  activeAgentTurnsResponseSchema,
   createProofRoomInputSchema,
   createReleasePreviewInputSchema,
   createReleaseRequestSchema,
   createRoomInputSchema,
+  reorderPanesInputSchema,
   reorderRoomsInputSchema,
   updatePaneLayoutInputSchema,
+  updateActivityLogSettingsInputSchema,
+  updateAppDiagnosticsInputSchema,
   updateCodexCliModeDefaultsInputSchema,
   updateCliRuntimeSettingInputSchema,
   updateCliRuntimeSettingResultSchema,
+  updateCliRuntimeVpnInputSchema,
+  updateCliRuntimeVpnResultSchema,
+  restartCliRuntimeVpnSessionsResultSchema,
+  replaceCliVpnProfileInputSchema,
   updateRoomInputSchema,
   updateUserLinkRequestSchema,
   createSkillProposalInputSchema,
   claimSwarmLockInputSchema,
-  canStartAgentRuntimeLogin,
   cliLoginRequestSchema,
   cliLoginResponseSchema,
   cliMaintenanceRequestSchema,
+  cliTerminalClientEventInputSchema,
+  cliTerminalClientEventResponseSchema,
   idSchema,
   imageArtifactMaxBytes,
   imageArtifactMimeTypeSchema,
+  isAgentFileArtifact,
   isRoomMediaArtifact,
+  listActivityLogEventsQuerySchema,
   listArtifactsQuerySchema,
   listClipboardItemsQuerySchema,
   listUserLinksQuerySchema,
@@ -143,6 +172,7 @@ import {
   paneCliSessionResponseSchema,
   paneCliTurnActivityResponseSchema,
   paneCliWebSocketServerMessageSchema,
+  proofRoomCliIdentitySchema,
   proofRoomSchema,
   memoryReclaimResponseSchema,
   postSwarmMessageInputSchema,
@@ -159,6 +189,10 @@ import {
   runSwarmTaskResponseSchema,
   setupClaimInputSchema,
   setupClaimResponseSchema,
+  setupConnectionCheckRunSchema,
+  setupConnectionSchema,
+  setupOverviewSchema,
+  setupStarterRoomResponseSchema,
   setupStatusSchema,
   spaceAgentBrowserActionBridgeRequestSchema,
   spaceAgentBrowserActionBridgeResponseSchema,
@@ -175,6 +209,11 @@ import {
   swarmStateSchema,
   type AgentRuntime,
   type CliSessionStats,
+  type CliRuntimeSetting,
+  type CliRuntimeVpnStatus,
+  type CliGlobalEgressStatus,
+  type CliEgressRouteId,
+  type CliVpnProfileId,
   type CodexEnvironment,
   type CodexLbSpeedDefaultsResponse,
   type CodexLbSpeedTier,
@@ -207,6 +246,7 @@ import {
   updatePaneBrowserSessionRequestSchema,
   updatePaneInputSchema,
   updateArtifactRetentionInputSchema,
+  deleteRoomAgentFilesResponseSchema,
   deleteRoomMediaResponseSchema,
   updateProviderInputSchema,
   updateProviderSettingsInputSchema,
@@ -230,6 +270,7 @@ import {
   type SpaceAgentBrowserActionRequest,
   type PaneBrowserSession,
   type PaneCliSession,
+  type PaneCliModelSettings,
   type PaneCliTranscriptChunk,
   type SpaceAgentSessionRecord,
   type Pane,
@@ -248,7 +289,13 @@ import {
   updateSourceControlConnectionInputSchema,
   userUploadArtifactSourceSchema
 } from "@space/contracts";
-import { PostgresSpaceStore } from "@space/db";
+import {
+  InMemoryActivityLogRepository,
+  InMemoryAppDiagnosticsRepository,
+  PostgresActivityLogRepository,
+  PostgresAppDiagnosticsRepository,
+  PostgresSpaceStore
+} from "@space/db";
 import {
   InMemorySpaceStore,
   InMemoryTelegramPersistence,
@@ -284,7 +331,27 @@ import {
   verifySession,
   type AuthConfig
 } from "./auth.js";
+import {
+  AppDiagnosticsService,
+  AppDiagnosticsServiceError
+} from "./app-diagnostics.js";
+import { ActivityLogService } from "./activity-log.js";
 import { buildCliAgentBootstrapMarkdown } from "./agent-bootstrap.js";
+import {
+  AgentFileDocxNormalizationError,
+  agentFileMaxBytes,
+  agentFileMaxCount,
+  agentFileMaxRequestBytes,
+  agentFilePreviewKind,
+  agentFileStoragePath,
+  cliAgentFilesEnabled,
+  cliAgentFilesTokenHeader,
+  persistAgentFile,
+  readAgentFileTextPreview,
+  renderAgentFileDocxPreview,
+  verifyCliAgentFilesToken,
+  type AgentFileDocxNormalizer
+} from "./cli-agent-files.js";
 import {
   buildBrowserEvidenceTargetUrl,
   createBrowserEvidenceCapture,
@@ -316,16 +383,47 @@ import {
   isGrokDirectParityRuntime,
   isKimiDirectParityRuntime,
   isLegacyCodexCliCwd,
+  isOpenCodeDirectParityRuntime,
   resolveDirectOperatorParityCwd
 } from "./cli-parity.js";
 import { findCodexCliPlanState } from "./codex-rollout-diagnostics.js";
+import {
+  createCodexResetCreditsService,
+  type CodexResetCreditsService
+} from "./codex-reset-credits.js";
 import { getCodexAppServerStatus, runCodexAppServerHandshake, runCodexAppServerTurnSmoke } from "./codex-app-server.js";
-import { createCodexParityService, type CodexParityService } from "./codex-parity.js";
-import { UnifiedCliTaskRegistry } from "./unified-cli-task-registry.js";
+import {
+  CodexParityNotFoundError,
+  createCodexParityService,
+  type CodexParityService
+} from "./codex-parity.js";
+import { UnifiedCliTaskRegistry, type ResolvedSpaceCliTask } from "./unified-cli-task-registry.js";
 import {
   CliRuntimeDisableConfirmationStaleError,
   CliRuntimeVisibilityPolicy
 } from "./cli-runtime-visibility.js";
+import {
+  CliVpnBrokerClient,
+  CliVpnError,
+  type CliVpnBroker
+} from "./cli-vpn.js";
+import {
+  opencodeNativeSessionIdPattern,
+  readOpenCodeNativeSessionId,
+  readOpenCodeNativeSessionIdFromProcessTree
+} from "./opencode-native-session.js";
+import {
+  fetchOpenCodeCurrentModel,
+  fetchOpenCodeSessionIsTurnActive,
+  fetchOpenCodeSessionModels,
+  openCodeDefaultReasoningEffort,
+  openCodeReasoningEfforts,
+  openCodeServerIsHealthy,
+  parseOpenCodeCompositeModelId,
+  readOpenCodeServerControl,
+  switchOpenCodeSessionModel,
+  type OpenCodeServerControl
+} from "./opencode-server-control.js";
 import { createCodexLbSpeedDefaultsService, type CodexLbSpeedModelId } from "./codex-lb-speed-defaults.js";
 import {
   createCodexCliModeDefaultsService,
@@ -347,16 +445,21 @@ import {
   supportsNativeCliResume,
   type CliHostGateway,
   type CliHostReapAggregate,
+  type CliTerminalManagerTelemetryEvent,
   type CodexCliCurrentTurnActivityFinder,
   type CodexCliTurnActivityFinder,
   type CodexThreadFinder,
   type CodexThreadResumeSettingsFinder
 } from "./cli-terminal.js";
 import {
+  activeCliSessionObserverRuntime,
+  checkCliRuntimeCredential,
   createAgentRuntimeRegistryCache,
   discoverAgentRuntimes,
   findRuntime,
-  isCliRuntimeTerminalLaunchable
+  isCliRuntimeLoginLaunchable,
+  isCliRuntimeTerminalLaunchable,
+  observeCliRuntimeCredential
 } from "./cli-runtimes.js";
 import {
   CliMaintenanceError,
@@ -364,6 +467,14 @@ import {
 } from "./cli-maintenance.js";
 import { getApiConfig, type SpaceApiConfig } from "./config.js";
 import type { OwnerSetupBootstrap } from "./owner-setup.js";
+import {
+  createSetupConnectionsService,
+  summarizeSetupConnections,
+  type SetupConnectionsService
+} from "./setup-connections.js";
+import {
+  SetupConnectionCheckRunManager
+} from "./setup-connection-check-runs.js";
 import { createHostStatsProvider, type HostStatsProvider } from "./host-stats.js";
 import {
   collectCliSessionStats,
@@ -435,7 +546,13 @@ import { createWorkerReadinessChecker, type WorkerReadinessChecker } from "./wor
 declare module "fastify" {
   interface FastifyRequest {
     requestIdForSpace: string;
-    user: { id: string; email: string; role: "OPERATOR" | "ADMIN" } | null;
+    user: {
+      id: string;
+      email: string;
+      role: "OPERATOR" | "ADMIN";
+      proofScope?: "READ_ONLY";
+      automationScope?: "APP_DIAGNOSTICS";
+    } | null;
   }
 }
 
@@ -448,6 +565,9 @@ export type GeminiMemorySearcher = (query: ListMemoryQuery) => Promise<MemoryEnt
 
 export interface CreateAppOptions {
   store?: SpaceStore;
+  agentFileDocxNormalizer?: AgentFileDocxNormalizer;
+  appDiagnosticsService?: AppDiagnosticsService;
+  activityLogService?: ActivityLogService;
   eventBus?: SpaceEventBus;
   turnStarter?: TurnStarter;
   codexTurnStarter?: TurnStarter;
@@ -474,9 +594,24 @@ export interface CreateAppOptions {
   cliHostClient?: CliHostGateway;
   cliAdminHostClient?: CliHostGateway;
   cliModelSelectionTimeoutMs?: number;
+  opencodeStateRoot?: string;
   cliLoginTimeoutMs?: number;
   cliLoginObservationIntervalMs?: number;
   cliRuntimeSessionTerminator?: (sessionId: string) => Promise<boolean>;
+  cliVpnBroker?: CliVpnBroker;
+  cliVpnSessionPidResolver?: (sessions: readonly PaneCliSession[]) => Promise<Map<string, number>>;
+  cliVpnSessionRestarter?: (
+    session: PaneCliSession,
+    runtime: AgentRuntime,
+    traceId: string
+  ) => Promise<PaneCliSession>;
+  codexMasterChatInterrupter?: (paneId: string, reason: string, traceId: string) => Promise<boolean>;
+  codexMasterRoomAgentStopper?: (
+    roomId: string,
+    missionId: string,
+    reason: string,
+    traceId: string
+  ) => Promise<boolean>;
   findCodexCliTurnActivity?: CodexCliTurnActivityFinder;
   findCurrentCodexCliTurnActivity?: CodexCliCurrentTurnActivityFinder;
   findCodexThreadId?: CodexThreadFinder;
@@ -485,6 +620,7 @@ export interface CreateAppOptions {
   codexSocketControlFactory?: (socketPath: string) => CodexAppServerSocketControlService;
   hostStatsProvider?: HostStatsProvider;
   toolbarUsageProvider?: () => Promise<CodexUsageAccountList>;
+  codexResetCreditsService?: CodexResetCreditsService;
   toolbarCliSessionStatsProvider?: InvalidatableProvider<CliSessionStats> | (() => Promise<CliSessionStats>);
   toolbarHostMemoryProvider?: InvalidatableProvider<HostMemoryDetails> | (() => Promise<HostMemoryDetails>);
   toolbarCliSessionReaper?: () => Promise<CliHostReapAggregate>;
@@ -499,13 +635,21 @@ export interface CreateAppOptions {
   telegramIntegrationManager?: TelegramIntegrationManager;
   sourceControlPublishingManager?: SourceControlPublishingManager;
   cliMaintenanceManager?: CliMaintenanceManager;
+  cliRecoveryLoginOpener?: (input: {
+    roomId: string;
+    runtimeId: string;
+    requestId: string;
+  }) => Promise<{ paneId: string }>;
   releasePublishingManager?: ReleasePublishingManager;
   auth?: AuthConfig;
   config?: SpaceApiConfig;
   setup?: OwnerSetupBootstrap | null;
+  setupConnections?: SetupConnectionsService;
+  setupConnectionCheckRuns?: SetupConnectionCheckRunManager;
 }
 
 const publicWaitlistBodyLimitBytes = 2 * 1024;
+const cliTerminalClientEventBodyLimitBytes = 2 * 1024;
 const publicPaths = new Set([
   "/healthz",
   "/metrics",
@@ -520,6 +664,7 @@ const publicPaths = new Set([
 const internalApiPrefix = "/api/internal/";
 const internalTokenHeader = "x-space-internal-token";
 const cliBrowserBridgePaths = new Set([
+  "/api/cli/agent-files",
   "/api/cli/browser/context",
   "/api/cli/browser/session",
   "/api/cli/browser/actions",
@@ -594,12 +739,51 @@ function requestIpForLog(request: FastifyRequest): string | undefined {
 }
 
 const idParamSchema = z.object({ id: idSchema });
+const proofRoomPaneParamSchema = z
+  .object({
+    roomId: idSchema,
+    paneId: idSchema
+  })
+  .strict();
+const appDiagnosticsLeaseParamsSchema = z.object({
+  leaseId: z.string().min(6).max(100).regex(/^[A-Za-z0-9][A-Za-z0-9:_-]*$/)
+}).strict();
+const appDiagnosticsSegmentParamsSchema = z.object({
+  segmentId: z.string().min(6).max(100).regex(/^[A-Za-z0-9][A-Za-z0-9:_-]*$/)
+}).strict();
+const appDiagnosticsVideoSegmentParamsSchema = z.object({
+  leaseId: z.string().min(6).max(100).regex(/^[A-Za-z0-9][A-Za-z0-9:_-]*$/),
+  sequence: z.coerce.number().int().min(0).max(1_000_000)
+}).strict();
+const appDiagnosticsHeartbeatInputSchema = z.object({
+  captureId: z.string().min(6).max(100).regex(/^[A-Za-z0-9][A-Za-z0-9:_-]*$/)
+}).strict();
 const sourceControlProviderParamSchema = z.object({ provider: sourceControlProviderSchema }).strict();
 const cliMaintenanceRunParamSchema = z.object({ runId: idSchema }).strict();
+const cliMaintenanceReplayQuerySchema = z.object({
+  afterSequence: z.coerce.number().int().min(0).max(1_000_000_000).default(0)
+}).strict();
+const setupConnectionCheckRunParamSchema = z.object({ runId: idSchema }).strict();
+const setupConnectionCheckReplayQuerySchema = z.object({
+  afterSequence: z.coerce.number().int().min(0).max(1_000_000_000).default(0)
+}).strict();
+const emptySetupConnectionCheckRunSchema = z.object({}).strict();
+const cliHttpControlHeaderNames = {
+  leaseId: "x-space-cli-control-lease-id",
+  browserClientId: "x-space-cli-browser-client-id",
+  tabLineageId: "x-space-cli-tab-lineage-id",
+  pageClientId: "x-space-cli-page-client-id"
+} as const;
+const cliHttpControlAuthoritySchema = z.object({
+  leaseId: idSchema,
+  browserClientId: z.string().uuid(),
+  tabLineageId: z.string().uuid(),
+  pageClientId: z.string().uuid()
+});
 const cliModelReasoningEffortSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
 const updateCliModelSettingsBodySchema = z.object({
   expectedSessionId: idSchema,
-  modelId: z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+  modelId: z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:\/-]*$/),
   reasoningEffort: cliModelReasoningEffortSchema,
   continueActiveTurn: z.boolean().default(true)
 });
@@ -634,6 +818,27 @@ class CodexRuntimeModelSettingsUnconfirmedError extends SpaceConflictError {
     );
     this.name = "CodexRuntimeModelSettingsUnconfirmedError";
   }
+}
+
+class CliTerminalControlRequiredError extends SpaceConflictError {
+  readonly errorCode = "CLI_CONTROL_REQUIRED";
+
+  constructor() {
+    super("Take control of this CLI pane before changing its active session.");
+    this.name = "CliTerminalControlRequiredError";
+  }
+}
+
+function parseCliHttpControlAuthority(request: FastifyRequest) {
+  const input = {
+    leaseId: headerString(request.headers[cliHttpControlHeaderNames.leaseId]),
+    browserClientId: headerString(request.headers[cliHttpControlHeaderNames.browserClientId]),
+    tabLineageId: headerString(request.headers[cliHttpControlHeaderNames.tabLineageId]),
+    pageClientId: headerString(request.headers[cliHttpControlHeaderNames.pageClientId])
+  };
+  return Object.values(input).every((value) => value === null)
+    ? null
+    : cliHttpControlAuthoritySchema.parse(input);
 }
 
 function canonicalCodexAdvertisedModelId(
@@ -674,11 +879,38 @@ const codexHistoryQuerySchema = z
     dedupeTitles: input.dedupeTitles,
     q: input.q?.trim() || undefined
   }));
-const cliTerminalQuerySchema = z.object({
-  sessionId: idSchema,
-  token: z.string().min(24).max(512),
-  clientId: z.string().uuid().optional()
-});
+const cliTerminalQuerySchema = z
+  .object({
+    sessionId: idSchema,
+    token: z.string().min(24).max(512),
+    clientId: z.string().uuid().optional(),
+    protocolVersion: z.coerce.number().int().min(1).max(2).optional(),
+    browserClientId: z.string().uuid().optional(),
+    tabLineageId: z.string().uuid().optional(),
+    pageClientId: z.string().uuid().optional(),
+    clientMode: z.enum(["INTERACTIVE", "OBSERVER"]).optional(),
+    leaseId: idSchema.optional(),
+    initialCols: z.coerce.number().int().min(2).max(400).optional(),
+    initialRows: z.coerce.number().int().min(2).max(200).optional()
+  })
+  .superRefine((input, context) => {
+    if ((input.initialCols === undefined) !== (input.initialRows === undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: input.initialCols === undefined ? ["initialCols"] : ["initialRows"],
+        message: "Initial terminal columns and rows must be provided together."
+      });
+    }
+    if (input.protocolVersion !== 2) return;
+    for (const field of ["browserClientId", "tabLineageId", "pageClientId"] as const) {
+      if (input[field]) continue;
+      context.addIssue({
+        code: "custom",
+        path: [field],
+        message: `Protocol-v2 CLI terminal connections require ${field}.`
+      });
+    }
+  });
 const cliSessionQuerySchema = z.object({
   includeTranscript: z
     .union([z.boolean(), z.enum(["true", "false"])])
@@ -695,6 +927,7 @@ const browserFrameQuerySchema = z.object({
 const browserStreamQuerySchema = browserFrameQuerySchema.required({ token: true }).extend({
   mode: browserStreamModeSchema.default("AUTO")
 });
+const browserAudioQuerySchema = browserFrameQuerySchema.required({ token: true });
 const browserPageParamSchema = z.object({ id: idSchema, pageId: z.string().min(1).max(200) });
 const browserCaptureParamSchema = z.object({ id: idSchema, jobId: idSchema });
 const browserDiagnosticsQuerySchema = z.object({
@@ -795,10 +1028,25 @@ function parseQuery<TSchema extends ZodTypeAny>(schema: TSchema, query: unknown)
 }
 
 const emptyToolbarActionSchema = z.object({}).strict();
-const codexLbSpeedModelParamsSchema = z.object({ modelId: z.enum(["gpt-5.5", "gpt-5.4"]) }).strict();
+const codexLbSpeedModelParamsSchema = z
+  .object({ modelId: z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/) })
+  .strict();
 const minimumKernelCacheReclaimBytes = 256 * 1024 * 1024;
 
 type CodexRouteMode = "headroom" | "primary" | "auto" | "fallback";
+
+const activeAgentStressModelId = "gpt-5.4-mini";
+const activeAgentStressReasoningEffort = "low";
+const activeAgentStressRoomDescription =
+  "Internal auxiliary AGENT_PROOF room for active-agent stress. [ACTIVE_AGENT_STRESS:v1]";
+const cliInputProofRoomDescriptionPrefix =
+  "Persistent isolated room for fixed CLI input proof. [CLI_INPUT:v1:";
+const activeAgentStressPrompts = [
+  "Write the opening paragraph of a harmless fictional story about a lighthouse keeper cataloging constellations. Return only the story paragraph.",
+  "Continue the same harmless fictional story by introducing a small mechanical seabird that delivers a weather note. Return only the next paragraph.",
+  "Continue the same harmless fictional story with the keeper and seabird solving a gentle navigation puzzle before dawn. Return only the next paragraph.",
+  "Conclude the same harmless fictional story at sunrise with the lighthouse log safely completed. Return only the final paragraph."
+] as const;
 
 function codexRouteModeForProvider(provider: Provider | undefined): CodexRouteMode | null {
   if (!provider || provider.status !== "VERIFIED") return null;
@@ -871,6 +1119,20 @@ function invalidateToolbarProvider(provider: unknown): void {
   if (typeof invalidate === "function") invalidate.call(provider);
 }
 
+function headerString(value: string | string[] | undefined): string | null {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value[0] ?? null;
+  return null;
+}
+
+function secureTokenMatches(expected: string | null, submitted: string | string[] | undefined): boolean {
+  const actual = headerString(submitted);
+  if (!expected || !actual) return false;
+  const expectedHash = createHash("sha256").update(expected).digest();
+  const actualHash = createHash("sha256").update(actual).digest();
+  return timingSafeEqual(expectedHash, actualHash);
+}
+
 function isInternalApiRequest(request: FastifyRequest): boolean {
   return request.url.startsWith(internalApiPrefix);
 }
@@ -881,6 +1143,22 @@ function requestPathname(request: FastifyRequest): string {
 
 function isCliBrowserBridgeRequest(request: FastifyRequest): boolean {
   return cliBrowserBridgePaths.has(requestPathname(request));
+}
+
+const appDiagnosticsAutomationMutationRoutes = new Set([
+  "PATCH /api/admin/app-diagnostics",
+  "POST /api/app-diagnostics/event-batches",
+  "POST /api/admin/app-diagnostics/video-leases",
+  "POST /api/admin/app-diagnostics/video-leases/:leaseId/heartbeats",
+  "DELETE /api/admin/app-diagnostics/video-leases/:leaseId",
+  "POST /api/admin/app-diagnostics/video-segments/:leaseId/:sequence",
+  "POST /api/cli/client-events"
+]);
+
+function isAllowedAppDiagnosticsAutomationMutation(request: FastifyRequest): boolean {
+  if (request.method === "GET") return true;
+  const route = request.routeOptions.url ?? requestPathname(request);
+  return appDiagnosticsAutomationMutationRoutes.has(`${request.method} ${route}`);
 }
 
 function sendApiError(reply: FastifyReply, statusCode: number, code: string, message: string, details?: unknown) {
@@ -1134,6 +1412,17 @@ function localArtifactFilePath(input: { artifactRoot: string; artifact: Artifact
       safeStorageSegment(day),
       safeCliFilename(filename)
     );
+  }
+  if (parsed.hostname === "agent-files" && segments.length === 5) {
+    const [roomId, paneId, sessionId, day, filename] = segments as [string, string, string, string, string];
+    candidate = agentFileStoragePath({
+      artifactRoot: input.artifactRoot,
+      roomId,
+      paneId,
+      cliSessionId: sessionId,
+      day,
+      storedFilename: filename
+    });
   }
   if (parsed.hostname === "browser-evidence" && segments.length === 2) {
     const [captureId, filename] = segments as [string, string];
@@ -1410,9 +1699,11 @@ function buildSwarmTaskPrompt(task: SwarmTask, operatorPrompt?: string): string 
     .slice(0, 8000);
 }
 
+const BROWSER_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["BROWSER", "YOUTUBE"];
+
 function assertBrowserPaneCompatible(pane: Pane) {
-  if (pane.mode !== "BROWSER") {
-    throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER panes.`);
+  if (!BROWSER_PANE_MODES.includes(pane.mode)) {
+    throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER or YOUTUBE panes.`);
   }
   if (pane.isClosed) {
     throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -1439,6 +1730,7 @@ async function buildPaneCliSessionResponse(input: {
   sessionId: string;
   includeWebsocket: boolean;
   includeTranscript?: boolean;
+  proofScope?: "READ_ONLY";
   tokenTtlMs: number;
   issueTicket: (paneId: string, sessionId: string, ttlMs: number) => PaneCliWebSocketToken;
 }) {
@@ -1453,13 +1745,47 @@ async function buildPaneCliSessionResponse(input: {
     session,
     runtime: input.runtime,
     transcript,
-    websocket: input.includeWebsocket ? input.issueTicket(session.paneId, session.sessionId, input.tokenTtlMs) : null
+    websocket: input.includeWebsocket
+      ? {
+          ...input.issueTicket(session.paneId, session.sessionId, input.tokenTtlMs),
+          ...(input.proofScope ? { proofScope: input.proofScope } : {})
+        }
+      : null
   });
 }
 
 async function loadCodexPrimaryTaskRequest(codexParity: CodexParityService, threadId: string): Promise<string | null> {
   const thread = await codexParity.getHistoryThread(threadId);
   return thread.firstUserMessage?.trim() || null;
+}
+
+async function availableNativeCodexThreadId(
+  codexParity: CodexParityService,
+  threadId: string | null
+): Promise<string | null> {
+  if (!threadId) return null;
+  try {
+    await codexParity.getHistoryThread(threadId);
+    return threadId;
+  } catch (error) {
+    if (error instanceof CodexParityNotFoundError) return null;
+    throw error;
+  }
+}
+
+async function availableOpenCodeNativeSessionId(input: {
+  sourceTask: ResolvedSpaceCliTask;
+  runtimeId: string;
+  sourceRuntimeId: string;
+  stateRoot?: string;
+}): Promise<string | null> {
+  const { sourceTask, runtimeId, sourceRuntimeId } = input;
+  if (runtimeId !== "cli:opencode" || sourceRuntimeId !== "cli:opencode") return null;
+  const nativeTaskRef = sourceTask.revision.nativeTaskRef;
+  if (nativeTaskRef && opencodeNativeSessionIdPattern.test(nativeTaskRef)) return nativeTaskRef;
+  const mapped = await readOpenCodeNativeSessionId(sourceTask.session.sessionId, input.stateRoot);
+  if (mapped) return mapped;
+  return null;
 }
 
 function paneTitleFromCliTaskTitle(title: string): string {
@@ -1714,6 +2040,7 @@ async function resolvePaneCodexThreadId(input: {
   store: SpaceStore;
   session: PaneCliSession;
   traceId: string;
+  findThreadId?: CodexThreadFinder;
 }): Promise<string | null> {
   if (input.session.codexThreadId) return input.session.codexThreadId;
   if (!isCodexDirectParityRuntime(input.session.runtimeId)) return null;
@@ -1721,7 +2048,8 @@ async function resolvePaneCodexThreadId(input: {
     store: input.store,
     paneId: input.session.paneId,
     sessionId: input.session.sessionId,
-    cwd: codexDirectParityCwd
+    cwd: input.session.cwd ?? codexDirectParityCwd,
+    findThreadId: input.findThreadId
   });
   if (!codexThreadId) return null;
   try {
@@ -1743,6 +2071,7 @@ async function syncPaneTitleToCodexHistory(input: {
   traceId: string;
   request: FastifyRequest;
   session?: PaneCliSession | SpaceAgentSessionRecord | null;
+  findThreadId?: CodexThreadFinder;
 }): Promise<(() => Promise<void>) | null> {
   if (input.pane.mode !== "TERMINAL" && input.pane.mode !== "CHAT") return null;
   const session = input.session ?? (input.pane.mode === "CHAT"
@@ -1757,7 +2086,12 @@ async function syncPaneTitleToCodexHistory(input: {
   const threadId = input.pane.mode === "CHAT"
     ? "threadId" in session ? session.threadId : null
     : "runtimeId" in session && isCodexDirectParityRuntime(session.runtimeId)
-      ? await resolvePaneCodexThreadId({ store: input.store, session, traceId: input.traceId })
+      ? await resolvePaneCodexThreadId({
+          store: input.store,
+          session,
+          traceId: input.traceId,
+          findThreadId: input.findThreadId
+        })
       : null;
   if (!threadId) {
     if (input.pane.mode === "CHAT") return null;
@@ -1800,6 +2134,71 @@ async function syncPaneTitleToCodexHistory(input: {
           codexThreadId: threadId
         },
         "codex thread title rollback failed"
+      );
+    }
+  };
+}
+
+async function syncPaneTitleToCliTaskRevision(input: {
+  store: SpaceStore;
+  pane: Pane;
+  title: string;
+  traceId: string;
+  request: FastifyRequest;
+  session?: PaneCliSession | null;
+}): Promise<(() => Promise<void>) | null> {
+  if (input.pane.mode !== "TERMINAL") return null;
+  const session = input.session ?? await input.store.getActivePaneCliSession(input.pane.id);
+  if (!session || session.purpose !== "NORMAL" || !session.cliTaskRevisionId) return null;
+  let previousTitle: string;
+  try {
+    const revision = await input.store.getCliTaskRevision(session.cliTaskRevisionId);
+    if (!revision) {
+      throw new Error(`CLI task revision ${session.cliTaskRevisionId} was not found.`);
+    }
+    previousTitle = revision.displayTitle;
+    const updated = await input.store.updateCliTaskRevision(
+      revision.revisionId,
+      { displayTitle: input.title },
+      input.traceId
+    );
+    if (updated.displayTitle !== input.title) {
+      throw new Error("Space CLI task history returned a different title after update.");
+    }
+  } catch (error) {
+    input.request.log.warn(
+      {
+        err: error,
+        requestId: input.traceId,
+        paneId: input.pane.id,
+        sessionId: session.sessionId,
+        cliTaskRevisionId: session.cliTaskRevisionId
+      },
+      "CLI task revision title sync failed"
+    );
+    throw new SpaceFeatureDisabledError(
+      "CLI_TASK_TITLE_SYNC_FAILED",
+      "The pane title was not changed because the matching Space CLI task history could not be updated."
+    );
+  }
+  return async () => {
+    if (previousTitle === input.title) return;
+    try {
+      await input.store.updateCliTaskRevision(
+        session.cliTaskRevisionId!,
+        { displayTitle: previousTitle },
+        input.traceId
+      );
+    } catch (error) {
+      input.request.log.error(
+        {
+          err: error,
+          requestId: input.traceId,
+          paneId: input.pane.id,
+          sessionId: session.sessionId,
+          cliTaskRevisionId: session.cliTaskRevisionId
+        },
+        "CLI task revision title rollback failed"
       );
     }
   };
@@ -2667,6 +3066,49 @@ function createDefaultStore(config: SpaceApiConfig): SpaceStore {
   });
 }
 
+function createDefaultAppDiagnosticsService(
+  config: SpaceApiConfig,
+  store: SpaceStore
+): AppDiagnosticsService {
+  const persistent = store instanceof PostgresSpaceStore;
+  const repository = persistent
+    ? PostgresAppDiagnosticsRepository.fromConnectionString(
+        config.databaseUrl ?? (() => {
+          throw new Error("SPACE_DATABASE_URL is required when SPACE_RUNTIME_STORE=postgres.");
+        })(),
+        {
+          max: 2,
+          idleTimeoutMillis: config.databasePoolIdleTimeoutMs,
+          connectionTimeoutMillis: config.databasePoolConnectionTimeoutMs
+        }
+      )
+    : new InMemoryAppDiagnosticsRepository();
+  return new AppDiagnosticsService({
+    repository,
+    root: persistent
+      ? config.appDiagnosticsRoot
+      : join(tmpdir(), `space-app-diagnostics-${process.pid}-${crypto.randomUUID()}`),
+    cleanupRootOnDispose: !persistent
+  });
+}
+
+function createDefaultActivityLogService(config: SpaceApiConfig, store: SpaceStore): ActivityLogService {
+  const persistent = store instanceof PostgresSpaceStore;
+  const repository = persistent
+    ? PostgresActivityLogRepository.fromConnectionString(
+        config.databaseUrl ?? (() => {
+          throw new Error("SPACE_DATABASE_URL is required when SPACE_RUNTIME_STORE=postgres.");
+        })(),
+        {
+          max: 2,
+          idleTimeoutMillis: config.databasePoolIdleTimeoutMs,
+          connectionTimeoutMillis: config.databasePoolConnectionTimeoutMs
+        }
+      )
+    : new InMemoryActivityLogRepository();
+  return new ActivityLogService({ repository });
+}
+
 function usedPercent(sizeBytes: number, availableBytes: number): number {
   if (sizeBytes <= 0) return 0;
   return Math.round(((sizeBytes - availableBytes) / sizeBytes) * 1000) / 10;
@@ -2757,13 +3199,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const config = options.config ?? getApiConfig(process.env);
   const auth = options.auth ?? getAuthConfig(process.env);
   const store = options.store ?? createDefaultStore(config);
+  const appDiagnosticsService =
+    options.appDiagnosticsService ?? createDefaultAppDiagnosticsService(config, store);
+  const activityLogService =
+    options.activityLogService ?? createDefaultActivityLogService(config, store);
   if (options.setup) {
     await store.initializeOwnerSetup(options.setup);
   }
   const sourceControlPublishingManager =
     options.sourceControlPublishingManager ?? new SourceControlPublishingManager({ store });
   const cliMaintenanceManager =
-    options.cliMaintenanceManager ?? new CliMaintenanceManager({ store });
+    options.cliMaintenanceManager ?? new CliMaintenanceManager({
+      store,
+      repairEnabled: config.cliMaintenanceRepairEnabled
+    });
   const releasePublishingManager =
     options.releasePublishingManager ?? new ReleasePublishingManager({ store });
   const telegramIntegrationManager =
@@ -2842,8 +3291,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           }
         : null,
       projectionPath: store instanceof PostgresSpaceStore
-        ? process.env.SPACE_CODEX_CLI_MODE_DEFAULTS_PROJECTION_PATH ||
-          "/opt/spaceapp/var/codex-cli-mode-defaults-v1.json"
+        ? "/opt/spaceapp/var/codex-cli-mode-defaults-v1.json"
         : null
     });
   const codexSessionSocketProbe = options.codexSessionSocketProbe ?? (async (socketPath: string) => {
@@ -2892,6 +3340,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       taskQueue: config.temporalTaskQueue
     });
   const observability = createHttpObservability({ serviceName: "space-api" });
+  let reportCliTerminalManagerTelemetry = (event: CliTerminalManagerTelemetryEvent) => {
+    observability.observeCliTerminalEvent({
+      source: "SERVER",
+      event: event.event,
+      outcome: event.outcome,
+      reason: event.reason
+    });
+  };
   const workerReadinessChecker = options.workerReadinessChecker ?? createWorkerReadinessChecker(config);
   const storageReadinessChecker = options.storageReadinessChecker ?? collectStorageReadiness;
   const spaceCapabilityInventoryCollector = options.spaceCapabilityInventoryCollector ?? collectDefaultSpaceCapabilityInventory;
@@ -2935,7 +3391,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
 
   const unifiedCliTaskRegistry = new UnifiedCliTaskRegistry(store);
-  const cliRuntimeRegistryCache = createAgentRuntimeRegistryCache(() => discoverAgentRuntimes(config));
+  let cliRuntimeRegistryCache!: ReturnType<typeof createAgentRuntimeRegistryCache>;
+  let setupConnections!: SetupConnectionsService;
 
   const cliTerminalManager = new CliTerminalManager({
     store,
@@ -2950,8 +3407,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     modelSelectionTimeoutMs: options.cliModelSelectionTimeoutMs,
     loginTimeoutMs: options.cliLoginTimeoutMs,
     loginObservationIntervalMs: options.cliLoginObservationIntervalMs,
+    onTelemetry: (event) => reportCliTerminalManagerTelemetry(event),
     codexBuildDefaultsProvider: async () => (await codexCliModeDefaultsService.current()).build,
-    onLoginSucceeded: async (loginSession) => {
+    onLoginSucceeded: async (loginSession, evidence) => {
       const startedAtMs = Date.parse(loginSession.startedAt);
       const durationMs = Math.min(900_000, Math.max(0, Date.now() - (Number.isFinite(startedAtMs) ? startedAtMs : Date.now())));
       try {
@@ -2960,6 +3418,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         const runtime = findRuntime(registry, loginSession.runtimeId);
         if (!runtime || !isCliRuntimeTerminalLaunchable(runtime)) {
           throw new SpaceConflictError("CLI login credential verification did not reach READY.");
+        }
+        const setupVerification = evidence
+          ? await setupConnections.recordVerifiedEvidence(runtime.id, evidence.fingerprintHash)
+          : await setupConnections.verify(runtime.id);
+        if (setupVerification.state !== "CONNECTED") {
+          throw new SpaceConflictError("CLI login credential verification did not reach CONNECTED.");
         }
         const pane = await store.getPane(loginSession.paneId);
         let modelId = pane.modelId ?? runtime.defaultModelId;
@@ -2992,6 +3456,22 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           status: "IDLE",
           statusReason: "CLI login verified; normal session allocated in the same pane."
         }, "req:cli-login-lifecycle");
+        try {
+          await cliMaintenanceManager.completeAuthHandoffsForRuntime(runtime.id);
+        } catch {
+          try {
+            await store.recordAuditEvent({
+              actorUserId: null,
+              traceId: "req:cli-login-lifecycle",
+              action: "cli_maintenance.auth_handoff.reconcile",
+              targetType: "runtime",
+              targetId: runtime.id,
+              metadata: { runtimeId: runtime.id, outcome: "FAILED" }
+            });
+          } catch {
+            // Provider login remains successful even if maintenance reconciliation is temporarily unavailable.
+          }
+        }
         await store.recordAuditEvent({
           actorUserId: null,
           traceId: "req:cli-login-lifecycle",
@@ -3028,9 +3508,144 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       });
     }
   });
+  const cliVpnBroker = options.cliVpnBroker ?? new CliVpnBrokerClient();
+  const cliVpnSessionPidResolver = options.cliVpnSessionPidResolver
+    ?? ((sessions: readonly PaneCliSession[]) => cliTerminalManager.activeSessionPids(sessions));
+  const cliVpnSessionRestarter = options.cliVpnSessionRestarter
+    ?? (async (session: PaneCliSession, runtime: AgentRuntime, traceId: string) => {
+      const taskRevision = session.cliTaskRevisionId
+        ? await store.getCliTaskRevision(session.cliTaskRevisionId)
+        : null;
+      const openCodeProcessPid = runtime.id === "cli:opencode"
+        ? (await cliVpnSessionPidResolver([session])).get(session.sessionId) ?? null
+        : null;
+      const openCodeNativeSessionId = runtime.id === "cli:opencode"
+        ? taskRevision?.nativeTaskRef
+          ?? await readOpenCodeNativeSessionId(session.sessionId)
+          ?? (openCodeProcessPid
+            ? await readOpenCodeNativeSessionIdFromProcessTree(openCodeProcessPid)
+            : null)
+        : null;
+      if (runtime.id === "cli:opencode" && !openCodeNativeSessionId) {
+        throw new SpaceConflictError(
+          `OpenCode session ${session.sessionId} has no exact native task reference; it was preserved instead of opening a blank VPN replacement.`
+        );
+      }
+      if (openCodeNativeSessionId && session.cliTaskRevisionId) {
+        await store.updateCliTaskRevision(
+          session.cliTaskRevisionId,
+          { nativeTaskRef: openCodeNativeSessionId },
+          traceId
+        );
+      }
+      return cliTerminalManager.replaceSessionForPolicyRestart(
+        session.sessionId,
+        runtime,
+        traceId,
+        async () => {
+          await store.updatePaneCliSession(
+            session.sessionId,
+            {
+              status: "EXITED",
+              statusReason: "CLI session restarted by explicit VPN routing request.",
+              isActive: false,
+              endedAt: nowIso()
+            },
+            traceId
+          );
+          const replacementSessionId = makeSpaceId("cli_session");
+          const allocatedAtNs = process.hrtime.bigint();
+          const replacement = await store.createPaneCliSession(
+            {
+              sessionId: replacementSessionId,
+              paneId: session.paneId,
+              roomId: session.roomId,
+              runtimeId: session.runtimeId,
+              providerId: session.providerId,
+              agentId: session.agentId,
+              modelId: session.modelId,
+              reasoningEffort: session.reasoningEffort,
+              launchMode: openCodeNativeSessionId ? "RESUME" : "FRESH",
+              cwd: session.cwd,
+              codexThreadId: null,
+              cliTaskId: session.cliTaskId,
+              cliTaskRevisionId: session.cliTaskRevisionId,
+              status: "IDLE",
+              statusReason: openCodeNativeSessionId
+                ? "OpenCode task allocated for exact native resume through VPN; waiting for terminal transport attach."
+                : "CLI session allocated for VPN routing; waiting for terminal transport attach."
+            },
+            traceId
+          );
+          cliTerminalManager.recordSessionAllocation(replacement.sessionId, allocatedAtNs);
+          await store.appendPaneCliTranscriptChunk(
+            {
+              sessionId: replacement.sessionId,
+              paneId: replacement.paneId,
+              roomId: replacement.roomId,
+              sequence: 0,
+              stream: "system",
+              content: openCodeNativeSessionId
+                ? `${runtime.displayName} task resumed exactly through the protected VPN route.`
+                : `${runtime.displayName} session restarted by explicit VPN routing request.`
+            },
+            traceId
+          );
+          return replacement;
+        }
+      );
+    });
+  cliRuntimeRegistryCache = createAgentRuntimeRegistryCache(() => discoverAgentRuntimes(config));
+  setupConnections =
+    options.setupConnections ??
+    createSetupConnectionsService({
+      store,
+      discoverRuntimes: async () => {
+        cliRuntimeRegistryCache.invalidate();
+        return cliRuntimeRegistryCache.read();
+      },
+      observeCredential: (runtime) => observeCliRuntimeCredential(runtime),
+      checkCredential: (runtime) => checkCliRuntimeCredential(runtime)
+    });
+  const setupConnectionCheckRuns =
+    options.setupConnectionCheckRuns ??
+    new SetupConnectionCheckRunManager({
+      store,
+      setupConnections
+    });
+  const assertCliHttpMutationControl = async (
+    request: FastifyRequest,
+    session: PaneCliSession
+  ): Promise<void> => {
+    const authority = parseCliHttpControlAuthority(request);
+    const activeLease = await store.getActivePaneCliTerminalControlLease(session.sessionId);
+    if (!activeLease && !authority) return;
+    if (
+      !activeLease ||
+      !authority ||
+      authority.leaseId !== activeLease.leaseId ||
+      authority.browserClientId !== activeLease.browserClientId ||
+      authority.tabLineageId !== activeLease.tabLineageId ||
+      authority.pageClientId !== activeLease.pageClientId ||
+      request.user?.id !== activeLease.userId
+    ) {
+      throw new CliTerminalControlRequiredError();
+    }
+  };
+  let codexMasterRoomAgentStopper = options.codexMasterRoomAgentStopper ?? (async () => false);
   const cliRuntimeVisibility = new CliRuntimeVisibilityPolicy({
     store,
     terminateSession: options.cliRuntimeSessionTerminator ?? ((sessionId) => cliTerminalManager.interrupt(sessionId)),
+    interruptChatPane: options.codexMasterChatInterrupter ?? (async (paneId, reason) => {
+      const pane = await store.getPane(paneId);
+      await spaceAgentAdapter.interrupt({ pane, reason });
+      const session = await store.getActiveSpaceAgentSession(paneId);
+      if (!session) return true;
+      const run = await store.getLatestSpaceAgentRun(session.sessionId);
+      return !run || (run.status !== "QUEUED" && run.status !== "RUNNING");
+    }),
+    stopRoomAgentMission: (roomId, missionId, reason, traceId) =>
+      codexMasterRoomAgentStopper(roomId, missionId, reason, traceId),
     publishEvent: (event) => eventBus.publish(event)
   });
   const hostStatsProvider =
@@ -3053,6 +3668,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const toolbarUsageProvider =
     options.toolbarUsageProvider ??
     createCodexUsageAccountProvider({ readUsage: createCodexUsageRemoteReader() });
+  const codexResetCreditsService = options.codexResetCreditsService ?? createCodexResetCreditsService();
   const toolbarCliSessionStatsProvider =
     options.toolbarCliSessionStatsProvider ??
     createCliSessionStatsProvider({
@@ -3084,7 +3700,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const toolbarProviderRouteApplier =
     options.toolbarProviderRouteApplier ??
     ((provider: Provider) => applyGlobalProviderRoute(config, provider, { strict: true }));
-  const codexLbSpeedDefaultsService = createCodexLbSpeedDefaultsService();
+  const codexLbSpeedDefaultsService = createCodexLbSpeedDefaultsService({
+    listModels: async () => {
+      if (!codexAgentControl) throw new Error("Codex model catalog is unavailable.");
+      return codexAgentControl.listModels();
+    }
+  });
   const codexLbSpeedDefaultsProvider = options.codexLbSpeedDefaultsProvider ?? codexLbSpeedDefaultsService.read;
   const codexLbSpeedDefaultUpdater = options.codexLbSpeedDefaultUpdater ?? codexLbSpeedDefaultsService.update;
   const codexHistoryPurgeService = options.codexHistoryPurgeService ?? createCodexHistoryPurgeService();
@@ -3154,7 +3775,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!isCodexDirectParityRuntime(session.runtimeId)) {
       throw new SpaceConflictError("Model switching is available only for Codex CLI panes.");
     }
-    const threadId = await resolvePaneCodexThreadId({ store, session, traceId });
+    const threadId = await resolvePaneCodexThreadId({
+      store,
+      session,
+      traceId,
+      findThreadId: options.findCodexThreadId
+    });
     const refreshedSession = (await store.getPaneCliSession(session.sessionId)) ?? session;
     const socketPath = codexPrivateAppServerSocketPath(refreshedSession);
     const directAvailable = await codexSessionSocketProbe(socketPath);
@@ -3216,6 +3842,66 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       session: refreshedSession
     };
   };
+  const resolveOpenCodeServerControl = async (session: PaneCliSession): Promise<OpenCodeServerControl> => {
+    const control = await readOpenCodeServerControl(session.sessionId, options.opencodeStateRoot);
+    if (!control || !(await openCodeServerIsHealthy(control))) {
+      throw new SpaceFeatureDisabledError(
+        "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+        "Live OpenCode model control is unavailable; the current CLI session was left unchanged."
+      );
+    }
+    return control;
+  };
+  const readPaneOpenCodeModelSettings = async (pane: Pane, session: PaneCliSession, traceId: string) => {
+    const control = await resolveOpenCodeServerControl(session);
+    const refreshedSession = (await store.getPaneCliSession(session.sessionId)) ?? session;
+    let models: PaneCliModelSettings["models"];
+    try {
+      const descriptors = await fetchOpenCodeSessionModels(control);
+      const currentModel = await fetchOpenCodeCurrentModel(control, control.nativeSessionId);
+      const currentModelId = currentModel ? `${currentModel.providerID}/${currentModel.id}` : null;
+      models = descriptors.map((descriptor) => {
+        const optionId = `${descriptor.providerId}/${descriptor.modelId}`;
+        return {
+          id: optionId,
+          displayName: descriptor.displayName,
+          isDefault: optionId === currentModelId,
+          defaultReasoningEffort: openCodeDefaultReasoningEffort,
+          supportedReasoningEfforts: [...openCodeReasoningEfforts],
+          reasoningOptions: openCodeReasoningEfforts.map((reasoningEffort) => ({ reasoningEffort }))
+        };
+      });
+    } catch {
+      throw new SpaceFeatureDisabledError(
+        "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+        "Live OpenCode model control is unavailable; the current CLI session was left unchanged."
+      );
+    }
+    if (!models.length) {
+      throw new SpaceFeatureDisabledError("OPENCODE_MODEL_CATALOG_UNAVAILABLE", "OpenCode did not advertise any selectable models.");
+    }
+    const currentModel = await fetchOpenCodeCurrentModel(control, control.nativeSessionId).catch(() => null);
+    const current = currentModel
+      ? {
+          modelId: `${currentModel.providerID}/${currentModel.id}`,
+          reasoningEffort: openCodeReasoningEfforts.includes(currentModel.variant as never)
+            ? (currentModel.variant as string)
+            : openCodeDefaultReasoningEffort
+        }
+      : null;
+    const isTurnActive = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId);
+    return {
+      settings: {
+        sessionId: refreshedSession.sessionId,
+        threadId: null,
+        current,
+        models,
+        controlMode: "OPENCODE" as const,
+        isTurnActive
+      },
+      session: refreshedSession
+    };
+  };
   const roomPlanInventoryProvider = options.roomPlanInventoryProvider ?? createRoomPlanInventoryProvider({
     store,
     findPlanState: (threadId) => findCodexCliPlanState({ codexHome: codexDirectParityCodexHome, threadId }),
@@ -3252,6 +3938,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     missionStopper: roomActionExecutor,
     roomPlanInventoryProvider
   });
+  if (!options.codexMasterRoomAgentStopper) {
+    codexMasterRoomAgentStopper = async (roomId, missionId, reason, traceId) => {
+      await roomAgentService.stop(roomId, reason, traceId);
+      const mission = await store.getRoomAgentMission(roomId, missionId);
+      return mission?.status === "INTERRUPTED";
+    };
+  }
 
   function assertRootAdmin(request: FastifyRequest, runtimeId: string | null | undefined) {
     if (runtimeId !== "cli:root" || request.user?.role === "ADMIN") return;
@@ -3339,6 +4032,50 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { claims, cliSession };
   }
 
+  async function requireCliAgentFilesContext(request: FastifyRequest, reply: FastifyReply) {
+    if (!cliAgentFilesEnabled(config)) {
+      await sendApiError(
+        reply,
+        503,
+        "CLI_AGENT_FILES_DISABLED",
+        "Space Agent Files publishing is unavailable until internal API authentication is configured."
+      );
+      return null;
+    }
+    const dedicatedClaims = verifyCliAgentFilesToken(
+      config,
+      headerString(request.headers[cliAgentFilesTokenHeader])
+    );
+    const legacyClaims = dedicatedClaims
+      ? null
+      : verifyCliBrowserBridgeToken(config, headerString(request.headers[cliBrowserBridgeTokenHeader]));
+    const claims = dedicatedClaims ?? legacyClaims;
+    if (!claims) {
+      await sendApiError(
+        reply,
+        401,
+        "CLI_AGENT_FILES_TOKEN_INVALID",
+        "The Space Agent Files token is missing, invalid, or expired. Start a new normal Space CLI session and try again."
+      );
+      return null;
+    }
+    const cliSession = await store.getPaneCliSession(claims.cliSessionId);
+    if (!cliSession || cliSession.roomId !== claims.roomId || cliSession.paneId !== claims.paneId) {
+      await sendApiError(reply, 404, "CLI_SESSION_NOT_FOUND", "CLI session for the Agent Files token was not found.");
+      return null;
+    }
+    if (!cliSession.isActive || cliSession.status === "EXITED" || cliSession.status === "ERROR") {
+      await sendApiError(reply, 409, "CLI_SESSION_INACTIVE", "Only an active CLI session can publish Agent Files.");
+      return null;
+    }
+    if (cliSession.purpose !== "NORMAL") {
+      await sendApiError(reply, 409, "CLI_LOGIN_SESSION_RESTRICTED", "CLI login sessions cannot publish Agent Files.");
+      return null;
+    }
+    await cliRuntimeVisibility.assertEnabled(cliSession.runtimeId);
+    return { claims, cliSession };
+  }
+
   function summarizeCliBrowserSession(session: PaneBrowserSession) {
     return {
       sessionId: session.sessionId,
@@ -3358,18 +4095,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   }
 
-  const trustedProxyAddresses = [
-    "127.0.0.1",
-    "::1",
-    "::ffff:127.0.0.1",
-    ...(process.env.SPACE_TRUSTED_PROXY_ADDRESSES ?? "")
-      .split(",")
-      .map((address) => address.trim())
-      .filter(Boolean)
-  ];
   const app = Fastify({
-    // Public installs trust loopback only unless the owner explicitly configures proxy addresses.
-    trustProxy: trustedProxyAddresses,
+    // public-host is the only public marketing proxy; forwarded IPs from every other remote remain untrusted.
+    trustProxy: ["127.0.0.1", "::1", "::ffff:127.0.0.1", "192.0.2.2"],
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
       redact: ["req.headers.authorization", "req.headers.cookie", "password"],
@@ -3387,11 +4115,40 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     }
   });
+  reportCliTerminalManagerTelemetry = (telemetry) => {
+    observability.observeCliTerminalEvent({
+      source: "SERVER",
+      event: telemetry.event,
+      outcome: telemetry.outcome,
+      reason: telemetry.reason
+    });
+    app.log.info(
+      {
+        event: "cli_terminal.lifecycle",
+        source: "SERVER",
+        eventType: telemetry.event,
+        outcome: telemetry.outcome,
+        reason: telemetry.reason,
+        paneId: telemetry.paneId,
+        roomId: telemetry.roomId,
+        sessionId: telemetry.sessionId,
+        runtimeId: telemetry.runtimeId,
+        protocolVersion: telemetry.protocolVersion ?? null,
+        clientMode: telemetry.clientMode ?? null,
+        controlState: telemetry.controlState ?? null,
+        socketCount: telemetry.socketCount,
+        requestId: telemetry.requestId ?? null
+      },
+      "CLI terminal lifecycle event."
+    );
+  };
   reportEventSubscriberError = (error, event) => {
     app.log.error({ err: error, eventId: event.id, eventType: event.type }, "Space event subscriber failed.");
   };
   let artifactRetentionTimer: ReturnType<typeof setInterval> | null = null;
   let artifactRetentionSweepRunning = false;
+  let appDiagnosticsRetentionTimer: ReturnType<typeof setInterval> | null = null;
+  let appDiagnosticsRetentionSweepRunning = false;
   let durableEventPollTimer: ReturnType<typeof setInterval> | null = null;
 
   async function runDurableEventPoll() {
@@ -3434,6 +4191,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
+  async function runAppDiagnosticsRetentionSweep() {
+    if (appDiagnosticsRetentionSweepRunning) return;
+    appDiagnosticsRetentionSweepRunning = true;
+    try {
+      const result = await appDiagnosticsService.sweepExpired();
+      if (result.segmentsDeleted > 0 || result.leasesDeleted > 0 || result.capturesDeleted > 0) {
+        app.log.info(result, "App diagnostics retention sweep completed.");
+      }
+    } catch (error) {
+      app.log.error({ err: error }, "App diagnostics retention sweep failed.");
+    } finally {
+      appDiagnosticsRetentionSweepRunning = false;
+    }
+  }
+
   await app.register(cookie);
   await app.register(compress, {
     threshold: 1024,
@@ -3460,18 +4232,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     timeWindow: "1 minute",
     keyGenerator: (request) => requestIpForLog(request) ?? "unknown"
   });
-  const defaultRouteRateLimitOptions = {
-    config: {
-      rateLimit: {
-        max: config.apiRateLimitMax,
-        timeWindow: "1 minute"
-      }
-    }
-  };
-  const defaultWebsocketRateLimitOptions = {
-    ...defaultRouteRateLimitOptions,
-    websocket: true as const
-  };
   await app.register(websocket, {
     options: {
       maxPayload: 64 * 1024,
@@ -3480,6 +4240,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     }
   });
+  app.addContentTypeParser(
+    /^video\/webm(?:\s*;\s*codecs=(?:vp8|vp9))?$/i,
+    { parseAs: "buffer" },
+    (_request, body, done) => done(null, body)
+  );
 
   app.addHook("onRequest", async (request) => {
     observability.onRequest(request);
@@ -3493,13 +4258,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   app.addHook("onClose", async () => {
     if (artifactRetentionTimer) clearInterval(artifactRetentionTimer);
+    if (appDiagnosticsRetentionTimer) clearInterval(appDiagnosticsRetentionTimer);
     if (durableEventPollTimer) clearInterval(durableEventPollTimer);
     stopTrackingPublishedEvents();
     await cliTerminalManager.closeAll();
     await browserSessionManager.closeAll();
+    await appDiagnosticsService.dispose();
   });
 
   app.addHook("onReady", async () => {
+    await appDiagnosticsService.initialize();
+    appDiagnosticsRetentionTimer = setInterval(
+      () => void runAppDiagnosticsRetentionSweep(),
+      5 * 60 * 1000
+    );
+    appDiagnosticsRetentionTimer.unref();
     if (browserSessionManager.recoverCaptureJobs) {
       try {
         const recovery = await browserSessionManager.recoverCaptureJobs();
@@ -3549,6 +4322,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (request.url.startsWith("/api/") && !request.user) {
       return sendApiError(reply, 401, "UNAUTHENTICATED", "Authentication is required.");
     }
+    if (
+      request.user?.automationScope === "APP_DIAGNOSTICS" &&
+      request.url.startsWith("/api/") &&
+      !isAllowedAppDiagnosticsAutomationMutation(request)
+    ) {
+      return sendApiError(
+        reply,
+        403,
+        "AUTOMATION_SCOPE_READ_ONLY",
+        "App diagnostics automation cannot mutate this resource."
+      );
+    }
     if (request.user && requiresCsrf(request)) {
       const submittedToken = request.headers[csrfHeaderName];
       if (!verifyCsrfToken(request.cookies[cookieName], submittedToken, auth.sessionSecret)) {
@@ -3565,6 +4350,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (error instanceof SpaceNotFoundError) {
       request.log.info({ err: error, requestId: request.requestIdForSpace }, "request target not found");
       return sendApiError(reply, 404, "NOT_FOUND", error.message);
+    }
+    if (error instanceof AppDiagnosticsServiceError) {
+      request.log.info(
+        { errorCode: error.code, requestId: request.requestIdForSpace },
+        "App diagnostics request rejected"
+      );
+      return sendApiError(reply, error.statusCode, error.code, error.message);
     }
     if (error instanceof TelegramIntegrationError) {
       request.log.info({ errorCode: error.code, requestId: request.requestIdForSpace }, "Telegram integration request rejected");
@@ -3609,6 +4401,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       request.log.info({ err: error, requestId: request.requestIdForSpace }, "Codex runtime model settings unconfirmed");
       return sendApiError(reply, 409, error.errorCode, error.message, error.details);
     }
+    if (error instanceof CliTerminalControlRequiredError) {
+      request.log.info(
+        { requestId: request.requestIdForSpace },
+        "CLI HTTP mutation rejected because terminal control is held by another page"
+      );
+      return sendApiError(reply, 409, error.errorCode, error.message);
+    }
     if (error instanceof PaneClosedConflictError) {
       request.log.info({ err: error, requestId: request.requestIdForSpace }, "closed pane request conflicted");
       return sendApiError(reply, 409, "PANE_CLOSED", error.message);
@@ -3617,15 +4416,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       request.log.info({ requestId: request.requestIdForSpace }, "CLI runtime disable confirmation is stale");
       return sendApiError(reply, 409, error.errorCode, error.message, error.preview);
     }
+    if (error instanceof CliVpnError) {
+      request.log.warn(
+        { errorCode: error.code, requestId: request.requestIdForSpace },
+        "CLI VPN request rejected"
+      );
+      return sendApiError(reply, error.statusCode, error.code, error.message);
+    }
     if (error instanceof SpaceConflictError) {
       request.log.info({ err: error, requestId: request.requestIdForSpace }, "request conflicted");
       return sendApiError(reply, 409, "CONFLICT", error.message);
     }
     if (error instanceof SpaceFeatureDisabledError) {
-      request.log.warn({ err: error, requestId: request.requestIdForSpace }, "request blocked by feature gate");
+      request.log.info({ err: error, requestId: request.requestIdForSpace }, "request blocked by feature gate");
       const statusCode =
         error.errorCode === "SPACE_AGENT_PERMISSION_FIXED_FULL_ACCESS" ||
-        error.errorCode === "SPACE_AGENT_MODEL_CONFIG_NOT_ADVERTISED"
+        error.errorCode === "SPACE_AGENT_MODEL_CONFIG_NOT_ADVERTISED" ||
+        error.errorCode === "CODEX_MASTER_DISABLED"
           ? 409
           : 503;
       return sendApiError(reply, statusCode, error.errorCode, error.message, error.details);
@@ -3643,20 +4450,22 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return sendApiError(reply, 500, "INTERNAL_ERROR", "The request could not be completed.");
   });
 
-  app.get("/healthz", defaultRouteRateLimitOptions, async () => ({ ok: true, service: "space-api" }));
-  app.get("/readyz", defaultRouteRateLimitOptions, async () => {
-    const worker = await workerReadinessChecker();
+  app.get("/healthz", async () => ({ ok: true, service: "space-api" }));
+  app.get("/readyz", async () => {
+    const [worker, appDiagnostics] = await Promise.all([
+      workerReadinessChecker(),
+      appDiagnosticsService.getStatus()
+    ]);
     const cliHost = config.cliEnabled
       ? await cliTerminalManager.hostHealth().then(() => "RUNNING" as const).catch(() => "UNAVAILABLE" as const)
       : "disabled" as const;
     const cliAdminHost = config.cliRootEnabled
       ? await cliTerminalManager.hostHealth("cli:root").then(() => "RUNNING" as const).catch(() => "UNAVAILABLE" as const)
       : "disabled" as const;
-    let browserHost: "in-process" | "RUNNING" | "UNAVAILABLE" | "DISABLED" | "CAPACITY_MISMATCH" =
-      config.browserSessionsEnabled ? "in-process" : "DISABLED";
+    let browserHost: "in-process" | "RUNNING" | "UNAVAILABLE" | "DISABLED" | "CAPACITY_MISMATCH" = "in-process";
     let browserHostBuildCommit: string | null = null;
     let browserHostCaptureMetrics: BrowserHostCaptureMetrics | null = null;
-    if (config.browserSessionsEnabled && config.browserHostTransport === "unix") {
+    if (config.browserHostTransport === "unix") {
       try {
         const [health, git] = await Promise.all([
           browserSessionManager.browserHostHealth
@@ -3673,7 +4482,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     return {
       ok: worker.status === "RUNNING" && cliHost !== "UNAVAILABLE" && cliAdminHost !== "UNAVAILABLE" &&
-        (browserHost === "in-process" || browserHost === "RUNNING" || browserHost === "DISABLED"),
+        (browserHost === "in-process" || browserHost === "RUNNING"),
       apiStartedAt,
       dependencies: {
         store: config.runtimeStore,
@@ -3686,23 +4495,30 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         browserHost,
         browserHostBuildCommit,
         browserHostCaptureMetrics,
+        appDiagnostics: {
+          isEnabled: appDiagnostics.isEnabled,
+          captureId: appDiagnostics.captureId,
+          usageBytes: appDiagnostics.usage.totalBytes,
+          quotaBytes: appDiagnostics.quotaBytes,
+          recorderStatus: appDiagnostics.recorder.status
+        },
         codexTurns: config.enableCodexTurns ? "enabled" : "disabled",
         codexLb: config.codexLbConfigured ? "configured" : "disabled"
       }
     };
   });
-  app.get("/version", defaultRouteRateLimitOptions, async () => ({
+  app.get("/version", async () => ({
     name: "space-api",
     version: config.version,
     node: process.version,
     git: await readGitVersionMetadata()
   }));
-  app.get("/metrics", defaultRouteRateLimitOptions, async (_request, reply) => {
+  app.get("/metrics", async (_request, reply) => {
     reply.header("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
     return observability.renderPrometheus();
   });
 
-  app.get("/api/auth/me", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/auth/me", async (request) => {
     const setupStatus = auth.devLogin
       ? { setupRequired: false }
       : await store.getOwnerSetupStatus();
@@ -3713,7 +4529,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.get("/api/setup/status", defaultRouteRateLimitOptions, async () => {
+  app.get("/api/setup/status", async () => {
     return setupStatusSchema.parse(await store.getOwnerSetupStatus());
   });
 
@@ -3727,12 +4543,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const input = parseBody(setupClaimInputSchema, request.body);
       const tokenHash = createHash("sha256").update(input.token).digest("hex");
       const passwordHash = await hashPassword(input.password);
-      const user = await store.claimOwnerSetup({
+      const claimed = await store.claimOwnerSetup({
         tokenHash,
         email: input.email,
         passwordHash,
         now: nowIso()
       });
+      const { user, onboarding } = claimed;
       await recordAudit(store, request, {
         actorUserId: user.id,
         action: "auth.owner_setup.claimed",
@@ -3756,10 +4573,266 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return setupClaimResponseSchema.parse({
         user,
         isAuthenticated: true,
-        isSetupRequired: false
+        isSetupRequired: false,
+        onboardingVersion: onboarding.onboardingVersion,
+        isOnboardingComplete: onboarding.isComplete,
+        starterRoomId: onboarding.starterRoomId
       });
     }
   );
+
+  app.get("/api/setup/overview", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "FORBIDDEN", "Owner access is required.");
+    }
+    const [onboarding, connections] = await Promise.all([
+      store.getOwnerOnboarding(),
+      setupConnections.overview()
+    ]);
+    return setupOverviewSchema.parse({
+      ...onboarding,
+      summary: summarizeSetupConnections(connections),
+      connections
+    });
+  });
+
+  app.post(
+    "/api/setup/connection-check-runs",
+    { config: { rateLimit: { max: 2, timeWindow: "15 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Setup connection checks require the ADMIN role.");
+      }
+      parseBody(emptySetupConnectionCheckRunSchema, request.body ?? {});
+      const admission = await setupConnectionCheckRuns.startAll(request.user.id);
+      await recordAudit(store, request, {
+        action: admission.reused ? "setup.connection_check.reused" : "setup.connection_check.started",
+        targetType: "setup_connection_check_run",
+        targetId: admission.run.id,
+        metadata: {
+          scope: admission.run.scope,
+          totalCount: admission.run.totalCount
+        }
+      });
+      reply
+        .code(admission.reused ? 200 : 202)
+        .header("Location", `/api/setup/connection-check-runs/${encodeURIComponent(admission.run.id)}/replay`);
+      return setupConnectionCheckRunSchema.parse(admission.run);
+    }
+  );
+
+  app.post(
+    "/api/setup/connections/:id/check-runs",
+    { config: { rateLimit: { max: 12, timeWindow: "15 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Setup connection checks require the ADMIN role.");
+      }
+      parseBody(emptySetupConnectionCheckRunSchema, request.body ?? {});
+      const params = parseQuery(idParamSchema, request.params);
+      const admission = await setupConnectionCheckRuns.startSingle(params.id, request.user.id);
+      await recordAudit(store, request, {
+        action: admission.reused ? "setup.connection_check.reused" : "setup.connection_check.started",
+        targetType: "setup_connection_check_run",
+        targetId: admission.run.id,
+        metadata: {
+          scope: admission.run.scope,
+          connectionId: params.id
+        }
+      });
+      reply
+        .code(admission.reused ? 200 : 202)
+        .header("Location", `/api/setup/connection-check-runs/${encodeURIComponent(admission.run.id)}/replay`);
+      return setupConnectionCheckRunSchema.parse(admission.run);
+    }
+  );
+
+  app.get(
+    "/api/setup/connection-check-runs/:runId/replay",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Setup connection replay requires the ADMIN role.");
+      }
+      const params = parseQuery(setupConnectionCheckRunParamSchema, request.params);
+      const query = parseQuery(setupConnectionCheckReplayQuerySchema, request.query);
+      return setupConnectionCheckRuns.replay(params.runId, query.afterSequence);
+    }
+  );
+
+  app.get(
+    "/api/setup/connection-check-runs/:runId/stream",
+    {
+      compress: false,
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } }
+    },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Setup connection progress requires the ADMIN role.");
+      }
+      const params = parseQuery(setupConnectionCheckRunParamSchema, request.params);
+      const query = parseQuery(setupConnectionCheckReplayQuerySchema, request.query);
+      const rawLastEventId = request.headers["last-event-id"];
+      const lastEventId = Array.isArray(rawLastEventId) ? rawLastEventId[0] : rawLastEventId;
+      const parsedLastEventId = /^\d{1,10}$/.test(String(lastEventId ?? ""))
+        ? Math.min(1_000_000_000, Number(lastEventId))
+        : 0;
+      let afterSequence = Math.max(query.afterSequence, parsedLastEventId);
+      const replay = await setupConnectionCheckRuns.replay(params.runId, afterSequence);
+
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "private, no-cache, no-store, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no"
+      });
+      reply.raw.write(formatSseMessage("ready", {
+        runId: replay.run.id,
+        afterSequence,
+        requestId: request.requestIdForSpace
+      }));
+      for (const event of replay.events) {
+        afterSequence = event.sequence;
+        reply.raw.write(formatSseMessage("progress", event, event.sequence));
+      }
+      reply.raw.write(formatSseMessage("run", replay.run));
+      reply.raw.write(formatSseMessage("overview", replay.overview));
+      if (setupConnectionCheckRuns.isStreamTerminal(replay)) {
+        reply.raw.end();
+        return;
+      }
+
+      let isClosed = false;
+      let polling = false;
+      let lastRunUpdatedAt = replay.run.updatedAt;
+      let pollTimer: ReturnType<typeof setInterval> | null = null;
+      const stopHeartbeat = startSseHeartbeat((frame) => {
+        if (!isClosed) reply.raw.write(frame);
+      });
+      const closeStream = () => {
+        if (isClosed) return;
+        isClosed = true;
+        if (pollTimer) clearInterval(pollTimer);
+        stopHeartbeat();
+      };
+      const poll = async () => {
+        if (isClosed || polling) return;
+        polling = true;
+        try {
+          const current = await setupConnectionCheckRuns.replay(params.runId, afterSequence);
+          for (const event of current.events) {
+            afterSequence = event.sequence;
+            reply.raw.write(formatSseMessage("progress", event, event.sequence));
+          }
+          if (current.run.updatedAt !== lastRunUpdatedAt || setupConnectionCheckRuns.isStreamTerminal(current)) {
+            lastRunUpdatedAt = current.run.updatedAt;
+            reply.raw.write(formatSseMessage("run", current.run));
+            reply.raw.write(formatSseMessage("overview", current.overview));
+          }
+          if (setupConnectionCheckRuns.isStreamTerminal(current)) {
+            closeStream();
+            reply.raw.end();
+          }
+        } catch {
+          if (!isClosed) {
+            reply.raw.write(formatSseMessage("stream-error", {
+              code: "SETUP_CONNECTION_STREAM_UNAVAILABLE",
+              message: "Live progress paused; durable replay remains available."
+            }));
+            closeStream();
+            reply.raw.end();
+          }
+        } finally {
+          polling = false;
+        }
+      };
+      pollTimer = setInterval(() => void poll(), 500);
+      reply.raw.once("close", closeStream);
+      request.raw.once("aborted", closeStream);
+    }
+  );
+
+  app.post(
+    "/api/setup/connections/:id/verify",
+    { config: { rateLimit: { max: 12, timeWindow: "15 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "FORBIDDEN", "Owner access is required.");
+      }
+      const params = parseQuery(idParamSchema, request.params);
+      const connection = await setupConnections.verify(params.id);
+      await recordAudit(store, request, {
+        action: "setup.connection.verify",
+        targetType: "setup_connection",
+        targetId: connection.id,
+        metadata: { state: connection.state, reasonCode: connection.reasonCode }
+      });
+      return setupConnectionSchema.parse(connection);
+    }
+  );
+
+  app.post(
+    "/api/setup/connections/verify-all",
+    { config: { rateLimit: { max: 2, timeWindow: "15 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "FORBIDDEN", "Owner access is required.");
+      }
+      const [onboarding, connections] = await Promise.all([
+        store.getOwnerOnboarding(),
+        setupConnections.verifyAll()
+      ]);
+      await recordAudit(store, request, {
+        action: "setup.connection.verify_all",
+        targetType: "owner_setup",
+        targetId: request.user.id,
+        metadata: {
+          connected: connections.filter((connection) => connection.state === "CONNECTED").length,
+          total: connections.length
+        }
+      });
+      return setupOverviewSchema.parse({
+        ...onboarding,
+        summary: summarizeSetupConnections(connections),
+        connections
+      });
+    }
+  );
+
+  app.post("/api/setup/starter-room", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "FORBIDDEN", "Owner access is required.");
+    }
+    const result = await store.ensureOwnerStarterRoom(request.requestIdForSpace);
+    await recordAudit(store, request, {
+      action: "setup.starter_room.ensure",
+      targetType: "room",
+      targetId: result.room.id,
+      metadata: { onboardingVersion: result.onboarding.onboardingVersion }
+    });
+    return setupStarterRoomResponseSchema.parse(result);
+  });
+
+  app.post("/api/setup/finish", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "FORBIDDEN", "Owner access is required.");
+    }
+    const [onboarding, connections] = await Promise.all([
+      store.completeOwnerOnboarding(nowIso()),
+      setupConnections.overview()
+    ]);
+    await recordAudit(store, request, {
+      action: "setup.onboarding.finish",
+      targetType: "owner_setup",
+      targetId: request.user!.id,
+      metadata: { onboardingVersion: onboarding.onboardingVersion }
+    });
+    return setupOverviewSchema.parse({
+      ...onboarding,
+      summary: summarizeSetupConnections(connections),
+      connections
+    });
+  });
 
   app.post(
     "/api/public/waitlist",
@@ -3791,12 +4864,158 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   );
 
-  app.get("/api/auth/csrf", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.get("/api/auth/csrf", async (request, reply) => {
     const csrfToken = createCsrfToken(request.cookies[cookieName], auth.sessionSecret);
     if (!csrfToken) {
       return sendApiError(reply, 401, "UNAUTHENTICATED", "Authentication is required.");
     }
     return { csrfToken, headerName: csrfHeaderName };
+  });
+
+  app.get("/api/app-diagnostics", async () => appDiagnosticsService.getStatus());
+
+  app.patch("/api/admin/app-diagnostics", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics settings require the ADMIN role.");
+    }
+    const input = parseBody(updateAppDiagnosticsInputSchema, request.body);
+    const before = await appDiagnosticsService.getStatus();
+    const status = await appDiagnosticsService.setEnabled(input.isEnabled, request.user.id);
+    if (before.isEnabled !== status.isEnabled) {
+      await recordAudit(store, request, {
+        action: `admin.app_diagnostics.${status.isEnabled ? "enabled" : "disabled"}`,
+        targetType: "app_diagnostics",
+        targetId: status.captureId ?? before.captureId,
+        metadata: {
+          isEnabled: status.isEnabled,
+          captureId: status.captureId ?? before.captureId
+        }
+      });
+    }
+    return status;
+  });
+
+  app.get("/api/activity-log", async (request, reply) => {
+    const query = parseQuery(listActivityLogEventsQuerySchema, request.query);
+    return activityLogService.listEvents(query);
+  });
+
+  app.get("/api/activity-log/settings", async () => activityLogService.getSettings());
+
+  app.patch("/api/admin/activity-log/settings", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Activity log settings require the ADMIN role.");
+    }
+    const input = parseBody(updateActivityLogSettingsInputSchema, request.body);
+    const before = await activityLogService.getSettings();
+    const settings = await activityLogService.setEnabled(input.enabled, request.user.id);
+    if (before.enabled !== settings.enabled) {
+      await recordAudit(store, request, {
+        action: `admin.activity_log.${settings.enabled ? "enabled" : "disabled"}`,
+        targetType: "activity_log",
+        metadata: { enabled: settings.enabled }
+      });
+    }
+    return settings;
+  });
+
+  app.post(
+    "/api/app-diagnostics/event-batches",
+    {
+      bodyLimit: appDiagnosticsEventBatchMaxBytes,
+      config: {
+        rateLimit: {
+          max: 60,
+          timeWindow: "1 minute",
+          hook: "preHandler",
+          keyGenerator: (request) => {
+            const body = request.body;
+            const clientId = typeof body === "object" && body !== null && "clientId" in body &&
+              typeof body.clientId === "string" &&
+              /^[A-Za-z0-9][A-Za-z0-9:_-]{5,99}$/.test(body.clientId)
+              ? body.clientId
+              : "invalid";
+            return `${request.user?.id ?? requestIpForLog(request) ?? "unknown"}:${clientId}`;
+          }
+        }
+      }
+    },
+    async (request) => {
+      const input = parseBody(appDiagnosticsEventBatchSchema, request.body);
+      return appDiagnosticsService.ingestEventBatch(input);
+    }
+  );
+
+  app.post("/api/admin/app-diagnostics/video-leases", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics recording requires the ADMIN role.");
+    }
+    const input = parseBody(acquireAppDiagnosticsVideoLeaseInputSchema, request.body);
+    return appDiagnosticsService.acquireVideoLease({
+      ...input,
+      userId: request.user.id
+    });
+  });
+
+  app.post("/api/admin/app-diagnostics/video-leases/:leaseId/heartbeats", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics recording requires the ADMIN role.");
+    }
+    const params = parseQuery(appDiagnosticsLeaseParamsSchema, request.params);
+    const input = parseBody(appDiagnosticsHeartbeatInputSchema, request.body);
+    return appDiagnosticsService.heartbeatVideoLease(params.leaseId, input.captureId, request.user.id);
+  });
+
+  app.delete("/api/admin/app-diagnostics/video-leases/:leaseId", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics recording requires the ADMIN role.");
+    }
+    const params = parseQuery(appDiagnosticsLeaseParamsSchema, request.params);
+    return appDiagnosticsService.releaseVideoLease(params.leaseId, request.user.id);
+  });
+
+  app.post(
+    "/api/admin/app-diagnostics/video-segments/:leaseId/:sequence",
+    {
+      bodyLimit: appDiagnosticsVideoSegmentMaxBytes,
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } }
+    },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics recording requires the ADMIN role.");
+      }
+      const params = parseQuery(appDiagnosticsVideoSegmentParamsSchema, request.params);
+      const query = parseQuery(appDiagnosticsVideoSegmentQuerySchema, request.query);
+      if (!Buffer.isBuffer(request.body)) {
+        throw new AppDiagnosticsServiceError("VIDEO_MAGIC_INVALID", "Diagnostics video body is invalid.", 415);
+      }
+      return appDiagnosticsService.uploadVideoSegment({
+        ...query,
+        leaseId: params.leaseId,
+        sequence: params.sequence,
+        userId: request.user.id,
+        mimeType: headerString(request.headers["content-type"]) ?? "",
+        bytes: request.body
+      });
+    }
+  );
+
+  app.get("/api/admin/app-diagnostics/segments", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics segments require the ADMIN role.");
+    }
+    return appDiagnosticsService.listSegments(request.query);
+  });
+
+  app.get("/api/admin/app-diagnostics/segments/:segmentId/content", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics segments require the ADMIN role.");
+    }
+    const params = parseQuery(appDiagnosticsSegmentParamsSchema, request.params);
+    const opened = await appDiagnosticsService.openSegment(params.segmentId, request.user.id);
+    reply.header("Cache-Control", "private, no-store");
+    reply.type(opened.segment.mimeType);
+    return reply.send(createReadStream(opened.path));
   });
 
   app.post("/api/auth/login", { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } }, async (request, reply) => {
@@ -3838,7 +5057,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { user: persistedUser, isAuthenticated: true, isSetupRequired: false };
   });
 
-  app.post("/api/auth/logout", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/auth/logout", async (request, reply) => {
     if (request.user) {
       await recordAudit(store, request, {
         action: "auth.logout",
@@ -3851,7 +5070,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true };
   });
 
-  app.get("/api/clipboard-items", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/clipboard-items", async (request) => {
     const query = parseQuery(listClipboardItemsQuerySchema, request.query);
     const owner = await store.upsertUser(request.user!);
     const result = await store.listClipboardItems(owner.id, query);
@@ -3866,26 +5085,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/clipboard-items", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/clipboard-items", async (request, reply) => {
     const input = parseBody(createClipboardItemRequestSchema, request.body);
     const owner = await store.upsertUser(request.user!);
     const item = await store.upsertClipboardItem({ ...input, ownerUserId: owner.id });
     return reply.code(201).send(item);
   });
 
-  app.delete("/api/clipboard-items/:id", defaultRouteRateLimitOptions, async (request) => {
+  app.delete("/api/clipboard-items/:id", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const owner = await store.upsertUser(request.user!);
     const deleted = await store.deleteClipboardItem(owner.id, params.id);
     return { id: deleted.id, deleted: true };
   });
 
-  app.delete("/api/clipboard-items", defaultRouteRateLimitOptions, async (request) => {
+  app.delete("/api/clipboard-items", async (request) => {
     const owner = await store.upsertUser(request.user!);
     return { deletedCount: await store.clearClipboardItems(owner.id) };
   });
 
-  app.get("/api/links", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/links", async (request) => {
     const query = parseQuery(listUserLinksQuerySchema, request.query);
     const owner = await store.upsertUser(request.user!);
     const result = await store.listUserLinks(owner.id, query);
@@ -3900,7 +5119,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.post("/api/links", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/links", async (request, reply) => {
     const input = parseBody(createUserLinkRequestSchema, request.body);
     const owner = await store.upsertUser(request.user!);
     const link = await store.createUserLink({ ...input, ownerUserId: owner.id });
@@ -3913,7 +5132,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return reply.code(201).send(link);
   });
 
-  app.patch("/api/links/:id", defaultRouteRateLimitOptions, async (request) => {
+  app.patch("/api/links/:id", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updateUserLinkRequestSchema, request.body);
     const link = await store.updateUserLink(request.user!.id, params.id, input);
@@ -3926,7 +5145,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return link;
   });
 
-  app.delete("/api/links/:id", defaultRouteRateLimitOptions, async (request) => {
+  app.delete("/api/links/:id", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const link = await store.deleteUserLink(request.user!.id, params.id);
     await recordAudit(store, request, {
@@ -3938,17 +5157,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { id: link.id, deleted: true };
   });
 
-  app.get("/api/codex/history", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/codex/history", async (request) => {
     const query = parseQuery(codexHistoryQuerySchema, request.query);
-    if (!await cliRuntimeVisibility.isEnabled("cli:codex")) {
-      return codexHistoryResponseSchema.parse({
-        data: [],
-        totalItems: 0,
-        visibleItems: 0,
-        pagination: { page: query.page, pageSize: query.pageSize, totalItems: 0, totalPages: 0 },
-        checkedAt: nowIso()
-      });
-    }
     return codexHistoryResponseSchema.parse(
       await codexParity.listHistory({
         page: query.page,
@@ -3963,9 +5173,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   // Unified CLI task history endpoint (all providers)
-  app.get("/api/cli/tasks", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/cli/tasks", async (request) => {
     const query = parseQuery(cliTaskHistoryQuerySchema, request.query);
     const visibleRuntimeIds = await visibleCliRuntimeIds();
+    if (!visibleRuntimeIds.includes("cli:codex")) visibleRuntimeIds.push("cli:codex");
     const runtimeIds = query.runtimeId
       ? visibleRuntimeIds.includes(query.runtimeId) ? [query.runtimeId] : []
       : visibleRuntimeIds;
@@ -3984,27 +5195,43 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/codex/threads/:id", defaultRouteRateLimitOptions, async (request) => {
-    await cliRuntimeVisibility.assertEnabled("cli:codex");
+  app.get("/api/panes/:id/cli/recovery-task", async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const pane = await getPaneById(store, params.id);
+    assertCliPaneCompatible(pane);
+    const visibleRuntimeIds = await visibleCliRuntimeIds();
+    if (!visibleRuntimeIds.includes("cli:codex")) visibleRuntimeIds.push("cli:codex");
+    const task = await unifiedCliTaskRegistry.findLatestTaskForPane(pane.id, visibleRuntimeIds);
+    return cliTaskHistoryResponseSchema.parse({
+      threads: task ? [task] : [],
+      total: task ? 1 : 0,
+      page: 1,
+      pageSize: 1
+    });
+  });
+
+  app.get("/api/codex/threads/:id", async (request) => {
     const params = parseQuery(codexThreadParamSchema, request.params);
     const query = parseQuery(codexThreadQuerySchema, request.query);
     return codexThreadResponseSchema.parse(await codexParity.getThread(params.id, { presentation: query.presentation }));
   });
 
-  app.get("/api/codex/environment", defaultRouteRateLimitOptions, async () => {
-    const [environment, spaceStats, hostStats] = await Promise.all([
+  app.get("/api/codex/environment", async () => {
+    const [environment, spaceStats, hostStats, isCodexEnabled] = await Promise.all([
       codexParity.getEnvironment(),
       readCodexEnvironmentSpaceStats(),
-      readCodexEnvironmentHostStats()
+      readCodexEnvironmentHostStats(),
+      cliRuntimeVisibility.isEnabled("cli:codex")
     ]);
     return codexEnvironmentSchema.parse({
       ...environment,
+      isCodexEnabled,
       spaceStats,
       ...(hostStats ? { hostStats } : {})
     });
   });
 
-  app.get("/api/rooms", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/rooms", async (request) => {
     const page = parseQuery(paginationRequestSchema, request.query);
     const rooms = await store.listRooms();
     const start = (page.page - 1) * page.pageSize;
@@ -4019,7 +5246,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.get("/api/rooms/cli-activity", defaultRouteRateLimitOptions, async () => {
+  app.get("/api/rooms/cli-activity", async () => {
     const runtimeIds = await visibleCliRuntimeIds();
     const [rooms, activity] = await Promise.all([
       store.listRooms(),
@@ -4035,8 +5262,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/rooms", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/rooms", async (request) => {
     const input = parseBody(createRoomInputSchema, request.body);
+    if (input.initialPaneCount > 0) await cliRuntimeVisibility.assertEnabled("cli:codex");
     const room = await store.createRoom(input, request.requestIdForSpace);
     await recordAudit(store, request, {
       action: "room.create",
@@ -4044,8 +5272,28 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       targetId: room.id,
       metadata: { name: room.name, initialPaneCount: input.initialPaneCount }
     });
+    await activityLogService.recordRoomCreate({
+      roomId: room.id,
+      actorUserId: request.user?.id ?? null,
+      reason: input.reason,
+      traceId: request.requestIdForSpace,
+      metadata: { roomName: room.name, initialPaneCount: input.initialPaneCount }
+    });
     return room;
   });
+
+  const assertActiveAgentStressModelAdvertised = async () => {
+    const catalog = (await codexCliModeDefaultsService.read()).catalog;
+    const model = catalog.status === "AVAILABLE"
+      ? catalog.models.find((candidate) => candidate.id === activeAgentStressModelId)
+      : null;
+    if (!model?.supportedReasoningEfforts.includes(activeAgentStressReasoningEffort)) {
+      throw new SpaceFeatureDisabledError(
+        "ACTIVE_AGENT_STRESS_MODEL_UNAVAILABLE",
+        "Active-agent stress requires the advertised gpt-5.4-mini model with low reasoning."
+      );
+    }
+  };
 
   const readProofRoom = async (roomId: string) => {
     const room = await store.getRoom(roomId);
@@ -4054,43 +5302,121 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     const panes = await store.listPanes(room.id);
     const sessions = await Promise.all(panes.map((pane) => store.getActivePaneCliSession(pane.id)));
+    const cliInputRuntimeCandidate = room.description?.startsWith(cliInputProofRoomDescriptionPrefix) &&
+      room.description.endsWith("]")
+      ? cliToggleRuntimeIdSchema.safeParse(
+          room.description.slice(cliInputProofRoomDescriptionPrefix.length, -1)
+        )
+      : null;
+    const cliInputRuntimeId = cliInputRuntimeCandidate?.success
+      ? cliInputRuntimeCandidate.data
+      : undefined;
+    const profile = room.description === activeAgentStressRoomDescription
+      ? "ACTIVE_AGENT_STRESS" as const
+      : cliInputRuntimeId
+        ? "CLI_INPUT" as const
+        : "STANDARD" as const;
     return proofRoomSchema.parse({
+      ...(profile === "STANDARD"
+        ? {}
+        : {
+            profile,
+            ...(cliInputRuntimeId ? { runtimeId: cliInputRuntimeId } : {})
+          }),
       room,
       panes,
       sessionIds: sessions.flatMap((session) => session ? [session.sessionId] : [])
     });
   };
 
-  app.post("/api/proof-rooms", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/proof-rooms", { config: { rateLimit: { max: 16, timeWindow: "10 minutes" } } }, async (request, reply) => {
     const input = parseBody(createProofRoomInputSchema, request.body);
+    const profile = input.profile ?? "STANDARD";
+    if (profile === "ACTIVE_AGENT_STRESS" || profile === "CLI_INPUT") {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Specialized proof rooms require the ADMIN role.");
+      }
+    }
+    if (profile === "ACTIVE_AGENT_STRESS") {
+      await assertActiveAgentStressModelAdvertised();
+    }
+    let cliInputRuntime: AgentRuntime | null = null;
+    if (profile === "CLI_INPUT") {
+      await cliRuntimeVisibility.assertEnabled(input.runtimeId!);
+      const registry = await cliRuntimeRegistryCache.read();
+      cliInputRuntime = findRuntime(registry, input.runtimeId!);
+      if (
+        !cliInputRuntime ||
+        !cliInputRuntime.capabilities.includes("CLI") ||
+        !isCliRuntimeTerminalLaunchable(cliInputRuntime)
+      ) {
+        throw new SpaceFeatureDisabledError(
+          "CLI_RUNTIME_DISABLED",
+          cliInputRuntime?.statusReason ?? `CLI runtime ${input.runtimeId} is unavailable.`,
+          { runtimeId: input.runtimeId }
+        );
+      }
+    }
     const roomName = input.roomLabel
       ? `Agent Proof · ${input.roomLabel}`
       : `Agent Proof · ${nowIso().slice(0, 19).replace("T", " ")}`;
     const room = await store.createRoom(
       {
         name: roomName,
-        description: "Persistent isolated room for agent UI proof and debugging.",
+        description: profile === "ACTIVE_AGENT_STRESS"
+          ? activeAgentStressRoomDescription
+          : profile === "CLI_INPUT"
+            ? `${cliInputProofRoomDescriptionPrefix}${input.runtimeId}]`
+            : "Persistent isolated room for agent UI proof and debugging.",
         initialPaneCount: 0,
         kind: "AGENT_PROOF"
       },
       request.requestIdForSpace
     );
+    await activityLogService.recordRoomCreate({
+      roomId: room.id,
+      actorUserId: request.user?.id ?? null,
+      traceId: request.requestIdForSpace,
+      metadata: { roomName: room.name, profile: input.profile ?? "STANDARD" }
+    });
     let panes: Pane[] = [];
     try {
       if (input.paneCount > 0) await cliRuntimeVisibility.assertEnabled("cli:codex");
       panes = await store.createPanes(
         Array.from({ length: input.paneCount }, () => ({
           roomId: room.id,
-          title: "Codex CLI",
+          title: cliInputRuntime?.displayName ?? "Codex CLI",
           mode: "TERMINAL" as const,
-          terminalRuntimeId: "cli:codex",
+          terminalRuntimeId: cliInputRuntime?.id ?? "cli:codex",
+          ...(profile === "ACTIVE_AGENT_STRESS" ? { modelId: activeAgentStressModelId } : {}),
           cwd: "/etc"
         })),
         request.requestIdForSpace
       );
-      const sessionSetup = await Promise.allSettled(
-        panes.map((pane) => cliTerminalManager.ensurePaneTransportReady(pane, request.requestIdForSpace))
-      );
+      if (profile === "ACTIVE_AGENT_STRESS") {
+        panes = await Promise.all(
+          panes.map((pane) =>
+            store.updatePane(
+              pane.id,
+              { modelId: activeAgentStressModelId, reasoningEffort: activeAgentStressReasoningEffort },
+              request.requestIdForSpace
+            )
+          )
+        );
+      }
+      const sessionSetup = profile === "CLI_INPUT"
+        ? []
+        : await Promise.allSettled(
+            panes.map((pane) =>
+              cliTerminalManager.ensurePaneTransportReady(
+                pane,
+                request.requestIdForSpace,
+                profile === "ACTIVE_AGENT_STRESS"
+                  ? { modelId: activeAgentStressModelId, reasoningEffort: activeAgentStressReasoningEffort }
+                  : {}
+              )
+            )
+          );
       const failedSession = sessionSetup.find((result) => result.status === "rejected");
       if (failedSession?.status === "rejected") throw failedSession.reason;
 
@@ -4105,7 +5431,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         action: "proof-room.create",
         targetType: "room",
         targetId: room.id,
-        metadata: { name: room.name, paneCount: panes.length, sessionCount: proofRoom.sessionIds.length }
+        metadata: {
+          name: room.name,
+          profile,
+          runtimeId: input.runtimeId ?? null,
+          paneCount: panes.length,
+          sessionCount: proofRoom.sessionIds.length
+        }
       });
       return reply.code(201).send(proofRoom);
     } catch (error) {
@@ -4124,17 +5456,164 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
 
-  app.get("/api/proof-rooms/:id", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/proof-rooms/:id", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     return readProofRoom(params.id);
   });
 
-  app.post("/api/rooms/reorder", defaultRouteRateLimitOptions, async (request) => {
+  app.get(
+    "/api/proof-rooms/:roomId/panes/:paneId/cli-identity",
+    { config: { rateLimit: false } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(
+          reply,
+          403,
+          "ADMIN_REQUIRED",
+          "CLI input proof identity requires the ADMIN role."
+        );
+      }
+      const params = parseQuery(proofRoomPaneParamSchema, request.params);
+      const proofRoom = await readProofRoom(params.roomId);
+      const pane = proofRoom.panes.find((candidate) => candidate.id === params.paneId);
+      if (
+        proofRoom.profile !== "CLI_INPUT" ||
+        !proofRoom.runtimeId ||
+        !pane ||
+        pane.roomId !== params.roomId ||
+        pane.mode !== "TERMINAL" ||
+        pane.terminalRuntimeId !== proofRoom.runtimeId
+      ) {
+        throw new SpaceNotFoundError(
+          `CLI input proof pane ${params.paneId} was not found.`
+        );
+      }
+
+      const session = await store.getActivePaneCliSession(pane.id);
+      if (
+        !session ||
+        session.roomId !== params.roomId ||
+        session.paneId !== params.paneId ||
+        session.runtimeId !== proofRoom.runtimeId ||
+        session.purpose !== "NORMAL" ||
+        session.status !== "RUNNING" ||
+        session.isActive !== true
+      ) {
+        throw new SpaceConflictError("CLI input proof pane has no matching active session.");
+      }
+      const hostSession = await cliTerminalManager.inspectSessionHost(session);
+      if (
+        !hostSession ||
+        hostSession.cliSessionId !== session.sessionId ||
+        hostSession.roomId !== session.roomId ||
+        hostSession.paneId !== session.paneId ||
+        hostSession.runtimeId !== session.runtimeId ||
+        hostSession.status !== "RUNNING"
+      ) {
+        throw new SpaceConflictError("CLI input proof host identity is unavailable.");
+      }
+
+      reply.header("cache-control", "no-store");
+      return proofRoomCliIdentitySchema.parse({
+        sessionId: hostSession.cliSessionId,
+        pid: hostSession.pid,
+        generationId: hostSession.generationId,
+        sampledAt: nowIso()
+      });
+    }
+  );
+
+  app.post(
+    "/api/proof-rooms/:id/active-agent-turns",
+    { config: { rateLimit: { max: 30, timeWindow: "10 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Active-agent stress turns require the ADMIN role.");
+      }
+      const params = parseQuery(idParamSchema, request.params);
+      const input = parseBody(activeAgentTurnsInputSchema, request.body);
+      const room = await store.getRoom(params.id);
+      if (room.kind !== "AGENT_PROOF" || room.description !== activeAgentStressRoomDescription) {
+        throw new SpaceNotFoundError(`Active-agent stress proof room ${params.id} was not found.`);
+      }
+      await assertActiveAgentStressModelAdvertised();
+
+      const panes = await store.listPanes(room.id);
+      const requestedPaneIds = new Set(input.paneIds);
+      if (
+        panes.length !== input.paneIds.length ||
+        panes.some((pane) =>
+          !requestedPaneIds.has(pane.id) ||
+          pane.mode !== "TERMINAL" ||
+          pane.terminalRuntimeId !== "cli:codex" ||
+          pane.modelId !== activeAgentStressModelId ||
+          pane.reasoningEffort !== activeAgentStressReasoningEffort
+        )
+      ) {
+        throw new SpaceConflictError("Active-agent stress turns must target the exact mini/low pane set.");
+      }
+
+      const sessions = await Promise.all(
+        panes.map(async (pane) => {
+          const session = await store.getActivePaneCliSession(pane.id);
+          if (!session) throw new SpaceConflictError(`Active-agent stress pane ${pane.id} has no active CLI session.`);
+          return { pane, session };
+        })
+      );
+      const prompt = activeAgentStressPrompts[input.cycle]!;
+      await Promise.all(
+        sessions.map(async ({ pane, session }) => {
+          const idempotencyPrefix = `active-agent-stress:${room.id}:${pane.id}:${input.cycle}`;
+          await cliTerminalManager.sendInput(
+            session.sessionId,
+            prompt,
+            request.requestIdForSpace,
+            null,
+            `${idempotencyPrefix}:content`
+          );
+          await cliTerminalManager.sendInput(
+            session.sessionId,
+            "\r",
+            request.requestIdForSpace,
+            null,
+            `${idempotencyPrefix}:submit`
+          );
+        })
+      );
+      await recordAudit(store, request, {
+        action: "proof-room.active-agent-turns",
+        targetType: "room",
+        targetId: room.id,
+        metadata: { cycle: input.cycle, paneCount: panes.length }
+      });
+      return activeAgentTurnsResponseSchema.parse({
+        roomId: room.id,
+        paneIds: panes.map((pane) => pane.id),
+        cycle: input.cycle,
+        acceptedCount: panes.length
+      });
+    }
+  );
+
+  app.post("/api/rooms/reorder", async (request) => {
     const input = parseBody(reorderRoomsInputSchema, request.body);
     return store.reorderRooms(input.roomIds, request.requestIdForSpace);
   });
 
-  app.patch("/api/rooms/:id", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/rooms/:id/panes/reorder", async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const input = parseBody(reorderPanesInputSchema, request.body);
+    const panes = await store.reorderPanes(params.id, input.paneIds, request.requestIdForSpace);
+    await recordAudit(store, request, {
+      action: "room.panes.reorder",
+      targetType: "room",
+      targetId: params.id,
+      metadata: { paneCount: panes.length }
+    });
+    return panes;
+  });
+
+  app.patch("/api/rooms/:id", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updateRoomInputSchema, request.body);
     const room = await store.updateRoom(params.id, input, request.requestIdForSpace);
@@ -4147,7 +5626,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return room;
   });
 
-  app.put("/api/rooms/:id/pane-layout", defaultRouteRateLimitOptions, async (request) => {
+  app.put("/api/rooms/:id/pane-layout", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updatePaneLayoutInputSchema, request.body);
     const result = await store.updateRoomPaneLayout(params.id, input, request.requestIdForSpace);
@@ -4160,7 +5639,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result;
   });
 
-  app.delete("/api/rooms/:id", defaultRouteRateLimitOptions, async (request) => {
+  app.delete("/api/rooms/:id", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const panes = await store.listPanes(params.id, true);
     let interruptedCliSessions = 0;
@@ -4182,7 +5661,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         );
         interruptedCliSessions += 1;
       }
-      if (pane.mode === "BROWSER") {
+      if (pane.mode === "BROWSER" || pane.mode === "YOUTUBE") {
         const active = await store.getActivePaneBrowserSession(pane.id);
         if (!active) continue;
         await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
@@ -4199,7 +5678,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true, roomId: room.id };
   });
 
-  app.get("/api/rooms/:id/agent-history", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/rooms/:id/agent-history", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     await store.getRoom(params.id);
     const history = [...(await store.listSpaceAgentHistory(params.id)), ...(await store.listAgentPaneHistory(params.id))]
@@ -4216,12 +5695,160 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.get("/api/cli/runtimes", defaultRouteRateLimitOptions, async (request) => {
+  function assertCliVpnAvailable(): void {
+    if (!config.cliVpnEnabled) {
+      throw new CliVpnError("VPN_FEATURE_DISABLED", "CLI VPN routing is not enabled on this Space installation.", 503);
+    }
+  }
+
+  function unavailableCliVpnConnection(error: unknown) {
+    const toolingUnavailable = error instanceof CliVpnError && error.code === "TOOLING_UNAVAILABLE";
+    return cliVpnConnectionSchema.parse({
+      profileConfigured: false,
+      status: "ERROR",
+      endpoint: null,
+      dnsServers: [],
+      profileFingerprint: null,
+      relay: null,
+      egressIpv4: null,
+      egressIpv6: null,
+      lastHandshakeAt: null,
+      lastVerifiedAt: null,
+      lastVerificationCode: toolingUnavailable ? "TOOLING_UNAVAILABLE" : "APPLY_FAILED",
+      updatedAt: nowIso()
+    });
+  }
+
+  async function readCliVpnApplications(settings: readonly CliRuntimeSetting[]): Promise<{
+    connection: ReturnType<typeof unavailableCliVpnConnection> | undefined;
+    applications: CliRuntimeVpnStatus[];
+    egress: CliGlobalEgressStatus;
+  }> {
+    const sessionGroups = await Promise.all(cliToggleRuntimeIds.map(async (runtimeId) => ({
+      runtimeId,
+      sessions: await store.listActivePaneCliSessions(runtimeId)
+    })));
+    if (!config.cliVpnEnabled) {
+      const unavailable = unavailableCliVpnConnection(new CliVpnError("TOOLING_UNAVAILABLE", "CLI egress is disabled.", 503));
+      const applications = sessionGroups.map(({ runtimeId, sessions }) => cliRuntimeVpnStatusSchema.parse({
+        runtimeId,
+        effectiveMode: "DIRECT",
+        appliedSessionIds: sessions.map((session) => session.sessionId),
+        restartRequiredSessionIds: []
+      }));
+      return {
+        connection: undefined,
+        applications,
+        egress: cliGlobalEgressStatusSchema.parse({
+          supported: false,
+          selectedRoute: "direct",
+          directEgressIpv4: null,
+          removedProfiles: [],
+          profiles: { greece: unavailable, thailand: unavailable, mullvad: unavailable },
+          applications: applications.map((application) => ({
+            runtimeId: application.runtimeId,
+            routeId: "direct",
+            appliedSessionIds: application.appliedSessionIds,
+            restartRequiredSessionIds: application.restartRequiredSessionIds
+          })),
+          checkedAt: nowIso()
+        })
+      };
+    }
+    const allSessions = sessionGroups.flatMap((group) => group.sessions);
+    const pidBySessionId = await cliVpnSessionPidResolver(allSessions);
+    try {
+      const inspection = await cliVpnBroker.inspectRuntimes(sessionGroups.map(({ runtimeId, sessions }) => ({
+        runtimeId,
+        pids: sessions.flatMap((session) => {
+          const pid = pidBySessionId.get(session.sessionId);
+          return pid ? [pid] : [];
+        })
+      })));
+      const inspectionByRuntime = new Map(inspection.runtimes.map((item) => [item.runtimeId, item]));
+      const selectedConnection = inspection.selectedRoute === "direct"
+        ? inspection.profiles.greece
+        : inspection.profiles[inspection.selectedRoute];
+      const settingByRuntime = new Map(settings.map((setting) => [setting.runtimeId, setting]));
+      const applications = sessionGroups.map(({ runtimeId, sessions }) => {
+        const inspected = inspectionByRuntime.get(runtimeId);
+        const isolatedPids = new Set(inspected?.isolatedPids ?? []);
+        const runningSessions = sessions.filter((session) => pidBySessionId.has(session.sessionId));
+        const vpnEnabled = settingByRuntime.get(runtimeId)?.vpnEnabled === true;
+        const vpnRequested = vpnEnabled && inspection.selectedRoute !== "direct";
+        const routeReady = !vpnRequested || selectedConnection.status === "CONNECTED";
+        const runtimeUsesVpn = inspected?.mode === "vpn";
+        const appliedSessionIds = vpnRequested && routeReady && runtimeUsesVpn
+          ? runningSessions.filter((session) => isolatedPids.has(pidBySessionId.get(session.sessionId)!)).map((session) => session.sessionId)
+          : vpnRequested
+            ? []
+            : runningSessions.map((session) => session.sessionId);
+        const restartRequiredSessionIds = vpnRequested && routeReady && runtimeUsesVpn
+          ? runningSessions.filter((session) => !isolatedPids.has(pidBySessionId.get(session.sessionId)!)).map((session) => session.sessionId)
+          : [];
+        return cliRuntimeVpnStatusSchema.parse({
+          runtimeId,
+          effectiveMode: !vpnRequested ? "DIRECT" : routeReady && runtimeUsesVpn ? "VPN" : "BLOCKED",
+          appliedSessionIds,
+          restartRequiredSessionIds
+        });
+      });
+      return {
+        connection: inspection.connection,
+        applications,
+        egress: cliGlobalEgressStatusSchema.parse({
+          supported: true,
+          selectedRoute: inspection.selectedRoute,
+          directEgressIpv4: inspection.directEgressIpv4,
+          removedProfiles: inspection.removedProfiles,
+          profiles: inspection.profiles,
+          applications: applications.map((application) => ({
+            runtimeId: application.runtimeId,
+            routeId: inspectionByRuntime.get(application.runtimeId)?.routeId ?? (application.effectiveMode === "VPN" ? inspection.selectedRoute : "direct"),
+            appliedSessionIds: application.appliedSessionIds,
+            restartRequiredSessionIds: application.restartRequiredSessionIds
+          })),
+          checkedAt: nowIso()
+        })
+      };
+    } catch (error) {
+      const unavailable = unavailableCliVpnConnection(error);
+      const fallbackRoute = settings.some((setting) => setting.vpnEnabled) ? "greece" : "direct";
+      const applications = sessionGroups.map(({ runtimeId, sessions }) => cliRuntimeVpnStatusSchema.parse({
+        runtimeId,
+        effectiveMode: fallbackRoute === "direct" ? "DIRECT" : "BLOCKED",
+        appliedSessionIds: fallbackRoute === "direct" ? sessions.map((session) => session.sessionId) : [],
+        restartRequiredSessionIds: fallbackRoute === "direct" ? [] : sessions.map((session) => session.sessionId)
+      }));
+      return {
+        connection: unavailable,
+        applications,
+        egress: cliGlobalEgressStatusSchema.parse({
+          supported: true,
+          selectedRoute: fallbackRoute,
+          directEgressIpv4: null,
+          removedProfiles: [],
+          profiles: { greece: unavailable, thailand: unavailable, mullvad: unavailable },
+          applications: applications.map((application) => ({
+            runtimeId: application.runtimeId,
+            routeId: fallbackRoute,
+            appliedSessionIds: application.appliedSessionIds,
+            restartRequiredSessionIds: application.restartRequiredSessionIds
+          })),
+          checkedAt: nowIso()
+        })
+      };
+    }
+  }
+
+  app.get("/api/cli/runtimes", async (request) => {
     const registry = await cliRuntimeRegistryCache.read();
     const settings = new Map((await store.listCliRuntimeSettings()).map((setting) => [setting.runtimeId, setting.enabled]));
     const visible = registry.data.filter((runtime) => {
       const toggleRuntimeId = cliToggleRuntimeIdSchema.safeParse(runtime.id);
-      return !toggleRuntimeId.success || settings.get(toggleRuntimeId.data) !== false;
+      return !toggleRuntimeId.success
+        || toggleRuntimeId.data === "cli:codex"
+        || settings.get(toggleRuntimeId.data) !== false;
     });
     if (request.user?.role === "ADMIN") return { ...registry, data: visible };
     return { ...registry, data: visible.filter((runtime) => runtime.id !== "cli:root") };
@@ -4229,7 +5856,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const cliRuntimeSettingParamSchema = z.object({ runtimeId: cliToggleRuntimeIdSchema });
 
-  app.get("/api/cli/runtime-settings", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.get("/api/cli/runtime-settings", async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI runtime settings require the ADMIN role.");
     }
@@ -4237,14 +5864,306 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       store.listCliRuntimeSettings(),
       cliRuntimeRegistryCache.read()
     ]);
+    const vpn = await readCliVpnApplications(settings);
     return cliRuntimeSettingsResponseSchema.parse({
       settings,
       runtimes: registry.data.filter((runtime) => settings.some((setting) => setting.runtimeId === runtime.id)),
+      vpnSupported: config.cliVpnEnabled,
+      vpnConnection: vpn.connection,
+      vpnApplications: vpn.applications,
+      egress: vpn.egress,
       checkedAt: nowIso()
     });
   });
 
-  app.post("/api/cli/runtime-settings/:runtimeId/disable-preview", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.get("/api/cli/egress", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
+    }
+    const settings = await store.listCliRuntimeSettings();
+    return (await readCliVpnApplications(settings)).egress;
+  });
+
+  app.get("/api/cli/vpn/routing-status", async () => {
+    const settings = await store.listCliRuntimeSettings();
+    const vpn = await readCliVpnApplications(settings);
+    return cliVpnRoutingStatusSchema.parse({
+      vpnSupported: config.cliVpnEnabled,
+      selectedRoute: vpn.egress.selectedRoute,
+      connectionStatus: vpn.connection?.status ?? "NOT_CONFIGURED",
+      egressIpv4: vpn.connection?.egressIpv4 ?? null,
+      egressIpv6: vpn.connection?.egressIpv6 ?? null,
+      applications: vpn.applications,
+      checkedAt: nowIso()
+    });
+  });
+
+  app.get("/api/cli/vpn", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
+    }
+    assertCliVpnAvailable();
+    return cliVpnConnectionSchema.parse(await cliVpnBroker.status());
+  });
+
+  app.put("/api/cli/vpn/profile", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
+    }
+    assertCliVpnAvailable();
+    const input = parseBody(replaceCliVpnProfileInputSchema, request.body ?? {});
+    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.replace(input.config));
+    await recordAudit(store, request, {
+      action: "cli.vpn.profile.replace",
+      targetType: "cli_vpn_profile",
+      targetId: "shared",
+      metadata: {
+        status: connection.status,
+        profileFingerprint: connection.profileFingerprint,
+        ipv4Verified: connection.egressIpv4 !== null,
+        ipv6Verified: connection.egressIpv6 !== null
+      }
+    });
+    return connection;
+  });
+
+  app.post("/api/cli/vpn/verify", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
+    }
+    assertCliVpnAvailable();
+    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.verify());
+    await recordAudit(store, request, {
+      action: "cli.vpn.profile.verify",
+      targetType: "cli_vpn_profile",
+      targetId: "shared",
+      metadata: {
+        status: connection.status,
+        profileFingerprint: connection.profileFingerprint,
+        ipv4Verified: connection.egressIpv4 !== null,
+        ipv6Verified: connection.egressIpv6 !== null
+      }
+    });
+    return connection;
+  });
+
+  app.delete("/api/cli/vpn/profile", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
+    }
+    assertCliVpnAvailable();
+    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.remove());
+    await recordAudit(store, request, {
+      action: "cli.vpn.profile.remove",
+      targetType: "cli_vpn_profile",
+      targetId: "shared",
+      metadata: { status: connection.status }
+    });
+    return connection;
+  });
+
+  const cliVpnProfileParamSchema = z.object({ profileId: cliVpnProfileIdSchema });
+
+  app.put("/api/cli/egress/profiles/:profileId", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
+    }
+    assertCliVpnAvailable();
+    const params = parseQuery(cliVpnProfileParamSchema, request.params);
+    const input = parseBody(replaceCliVpnProfileInputSchema, request.body ?? {});
+    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.replaceProfile(params.profileId, input.config));
+    await recordAudit(store, request, {
+      action: "cli.egress.profile.replace",
+      targetType: "cli_vpn_profile",
+      targetId: params.profileId,
+      metadata: {
+        status: connection.status,
+        profileFingerprint: connection.profileFingerprint,
+        ipv4Verified: connection.egressIpv4 !== null,
+        ipv6Verified: connection.egressIpv6 !== null
+      }
+    });
+    return connection;
+  });
+
+  app.post("/api/cli/egress/profiles/:profileId/verify", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
+    }
+    assertCliVpnAvailable();
+    const params = parseQuery(cliVpnProfileParamSchema, request.params);
+    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.verifyProfile(params.profileId));
+    await recordAudit(store, request, {
+      action: "cli.egress.profile.verify",
+      targetType: "cli_vpn_profile",
+      targetId: params.profileId,
+      metadata: { status: connection.status, profileFingerprint: connection.profileFingerprint }
+    });
+    return connection;
+  });
+
+  app.post("/api/cli/egress/profiles/mullvad/random-city", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
+    }
+    assertCliVpnAvailable();
+    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.rotateMullvadCity());
+    await recordAudit(store, request, {
+      action: "cli.egress.mullvad.city.rotate",
+      targetType: "cli_vpn_profile",
+      targetId: "mullvad",
+      metadata: {
+        status: connection.status,
+        relay: connection.relay,
+        egressIpv4: connection.egressIpv4
+      }
+    });
+    return connection;
+  });
+
+  app.delete("/api/cli/egress/profiles/:profileId", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
+    }
+    assertCliVpnAvailable();
+    const params = parseQuery(cliVpnProfileParamSchema, request.params);
+    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.removeProfile(params.profileId));
+    await recordAudit(store, request, {
+      action: "cli.egress.profile.remove",
+      targetType: "cli_vpn_profile",
+      targetId: params.profileId,
+      metadata: { status: connection.status }
+    });
+    return connection;
+  });
+
+  async function switchGlobalCliEgress(request: FastifyRequest, routeId: CliEgressRouteId) {
+    assertCliVpnAvailable();
+    if (!request.user) throw new CliVpnError("AUTH_REQUIRED", "Authentication is required.", 401);
+    const previousSettings = await store.listCliRuntimeSettings();
+    const previousStatus = await readCliVpnApplications(previousSettings);
+    const sessionGroups = await Promise.all(cliToggleRuntimeIds.map(async (runtimeId) => ({
+      runtimeId,
+      sessions: await store.listActivePaneCliSessions(runtimeId)
+    })));
+    const allSessions = sessionGroups.flatMap((group) => group.sessions);
+    const pidBySessionId = await cliVpnSessionPidResolver(allSessions);
+    const routed = await cliVpnBroker.setGlobalRoute(routeId, sessionGroups.map(({ runtimeId, sessions }) => ({
+      runtimeId,
+      pids: sessions.flatMap((session) => {
+        const pid = pidBySessionId.get(session.sessionId);
+        return pid ? [pid] : [];
+      })
+    })));
+
+    try {
+      if (routeId === "direct") {
+        for (const runtimeId of cliToggleRuntimeIds) {
+          await store.updateCliRuntimeVpnSetting(runtimeId, { enabled: false }, request.user.id);
+        }
+      }
+    } catch (error) {
+      try {
+        await cliVpnBroker.setGlobalRoute(previousStatus.egress.selectedRoute, sessionGroups.map(({ runtimeId, sessions }) => ({
+          runtimeId,
+          pids: sessions.flatMap((session) => {
+            const pid = pidBySessionId.get(session.sessionId);
+            return pid ? [pid] : [];
+          })
+        })));
+        for (const setting of previousSettings) {
+          await store.updateCliRuntimeVpnSetting(setting.runtimeId, { enabled: setting.vpnEnabled }, request.user.id);
+        }
+      } catch {
+        throw new CliVpnError(
+          "VPN_ROLLBACK_FAILED",
+          "Global CLI egress persistence failed and the previous protected route could not be restored.",
+          502
+        );
+      }
+      throw error;
+    }
+
+    const legacyPidByRuntime = new Map(
+      routed.runtimes.map((application) => [application.runtimeId, new Set(application.legacyPids)])
+    );
+    const requestedSessions = allSessions.filter((session) => {
+          const pid = pidBySessionId.get(session.sessionId);
+          const runtimeId = cliToggleRuntimeIdSchema.safeParse(session.runtimeId);
+          const application = runtimeId.success ? routed.runtimes.find((candidate) => candidate.runtimeId === runtimeId.data) : null;
+          return pid && runtimeId.success && application?.routeId !== "direct"
+            ? legacyPidByRuntime.get(runtimeId.data)?.has(pid) === true
+            : false;
+        });
+    const registry = await discoverAgentRuntimes(config);
+    const requestedRestartSessionIds = requestedSessions.map((session) => session.sessionId);
+    const restartedSessionIds: string[] = [];
+    const replacementSessionIds: string[] = [];
+    const failedSessionIds: string[] = [];
+    for (const session of requestedSessions) {
+      const runtime = findRuntime(registry, session.runtimeId);
+      if (
+        session.purpose !== "NORMAL" ||
+        !runtime ||
+        !runtime.capabilities.includes("CLI") ||
+        !isCliRuntimeTerminalLaunchable(runtime)
+      ) {
+        failedSessionIds.push(session.sessionId);
+        continue;
+      }
+      try {
+        const pane = await getPaneById(store, session.paneId);
+        assertCliPaneCompatible(pane);
+        if (pane.terminalRuntimeId && pane.terminalRuntimeId !== session.runtimeId) {
+          throw new SpaceConflictError(`Pane ${pane.id} no longer uses ${session.runtimeId}.`);
+        }
+        const replacement = await cliVpnSessionRestarter(session, runtime, request.requestIdForSpace);
+        if (
+          replacement.paneId !== session.paneId ||
+          replacement.runtimeId !== session.runtimeId ||
+          replacement.sessionId === session.sessionId
+        ) {
+          throw new SpaceConflictError(`CLI session ${session.sessionId} returned an invalid egress replacement.`);
+        }
+        restartedSessionIds.push(session.sessionId);
+        replacementSessionIds.push(replacement.sessionId);
+      } catch {
+        failedSessionIds.push(session.sessionId);
+      }
+    }
+
+    const status = (await readCliVpnApplications(await store.listCliRuntimeSettings())).egress;
+    await recordAudit(store, request, {
+      action: "cli.egress.route.update",
+      targetType: "cli_egress",
+      targetId: "global",
+      metadata: {
+        previousRoute: previousStatus.egress.selectedRoute,
+        selectedRoute: routeId,
+        requestedRestartSessionCount: requestedRestartSessionIds.length,
+        restartedSessionCount: restartedSessionIds.length,
+        failedSessionCount: failedSessionIds.length,
+        appliedRuntimeCount: status.applications.filter((application) => application.restartRequiredSessionIds.length === 0).length
+      }
+    });
+    return updateCliGlobalEgressResultSchema.parse({
+      status,
+      requestedRestartSessionIds,
+      restartedSessionIds,
+      replacementSessionIds,
+      failedSessionIds
+    });
+  }
+
+  app.put("/api/cli/egress/route", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
+    }
+    const input = parseBody(updateCliGlobalEgressInputSchema, request.body ?? {});
+    return switchGlobalCliEgress(request, input.routeId);
+  });
+
+  app.post("/api/cli/runtime-settings/:runtimeId/disable-preview", async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI runtime settings require the ADMIN role.");
     }
@@ -4252,7 +6171,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return cliRuntimeDisablePreviewSchema.parse(await cliRuntimeVisibility.createDisablePreview(params.runtimeId));
   });
 
-  app.patch("/api/cli/runtime-settings/:runtimeId", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.patch("/api/cli/runtime-settings/:runtimeId", async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI runtime settings require the ADMIN role.");
     }
@@ -4278,22 +6197,258 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return updateCliRuntimeSettingResultSchema.parse(result);
   });
 
-  app.post("/api/rooms/:id/cli-login", defaultRouteRateLimitOptions, async (request) => {
-    const startedAtMs = Date.now();
-    const params = parseQuery(idParamSchema, request.params);
-    const input = parseBody(cliLoginRequestSchema, request.body ?? {});
-    await cliRuntimeVisibility.assertEnabled(input.runtimeId);
-    await store.getRoom(params.id);
+  app.patch("/api/cli/runtime-settings/:runtimeId/vpn", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
+    }
+    const params = parseQuery(cliRuntimeSettingParamSchema, request.params);
+    const input = parseBody(updateCliRuntimeVpnInputSchema, request.body ?? {});
+    assertCliVpnAvailable();
+    if (!request.user) throw new CliVpnError("AUTH_REQUIRED", "Authentication is required.", 401);
+    const previousSettings = await store.listCliRuntimeSettings();
+    const previousSetting = previousSettings.find((candidate) => candidate.runtimeId === params.runtimeId);
+    if (!previousSetting) throw new CliVpnError("BROKER_FAILED", "CLI runtime VPN setting is unavailable.", 502);
+    const sessions = await store.listActivePaneCliSessions(params.runtimeId);
+    const pidBySessionId = await cliVpnSessionPidResolver(sessions);
+    const routed = await cliVpnBroker.setRuntime(
+      params.runtimeId,
+      input.enabled,
+      sessions.flatMap((session) => {
+        const pid = pidBySessionId.get(session.sessionId);
+        return pid ? [pid] : [];
+      })
+    );
+    try {
+      await store.updateCliRuntimeVpnSetting(params.runtimeId, { enabled: input.enabled }, request.user.id);
+    } catch (error) {
+      try {
+        await cliVpnBroker.setRuntime(
+          params.runtimeId,
+          previousSetting.vpnEnabled,
+          sessions.flatMap((session) => {
+            const pid = pidBySessionId.get(session.sessionId);
+            return pid ? [pid] : [];
+          })
+        );
+      } catch {
+        throw new CliVpnError(
+          "VPN_ROLLBACK_FAILED",
+          "The CLI VPN setting could not be saved and its previous route could not be restored.",
+          502
+        );
+      }
+      throw error;
+    }
+    const legacyPids = new Set(routed.legacyPids);
+    const requestedSessions = sessions.filter((session) => {
+      const pid = pidBySessionId.get(session.sessionId);
+      return pid && legacyPids.has(pid) && session.purpose === "NORMAL";
+    });
+    const registry = requestedSessions.length ? await discoverAgentRuntimes(config) : null;
+    const runtime = registry ? findRuntime(registry, params.runtimeId) : null;
+    const restartedSessionIds: string[] = [];
+    const replacementSessionIds: string[] = [];
+    const failedSessionIds: string[] = [];
+    for (const session of requestedSessions) {
+      if (!runtime || !runtime.capabilities.includes("CLI") || !isCliRuntimeTerminalLaunchable(runtime)) {
+        failedSessionIds.push(session.sessionId);
+        continue;
+      }
+      try {
+        const pane = await getPaneById(store, session.paneId);
+        assertCliPaneCompatible(pane);
+        if (pane.terminalRuntimeId && pane.terminalRuntimeId !== params.runtimeId) {
+          throw new SpaceConflictError(`Pane ${pane.id} no longer uses ${params.runtimeId}.`);
+        }
+        const replacement = await cliVpnSessionRestarter(session, runtime, request.requestIdForSpace);
+        if (
+          replacement.paneId !== session.paneId
+          || replacement.runtimeId !== params.runtimeId
+          || replacement.sessionId === session.sessionId
+        ) {
+          throw new SpaceConflictError(`CLI session ${session.sessionId} returned an invalid egress replacement.`);
+        }
+        restartedSessionIds.push(session.sessionId);
+        replacementSessionIds.push(replacement.sessionId);
+      } catch {
+        failedSessionIds.push(session.sessionId);
+      }
+    }
+    const afterSettings = await store.listCliRuntimeSettings();
+    const after = await readCliVpnApplications(afterSettings);
+    const setting = afterSettings.find((candidate) => candidate.runtimeId === params.runtimeId);
+    const application = after.applications.find((candidate) => candidate.runtimeId === params.runtimeId);
+    if (!setting || !application || !after.connection) {
+      throw new CliVpnError("BROKER_FAILED", "CLI VPN routing status is unavailable after the route change.", 502);
+    }
+    await recordAudit(store, request, {
+      action: "cli.runtime.vpn.update",
+      targetType: "cli_runtime",
+      targetId: params.runtimeId,
+      metadata: {
+        enabled: input.enabled,
+        selectedRoute: after.egress.selectedRoute,
+        requestedRestartSessionCount: requestedSessions.length,
+        restartedSessionCount: restartedSessionIds.length,
+        failedSessionCount: failedSessionIds.length,
+        profileFingerprint: after.connection.profileFingerprint
+      }
+    });
+    return updateCliRuntimeVpnResultSchema.parse({
+      setting,
+      connection: after.connection,
+      application: {
+        effectiveMode: application.effectiveMode,
+        appliedSessionIds: application.appliedSessionIds,
+        restartRequiredSessionIds: application.restartRequiredSessionIds
+      }
+    });
+  });
 
-    const loginRuntimeIds = new Set(["cli:codex", "cli:gemini", "cli:qwen", "cli:kimi", "cli:grok", "cli:deepseek"]);
-    if (!loginRuntimeIds.has(input.runtimeId)) {
-      throw new SpaceConflictError(`CLI runtime ${input.runtimeId} does not support terminal login.`);
+  const cliVpnRestartPendingRuntimes = new Set<string>();
+  app.post("/api/cli/runtime-settings/:runtimeId/vpn/restart-required", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN session restarts require the ADMIN role.");
+    }
+    assertCliVpnAvailable();
+    const params = parseQuery(cliRuntimeSettingParamSchema, request.params);
+    if (cliVpnRestartPendingRuntimes.has(params.runtimeId)) {
+      throw new SpaceConflictError(`A VPN session restart is already running for ${params.runtimeId}.`);
+    }
+    cliVpnRestartPendingRuntimes.add(params.runtimeId);
+    try {
+      const settings = await store.listCliRuntimeSettings();
+      const setting = settings.find((candidate) => candidate.runtimeId === params.runtimeId);
+      if (!setting?.vpnEnabled) {
+        throw new SpaceConflictError(`Enable VPN routing for ${params.runtimeId} before restarting its sessions.`);
+      }
+      await cliRuntimeVisibility.assertEnabled(params.runtimeId);
+      const before = await readCliVpnApplications(settings);
+      const connection = before.connection;
+      const application = before.applications.find((candidate) => candidate.runtimeId === params.runtimeId);
+      if (!connection || connection.status !== "CONNECTED" || application?.effectiveMode !== "VPN") {
+        throw new CliVpnError(
+          "VPN_NOT_READY",
+          "The protected VPN route must be connected before restarting CLI sessions.",
+          409
+        );
+      }
+
+      const requestedSessionIds = [...(application.restartRequiredSessionIds ?? [])];
+      const requestedSessionIdSet = new Set(requestedSessionIds);
+      const sessions = await store.listActivePaneCliSessions(params.runtimeId);
+      const sessionById = new Map(
+        sessions
+          .filter((session) => requestedSessionIdSet.has(session.sessionId))
+          .map((session) => [session.sessionId, session])
+      );
+      const registry = await discoverAgentRuntimes(config);
+      const runtime = findRuntime(registry, params.runtimeId);
+      if (!runtime || !runtime.capabilities.includes("CLI") || !isCliRuntimeTerminalLaunchable(runtime)) {
+        throw new SpaceFeatureDisabledError(
+          "CLI_RUNTIME_DISABLED",
+          runtime?.statusReason ?? `CLI runtime ${params.runtimeId} is unavailable.`,
+          { runtimeId: params.runtimeId }
+        );
+      }
+
+      const restartedSessionIds: string[] = [];
+      const replacementSessionIds: string[] = [];
+      const failedSessionIds: string[] = [];
+      for (const sessionId of requestedSessionIds) {
+        const session = sessionById.get(sessionId);
+        if (!session || session.purpose !== "NORMAL") {
+          failedSessionIds.push(sessionId);
+          continue;
+        }
+        try {
+          const pane = await getPaneById(store, session.paneId);
+          assertCliPaneCompatible(pane);
+          if (pane.terminalRuntimeId && pane.terminalRuntimeId !== params.runtimeId) {
+            throw new SpaceConflictError(`Pane ${pane.id} no longer uses ${params.runtimeId}.`);
+          }
+          const replacement = await cliVpnSessionRestarter(
+            session,
+            runtime,
+            request.requestIdForSpace
+          );
+          if (
+            replacement.paneId !== session.paneId ||
+            replacement.runtimeId !== params.runtimeId ||
+            replacement.sessionId === session.sessionId
+          ) {
+            throw new SpaceConflictError(`CLI session ${session.sessionId} returned an invalid VPN replacement.`);
+          }
+          restartedSessionIds.push(session.sessionId);
+          replacementSessionIds.push(replacement.sessionId);
+        } catch {
+          failedSessionIds.push(sessionId);
+        }
+      }
+
+      const afterSettings = await store.listCliRuntimeSettings();
+      const after = await readCliVpnApplications(afterSettings);
+      const afterConnection = after.connection;
+      const afterApplication = after.applications.find((candidate) => candidate.runtimeId === params.runtimeId);
+      if (!afterConnection || !afterApplication) {
+        throw new CliVpnError("BROKER_FAILED", "CLI VPN routing status is unavailable after restart.", 502);
+      }
+      await recordAudit(store, request, {
+        action: "cli.runtime.vpn.restart_required",
+        targetType: "cli_runtime",
+        targetId: params.runtimeId,
+        metadata: {
+          requestedSessionCount: requestedSessionIds.length,
+          restartedSessionCount: restartedSessionIds.length,
+          failedSessionCount: failedSessionIds.length,
+          remainingRestartRequiredSessionCount: afterApplication.restartRequiredSessionIds.length,
+          connectionStatus: afterConnection.status,
+          profileFingerprint: afterConnection.profileFingerprint
+        }
+      });
+      const { runtimeId: _applicationRuntimeId, ...restartApplication } = afterApplication;
+      return restartCliRuntimeVpnSessionsResultSchema.parse({
+        runtimeId: params.runtimeId,
+        requestedSessionIds,
+        restartedSessionIds,
+        replacementSessionIds,
+        failedSessionIds,
+        connection: afterConnection,
+        application: restartApplication
+      });
+    } finally {
+      cliVpnRestartPendingRuntimes.delete(params.runtimeId);
+    }
+  });
+
+  const openCliLogin = async (
+    request: FastifyRequest,
+    roomId: string,
+    runtimeId: string
+  ) => {
+    const startedAtMs = Date.now();
+    await cliRuntimeVisibility.assertEnabled(runtimeId);
+    await store.getRoom(roomId);
+
+    const loginRuntimeIds = new Set([
+      "cli:codex",
+      "cli:gemini",
+      "cli:qwen",
+      "cli:autohand",
+      "cli:kimi",
+      "cli:grok",
+      "cli:deepseek",
+      "cli:cursor",
+      "cli:copilot"
+    ]);
+    if (!loginRuntimeIds.has(runtimeId)) {
+      throw new SpaceConflictError(`CLI runtime ${runtimeId} does not support terminal login.`);
     }
 
     const registry = await cliRuntimeRegistryCache.read();
-    const runtime = findRuntime(registry, input.runtimeId);
-    if (!runtime) throw new SpaceNotFoundError(`CLI runtime ${input.runtimeId} was not found.`);
-    if (!runtime.capabilities.includes("CLI") || !canStartAgentRuntimeLogin(runtime) || !runtime.detectedCommandPath) {
+    const runtime = findRuntime(registry, runtimeId);
+    if (!runtime) throw new SpaceNotFoundError(`CLI runtime ${runtimeId} was not found.`);
+    if (!runtime.capabilities.includes("CLI") || !isCliRuntimeLoginLaunchable(runtime)) {
       throw new SpaceFeatureDisabledError("CLI_LOGIN_UNAVAILABLE", runtime.authReason, {
         runtimeId: runtime.id,
         authState: runtime.authState
@@ -4302,7 +6457,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
     let pane: Pane | null = null;
     let latestLoginSession: PaneCliSession | null = null;
-    for (const candidate of await store.listPanes(params.id)) {
+    for (const candidate of await store.listPanes(roomId)) {
       if (candidate.mode !== "TERMINAL" || candidate.terminalRuntimeId !== runtime.id) continue;
       const activeCandidateSession = await store.getActivePaneCliSession(candidate.id);
       if (activeCandidateSession?.purpose === "NORMAL") continue;
@@ -4319,7 +6474,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       await cliRuntimeVisibility.assertEnabled(runtime.id);
       pane = await store.createPane(
         {
-          roomId: params.id,
+          roomId,
           title: runtime.displayName,
           mode: "TERMINAL",
           terminalRuntimeId: runtime.id,
@@ -4327,7 +6482,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         },
         request.requestIdForSpace
       );
-      const latestEvent = await getLatestRoomEvent(store, params.id);
+      const latestEvent = await getLatestRoomEvent(store, roomId);
       if (latestEvent) eventBus.publish(latestEvent);
     }
 
@@ -4382,14 +6537,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }),
       reused
     });
+  };
+
+  app.post("/api/rooms/:id/cli-login", async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const input = parseBody(cliLoginRequestSchema, request.body ?? {});
+    return openCliLogin(request, params.id, input.runtimeId);
   });
 
-  app.get("/api/cli/codex-defaults", defaultRouteRateLimitOptions, async () => {
+  app.get("/api/cli/codex-defaults", async () => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     return codexCliModeDefaultsService.read();
   });
 
-  app.patch("/api/cli/codex-defaults", defaultRouteRateLimitOptions, async (request) => {
+  app.patch("/api/cli/codex-defaults", async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(updateCodexCliModeDefaultsInputSchema, request.body ?? {});
     const response = await codexCliModeDefaultsService.update(input);
@@ -4407,7 +6568,50 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return response;
   });
 
-  app.get("/api/panes/:id/cli/terminal", defaultWebsocketRateLimitOptions, (socket, request) => {
+  app.post(
+    "/api/cli/client-events",
+    {
+      bodyLimit: cliTerminalClientEventBodyLimitBytes,
+      config: { rateLimit: { max: 240, timeWindow: "1 minute" } }
+    },
+    async (request, reply) => {
+      const input = parseBody(cliTerminalClientEventInputSchema, request.body);
+      observability.observeCliTerminalEvent({
+        source: "CLIENT",
+        event: input.event,
+        outcome: input.outcome,
+        reason: input.reason
+      });
+      request.log.info(
+        {
+          event: "cli_terminal.lifecycle",
+          source: "CLIENT",
+          eventType: input.event,
+          outcome: input.outcome,
+          reason: input.reason,
+          paneId: input.paneId,
+          sessionId: input.sessionId ?? null,
+          runtimeId: input.runtimeId ?? null,
+          controlState: input.controlState ?? null,
+          protocolVersion: input.protocolVersion ?? null,
+          clientMode: input.clientMode ?? null,
+          socketGeneration: input.socketGeneration ?? null,
+          attempt: input.attempt ?? null,
+          delayMs: input.delayMs ?? null,
+          closeCode: input.closeCode ?? null,
+          wasClean: input.wasClean ?? null,
+          clientAt: input.clientAt,
+          requestId: request.requestIdForSpace
+        },
+        "CLI terminal lifecycle event."
+      );
+      return reply
+        .code(202)
+        .send(cliTerminalClientEventResponseSchema.parse({ accepted: true }));
+    }
+  );
+
+  app.get("/api/panes/:id/cli/terminal", { websocket: true }, (socket, request) => {
     try {
       const params = parseQuery(idParamSchema, request.params);
       const query = parseQuery(cliTerminalQuerySchema, request.query);
@@ -4422,6 +6626,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         sessionId: query.sessionId,
         token: query.token,
         clientId: query.clientId,
+        ...(query.protocolVersion === 2
+          ? {
+              protocolVersion: 2 as const,
+              browserClientId: query.browserClientId,
+              tabLineageId: query.tabLineageId,
+              pageClientId: query.pageClientId,
+        clientMode: query.clientMode,
+              requestedLeaseId: query.leaseId
+            }
+          : {}),
+        initialCols: query.initialCols,
+        initialRows: query.initialRows,
+        userId: request.user!.id,
+        proofScope: request.user?.proofScope,
         requestId: request.requestIdForSpace
       });
     } catch (error) {
@@ -4429,21 +6647,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
 
-  app.get("/api/panes/:id/cli/session", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/cli/session", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const query = parseQuery(cliSessionQuerySchema, request.query);
     const pane = await getPaneById(store, params.id);
     assertCliPaneCompatible(pane);
     await assertPaneCliRuntimeEnabled(pane);
     assertRootAdmin(request, pane.terminalRuntimeId);
-    const active = await store.getActivePaneCliSession(pane.id);
+    let active = await store.getActivePaneCliSession(pane.id);
     if (!active || !active.isActive || active.status === "EXITED" || active.status === "ERROR") {
+      return null;
+    }
+    active = await cliTerminalManager.reconcileNormalSessionHostState(active);
+    if (!active.isActive || active.status === "EXITED" || active.status === "ERROR") {
       return null;
     }
     assertRootAdmin(request, active.runtimeId);
     await cliRuntimeVisibility.assertEnabled(active.runtimeId);
-    const registry = await cliRuntimeRegistryCache.read();
-    const runtime = findRuntime(registry, active.runtimeId);
+    const runtime = request.user?.automationScope === "APP_DIAGNOSTICS"
+      ? activeCliSessionObserverRuntime(config, active.runtimeId)
+      : findRuntime(await cliRuntimeRegistryCache.read(), active.runtimeId);
     if (!runtime) {
       throw new SpaceNotFoundError(`CLI runtime ${active.runtimeId} was not found.`);
     }
@@ -4452,44 +6675,55 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       runtime,
       sessionId: active.sessionId,
       includeWebsocket: true,
-      includeTranscript: query.includeTranscript,
+      includeTranscript:
+        request.user?.automationScope === "APP_DIAGNOSTICS"
+          ? false
+          : query.includeTranscript,
+      proofScope: request.user?.proofScope,
       tokenTtlMs: config.cliTokenTtlMs,
       issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
     });
   });
 
-  app.get("/api/panes/:id/cli/model-settings", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/cli/model-settings", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertCliPaneCompatible(pane);
     await assertPaneCliRuntimeEnabled(pane);
     const active = await store.getActivePaneCliSession(pane.id);
     if (!active || !active.isActive || active.status === "EXITED" || active.status === "ERROR") {
-      throw new SpaceConflictError("Attach a Codex CLI session before changing its model settings.");
+      throw new SpaceConflictError("Attach a CLI session before changing its model settings.");
     }
     assertNormalCliSession(active);
     assertRootAdmin(request, active.runtimeId);
-    return (await readPaneCliModelSettings(pane, active, request.requestIdForSpace)).settings;
+    return isOpenCodeDirectParityRuntime(active.runtimeId)
+      ? (await readPaneOpenCodeModelSettings(pane, active, request.requestIdForSpace)).settings
+      : (await readPaneCliModelSettings(pane, active, request.requestIdForSpace)).settings;
   });
 
-  app.get("/api/panes/:id/cli/model-settings/status", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/cli/model-settings/status", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertCliPaneCompatible(pane);
     await assertPaneCliRuntimeEnabled(pane);
     const active = await store.getActivePaneCliSession(pane.id);
     if (!active || !active.isActive || active.status === "EXITED" || active.status === "ERROR") {
-      throw new SpaceConflictError("Attach a Codex CLI session before checking its model settings.");
+      throw new SpaceConflictError("Attach a CLI session before checking its model settings.");
     }
     assertNormalCliSession(active);
     assertRootAdmin(request, active.runtimeId);
     try {
-      const settings = (await readPaneCliModelSettings(pane, active, request.requestIdForSpace)).settings;
+      const settings = isOpenCodeDirectParityRuntime(active.runtimeId)
+        ? (await readPaneOpenCodeModelSettings(pane, active, request.requestIdForSpace)).settings
+        : (await readPaneCliModelSettings(pane, active, request.requestIdForSpace)).settings;
       return paneCliModelSettingsStatusSchema.parse({ status: "AVAILABLE", settings });
     } catch (error) {
       if (
         error instanceof SpaceFeatureDisabledError &&
-        (error.errorCode === "CODEX_SESSION_CONTROL_UNAVAILABLE" || error.errorCode === "CODEX_MODEL_CATALOG_UNAVAILABLE")
+        (error.errorCode === "CODEX_SESSION_CONTROL_UNAVAILABLE" ||
+          error.errorCode === "CODEX_MODEL_CATALOG_UNAVAILABLE" ||
+          error.errorCode === "OPENCODE_SESSION_CONTROL_UNAVAILABLE" ||
+          error.errorCode === "OPENCODE_MODEL_CATALOG_UNAVAILABLE")
       ) {
         return paneCliModelSettingsStatusSchema.parse({
           status: "UNAVAILABLE",
@@ -4501,7 +6735,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
 
-  app.patch("/api/panes/:id/cli/model-settings", defaultRouteRateLimitOptions, async (request) => {
+  app.patch("/api/panes/:id/cli/model-settings", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updateCliModelSettingsBodySchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -4509,12 +6743,79 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await assertPaneCliRuntimeEnabled(pane);
     const active = await store.getActivePaneCliSession(pane.id);
     if (!active || !active.isActive || active.status === "EXITED" || active.status === "ERROR") {
-      throw new SpaceConflictError("Attach a Codex CLI session before changing its model settings.");
+      throw new SpaceConflictError("Attach a CLI session before changing its model settings.");
     }
     assertNormalCliSession(active);
     assertRootAdmin(request, active.runtimeId);
+    await assertCliHttpMutationControl(request, active);
     if (active.sessionId !== input.expectedSessionId) {
-      throw new SpaceConflictError("The Codex CLI session changed before the model switch could be applied.");
+      throw new SpaceConflictError("The CLI session changed before the model switch could be applied.");
+    }
+
+    if (isOpenCodeDirectParityRuntime(active.runtimeId)) {
+      const control = await resolveOpenCodeServerControl(active);
+      const before = await readPaneOpenCodeModelSettings(pane, active, request.requestIdForSpace);
+      const parsedRef = parseOpenCodeCompositeModelId(input.modelId);
+      const advertised = before.settings.models.some((model) => model.id === input.modelId);
+      if (!parsedRef || !advertised) {
+        throw new SpaceConflictError("The selected model is not advertised by this OpenCode runtime.");
+      }
+      const wasActive = before.settings.isTurnActive;
+      try {
+        await switchOpenCodeSessionModel(
+          control,
+          control.nativeSessionId,
+          parsedRef.providerId,
+          parsedRef.modelId,
+          input.reasoningEffort
+        );
+      } catch (error) {
+        throw new SpaceConflictError("OpenCode rejected the model switch; the current session was left unchanged.");
+      }
+      const updatedSession = await store.updatePaneCliSession(
+        active.sessionId,
+        {
+          modelId: input.modelId,
+          reasoningEffort: input.reasoningEffort,
+          statusReason: "OpenCode model settings saved for this pane."
+        },
+        request.requestIdForSpace
+      );
+      const registry = await discoverAgentRuntimes(config);
+      const runtime = findRuntime(registry, updatedSession.runtimeId);
+      if (!runtime) throw new SpaceNotFoundError(`CLI runtime ${updatedSession.runtimeId} was not found.`);
+      const after = await readPaneOpenCodeModelSettings(pane, updatedSession, request.requestIdForSpace);
+      await recordAudit(store, request, {
+        action: "pane.cli.model-settings",
+        targetType: "pane",
+        targetId: pane.id,
+        metadata: {
+          roomId: pane.roomId,
+          sessionId: updatedSession.sessionId,
+          modelId: input.modelId,
+          reasoningEffort: input.reasoningEffort,
+          appliedScope: "MODEL_AND_REASONING",
+          interrupted: false,
+          continuation: "NOT_NEEDED"
+        }
+      });
+      return {
+        settings: after.settings,
+        session: await buildPaneCliSessionResponse({
+          store,
+          runtime,
+          sessionId: updatedSession.sessionId,
+          includeWebsocket: true,
+          tokenTtlMs: config.cliTokenTtlMs,
+          issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
+        }),
+        appliedScope: "MODEL_AND_REASONING",
+        wasActive,
+        interrupted: false,
+        continuation: "NOT_NEEDED",
+        transport: "OPENCODE",
+        warning: null
+      };
     }
 
     const before = await readPaneCliModelSettings(pane, active, request.requestIdForSpace);
@@ -4647,7 +6948,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.get("/api/panes/:id/cli/turn-activity", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/cli/turn-activity", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const query = parseQuery(cliTurnActivityQuerySchema, request.query);
     const pane = await getPaneById(store, params.id);
@@ -4664,7 +6965,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return paneCliTurnActivityResponseSchema.parse(await cliTerminalManager.getTurnActivity(active.sessionId, query.marker));
   });
 
-  app.get("/api/panes/:id/browser/frames", defaultWebsocketRateLimitOptions, (socket, request) => {
+  app.get("/api/panes/:id/browser/frames", { websocket: true }, (socket, request) => {
     void (async () => {
       const params = parseQuery(idParamSchema, request.params);
       const query = parseQuery(browserFrameQuerySchema.required({ token: true }), request.query);
@@ -4706,7 +7007,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/panes/:id/browser/stream-ticket", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/stream-ticket", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -4721,7 +7022,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/panes/:id/browser/stream", defaultWebsocketRateLimitOptions, (socket, request) => {
+  app.get("/api/panes/:id/browser/stream", { websocket: true }, (socket, request) => {
     void (async () => {
       const params = parseQuery(idParamSchema, request.params);
       const query = parseQuery(browserStreamQuerySchema, request.query);
@@ -4832,7 +7133,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const stop = () => {
         if (stopped) return;
         stopped = true;
-        void stream.stop();
+        void stream.stop().catch(() => undefined);
       };
       socket.once("close", stop);
       socket.once("error", stop);
@@ -4841,7 +7142,69 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/panes", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/audio-ticket", async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const pane = await getPaneById(store, params.id);
+    assertBrowserPaneCompatible(pane);
+    const session = await store.getActivePaneBrowserSession(pane.id);
+    if (!session) throw new SpaceNotFoundError(`Active browser session for pane ${pane.id} was not found.`);
+    return browserStreamTicketResponseSchema.parse({
+      websocket: browserSessionManager.issueAudioTicket(
+        pane.id,
+        session.sessionId,
+        config.browserSessionsTokenTtlMs
+      )
+    });
+  });
+
+  app.get("/api/panes/:id/browser/audio", { websocket: true }, (socket, request) => {
+    void (async () => {
+      const params = parseQuery(idParamSchema, request.params);
+      const query = parseQuery(browserAudioQuerySchema, request.query);
+      const pane = await getPaneById(store, params.id);
+      assertBrowserPaneCompatible(pane);
+      const session = await store.getPaneBrowserSession(query.sessionId);
+      if (!session || session.paneId !== pane.id || !session.isActive) {
+        throw new SpaceNotFoundError(`Browser session ${query.sessionId} was not found.`);
+      }
+      if (!browserSessionManager.acceptAudioTicket(pane.id, session.sessionId, query.token)) {
+        throw new SpaceFeatureDisabledError("BROWSER_AUDIO_TOKEN_INVALID", "Browser audio token is invalid or expired.");
+      }
+      const startAudioStream = browserSessionManager.startAudioStream?.bind(browserSessionManager);
+      if (!startAudioStream) {
+        throw new SpaceFeatureDisabledError("BROWSER_AUDIO_UNAVAILABLE", "Browser audio streaming is unavailable on this runtime.");
+      }
+      const stream = await startAudioStream(session.sessionId, (chunk) => {
+        if (socket.readyState !== 1 || socket.bufferedAmount > 8 * 1024 * 1024) return;
+        socket.send(chunk.data, { binary: true, compress: false });
+      });
+      if (socket.readyState !== 1) {
+        await stream.stop();
+        return;
+      }
+      sendBrowserStreamMessage(socket, {
+        type: "audioReady",
+        paneId: pane.id,
+        sessionId: session.sessionId,
+        streamId: stream.id,
+        encoding: "pcm_s16le",
+        sampleRate: stream.sampleRate,
+        channels: stream.channels
+      });
+      let stopped = false;
+      const stop = () => {
+        if (stopped) return;
+        stopped = true;
+        void stream.stop().catch(() => undefined);
+      };
+      socket.once("close", stop);
+      socket.once("error", stop);
+    })().catch((error: unknown) => {
+      closeBrowserSocketWithSetupError(socket, error instanceof Error ? error.message : "Browser audio stream setup failed.");
+    });
+  });
+
+  app.get("/api/panes", async (request) => {
     const query = parseQuery(listPanesQuerySchema, request.query);
     const enabledRuntimeIds = new Set(await cliRuntimeVisibility.enabledRuntimeIds());
     const panes = (await store.listPanes(query.roomId, query.includeClosed)).filter((pane) => {
@@ -4860,14 +7223,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.post("/api/rooms/:id/panes", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/rooms/:id/panes", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createRoomPanesRequestSchema, request.body);
     const registry = await discoverAgentRuntimes(config);
     const runtimeById = new Map(registry.data.map((runtime) => [runtime.id, runtime]));
 
-    await Promise.all(input.panes.flatMap((item) =>
-      item.mode === "TERMINAL" ? [cliRuntimeVisibility.assertEnabled(item.terminalRuntimeId)] : []
+    await Promise.all(input.panes.map((item) =>
+      item.mode === "TERMINAL"
+        ? cliRuntimeVisibility.assertEnabled(item.terminalRuntimeId)
+        : cliRuntimeVisibility.assertEnabled("cli:codex")
     ));
 
     const paneInputs = input.panes.map((item: RoomPaneBatchItem) => {
@@ -4920,10 +7285,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return roomPanesResultSchema.parse({ roomId: params.id, data: panes });
   });
 
-  app.post("/api/panes", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes", async (request) => {
     const input = parseBody(createPaneInputSchema, request.body);
     assertRootAdmin(request, input.terminalRuntimeId);
-    if (input.mode === "TERMINAL" && input.terminalRuntimeId) {
+    if (input.mode === "CHAT") {
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
+    } else if (input.mode === "TERMINAL" && input.terminalRuntimeId) {
       await cliRuntimeVisibility.assertEnabled(input.terminalRuntimeId);
     }
     const pane = await store.createPane(input, request.requestIdForSpace);
@@ -4940,31 +7307,49 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return pane;
   });
 
-  app.patch("/api/panes/:id", defaultRouteRateLimitOptions, async (request) => {
+  app.patch("/api/panes/:id", async (request) => {
     const params = request.params as { id: string };
     const input = parseBody(updatePaneInputSchema, request.body);
     const existingPane = await getPaneById(store, params.id);
     assertRootAdmin(request, input.terminalRuntimeId ?? existingPane.terminalRuntimeId);
     const targetRuntimeId = input.terminalRuntimeId ?? existingPane.terminalRuntimeId;
-    if ((input.mode ?? existingPane.mode) === "TERMINAL" && targetRuntimeId && input.isClosed !== true) {
+    const targetMode = input.mode ?? existingPane.mode;
+    if (targetMode === "CHAT" && input.isClosed !== true) {
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
+    } else if (targetMode === "TERMINAL" && targetRuntimeId && input.isClosed !== true) {
       await cliRuntimeVisibility.assertEnabled(targetRuntimeId);
     }
     const current = input.title === undefined ? null : existingPane;
-    const rollbackCodexTitle =
-      typeof input.title === "string" && current && input.title !== current.title
-        ? await syncPaneTitleToCodexHistory({
-            store,
-            codexParity,
-            pane: current,
-            title: input.title,
-            traceId: request.requestIdForSpace,
-            request
-          })
-        : null;
+    let rollbackCodexTitle: (() => Promise<void>) | null = null;
+    let rollbackCliTaskTitle: (() => Promise<void>) | null = null;
+    if (typeof input.title === "string" && current && input.title !== current.title) {
+      rollbackCodexTitle = await syncPaneTitleToCodexHistory({
+        store,
+        codexParity,
+        pane: current,
+        title: input.title,
+        traceId: request.requestIdForSpace,
+        request,
+        findThreadId: options.findCodexThreadId
+      });
+      try {
+        rollbackCliTaskTitle = await syncPaneTitleToCliTaskRevision({
+          store,
+          pane: current,
+          title: input.title,
+          traceId: request.requestIdForSpace,
+          request
+        });
+      } catch (error) {
+        await rollbackCodexTitle?.();
+        throw error;
+      }
+    }
     let pane: Pane;
     try {
       pane = await store.updatePane(params.id, input, request.requestIdForSpace);
     } catch (error) {
+      await rollbackCliTaskTitle?.();
       await rollbackCodexTitle?.();
       throw error;
     }
@@ -4981,7 +7366,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return pane;
   });
 
-  app.post("/api/panes/:id/move", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/move", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(movePaneInputSchema, request.body);
     const move = await store.movePane(params.id, input, request.requestIdForSpace);
@@ -5009,7 +7394,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return move;
   });
 
-  app.post("/api/panes/:id/title/generate", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/title/generate", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     if (pane.mode !== "TERMINAL" && pane.mode !== "CHAT") {
@@ -5025,24 +7410,34 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       assertNormalCliSession(session);
     }
 
-    const [providers, providerSettings, models, transcript] = await Promise.all([
+    const [providers, providerSettings, models, transcript, cliTaskRevision] = await Promise.all([
       store.listProviders(),
       store.getProviderSettings(),
       store.listModels(),
-      pane.mode === "TERMINAL" ? store.listPaneCliTranscriptChunks(session.sessionId, 48) : Promise.resolve([])
+      pane.mode === "TERMINAL" ? store.listPaneCliTranscriptChunks(session.sessionId, 48) : Promise.resolve([]),
+      pane.mode === "TERMINAL" && "cliTaskRevisionId" in session && session.cliTaskRevisionId
+        ? store.getCliTaskRevision(session.cliTaskRevisionId)
+        : Promise.resolve(null)
     ]);
     const codexThreadId = pane.mode === "CHAT"
       ? "threadId" in session ? session.threadId : null
       : "runtimeId" in session
-        ? await resolvePaneCodexThreadId({ store, session, traceId: request.requestIdForSpace })
+        ? await resolvePaneCodexThreadId({
+            store,
+            session,
+            traceId: request.requestIdForSpace,
+            findThreadId: options.findCodexThreadId
+          })
         : null;
     if (pane.mode === "CHAT" && !codexThreadId) {
       throw new SpaceConflictError("Start a Chat task before generating a title.");
     }
-    let primaryTaskRequest: string | null = null;
+    let primaryTaskRequest = cliTaskRevision?.firstUserMessage.trim() || null;
     if (codexThreadId) {
       try {
-        primaryTaskRequest = await loadCodexPrimaryTaskRequest(codexParity, codexThreadId);
+        primaryTaskRequest =
+          (await loadCodexPrimaryTaskRequest(codexParity, codexThreadId)) ??
+          primaryTaskRequest;
       } catch (error) {
         if (pane.mode === "CHAT") {
           throw new SpaceFeatureDisabledError(
@@ -5082,19 +7477,37 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const message = error instanceof Error ? error.message : "CLI title generation failed.";
       throw new SpaceFeatureDisabledError("PANE_TITLE_GENERATION_FAILED", message);
     }
-    const rollbackCodexTitle = await syncPaneTitleToCodexHistory({
-      store,
-      codexParity,
-      pane,
-      title: generated.title,
-      traceId: request.requestIdForSpace,
-      request,
-      session: codexThreadId ? { ...session, codexThreadId } : session
-    });
+    const rollbackCodexTitle = codexThreadId
+      ? await syncPaneTitleToCodexHistory({
+          store,
+          codexParity,
+          pane,
+          title: generated.title,
+          traceId: request.requestIdForSpace,
+          request,
+          session: { ...session, codexThreadId },
+          findThreadId: options.findCodexThreadId
+        })
+      : null;
+    let rollbackCliTaskTitle: (() => Promise<void>) | null = null;
+    try {
+      rollbackCliTaskTitle = await syncPaneTitleToCliTaskRevision({
+        store,
+        pane,
+        title: generated.title,
+        traceId: request.requestIdForSpace,
+        request,
+        session: pane.mode === "TERMINAL" && "runtimeId" in session ? session : null
+      });
+    } catch (error) {
+      await rollbackCodexTitle?.();
+      throw error;
+    }
     let updated: Pane;
     try {
       updated = await store.updatePane(pane.id, { title: generated.title }, request.requestIdForSpace);
     } catch (error) {
+      await rollbackCliTaskTitle?.();
       await rollbackCodexTitle?.();
       throw error;
     }
@@ -5115,13 +7528,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return updated;
   });
 
-  app.get("/api/panes/:id/capabilities", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/capabilities", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     return buildPaneCapabilityMatrix(store, pane);
   });
 
-  app.delete("/api/panes/:id", defaultRouteRateLimitOptions, async (request) => {
+  app.delete("/api/panes/:id", async (request) => {
     const params = request.params as { id: string };
     const current = await getPaneById(store, params.id);
     let interruptedCliSessionId: string | null = null;
@@ -5143,7 +7556,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         interruptedCliSessionId = active.sessionId;
       }
     }
-    if (current.mode === "BROWSER") {
+    if (current.mode === "BROWSER" || current.mode === "YOUTUBE") {
       await browserSessionManager.stopPane(current.id, request.requestIdForSpace, operatorBrowserActor(request));
     }
     const pane = await store.updatePane(params.id, { isClosed: true, status: "CLOSED" }, request.requestIdForSpace);
@@ -5156,9 +7569,98 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return pane;
   });
 
-  app.get("/api/browser/status", defaultRouteRateLimitOptions, async () => browserSessionManager.status());
+  app.get("/api/browser/status", async () => browserSessionManager.status());
 
-  app.get("/api/cli/browser/context", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/cli/agent-files", async (request, reply) => {
+    const bridge = await requireCliAgentFilesContext(request, reply);
+    if (!bridge) return undefined;
+    if (!request.isMultipart()) {
+      return sendApiError(reply, 400, "BAD_REQUEST", "Agent Files publishing must use multipart/form-data.");
+    }
+
+    const uploads: Array<{ buffer: Buffer; filename: string; declaredMimeType: string }> = [];
+    let totalBytes = 0;
+    for await (const part of request.parts()) {
+      if (part.type !== "file") continue;
+      if (uploads.length >= agentFileMaxCount) {
+        return sendApiError(reply, 422, "UPLOAD_LIMIT_EXCEEDED", `At most ${agentFileMaxCount} Agent Files can be published at once.`);
+      }
+      const chunks: Buffer[] = [];
+      let byteSize = 0;
+      for await (const chunk of part.file) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        byteSize += buffer.byteLength;
+        totalBytes += buffer.byteLength;
+        if (byteSize > agentFileMaxBytes) {
+          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "Each Agent File must be 100 MiB or smaller.");
+        }
+        if (totalBytes > agentFileMaxRequestBytes) {
+          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "One Agent Files publish request cannot exceed 250 MiB.");
+        }
+        chunks.push(buffer);
+      }
+      if (byteSize === 0) {
+        return sendApiError(reply, 422, "EMPTY_UPLOAD", "Agent Files must not be empty.");
+      }
+      uploads.push({
+        buffer: Buffer.concat(chunks),
+        filename: part.filename || "agent-file",
+        declaredMimeType: part.mimetype || "application/octet-stream"
+      });
+    }
+    if (!uploads.length) {
+      return sendApiError(reply, 422, "EMPTY_UPLOAD", "Publish at least one Agent File.");
+    }
+
+    const rootStats = await statfs(config.browserEvidenceArtifactRoot);
+    const freeBytes = Number(rootStats.bavail) * Number(rootStats.bsize);
+    if (freeBytes < totalBytes + 1024 * 1024 * 1024) {
+      return sendApiError(reply, 507, "STORAGE_FULL", "Agent Files publishing requires at least 1 GiB of free space after this upload.");
+    }
+
+    const artifacts: Artifact[] = [];
+    for (const upload of uploads) {
+      let record: Awaited<ReturnType<typeof persistAgentFile>>;
+      try {
+        record = await persistAgentFile({
+          store,
+          artifactRoot: config.browserEvidenceArtifactRoot,
+          roomId: bridge.claims.roomId,
+          paneId: bridge.claims.paneId,
+          cliSessionId: bridge.claims.cliSessionId,
+          runtimeId: bridge.cliSession.runtimeId,
+          originalFilename: upload.filename,
+          declaredMimeType: upload.declaredMimeType,
+          buffer: upload.buffer,
+          traceId: request.requestIdForSpace,
+          docxNormalizer: options.agentFileDocxNormalizer
+        });
+      } catch (error) {
+        if (error instanceof AgentFileDocxNormalizationError) {
+          return sendApiError(reply, 422, "DOCX_NORMALIZATION_FAILED", error.message);
+        }
+        throw error;
+      }
+      eventBus.publish(record.event);
+      artifacts.push(record.artifact);
+    }
+    await recordAudit(store, request, {
+      action: "agent_file.publish",
+      targetType: "pane",
+      targetId: bridge.claims.paneId,
+      metadata: {
+        roomId: bridge.claims.roomId,
+        cliSessionId: bridge.claims.cliSessionId,
+        runtimeId: bridge.cliSession.runtimeId,
+        artifactCount: artifacts.length,
+        artifactIds: artifacts.map((artifact) => artifact.id),
+        totalBytes
+      }
+    });
+    return { artifacts };
+  });
+
+  app.get("/api/cli/browser/context", async (request, reply) => {
     const bridge = await requireCliBrowserBridgeContext(request, reply);
     if (!bridge) return undefined;
     const browserSessions = await store.listActivePaneBrowserSessions(bridge.claims.roomId);
@@ -5180,7 +7682,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/cli/browser/session", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/cli/browser/session", async (request, reply) => {
     const bridge = await requireCliBrowserBridgeContext(request, reply);
     if (!bridge) return undefined;
     const input = parseBody(spaceCliBrowserSessionStartRequestSchema, request.body ?? {});
@@ -5228,7 +7730,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/cli/browser/actions", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/cli/browser/actions", async (request, reply) => {
     const bridge = await requireCliBrowserBridgeContext(request, reply);
     if (!bridge) return undefined;
     const input = parseBody(spaceCliBrowserActionBridgeRequestSchema, request.body ?? {});
@@ -5300,7 +7802,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return spaceCliBrowserActionBridgeResponseSchema.parse({ results });
   });
 
-  app.post("/api/cli/browser/commands", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/cli/browser/commands", async (request, reply) => {
     const bridge = await requireCliBrowserBridgeContext(request, reply);
     if (!bridge) return undefined;
     const input = parseBody(spaceCliBrowserCommandRequestSchema, request.body ?? {});
@@ -5471,7 +7973,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result;
   });
 
-  app.get("/api/panes/:id/browser/session", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/browser/session", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5482,7 +7984,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return session;
   });
 
-  app.get("/api/panes/:id/browser/handoff", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/browser/handoff", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5495,7 +7997,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserHandoffRequestResponseSchema.parse({ handoff });
   });
 
-  app.post("/api/panes/:id/browser/session", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/session", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createPaneBrowserSessionRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5522,7 +8024,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return session;
   });
 
-  app.patch("/api/panes/:id/browser/session", defaultRouteRateLimitOptions, async (request) => {
+  app.patch("/api/panes/:id/browser/session", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updatePaneBrowserSessionRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5554,7 +8056,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return response;
   });
 
-  app.post("/api/panes/:id/browser/navigate", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/navigate", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserNavigateInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5569,7 +8071,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return response;
   });
 
-  app.get("/api/panes/:id/browser/pages", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/browser/pages", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5579,7 +8081,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.listPages(pane);
   });
 
-  app.post("/api/panes/:id/browser/pages", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/pages", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createBrowserPageInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5590,7 +8092,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.createPage(pane, input.url, input.activate, request.requestIdForSpace, operatorBrowserActor(request));
   });
 
-  app.post("/api/panes/:id/browser/pages/:pageId/activate", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/pages/:pageId/activate", async (request) => {
     const params = parseQuery(browserPageParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5600,7 +8102,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.activatePage(pane, params.pageId, request.requestIdForSpace, operatorBrowserActor(request));
   });
 
-  app.post("/api/panes/:id/browser/pages/:pageId/close", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/pages/:pageId/close", async (request) => {
     const params = parseQuery(browserPageParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5610,7 +8112,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.closePage(pane, params.pageId, request.requestIdForSpace, operatorBrowserActor(request));
   });
 
-  app.post("/api/panes/:id/browser/control/acquire", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/control/acquire", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(acquireBrowserControlInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5644,7 +8146,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserControlLeaseResponseSchema.parse({ lease });
   });
 
-  app.post("/api/panes/:id/browser/control/heartbeat", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/control/heartbeat", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserControlLeaseActionInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5657,7 +8159,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/panes/:id/browser/control/release", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/control/release", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserControlLeaseActionInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5684,7 +8186,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserControlLeaseResponseSchema.parse({ lease });
   });
 
-  app.post("/api/panes/:id/browser/input", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/input", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserRuntimeInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5695,7 +8197,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.input(pane, input, request.requestIdForSpace, operatorBrowserActor(request));
   });
 
-  app.post("/api/panes/:id/browser/captures", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/panes/:id/browser/captures", async (request, reply) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createBrowserCaptureJobRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5717,7 +8219,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return reply.code(202).send(browserCaptureJobResponseSchema.parse({ job }));
   });
 
-  app.get("/api/panes/:id/browser/captures/:jobId", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/browser/captures/:jobId", async (request) => {
     const params = parseQuery(browserCaptureParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5727,7 +8229,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserCaptureJobResponseSchema.parse({ job: await browserSessionManager.getCapture(pane, params.jobId) });
   });
 
-  app.get("/api/panes/:id/browser/captures/:jobId/segments", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/browser/captures/:jobId/segments", async (request) => {
     const params = parseQuery(browserCaptureParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5739,7 +8241,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/panes/:id/browser/captures/:jobId/timeline", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/browser/captures/:jobId/timeline", async (request) => {
     const params = parseQuery(browserCaptureParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5769,7 +8271,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/panes/:id/browser/captures/:jobId/stop", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/captures/:jobId/stop", async (request) => {
     const params = parseQuery(browserCaptureParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5791,7 +8293,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserCaptureJobResponseSchema.parse({ job });
   });
 
-  app.post("/api/panes/:id/browser/captures/:jobId/cancel", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/captures/:jobId/cancel", async (request) => {
     const params = parseQuery(browserCaptureParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5813,7 +8315,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserCaptureJobResponseSchema.parse({ job });
   });
 
-  app.get("/api/panes/:id/browser/diagnostics", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/browser/diagnostics", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const query = parseQuery(browserDiagnosticsQuerySchema, request.query);
     const pane = await getPaneById(store, params.id);
@@ -5824,7 +8326,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserDiagnosticsResponseSchema.parse(await browserSessionManager.diagnostics(pane, query.includeNetwork, query.limit));
   });
 
-  app.get("/api/panes/:id/browser/bookmarks", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/browser/bookmarks", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5832,7 +8334,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return listManagedBrowserBookmarks(session);
   });
 
-  app.post("/api/panes/:id/browser/bookmarks", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/bookmarks", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createBrowserBookmarkInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5857,7 +8359,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserBookmarkListResponseSchema.parse(bookmarks);
   });
 
-  app.post("/api/panes/:id/browser/bookmarks/import", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/panes/:id/browser/bookmarks/import", async (request, reply) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5932,7 +8434,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserBookmarkImportResponseSchema.parse(imported);
   });
 
-  app.get("/api/panes/:id/browser/bookmarks/export", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.get("/api/panes/:id/browser/bookmarks/export", async (request, reply) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -5950,7 +8452,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       .send(`${JSON.stringify(data, null, 2)}\n`);
   });
 
-  app.post("/api/panes/:id/browser/bookmarks/open", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/bookmarks/open", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(openBrowserBookmarkInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5971,7 +8473,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return response;
   });
 
-  app.post("/api/panes/:id/browser/viewport", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/viewport", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserSetViewportInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -5986,7 +8488,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return response;
   });
 
-  app.post("/api/panes/:id/browser/action", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/action", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserToolActionInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -6001,7 +8503,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result;
   });
 
-  app.post("/api/internal/agent/browser-actions", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/internal/agent/browser-actions", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     if (!config.browserToolBridgeEnabled) {
       throw new SpaceFeatureDisabledError(
         "BROWSER_TOOL_BRIDGE_DISABLED",
@@ -6139,7 +8642,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return spaceAgentBrowserActionBridgeResponseSchema.parse({ results });
   });
 
-  app.post("/api/internal/agent/room-actions", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/internal/agent/room-actions", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(spaceAgentRoomActionBridgeRequestSchema, request.body ?? {});
     const roomAgentPane = await store.getOrCreateRoomAgentPane(input.roomId, request.requestIdForSpace);
     if (roomAgentPane.id !== input.agentPaneId) {
@@ -6179,7 +8683,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result;
   });
 
-  app.get("/api/panes/:id/browser/frame", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/browser/frame", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const query = parseQuery(browserFrameQuerySchema, request.query);
     const pane = await getPaneById(store, params.id);
@@ -6191,7 +8695,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.captureFrame(session.sessionId);
   });
 
-  app.post("/api/panes/:id/browser/stop", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/browser/stop", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -6205,7 +8709,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true, paneId: pane.id };
   });
 
-  app.post("/api/panes/:id/cli/session", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/cli/session", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createPaneCliSessionRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -6242,6 +8746,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (active?.purpose === "LOGIN") {
       throw new SpaceConflictError("Cancel or complete CLI login before starting a normal CLI session in this pane.");
     }
+    if (active) await assertCliHttpMutationControl(request, active);
     const requestedCwd = input.cwd ?? pane.cwd ?? null;
     const directCodexParity = isCodexDirectParityRuntime(runtime.id);
     const directClaudeParity = isClaudeDirectParityRuntime(runtime.id);
@@ -6332,7 +8837,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
               ? directCodexParity
                 ? "CLI session replaced with direct VS Code/Codex parity workspace."
                 : directClaudeParity
-                  ? "CLI session replaced with direct Claude Code operator parity workspace."
+                  ? "CLI session replaced with direct Claude Code via Legacy operator parity workspace."
                   : directKimiParity
                     ? "CLI session replaced with direct Kimi Code subscription operator parity workspace."
                     : directGrokParity
@@ -6343,7 +8848,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
                 : directCodexParity
                   ? "CLI session replaced to apply updated Codex CLI session settings."
                   : directClaudeParity
-                    ? "CLI session replaced to apply updated Claude Code CLI session settings."
+                    ? "CLI session replaced to apply updated Claude Code via Legacy CLI session settings."
                     : directKimiParity
                       ? "CLI session replaced to apply updated Kimi Code CLI session settings."
                       : directGrokParity
@@ -6476,17 +8981,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/panes/:id/cli/resume", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/cli/resume", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(resumePaneCliSessionRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
     assertCliPaneCompatible(pane);
+    const active = await store.getActivePaneCliSession(pane.id);
+    if (active) await assertCliHttpMutationControl(request, active);
+    const targetRuntimeId = pane.terminalRuntimeId ?? "cli:codex";
+    await cliRuntimeVisibility.assertEnabled(targetRuntimeId);
     const sourceTaskReference = input.taskId ?? input.threadId;
     if (!sourceTaskReference) throw new SpaceNotFoundError("Space CLI task reference was not provided.");
     const sourceTask = await unifiedCliTaskRegistry.getTask(sourceTaskReference, await visibleCliRuntimeIds());
     const paneTitle = paneTitleFromCliTaskTitle(sourceTask.title);
-    const targetRuntimeId = pane.terminalRuntimeId ?? "cli:codex";
-    await cliRuntimeVisibility.assertEnabled(targetRuntimeId);
     const registry = await discoverAgentRuntimes(config);
     const runtime = findRuntime(registry, targetRuntimeId);
     if (!runtime) {
@@ -6501,15 +9008,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         status: runtime.status
       });
     }
-    const active = await store.getActivePaneCliSession(pane.id);
     if (active?.purpose === "LOGIN") {
       throw new SpaceConflictError("Cancel or complete CLI login before resuming a CLI task in this pane.");
     }
     const parsedNativeThreadId = codexThreadIdSchema.safeParse(sourceTask.revision.nativeTaskRef);
-    const nativeThreadId = runtime.id === "cli:codex" && sourceTask.runtimeId === "cli:codex" && parsedNativeThreadId.success
-      ? parsedNativeThreadId.data
-      : null;
-    const mode = nativeThreadId
+    const nativeThreadId = await availableNativeCodexThreadId(
+      codexParity,
+      runtime.id === "cli:codex" && sourceTask.runtimeId === "cli:codex" && parsedNativeThreadId.success
+        ? parsedNativeThreadId.data
+        : null
+    );
+    const opencodeNativeSessionId = await availableOpenCodeNativeSessionId({
+      sourceTask,
+      runtimeId: runtime.id,
+      sourceRuntimeId: sourceTask.runtimeId
+    });
+    const exactNativeResume = Boolean(nativeThreadId || opencodeNativeSessionId);
+    const mode = exactNativeResume
       ? "NATIVE_RESUME" as const
       : sourceTask.runtimeId === runtime.id
         ? "SPACE_FALLBACK" as const
@@ -6553,7 +9068,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             ? sourceTask.revision.modelId ?? pane.modelId ?? runtime.defaultModelId
             : pane.modelId ?? runtime.defaultModelId,
           reasoningEffort: sameRuntime ? sourceTask.revision.reasoningEffort : pane.reasoningEffort,
-          launchMode: nativeThreadId ? "RESUME" : "FRESH",
+          launchMode: exactNativeResume ? "RESUME" : "FRESH",
           cwd: sameRuntime ? sourceTask.revision.cwd ?? pane.cwd ?? "/etc" : pane.cwd ?? "/etc",
           codexThreadId: null,
           cliTaskId: sourceTask.taskId,
@@ -6583,7 +9098,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             cwd: session.cwd,
             modelId: session.modelId,
             reasoningEffort: session.reasoningEffort,
-            ...(nativeThreadId ? { nativeTaskRef: nativeThreadId } : {})
+            ...(nativeThreadId
+              ? { nativeTaskRef: nativeThreadId }
+              : opencodeNativeSessionId
+                ? { nativeTaskRef: opencodeNativeSessionId }
+                : {})
           },
           request.requestIdForSpace
         );
@@ -6595,13 +9114,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           roomId: pane.roomId,
           sequence: 0,
           stream: "system",
-          content: nativeThreadId
-            ? `Resuming ${sourceTask.title} from exact Codex task history.`
+          content: exactNativeResume
+            ? `Resuming ${sourceTask.title} from exact ${runtime.displayName} task history.`
             : `Loaded bounded untrusted context from Space CLI task ${sourceTask.title} into a fresh ${runtime.displayName} session.`
         },
         request.requestIdForSpace
       );
-      if (!nativeThreadId) {
+      if (!exactNativeResume) {
         const sharedContext = buildSharedCliTaskContext({
           sourceTaskId: sourceTask.taskId,
           sourceRuntimeLabel: sourceTask.providerLabel,
@@ -6640,7 +9159,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           sourceRevisionId: sourceTask.revision.revisionId,
           targetRevisionId: session.cliTaskRevisionId,
           sourceRuntimeId: sourceTask.runtimeId,
-          codexThreadId: nativeThreadId
+          codexThreadId: nativeThreadId,
+          opencodeNativeSessionId: opencodeNativeSessionId ?? undefined
         }
       });
       return resumePaneCliSessionResponseSchema.parse({
@@ -6662,7 +9182,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       : resumeOperation();
   });
 
-  app.post("/api/panes/:id/cli/uploads", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/panes/:id/cli/uploads", async (request, reply) => {
     const params = parseQuery(idParamSchema, request.params);
     const query = parseQuery(cliUploadsQuerySchema, request.query);
     const pane = await getPaneById(store, params.id);
@@ -6675,6 +9195,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (active.purpose !== "NORMAL") {
       return sendApiError(reply, 409, "CLI_LOGIN_SESSION_RESTRICTED", "CLI login sessions cannot persist terminal uploads.");
     }
+    await assertCliHttpMutationControl(request, active);
     await cliRuntimeVisibility.assertEnabled(active.runtimeId);
     if (active.runtimeId === "cli:deepseek") {
       return sendApiError(reply, 409, "CLI_UPLOAD_UNSUPPORTED", "DeepSeek CLI does not support terminal file uploads.");
@@ -6812,7 +9333,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/panes/:id/cli/clipboard-debug", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/cli/clipboard-debug", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(cliClipboardDebugInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -6851,7 +9372,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.post("/api/panes/:id/cli/interrupt", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/cli/interrupt", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(paneCliInterruptInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -6860,6 +9381,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!active) {
       throw new SpaceNotFoundError(`Active CLI session for pane ${pane.id} was not found.`);
     }
+    await assertCliHttpMutationControl(request, active);
     const registry = await discoverAgentRuntimes(config);
     const runtime = findRuntime(registry, active.runtimeId);
     if (!runtime) {
@@ -6903,19 +9425,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/panes/:id/agent-session", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/panes/:id/agent-session", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertAgentPaneCompatible(pane);
     return spaceAgentAdapter.loadSession({ pane });
   });
 
-  app.get("/api/rooms/:id/room-agent", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/rooms/:id/room-agent", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     return roomAgentService.load(params.id);
   });
 
-  app.post("/api/rooms/:id/room-agent/messages", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/rooms/:id/room-agent/messages", async (request, reply) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(roomAgentMessageInputSchema, request.body);
     const session = await roomAgentService.send(params.id, input.content, input.clientRequestId, request.requestIdForSpace);
@@ -6928,7 +9451,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return reply.code(202).send(session);
   });
 
-  app.post("/api/rooms/:id/room-agent/stop", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/rooms/:id/room-agent/stop", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(roomAgentStopInputSchema, request.body ?? {});
     const session = await roomAgentService.stop(params.id, input.reason, request.requestIdForSpace);
@@ -6941,9 +9464,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return session;
   });
 
-  app.post("/api/rooms/:id/room-agent/control", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/rooms/:id/room-agent/control", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(roomAgentControlInputSchema, request.body ?? {});
+    if (input.action !== "STOP") await cliRuntimeVisibility.assertEnabled("cli:codex");
     const session = await roomAgentService.control(params.id, input.action, "reason" in input ? input.reason : undefined, request.requestIdForSpace);
     await recordAudit(store, request, {
       action: `room.agent.${input.action.toLowerCase()}`,
@@ -6954,7 +9478,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return session;
   });
 
-  app.delete("/api/rooms/:id/room-agent/transcript", defaultRouteRateLimitOptions, async (request) => {
+  app.delete("/api/rooms/:id/room-agent/transcript", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const session = await roomAgentService.clearTranscript(params.id, request.requestIdForSpace);
     await recordAudit(store, request, {
@@ -6966,7 +9491,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return session;
   });
 
-  app.post("/api/panes/:id/agent-session", defaultRouteRateLimitOptions, async (request) => codexHistoryAccessCoordinator.withHistoryAttachment(async () => {
+  app.post("/api/panes/:id/agent-session", async (request) => codexHistoryAccessCoordinator.withHistoryAttachment(async () => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createAgentPaneSessionInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -6981,7 +9507,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   }));
 
-  app.post("/api/panes/:id/agent/messages", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/agent/messages", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneSendMessageInputSchema, request.body);
     const pane = await getPaneById(store, params.id);
@@ -7004,7 +9531,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result.session;
   });
 
-  app.post("/api/panes/:id/agent/interrupt", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/panes/:id/agent/interrupt", async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneInterruptInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -7019,7 +9546,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result.session;
   });
 
-  app.patch("/api/panes/:id/agent/settings", defaultRouteRateLimitOptions, async (request) => {
+  app.patch("/api/panes/:id/agent/settings", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneSettingsInputSchema, request.body);
     const pane = await getPaneById(store, params.id);
@@ -7046,7 +9574,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result.session;
   });
 
-  app.put("/api/panes/:id/agent/goal", defaultRouteRateLimitOptions, async (request) => {
+  app.put("/api/panes/:id/agent/goal", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneGoalInputSchema, request.body);
     const pane = await getPaneById(store, params.id);
@@ -7067,7 +9596,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result.session;
   });
 
-  app.delete("/api/panes/:id/agent/goal", defaultRouteRateLimitOptions, async (request) => {
+  app.delete("/api/panes/:id/agent/goal", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertAgentPaneCompatible(pane);
@@ -7086,9 +9616,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result.session;
   });
 
-  app.get("/api/voice/transcription/settings", defaultRouteRateLimitOptions, async () => buildVoiceTranscriptionSettings(config));
+  app.get("/api/voice/transcription/settings", async () => buildVoiceTranscriptionSettings(config));
 
-  app.post("/api/voice/realtime/calls", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/voice/realtime/calls", async (request, reply) => {
     const settings = buildVoiceTranscriptionSettings(config);
     if (!settings.enabled) {
       throw new SpaceFeatureDisabledError("VOICE_TRANSCRIPTION_DISABLED", settings.statusReason);
@@ -7120,7 +9650,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
 
-  app.get("/api/turns", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/turns", async (request) => {
     const page = parseQuery(listTurnsQuerySchema, request.query);
     if (page.roomId) {
       await store.getRoom(page.roomId);
@@ -7142,8 +9672,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.post("/api/turns", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/turns", async (request) => {
     const input = parseBody(createTurnInputSchema, request.body);
+    if (input.runtime === "CODEX_APP_SERVER") await cliRuntimeVisibility.assertEnabled("cli:codex");
     await store.getRoom(input.roomId);
     const pane = await store.getPane(input.paneId);
     if (pane.roomId !== input.roomId) {
@@ -7230,7 +9761,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ...result, artifactIds: turnInput.artifactIds, turnId: queued.turn.id };
   });
 
-  app.get("/api/events", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.get("/api/events", async (request, reply) => {
     const parsedQuery = listEventsQuerySchema.safeParse(request.query);
     if (!parsedQuery.success) {
       return sendApiError(reply, 400, "VALIDATION_ERROR", "Invalid request data.", parsedQuery.error.flatten());
@@ -7251,7 +9782,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.get("/api/events/stream", { config: { rateLimit: defaultRouteRateLimitOptions.config.rateLimit }, compress: false }, async (request, reply) => {
+  app.get("/api/events/stream", { compress: false }, async (request, reply) => {
     const query = parseQuery(eventStreamQuerySchema, request.query);
     if (query.roomId) {
       await store.getRoom(query.roomId);
@@ -7289,6 +9820,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   let toolbarCleanupInFlight = false;
+  const codexResetRedemptionAttempts = new Map<string, number[]>();
+  function consumeCodexResetRedemptionLimit(actorId: string): boolean {
+    const current = Date.now();
+    const cutoff = current - 5 * 60 * 1000;
+    const recent = (codexResetRedemptionAttempts.get(actorId) ?? []).filter((timestamp) => timestamp > cutoff);
+    if (recent.length >= 12) {
+      codexResetRedemptionAttempts.set(actorId, recent);
+      return false;
+    }
+    recent.push(current);
+    codexResetRedemptionAttempts.set(actorId, recent);
+    return true;
+  }
   let toolbarProviderSwitchInFlight = false;
   let codexLbSpeedUpdateQueue: Promise<void> = Promise.resolve();
 
@@ -7358,7 +9902,43 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Toolbar system telemetry requires the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       return codexUsageAccountListSchema.parse(await toolbarUsageProvider());
+    }
+  );
+  app.get(
+    "/api/admin/codex-reset-credits",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Codex reset credit telemetry requires the ADMIN role.");
+      }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
+      return codexResetCreditAvailabilitySchema.parse(await codexResetCreditsService.availability());
+    }
+  );
+  app.post(
+    "/api/admin/codex-reset-credits/:accountId/redemptions",
+    { config: { rateLimit: false } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Codex reset credit redemption requires the ADMIN role.");
+      }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
+      const { accountId } = z.object({ accountId: z.string().min(1).max(160) }).strict().parse(request.params);
+      const { idempotencyKey } = parseBody(codexResetCreditRedemptionInputSchema, request.body ?? {});
+      if (!consumeCodexResetRedemptionLimit(request.user.id)) {
+        reply.header("retry-after", "300");
+        return sendApiError(reply, 429, "RATE_LIMITED", "Too many Codex reset redemption attempts.");
+      }
+      const result = await codexResetCreditsService.redeem(accountId, idempotencyKey);
+      await recordAudit(store, request, {
+        action: "admin.codex_reset_credit.redeemed",
+        targetType: "codex_reset_credit",
+        targetId: accountId,
+        metadata: result.audit
+      });
+      return codexResetCreditRedemptionResponseSchema.parse(result.response);
     }
   );
   app.get(
@@ -7479,6 +10059,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Provider route telemetry requires the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       return readToolbarProviderTargets();
     }
   );
@@ -7489,6 +10070,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Codex-LB speed telemetry requires the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       return codexLbSpeedDefaultsResponseSchema.parse(await codexLbSpeedDefaultsProvider());
     }
   );
@@ -7499,11 +10081,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Codex-LB speed updates require the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       const { modelId } = codexLbSpeedModelParamsSchema.parse(request.params);
       const { tier } = parseBody(codexLbSpeedDefaultUpdateRequestSchema, request.body ?? {});
       return serializeCodexLbSpeedUpdate(async () => {
         const before = codexLbSpeedDefaultsResponseSchema.parse(await codexLbSpeedDefaultsProvider());
-        const previousTier = before.models.find((model) => model.modelId === modelId)!.tier;
+        const beforeModel = before.models.find((model) => model.modelId === modelId);
+        if (!beforeModel) {
+          throw new SpaceConflictError("The selected model is not advertised by the current Codex catalog.");
+        }
+        const previousTier = beforeModel.tier;
         const result = codexLbSpeedDefaultsResponseSchema.parse(await codexLbSpeedDefaultUpdater(modelId, tier));
         if (result.models.find((model) => model.modelId === modelId)?.tier !== tier) {
           throw new SpaceConflictError("Codex-LB speed update could not be confirmed.");
@@ -7543,6 +10130,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "History purge previews require the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       parseBody(codexHistoryPurgePreviewRequestSchema, request.body ?? {});
       return codexHistoryAccessCoordinator.withExclusivePurge(async () => {
         const [protectedThreadIds, sharedCliTaskIds] = await Promise.all([
@@ -7581,6 +10169,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "History purge requires the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       const input = parseBody(codexHistoryPurgeExecuteRequestSchema, request.body ?? {});
       return codexHistoryAccessCoordinator.withExclusivePurge(async () => {
         const actorId = request.user!.id;
@@ -7675,6 +10264,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Provider route switching requires the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       const input = parseBody(providerSwitchRequestSchema, request.body ?? {});
       if (toolbarProviderSwitchInFlight) throw new SpaceConflictError("A provider route switch is already running.");
       toolbarProviderSwitchInFlight = true;
@@ -7735,7 +10325,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     }
   );
-  app.get("/api/providers", defaultRouteRateLimitOptions, async () => {
+  app.get("/api/providers", async () => {
     const providers = await store.listProviders();
     return { data: providers, pagination: { page: 1, pageSize: 100, totalItems: providers.length, totalPages: providers.length ? 1 : 0 } };
   });
@@ -7765,6 +10355,264 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return cliMaintenanceManager.get(params.runId);
     }
   );
+  app.get(
+    "/api/admin/cli-maintenance/runs/:runId/replay",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI maintenance replay requires the ADMIN role.");
+      }
+      const params = parseQuery(cliMaintenanceRunParamSchema, request.params);
+      const query = parseQuery(cliMaintenanceReplayQuerySchema, request.query);
+      return cliMaintenanceManager.replay(params.runId, query.afterSequence);
+    }
+  );
+  app.get(
+    "/api/admin/cli-maintenance/runs/:runId/export",
+    { config: { rateLimit: { max: 12, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI maintenance export requires the ADMIN role.");
+      }
+      const params = parseQuery(cliMaintenanceRunParamSchema, request.params);
+      const exported = await cliMaintenanceManager.export(params.runId);
+      const suffix = params.runId.slice(params.runId.indexOf(":") + 1);
+      reply.header("Cache-Control", "private, no-store");
+      reply.header("Content-Disposition", `attachment; filename="cli-health-repair-${suffix}.json"`);
+      return exported;
+    }
+  );
+  app.get(
+    "/api/admin/cli-maintenance/runs/:runId/stream",
+    {
+      compress: false,
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } }
+    },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI maintenance live progress requires the ADMIN role.");
+      }
+      const params = parseQuery(cliMaintenanceRunParamSchema, request.params);
+      const query = parseQuery(cliMaintenanceReplayQuerySchema, request.query);
+      const rawLastEventId = request.headers["last-event-id"];
+      const lastEventId = Array.isArray(rawLastEventId) ? rawLastEventId[0] : rawLastEventId;
+      const parsedLastEventId = /^\d{1,10}$/.test(String(lastEventId ?? ""))
+        ? Math.min(1_000_000_000, Number(lastEventId))
+        : 0;
+      let afterSequence = Math.max(query.afterSequence, parsedLastEventId);
+      const replay = await cliMaintenanceManager.replay(params.runId, afterSequence);
+
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no"
+      });
+      reply.raw.write(formatSseMessage("ready", {
+        runId: replay.run.id,
+        afterSequence,
+        requestId: request.requestIdForSpace
+      }));
+      for (const event of replay.events) {
+        afterSequence = event.sequence;
+        reply.raw.write(formatSseMessage("progress", event, event.sequence));
+      }
+      reply.raw.write(formatSseMessage("run", replay.run));
+      if (cliMaintenanceManager.isStreamTerminal(replay)) {
+        reply.raw.end();
+        return;
+      }
+
+      let isClosed = false;
+      let polling = false;
+      let lastRunUpdatedAt = replay.run.updatedAt;
+      let pollTimer: ReturnType<typeof setInterval> | null = null;
+      const stopHeartbeat = startSseHeartbeat((frame) => {
+        if (!isClosed) reply.raw.write(frame);
+      });
+      const closeStream = () => {
+        if (isClosed) return;
+        isClosed = true;
+        if (pollTimer) clearInterval(pollTimer);
+        stopHeartbeat();
+      };
+      const poll = async () => {
+        if (isClosed || polling) return;
+        polling = true;
+        try {
+          const current = await cliMaintenanceManager.replay(params.runId, afterSequence);
+          for (const event of current.events) {
+            afterSequence = event.sequence;
+            reply.raw.write(formatSseMessage("progress", event, event.sequence));
+          }
+          if (current.run.updatedAt !== lastRunUpdatedAt || cliMaintenanceManager.isStreamTerminal(current)) {
+            lastRunUpdatedAt = current.run.updatedAt;
+            reply.raw.write(formatSseMessage("run", current.run));
+          }
+          if (cliMaintenanceManager.isStreamTerminal(current)) {
+            closeStream();
+            reply.raw.end();
+          }
+        } catch {
+          if (!isClosed) {
+            reply.raw.write(formatSseMessage("stream-error", {
+              code: "CLI_MAINTENANCE_STREAM_UNAVAILABLE",
+              message: "Live progress paused; durable replay remains available."
+            }));
+            closeStream();
+            reply.raw.end();
+          }
+        } finally {
+          polling = false;
+        }
+      };
+      pollTimer = setInterval(() => void poll(), 500);
+      reply.raw.once("close", closeStream);
+      request.raw.once("aborted", closeStream);
+    }
+  );
+  app.post(
+    "/api/admin/cli-maintenance/auth-handoffs/open",
+    { config: { rateLimit: { max: 8, timeWindow: "15 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI Recovery requires the ADMIN role.");
+      }
+      parseBody(z.object({}).strict(), request.body ?? {});
+      const candidates = await cliMaintenanceManager.listAuthHandoffsForRecovery();
+      if (candidates.length === 0) {
+        return { status: "NOOP", room: null, handoffs: [], loginPanes: [] };
+      }
+
+      let room = (await store.listRooms()).find((candidate) => candidate.kind === "CLI_RECOVERY") ?? null;
+      if (!room) {
+        room = await store.createRoom(
+          {
+            name: "CLI Recovery",
+            description: "Reusable provider login room created by Space health and repair.",
+            initialPaneCount: 0,
+            kind: "CLI_RECOVERY"
+          },
+          request.requestIdForSpace
+        );
+        await activityLogService.recordRoomCreate({
+          roomId: room.id,
+          actorUserId: null,
+          reason: "CLI maintenance recovery room",
+          traceId: request.requestIdForSpace,
+          metadata: { roomName: room.name, source: "cli-maintenance" }
+        });
+        const latestEvent = await getLatestRoomEvent(store, room.id);
+        if (latestEvent) eventBus.publish(latestEvent);
+      }
+
+      const handoffs = [];
+      const loginPanes: Array<{
+        handoffId: string;
+        runtimeId: string;
+        paneId: string | null;
+        status: "OPENED" | "FAILED";
+        safeErrorCode: string | null;
+      }> = [];
+      for (const handoff of candidates) {
+        if (handoff.status === "OPENED" && handoff.roomId === room.id) {
+          handoffs.push(handoff);
+          continue;
+        }
+        const attemptCount = handoff.attemptCount + 1;
+        try {
+          const opened = options.cliRecoveryLoginOpener
+            ? await options.cliRecoveryLoginOpener({
+                roomId: room.id,
+                runtimeId: handoff.runtimeId,
+                requestId: request.requestIdForSpace
+              })
+            : await openCliLogin(request, room.id, handoff.runtimeId).then((result) => ({
+                paneId: result.pane.id
+              }));
+          const updated = await store.updateCliMaintenanceAuthHandoff(handoff.id, {
+            roomId: room.id,
+            status: "OPENED",
+            attemptCount,
+            safeErrorCode: null
+          });
+          await store.appendCliMaintenanceEvent({
+            runId: handoff.runId,
+            runtimeId: handoff.runtimeId,
+            phase: "AUTH_HANDOFF",
+            state: "SUCCEEDED",
+            severity: "INFO",
+            code: "CLI_RECOVERY_OPENED",
+            message: `${handoff.runtimeId} provider login opened in CLI Recovery.`,
+            attempt: Math.min(10, Math.max(1, attemptCount)),
+            installedVersion: null,
+            availableVersion: null,
+            targetVersion: null,
+            durationMs: null,
+            outcome: "ACTION_REQUIRED",
+            rollback: null,
+            diagnostics: {}
+          });
+          handoffs.push(updated);
+          loginPanes.push({
+            handoffId: handoff.id,
+            runtimeId: handoff.runtimeId,
+            paneId: opened.paneId,
+            status: "OPENED",
+            safeErrorCode: null
+          });
+        } catch {
+          const updated = await store.updateCliMaintenanceAuthHandoff(handoff.id, {
+            roomId: room.id,
+            status: "FAILED",
+            attemptCount,
+            safeErrorCode: "CLI_LOGIN_UNAVAILABLE"
+          });
+          await store.appendCliMaintenanceEvent({
+            runId: handoff.runId,
+            runtimeId: handoff.runtimeId,
+            phase: "AUTH_HANDOFF",
+            state: "FAILED",
+            severity: "ERROR",
+            code: "CLI_LOGIN_UNAVAILABLE",
+            message: `${handoff.runtimeId} provider login could not be opened; durable retry remains available.`,
+            attempt: Math.min(10, Math.max(1, attemptCount)),
+            installedVersion: null,
+            availableVersion: null,
+            targetVersion: null,
+            durationMs: null,
+            outcome: "ACTION_REQUIRED",
+            rollback: null,
+            diagnostics: {}
+          });
+          handoffs.push(updated);
+          loginPanes.push({
+            handoffId: handoff.id,
+            runtimeId: handoff.runtimeId,
+            paneId: null,
+            status: "FAILED",
+            safeErrorCode: "CLI_LOGIN_UNAVAILABLE"
+          });
+        }
+      }
+      await recordAudit(store, request, {
+        action: "cli_maintenance.recovery_opened",
+        targetType: "room",
+        targetId: room.id,
+        metadata: {
+          handoffCount: handoffs.length,
+          openedCount: handoffs.filter((handoff) => handoff.status === "OPENED").length,
+          failedCount: handoffs.filter((handoff) => handoff.status === "FAILED").length
+        }
+      });
+      return {
+        status: handoffs.some((handoff) => handoff.status === "OPENED") ? "OPENED" : "FAILED",
+        room,
+        handoffs,
+        loginPanes
+      };
+    }
+  );
   app.post(
     "/api/admin/cli-maintenance/runs",
     { config: { rateLimit: { max: 4, timeWindow: "15 minutes" } } },
@@ -7775,7 +10623,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const input = parseBody(cliMaintenanceRequestSchema, request.body);
       const run = await cliMaintenanceManager.start(input, request.user.id);
       await recordAudit(store, request, {
-        action: input.mode === "CHECK" ? "cli_maintenance.check_queued" : "cli_maintenance.update_queued",
+        action: input.mode === "CHECK"
+          ? "cli_maintenance.check_queued"
+          : input.mode === "REPAIR"
+            ? "cli_maintenance.repair_queued"
+            : "cli_maintenance.update_queued",
         targetType: "admin_operation_run",
         targetId: run.id,
         metadata: {
@@ -7948,6 +10800,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Telegram integration changes require the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       const input = parseBody(createTelegramPairingInputSchema, request.body);
       const pairing = await telegramIntegrationManager.createPairing(input.botToken, request.user.id);
       await recordAudit(store, request, {
@@ -7970,6 +10823,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Telegram integration changes require the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       const params = parseQuery(idParamSchema, request.params);
       const status = await telegramIntegrationManager.checkPairing(params.id);
       await recordAudit(store, request, {
@@ -7988,6 +10842,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Telegram integration changes require the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       const status = await telegramIntegrationManager.sendTest();
       await recordAudit(store, request, {
         action: "telegram.test_delivery.sent",
@@ -8005,6 +10860,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Telegram integration changes require the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       const input = parseBody(updateTelegramIntegrationInputSchema, request.body);
       const status = await telegramIntegrationManager.setEnabled(input.isEnabled);
       await recordAudit(store, request, {
@@ -8023,6 +10879,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Telegram integration changes require the ADMIN role.");
       }
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
       const status = await telegramIntegrationManager.disconnect();
       await recordAudit(store, request, {
         action: "telegram.disconnected",
@@ -8033,8 +10890,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return status;
     }
   );
-  app.get("/api/provider-settings", defaultRouteRateLimitOptions, async () => store.getProviderSettings());
-  app.patch("/api/provider-settings", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/provider-settings", async () => store.getProviderSettings());
+  app.patch("/api/provider-settings", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(updateProviderSettingsInputSchema, request.body);
     const currentSettings = await store.getProviderSettings();
     const nextDefaultProviderId = input.defaultProviderId ?? currentSettings.defaultProviderId;
@@ -8053,7 +10911,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return settings;
   });
-  app.post("/api/providers", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/providers", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(createProviderInputSchema, request.body);
     const provider = await store.createProvider(input);
     await recordAudit(store, request, {
@@ -8068,7 +10927,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return provider;
   });
-  app.patch("/api/providers/:id", defaultRouteRateLimitOptions, async (request) => {
+  app.patch("/api/providers/:id", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = request.params as { id: string };
     const input = parseBody(updateProviderInputSchema, request.body);
     const provider = await store.updateProvider(params.id, input);
@@ -8084,7 +10944,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return provider;
   });
-  app.post("/api/providers/:id/validate", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/providers/:id/validate", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = request.params as { id: string };
     const providers = await store.listProviders();
     const provider = providers.find((candidate) => candidate.id === params.id);
@@ -8109,7 +10970,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return result.models ? { ...recorded, models: persistedModels } : recorded;
   });
-  app.get("/api/providers/:id/validation", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/providers/:id/validation", async (request) => {
     const params = request.params as { id: string };
     const providers = await store.listProviders();
     if (!providers.some((provider) => provider.id === params.id)) {
@@ -8117,7 +10978,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     return { data: await store.getLatestProviderValidation(params.id) };
   });
-  app.get("/api/models", defaultRouteRateLimitOptions, async () => {
+  app.get("/api/models", async () => {
     const models = await store.listModels();
     return { data: models, pagination: { page: 1, pageSize: 100, totalItems: models.length, totalPages: models.length ? 1 : 0 } };
   });
@@ -8327,7 +11188,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get("/api/mcp", defaultRouteRateLimitOptions, async () => {
+  app.get("/api/mcp", async () => {
     const capabilities = (await store.listCapabilities()).filter((item) => item.kind === "MCP_SERVER" || item.kind === "MCP_TOOL");
     const gateway = await store.getMcpGatewayStatus();
     const servers = await store.listMcpServers();
@@ -8340,12 +11201,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       pagination: { page: 1, pageSize: 100, totalItems: capabilities.length, totalPages: capabilities.length ? 1 : 0 }
     };
   });
-  app.post("/api/mcp/tools/execute", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/mcp/tools/execute", async (request) => {
     const input = parseBody(createMcpToolExecutionInputSchema, request.body);
     return executeMcpToolWithPolicy(input, request);
   });
 
-  app.post("/api/internal/agent/mcp-actions", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/internal/agent/mcp-actions", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     if (!config.mcpToolBridgeEnabled) {
       throw new SpaceFeatureDisabledError(
         "MCP_TOOL_BRIDGE_DISABLED",
@@ -8415,11 +11277,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/skills", defaultRouteRateLimitOptions, async () => {
+  app.get("/api/skills", async () => {
     const skills = await store.listSkills();
     return { data: skills, pagination: { page: 1, pageSize: 100, totalItems: skills.length, totalPages: skills.length ? 1 : 0 } };
   });
-  app.post("/api/skills", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/skills", async (request) => {
     const input = parseBody(createSkillProposalInputSchema, request.body);
     const record = await store.createSkillProposal(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -8437,7 +11299,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.skill;
   });
-  app.get("/api/imports", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/imports", async (request) => {
     const page = parseQuery(listImportCandidatesQuerySchema, request.query);
     const candidates = await store.listImportCandidates(page);
     const start = (page.page - 1) * page.pageSize;
@@ -8451,7 +11313,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     };
   });
-  app.post("/api/imports", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/imports", async (request) => {
     const input = parseBody(createImportCandidateInputSchema, request.body);
     const record = await store.createImportCandidate(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -8468,7 +11330,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.candidate;
   });
-  app.post("/api/imports/:id/decision", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/imports/:id/decision", async (request) => {
     const params = request.params as { id: string };
     const input = parseBody(importCandidateDecisionInputSchema, request.body);
     const record = await store.decideImportCandidate(params.id, input, request.requestIdForSpace);
@@ -8493,7 +11355,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       skill: record.skill
     });
   });
-  app.get("/api/memory", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/memory", async (request) => {
     const page = parseQuery(listMemoryQuerySchema, request.query);
     const [latestEmbeddingSmoke, vectorReadiness] = await Promise.all([
       store.getLatestMemoryEmbeddingSmoke(),
@@ -8562,7 +11424,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       search: buildMemorySearchStatus(page.searchMode, latestEmbeddingSmoke, vectorReadiness, geminiEntries.length)
     };
   });
-  app.post("/api/memory", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/memory", async (request) => {
     const input = parseBody(createMemoryEntryInputSchema, request.body);
     const entry = await canonicalMemory.save(input, request.requestIdForSpace);
     await memoryGraphService.invalidateCachedSnapshot();
@@ -8603,14 +11465,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return entry;
   });
-  app.get("/api/tasks", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/tasks", async (request) => {
     const page = parseQuery(listSharedTasksQuerySchema, request.query);
     const tasks: SharedTask[] = [];
     if (page.source === "all" || page.source === "space_swarm") {
       const swarmTasks = await store.listSwarmTasks({ page: 1, pageSize: 100, sortOrder: page.sortOrder });
       tasks.push(...swarmTasks.map(sharedTaskFromSwarmTask));
     }
-    if ((page.source === "all" || page.source === "codex_goal") && await cliRuntimeVisibility.isEnabled("cli:codex")) {
+    if (page.source === "all" || page.source === "codex_goal") {
       tasks.push(...(await codexGoals.list()));
     }
     const sortedTasks = sortSharedTasks(tasks, page.sortOrder);
@@ -8625,7 +11487,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     };
   });
-  app.patch("/api/tasks/codex-goals/:threadId", defaultRouteRateLimitOptions, async (request) => {
+  app.patch("/api/tasks/codex-goals/:threadId", async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseBody(codexGoalThreadParamSchema, request.params);
     const input = parseBody(updateCodexGoalTaskInputSchema, request.body);
@@ -8644,7 +11506,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return updated;
   });
-  app.get("/api/artifacts", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/artifacts", async (request) => {
     const page = parseQuery(listArtifactsQuerySchema, request.query);
     const artifacts = await store.listArtifacts(page);
     const start = (page.page - 1) * page.pageSize;
@@ -8658,7 +11520,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     };
   });
-  app.get("/api/artifacts/:id/file", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.get("/api/artifacts/:id/file", async (request, reply) => {
     const params = parseBody(idParamSchema, request.params);
     const artifact = await store.getArtifact(params.id);
     if (artifact.deletedAt) {
@@ -8684,7 +11546,86 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       .header("content-disposition", `inline; filename="${filename.replace(/["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
     return reply.send(createReadStream(filePath));
   });
-  app.patch("/api/artifacts/:id/retention", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/artifacts/:id/download", async (request, reply) => {
+    const params = parseBody(idParamSchema, request.params);
+    const artifact = await store.getArtifact(params.id);
+    if (artifact.deletedAt || !isAgentFileArtifact(artifact)) {
+      throw new SpaceNotFoundError(`Agent File ${artifact.id} was not found.`);
+    }
+    const filePath = localArtifactFilePath({ artifactRoot: config.browserEvidenceArtifactRoot, artifact });
+    const fileStat = await stat(filePath).catch((error) => {
+      if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new SpaceNotFoundError(`Agent File contents for ${artifact.id} were not found.`);
+      }
+      throw error;
+    });
+    if (!fileStat.isFile()) {
+      throw new SpaceConflictError(`Agent File ${artifact.id} does not point to a readable file.`);
+    }
+    const filename = artifactFilename(artifact);
+    reply
+      .type(artifact.mimeType)
+      .header("content-length", String(fileStat.size))
+      .header("cache-control", "private, no-store")
+      .header("content-disposition", `attachment; filename="${filename.replace(/["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    return reply.send(createReadStream(filePath));
+  });
+  app.get("/api/artifacts/:id/preview", async (request, reply) => {
+    const params = parseBody(idParamSchema, request.params);
+    const artifact = await store.getArtifact(params.id);
+    if (artifact.deletedAt || !isAgentFileArtifact(artifact)) {
+      throw new SpaceNotFoundError(`Agent File ${artifact.id} was not found.`);
+    }
+    const filePath = localArtifactFilePath({ artifactRoot: config.browserEvidenceArtifactRoot, artifact });
+    const fileStat = await stat(filePath).catch((error) => {
+      if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new SpaceNotFoundError(`Agent File contents for ${artifact.id} were not found.`);
+      }
+      throw error;
+    });
+    if (!fileStat.isFile()) {
+      throw new SpaceConflictError(`Agent File ${artifact.id} does not point to a readable file.`);
+    }
+    const previewKind = agentFilePreviewKind(artifact);
+    reply.header("cache-control", "private, no-store");
+    if (previewKind === "TEXT") {
+      const preview = await readAgentFileTextPreview(filePath);
+      reply
+        .type("text/plain; charset=utf-8")
+        .header("x-space-preview-truncated", preview.truncated ? "true" : "false");
+      return reply.send(preview.content);
+    }
+    if (previewKind === "DOCX") {
+      try {
+        const html = await renderAgentFileDocxPreview(filePath);
+        reply
+          .type("text/html; charset=utf-8")
+          .header(
+            "content-security-policy",
+            "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox"
+          );
+        return reply.send(html);
+      } catch (error) {
+        request.log.info(
+          {
+            artifactId: artifact.id,
+            errorCode: error instanceof Error ? (error as NodeJS.ErrnoException).code ?? error.name : "UNKNOWN"
+          },
+          "Agent File DOCX preview unavailable"
+        );
+        return sendApiError(reply, 422, "PREVIEW_UNAVAILABLE", "This DOCX could not be rendered safely. Download remains available.");
+      }
+    }
+    if (previewKind === "IMAGE" || previewKind === "VIDEO" || previewKind === "AUDIO" || previewKind === "PDF") {
+      reply
+        .type(artifact.mimeType)
+        .header("content-length", String(fileStat.size))
+        .header("content-disposition", "inline");
+      return reply.send(createReadStream(filePath));
+    }
+    return sendApiError(reply, 415, "PREVIEW_UNSUPPORTED", "Preview is not available for this file type. Download remains available.");
+  });
+  app.patch("/api/artifacts/:id/retention", async (request) => {
     const params = parseBody(idParamSchema, request.params);
     const input = parseBody(updateArtifactRetentionInputSchema, request.body ?? {});
     const current = await store.getArtifact(params.id);
@@ -8705,7 +11646,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return artifact;
   });
-  app.delete("/api/artifacts/:id", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.delete("/api/artifacts/:id", async (request, reply) => {
     const params = parseBody(idParamSchema, request.params);
     const artifact = await store.getArtifact(params.id);
     const deleted = await permanentlyDeleteLocalArtifact({ store, artifactRoot: config.browserEvidenceArtifactRoot, artifact });
@@ -8723,7 +11664,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return { ok: true, artifactId: deleted.id };
   });
-  app.delete("/api/rooms/:id/media", defaultRouteRateLimitOptions, async (request) => {
+  app.delete("/api/rooms/:id/media", async (request) => {
     const params = parseBody(idParamSchema, request.params);
     await store.getRoom(params.id);
     const mediaArtifacts = (await store.listArtifacts({
@@ -8770,7 +11711,58 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return result;
   });
-  app.post("/api/artifacts/uploads", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.delete("/api/rooms/:id/agent-files", async (request) => {
+    const params = parseBody(idParamSchema, request.params);
+    await store.getRoom(params.id);
+    const agentFiles = await store.listArtifacts({
+      page: 1,
+      pageSize: 100,
+      sortOrder: "desc",
+      roomId: params.id,
+      collection: "AGENT_FILES"
+    });
+    if (agentFiles.length > 10_000) {
+      throw new SpaceConflictError("Agent Files clear is limited to 10,000 files per operation.");
+    }
+    const failedArtifactIds: string[] = [];
+    let deletedCount = 0;
+    for (const artifact of agentFiles) {
+      try {
+        await permanentlyDeleteLocalArtifact({ store, artifactRoot: config.browserEvidenceArtifactRoot, artifact });
+        deletedCount += 1;
+      } catch (error) {
+        failedArtifactIds.push(artifact.id);
+        request.log.warn(
+          {
+            roomId: params.id,
+            artifactId: artifact.id,
+            errorCode: error instanceof Error ? (error as NodeJS.ErrnoException).code ?? error.name : "UNKNOWN"
+          },
+          "Room Agent File deletion failed."
+        );
+      }
+    }
+    const result = deleteRoomAgentFilesResponseSchema.parse({
+      ok: failedArtifactIds.length === 0,
+      roomId: params.id,
+      matchedCount: agentFiles.length,
+      deletedCount,
+      failedCount: failedArtifactIds.length,
+      failedArtifactIds
+    });
+    await recordAudit(store, request, {
+      action: "room.agent_files.clear",
+      targetType: "room",
+      targetId: params.id,
+      metadata: {
+        matchedCount: result.matchedCount,
+        deletedCount: result.deletedCount,
+        failedCount: result.failedCount
+      }
+    });
+    return result;
+  });
+  app.post("/api/artifacts/uploads", async (request, reply) => {
     const query = parseQuery(uploadArtifactsQuerySchema, request.query);
     await store.getRoom(query.roomId);
     await assertPaneBelongsToRoom(store, query.roomId, query.paneId ?? null);
@@ -8880,7 +11872,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { artifacts };
   });
 
-  app.post("/api/artifacts/file-uploads", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/artifacts/file-uploads", async (request, reply) => {
     const query = parseQuery(uploadArtifactsQuerySchema, request.query);
     await store.getRoom(query.roomId);
     await assertPaneBelongsToRoom(store, query.roomId, query.paneId ?? null);
@@ -9000,7 +11992,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { artifacts };
   });
 
-  app.post("/api/rooms/:id/screen-capture", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/rooms/:id/screen-capture", async (request) => {
     const params = parseBody(idParamSchema, request.params);
     const input = parseBody(screenCaptureInputSchema, request.body ?? {});
     await store.getRoom(params.id);
@@ -9060,7 +12052,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return { ...parsedCapture, artifact: screenshot };
   });
-  app.post("/api/artifacts", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/artifacts", async (request) => {
     const input = parseBody(createArtifactInputSchema, request.body);
     const record = await store.createArtifact(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -9079,11 +12071,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.artifact;
   });
-  app.get("/api/browser", defaultRouteRateLimitOptions, async () => {
+  app.get("/api/browser", async () => {
     const capabilities = (await store.listCapabilities()).filter((item) => item.kind === "BROWSER_POOL");
     return { data: capabilities, pagination: { page: 1, pageSize: 100, totalItems: capabilities.length, totalPages: capabilities.length ? 1 : 0 } };
   });
-  app.post("/api/browser/evidence-smoke", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/browser/evidence-smoke", async (request) => {
     const input = parseBody(createBrowserEvidenceInputSchema, request.body);
     const targetUrl = buildBrowserEvidenceTargetUrl(config.browserEvidenceTargetOrigin);
     const capture = await browserEvidenceCapture({
@@ -9132,7 +12124,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       artifacts
     });
   });
-  app.get("/api/reviews", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/reviews", async (request) => {
     const page = parseQuery(listReviewDecisionsQuerySchema, request.query);
     const decisions = await store.listReviewDecisions(page);
     const start = (page.page - 1) * page.pageSize;
@@ -9146,7 +12138,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     };
   });
-  app.post("/api/reviews", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/reviews", async (request) => {
     const input = parseBody(createReviewDecisionInputSchema, request.body);
     const record = await store.createReviewDecision(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -9163,7 +12155,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.decision;
   });
-  app.get("/api/reviews/state", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/reviews/state", async (request) => {
     const page = parseQuery(listReviewDecisionsQuerySchema, request.query);
     const [decisions, checks, diffs, artifacts] = await Promise.all([
       store.listReviewDecisions(page),
@@ -9179,7 +12171,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       ...reviewGateStatus(checks)
     });
   });
-  app.get("/api/review-checks", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/review-checks", async (request) => {
     const page = parseQuery(listReviewChecksQuerySchema, request.query);
     const checks = await store.listReviewChecks(page);
     const start = (page.page - 1) * page.pageSize;
@@ -9193,7 +12185,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     };
   });
-  app.post("/api/review-checks", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/review-checks", async (request) => {
     const input = parseBody(createReviewCheckInputSchema, request.body);
     const record = await store.createReviewCheck(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -9210,7 +12202,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.check;
   });
-  app.get("/api/review-diffs", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/review-diffs", async (request) => {
     const page = parseQuery(listReviewDiffSummariesQuerySchema, request.query);
     const diffs = await store.listReviewDiffSummaries(page);
     const start = (page.page - 1) * page.pageSize;
@@ -9224,7 +12216,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     };
   });
-  app.post("/api/review-diffs", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/review-diffs", async (request) => {
     const input = parseBody(createReviewDiffSummaryInputSchema, request.body);
     const record = await store.createReviewDiffSummary(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -9243,11 +12235,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.diff;
   });
-  app.get("/api/swarm", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/swarm", async (request) => {
     const query = parseQuery(swarmStateQuerySchema, request.query);
     return swarmStateForResponse(await store.getSwarmState(query.roomId), config);
   });
-  app.get("/api/swarm/tasks", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/swarm/tasks", async (request) => {
     const page = parseQuery(listSwarmTasksQuerySchema, request.query);
     const tasks = await store.listSwarmTasks(page);
     const start = (page.page - 1) * page.pageSize;
@@ -9261,7 +12253,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     };
   });
-  app.post("/api/swarm/tasks", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/swarm/tasks", async (request) => {
     const input = parseBody(createSwarmTaskInputSchema, request.body);
     const record = await store.createSwarmTask(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -9279,7 +12271,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.task;
   });
-  app.patch("/api/swarm/tasks/:id", defaultRouteRateLimitOptions, async (request) => {
+  app.patch("/api/swarm/tasks/:id", async (request) => {
     const params = parseBody(idParamSchema, request.params);
     const input = parseBody(updateSwarmTaskInputSchema, request.body);
     const record = await store.updateSwarmTask(params.id, input, request.requestIdForSpace);
@@ -9298,7 +12290,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.task;
   });
-  app.post("/api/swarm/tasks/:id/run", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/swarm/tasks/:id/run", async (request) => {
     const params = parseBody(idParamSchema, request.params);
     const input = parseBody(runSwarmTaskInputSchema, request.body ?? {});
     const gate = swarmExecutionGate(config);
@@ -9379,7 +12371,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       message: messageRecord.message
     });
   });
-  app.post("/api/swarm/locks", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/swarm/locks", async (request) => {
     const input = parseBody(claimSwarmLockInputSchema, request.body);
     const record = await store.claimSwarmLock(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -9397,7 +12389,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.lock;
   });
-  app.post("/api/swarm/locks/:id/release", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/swarm/locks/:id/release", async (request) => {
     const params = parseBody(idParamSchema, request.params);
     const input = parseBody(releaseSwarmLockInputSchema, request.body ?? {});
     const record = await store.releaseSwarmLock(params.id, input, request.requestIdForSpace);
@@ -9416,7 +12408,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.lock;
   });
-  app.post("/api/swarm/messages", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/swarm/messages", async (request) => {
     const input = parseBody(postSwarmMessageInputSchema, request.body);
     const record = await store.postSwarmMessage(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -9433,7 +12425,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.message;
   });
-  app.post("/api/swarm/reconciles", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/swarm/reconciles", async (request) => {
     const input = parseBody(createSwarmReconcileInputSchema, request.body);
     const record = await store.createSwarmReconcile(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -9449,10 +12441,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return record.reconcile;
   });
-  app.get("/api/admin/integrations/space", defaultRouteRateLimitOptions, async () =>
+  app.get("/api/admin/integrations/space", async () =>
     spaceCapabilitySnapshotSchema.parse(await spaceCapabilityInventoryCollector({ store, config }))
   );
-  app.get("/api/admin/audit", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/admin/audit", async (request) => {
     const page = parseQuery(paginationRequestSchema, request.query);
     const events = await store.listAuditEvents();
     const start = (page.page - 1) * page.pageSize;
@@ -9466,10 +12458,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     };
   });
-  app.get("/api/admin/mcp/discovery-smoke", defaultRouteRateLimitOptions, async () => ({
+  app.get("/api/admin/mcp/discovery-smoke", async () => ({
     data: await store.getLatestMcpDiscoverySmoke()
   }));
-  app.post("/api/admin/mcp/discovery-smoke", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/admin/mcp/discovery-smoke", async (request) => {
     const context = {
       gatewayStatus: await store.getMcpGatewayStatus(),
       servers: await store.listMcpServers()
@@ -9509,10 +12501,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return recorded;
   });
-  app.get("/api/admin/memory/embedding-smoke", defaultRouteRateLimitOptions, async () => ({
+  app.get("/api/admin/memory/embedding-smoke", async () => ({
     data: await store.getLatestMemoryEmbeddingSmoke()
   }));
-  app.get("/api/admin/memory/vector-readiness", defaultRouteRateLimitOptions, async () => ({
+  app.get("/api/admin/memory/vector-readiness", async () => ({
     data: await store.getMemoryVectorReadiness(config.memoryEmbeddingDimensions)
   }));
   registerMemoryGraphRoutes(app, {
@@ -9523,7 +12515,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     mutationCoordinator: memoryMutationCoordinator,
     recordAudit: (request, input) => recordAudit(store, request, input)
   });
-  app.post("/api/admin/memory/embedding-smoke", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/admin/memory/embedding-smoke", async (request) => {
     const vectorReadiness = await store.getMemoryVectorReadiness(config.memoryEmbeddingDimensions);
     const result = await runMemoryEmbeddingSmoke(config, {
       pgvectorReady: vectorReadiness.status === "VERIFIED"
@@ -9554,11 +12546,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return recorded;
   });
-  app.get("/api/admin/codex-app-server", defaultRouteRateLimitOptions, async () => getCodexAppServerStatus(config));
-  app.get("/api/admin/codex-app-server/handshake", defaultRouteRateLimitOptions, async () => ({
+  app.get("/api/admin/codex-app-server", async () => getCodexAppServerStatus(config));
+  app.get("/api/admin/codex-app-server/handshake", async () => ({
     data: await store.getLatestCodexAppServerHandshake()
   }));
-  app.post("/api/admin/codex-app-server/handshake", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/admin/codex-app-server/handshake", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const status = getCodexAppServerStatus(config);
     const result = await runCodexAppServerHandshake(config, { schemaManifest: status.schemaManifest });
     const recorded = await store.recordCodexAppServerHandshake({
@@ -9583,10 +12576,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return recorded;
   });
-  app.get("/api/admin/codex-app-server/turn-smoke", defaultRouteRateLimitOptions, async () => ({
+  app.get("/api/admin/codex-app-server/turn-smoke", async () => ({
     data: await store.getLatestCodexAppServerTurnSmoke()
   }));
-  app.post("/api/admin/codex-app-server/turn-smoke", defaultRouteRateLimitOptions, async (request) => {
+  app.post("/api/admin/codex-app-server/turn-smoke", async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(codexAppServerTurnSmokeInputSchema, request.body ?? {});
     const status = getCodexAppServerStatus(config);
     const result = await runCodexAppServerTurnSmoke(config, input, { schemaManifest: status.schemaManifest });
@@ -9617,7 +12611,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return recorded;
   });
-  app.post("/api/admin/service-restarts", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.post("/api/admin/service-restarts", async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Server restart requires the ADMIN role.");
     }
@@ -9669,22 +12663,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       serviceRestartInFlight = false;
     }
   });
-  app.get("/api/admin", defaultRouteRateLimitOptions, async () => {
+  app.get("/api/admin", async () => {
     const storageReadiness = storageReadinessSchema.parse(await storageReadinessChecker());
     return {
       status: "ok",
       mode: config.runtimeStore === "postgres" ? "v0-postgres" : "v0-in-memory",
       capabilities: await store.listCapabilities(),
-      storageWarning:
-        config.browserSessionsEnabled && storageReadiness.status !== "VERIFIED"
-          ? storageReadiness.statusReason
-          : ""
+      storageWarning: storageReadiness.status === "VERIFIED" ? "" : storageReadiness.statusReason
     };
   });
-  app.get("/api/admin/storage", defaultRouteRateLimitOptions, async () => storageReadinessSchema.parse(await storageReadinessChecker()));
-  app.get("/api/admin/observability", defaultRouteRateLimitOptions, async () => observabilitySnapshotSchema.parse(observability.snapshot()));
-  app.get("/api/admin/worker", defaultRouteRateLimitOptions, async () => workerReadinessSchema.parse(await workerReadinessChecker()));
-  app.get("/api/admin/launch-readiness", defaultRouteRateLimitOptions, async () =>
+  app.get("/api/admin/storage", async () => storageReadinessSchema.parse(await storageReadinessChecker()));
+  app.get("/api/admin/observability", async () => observabilitySnapshotSchema.parse(observability.snapshot()));
+  app.get("/api/admin/worker", async () => workerReadinessSchema.parse(await workerReadinessChecker()));
+  app.get("/api/admin/launch-readiness", async () =>
     buildLaunchReadinessReport({
       store,
       config,

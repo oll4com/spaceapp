@@ -7,7 +7,7 @@ import {
   Plus,
   Trash2,
   X
-} from "lucide-react";
+} from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ClipboardItem, ClipboardSource } from "@space/contracts";
 import { clipboardTextMaxCharacters } from "@space/contracts";
@@ -27,17 +27,20 @@ interface ClipboardDockProps {
   onInsert: (item: ClipboardItem) => void;
 }
 
-type SourceFilter = "ALL" | "COPY" | "PASTE" | "NOTES";
+type SourceFilter = "ALL" | "COPY" | "PASTE" | "NOTES" | "PLANS";
 
 const sourceFilters: Array<{ id: SourceFilter; label: string }> = [
   { id: "ALL", label: "All" },
   { id: "COPY", label: "Copy" },
   { id: "PASTE", label: "Paste" },
-  { id: "NOTES", label: "Notes" }
+  { id: "NOTES", label: "Notes" },
+  { id: "PLANS", label: "Plans" }
 ];
 
 function sourceLabel(source: ClipboardSource): string {
-  return source === "MANUAL_NOTE" ? "NOTE" : source.replace("_", " ");
+  if (source === "MANUAL_NOTE") return "NOTE";
+  if (source === "PLAN") return "PLAN";
+  return source.replace("_", " ");
 }
 
 function timeLabel(value: string): string {
@@ -67,8 +70,8 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
     try {
       const payload = await api.clipboardItems({
         ...(search.trim() ? { q: search.trim() } : {}),
-        ...(sourceFilter === "COPY" || sourceFilter === "PASTE"
-          ? { source: sourceFilter }
+        ...(sourceFilter === "COPY" || sourceFilter === "PASTE" || sourceFilter === "PLANS"
+          ? { source: sourceFilter === "PLANS" ? "PLAN" : sourceFilter }
           : {}),
         page: 1,
         pageSize: 100
@@ -110,7 +113,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
   }, [isFullscreen]);
 
   const summary = useMemo(
-    () => `${totalItems} text clip${totalItems === 1 ? "" : "s"} · Private · Space-wide · 100 max`,
+    () => `${totalItems} text clip${totalItems === 1 ? "" : "s"} and plan${totalItems === 1 ? "" : "s"} · Private · Space-wide · 100 max`,
     [totalItems]
   );
 
@@ -220,12 +223,13 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
             const expanded = expandedIds.has(item.id);
             const isLong = item.characterCount > 360;
             return (
-              <article className="clipboard-card" role="listitem" key={item.id}>
+              <article className={`clipboard-card${item.source === "PLAN" ? " is-plan" : ""}`} role="listitem" key={item.id}>
                 <div className="clipboard-card-meta">
-                  <strong>{sourceLabel(item.source)}</strong>
+                  <strong className={item.source === "PLAN" ? "clipboard-source-plan" : undefined}>{sourceLabel(item.source)}</strong>
                   <span>{item.paneTitle ?? "Space"} · {timeLabel(item.lastUsedAt)}</span>
                   {item.occurrenceCount > 1 ? <small>Used {item.occurrenceCount} times</small> : null}
                 </div>
+                {item.title ? <div className="clipboard-card-title">{item.title}</div> : null}
                 <button className={`clipboard-card-text${expanded ? " expanded" : ""}`} onClick={() => void copyItem(item)}
                   aria-label="Copy clip text">{item.text}</button>
                 {copiedId === item.id ? (

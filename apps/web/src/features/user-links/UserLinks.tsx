@@ -1,8 +1,9 @@
-import { ExternalLink, Link as LinkIcon, Pencil, Plus, Search, Star, Trash2, X } from "lucide-react";
+import { ExternalLink, Link as LinkIcon, Pencil, Plus, Search, Star, Trash2, X } from "../ui-theme/app-icons.js";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { UserLink, UserLinkOpenMode } from "@space/contracts";
 import { api } from "../../api.js";
 import { resolveExternalResource } from "../../runtime/SpaceRuntime.js";
+import { useAutoDismiss } from "../../use-auto-dismiss.js";
 
 export const USER_LINKS_UPDATED_EVENT = "space:user-links-updated";
 const pageSize = 10;
@@ -32,6 +33,8 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
   const [editing, setEditing] = useState<UserLink | "new" | null>(null);
   const [draft, setDraft] = useState<LinkDraft>(emptyDraft);
   const [saving, setSaving] = useState(false);
+
+  useAutoDismiss(error, setError);
 
   async function load(nextPage = 1, append = false) {
     setLoading(true);
@@ -105,7 +108,9 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
       <button type="submit">Search</button>
     </form>
     <button className="links-add" type="button" onClick={startAdd}><Plus aria-hidden="true" /> Add link</button>
-    {error ? <p className="links-error" role="alert">{error}</p> : null}
+    {error ? (
+      <p className="links-error" role="alert"><span>{error}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setError(null)}><X aria-hidden="true" /></button></p>
+    ) : null}
     {editing ? <form className="link-form" aria-label={editing === "new" ? "Add link" : "Edit link"} onSubmit={submit}>
       <header><strong>{editing === "new" ? "Add link" : "Edit link"}</strong><button type="button" aria-label="Close link form" onClick={() => setEditing(null)}><X aria-hidden="true" /></button></header>
       <label>Title<input required maxLength={160} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
@@ -147,6 +152,8 @@ export function QuickLinksPopover({ open, onClose, onOpen, onManage }: { open: b
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useAutoDismiss(error, setError);
+
   async function load(nextPage = 1, append = false) {
     setLoading(true); setError(null);
     try {
@@ -169,7 +176,9 @@ export function QuickLinksPopover({ open, onClose, onOpen, onManage }: { open: b
   if (!open) return null;
   return <section ref={ref} className="quick-links-popover" role="dialog" aria-label="Quick Links">
     <header><strong>Quick Links</strong><button type="button" aria-label="Close Quick Links" onClick={onClose}><X aria-hidden="true" /></button></header>
-    {error ? <p role="alert">{error}</p> : null}
+    {error ? (
+      <p role="alert"><span>{error}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setError(null)}><X aria-hidden="true" /></button></p>
+    ) : null}
     {!loading && links.length === 0 ? <p className="links-empty">No Quick Links yet. Star links in Manage Links to add them here.</p> : null}
     <div className="quick-links-list">{links.map((link) => <button type="button" key={link.id} onClick={() => onOpen(link)}>
       <span className="link-favicon"><LinkFavicon link={link} /></span><span><strong>{link.title}</strong>{link.description ? <small>{link.description}</small> : null}</span><ExternalLink aria-hidden="true" />

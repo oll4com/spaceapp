@@ -14,7 +14,8 @@ const {
   createScheduledMemoryAudit,
   finalizeMemoryRepair,
   prepareMemoryConsolidation,
-  refreshMemoryGraphSnapshot
+  refreshMemoryGraphSnapshot,
+  refreshAllMonthsMemoryGraphSnapshot
 } = proxyActivities<typeof activities>({
   startToCloseTimeout: "10 minutes",
   retry: {
@@ -30,6 +31,11 @@ const { executePersistedMemoryChangeSet } = proxyActivities<typeof mutationActiv
 
 export async function memoryMaintenanceWorkflow(input: MemoryMaintenanceInput): Promise<MemoryMaintenanceResult> {
   const result = await refreshMemoryGraphSnapshot(input);
+  try {
+    await refreshAllMonthsMemoryGraphSnapshot(input);
+  } catch (error) {
+    console.warn("All-months memory graph refresh failed; the live snapshot and maintenance continue.", error);
+  }
   const run = await createScheduledMemoryAudit({ ...input, sourceHash: result.sourceHash });
   await executeChild(memoryConsolidationWorkflow, {
     args: [{ runId: run.id, traceId: input.traceId }],

@@ -16,7 +16,7 @@ import { analyzeMemoryGraphSemantics } from "./semantics.js";
 
 const markerPattern = /<!--\s*space-memory:id=([a-zA-Z0-9:_-]{3,200})\s*-->/;
 const markerCandidatePattern = /<!--\s*space-memory:id=[\s\S]*?-->/;
-const datedHeadingPattern = /^(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}):(\d{2})\s+(EEST|EET|UTC))?(?:\s+follow-up)?\s*[-–—]\s*(.+)$/i;
+const datedHeadingPattern = /^(\d{4}-\d{2}-\d{2})(?:\s+(?:(\d{2}):(\d{2})\s+)?(EEST|EET|UTC))?(?:\s+follow-up)?\s*[-–—]\s*(.+)$/i;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");

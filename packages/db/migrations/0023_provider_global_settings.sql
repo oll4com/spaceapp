@@ -27,5 +27,5 @@ CREATE TABLE IF NOT EXISTS provider_settings (
 );
 
 INSERT INTO provider_settings (id, default_provider_id, updated_at)
-VALUES ('global', 'codex-lb', now())
+VALUES ('global', 'headroom-gateway', now())
 ON CONFLICT (id) DO NOTHING;

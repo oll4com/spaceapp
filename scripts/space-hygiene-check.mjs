@@ -8,9 +8,6 @@ const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(scriptPath), "..");
 const args = new Set(process.argv.slice(2));
 const preflight = args.has("--preflight");
-const trackedRuntimeSourceAllowlist = new Set([
-  "packages/run-spaceapp/bin/spaceapp.mjs"
-]);
 
 function git(args) {
   return execFileSync("git", ["-C", repoRoot, ...args], {
@@ -30,7 +27,6 @@ function toPosix(path) {
 
 function isRuntimeOrSecretPath(path) {
   const normalized = toPosix(path);
-  if (trackedRuntimeSourceAllowlist.has(normalized)) return false;
   return (
     /(^|\/)\.env($|\/)/.test(normalized) ||
     /(^|\/)\.env\.local$/.test(normalized) ||
