@@ -88,6 +88,7 @@ import {
   cliVpnRoutingStatusSchema,
   cliToggleRuntimeIds,
   cliToggleRuntimeIdSchema,
+  type CliToggleRuntimeId,
   cliVpnConnectionSchema,
   clipboardItemListResponseSchema,
   codexEnvironmentSchema,
@@ -96,7 +97,9 @@ import {
   codexHistoryPurgeExecuteRequestSchema,
   codexHistoryPurgePreviewRequestSchema,
   codexHistoryPurgePreviewResponseSchema,
+  type CodexHistoryPurgePreviewResponse,
   codexHistoryPurgeResponseSchema,
+  type CodexHistoryPurgeResponse,
   codexResetCreditAvailabilitySchema,
   codexResetCreditRedemptionInputSchema,
   codexResetCreditRedemptionResponseSchema,
@@ -403,6 +406,11 @@ import {
   CliRuntimeVisibilityPolicy
 } from "./cli-runtime-visibility.js";
 import {
+  countRuntimeProcesses as countRuntimeProcessesDefault,
+  sweepRuntimeProcesses as sweepRuntimeProcessesDefault,
+  type RuntimeProcessSweepResult
+} from "./cli-runtime-process-sweeper.js";
+import {
   CliVpnBrokerClient,
   CliVpnError,
   type CliVpnBroker
@@ -416,12 +424,14 @@ import {
   fetchOpenCodeCurrentModel,
   fetchOpenCodeSessionIsTurnActive,
   fetchOpenCodeSessionModels,
+  fetchOpenCodeSessionTitle,
   openCodeDefaultReasoningEffort,
   openCodeReasoningEfforts,
   openCodeServerIsHealthy,
   parseOpenCodeCompositeModelId,
   readOpenCodeServerControl,
   switchOpenCodeSessionModel,
+  updateOpenCodeSessionTitle,
   type OpenCodeServerControl
 } from "./opencode-server-control.js";
 import { createCodexLbSpeedDefaultsService, type CodexLbSpeedModelId } from "./codex-lb-speed-defaults.js";
@@ -612,6 +622,8 @@ export interface CreateAppOptions {
     reason: string,
     traceId: string
   ) => Promise<boolean>;
+  killRuntimeProcesses?: (runtimeId: CliToggleRuntimeId, traceId: string) => Promise<RuntimeProcessSweepResult>;
+  countRuntimeProcesses?: (runtimeId: CliToggleRuntimeId) => Promise<number>;
   findCodexCliTurnActivity?: CodexCliTurnActivityFinder;
   findCurrentCodexCliTurnActivity?: CodexCliCurrentTurnActivityFinder;
   findCodexThreadId?: CodexThreadFinder;
@@ -2204,6 +2216,102 @@ async function syncPaneTitleToCliTaskRevision(input: {
   };
 }
 
+async function syncPaneTitleToOpenCodeSession(input: {
+  store: SpaceStore;
+  pane: Pane;
+  title: string;
+  traceId: string;
+  request: FastifyRequest;
+  session?: PaneCliSession | null;
+  stateRoot?: string;
+}): Promise<(() => Promise<void>) | null> {
+  if (input.pane.mode !== "TERMINAL") return null;
+  const session = input.session ?? await input.store.getActivePaneCliSession(input.pane.id);
+  if (!session || session.purpose !== "NORMAL" || session.runtimeId !== "cli:opencode") return null;
+  const control = await readOpenCodeServerControl(session.sessionId, input.stateRoot);
+  if (!control) return null;
+  let previousTitle: string;
+  try {
+    const info = await fetchOpenCodeSessionTitle(control, control.nativeSessionId);
+    previousTitle = info?.title ?? "";
+    await updateOpenCodeSessionTitle(control, control.nativeSessionId, input.title);
+  } catch (error) {
+    input.request.log.warn(
+      {
+        err: error,
+        requestId: input.traceId,
+        paneId: input.pane.id,
+        sessionId: session.sessionId,
+        nativeSessionId: control.nativeSessionId
+      },
+      "OpenCode session title sync failed"
+    );
+    throw new SpaceFeatureDisabledError(
+      "OPENCODE_TITLE_SYNC_FAILED",
+      "The pane title was not changed because the matching OpenCode session title could not be updated."
+    );
+  }
+  return async () => {
+    if (previousTitle === input.title) return;
+    try {
+      await updateOpenCodeSessionTitle(control, control.nativeSessionId, previousTitle);
+    } catch (error) {
+      input.request.log.error(
+        {
+          err: error,
+          requestId: input.traceId,
+          paneId: input.pane.id,
+          sessionId: session.sessionId,
+          nativeSessionId: control.nativeSessionId
+        },
+        "OpenCode session title rollback failed"
+      );
+    }
+  };
+}
+
+const opencodeTitleSyncPollIntervalMs = 20_000;
+const opencodeTitleSyncMaxTitleLength = 120;
+
+async function runOpenCodePaneTitleSync(input: {
+  store: SpaceStore;
+  stateRoot?: string;
+  eventBus: SpaceEventBus;
+  traceIdPrefix?: string;
+}): Promise<number> {
+  const sessions = await input.store.listActivePaneCliSessions("cli:opencode");
+  let updatedCount = 0;
+  for (const session of sessions) {
+    if (session.purpose !== "NORMAL") continue;
+    const control = await readOpenCodeServerControl(session.sessionId, input.stateRoot);
+    if (!control) continue;
+    let info: Awaited<ReturnType<typeof fetchOpenCodeSessionTitle>>;
+    try {
+      info = await fetchOpenCodeSessionTitle(control, control.nativeSessionId);
+    } catch {
+      continue;
+    }
+    if (!info) continue;
+    const nativeTitle = info.title.trim().slice(0, opencodeTitleSyncMaxTitleLength);
+    if (!nativeTitle) continue;
+    const pane = await getPaneById(input.store, session.paneId).catch(() => null);
+    if (!pane || pane.title === nativeTitle) continue;
+    const traceId = `${input.traceIdPrefix ?? "req:opencode-title-sync"}:${session.sessionId}`;
+    const updatedPane = await input.store.updatePane(pane.id, { title: nativeTitle }, traceId);
+    if (session.cliTaskRevisionId) {
+      await input.store.updateCliTaskRevision(
+        session.cliTaskRevisionId,
+        { displayTitle: nativeTitle },
+        traceId
+      );
+    }
+    updatedCount += 1;
+    const latestEvent = await getLatestRoomEvent(input.store, updatedPane.roomId);
+    if (latestEvent) input.eventBus.publish(latestEvent);
+  }
+  return updatedCount;
+}
+
 function closeCliSocketWithSetupError(
   socket: { readyState: number; send(data: string): void; close(code?: number, reason?: string): void },
   message: string
@@ -3646,6 +3754,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }),
     stopRoomAgentMission: (roomId, missionId, reason, traceId) =>
       codexMasterRoomAgentStopper(roomId, missionId, reason, traceId),
+    killRuntimeProcesses: options.killRuntimeProcesses ?? ((runtimeId) => sweepRuntimeProcessesDefault(runtimeId)),
+    countRuntimeProcesses: options.countRuntimeProcesses ?? ((runtimeId) => countRuntimeProcessesDefault(runtimeId)),
     publishEvent: (event) => eventBus.publish(event)
   });
   const hostStatsProvider =
@@ -3694,7 +3804,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   const toolbarHostMemoryProvider =
     options.toolbarHostMemoryProvider ??
-    createHostMemoryDetailsProvider({ cliSessions: () => toolbarCliSessionStatsProvider() });
+    createHostMemoryDetailsProvider({
+      cliSessions: () => toolbarCliSessionStatsProvider(),
+      resolveSessionTitle: async (paneId) => {
+        try {
+          const task = await unifiedCliTaskRegistry.findLatestTaskForPane(paneId);
+          return task?.title ?? null;
+        } catch {
+          return null;
+        }
+      }
+    });
   const toolbarCliSessionReaper = options.toolbarCliSessionReaper ?? (() => cliTerminalManager.reapDetachedSessions());
   const toolbarKernelCacheReclaimer = options.toolbarKernelCacheReclaimer ?? runKernelCacheReclaim;
   const toolbarProviderRouteApplier =
@@ -4150,6 +4270,28 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   let appDiagnosticsRetentionTimer: ReturnType<typeof setInterval> | null = null;
   let appDiagnosticsRetentionSweepRunning = false;
   let durableEventPollTimer: ReturnType<typeof setInterval> | null = null;
+  let opencodeTitleSyncTimer: ReturnType<typeof setInterval> | null = null;
+  let opencodeTitleSyncRunning = false;
+
+  async function runOpenCodePaneTitleSyncSweep() {
+    if (opencodeTitleSyncRunning) return;
+    opencodeTitleSyncRunning = true;
+    try {
+      const updated = await runOpenCodePaneTitleSync({
+        store,
+        stateRoot: options.opencodeStateRoot,
+        eventBus,
+        traceIdPrefix: "req:opencode-title-sync"
+      });
+      if (updated > 0) {
+        app.log.info({ updated }, "OpenCode pane title sync updated panes from native sessions.");
+      }
+    } catch (error) {
+      app.log.error({ err: error }, "OpenCode pane title sync sweep failed.");
+    } finally {
+      opencodeTitleSyncRunning = false;
+    }
+  }
 
   async function runDurableEventPoll() {
     try {
@@ -4260,6 +4402,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (artifactRetentionTimer) clearInterval(artifactRetentionTimer);
     if (appDiagnosticsRetentionTimer) clearInterval(appDiagnosticsRetentionTimer);
     if (durableEventPollTimer) clearInterval(durableEventPollTimer);
+    if (opencodeTitleSyncTimer) clearInterval(opencodeTitleSyncTimer);
     stopTrackingPublishedEvents();
     await cliTerminalManager.closeAll();
     await browserSessionManager.closeAll();
@@ -4298,6 +4441,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await seedDurableEventRelay();
     durableEventPollTimer = setInterval(() => void runDurableEventPoll(), 1000);
     durableEventPollTimer.unref();
+    opencodeTitleSyncTimer = setInterval(() => void runOpenCodePaneTitleSyncSweep(), opencodeTitleSyncPollIntervalMs);
+    opencodeTitleSyncTimer.unref();
   });
 
   app.addHook("preHandler", async (request, reply) => {
@@ -5664,8 +5809,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (pane.mode === "BROWSER" || pane.mode === "YOUTUBE") {
         const active = await store.getActivePaneBrowserSession(pane.id);
         if (!active) continue;
-        await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
-        closedBrowserSessions += 1;
+        try {
+          await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
+          closedBrowserSessions += 1;
+        } catch (error) {
+          request.log.warn({ err: error, paneId: pane.id }, "browser session stop failed during room delete; deleting room anyway");
+        }
       }
     }
     const room = await store.deleteRoom(params.id);
@@ -5846,9 +5995,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const settings = new Map((await store.listCliRuntimeSettings()).map((setting) => [setting.runtimeId, setting.enabled]));
     const visible = registry.data.filter((runtime) => {
       const toggleRuntimeId = cliToggleRuntimeIdSchema.safeParse(runtime.id);
-      return !toggleRuntimeId.success
-        || toggleRuntimeId.data === "cli:codex"
-        || settings.get(toggleRuntimeId.data) !== false;
+      return !toggleRuntimeId.success || settings.get(toggleRuntimeId.data) !== false;
     });
     if (request.user?.role === "ADMIN") return { ...registry, data: visible };
     return { ...registry, data: visible.filter((runtime) => runtime.id !== "cli:root") };
@@ -5893,6 +6040,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       connectionStatus: vpn.connection?.status ?? "NOT_CONFIGURED",
       egressIpv4: vpn.connection?.egressIpv4 ?? null,
       egressIpv6: vpn.connection?.egressIpv6 ?? null,
+      relay: vpn.connection?.relay ?? null,
       applications: vpn.applications,
       checkedAt: nowIso()
     });
@@ -7322,6 +7470,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const current = input.title === undefined ? null : existingPane;
     let rollbackCodexTitle: (() => Promise<void>) | null = null;
     let rollbackCliTaskTitle: (() => Promise<void>) | null = null;
+    let rollbackOpenCodeTitle: (() => Promise<void>) | null = null;
     if (typeof input.title === "string" && current && input.title !== current.title) {
       rollbackCodexTitle = await syncPaneTitleToCodexHistory({
         store,
@@ -7344,11 +7493,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         await rollbackCodexTitle?.();
         throw error;
       }
+      try {
+        rollbackOpenCodeTitle = await syncPaneTitleToOpenCodeSession({
+          store,
+          pane: current,
+          title: input.title,
+          traceId: request.requestIdForSpace,
+          request,
+          stateRoot: options.opencodeStateRoot
+        });
+      } catch (error) {
+        await rollbackCliTaskTitle?.();
+        await rollbackCodexTitle?.();
+        throw error;
+      }
     }
     let pane: Pane;
     try {
       pane = await store.updatePane(params.id, input, request.requestIdForSpace);
     } catch (error) {
+      await rollbackOpenCodeTitle?.();
       await rollbackCliTaskTitle?.();
       await rollbackCodexTitle?.();
       throw error;
@@ -7557,7 +7721,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     }
     if (current.mode === "BROWSER" || current.mode === "YOUTUBE") {
-      await browserSessionManager.stopPane(current.id, request.requestIdForSpace, operatorBrowserActor(request));
+      const active = await store.getActivePaneBrowserSession(current.id);
+      if (active) {
+        try {
+          await browserSessionManager.stopPane(current.id, request.requestIdForSpace, operatorBrowserActor(request));
+        } catch (error) {
+          request.log.warn({ err: error, paneId: current.id }, "browser session stop failed during pane close; closing pane anyway");
+        }
+      }
     }
     const pane = await store.updatePane(params.id, { isClosed: true, status: "CLOSED" }, request.requestIdForSpace);
     await recordAudit(store, request, {
@@ -10123,24 +10294,52 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       });
     }
   );
-  app.post(
+const emptyCodexHistoryPurgePreview = (protectedThreadIds: string[]): CodexHistoryPurgePreviewResponse => {
+  const checkedAt = new Date();
+  return {
+    status: "NOOP",
+    previewId: crypto.randomUUID(),
+    candidates: { threads: 0, cliTasks: 0, indexEntries: 0, rolloutFiles: 0, shellSnapshots: 0 },
+    protectedThreads: protectedThreadIds.length,
+    expiresAt: new Date(checkedAt.getTime() + 5 * 60 * 1000).toISOString(),
+    checkedAt: checkedAt.toISOString()
+  };
+};
+
+const emptyCodexHistoryPurgeResult = (
+  previewId: string,
+  protectedThreadIds: string[]
+): CodexHistoryPurgeResponse => ({
+  status: "NOOP",
+  previewId,
+  backupId: crypto.randomUUID(),
+  purged: { threads: 0, cliTasks: 0, indexEntries: 0, rolloutFiles: 0, shellSnapshots: 0 },
+  protectedThreads: protectedThreadIds.length,
+  newlyProtectedThreads: 0,
+  completedAt: new Date().toISOString()
+});
+
+app.post(
     "/api/admin/codex-history-purge-previews",
     { config: { rateLimit: { max: 6, timeWindow: "5 minutes" } } },
     async (request, reply) => {
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "History purge previews require the ADMIN role.");
       }
-      await cliRuntimeVisibility.assertEnabled("cli:codex");
+      await cliRuntimeVisibility.assertAnyCliRuntimeEnabled();
       parseBody(codexHistoryPurgePreviewRequestSchema, request.body ?? {});
       return codexHistoryAccessCoordinator.withExclusivePurge(async () => {
-        const [protectedThreadIds, sharedCliTaskIds] = await Promise.all([
+        const [protectedThreadIds, sharedCliTaskIds, codexEnabled] = await Promise.all([
           store.listActiveManagedCodexThreadIds(),
-          store.listInactivePaneCliTaskIds()
+          store.listInactivePaneCliTaskIds(),
+          cliRuntimeVisibility.isEnabled("cli:codex")
         ]);
-        const nativePreview = codexHistoryPurgePreviewResponseSchema.parse(await codexHistoryPurgeService.preview({
-          actorId: request.user!.id,
-          protectedThreadIds
-        }));
+        const nativePreview = codexEnabled
+          ? codexHistoryPurgePreviewResponseSchema.parse(await codexHistoryPurgeService.preview({
+              actorId: request.user!.id,
+              protectedThreadIds
+            }))
+          : emptyCodexHistoryPurgePreview(protectedThreadIds);
         const preview = codexHistoryPurgePreviewResponseSchema.parse({
           ...nativePreview,
           status: nativePreview.status === "READY" || sharedCliTaskIds.length > 0 ? "READY" : "NOOP",
@@ -10169,7 +10368,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "History purge requires the ADMIN role.");
       }
-      await cliRuntimeVisibility.assertEnabled("cli:codex");
+      await cliRuntimeVisibility.assertAnyCliRuntimeEnabled();
       const input = parseBody(codexHistoryPurgeExecuteRequestSchema, request.body ?? {});
       return codexHistoryAccessCoordinator.withExclusivePurge(async () => {
         const actorId = request.user!.id;
@@ -10177,16 +10376,24 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if (!cachedPreview || cachedPreview.actorId !== actorId) {
           throw new SpaceConflictError("History purge preview is unavailable; refresh the preview before retrying.");
         }
-        const protectedThreadIds = await store.listActiveManagedCodexThreadIds();
-        const nativeResult = codexHistoryPurgeResponseSchema.parse(await codexHistoryPurgeService.execute({
-          actorId,
-          previewId: input.previewId,
-          protectedThreadIds
-        }));
+        const [protectedThreadIds, codexEnabled] = await Promise.all([
+          store.listActiveManagedCodexThreadIds(),
+          cliRuntimeVisibility.isEnabled("cli:codex")
+        ]);
+        const nativeResult = codexEnabled
+          ? codexHistoryPurgeResponseSchema.parse(await codexHistoryPurgeService.execute({
+              actorId,
+              previewId: input.previewId,
+              protectedThreadIds
+            }))
+          : emptyCodexHistoryPurgeResult(input.previewId, protectedThreadIds);
         let hiddenSharedCliTaskIds: string[];
         try {
           hiddenSharedCliTaskIds = await store.hideInactivePaneCliTasks(cachedPreview.taskIds);
         } catch (sharedHistoryError) {
+          if (!codexEnabled) {
+            throw new SpaceConflictError("History purge failed.");
+          }
           try {
             await codexHistoryPurgeService.rollback({
               actorId,
@@ -10225,7 +10432,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             }
           });
         } catch (auditError) {
-          let nativeRollbackCompleted = false;
+          let nativeRollbackCompleted = !codexEnabled;
           let sharedRollbackCompleted = false;
           try {
             await store.restorePaneCliTasks(hiddenSharedCliTaskIds);
@@ -10236,18 +10443,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
               "Shared CLI history purge audit and rollback failed"
             );
           }
-          try {
-            await codexHistoryPurgeService.rollback({
-              actorId,
-              previewId: result.previewId,
-              backupId: result.backupId
-            });
-            nativeRollbackCompleted = true;
-          } catch (rollbackError) {
-            request.log.error(
-              { auditError, rollbackError, requestId: request.requestIdForSpace },
-              "Codex history purge audit and rollback failed"
-            );
+          if (codexEnabled) {
+            try {
+              await codexHistoryPurgeService.rollback({
+                actorId,
+                previewId: result.previewId,
+                backupId: result.backupId
+              });
+              nativeRollbackCompleted = true;
+            } catch (rollbackError) {
+              request.log.error(
+                { auditError, rollbackError, requestId: request.requestIdForSpace },
+                "Codex history purge audit and rollback failed"
+              );
+            }
           }
           throw new SpaceConflictError(nativeRollbackCompleted && sharedRollbackCompleted
             ? "History purge audit failed; the purge was rolled back."

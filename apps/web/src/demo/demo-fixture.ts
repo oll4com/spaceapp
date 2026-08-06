@@ -819,6 +819,7 @@ export function createDemoFixture(): DemoFixture {
         {
           pid: 4201,
           name: "demo-space-web",
+          taskTitle: null,
           rssBytes: 536_870_912,
           cpuPercent: 2.5,
           state: "S",
@@ -827,9 +828,32 @@ export function createDemoFixture(): DemoFixture {
         },
         {
           pid: 4202,
-          name: "demo-codex-pane",
+          name: "opencode",
+          taskTitle: "Demo opencode task",
           rssBytes: 402_653_184,
           cpuPercent: 1.25,
+          state: "S",
+          isSpaceManaged: true,
+          cleanupEligible: false
+        }
+      ],
+      topCpuProcesses: [
+        {
+          pid: 4203,
+          name: "demo-renderer",
+          taskTitle: null,
+          rssBytes: 268_435_456,
+          cpuPercent: 42,
+          state: "R",
+          isSpaceManaged: false,
+          cleanupEligible: false
+        },
+        {
+          pid: 4201,
+          name: "demo-space-web",
+          taskTitle: null,
+          rssBytes: 536_870_912,
+          cpuPercent: 2.5,
           state: "S",
           isSpaceManaged: true,
           cleanupEligible: false

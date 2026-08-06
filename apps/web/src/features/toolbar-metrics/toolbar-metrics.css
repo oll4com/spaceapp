@@ -253,6 +253,10 @@
   right: 0.75rem;
   bottom: 0.75rem;
   z-index: 160;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
   max-width: min(28rem, calc(100vw - 1.5rem));
   border: 1px solid #4f746e;
   border-radius: 7px;
@@ -261,6 +265,10 @@
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
   padding: 0.55rem 0.7rem;
   font-size: 0.74rem;
+}
+
+.toolbar-metric-action-status > span {
+  min-width: 0;
 }
 
 .mobile-action-sheet .mobile-system-metrics {

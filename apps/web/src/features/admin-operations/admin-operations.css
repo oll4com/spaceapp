@@ -461,6 +461,39 @@
   color: #bce7df;
 }
 
+.admin-operation-providers {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-operation-providers li {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid var(--room-border, #303437);
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.7rem;
+}
+
+.admin-operation-providers li strong {
+  font-size: 0.7rem;
+}
+
+.admin-operation-providers a {
+  color: #9ee0d4;
+  text-decoration: none;
+}
+
+.admin-operation-provider-status.succeeded {
+  color: #bce7df;
+}
+
 @media (max-width: 42rem) {
   .admin-operations-backdrop {
     align-items: end;

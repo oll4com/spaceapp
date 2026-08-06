@@ -117,7 +117,7 @@ export function CliLauncherMenu({
       const change = readCliRuntimeVisibilityChange(event);
       if (!change) return;
       api.invalidateCliRuntimes();
-      if (change.runtimeId && change.enabled === false && change.runtimeId !== "cli:codex") {
+      if (change.runtimeId && change.enabled === false) {
         setRuntimes((current) => current.filter((runtime) => runtime.id !== change.runtimeId));
       }
       void refreshRuntimes();

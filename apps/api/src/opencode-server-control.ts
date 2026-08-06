@@ -192,6 +192,39 @@ export async function fetchOpenCodeCurrentModel(
   };
 }
 
+export interface OpenCodeSessionTitleInfo {
+  title: string;
+  updatedAt: number;
+}
+
+export async function fetchOpenCodeSessionTitle(
+  control: OpenCodeServerControl,
+  nativeSessionId: string
+): Promise<OpenCodeSessionTitleInfo | null> {
+  const response = await openCodeServerFetch(control, `/session/${encodeURIComponent(nativeSessionId)}`);
+  if (!response.ok) return null;
+  const session = (await response.json()) as { title?: unknown; time?: { updated?: unknown } };
+  const title = typeof session.title === "string" && session.title.length > 0 ? session.title : null;
+  const updatedAt = typeof session.time?.updated === "number" ? session.time.updated : 0;
+  if (!title) return null;
+  return { title, updatedAt };
+}
+
+export async function updateOpenCodeSessionTitle(
+  control: OpenCodeServerControl,
+  nativeSessionId: string,
+  title: string
+): Promise<void> {
+  const response = await openCodeServerFetch(control, `/session/${encodeURIComponent(nativeSessionId)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title })
+  });
+  if (!response.ok) {
+    throw new Error(`OpenCode session title update failed with HTTP ${response.status}.`);
+  }
+}
+
 type OpenCodeSessionStatus = { type: "idle" } | { type: "retry"; attempt: number } | { type: "busy" };
 
 export async function fetchOpenCodeSessionIsTurnActive(

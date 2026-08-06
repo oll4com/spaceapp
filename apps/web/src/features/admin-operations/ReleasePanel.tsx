@@ -18,6 +18,21 @@ export interface ReleaseClient {
   listReleaseRuns(): Promise<{ data: AdminOperationRun[] }>;
 }
 
+interface ReleaseProviderResult {
+  provider: string;
+  status: string;
+  releaseUrl?: string;
+}
+
+function isReleaseProviderResult(value: unknown): value is ReleaseProviderResult {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    typeof (value as ReleaseProviderResult).provider === "string" &&
+    typeof (value as ReleaseProviderResult).status === "string"
+  );
+}
+
 export function ReleasePanel({
   client,
   onBusyChange
@@ -33,6 +48,7 @@ export function ReleasePanel({
   const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [startedTag, setStartedTag] = useState<string | null>(null);
   const latest = runs[0];
   const hasActiveRun = runs.some((run) => activeOperationStatuses.has(run.status));
   const partialRetryCandidate = useMemo(
@@ -48,7 +64,12 @@ export function ReleasePanel({
   const target = partialRetry ?? (previewSucceeded ? null : preview);
   const showingPreview = Boolean(preview && target === preview);
   const targetPreviewId = partialRetry?.previewId ?? (showingPreview ? preview?.id ?? null : null);
-  const exactConfirmation = target ? `PUBLISH ${target.tag}` : "";
+  const exactConfirmation = target ? "PUBLISH" : "";
+  const latestTag = typeof latest?.result?.tag === "string" ? latest.result.tag : null;
+  const latestSucceeded = latest?.status === "SUCCEEDED" && latestTag !== null;
+  const publishedProviders = Array.isArray(latest?.result?.providers)
+    ? latest.result.providers.filter(isReleaseProviderResult)
+    : [];
 
   const load = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
@@ -81,6 +102,7 @@ export function ReleasePanel({
     setPending(true);
     setError(null);
     setConfirmation("");
+    setStartedTag(null);
     try {
       const input = notes.trim() ? { notes: notes.trim() } : {};
       setPreview(await client.createReleasePreview(input));
@@ -104,6 +126,7 @@ export function ReleasePanel({
         confirmation: exactConfirmation
       });
       setRuns((current) => [run, ...current.filter((candidate) => candidate.id !== run.id)]);
+      setStartedTag(target.tag);
       setConfirmation("");
     } catch (reason) {
       setError(errorMessage(reason, "Space release publishing could not be started."));
@@ -186,6 +209,7 @@ export function ReleasePanel({
                   setDismissedPartialPreviewId(partialRetry.previewId);
                 }
                 setConfirmation("");
+                setStartedTag(null);
               }}
             >
               {showingPreview ? "Discard preview" : "Prepare new preview"}
@@ -225,8 +249,35 @@ export function ReleasePanel({
             <p>{latest.summary}</p>
           </div>
         ) : <p className="admin-operation-empty">Prepare a preview to create the first release.</p>}
+        {latestSucceeded ? (
+          <p className="admin-operation-alert success" role="status">
+            Release {latestTag} was published to Gitea and GitHub.
+          </p>
+        ) : null}
+        {latestSucceeded && publishedProviders.length > 0 ? (
+          <ul className="admin-operation-providers" aria-label="Published release providers">
+            {publishedProviders.map((provider) => (
+              <li key={provider.provider}>
+                <strong>{provider.provider === "gitea" ? "Gitea" : "GitHub"}</strong>
+                <span className={`admin-operation-provider-status ${provider.status.toLowerCase()}`}>
+                  {provider.status}
+                </span>
+                {typeof provider.releaseUrl === "string" && provider.releaseUrl ? (
+                  <a href={provider.releaseUrl} target="_blank" rel="noreferrer">
+                    Release
+                  </a>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </section>
 
+      {startedTag && hasActiveRun ? (
+        <p className="admin-operation-alert" role="status">
+          Publishing {startedTag} started — the result appears here when it completes.
+        </p>
+      ) : null}
       {error ? <p className="admin-operation-alert error" role="alert">{error}</p> : null}
     </div>
   );

@@ -12,6 +12,7 @@ export interface PaneVpnRoutingPresentation {
   label: string;
   title: string;
   tone: "vpn" | "pending" | "blocked";
+  city?: string;
 }
 
 const routeLabels = {
@@ -20,6 +21,12 @@ const routeLabels = {
   thailand: "Thailand",
   mullvad: "Mullvad"
 } as const;
+
+function relayCityLabel(status: CliVpnRoutingStatus): string | undefined {
+  const relay = status.relay;
+  if (!relay) return undefined;
+  return relay.countryCode ? `${relay.cityName} (${relay.countryCode.toUpperCase()})` : relay.cityName;
+}
 
 export function paneVpnRoutingPresentation(
   status: CliVpnRoutingStatus | null,
@@ -31,12 +38,16 @@ export function paneVpnRoutingPresentation(
   if (application.appliedSessionIds.includes(session.sessionId) && application.effectiveMode === "VPN") {
     const egressIp = status.egressIpv4 ?? status.egressIpv6;
     const routeLabel = routeLabels[status.selectedRoute];
+    const city = relayCityLabel(status);
+    const label = egressIp ? `${routeLabel} · ${egressIp}` : `${routeLabel} connected`;
+    const title = egressIp
+      ? `This CLI session is connected through the ${routeLabel} VPN egress ${egressIp}.`
+      : `This CLI session is connected through the ${routeLabel} VPN.`;
     return {
-      label: egressIp ? `${routeLabel} · ${egressIp}` : `${routeLabel} connected`,
-      title: egressIp
-        ? `This CLI session is connected through the ${routeLabel} VPN egress ${egressIp}.`
-        : `This CLI session is connected through the ${routeLabel} VPN.`,
-      tone: "vpn"
+      label: city ? `${label} · ${city}` : label,
+      title: city ? `${title} VPN city: ${city}.` : title,
+      tone: "vpn",
+      city
     };
   }
   if (application.restartRequiredSessionIds.includes(session.sessionId)) {

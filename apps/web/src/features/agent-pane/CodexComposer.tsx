@@ -98,7 +98,7 @@ export function CodexComposer({
     const textarea = promptRef.current;
     if (!textarea) return;
     textarea.style.height = "auto";
-    textarea.style.height = String(Math.min(textarea.scrollHeight, 260)) + "px";
+    textarea.style.height = String(Math.min(textarea.scrollHeight, 160)) + "px";
   }, [prompt]);
 
   useEffect(() => {
@@ -195,7 +195,7 @@ export function CodexComposer({
         onChange={(event) => onPromptChange(event.target.value)}
         onKeyDown={handlePromptKeyDown}
         placeholder="Ask Codex"
-        rows={3}
+        rows={1}
         disabled={pending || isDisabled}
         title={disabledTitle}
       />

@@ -201,6 +201,7 @@ function DisableRuntimeDialog({
             <li><strong>{dialog.preview.activeChatRunCount}</strong> active native Chat {dialog.preview.activeChatRunCount === 1 ? "run" : "runs"} will stop.</li>
             <li><strong>{dialog.preview.openChatPaneCount}</strong> open Chat {dialog.preview.openChatPaneCount === 1 ? "pane" : "panes"} will close.</li>
             <li><strong>{dialog.preview.activeRoomAgentMissionCount}</strong> active Room Agent {dialog.preview.activeRoomAgentMissionCount === 1 ? "mission" : "missions"} will stop.</li>
+            <li><strong>{dialog.preview.matchingProcessCount}</strong> running Codex {dialog.preview.matchingProcessCount === 1 ? "process" : "processes"} will be terminated.</li>
           </ul>
         ) : (
           <p id="cli-runtime-disable-impact" className="cli-runtime-disable-impact">

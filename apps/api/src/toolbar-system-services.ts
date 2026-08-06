@@ -304,6 +304,15 @@ function safeProcessName(value: string): string {
   return (sanitized || "unknown").slice(0, 120);
 }
 
+interface ParsedProcess {
+  pid: number;
+  name: string;
+  commandLine: string;
+  rssBytes: number;
+  cpuPercent: number | null;
+  state: string;
+}
+
 function parseProcessTable(raw: string) {
   return raw.split("\n").flatMap((line) => {
     const match = /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
@@ -312,27 +321,101 @@ function parseProcessTable(raw: string) {
     const rssBytes = Number.parseInt(match[2] ?? "0", 10) * kib;
     const cpu = Number.parseFloat(match[3] ?? "0");
     if (!Number.isInteger(pid) || pid <= 0) return [];
+    const commandLine = safeProcessName(match[5] ?? "unknown");
     return [{
       pid,
-      name: safeProcessName(match[5] ?? "unknown"),
+      name: safeProcessName((commandLine.split(/\s+/)[0] ?? "unknown").split("/").pop() ?? "unknown"),
+      commandLine,
       rssBytes: byteCount(rssBytes),
       cpuPercent: Number.isFinite(cpu) ? Math.min(Math.max(Math.round(cpu * 10) / 10, 0), 100) : null,
       state: (match[4] ?? "?").slice(0, 16)
     }];
-  }).slice(0, 10);
+  });
 }
 
 async function defaultProcessTable(): Promise<string> {
   const { stdout } = await execFileAsync(
     "ps",
-    ["-eo", "pid=,rss=,pcpu=,stat=,comm=", "--sort=-rss"],
+    ["-eo", "pid=,rss=,pcpu=,stat=,args="],
     { timeout: 2_000, maxBuffer: 512 * 1024 }
   );
   return String(stdout);
 }
 
+interface CliSessionForProcesses {
+  pid: number;
+  cleanupEligible: boolean;
+  sessionId?: string | null;
+  paneId?: string | null;
+}
+
+interface SessionProcessGroup {
+  processes: ParsedProcess[];
+  session: CliSessionForProcesses;
+}
+
+function extractCliPortFromArgs(commandLine: string): string | null {
+  const match = /(?:\s|^)--port\s+(\d{2,6})|(?:\s|^)http:\/\/127\.0\.0\.1:(\d{2,6})(?:\s|$)/.exec(commandLine);
+  if (match) return match[1] ?? match[2] ?? null;
+  return null;
+}
+
+function matchSessionArgs(commandLine: string, sessionId: string): boolean {
+  return commandLine.includes(`--session ${sessionId}`) || commandLine.includes(`--session=${sessionId}`);
+}
+
+function groupCliSessionProcesses(
+  processes: ParsedProcess[],
+  sessions: CliSessionForProcesses[]
+): { grouped: SessionProcessGroup[]; ungrouped: ParsedProcess[] } {
+  const grouped: SessionProcessGroup[] = [];
+  const usedPids = new Set<number>();
+  const byPid = new Map(processes.map((process) => [process.pid, process]));
+  for (const session of sessions) {
+    const members = new Map<number, ParsedProcess>();
+    const primary = byPid.get(session.pid);
+    if (primary) {
+      members.set(primary.pid, primary);
+      usedPids.add(primary.pid);
+    }
+    let port = primary ? extractCliPortFromArgs(primary.commandLine) : null;
+    for (const process of processes) {
+      if (members.has(process.pid)) continue;
+      if (session.sessionId && matchSessionArgs(process.commandLine, session.sessionId)) {
+        members.set(process.pid, process);
+        usedPids.add(process.pid);
+        port ??= extractCliPortFromArgs(process.commandLine);
+      }
+    }
+    if (port) {
+      for (const process of processes) {
+        if (members.has(process.pid)) continue;
+        if (extractCliPortFromArgs(process.commandLine) === port) {
+          members.set(process.pid, process);
+          usedPids.add(process.pid);
+        }
+      }
+    }
+    if (members.size === 0) continue;
+    grouped.push({ processes: [...members.values()], session });
+  }
+  const ungrouped = processes.filter((process) => !usedPids.has(process.pid));
+  return { grouped, ungrouped };
+}
+
+function withManagementFlags(
+  process: { pid: number },
+  managedByPid: Map<number, boolean>
+): { isSpaceManaged: boolean; cleanupEligible: boolean } {
+  return {
+    isSpaceManaged: managedByPid.has(process.pid),
+    cleanupEligible: managedByPid.get(process.pid) === true
+  };
+}
+
 export function createHostMemoryDetailsProvider(options: {
-  cliSessions: () => Promise<Pick<CliSessionStats, "summary"> & { sessions: Array<{ pid: number; cleanupEligible: boolean }> }>;
+  cliSessions: () => Promise<Pick<CliSessionStats, "summary"> & { sessions: CliSessionForProcesses[] }>;
+  resolveSessionTitle?: (paneId: string) => Promise<string | null>;
   readMeminfo?: () => Promise<string>;
   readProcessTable?: () => Promise<string>;
   now?: () => Date;
@@ -342,12 +425,13 @@ export function createHostMemoryDetailsProvider(options: {
   const readMeminfo = options.readMeminfo ?? (() => readFile("/proc/meminfo", "utf8"));
   const readProcessTable = options.readProcessTable ?? defaultProcessTable;
   const cacheTtlMs = Math.max(Math.trunc(options.cacheTtlMs ?? memoryCacheTtlMs), 0);
+  const resolveSessionTitle = options.resolveSessionTitle ?? (async () => null);
   let cached: { value: HostMemoryDetails; expiresAtMs: number } | null = null;
   let inFlight: Promise<HostMemoryDetails> | null = null;
 
   function refresh(): Promise<HostMemoryDetails> {
     if (inFlight) return inFlight;
-    const request = Promise.all([readMeminfo(), readProcessTable(), options.cliSessions()]).then(([meminfo, ps, cli]) => {
+    const request = Promise.all([readMeminfo(), readProcessTable(), options.cliSessions()]).then(async ([meminfo, ps, cli]) => {
       const sampled = now();
       const values = parseMeminfoValues(meminfo);
       const totalBytes = values.get("MemTotal") ?? 0;
@@ -359,6 +443,56 @@ export function createHostMemoryDetailsProvider(options: {
       const availablePercent = roundedPercent(availableBytes, totalBytes);
       const isUnderPressure = totalBytes > 0 && availablePercent <= 20;
       const managedByPid = new Map(cli.sessions.map((session) => [session.pid, session.cleanupEligible]));
+      const processes = parseProcessTable(ps);
+      const titleByPaneId = new Map<string, string>();
+      for (const session of cli.sessions) {
+        if (!session.paneId || titleByPaneId.has(session.paneId)) continue;
+        try {
+          const title = await resolveSessionTitle(session.paneId);
+          if (title) titleByPaneId.set(session.paneId, title);
+        } catch {
+          // Title resolution is best-effort; the process row stays untitled.
+        }
+      }
+      const { grouped, ungrouped } = groupCliSessionProcesses(processes, cli.sessions);
+      const rows: Array<{
+        pid: number;
+        name: string;
+        taskTitle: string | null;
+        rssBytes: number;
+        cpuPercent: number | null;
+        state: string;
+        isSpaceManaged: boolean;
+        cleanupEligible: boolean;
+      }> = grouped.map(({ processes: members, session }) => {
+        const primary = members.find((process) => process.pid === session.pid) ?? members[0]!;
+        const rssBytes = members.reduce((sum, process) => sum + process.rssBytes, 0);
+        const cpuTotal = members.reduce((sum, process) => sum + (process.cpuPercent ?? 0), 0);
+        return {
+          pid: primary.pid,
+          name: primary.name,
+          taskTitle: session.paneId ? (titleByPaneId.get(session.paneId) ?? null) : null,
+          rssBytes: byteCount(rssBytes),
+          cpuPercent: Number.isFinite(cpuTotal) ? Math.min(Math.max(Math.round(cpuTotal * 10) / 10, 0), 100) : null,
+          state: primary.state,
+          isSpaceManaged: true,
+          cleanupEligible: session.cleanupEligible
+        };
+      });
+      const standalone = ungrouped.map((process) => ({
+        pid: process.pid,
+        name: process.name,
+        taskTitle: null as string | null,
+        rssBytes: process.rssBytes,
+        cpuPercent: process.cpuPercent,
+        state: process.state,
+        ...withManagementFlags(process, managedByPid)
+      }));
+      const allRows = [...rows, ...standalone];
+      const byRss = [...allRows].sort((a, b) => b.rssBytes - a.rssBytes).slice(0, 10);
+      const byCpu = [...allRows]
+        .sort((a, b) => (b.cpuPercent ?? -1) - (a.cpuPercent ?? -1))
+        .slice(0, 10);
       const value = hostMemoryDetailsSchema.parse({
         memory: {
           totalBytes,
@@ -378,11 +512,8 @@ export function createHostMemoryDetailsProvider(options: {
           availablePercent,
           canDropPageCache: isUnderPressure && pageCacheBytes >= minimumDropCacheBytes
         },
-        topProcesses: parseProcessTable(ps).map((process) => ({
-          ...process,
-          isSpaceManaged: managedByPid.has(process.pid),
-          cleanupEligible: managedByPid.get(process.pid) === true
-        })),
+        topProcesses: byRss,
+        topCpuProcesses: byCpu,
         sampledAt: sampled.toISOString()
       });
       cached = { value, expiresAtMs: sampled.getTime() + cacheTtlMs };

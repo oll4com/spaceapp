@@ -26,6 +26,7 @@ export const appIconMaterialSymbols = {
   "CircleStop": "stop_circle",
   "Clipboard": "content_paste",
   "Clock3": "schedule",
+  "Columns3": "width",
   "Copy": "content_copy",
   "Cpu": "memory",
   "Crosshair": "my_location",

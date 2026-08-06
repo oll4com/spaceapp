@@ -21,6 +21,7 @@ const createActionIds = new Set([
 
 const viewActionIds = new Set([
   "pane-layout",
+  "pane-span-all",
   "theme",
   "cli-floats",
   "font-down"

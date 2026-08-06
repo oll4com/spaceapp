@@ -1523,7 +1523,6 @@ export function TerminalPane({
     }
     ensureTerminalControl(true);
     setError(null);
-    setNotice("Taking terminal control…");
     return "pending";
   }
 
@@ -2197,7 +2196,7 @@ export function TerminalPane({
     const attemptKey = `${pane.id}:${selectedRuntime.id}`;
     if (autoAttachAttemptRef.current === attemptKey) return;
     autoAttachAttemptRef.current = attemptKey;
-    void startOrReconnect();
+    void autoAttachRunningSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, pane.id, pending, selectedRuntime?.id, selectedRuntime?.status, sessionResponse]);
 
@@ -3607,6 +3606,28 @@ export function TerminalPane({
     await requestCliSession({}, options);
   }
 
+  async function autoAttachRunningSession() {
+    try {
+      const activeSession = await api.activeCliSession(pane.id, { includeTranscript: false });
+      if (activeSession && isRecoverableCliSession(activeSession.session) && activeSession.session.paneId === pane.id) {
+        restoreActiveSession(activeSession);
+      } else {
+        const freshPaneWindowMs = 60 * 1000;
+        const paneAgeMs = Date.now() - new Date(pane.createdAt).getTime();
+        if (paneAgeMs <= freshPaneWindowMs) {
+          await startOrReconnect();
+        } else {
+          reportTerminalBootstrapped();
+          settleTerminalPrefill();
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Active CLI session failed to load");
+      reportTerminalBootstrapped();
+      settleTerminalPrefill();
+    }
+  }
+
   async function reconnectTerminal() {
     if (pending) return;
     const rememberedTaskId = sessionResponseRef.current?.session.cliTaskId ?? null;
@@ -3904,7 +3925,6 @@ export function TerminalPane({
       }
       pendingTerminalInputsRef.current.push({ data: terminalData, source, display, preserveNotice, options });
       ensureTerminalControl(true);
-      setNotice("Taking terminal control…");
       return true;
     }
     if (wireDisplay === "hidden") {

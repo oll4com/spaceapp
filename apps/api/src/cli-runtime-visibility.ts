@@ -15,6 +15,7 @@ import {
   nowIso,
   type SpaceStore
 } from "@space/runtime";
+import type { RuntimeProcessSweepResult } from "./cli-runtime-process-sweeper.js";
 
 interface CliRuntimeImpact {
   sessionIds: string[];
@@ -35,6 +36,8 @@ export interface CliRuntimeVisibilityPolicyOptions {
   terminateSession: (sessionId: string) => Promise<boolean>;
   interruptChatPane?: (paneId: string, reason: string, traceId: string) => Promise<boolean>;
   stopRoomAgentMission?: (roomId: string, missionId: string, reason: string, traceId: string) => Promise<boolean>;
+  killRuntimeProcesses?: (runtimeId: CliToggleRuntimeId, traceId: string) => Promise<RuntimeProcessSweepResult>;
+  countRuntimeProcesses?: (runtimeId: CliToggleRuntimeId) => Promise<number>;
   publishEvent?: (event: Event) => void;
   now?: () => number;
   confirmationTtlMs?: number;
@@ -89,11 +92,23 @@ export class CliRuntimeVisibilityPolicy {
     );
   }
 
+  async assertAnyCliRuntimeEnabled(): Promise<void> {
+    const settings = await this.options.store.listCliRuntimeSettings();
+    const hasEnabledRuntime = settings.some((setting) => setting.enabled);
+    if (hasEnabledRuntime) return;
+    throw new SpaceFeatureDisabledError(
+      "NO_CLI_RUNTIME_ENABLED",
+      "No CLI runtime is enabled. Enable at least one CLI in Settings.",
+      {}
+    );
+  }
+
   async createDisablePreview(runtimeId: CliToggleRuntimeId): Promise<CliRuntimeDisablePreview> {
     const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
     this.deleteExpiredConfirmations();
     const impact = await this.collectImpact(parsedRuntimeId);
-    return this.issuePreview(parsedRuntimeId, impact);
+    const matchingProcessCount = await this.countRuntimeProcesses(parsedRuntimeId);
+    return this.issuePreview(parsedRuntimeId, impact, matchingProcessCount);
   }
 
   async enable(runtimeId: CliToggleRuntimeId, updatedBy: string, traceId: string): Promise<UpdateCliRuntimeSettingResult> {
@@ -127,7 +142,10 @@ export class CliRuntimeVisibilityPolicy {
         impact.roomAgentMissions.map((mission) => mission.missionId)
       )
     ) {
-      throw new CliRuntimeDisableConfirmationStaleError(this.issuePreview(parsedRuntimeId, impact));
+      const matchingProcessCount = await this.countRuntimeProcesses(parsedRuntimeId);
+      throw new CliRuntimeDisableConfirmationStaleError(
+        await this.issuePreview(parsedRuntimeId, impact, matchingProcessCount)
+      );
     }
 
     const setting = await this.options.store.updateCliRuntimeSetting(
@@ -195,6 +213,16 @@ export class CliRuntimeVisibilityPolicy {
       }
     }
 
+    let processSweep: RuntimeProcessSweepResult = { matchedPids: [], killedPids: [], remainingPids: [] };
+    let processSweepFailed = false;
+    if (this.options.killRuntimeProcesses) {
+      try {
+        processSweep = await this.options.killRuntimeProcesses(parsedRuntimeId, traceId);
+      } catch {
+        processSweepFailed = true;
+      }
+    }
+
     const closedPaneIds: string[] = [];
     const unresolvedPaneIds: string[] = [];
     for (const paneId of impact.paneIds) {
@@ -242,7 +270,10 @@ export class CliRuntimeVisibilityPolicy {
       unresolvedSessionIds,
       unresolvedChatPaneIds: [...unresolvedChatPaneIds].sort(),
       unresolvedRoomAgentMissionIds,
-      unresolvedPaneIds
+      unresolvedPaneIds,
+      killedProcessCount: processSweep.killedPids.length,
+      remainingProcessCount: processSweep.remainingPids.length,
+      processSweepFailed
     };
     this.publishVisibilityEvent(parsedRuntimeId, false, traceId, cleanup);
     return updateCliRuntimeSettingResultSchema.parse({ setting, cleanup });
@@ -301,7 +332,11 @@ export class CliRuntimeVisibilityPolicy {
     };
   }
 
-  private issuePreview(runtimeId: CliToggleRuntimeId, impact: CliRuntimeImpact): CliRuntimeDisablePreview {
+  private async issuePreview(
+    runtimeId: CliToggleRuntimeId,
+    impact: CliRuntimeImpact,
+    matchingProcessCount: number
+  ): Promise<CliRuntimeDisablePreview> {
     const confirmationToken = randomBytes(24).toString("base64url");
     const expiresAtMs = this.now() + this.confirmationTtlMs;
     this.confirmations.set(confirmationToken, { runtimeId, ...impact, expiresAtMs });
@@ -312,9 +347,18 @@ export class CliRuntimeVisibilityPolicy {
       activeChatRunCount: impact.chatRunIds.length,
       openChatPaneCount: impact.chatPaneIds.length,
       activeRoomAgentMissionCount: impact.roomAgentMissions.length,
+      matchingProcessCount,
       confirmationToken,
       expiresAt: new Date(expiresAtMs).toISOString()
     });
+  }
+
+  private async countRuntimeProcesses(runtimeId: CliToggleRuntimeId): Promise<number> {
+    try {
+      return (await this.options.countRuntimeProcesses?.(runtimeId)) ?? 0;
+    } catch {
+      return 0;
+    }
   }
 
   private deleteExpiredConfirmations(): void {

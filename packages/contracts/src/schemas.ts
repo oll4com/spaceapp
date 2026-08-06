@@ -98,7 +98,7 @@ export const paginated = <T extends z.ZodType>(item: T) =>
 export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"]);
 export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
-export const paneColumnSpanSchema = z.number().int().min(1).max(3);
+export const paneColumnSpanSchema = z.number().int().min(1).max(4);
 export const paneSplitSchema = z.object({
   parentId: idSchema.nullable(),
   direction: z.enum(["horizontal", "vertical"]).nullable(),
@@ -1366,6 +1366,7 @@ export const cliRuntimeDisablePreviewSchema = z.object({
   activeChatRunCount: z.number().int().min(0).max(10_000).default(0),
   openChatPaneCount: z.number().int().min(0).max(10_000).default(0),
   activeRoomAgentMissionCount: z.number().int().min(0).max(10_000).default(0),
+  matchingProcessCount: z.number().int().min(0).max(100_000).default(0),
   confirmationToken: cliRuntimeDisableConfirmationTokenSchema,
   expiresAt: isoDateTimeSchema
 });
@@ -1407,7 +1408,10 @@ export const cliRuntimeCleanupResultSchema = z.object({
   unresolvedSessionIds: z.array(idSchema).max(10_000),
   unresolvedChatPaneIds: z.array(idSchema).max(10_000).default([]),
   unresolvedRoomAgentMissionIds: z.array(idSchema).max(10_000).default([]),
-  unresolvedPaneIds: z.array(idSchema).max(10_000)
+  unresolvedPaneIds: z.array(idSchema).max(10_000),
+  killedProcessCount: z.number().int().min(0).max(100_000).default(0),
+  remainingProcessCount: z.number().int().min(0).max(100_000).default(0),
+  processSweepFailed: z.boolean().default(false)
 });
 
 export const updateCliRuntimeSettingResultSchema = z.object({
@@ -1537,6 +1541,7 @@ export const cliVpnRoutingStatusSchema = z
     connectionStatus: cliVpnConnectionStatusSchema,
     egressIpv4: cliVpnIpAddressSchema.nullable(),
     egressIpv6: cliVpnIpAddressSchema.nullable(),
+    relay: cliMullvadRelaySchema.nullable(),
     applications: z.array(cliRuntimeVpnStatusSchema).max(cliToggleRuntimeIds.length),
     checkedAt: isoDateTimeSchema
   })
@@ -3608,6 +3613,19 @@ export const hostMemorySummarySchema = z
   })
   .strict();
 
+export const hostMemoryProcessSchema = z
+  .object({
+    pid: z.number().int().positive(),
+    name: z.string().min(1).max(120),
+    taskTitle: z.string().min(1).max(120).nullable(),
+    rssBytes: toolbarByteCountSchema,
+    cpuPercent: nullableToolbarPercentSchema,
+    state: z.string().min(1).max(16),
+    isSpaceManaged: z.boolean(),
+    cleanupEligible: z.boolean()
+  })
+  .strict();
+
 export const hostMemoryDetailsSchema = z
   .object({
     memory: hostMemorySummarySchema,
@@ -3625,21 +3643,8 @@ export const hostMemoryDetailsSchema = z
         canDropPageCache: z.boolean()
       })
       .strict(),
-    topProcesses: z
-      .array(
-        z
-          .object({
-            pid: z.number().int().positive(),
-            name: z.string().min(1).max(120),
-            rssBytes: toolbarByteCountSchema,
-            cpuPercent: nullableToolbarPercentSchema,
-            state: z.string().min(1).max(16),
-            isSpaceManaged: z.boolean(),
-            cleanupEligible: z.boolean()
-          })
-          .strict()
-      )
-      .max(10),
+    topProcesses: z.array(hostMemoryProcessSchema).max(10),
+    topCpuProcesses: z.array(hostMemoryProcessSchema).max(10),
     sampledAt: isoDateTimeSchema
   })
   .strict();
@@ -4100,11 +4105,11 @@ export const createReleaseRequestSchema = z
   })
   .strict()
   .superRefine((input, context) => {
-    if (input.confirmation !== `PUBLISH ${input.tag}`) {
+    if (input.confirmation !== "PUBLISH") {
       context.addIssue({
         code: "custom",
         path: ["confirmation"],
-        message: `Release confirmation must exactly match PUBLISH ${input.tag}.`
+        message: "Release confirmation must exactly match PUBLISH."
       });
     }
   });

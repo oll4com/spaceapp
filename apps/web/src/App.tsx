@@ -14,6 +14,7 @@ import {
   CircleHelp,
   CircleStop,
   Clipboard,
+  Columns3,
   Copy,
   Crosshair,
   Database,
@@ -56,6 +57,7 @@ import {
   Search,
   ServerCog,
   Settings2,
+  Bell,
   ShieldCheck,
   Sparkles,
   Star,
@@ -130,7 +132,8 @@ import type {
   UpdateProviderSettingsInput,
   VoiceTranscriptionSettings,
   WorkerReadiness,
-  UserLink
+  UserLink,
+  CliRuntimeSettingsResponse
 } from "@space/contracts";
 import { SpaceApiError, api, type McpPayload, type ReadyzPayload } from "./api.js";
 import { nextGeneratedRoomName } from "./room-naming.js";
@@ -195,13 +198,15 @@ import { CliRuntimeSettingsCard } from "./features/cli-runtime-settings/CliRunti
 import { SourceControlPublishingCard } from "./features/source-control-publishing/SourceControlPublishingCard.js";
 import {
   SPACE_CLIPBOARD_NOTICE_EVENT,
-  useSpaceClipboardCapture
+  useSpaceClipboardCapture,
+  writeClipboardText
 } from "./features/clipboard-dock/clipboard-events.js";
 import { MediaDock } from "./features/media-dock/MediaDock.js";
 import { reorderPanesByTarget, setPaneDragData } from "./features/pane-drag/pane-drag.js";
 import { ActivityLogDock } from "./features/activity-log/ActivityLogDock.js";
 import { AgentFilesDock } from "./features/agent-files/AgentFilesDock.js";
 import { PANE_LAYOUT_MENU_ID, PaneLayoutMenu } from "./features/pane-layout/PaneLayoutMenu.js";
+import { PANE_SPAN_ALL_MENU_ID, PaneSpanAllMenu } from "./features/pane-layout/PaneSpanAllMenu.js";
 import { EmbeddedDashboardDialog } from "./features/embedded-dashboard/EmbeddedDashboardDialog.js";
 import { LinksPanel, QuickLinksPopover } from "./features/user-links/UserLinks.js";
 import { HelpPage } from "./features/help/HelpPage.js";
@@ -311,6 +316,10 @@ import {
   removeLegacyWarmRoomConnectedPaneLimit,
   writeStoredWarmRoomEnabled,
 } from "./warm-room-settings.js";
+import {
+  readStoredSuppressNotifications,
+  writeStoredSuppressNotifications,
+} from "./notifications-settings.js";
 
 const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
   CHAT: MessageSquare,
@@ -551,7 +560,7 @@ const TERMINAL_PANE_ACTION_EVENT = "space:terminal-pane-action";
 const AGENT_PANE_SETTINGS_EVENT = "space:agent-pane-settings-updated";
 const MOBILE_SHELL_MAX_WIDTH = 768;
 const TABLET_SHELL_MAX_WIDTH = 1100;
-const MAX_PANE_COLUMN_SPAN = 3;
+const MAX_PANE_COLUMN_SPAN = 4;
 const ROOM_CLI_ACTIVITY_POLL_INTERVAL_MS = 5_000;
 
 function readAppView(): AppView {
@@ -1118,6 +1127,7 @@ function MobileActionSheet({
   onRunCommand,
   onShowAction,
   onRunAction,
+  plainActions = false,
   popupId,
   summary,
   triggerRef,
@@ -1133,6 +1143,7 @@ function MobileActionSheet({
   onRunCommand?: (command: PaneOverflowCommand) => void;
   onShowAction: (actionId: string) => void;
   onRunAction: (action: IconToolbarAction) => void;
+  plainActions?: boolean;
   popupId: string;
   summary?: ReactNode;
   triggerRef: RefObject<HTMLButtonElement | null>;
@@ -1242,6 +1253,28 @@ function MobileActionSheet({
               {section.actions.map((action) => {
                 const ActionIcon = action.icon;
                 const isHidden = hiddenSet.has(action.id);
+                if (plainActions) {
+                  return (
+                    <div className="mobile-action-sheet-row" key={action.id}>
+                      <button
+                        type="button"
+                        className="mobile-action-sheet-main"
+                        aria-label={action.ariaLabel}
+                        aria-controls={action.ariaControls}
+                        aria-expanded={action.ariaExpanded}
+                        aria-haspopup={action.ariaHasPopup}
+                        disabled={action.disabled}
+                        onClick={() => runAction(action)}
+                      >
+                        <ActionIcon aria-hidden="true" />
+                        <span>
+                          <strong>{action.label}</strong>
+                          <small>{action.title}</small>
+                        </span>
+                      </button>
+                    </div>
+                  );
+                }
                 return (
                   <div className={isHidden ? "mobile-action-sheet-row is-hidden" : "mobile-action-sheet-row"} key={action.id}>
                     <button
@@ -1295,8 +1328,10 @@ function DesktopActionManager({
   label,
   onClose,
   onHideAction,
+  onRunAction,
   onRunCommand,
   onShowAction,
+  plainActions = false,
   primaryActionIds,
   popupId,
   triggerRef
@@ -1308,8 +1343,10 @@ function DesktopActionManager({
   label: string;
   onClose: () => void;
   onHideAction: (actionId: string) => void;
+  onRunAction?: (action: IconToolbarAction) => void;
   onRunCommand?: (command: PaneOverflowCommand) => void;
   onShowAction: (actionId: string) => void;
+  plainActions?: boolean;
   primaryActionIds?: string[];
   popupId: string;
   triggerRef: RefObject<HTMLButtonElement | null>;
@@ -1367,6 +1404,11 @@ function DesktopActionManager({
   function runCommand(command: PaneOverflowCommand) {
     closeIntentRef.current = "activation";
     onRunCommand?.(command);
+  }
+
+  function runAction(action: IconToolbarAction) {
+    closeIntentRef.current = "activation";
+    onRunAction?.(action);
   }
 
   function handleMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -1439,6 +1481,22 @@ function DesktopActionManager({
             const isShown = !isHidden && (primarySet?.has(action.id) ?? true);
             const canHide = action.hideable !== false;
             const stateLabel = isShown ? (canHide ? "Hide" : "Shown") : "Show";
+            if (plainActions) {
+              return (
+                <button
+                  key={action.id}
+                  type="button"
+                  role="menuitem"
+                  aria-label={action.ariaLabel}
+                  title={action.title}
+                  disabled={action.disabled}
+                  onClick={() => runAction(action)}
+                >
+                  <ActionIcon aria-hidden="true" />
+                  <span>{action.label}</span>
+                </button>
+              );
+            }
             return (
               <button
                 key={action.id}
@@ -2169,6 +2227,8 @@ export function App() {
   useAutoDismiss(clipToolNotice, setClipToolNotice);
   const [codexEnvironmentSummary, setCodexEnvironmentSummary] = useState<CodexEnvironment | null>(null);
   const isCodexEnabled = codexEnvironmentSummary?.isCodexEnabled ?? true;
+  const [cliRuntimeSettings, setCliRuntimeSettings] = useState<CliRuntimeSettingsResponse | null>(null);
+  const anyCliEnabled = cliRuntimeSettings?.settings.some((setting) => setting.enabled) ?? true;
   const [activeSideSurface, setActiveSideSurface] = useState<SideSurface>("rooms");
   const [isRoomFocusMode, setIsRoomFocusMode] = useState(() => readStoredBoolean(ROOM_FOCUS_MODE_STORAGE_KEY));
   const [isMobilePaneFocusMode, setIsMobilePaneFocusMode] = useState(false);
@@ -2179,6 +2239,7 @@ export function App() {
   const [terminalFontSize, setTerminalFontSize] = useState(readStoredTerminalFontSize);
   const [cliImagePreviewLimit, setCliImagePreviewLimit] = useState(readStoredCliImagePreviewLimit);
   const [warmRoomEnabled, setWarmRoomEnabled] = useState(readStoredWarmRoomEnabled);
+  const [suppressNotifications, setSuppressNotifications] = useState(readStoredSuppressNotifications);
   const [warmRoomCapacity, setWarmRoomCapacity] = useState<WarmRoomCapacitySnapshot>(() =>
     snapshotWarmRoomCapacity({
       memory: {
@@ -2217,6 +2278,9 @@ export function App() {
   const [isPaneLayoutMenuOpen, setIsPaneLayoutMenuOpen] = useState(false);
   const [paneLayoutPending, setPaneLayoutPending] = useState(false);
   const [paneLayoutError, setPaneLayoutError] = useState<string | null>(null);
+  const [isPaneSpanAllMenuOpen, setIsPaneSpanAllMenuOpen] = useState(false);
+  const [paneSpanAllPending, setPaneSpanAllPending] = useState(false);
+  const [paneSpanAllError, setPaneSpanAllError] = useState<string | null>(null);
   const [isWorkspaceTextSizePickerOpen, setIsWorkspaceTextSizePickerOpen] = useState(false);
   const [isCliLauncherOpen, setIsCliLauncherOpen] = useState(false);
   const [cliPaneCreationPending, setCliPaneCreationPending] = useState(false);
@@ -2333,6 +2397,7 @@ export function App() {
   const workspaceTextSizeButtonRef = useRef<HTMLButtonElement | null>(null);
   const vibeMusicButtonRef = useRef<HTMLButtonElement | null>(null);
   const paneLayoutButtonRef = useRef<HTMLButtonElement | null>(null);
+  const paneSpanAllButtonRef = useRef<HTMLButtonElement | null>(null);
   const roomThemeButtonRef = useRef<HTMLButtonElement | null>(null);
   const serverActionsButtonRef = useRef<HTMLButtonElement | null>(null);
   const toolbarMetricsRef = useRef<ToolbarMetricsHandle | null>(null);
@@ -4752,6 +4817,11 @@ export function App() {
           if (appMountedRef.current) setCodexEnvironmentSummary(environment);
         })
         .catch(() => undefined);
+      void api.cliRuntimeSettings()
+        .then((settings) => {
+          if (appMountedRef.current) setCliRuntimeSettings(settings);
+        })
+        .catch(() => undefined);
       const roomIds = new Set<string>([
         ...(selectedRoomIdRef.current ? [selectedRoomIdRef.current] : []),
         ...warmRoomIdsRef.current
@@ -4795,6 +4865,8 @@ export function App() {
     setRoomNameDraft(activeRoom?.name ?? "");
     setIsPaneLayoutMenuOpen(false);
     setPaneLayoutError(null);
+    setIsPaneSpanAllMenuOpen(false);
+    setPaneSpanAllError(null);
   }, [activeRoom?.id, activeRoom?.name]);
   const paneDensity = useMemo(() => paneDensityFor(shellMode, visiblePanes.length), [shellMode, visiblePanes.length]);
   const automaticPaneGridColumnCount = useMemo(
@@ -5059,12 +5131,14 @@ export function App() {
   }
 
   async function refreshToolbarSystemState() {
-    const [environmentResult, providerSettingsResult] = await Promise.allSettled([
+    const [environmentResult, providerSettingsResult, runtimeSettingsResult] = await Promise.allSettled([
       api.codexEnvironment(),
-      api.providerSettings()
+      api.providerSettings(),
+      api.cliRuntimeSettings()
     ]);
     if (environmentResult.status === "fulfilled") setCodexEnvironmentSummary(environmentResult.value);
     if (providerSettingsResult.status === "fulfilled") setProviderSettings(providerSettingsResult.value);
+    if (runtimeSettingsResult.status === "fulfilled") setCliRuntimeSettings(runtimeSettingsResult.value);
   }
 
   function closePaneLayoutMenu(restoreFocus = true) {
@@ -5100,6 +5174,61 @@ export function App() {
     } catch (layoutError) {
       setPaneLayoutError(layoutError instanceof Error ? layoutError.message : "Pane layout update failed");
       setPaneLayoutPending(false);
+    }
+  }
+
+  async function applyPaneSpanToAll(columnSpan: number) {
+    if (!activeRoom || paneSpanAllPending) return;
+    const targets = visiblePanes.filter((pane) => pane.roomId === activeRoom.id);
+    if (targets.length === 0) return;
+    setPaneSpanAllPending(true);
+    setPaneSpanAllError(null);
+    try {
+      const nextColumnSpan = Math.max(1, Math.min(MAX_PANE_COLUMN_SPAN, columnSpan));
+      const results = await Promise.allSettled(
+        targets.map((pane) => {
+          if ((pane.columnSpan ?? 1) === nextColumnSpan) return Promise.resolve(pane);
+          return api.updatePane(pane.id, { columnSpan: nextColumnSpan });
+        })
+      );
+      const updatedPanes: Pane[] = [];
+      let failed = 0;
+      results.forEach((result, index) => {
+        const pane = targets[index]!;
+        if (result.status === "fulfilled") {
+          updatedPanes.push(result.value);
+        } else {
+          failed += 1;
+          updatedPanes.push(pane);
+        }
+      });
+      setPanes((current) => current.map((item) => updatedPanes.find((pane) => pane.id === item.id) ?? item));
+      setPaneSpanAllPending(false);
+      if (failed > 0) {
+        setPaneSpanAllError(`${failed} pane${failed === 1 ? "" : "s"} could not be updated.`);
+      } else {
+        closePaneSpanAllMenu();
+      }
+      try {
+        await refreshRoomEvents(activeRoom.id);
+      } catch {
+        setError("Pane width applied, but room activity could not be refreshed.");
+      }
+    } catch (spanError) {
+      setPaneSpanAllError(spanError instanceof Error ? spanError.message : "Pane width update failed");
+      setPaneSpanAllPending(false);
+    }
+  }
+
+  function commonPaneColumnSpan(panes: Pane[]): number | null {
+    const first = panes[0]?.columnSpan ?? 1;
+    return panes.every((pane) => (pane.columnSpan ?? 1) === first) ? first : null;
+  }
+
+  function closePaneSpanAllMenu(restoreFocus = true) {
+    setIsPaneSpanAllMenuOpen(false);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => paneSpanAllButtonRef.current?.focus());
     }
   }
 
@@ -5155,6 +5284,22 @@ export function App() {
         ariaExpanded: isPaneLayoutMenuOpen,
         ariaHasPopup: "menu",
         disabled: !activeRoom || paneLayoutPending
+      },
+      {
+        id: "pane-span-all",
+        label: "All panes width",
+        title: "Set width for all panes",
+        ariaLabel: "Set width for all panes",
+        icon: Columns3,
+        onClick: () => {
+          setPaneSpanAllError(null);
+          setIsPaneLayoutMenuOpen(false);
+          setIsPaneSpanAllMenuOpen((current) => !current);
+        },
+        ariaControls: PANE_SPAN_ALL_MENU_ID,
+        ariaExpanded: isPaneSpanAllMenuOpen,
+        ariaHasPopup: "menu",
+        disabled: !activeRoom || visiblePanes.length < 2 || paneSpanAllPending
       },
       {
         id: "theme",
@@ -5303,6 +5448,7 @@ export function App() {
       isMemoryWorkspaceOpen,
       isCliLauncherOpen,
       isPaneLayoutMenuOpen,
+      isPaneSpanAllMenuOpen,
       isSideSurfaceOpen,
       isCompactSideSurfaceOpen,
       isServerActionsMenuOpen,
@@ -5371,12 +5517,12 @@ export function App() {
         {
           id: "codex-history-purge",
           label: "Purge history",
-          description: isCodexEnabled
-            ? "Preview and remove inactive task history safely."
-            : "OFF · Enable Codex in Settings.",
+          description: anyCliEnabled
+            ? "Preview and remove inactive task history across all active CLIs."
+            : "OFF · Enable a CLI in Settings.",
           icon: Trash2,
-          disabled: !isCodexEnabled,
-          title: !isCodexEnabled ? "Enable Codex in Settings" : undefined,
+          disabled: !anyCliEnabled,
+          title: !anyCliEnabled ? "Enable a CLI in Settings" : undefined,
           onSelect: () => {
             adminCodexToolTriggerRef.current = serverActionsButtonRef.current;
             setAdminCodexTool("history");
@@ -5422,6 +5568,8 @@ export function App() {
                   ? roomThemeButtonRef
                 : action.id === "pane-layout"
                   ? paneLayoutButtonRef
+                : action.id === "pane-span-all"
+                  ? paneSpanAllButtonRef
                   : undefined
         }
         type="button"
@@ -5430,6 +5578,7 @@ export function App() {
           roomToolbar.closeMenus();
           if (action.id !== "theme") setIsThemeMenuOpen(false);
           if (action.id !== "pane-layout") setIsPaneLayoutMenuOpen(false);
+          if (action.id !== "pane-span-all") setIsPaneSpanAllMenuOpen(false);
           if (action.id !== "font-down") setIsWorkspaceTextSizePickerOpen(false);
           if (action.id !== "server-restart") setIsServerActionsMenuOpen(false);
           if (action.id !== "add-cli") setIsCliLauncherOpen(false);
@@ -5447,6 +5596,7 @@ export function App() {
           roomToolbar.closeMenus();
           setIsThemeMenuOpen(false);
           setIsPaneLayoutMenuOpen(false);
+          setIsPaneSpanAllMenuOpen(false);
           setIsWorkspaceTextSizePickerOpen(false);
           setIsServerActionsMenuOpen(false);
           setIsCliLauncherOpen(false);
@@ -5531,16 +5681,18 @@ export function App() {
     setIsCompactSideSurfaceOpen(false);
     setIsThemeMenuOpen(false);
     setIsPaneLayoutMenuOpen(false);
+    setIsPaneSpanAllMenuOpen(false);
     setIsWorkspaceTextSizePickerOpen(false);
     roomToolbar.closeMenus();
     setIsMobilePaneFocusMode(nextFocused);
   }
   useDismissibleToolbarLayer({
     containerRef: roomToolbarActionsRef,
-    active: isThemeMenuOpen || isPaneLayoutMenuOpen || roomToolbar.isOverflowOpen || Boolean(roomToolbar.actionMenu),
+    active: isThemeMenuOpen || isPaneLayoutMenuOpen || isPaneSpanAllMenuOpen || roomToolbar.isOverflowOpen || Boolean(roomToolbar.actionMenu),
     onDismiss: () => {
       setIsThemeMenuOpen(false);
       closePaneLayoutMenu(isPaneLayoutMenuOpen);
+      closePaneSpanAllMenu(isPaneSpanAllMenuOpen);
       setIsWorkspaceTextSizePickerOpen(false);
       roomToolbar.closeMenus();
     }
@@ -5642,8 +5794,13 @@ export function App() {
       if (requestPending || document.visibilityState === "hidden") return;
       requestPending = true;
       try {
-        const environment = await api.codexEnvironment();
-        if (!disposed) setCodexEnvironmentSummary(environment);
+        const [environment, runtimeSettings] = await Promise.allSettled([
+          api.codexEnvironment(),
+          api.cliRuntimeSettings()
+        ]);
+        if (disposed) return;
+        if (environment.status === "fulfilled") setCodexEnvironmentSummary(environment.value);
+        if (runtimeSettings.status === "fulfilled") setCliRuntimeSettings(runtimeSettings.value);
       } catch {
         // Keep room-level stats best-effort so the main shell still renders if this endpoint is unavailable.
       } finally {
@@ -6080,11 +6237,15 @@ export function App() {
         cliImagePreviewLimit={cliImagePreviewLimit}
         warmRoomEnabled={warmRoomEnabled}
         warmRoomCapacity={warmRoomLiveCapacity}
+        suppressNotifications={suppressNotifications}
         providerSettings={providerSettings}
         providers={providers}
         onCliImagePreviewLimitChange={setCliImagePreviewLimit}
         onWarmRoomEnabledChange={(enabled) => {
           setWarmRoomEnabled(writeStoredWarmRoomEnabled(enabled));
+        }}
+        onSuppressNotificationsChange={(suppressed) => {
+          setSuppressNotifications(writeStoredSuppressNotifications(suppressed));
         }}
         onProviderSettingsRefresh={setProviderSettings}
         onUiThemeApply={({ appearance, iconPack, theme }) => {
@@ -6435,6 +6596,7 @@ export function App() {
       data-room-id={activeRoom?.id}
       data-shell-mode={shellMode}
       data-warm-room-cache-enabled={String(warmRoomEnabled)}
+      data-suppress-notifications={String(suppressNotifications)}
       data-warm-room-safe-capacity={warmRoomCapacity.effectiveSafeRoomCapacity}
       data-warm-room-hard-capacity={warmRoomCapacity.hardRoomCapacity}
       data-warm-room-count={warmRoomLiveCapacity.warmRoomCount}
@@ -6501,6 +6663,7 @@ export function App() {
         <AdminCodexToolsDialog
           initialTool={adminCodexTool}
           isCodexEnabled={isCodexEnabled}
+          anyCliEnabled={anyCliEnabled}
           onClose={closeAdminCodexTool}
         />
       ) : null}
@@ -6695,6 +6858,7 @@ export function App() {
                     onClick={() => {
                       setIsThemeMenuOpen(false);
                       setIsPaneLayoutMenuOpen(false);
+                      setIsPaneSpanAllMenuOpen(false);
                       setIsWorkspaceTextSizePickerOpen(false);
                       setIsServerActionsMenuOpen(false);
                       setIsCliLauncherOpen(false);
@@ -6718,6 +6882,7 @@ export function App() {
                           roomToolbar.closeMenus();
                           if (action.id !== "theme") setIsThemeMenuOpen(false);
                           if (action.id !== "pane-layout") setIsPaneLayoutMenuOpen(false);
+                          if (action.id !== "pane-span-all") setIsPaneSpanAllMenuOpen(false);
                           if (action.id !== "font-down") setIsWorkspaceTextSizePickerOpen(false);
                           if (action.id !== "add-cli") setIsCliLauncherOpen(false);
                           action.onClick();
@@ -6753,6 +6918,7 @@ export function App() {
                     setIsQuickLinksOpen(false);
                     setIsThemeMenuOpen(false);
                     setIsPaneLayoutMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
                     setIsWorkspaceTextSizePickerOpen(false);
                     setIsServerActionsMenuOpen(false);
                     setIsCliLauncherOpen(false);
@@ -6769,6 +6935,7 @@ export function App() {
                     roomToolbar.closeMenus();
                     setIsThemeMenuOpen(false);
                     setIsPaneLayoutMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
                     setIsWorkspaceTextSizePickerOpen(false);
                     setIsVibeMusicOpen(false);
                     setIsCliLauncherOpen(false);
@@ -6810,6 +6977,18 @@ export function App() {
                   onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
                   pending={paneLayoutPending}
                   triggerRef={paneLayoutButtonRef}
+                  visiblePaneCount={visiblePanes.length}
+                />
+              ) : null}
+              {isPaneSpanAllMenuOpen && activeRoom ? (
+                <PaneSpanAllMenu
+                  activeColumnCount={paneGridColumnCount}
+                  currentSpan={commonPaneColumnSpan(visiblePanes)}
+                  error={paneSpanAllError}
+                  onClose={() => setIsPaneSpanAllMenuOpen(false)}
+                  onSelect={(columnSpan) => void applyPaneSpanToAll(columnSpan)}
+                  pending={paneSpanAllPending}
+                  triggerRef={paneSpanAllButtonRef}
                   visiblePaneCount={visiblePanes.length}
                 />
               ) : null}
@@ -7668,11 +7847,13 @@ function AgentSettingsDock({
   isCodexEnabled,
   warmRoomEnabled,
   warmRoomCapacity,
+  suppressNotifications,
   providerSettings,
   providers,
   onCliImagePreviewLimitChange,
   onUiThemeApply,
   onWarmRoomEnabledChange,
+  onSuppressNotificationsChange,
   onProviderSettingsRefresh
 }: {
   activePane: Pane | null;
@@ -7687,11 +7868,13 @@ function AgentSettingsDock({
   isCodexEnabled: boolean;
   warmRoomEnabled: boolean;
   warmRoomCapacity: WarmRoomCapacitySnapshot;
+  suppressNotifications: boolean;
   providerSettings: ProviderSettings | null;
   providers: Provider[];
   onCliImagePreviewLimitChange: (limit: number) => void;
   onUiThemeApply: (selection: { appearance: ModernAppearance; iconPack: ModernIconPack; theme: UiTheme }) => void;
   onWarmRoomEnabledChange: (enabled: boolean) => void;
+  onSuppressNotificationsChange: (suppressed: boolean) => void;
   onProviderSettingsRefresh: (settings: ProviderSettings) => void;
 }) {
   const [session, setSession] = useState<AgentPaneSession | null>(null);
@@ -7905,6 +8088,26 @@ function AgentSettingsDock({
             />
           </label>
         </div>
+      </section>
+
+      <section className="agent-settings-card suppress-notifications-settings-card" aria-label="Notification settings">
+        <div className="agent-settings-section-title">
+          <Bell aria-hidden="true" />
+          <span>
+            <strong>Notifications</strong>
+            <small>{suppressNotifications ? "All toast and status notifications are hidden in this browser." : "Toasts and status notices appear normally in this browser."}</small>
+          </span>
+        </div>
+        <label className="settings-toggle-row suppress-notifications-toggle">
+          <input
+            type="checkbox"
+            name="suppress-notifications-enabled"
+            checked={suppressNotifications}
+            onChange={(event) => onSuppressNotificationsChange(event.target.checked)}
+            aria-label="Suppress all notifications"
+          />
+          <span>Suppress all notifications</span>
+        </label>
       </section>
 
       <section className="agent-settings-card basic-agent-card" aria-label={activePane?.mode === "CHAT" ? `Basic settings for ${title}` : `Selected pane ${title}`}>
@@ -8193,6 +8396,7 @@ const PaneCard = memo(function PaneCard({
   const [titleEditOpen, setTitleEditOpen] = useState(false);
   const [titleSavePending, setTitleSavePending] = useState(false);
   const [titleGeneratePending, setTitleGeneratePending] = useState(false);
+  const [badgeMenuPosition, setBadgeMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [resumeHistoryOpen, setResumeHistoryOpen] = useState(false);
   const [resumeHistoryMode, setResumeHistoryMode] = useState<"chat" | "cli">("cli");
   const [resumeHistoryItems, setResumeHistoryItems] = useState<TaskHistoryDialogItem[]>([]);
@@ -8559,6 +8763,22 @@ const PaneCard = memo(function PaneCard({
     setTitleError(null);
   }
 
+  async function copyPaneIdentityInfo() {
+    setBadgeMenuPosition(null);
+    const text = paneIdentityTitle.trim();
+    if (!text) return;
+    try {
+      await writeClipboardText(text);
+      window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_NOTICE_EVENT, {
+        detail: { message: "Pane session info copied." }
+      }));
+    } catch {
+      window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_NOTICE_EVENT, {
+        detail: { message: "Pane session info copy failed." }
+      }));
+    }
+  }
+
   let rawPaneActions: IconToolbarAction[] = [
     ...(!isTerminalLoginSession && !isDeepSeekTerminal ? [{
       id: "import",
@@ -8569,7 +8789,7 @@ const PaneCard = memo(function PaneCard({
       onClick: openPaneImport,
       disabled: usesGenericImport && genericImportPending
     }] : []),
-    ...(((isTerminalPane && !isRootPane && !isTerminalLoginSession) || pane.mode === "CHAT")
+    ...(pane.mode === "CHAT"
       ? [
           {
             id: "generate-title",
@@ -8878,16 +9098,19 @@ const PaneCard = memo(function PaneCard({
     closeOverflowOnDragStart: shellMode === "mobile"
   });
   const modernPrimaryActionLimit = modernPanePrimaryActionCount(shellMode);
+  const paneToolbarMenuActions = pane.mode === "TERMINAL" ? paneToolbar.orderedActions : paneToolbar.visibleActions;
   const paneToolbarPrimaryActionCount = uiTheme === "modern"
     ? Math.min(modernPrimaryActionLimit, modernPrimaryActionCapacity ?? modernPrimaryActionLimit)
-    : paneToolbar.visibleActions.length;
-  const paneToolbarRenderedActions = uiTheme === "modern"
-    ? paneToolbar.visibleActions.slice(0, paneToolbarPrimaryActionCount)
-    : paneToolbar.visibleActions;
+    : paneToolbarMenuActions.length;
+  const paneToolbarRenderedActions = pane.mode === "TERMINAL"
+    ? []
+    : (uiTheme === "modern"
+        ? paneToolbarMenuActions.slice(0, paneToolbarPrimaryActionCount)
+        : paneToolbarMenuActions);
   const paneOverflowCommands: PaneOverflowCommand[] = [
     ...paneTaskCommands,
-    ...(uiTheme === "modern" && shellMode !== "mobile"
-      ? paneToolbar.visibleActions.slice(paneToolbarPrimaryActionCount).map((action) => ({
+    ...(uiTheme === "modern" && shellMode !== "mobile" && pane.mode !== "TERMINAL"
+      ? paneToolbarMenuActions.slice(paneToolbarPrimaryActionCount).map((action) => ({
           id: `toolbar-action:${action.id}`,
           label: action.label,
           description: action.title,
@@ -9008,8 +9231,11 @@ const PaneCard = memo(function PaneCard({
   ]);
   useDismissibleToolbarLayer({
     containerRef: paneHeaderRef,
-    active: paneToolbar.isOverflowOpen || Boolean(paneToolbar.actionMenu),
-    onDismiss: paneToolbar.closeMenus
+    active: paneToolbar.isOverflowOpen || Boolean(paneToolbar.actionMenu) || Boolean(badgeMenuPosition),
+    onDismiss: () => {
+      paneToolbar.closeMenus();
+      setBadgeMenuPosition(null);
+    }
   });
 
   return (
@@ -9069,6 +9295,11 @@ const PaneCard = memo(function PaneCard({
               draggable={!paneReorderPending}
               onDragStart={(event) => onPaneDragStart(event, pane)}
               onDragEnd={onPaneDragEnd}
+              onContextMenu={isTerminalPane ? (event) => {
+                event.preventDefault();
+                paneToolbar.closeMenus();
+                setBadgeMenuPosition({ x: event.clientX, y: event.clientY });
+              } : undefined}
             >
               <PaneModeIcon pane={pane} />
               {vpnRoutingPresentation ? (
@@ -9076,6 +9307,53 @@ const PaneCard = memo(function PaneCard({
               ) : null}
             </div>
           )}
+          {badgeMenuPosition ? (
+            <div
+              className="icon-context-menu"
+              role="menu"
+              aria-label={`Pane menu ${title}`}
+              style={{ left: `${badgeMenuPosition.x}px`, top: `${badgeMenuPosition.y}px` }}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => void copyPaneIdentityInfo()}
+              >
+                <Copy aria-hidden="true" />
+                Copy session info
+              </button>
+              {!isTerminalLoginSession ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={titleSavePending || titleGeneratePending || codexMutationBlocked}
+                  title={codexMutationBlocked ? codexDisabledReason : undefined}
+                  onClick={() => {
+                    setBadgeMenuPosition(null);
+                    beginTitleEdit();
+                  }}
+                >
+                  <Pencil aria-hidden="true" />
+                  Edit pane title
+                </button>
+              ) : null}
+              {!isRootPane && !isTerminalLoginSession ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={titleSavePending || titleGeneratePending || codexMutationBlocked}
+                  title={codexMutationBlocked ? codexDisabledReason : undefined}
+                  onClick={() => {
+                    setBadgeMenuPosition(null);
+                    void generatePaneTitle();
+                  }}
+                >
+                  <Sparkles aria-hidden="true" />
+                  Generate pane title
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <div className="pane-title-block">
           <div className="pane-title-row">
@@ -9113,7 +9391,7 @@ const PaneCard = memo(function PaneCard({
                 <strong ref={titleTextRef} className="pane-title-text" title={pane.title}>
                   {pane.title}
                 </strong>
-                {(pane.mode === "CHAT" || isTerminalPane) && !isTerminalLoginSession ? (
+                {(pane.mode === "CHAT") && !isTerminalLoginSession ? (
                   <button
                     type="button"
                     className="room-title-edit pane-title-edit"
@@ -9151,7 +9429,7 @@ const PaneCard = memo(function PaneCard({
                 onClick={action.onClick}
                 disabled={action.disabled}
                 onContextMenu={(event) => {
-                  if (action.hideable === false) return;
+                  if (pane.mode === "TERMINAL" || action.hideable === false) return;
                   event.preventDefault();
                   paneToolbar.closeMenus();
                   paneToolbar.setActionMenu({
@@ -9221,6 +9499,7 @@ const PaneCard = memo(function PaneCard({
                     paneToolbar.setIsOverflowOpen(false);
                     action.onClick();
                   }}
+                  plainActions={pane.mode === "TERMINAL"}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}
                 />
@@ -9233,6 +9512,10 @@ const PaneCard = memo(function PaneCard({
                   label={`Pane actions ${title}`}
                   onClose={paneToolbar.closeMenus}
                   onHideAction={paneToolbar.hideAction}
+                  onRunAction={(action) => {
+                    paneToolbar.setIsOverflowOpen(false);
+                    action.onClick();
+                  }}
                   onRunCommand={(command) => {
                     paneToolbar.setIsOverflowOpen(false);
                     command.onClick();
@@ -9244,6 +9527,7 @@ const PaneCard = memo(function PaneCard({
                       paneToolbar.showAction(actionId);
                     }
                   }}
+                  plainActions={pane.mode === "TERMINAL"}
                   primaryActionIds={uiTheme === "modern" ? paneToolbarRenderedActions.map((action) => action.id) : undefined}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}

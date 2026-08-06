@@ -987,6 +987,7 @@ export class DemoStore {
         connectionStatus: "NOT_CONFIGURED",
         egressIpv4: null,
         egressIpv6: null,
+        relay: null,
         applications: cliToggleRuntimeIds.map((runtimeId) => ({
           runtimeId,
           effectiveMode: "DIRECT",
@@ -1039,6 +1040,7 @@ export class DemoStore {
         return Promise.resolve({
           runtimeId,
           activeSessionCount: codexPanes.length,
+          matchingProcessCount: 0,
           openPaneCount: codexPanes.length,
           activeChatRunCount: 0,
           openChatPaneCount: chatPanes.length,
@@ -1085,6 +1087,9 @@ export class DemoStore {
             stoppedRoomAgentMissionIds: [],
             closedPaneIds: codexPanes.map((pane) => pane.id),
             closedChatPaneIds: chatPanes.map((pane) => pane.id),
+            killedProcessCount: 0,
+            remainingProcessCount: 0,
+            processSweepFailed: false,
             unresolvedSessionIds: [],
             unresolvedChatPaneIds: [],
             unresolvedRoomAgentMissionIds: [],

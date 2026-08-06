@@ -22,10 +22,12 @@ import type {
 } from "@space/contracts";
 import { api, SpaceApiError } from "../../api.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
+import { useAutoDismiss } from "../../use-auto-dismiss.js";
+import { X } from "../ui-theme/app-icons.js";
 import { ConfirmationDialog, MetricPopover } from "./MetricLayers.js";
 import "./toolbar-metrics.css";
 
-type PanelKey = "accounts" | "cli" | "memory" | "provider";
+type PanelKey = "accounts" | "cli" | "memory" | "cpu" | "provider";
 type ConfirmationKind = "cli" | "memory";
 
 export interface ToolbarMetricsHandle {
@@ -238,7 +240,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const cli = useLazyResource(() => client.cliSessions(), 5_000);
   const memory = useLazyResource(() => client.hostMemory(), 10_000);
   const providers = useLazyResource(() => client.providerTargets(), 10_000);
-  const anchorsRef = useRef<Record<PanelKey, HTMLButtonElement | null>>({ accounts: null, cli: null, memory: null, provider: null });
+  const anchorsRef = useRef<Record<PanelKey, HTMLButtonElement | null>>({ accounts: null, cli: null, memory: null, cpu: null, provider: null });
   const closeTimerRef = useRef<number | null>(null);
   const resetInFlightRef = useRef(new Set<string>());
   const actionTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -247,6 +249,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const [confirmation, setConfirmation] = useState<ConfirmationKind | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  useAutoDismiss(actionMessage, setActionMessage);
   const [providerMenuFocusRequested, setProviderMenuFocusRequested] = useState(false);
   const [providerSwitchingId, setProviderSwitchingId] = useState<string | null>(null);
   const [switchedProviderCode, setSwitchedProviderCode] = useState<string | null>(null);
@@ -343,6 +346,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         return accounts.load();
       case "cli": return cli.load();
       case "memory": return memory.load();
+      case "cpu": return memory.load();
       case "provider": return providers.load();
     }
   }
@@ -510,13 +514,13 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const host = environment?.hostStats;
   const ramValue = snapshot.ram;
   const cpuValue = snapshot.cpu;
-  const swapValue = snapshot.swap;
 
   function anchorEvents(panel: PanelKey) {
+    const hoverOpen = panel !== "cpu";
     return {
-      onMouseEnter: () => openPanel(panel),
+      onMouseEnter: hoverOpen ? () => openPanel(panel) : undefined,
       onMouseLeave: requestClose,
-      onFocus: () => openPanel(panel),
+      onFocus: hoverOpen ? () => openPanel(panel) : undefined,
       onBlur: requestClose,
     };
   }
@@ -584,17 +588,57 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           <div className="toolbar-metric-grid">
             <MetricRow label="Used" value={`${formatPercent(memory.data.memory.usagePercent)} · ${formatBytes(memory.data.memory.usedBytes)}`} />
             <MetricRow label="Available" value={formatBytes(memory.data.memory.availableBytes)} />
+            <MetricRow label="Swap" value={`${formatPercent(memory.data.swap.usagePercent)} · ${formatBytes(memory.data.swap.usedBytes)} of ${formatBytes(memory.data.swap.totalBytes)}`} />
             <MetricRow label="Page cache" value={formatBytes(memory.data.memory.pageCacheBytes)} />
             <MetricRow label="Pressure" value={memory.data.pressure.isUnderPressure ? "Yes" : "No"} />
           </div>
           <strong className="toolbar-metric-subtitle">Top processes</strong>
           <ul className="toolbar-metric-list">
-            {memory.data.topProcesses.map((process) => <li key={process.pid}>
-              <strong>{process.name}</strong>
-              <span>{formatBytes(process.rssBytes)} · CPU {formatPercent(process.cpuPercent)} · {process.state}</span>
-            </li>)}
-            {!memory.data.topProcesses.length ? <li><span>No process sample available.</span></li> : null}
+            {(() => {
+              const memoryData = memory.data;
+              if (!memoryData) return null;
+              return memoryData.topProcesses.map((process) => {
+                const sharePercent = memoryData.memory.usedBytes > 0
+                  ? Math.round((process.rssBytes / memoryData.memory.usedBytes) * 100)
+                  : 0;
+                return <li key={process.pid}>
+                  <strong>{process.name}{process.taskTitle ? ` · ${process.taskTitle}` : ""}</strong>
+                  <span>{formatBytes(process.rssBytes)} · {sharePercent}% of used · {process.state}</span>
+                </li>;
+              });
+            })()}
+            {!memory.data?.topProcesses.length ? <li><span>No process sample available.</span></li> : null}
           </ul>
+          <p className="toolbar-metric-note">Top processes are the largest contributors to the used total above.</p>
+        </> : null}
+      </>
+    );
+    if (activePanel === "cpu") return (
+      <>
+        <header><strong>Host CPU</strong><small>On demand</small></header>
+        {memory.loading ? <p className="toolbar-metric-note">Loading CPU details…</p> : null}
+        {memory.error ? <p className="toolbar-metric-error" role="alert">{memory.error}</p> : null}
+        {memory.data ? <>
+          <div className="toolbar-metric-grid">
+            <MetricRow label="Usage" value={formatPercent(host?.cpu.usagePercent)} />
+            <MetricRow label="Cores" value={host?.cpu.coreCount != null ? String(host.cpu.coreCount) : "--"} />
+            <MetricRow label="RAM" value={`${formatPercent(memory.data.memory.usagePercent)} · ${formatBytes(memory.data.memory.usedBytes)} of ${formatBytes(memory.data.memory.totalBytes)}`} />
+          </div>
+          <strong className="toolbar-metric-subtitle">Top processes by CPU</strong>
+          <ul className="toolbar-metric-list">
+            {(() => {
+              const memoryData = memory.data;
+              if (!memoryData) return null;
+              return memoryData.topCpuProcesses.map((process) => (
+                <li key={`cpu:${process.pid}`}>
+                  <strong>{process.name}{process.taskTitle ? ` · ${process.taskTitle}` : ""}</strong>
+                  <span>CPU {formatPercent(process.cpuPercent)} · {formatBytes(process.rssBytes)} · {process.state}</span>
+                </li>
+              ));
+            })()}
+            {!memory.data?.topCpuProcesses.length ? <li><span>No process sample available.</span></li> : null}
+          </ul>
+          <p className="toolbar-metric-note">Top processes are the highest CPU consumers at sample time.</p>
         </> : null}
       </>
     );
@@ -627,6 +671,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     accounts: "Account usage details",
     cli: "CLI session details",
     memory: "Memory details",
+    cpu: "CPU details",
     provider: "Provider details",
   };
 
@@ -663,16 +708,17 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         onClick={(event: MouseEvent<HTMLButtonElement>) => openConfirmation("memory", event.currentTarget)}
         {...anchorEvents("memory")}
       ><small>RAM</small><strong>{ramValue}</strong></button>
-      <article
-        className={`toolbar-lb-badge tone-${usageTone(host?.cpu.usagePercent, 85, 95)}`}
+      <button
+        ref={(node) => { anchorsRef.current.cpu = node; }}
+        type="button"
+        className={`toolbar-lb-badge toolbar-metric-trigger tone-${usageTone(host?.cpu.usagePercent, 85, 95)}`}
         aria-label={host ? `CPU ${cpuValue}, ${host.cpu.coreCount ?? "--"} cores` : "CPU unavailable"}
         title={host ? `CPU: ${cpuValue}, ${host.cpu.coreCount ?? "--"} cores` : "CPU metrics unavailable"}
-      ><small>CPU</small><strong>{cpuValue}</strong></article>
-      <article
-        className={`toolbar-lb-badge tone-${usageTone(host?.swap.usagePercent, 50, 80)}`}
-        aria-label={host ? `SWP ${swapValue}, ${formatBytes(host.swap.usedBytes)} of ${formatBytes(host.swap.totalBytes)}` : "SWP unavailable"}
-        title={host ? `SWP: ${swapValue}, ${formatBytes(host.swap.usedBytes)} of ${formatBytes(host.swap.totalBytes)}` : "Swap metrics unavailable"}
-      ><small>SWP</small><strong>{swapValue}</strong></article>
+        aria-expanded={activePanel === "cpu"}
+        aria-controls="toolbar-metric-panel-cpu"
+        onClick={() => openPanel("cpu")}
+        {...anchorEvents("cpu")}
+      ><small>CPU</small><strong>{cpuValue}</strong></button>
       <article
         className={`toolbar-lb-badge tone-${rtt.tone}`}
         aria-label={rttFailed
@@ -723,6 +769,13 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       onCancel={closeConfirmation}
       onConfirm={() => void confirmAction()}
     ><p>This rechecks live pressure, cleans eligible detached Space CLIs, and drops page cache only when safe. It never kills arbitrary processes.</p></ConfirmationDialog> : null}
-    {actionMessage ? <div className="toolbar-metric-action-status" role="status" aria-live="polite">{actionMessage}</div> : null}
+    {actionMessage ? (
+      <div className="toolbar-metric-action-status">
+        <span role="status">{actionMessage}</span>
+        <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setActionMessage(null)}>
+          <X aria-hidden="true" />
+        </button>
+      </div>
+    ) : null}
   </>;
 });

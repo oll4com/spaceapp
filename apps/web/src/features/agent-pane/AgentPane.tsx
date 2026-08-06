@@ -219,6 +219,8 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   const [voicePreview, setVoicePreview] = useState("");
   const [homePinned, setHomePinned] = useState(false);
   const [goalDialogOpen, setGoalDialogOpen] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const turnStartedAtRef = useRef<number | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -442,6 +444,31 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
     void openThread(nextThreadId, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.threadId, homePinned]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      turnStartedAtRef.current = null;
+      setElapsedSeconds(0);
+      return;
+    }
+    if (turnStartedAtRef.current === null) {
+      const lastUserItem = [...(thread?.items ?? [])]
+        .reverse()
+        .find((item) => item.kind === "message" && item.role === "user");
+      const baseTime = lastUserItem?.createdAt ? new Date(lastUserItem.createdAt).getTime() : Date.now();
+      turnStartedAtRef.current = Number.isNaN(baseTime) ? Date.now() : baseTime;
+    }
+  }, [isRunning, thread?.items]);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const timer = window.setInterval(() => {
+      if (turnStartedAtRef.current !== null) {
+        setElapsedSeconds(Math.floor((Date.now() - turnStartedAtRef.current) / 1000));
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isRunning]);
 
   useEffect(() => {
     if (transcriptRef.current && followTranscriptRef.current) {
@@ -919,7 +946,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
       />
       <div className="codex-chat-shell">
         <div ref={transcriptRef} className="codex-transcript-scroll" onScroll={handleTranscriptScroll}>
-          <CodexTranscript items={thread?.items ?? []} isRunning={isRunning} loading={threadLoading || loading} />
+          <CodexTranscript items={thread?.items ?? []} isRunning={isRunning} loading={threadLoading || loading} elapsedSeconds={elapsedSeconds} />
         </div>
         <div className="codex-notification-stack">
           {session?.binding.status === "BLOCKED" ? (

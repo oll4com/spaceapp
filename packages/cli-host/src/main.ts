@@ -25,6 +25,15 @@ const inactiveSweep = setInterval(() => {
       inactiveSessionMs
     })}\n`);
   }
+  const stale = registry.sweepStaleSessions();
+  if (stale.reconciled > 0 || stale.pruned > 0) {
+    process.stderr.write(`${JSON.stringify({
+      event: "cli_host_stale_sessions_swept",
+      reconciled: stale.reconciled,
+      pruned: stale.pruned,
+      retained: registry.sessionCount()
+    })}\n`);
+  }
 }, inactiveSweepMs);
 inactiveSweep.unref();
 

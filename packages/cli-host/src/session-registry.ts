@@ -23,6 +23,7 @@ const immutableIdentityFields = [
 ] as const satisfies ReadonlyArray<keyof CliHostIdentity>;
 
 export const CLI_HOST_MANUAL_REAP_GRACE_MS = 5 * 60_000;
+export const CLI_HOST_TERMINAL_SESSION_RETENTION_MS = 60 * 60_000;
 
 export function resolveCliHostInactiveSessionMs(value: string | undefined): number | null {
   const normalized = value?.trim();
@@ -72,9 +73,67 @@ export class CliHostSessionRegistry {
       normalizeSpawn?: (identity: CliHostIdentity, spawn: CliHostSpawnSpec) => CliHostSpawnSpec;
       outputBufferBytes?: number;
       now?: () => number;
+      killProcess?: (pid: number, signal: NodeJS.Signals | 0) => void;
     }
   ) {
     this.outputBufferBytes = Math.max(1024, options.outputBufferBytes ?? 8 * 1024 * 1024);
+  }
+
+  private killProcess(pid: number, signal: NodeJS.Signals | 0): void {
+    (this.options.killProcess ?? process.kill)(pid, signal);
+  }
+
+  private isProcessAlive(pid: number): boolean {
+    try {
+      this.killProcess(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException)?.code === "EPERM";
+    }
+  }
+
+  private processAlive(managed: ManagedSession): boolean {
+    const pid = managed.pty.pid;
+    return Number.isInteger(pid) && pid > 0 && this.isProcessAlive(pid);
+  }
+
+  private markProcessGone(managed: ManagedSession): void {
+    managed.status = "EXITED";
+    managed.exitCode = null;
+    managed.signal = null;
+    managed.statusReason = "CLI process is no longer alive; the PTY exit event was missed.";
+    managed.endedAt ??= new Date().toISOString();
+  }
+
+  private forceKill(managed: ManagedSession): void {
+    // node-pty kill() only delivers SIGHUP and swallows signal errors, so a
+    // stuck CLI tree (sudo wrapper, broker, agent subprocess) can survive it.
+    // Escalate deterministically; the PTY child is a session leader, so the
+    // negative-pid group kill covers the whole tree.
+    try {
+      managed.pty.kill();
+    } catch {
+      // Best effort only; escalation below still applies.
+    }
+    const pid = managed.pty.pid;
+    if (!Number.isInteger(pid) || pid <= 0 || !this.isProcessAlive(pid)) return;
+    try {
+      this.killProcess(pid, "SIGTERM");
+    } catch {
+      // Best effort only; SIGKILL below still applies.
+    }
+    if (!this.isProcessAlive(pid)) return;
+    try {
+      this.killProcess(-pid, "SIGKILL");
+      return;
+    } catch {
+      // Fall back to the single pid when the process group is unavailable.
+    }
+    try {
+      this.killProcess(pid, "SIGKILL");
+    } catch {
+      // Best effort only; the next sweep reconciles liveness again.
+    }
   }
 
   async attach(input: CliHostAttachInput, listener?: CliHostEventListener): Promise<CliHostAttachResult> {
@@ -118,6 +177,10 @@ export class CliHostSessionRegistry {
 
   inspectAll(): CliHostSessionSummary[] {
     return Array.from(this.resolvedSessions.values(), (managed) => this.summarize(managed));
+  }
+
+  sessionCount(): number {
+    return this.resolvedSessions.size;
   }
 
   async input(
@@ -183,18 +246,22 @@ export class CliHostSessionRegistry {
     const reaped: string[] = [];
     const leaseMs = Math.max(1, inactiveMs);
     for (const managed of this.resolvedSessions.values()) {
+      if (managed.status !== "RUNNING" || managed.terminationRequested) continue;
+      if (!this.processAlive(managed)) {
+        this.markProcessGone(managed);
+        reaped.push(managed.identity.cliSessionId);
+        continue;
+      }
       if (
-        managed.status !== "RUNNING" ||
-        managed.terminationRequested ||
         managed.attachments.size !== 0 ||
         managed.detachedAtMs === null ||
         nowMs - managed.detachedAtMs < leaseMs
       ) {
         continue;
       }
-      managed.terminationRequested = true;
-      managed.pty.kill();
-      reaped.push(managed.identity.cliSessionId);
+      this.forceKill(managed);
+      if (this.processAlive(managed)) managed.terminationRequested = false;
+      else reaped.push(managed.identity.cliSessionId);
     }
     return reaped;
   }
@@ -204,19 +271,54 @@ export class CliHostSessionRegistry {
     let skippedCount = 0;
     for (const managed of this.resolvedSessions.values()) {
       if (managed.status !== "RUNNING" || managed.terminationRequested) continue;
-      if (
-        managed.attachments.size !== 0 ||
-        managed.detachedAtMs === null ||
-        nowMs - managed.detachedAtMs < CLI_HOST_MANUAL_REAP_GRACE_MS
-      ) {
+      if (!this.processAlive(managed)) {
+        // The PTY child is already gone (missed exit event): reconcile the
+        // status so the running-session counter drops, and count the session
+        // as cleaned even though no kill was necessary.
+        this.markProcessGone(managed);
+        killedSessions.push(this.summarize(managed));
+        continue;
+      }
+      if (managed.attachments.size !== 0) {
         skippedCount += 1;
         continue;
       }
-      killedSessions.push(this.summarize(managed));
-      managed.terminationRequested = true;
-      managed.pty.kill();
+      if (managed.detachedAtMs === null || nowMs - managed.detachedAtMs < CLI_HOST_MANUAL_REAP_GRACE_MS) {
+        skippedCount += 1;
+        continue;
+      }
+      this.forceKill(managed);
+      if (this.processAlive(managed)) {
+        // The process survived the full escalation; do NOT leave the session
+        // marked termination-requested forever, so the next Clean retries.
+        managed.terminationRequested = false;
+        skippedCount += 1;
+      } else {
+        killedSessions.push(this.summarize(managed));
+      }
     }
     return { killedSessions, skippedCount };
+  }
+
+  sweepStaleSessions(nowMs = this.now()): { reconciled: number; pruned: number } {
+    let reconciled = 0;
+    let pruned = 0;
+    for (const managed of this.resolvedSessions.values()) {
+      if (managed.status === "RUNNING" && !this.processAlive(managed)) {
+        this.markProcessGone(managed);
+        reconciled += 1;
+      }
+    }
+    for (const managed of this.resolvedSessions.values()) {
+      if (managed.status !== "EXITED" && managed.status !== "ERROR") continue;
+      const endedAtMs = managed.endedAt ? Date.parse(managed.endedAt) : Number.NaN;
+      if (Number.isFinite(endedAtMs) && nowMs - endedAtMs >= CLI_HOST_TERMINAL_SESSION_RETENTION_MS) {
+        this.resolvedSessions.delete(managed.identity.cliSessionId);
+        this.sessions.delete(managed.identity.cliSessionId);
+        pruned += 1;
+      }
+    }
+    return { reconciled, pruned };
   }
 
   terminate(identity: CliHostIdentity): boolean {
@@ -224,8 +326,13 @@ export class CliHostSessionRegistry {
     if (!managed) return false;
     this.assertIdentity(managed.identity, identity);
     if (managed.status !== "RUNNING" || managed.terminationRequested) return false;
+    if (!this.processAlive(managed)) {
+      this.markProcessGone(managed);
+      return true;
+    }
     managed.terminationRequested = true;
-    managed.pty.kill();
+    this.forceKill(managed);
+    if (this.processAlive(managed)) managed.terminationRequested = false;
     return true;
   }
 
@@ -233,7 +340,8 @@ export class CliHostSessionRegistry {
     for (const managed of this.resolvedSessions.values()) {
       if (managed.status === "RUNNING" && !managed.terminationRequested) {
         managed.terminationRequested = true;
-        managed.pty.kill();
+        this.forceKill(managed);
+        if (this.processAlive(managed)) managed.terminationRequested = false;
       }
     }
   }

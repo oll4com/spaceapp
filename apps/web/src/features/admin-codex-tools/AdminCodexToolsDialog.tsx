@@ -67,11 +67,13 @@ export function AdminCodexToolsDialog({
   client = defaultClient,
   initialTool,
   isCodexEnabled = true,
+  anyCliEnabled = true,
   onClose
 }: {
   client?: AdminCodexToolsClient;
   initialTool: AdminCodexTool;
   isCodexEnabled?: boolean;
+  anyCliEnabled?: boolean;
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
@@ -158,7 +160,7 @@ export function AdminCodexToolsDialog({
   }
 
   async function previewPurge() {
-    if (!isCodexEnabled || purgeBusy) return;
+    if (!anyCliEnabled || purgeBusy) return;
     setPurgeBusy(true);
     setPurgeError(null);
     setPurgeResult(null);
@@ -174,7 +176,7 @@ export function AdminCodexToolsDialog({
   }
 
   async function executePurge() {
-    if (!isCodexEnabled || purgeBusy || preview?.status !== "READY" || confirmation !== purgeConfirmation) return;
+    if (!anyCliEnabled || purgeBusy || preview?.status !== "READY" || confirmation !== purgeConfirmation) return;
     setPurgeBusy(true);
     setPurgeError(null);
     try {
@@ -214,7 +216,7 @@ export function AdminCodexToolsDialog({
               ? "Choose the global Standard or Fast default for each supported model."
               : "Remove inactive task history only after a fresh server-side preview."}</p>
           </div>
-          {!isCodexEnabled ? <span className="status muted">OFF</span> : null}
+          {isSpeed ? (!isCodexEnabled ? <span className="status muted">OFF</span> : null) : (!anyCliEnabled ? <span className="status muted">OFF</span> : null)}
           <button ref={closeRef} type="button" aria-label={`Close ${title}`} disabled={busy} onClick={close}>
             <X aria-hidden="true" />
           </button>
@@ -272,8 +274,8 @@ export function AdminCodexToolsDialog({
               <button
                 className="admin-codex-primary"
                 type="button"
-                disabled={!isCodexEnabled || purgeBusy}
-                title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
+                disabled={!anyCliEnabled || purgeBusy}
+                title={!anyCliEnabled ? "Enable a CLI in Settings" : undefined}
                 onClick={() => void previewPurge()}
               >
                 {purgeBusy ? "Preparing preview…" : "Preview history purge"}
@@ -296,15 +298,15 @@ export function AdminCodexToolsDialog({
                 autoComplete="off"
                 spellCheck={false}
                 value={confirmation}
-                disabled={!isCodexEnabled || purgeBusy}
-                title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
+                disabled={!anyCliEnabled || purgeBusy}
+                title={!anyCliEnabled ? "Enable a CLI in Settings" : undefined}
                 onChange={(event) => setConfirmation(event.currentTarget.value)}
               />
               <button
                 type="button"
                 className="danger"
-                disabled={!isCodexEnabled || purgeBusy || confirmation !== purgeConfirmation}
-                title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
+                disabled={!anyCliEnabled || purgeBusy || confirmation !== purgeConfirmation}
+                title={!anyCliEnabled ? "Enable a CLI in Settings" : undefined}
                 onClick={() => void executePurge()}
               >
                 {purgeBusy ? "Purging…" : "Purge history"}
