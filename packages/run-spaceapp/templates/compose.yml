@@ -117,6 +117,36 @@ services:
     networks:
       - spaceapp
 
+  codex-lb:
+    image: ghcr.io/soju06/codex-lb:1.22.0
+    profiles: ["companions"]
+    restart: unless-stopped
+    init: true
+    mem_limit: "768m"
+    cpus: "1.0"
+    ports:
+      - "${SPACEAPP_BIND_HOST}:2455:2455"
+      - "${SPACEAPP_BIND_HOST}:1455:1455"
+    volumes:
+      - spaceapp-codex-lb:/var/lib/codex-lb
+    networks:
+      - spaceapp
+
+  headroom:
+    image: ghcr.io/oll4com/headroom-codex-lb:code
+    profiles: ["companions"]
+    restart: unless-stopped
+    init: true
+    mem_limit: "768m"
+    cpus: "1.0"
+    environment:
+      HEADROOM_HOST: "0.0.0.0"
+      OPENAI_TARGET_API_URL: "${SPACEAPP_COMPANIONS_OPENAI_TARGET_API_URL:-}"
+    ports:
+      - "${SPACEAPP_BIND_HOST}:8787:8787"
+    networks:
+      - spaceapp
+
   postgres:
     image: pgvector/pgvector:0.8.3-pg17-trixie
     restart: unless-stopped
@@ -187,3 +217,4 @@ volumes:
   spaceapp-memory:
   spaceapp-postgres:
   spaceapp-workspaces:
+  spaceapp-codex-lb:

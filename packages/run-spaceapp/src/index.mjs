@@ -56,7 +56,7 @@ const SECRET_FIELD = /password|secret|token|api.?key|credential/i;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const BACKUP_ID_PATTERN = /^spaceapp-backup-\d{8}T\d{9}Z$/;
 const PROVIDERS = Object.freeze({
-  bundled: Object.freeze(["codex", "gemini", "opencode", "qwen", "kimi", "grok"]),
+  bundled: Object.freeze(["codex", "gemini", "opencode", "qwen", "kimi", "grok", "autohand", "cursor", "copilot"]),
   ownerInstalled: Object.freeze(["claude"]),
   experimental: Object.freeze(["deepseek"])
 });
@@ -70,7 +70,8 @@ const CONFIG_KEYS = new Set([
   "telemetry",
   "profile",
   "accessMode",
-  "workspaces"
+  "workspaces",
+  "companionsEnabled"
 ]);
 
 export function resolveSpaceAppHome({
@@ -153,7 +154,8 @@ export function installResourceChecks(resources) {
 export function createDefaultConfig({
   version,
   profile = "light",
-  accessMode = "isolated"
+  accessMode = "isolated",
+  companionsEnabled = false
 }) {
   assertVersion(version);
   if (profile !== "light" && profile !== "standard") {
@@ -169,6 +171,7 @@ export function createDefaultConfig({
     telemetry: false,
     profile,
     accessMode: resolvedAccessMode,
+    companionsEnabled,
     workspaces: []
   };
 }
@@ -207,6 +210,9 @@ export function validateConfig(config) {
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
   }
+  if (typeof config.companionsEnabled !== "boolean") {
+    throw new Error("companionsEnabled must be boolean.");
+  }
   if (!Array.isArray(config.workspaces)) {
     throw new Error("workspaces must be an array.");
   }
@@ -234,7 +240,8 @@ function migrateConfig(config) {
     return {
       ...config,
       schemaVersion: CONFIG_SCHEMA_VERSION,
-      accessMode: "isolated"
+      accessMode: "isolated",
+      companionsEnabled: false
     };
   }
   if (config?.schemaVersion !== 1) {
@@ -248,7 +255,8 @@ function migrateConfig(config) {
     ...config,
     schemaVersion: CONFIG_SCHEMA_VERSION,
     profile: legacyProfiles[config.profile] ?? config.profile,
-    accessMode: "isolated"
+    accessMode: "isolated",
+    companionsEnabled: false
   };
 }
 
@@ -355,6 +363,7 @@ export function renderRuntimeEnv(config) {
     `SPACEAPP_POSTGRES_CPU_LIMIT=${settings.postgresCpuLimit}`,
     `SPACEAPP_TEMPORAL_MEMORY_LIMIT=${settings.temporalMemoryLimit}`,
     `SPACEAPP_TEMPORAL_CPU_LIMIT=${settings.temporalCpuLimit}`,
+    `SPACEAPP_COMPANIONS_ENABLED=${config.companionsEnabled ? "true" : "false"}`,
     ""
   ].join("\n");
 }
@@ -425,7 +434,8 @@ export function composeCommand(action, root, options = {}) {
     "-f", join(stateRoot, "compose.yml"),
     "-f", join(stateRoot, "compose.workspaces.yml"),
     "-f", join(stateRoot, "compose.host-access.yml"),
-    ...(profile === "standard" ? ["--profile", "standard"] : [])
+    ...(profile === "standard" ? ["--profile", "standard"] : []),
+    ...(options.companionsEnabled ? ["--profile", "companions"] : [])
   ];
   const actions = {
     up: ["up", "-d", "--remove-orphans"],
@@ -539,7 +549,8 @@ export async function writeRuntimeFiles(root, config) {
 export async function prepareInstallation(root, {
   version,
   profile,
-  accessMode
+  accessMode,
+  companionsEnabled
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -560,7 +571,8 @@ export async function prepareInstallation(root, {
     config = createDefaultConfig({
       version,
       profile: resolvedProfile ?? "light",
-      accessMode: resolveInstallAccessMode(accessMode)
+      accessMode: resolveInstallAccessMode(accessMode),
+      companionsEnabled
     });
   }
   if (config.version !== version) {
@@ -576,6 +588,9 @@ export async function prepareInstallation(root, {
   const resolvedAccessMode = resolveInstallAccessMode(accessMode, config.accessMode);
   if (config.accessMode !== resolvedAccessMode) {
     config = { ...config, accessMode: resolvedAccessMode };
+  }
+  if (companionsEnabled !== undefined && config.companionsEnabled !== companionsEnabled) {
+    config = { ...config, companionsEnabled };
   }
   validateConfig(config);
 

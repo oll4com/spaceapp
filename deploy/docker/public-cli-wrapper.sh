@@ -58,6 +58,20 @@ case "$runtime_name" in
     export DEEPSEEK_HOME="$state_root"
     export DEEPSEEK_API_KEY="$(cat "$credential_file" 2>/dev/null || true)"
     ;;
+  autohand)
+    command_name="autohand"
+    export AUTOHAND_HOME="$state_root"
+    export AUTOHAND_API_KEY="$(cat "$credential_file" 2>/dev/null || true)"
+    ;;
+  cursor)
+    command_name="cursor-agent"
+    export CURSOR_CONFIG_DIR="$state_root"
+    export AGENT_CLI_CREDENTIAL_STORE="file"
+    ;;
+  copilot)
+    command_name="copilot"
+    export COPILOT_HOME="$state_root"
+    ;;
   *)
     echo "Unsupported SpaceApp CLI wrapper." >&2
     exit 64
@@ -84,6 +98,9 @@ credential_ready() {
     grok) [ -s "$state_root/.grok/credentials.json" ] ;;
     claude) [ -s "$state_root/.credentials.json" ] ;;
     deepseek) [ -s "$credential_file" ] ;;
+    autohand) [ -s "$state_root/config.json" ] ;;
+    cursor) [ -s "$state_root/.config/cursor/auth.json" ] ;;
+    copilot) [ -s "$state_root/config.json" ] ;;
   esac
 }
 
@@ -124,6 +141,12 @@ case "${1:-}" in
         echo "Set DeepSeek credentials with: spaceapp credentials set deepseek" >&2
         exit 64
         ;;
+      autohand)
+        echo "Set Autohand credentials with: spaceapp credentials set autohand" >&2
+        exit 64
+        ;;
+      cursor) exec "$command_name" login "$@" ;;
+      copilot) exec "$command_name" login "$@" ;;
       *) echo "Login is unavailable for this runtime." >&2; exit 64 ;;
     esac
     ;;

@@ -15,8 +15,23 @@ grant rights beyond the upstream terms.
 | `@moonshot-ai/kimi-code@0.29.0` | 0.29.0 | MIT | [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code) | reviewed |
 | `@xai-official/grok@0.2.111` | 0.2.111 | Apache-2.0 in npm metadata | [npm package](https://www.npmjs.com/package/@xai-official/grok) | reviewed |
 | `run-deepseek-cli@0.1.1` | 0.1.1 | MIT | [holasoymalva/deepseek-cli](https://github.com/holasoymalva/deepseek-cli) | reviewed with experimental warning |
+| `autohand-cli@0.9.3` | 0.9.3 | Apache-2.0 | [autohand.ai/cli](https://autohand.ai/cli/) | reviewed |
+| `@github/copilot@1.0.78` | 1.0.78 | GitHub Copilot CLI License (redistribution within a larger application permitted under conditions) | [github/copilot-cli](https://github.com/github/copilot-cli) | reviewed |
+| `@anysphere/agent-cli-runtime` (Cursor CLI 2026.07.23-e383d2b, `agent-cli-package.tar.gz`) | 2026.07.23-e383d2b | No license declared; proprietary Cursor terms | [downloads.cursor.com](https://downloads.cursor.com) | reviewed; proprietary |
 
 DeepSeek support is community/experimental. `run-deepseek-cli` is not an official DeepSeek CLI and must not be described as one.
+
+Cursor CLI (`@anysphere/agent-cli-runtime`) declares no open-source license and
+is distributed under Cursor's proprietary terms; its use of the bundled `node`
+runtime and third-party node modules (for example `better-sqlite3`, `piscina`,
+`bindings`) is subject to their respective licenses.
+
+`@github/copilot` is distributed under the GitHub Copilot CLI License, which
+permits redistribution only in unmodified form as part of an application or
+service that provides material functionality beyond the software itself,
+including a copy of that license. SpaceApp satisfies these conditions by
+bundling the package in the CLI image only, and must not republish it as a
+standalone product.
 
 ## Claude Code owner-installed boundary
 

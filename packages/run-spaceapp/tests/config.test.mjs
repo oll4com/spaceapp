@@ -40,6 +40,7 @@ test("default config is versioned, loopback-only, and contains no secret fields"
     telemetry: false,
     profile: "light",
     accessMode: "isolated",
+    companionsEnabled: false,
     workspaces: []
   });
   assert.doesNotMatch(JSON.stringify(config), /password|secret|token|api.?key/i);
@@ -87,6 +88,7 @@ test("loads legacy full and core profiles through the stable schema migration", 
       telemetry: false,
       profile: stableProfile,
       accessMode: "isolated",
+      companionsEnabled: false,
       workspaces: []
     });
   }
@@ -114,12 +116,13 @@ test("loads schema 2 installations as isolated without changing durable settings
     telemetry: false,
     profile: "light",
     accessMode: "isolated",
+    companionsEnabled: false,
     workspaces: []
   });
 });
 
 test("host-root Compose access is explicit, bounded, and reversible", () => {
-  const isolated = createDefaultConfig({ version: "0.1.15-hostroot.0" });
+  const isolated = createDefaultConfig({ version: "0.1.15" });
   assert.equal(renderHostAccessCompose(isolated), "services: {}\n");
 
   const hostRoot = {

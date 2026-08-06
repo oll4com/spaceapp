@@ -224,7 +224,7 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
   );
   assert.match(
     stdout.value(),
-    /If it expires, run: npx --yes run-spaceapp@personal owner rotate-setup-token/
+    /If it expires, run: npx --yes run-spaceapp@latest owner rotate-setup-token/
   );
   assert.ok(stdout.value().lastIndexOf(installedToken) > stdout.value().lastIndexOf("SpaceApp is ready"));
   assert.equal(stderr.value(), "");
@@ -310,7 +310,7 @@ test("install explains recovery when the database accepts a token that cannot be
   assert.match(stderr.value(), /accepted a new setup token.*could not be saved locally/is);
   assert.match(
     stderr.value(),
-    /npx --yes run-spaceapp@personal owner rotate-setup-token/i
+    /npx --yes run-spaceapp@latest owner rotate-setup-token/i
   );
 });
 
@@ -571,7 +571,7 @@ test("an existing host-root installation is rejected on non-Linux hosts before D
   for (const platform of ["darwin", "win32"]) {
     const root = await mkdtemp(join(tmpdir(), `spaceapp-cli-existing-host-root-${platform}-`));
     await initializeInstallation(root, {
-      version: "0.1.15-hostroot.0",
+      version: "0.1.15",
       profile: "light",
       accessMode: "host-root"
     });
@@ -796,7 +796,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
         );
         assert.match(
           await readFile(join(stagedStateRoot, "runtime.env"), "utf8"),
-          /^SPACEAPP_IMAGE_TAG=0\.1\.15-hostroot\.2$/m
+          /^SPACEAPP_IMAGE_TAG=0\.1\.15$/m
         );
       }
       return 0;
@@ -806,7 +806,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   assert.equal(await run(["install", "--no-open"], options), 0);
 
   const upgradedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(upgradedConfig.version, "0.1.15-hostroot.2");
+  assert.equal(upgradedConfig.version, "0.1.15");
   assert.equal(upgradedConfig.previousVersion, "0.1.10");
   assert.equal(upgradedConfig.profile, "light");
   assert.deepEqual(upgradedConfig.workspaces, staleConfig.workspaces);
@@ -829,8 +829,8 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   for (const spec of calls) {
     assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
   }
-  assert.match(stdout.value(), /Launcher version: 0\.1\.15-hostroot\.2/);
-  assert.match(stdout.value(), /Runtime image version: 0\.1\.10 -> 0\.1\.15-hostroot\.2/);
+  assert.match(stdout.value(), /Launcher version: 0\.1\.15/);
+  assert.match(stdout.value(), /Runtime image version: 0\.1\.10 -> 0\.1\.15/);
   assert.match(stdout.value(), /Profile: standard -> light/);
   assert.match(stdout.value(), /data.*workspaces.*credentials.*secrets.*persistent Docker volumes/i);
 
@@ -841,7 +841,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
     stdout: refreshOutput.stream
   }), 0);
   const refreshedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(refreshedConfig.version, "0.1.15-hostroot.2");
+  assert.equal(refreshedConfig.version, "0.1.15");
   assert.equal(refreshedConfig.previousVersion, "0.1.10");
   assert.equal(refreshedConfig.profile, "light");
   assert.deepEqual(refreshedConfig.workspaces, staleConfig.workspaces);
@@ -866,7 +866,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   }
   assert.match(
     refreshOutput.value(),
-    /Runtime image version: 0\.1\.15-hostroot\.2 -> 0\.1\.15-hostroot\.2/
+    /Runtime image version: 0\.1\.15 -> 0\.1\.15/
   );
   assert.match(refreshOutput.value(), /Profile: light -> light/);
 });
@@ -1050,6 +1050,44 @@ test("a failed clean host-root install stops the partially started runtime", asy
   assert.equal(code, 1);
   assert.deepEqual(composeActions, ["up", "down"]);
   await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
+});
+
+test("install --with-companions activates the companions compose profile and runtime toggle", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-with-companions-"));
+  const composeArgs = [];
+  let runtimeEnvText = null;
+
+  const code = await run(["install", "--with-companions", "--access", "host-root", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    hostRootRuntimeCompatible: true,
+    stdout: capture().stream,
+    stderr: capture().stream,
+    stdin: Readable.from([]),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    request: async () => jsonResponse({ ok: false }, 503),
+    sleep: async () => {},
+    execute: async (spec) => {
+      if (spec.args.includes("--remove-orphans")) {
+        composeArgs.push(spec.args);
+        runtimeEnvText = await readFile(
+          join(dirname(spec.args[spec.args.indexOf("--env-file") + 1]), "runtime.env"),
+          "utf8"
+        );
+      }
+      return 0;
+    }
+  });
+
+  assert.equal(code, 1);
+  assert.equal(composeArgs.length, 1);
+  assert.deepEqual(
+    composeArgs[0].slice(composeArgs[0].indexOf("--profile"), composeArgs[0].indexOf("up")),
+    ["--profile", "companions"]
+  );
+  assert.match(runtimeEnvText, /^SPACEAPP_COMPANIONS_ENABLED=true$/m);
 });
 
 test("diagnostic command errors never prevent failed-install rollback", async () => {
@@ -1422,7 +1460,7 @@ test("Docker-backed commands explain exit 127 instead of failing silently", asyn
     execute: async () => 127
   }), 127);
   assert.match(stderr.value(), /could not find the Docker CLI/i);
-  assert.match(stderr.value(), /npx --yes run-spaceapp@personal install/);
+  assert.match(stderr.value(), /npx --yes run-spaceapp@latest install/);
 });
 
 test("doctor probes Docker CLI, Compose, and Engine once and distinguishes a stopped engine", async () => {

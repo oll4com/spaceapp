@@ -215,6 +215,17 @@ test("public CLI wrapper isolates provider state and supports protected DeepSeek
   assert.doesNotMatch(credentialStatusBlock, /ensure_runtime_dirs/);
   assert.match(wrapper, /opencode\) exec "\$command_name" auth login/);
   assert.match(wrapper, /vendor\/claude\/node_modules\/\.bin\/claude/);
+  assert.match(wrapper, /autohand\)\n\s+command_name="autohand"/);
+  assert.match(wrapper, /AUTOHAND_HOME="\$state_root"/);
+  assert.match(wrapper, /AUTOHAND_API_KEY=/);
+  assert.match(wrapper, /cursor\)\n\s+command_name="cursor-agent"/);
+  assert.match(wrapper, /CURSOR_CONFIG_DIR="\$state_root"/);
+  assert.match(wrapper, /AGENT_CLI_CREDENTIAL_STORE="file"/);
+  assert.match(wrapper, /copilot\)\n\s+command_name="copilot"/);
+  assert.match(wrapper, /COPILOT_HOME="\$state_root"/);
+  assert.match(wrapper, /autohand\) \[ -s "\$state_root\/config\.json" \]/);
+  assert.match(wrapper, /cursor\) \[ -s "\$state_root\/\.config\/cursor\/auth\.json" \]/);
+  assert.match(wrapper, /copilot\) \[ -s "\$state_root\/config\.json" \]/);
   assert.doesNotMatch(wrapper, /setup_deepseek_credential|read -r -s/);
   assert.doesNotMatch(wrapper, /Legacy|\/home\/spaceapp-user|\/srv\/space/i);
 });

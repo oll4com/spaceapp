@@ -52,7 +52,7 @@ COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./
 COPY --chown=spaceapp:spaceapp deploy/docker ./deploy/docker
 RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint.sh deploy/docker/cli-entrypoint.sh \
     && install -m 0755 deploy/docker/public-cli-wrapper.sh /usr/local/bin/spaceapp-cli-wrapper \
-    && for name in codex claude gemini opencode qwen kimi grok deepseek; do \
+    && for name in codex claude gemini opencode qwen kimi grok deepseek autohand cursor copilot; do \
          ln -s /usr/local/bin/spaceapp-cli-wrapper "/usr/local/bin/${name}-vscode-parity"; \
        done
 
@@ -88,9 +88,20 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund \
       @qwen-code/qwen-code@0.20.1 \
       @moonshot-ai/kimi-code@0.29.0 \
       @xai-official/grok@0.2.111 \
+      autohand-cli@0.9.3 \
+      @github/copilot@1.0.78 \
     && npm install --global --no-audit --no-fund opencode-ai@1.18.4 \
     && npm install --global --ignore-scripts --no-audit --no-fund \
       run-deepseek-cli@0.1.1 \
+    && install -d -o spaceapp -g spaceapp -m 0700 \
+      /var/lib/spaceapp-cli/vendor \
+      /var/lib/spaceapp-cli/vendor/cursor \
+    && cursor_arch="$(if [ "$TARGETARCH" = "amd64" ]; then printf 'x64'; else printf 'arm64'; fi)" \
+    && curl -fsSL --retry 3 "https://downloads.cursor.com/lab/2026.07.23-e383d2b/linux/${cursor_arch}/agent-cli-package.tar.gz" -o /tmp/cursor-agent.tar.gz \
+    && tar -xzf /tmp/cursor-agent.tar.gz -C /var/lib/spaceapp-cli/vendor/cursor --strip-components=1 \
+    && rm -f /tmp/cursor-agent.tar.gz \
+    && ln -s /var/lib/spaceapp-cli/vendor/cursor/cursor-agent /usr/local/bin/cursor-agent \
+    && chown -R spaceapp:spaceapp /var/lib/spaceapp-cli/vendor/cursor \
     && npm cache clean --force \
     && install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp-cli \

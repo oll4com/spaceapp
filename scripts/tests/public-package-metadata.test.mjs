@@ -423,6 +423,8 @@ test("third-party notices cover every pinned CLI and the experimental DeepSeek b
     "@qwen-code/qwen-code@0.20.1",
     "@moonshot-ai/kimi-code@0.29.0",
     "@xai-official/grok@0.2.111",
+    "autohand-cli@0.9.3",
+    "@github/copilot@1.0.78",
     "run-deepseek-cli@0.1.1"
   ];
 
@@ -430,6 +432,9 @@ test("third-party notices cover every pinned CLI and the experimental DeepSeek b
     assert.match(dockerfile, new RegExp(packageSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.match(notices, new RegExp(packageSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+  assert.match(dockerfile, /downloads\.cursor\.com\/lab\/2026\.07\.23-e383d2b\/linux\/\$\{cursor_arch\}\/agent-cli-package\.tar\.gz/);
+  assert.match(notices, /2026\.07\.23-e383d2b/);
+  assert.match(notices, /@anysphere\/agent-cli-runtime/);
   assert.doesNotMatch(dockerfile, /@anthropic-ai\/claude-code/);
   assert.match(notices, /Claude Code[\s\S]*not included in published SpaceApp images/i);
   assert.match(notices, /Claude Code[\s\S]*owner-initiated/i);

@@ -10,7 +10,7 @@ install -d -o spaceapp -g spaceapp -m 0700 \
   /run/spaceapp-cli
 
 if [ -d /run/spaceapp-secrets/providers ]; then
-  for provider in codex gemini opencode qwen kimi grok claude deepseek; do
+  for provider in codex gemini opencode qwen kimi grok claude deepseek autohand cursor copilot; do
     source="/run/spaceapp-secrets/providers/$provider.key"
     destination="/var/lib/spaceapp-cli/imported-credentials/$provider.key"
     rm -f -- "$destination"

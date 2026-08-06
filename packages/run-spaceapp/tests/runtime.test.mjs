@@ -18,6 +18,7 @@ const config = {
   telemetry: false,
   profile: "standard",
   accessMode: "isolated",
+  companionsEnabled: false,
   workspaces: [
     {
       id: "project-a1b2c3d4",
@@ -121,6 +122,33 @@ test("runtime env applies bounded light and standard resource settings without s
   assert.match(light, /^SPACEAPP_POSTGRES_MEMORY_LIMIT=768m$/m);
   assert.match(light, /^SPACEAPP_TEMPORAL_MEMORY_LIMIT=768m$/m);
   assert.doesNotMatch(`${standard}\n${light}`, /password|secret|token|api.?key/i);
+});
+
+test("compose activates the companions profile only when companions are enabled", () => {
+  const withCompanions = composeCommand("up", home, {
+    profile: "light",
+    companionsEnabled: true
+  });
+  const withoutCompanions = composeCommand("up", home, {
+    profile: "light",
+    companionsEnabled: false
+  });
+
+  assert.equal(withCompanions.args.includes("--profile"), true);
+  assert.deepEqual(
+    withCompanions.args.slice(-5),
+    ["--profile", "companions", "up", "-d", "--remove-orphans"]
+  );
+  assert.equal(withoutCompanions.args.includes("--profile"), false);
+});
+
+test("runtime env exposes the companions toggle without leaking credentials", () => {
+  const enabled = renderRuntimeEnv({ ...config, companionsEnabled: true });
+  const disabled = renderRuntimeEnv({ ...config, companionsEnabled: false });
+
+  assert.match(enabled, /^SPACEAPP_COMPANIONS_ENABLED=true$/m);
+  assert.match(disabled, /^SPACEAPP_COMPANIONS_ENABLED=false$/m);
+  assert.doesNotMatch(`${enabled}\n${disabled}`, /password|secret|token|api.?key/i);
 });
 
 test("workspace override renders explicit bind mounts without Docker socket access", () => {

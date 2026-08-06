@@ -55,19 +55,19 @@ test("init and the default update target the pinned runtime image version", asyn
   });
 
   let config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(config.version, "0.1.15-hostroot.2");
+  assert.equal(config.version, "0.1.15");
   assert.match(
     await readFile(join(root, "runtime.env"), "utf8"),
-    /^SPACEAPP_IMAGE_TAG=0\.1\.15-hostroot\.2$/m
+    /^SPACEAPP_IMAGE_TAG=0\.1\.15$/m
   );
 
   assert.equal(await run(["update"], options), 0);
   config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(config.version, "0.1.15-hostroot.2");
+  assert.equal(config.version, "0.1.15");
   assert.equal(config.previousVersion, null);
   assert.match(
     await readFile(join(root, "runtime.env"), "utf8"),
-    /^SPACEAPP_IMAGE_TAG=0\.1\.15-hostroot\.2$/m
+    /^SPACEAPP_IMAGE_TAG=0\.1\.15$/m
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
     "pull",
@@ -106,8 +106,9 @@ test("help and version aliases expose the complete stable command surface", asyn
     ]) {
       assert.match(stdout.value(), new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
-    assert.match(stdout.value(), /Usage: npx --yes run-spaceapp@personal <command>/);
+    assert.match(stdout.value(), /Usage: npx --yes run-spaceapp@latest <command>/);
     assert.match(stdout.value(), /\[--access isolated\|host-root\]/);
+    assert.match(stdout.value(), /\[--with-companions\]/);
     assert.match(stdout.value(), /spaceapp <command>\s+Optional global launcher/);
   }
 
@@ -213,7 +214,7 @@ test("workspace and credential list contracts persist only the requested local s
     ...options,
     stdout: credentials.stream
   }), 0);
-  for (const provider of ["codex", "gemini", "opencode", "qwen", "kimi", "grok", "claude", "deepseek"]) {
+  for (const provider of ["codex", "gemini", "opencode", "qwen", "kimi", "grok", "claude", "deepseek", "autohand", "cursor", "copilot"]) {
     assert.match(credentials.value(), new RegExp(`"${provider}"`));
   }
 });
@@ -232,14 +233,14 @@ test("update and rollback persist version state only after both Docker operation
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.6", previousVersion: "0.1.15-hostroot.2" }
+    { version: "0.1.6", previousVersion: "0.1.15" }
   );
   assert.equal(await run(["rollback"], options), 0);
   assert.deepEqual(
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.15-hostroot.2", previousVersion: "0.1.6" }
+    { version: "0.1.15", previousVersion: "0.1.6" }
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
     "pull",
@@ -248,7 +249,7 @@ test("update and rollback persist version state only after both Docker operation
     "--remove-orphans"
   ]);
   assert.match(stdout.value(), /Updated to SpaceApp 0\.1\.6/);
-  assert.match(stdout.value(), /Rolled back to SpaceApp 0\.1\.15-hostroot\.2/);
+  assert.match(stdout.value(), /Rolled back to SpaceApp 0\.1\.15/);
 });
 
 test("doctor is read-only for installation configuration and generated runtime files", async () => {
@@ -288,15 +289,15 @@ test("invalid and cancelled command paths fail closed with actionable usage", as
   const { options } = await installation();
   const invalid = [
     [["unknown"], /Unknown command/],
-    [["up", "extra"], /Usage: npx --yes run-spaceapp@personal up/],
+    [["up", "extra"], /Usage: npx --yes run-spaceapp@latest up/],
     [["workspace"], /workspace <add\|remove\|list>/],
     [["workspace", "add"], /workspace add/],
     [["credentials"], /credentials <set\|remove\|list>/],
     [["credentials", "set", "gemini", "argv-secret"], /read from stdin/],
     [["provider", "install", "gemini"], /provider install claude/],
     [["owner", "unknown"], /owner <reset-password\|rotate-setup-token>/],
-    [["update", "0.1.6", "extra"], /Usage: npx --yes run-spaceapp@personal update/],
-    [["uninstall", "--unknown"], /Usage: npx --yes run-spaceapp@personal uninstall/]
+    [["update", "0.1.6", "extra"], /Usage: npx --yes run-spaceapp@latest update/],
+    [["uninstall", "--unknown"], /Usage: npx --yes run-spaceapp@latest uninstall/]
   ];
   for (const [args, pattern] of invalid) {
     await assert.rejects(() => run(args, options), pattern);

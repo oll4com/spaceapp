@@ -148,7 +148,7 @@ export async function run(argv, {
 
   if (["up", "down", "status", "logs"].includes(command)) {
     assertNoArgs(args, command);
-    return runtimeExecute(composeCommand(command, root, { profile: config.profile }), { stdin, stdout, stderr });
+    return runtimeExecute(composeCommand(command, root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
   }
   if (command === "open") {
     assertNoArgs(args, "open");
@@ -197,12 +197,12 @@ export async function run(argv, {
       previousVersion: config.version
     };
     await writeRuntimeFiles(root, rollback);
-    const pullCode = await runtimeExecute(composeCommand("pull", root, { profile: rollback.profile }), { stdin, stdout, stderr });
+    const pullCode = await runtimeExecute(composeCommand("pull", root, { profile: rollback.profile, companionsEnabled: rollback.companionsEnabled }), { stdin, stdout, stderr });
     if (pullCode !== 0) {
       await writeRuntimeFiles(root, config);
       return pullCode;
     }
-    const upCode = await runtimeExecute(composeCommand("up", root, { profile: rollback.profile }), { stdin, stdout, stderr });
+    const upCode = await runtimeExecute(composeCommand("up", root, { profile: rollback.profile, companionsEnabled: rollback.companionsEnabled }), { stdin, stdout, stderr });
     if (upCode !== 0) {
       await writeRuntimeFiles(root, config);
       return upCode;
@@ -213,7 +213,7 @@ export async function run(argv, {
   }
   if (command === "backup") {
     assertNoArgs(args, command);
-    return runtimeExecute(composeCommand("backup", root, { profile: config.profile }), { stdin, stdout, stderr });
+    return runtimeExecute(composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
   }
   if (command === "restore") {
     assertNoArgs(args, command);
@@ -227,22 +227,22 @@ export async function run(argv, {
       throw new Error("Restore cancelled.");
     }
     const backupId = await selectLatestBackupId(root);
-    const backupCode = await runtimeExecute(composeCommand("backup", root, { profile: config.profile }), { stdin, stdout, stderr });
+    const backupCode = await runtimeExecute(composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
     if (backupCode !== 0) return backupCode;
-    const stopCode = await runtimeExecute(composeCommand("stopForRestore", root, { profile: config.profile }), { stdin, stdout, stderr });
+    const stopCode = await runtimeExecute(composeCommand("stopForRestore", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
     if (stopCode !== 0) return stopCode;
     const restoreCode = await runtimeExecute(
       composeCommand("restore", root, { backupId, profile: config.profile }),
       { stdin, stdout, stderr }
     );
     if (restoreCode !== 0) return restoreCode;
-    return runtimeExecute(composeCommand("up", root, { profile: config.profile }), { stdin, stdout, stderr });
+    return runtimeExecute(composeCommand("up", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
   }
   if (command === "uninstall") {
     if (args.length === 0) {
       stdout.write("Stopping and removing SpaceApp containers and network...\n");
       const code = await runtimeExecute(
-        composeCommand("down", root, { profile: config.profile }),
+        composeCommand("down", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
         { stdin, stdout, stderr }
       );
       if (code === 0) {
@@ -264,7 +264,7 @@ export async function run(argv, {
       }
       stdout.write("Removing SpaceApp containers, network, and Docker volumes...\n");
       const code = await runtimeExecute(
-        composeCommand("purge", root, { profile: config.profile }),
+        composeCommand("purge", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
         { stdin, stdout, stderr }
       );
       if (code === 0) {
@@ -303,7 +303,7 @@ async function installCommand(args, {
   sleep,
   persistSetupToken
 }) {
-  const { requestedProfile, requestedAccessMode, noOpen } = parseInstallArgs(args);
+  const { requestedProfile, requestedAccessMode, noOpen, companionsEnabled } = parseInstallArgs(args);
   const existingConfig = await loadExistingInstallation(root);
   const accessMode = resolveInstallAccessMode(
     requestedAccessMode,
@@ -328,7 +328,8 @@ async function installCommand(args, {
   const result = await prepareInstallation(root, {
     version: runtimeVersion,
     profile,
-    accessMode
+    accessMode,
+    ...(companionsEnabled ? { companionsEnabled } : {})
   });
 
   stdout.write(`Launcher version: ${launcherVersion}\n`);
@@ -421,6 +422,7 @@ async function installCommand(args, {
         stagedStateRoot,
         existingConfig,
         attemptedProfile: profile,
+        companionsEnabled,
         platform,
         stdin,
         stdout,
@@ -437,6 +439,7 @@ async function installCommand(args, {
       composeCommand(action, root, {
         profile,
         stateRoot: stagedStateRoot,
+        companionsEnabled,
         ...options
       });
     const pullCode = await executeWithDockerDiagnostics(
@@ -661,6 +664,7 @@ async function restoreRuntimeAfterFailedInstall({
   stagedStateRoot,
   existingConfig,
   attemptedProfile,
+  companionsEnabled,
   platform,
   stdin,
   stdout,
@@ -678,7 +682,8 @@ async function restoreRuntimeAfterFailedInstall({
       await commitInstallation(root, existingConfig);
       const restoreCode = await runtimeExecute(
         composeCommand("up", root, {
-          profile: existingConfig.profile
+          profile: existingConfig.profile,
+          companionsEnabled: existingConfig.companionsEnabled
         })
       );
       if (restoreCode === 0) {
@@ -705,7 +710,8 @@ async function restoreRuntimeAfterFailedInstall({
     const stopCode = await runtimeExecute(
       composeCommand("down", root, {
         profile: existingConfig?.profile ?? attemptedProfile,
-        stateRoot: existingConfig ? root : stagedStateRoot
+        stateRoot: existingConfig ? root : stagedStateRoot,
+        companionsEnabled: existingConfig?.companionsEnabled ?? companionsEnabled
       })
     );
     if (stopCode !== 0) {
@@ -724,10 +730,15 @@ function parseInstallArgs(args) {
   let requestedProfile = "auto";
   let requestedAccessMode;
   let noOpen = false;
+  let companionsEnabled = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--no-open" && !noOpen) {
       noOpen = true;
+      continue;
+    }
+    if (argument === "--with-companions" && !companionsEnabled) {
+      companionsEnabled = true;
       continue;
     }
     if (argument === "--profile" && index + 1 < args.length) {
@@ -749,7 +760,7 @@ function parseInstallArgs(args) {
       continue;
     }
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--access isolated|host-root] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
     );
   }
   if (
@@ -760,10 +771,10 @@ function parseInstallArgs(args) {
     )
   ) {
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--access isolated|host-root] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
     );
   }
-  return { requestedProfile, requestedAccessMode, noOpen };
+  return { requestedProfile, requestedAccessMode, noOpen, companionsEnabled };
 }
 
 async function loadExistingInstallation(root) {
@@ -825,7 +836,7 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
     const value = await readSecret(stdin, stdout, `Enter ${provider} credential: `);
     await writeCredential(root, provider, value);
     const syncCode = await execute(
-      composeCommand("syncCredentials", root, { profile: config.profile }),
+      composeCommand("syncCredentials", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
       { stdin, stdout, stderr }
     );
     if (syncCode !== 0) {
@@ -841,7 +852,7 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
     }
     const removed = await removeCredential(root, provider);
     const syncCode = await execute(
-      composeCommand("syncCredentials", root, { profile: config.profile }),
+      composeCommand("syncCredentials", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
       { stdin, stdout, stderr }
     );
     if (syncCode !== 0) {
@@ -859,13 +870,13 @@ async function providerCommand(args, { root, config, stdin, stdout, stderr, exec
     throw new Error(`Usage: ${UNIVERSAL_COMMAND} provider install claude`);
   }
   stdout.write("Installing Claude Code from Anthropic into this installation's private provider volume.\n");
-  return execute(composeCommand("installClaude", root, { profile: config.profile }), { stdin, stdout, stderr });
+  return execute(composeCommand("installClaude", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
 }
 
 async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
   if (args.length === 1 && args[0] === "rotate-setup-token") {
     const token = randomBytes(32).toString("base64url");
-    const code = await execute(composeCommand("rotateOwnerSetupToken", root, { profile: config.profile }), {
+    const code = await execute(composeCommand("rotateOwnerSetupToken", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), {
       stdin,
       stdout,
       stderr,
@@ -886,7 +897,7 @@ async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute
   if (password.length < 6) {
     throw new Error("Owner password must be at least 6 characters.");
   }
-  return execute(composeCommand("resetOwnerPassword", root, { profile: config.profile }), {
+  return execute(composeCommand("resetOwnerPassword", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), {
     stdin,
     stdout,
     stderr,
@@ -907,12 +918,12 @@ async function updateCommand(args, { root, config, version, stdin, stdout, stder
       previousVersion: config.version
     };
   await writeRuntimeFiles(root, updated);
-  const pullCode = await execute(composeCommand("pull", root, { profile: updated.profile }), { stdin, stdout, stderr });
+  const pullCode = await execute(composeCommand("pull", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }), { stdin, stdout, stderr });
   if (pullCode !== 0) {
     await writeRuntimeFiles(root, config);
     return pullCode;
   }
-  const upCode = await execute(composeCommand("up", root, { profile: updated.profile }), { stdin, stdout, stderr });
+  const upCode = await execute(composeCommand("up", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }), { stdin, stdout, stderr });
   if (upCode !== 0) {
     await writeRuntimeFiles(root, config);
     return upCode;
@@ -1279,7 +1290,7 @@ Usage: ${UNIVERSAL_COMMAND} <command>
        spaceapp <command>             Optional global launcher
 
   init                              Create a local SpaceApp installation
-  install [--profile auto|light|standard] [--access isolated|host-root] [--no-open]
+  install [--profile auto|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
                                     Install prerequisites, initialize, and start
   up | down | status | logs         Manage the Docker application
   open                              Open the local web application
