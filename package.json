@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "ws": "8.21.0"
+    "ws": "8.21.1"
   },
   "overrides": {
     "@hono/node-server": "2.0.12",
