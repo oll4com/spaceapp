@@ -267,6 +267,65 @@ const clipboardToolOptions: AgentPaneToolOption[] = [
   }
 ];
 
+const taskToolOptions: AgentPaneToolOption[] = [
+  {
+    id: "tasks:list",
+    displayName: "Tasks list",
+    description: "List the authenticated operator's private Space task declarations when requested.",
+    category: "memory",
+    slug: "tasks.list",
+    availability: "force_on",
+    authType: "space-tasks",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "tasks:get",
+    displayName: "Tasks get",
+    description: "Read one private Space task item by id when the operator requests it.",
+    category: "memory",
+    slug: "tasks.get",
+    availability: "force_on",
+    authType: "space-tasks",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "tasks:save",
+    displayName: "Tasks save",
+    description: "Save an operator-requested task declaration with its objective to the private Space task dock.",
+    category: "memory",
+    slug: "tasks.save",
+    availability: "force_on",
+    authType: "space-tasks",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "tasks:update",
+    displayName: "Tasks update",
+    description: "Update the status or objective of a private Space task item when the operator requests it.",
+    category: "memory",
+    slug: "tasks.update",
+    availability: "force_on",
+    authType: "space-tasks",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  }
+];
+
 const skillToolOptions: AgentPaneToolOption[] = [
   {
     id: "skills:list",
@@ -376,6 +435,22 @@ function clipboardToolContext(selectedToolIds: string[] | null | undefined): str
     '```space-clipboard-actions\n{"version":1,"actions":[{"toolId":"clipboard:list","action":{"type":"list","pageSize":10}}]}\n```',
     "Action bodies: clipboard:list uses type=list with optional q/source/pageSize; clipboard:get uses type=get with clipboardItemId; clipboard:save uses type=save with text; clipboard:save-plan uses type=save-plan with text and an optional title.",
     "V1 allows at most 3 actions per turn. clipboard:save creates an AGENT_NOTE and accepts at most 10,000 characters. clipboard:save-plan stores a PLAN (the full designed plan) and accepts up to 100,000 characters. CLI agents do not have clipboard API access."
+  ].join("\n");
+}
+
+function taskToolContext(selectedToolIds: string[] | null | undefined): string | null {
+  const selected = Array.from(
+    new Set((selectedToolIds ?? []).filter((toolId) => toolId.startsWith("tasks:")))
+  );
+  if (!selected.length) return null;
+  return [
+    "Space private task tools selected:",
+    `tools=${selected.join(", ")}`,
+    "Use these tools only when the operator explicitly asks to list, read, save, or update Space task declarations. Never add task declarations to an ordinary prompt.",
+    "To request a task action, include one fenced block named space-task-actions with JSON only:",
+    '```space-task-actions\n{"version":1,"actions":[{"toolId":"tasks:list","action":{"type":"list","pageSize":10}}]}\n```',
+    "Action bodies: tasks:list uses type=list with optional q/status/pageSize; tasks:get uses type=get with taskItemId; tasks:save uses type=save with title and objective; tasks:update uses type=update with taskItemId and optional status/objective.",
+    "V1 allows at most 3 actions per turn. tasks:save creates an OPEN task with source AGENT and accepts objectives up to 10,000 characters. CLI agents do not have task API access."
   ].join("\n");
 }
 
@@ -732,6 +807,7 @@ export function createSpaceAgentAdapter(options: {
     const tools = [
       ...memoryToolOptions,
       ...clipboardToolOptions,
+      ...taskToolOptions,
       ...skillToolOptions,
       ...toolOptionsFromStore(mcpServers, mcpTools),
       ...browserToolOptionsFromSessions(config, browserSessions)
@@ -987,6 +1063,7 @@ export function createSpaceAgentAdapter(options: {
       paneId: input.pane.id,
       prompt: promptWithAgentContexts(input.content, [
         clipboardToolContext(sendSelection.selectedTools),
+        taskToolContext(sendSelection.selectedTools),
         artifactContext(attachedArtifacts)
       ]),
       artifactIds: attachedArtifacts.filter(isImageTurnArtifact).map((artifact) => artifact.id),

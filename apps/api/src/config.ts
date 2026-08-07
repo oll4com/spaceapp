@@ -111,6 +111,7 @@ export interface SpaceApiConfig {
   internalApiToken: string | null;
   apiRateLimitMax: number;
   telegramSecretRoot: string;
+  agentToolsWriterCommand: string | null;
 }
 
 function parseCsvList(raw: string | undefined): string[] {
@@ -257,6 +258,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     swarmExecutionEnabled: env.SPACE_SWARM_EXECUTION_ENABLED === "true",
     internalApiToken: env.SPACE_INTERNAL_API_TOKEN || null,
     apiRateLimitMax: Math.min(parsePositiveInt(env.SPACE_API_RATE_LIMIT_MAX, 3000), 20000),
-    telegramSecretRoot: env.SPACE_TELEGRAM_SECRET_ROOT || "/opt/spaceapp/secrets/telegram"
+    telegramSecretRoot: env.SPACE_TELEGRAM_SECRET_ROOT || "/opt/spaceapp/secrets/telegram",
+    agentToolsWriterCommand: env.SPACE_AGENT_TOOLS_WRITER || "/opt/spaceapp/bin/space-agent-tools-writer"
   };
 }

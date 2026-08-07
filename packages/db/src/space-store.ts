@@ -17,6 +17,7 @@ import {
   cliMaintenanceAuthHandoffSchema,
   cliMaintenanceEventSchema,
   cliRuntimeSettingSchema,
+  agentToolAssignmentSchema,
   cliToggleRuntimeIdSchema,
   cliToggleRuntimeIds,
   codexCliModeDefaultsSchema,
@@ -52,8 +53,12 @@ import {
   createMemoryConsolidationRunInputSchema,
   linkMemoryCacheInputSchema,
   listClipboardItemsQuerySchema,
+  listTaskItemsQuerySchema,
   listUserLinksQuerySchema,
   listMemoryCacheLinksQuerySchema,
+  taskItemSchema,
+  updateTaskItemInputSchema,
+  upsertTaskItemInputSchema,
   memoryCacheLinkSchema,
   memoryCommandIdempotencySchema,
   memoryConsolidationFindingSchema,
@@ -113,6 +118,7 @@ import {
   updateCodexCliModeDefaultsInputSchema,
   updateCliRuntimeSettingInputSchema,
   updateCliRuntimeVpnInputSchema,
+  updateAgentToolAssignmentInputSchema,
   updateAdminOperationRunInputSchema,
   updateCliMaintenanceAuthHandoffInputSchema,
   swarmLockSchema,
@@ -150,6 +156,7 @@ import {
   type CliMaintenanceAuthHandoff,
   type CliMaintenanceEvent,
   type CliRuntimeSetting,
+  type AgentToolAssignment,
   type CliToggleRuntimeId,
   type CreateUserLinkRequest,
   type CodexAppServerHandshakeCheck,
@@ -197,6 +204,7 @@ import {
   type ClaimSwarmLockInput,
   type ListArtifactsQuery,
   type ListClipboardItemsQuery,
+  type ListTaskItemsQuery,
   type ListUserLinksQuery,
   type ListImportCandidatesQuery,
   type ListMemoryChangeSetsQuery,
@@ -262,6 +270,7 @@ import {
   type SwarmReconcile,
   type SwarmState,
   type SwarmTask,
+  type TaskItem,
   type Turn,
   type UpdateAgentPaneBindingInput,
   type UpdateAdminOperationRunInput,
@@ -287,6 +296,7 @@ import {
   type UpdateCodexCliModeDefaultsInput,
   type UpdateCliRuntimeSettingInput,
   type UpdateCliRuntimeVpnInput,
+  type UpdateAgentToolAssignmentInput,
   type UpdateSpaceAgentMessageInput,
   type UpdateSpaceAgentRunInput,
   type UpdateSpaceAgentSessionInput,
@@ -294,7 +304,9 @@ import {
   type UpdateRoomAgentMissionInput,
   type UpdateSwarmTaskInput,
   type UpdatePaneInput,
+  type UpdateTaskItemInput,
   type UpsertClipboardItemInput,
+  type UpsertTaskItemInput,
   type UpsertAgentPaneStoredSessionInput,
   type UpsertRoomAgentTaskRunInput,
   type UpsertAgentPaneBindingInput,
@@ -340,6 +352,7 @@ import {
   type CompleteTurnInput,
   type ClipboardItemListResult,
   type CreateUserLinkInput,
+  type TaskItemListResult,
   type CompleteSpaceAgentRunInput,
   type CompleteCodexCliTurnMarkerInput,
   type CompletedTurnRecord,
@@ -475,6 +488,21 @@ type ClipboardItemRow = {
   text: string;
   source: ClipboardItem["source"];
   title: string | null;
+  roomId: string | null;
+  paneId: string | null;
+  paneTitle: string | null;
+  occurrenceCount: number;
+  characterCount: number;
+  createdAt: Date | string;
+  lastUsedAt: Date | string;
+};
+
+type TaskItemRow = {
+  id: string;
+  title: string;
+  objective: string;
+  status: TaskItem["status"];
+  source: TaskItem["source"];
   roomId: string | null;
   paneId: string | null;
   paneTitle: string | null;
@@ -934,6 +962,15 @@ type CliRuntimeSettingRow = {
   updatedBy: string | null;
 };
 
+type AgentToolAssignmentRow = {
+  toolId: string;
+  kind: AgentToolAssignment["kind"];
+  scope: AgentToolAssignment["scope"];
+  runtimeIds: string[];
+  updatedAt: Date | string;
+  updatedBy: string | null;
+};
+
 type AdminOperationRunRow = {
   id: string;
   operationType: AdminOperationRun["operationType"];
@@ -1361,6 +1398,23 @@ const clipboardItemSelect = `
     created_at AS "createdAt",
     last_used_at AS "lastUsedAt"
   FROM clipboard_items
+`;
+
+const taskItemSelect = `
+  SELECT
+    id,
+    title,
+    objective,
+    status,
+    source,
+    room_id AS "roomId",
+    pane_id AS "paneId",
+    pane_title AS "paneTitle",
+    occurrence_count AS "occurrenceCount",
+    character_count AS "characterCount",
+    created_at AS "createdAt",
+    last_used_at AS "lastUsedAt"
+  FROM task_items
 `;
 
 const userLinkSelect = `
@@ -1840,6 +1894,17 @@ const cliRuntimeSettingsSelect = `
     updated_at AS "updatedAt",
     updated_by AS "updatedBy"
   FROM cli_runtime_settings
+`;
+
+const agentToolAssignmentsSelect = `
+  SELECT
+    tool_id AS "toolId",
+    kind,
+    scope,
+    runtime_ids AS "runtimeIds",
+    updated_at AS "updatedAt",
+    updated_by AS "updatedBy"
+  FROM agent_tool_assignments
 `;
 
 const adminOperationRunsSelect = `
@@ -2424,6 +2489,14 @@ function mapClipboardItem(row: ClipboardItemRow): ClipboardItem {
   });
 }
 
+function mapTaskItem(row: TaskItemRow): TaskItem {
+  return taskItemSchema.parse({
+    ...row,
+    createdAt: toIso(row.createdAt),
+    lastUsedAt: toIso(row.lastUsedAt)
+  });
+}
+
 function mapUserLink(row: UserLinkRow): UserLink {
   return userLinkSchema.parse({ ...row, createdAt: toIso(row.createdAt), updatedAt: toIso(row.updatedAt) });
 }
@@ -2899,6 +2972,17 @@ function mapCliRuntimeSetting(row: CliRuntimeSettingRow): CliRuntimeSetting {
     runtimeId: row.runtimeId,
     enabled: row.enabled,
     vpnEnabled: row.vpnEnabled,
+    updatedAt: toIso(row.updatedAt),
+    updatedBy: row.updatedBy
+  });
+}
+
+function mapAgentToolAssignment(row: AgentToolAssignmentRow): AgentToolAssignment {
+  return agentToolAssignmentSchema.parse({
+    toolId: row.toolId,
+    kind: row.kind,
+    scope: row.scope,
+    runtimeIds: row.runtimeIds ?? [],
     updatedAt: toIso(row.updatedAt),
     updatedBy: row.updatedBy
   });
@@ -4284,6 +4368,187 @@ export class PostgresSpaceStore implements SpaceStore {
     return result.rowCount ?? 0;
   }
 
+  async upsertTaskItem(input: UpsertTaskItemInput): Promise<TaskItem> {
+    const parsed = upsertTaskItemInputSchema.parse(input);
+    const contentHash = createHash("sha256").update(parsed.objective).digest("hex");
+    return this.withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [parsed.ownerUserId]);
+      const result = await client.query<TaskItemRow>(
+        `
+          INSERT INTO task_items (
+            id, owner_user_id, content_hash, title, objective, status, source, room_id, pane_id, pane_title,
+            occurrence_count, character_count, created_at, last_used_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, char_length($5), clock_timestamp(), clock_timestamp())
+          ON CONFLICT (owner_user_id, content_hash)
+          DO UPDATE SET
+            title = EXCLUDED.title,
+            objective = EXCLUDED.objective,
+            status = EXCLUDED.status,
+            room_id = EXCLUDED.room_id,
+            pane_id = EXCLUDED.pane_id,
+            pane_title = EXCLUDED.pane_title,
+            occurrence_count = task_items.occurrence_count + 1,
+            character_count = EXCLUDED.character_count,
+            last_used_at = clock_timestamp()
+          RETURNING
+            id,
+            title,
+            objective,
+            status,
+            source,
+            room_id AS "roomId",
+            pane_id AS "paneId",
+            pane_title AS "paneTitle",
+            occurrence_count AS "occurrenceCount",
+            character_count AS "characterCount",
+            created_at AS "createdAt",
+            last_used_at AS "lastUsedAt"
+        `,
+        [
+          makeSpaceId("task"),
+          parsed.ownerUserId,
+          contentHash,
+          parsed.title,
+          parsed.objective,
+          parsed.status,
+          parsed.source,
+          parsed.roomId ?? null,
+          parsed.paneId ?? null,
+          parsed.paneTitle ?? null
+        ]
+      );
+      await client.query(
+        `
+          DELETE FROM task_items
+          WHERE owner_user_id = $1
+            AND id NOT IN (
+              SELECT id
+              FROM task_items
+              WHERE owner_user_id = $1
+              ORDER BY last_used_at DESC, id DESC
+              LIMIT 100
+            )
+        `,
+        [parsed.ownerUserId]
+      );
+      return mapTaskItem(firstOrNotFound(result.rows, "Task item was not stored."));
+    });
+  }
+
+  async getTaskItem(ownerUserId: string, taskItemId: string): Promise<TaskItem | null> {
+    const result = await this.pool.query<TaskItemRow>(
+      `${taskItemSelect} WHERE owner_user_id = $1 AND id = $2 LIMIT 1`,
+      [ownerUserId, taskItemId]
+    );
+    return result.rows[0] ? mapTaskItem(result.rows[0]) : null;
+  }
+
+  async listTaskItems(
+    ownerUserId: string,
+    query: ListTaskItemsQuery = { page: 1, pageSize: 25 }
+  ): Promise<TaskItemListResult> {
+    const parsed = listTaskItemsQuerySchema.parse(query);
+    const conditions = ["owner_user_id = $1"];
+    const values: unknown[] = [ownerUserId];
+    if (parsed.status) {
+      values.push(parsed.status);
+      conditions.push(`status = $${values.length}`);
+    }
+    if (parsed.q) {
+      const escapedSearch = parsed.q.replace(/[\\%_]/g, "\\$&");
+      values.push(`%${escapedSearch}%`);
+      conditions.push(`(title ILIKE $${values.length} ESCAPE '\\' OR objective ILIKE $${values.length} ESCAPE '\\')`);
+    }
+    const where = `WHERE ${conditions.join(" AND ")}`;
+    const countResult = await this.pool.query<CountRow>(
+      `SELECT count(*) AS count FROM task_items ${where}`,
+      values
+    );
+    const pageValues = [...values, parsed.pageSize, (parsed.page - 1) * parsed.pageSize];
+    const itemsResult = await this.pool.query<TaskItemRow>(
+      `${taskItemSelect} ${where} ORDER BY last_used_at DESC, id DESC LIMIT $${pageValues.length - 1} OFFSET $${pageValues.length}`,
+      pageValues
+    );
+    return {
+      items: itemsResult.rows.map(mapTaskItem),
+      total: Number.parseInt(String(countResult.rows[0]?.count ?? 0), 10)
+    };
+  }
+
+  async updateTaskItem(ownerUserId: string, taskItemId: string, input: UpdateTaskItemInput): Promise<TaskItem> {
+    const parsed = updateTaskItemInputSchema.parse(input);
+    const updates: string[] = [];
+    const values: unknown[] = [ownerUserId, taskItemId];
+    if (parsed.title !== undefined) {
+      values.push(parsed.title);
+      updates.push(`title = $${values.length}`);
+    }
+    if (parsed.objective !== undefined) {
+      values.push(parsed.objective);
+      updates.push(`objective = $${values.length}`, `character_count = char_length($${values.length})`);
+    }
+    if (parsed.status !== undefined) {
+      values.push(parsed.status);
+      updates.push(`status = $${values.length}`);
+    }
+    if (updates.length === 0) {
+      throw new Error("Task update must include title, objective, or status.");
+    }
+    updates.push("last_used_at = clock_timestamp()");
+    const result = await this.pool.query<TaskItemRow>(
+      `
+        UPDATE task_items
+        SET ${updates.join(", ")}
+        WHERE owner_user_id = $1 AND id = $2
+        RETURNING
+          id,
+          title,
+          objective,
+          status,
+          source,
+          room_id AS "roomId",
+          pane_id AS "paneId",
+          pane_title AS "paneTitle",
+          occurrence_count AS "occurrenceCount",
+          character_count AS "characterCount",
+          created_at AS "createdAt",
+          last_used_at AS "lastUsedAt"
+      `,
+      values
+    );
+    return mapTaskItem(firstOrNotFound(result.rows, `Task item ${taskItemId} was not found.`));
+  }
+
+  async deleteTaskItem(ownerUserId: string, taskItemId: string): Promise<TaskItem> {
+    const result = await this.pool.query<TaskItemRow>(
+      `
+        DELETE FROM task_items
+        WHERE owner_user_id = $1 AND id = $2
+        RETURNING
+          id,
+          title,
+          objective,
+          status,
+          source,
+          room_id AS "roomId",
+          pane_id AS "paneId",
+          pane_title AS "paneTitle",
+          occurrence_count AS "occurrenceCount",
+          character_count AS "characterCount",
+          created_at AS "createdAt",
+          last_used_at AS "lastUsedAt"
+      `,
+      [ownerUserId, taskItemId]
+    );
+    return mapTaskItem(firstOrNotFound(result.rows, `Task item ${taskItemId} was not found.`));
+  }
+
+  async clearTaskItems(ownerUserId: string): Promise<number> {
+    const result = await this.pool.query("DELETE FROM task_items WHERE owner_user_id = $1", [ownerUserId]);
+    return result.rowCount ?? 0;
+  }
+
   private async initializeUserLinks(ownerUserId: string): Promise<void> {
     await this.withTransaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`user-links:${ownerUserId}`]);
@@ -4479,6 +4744,64 @@ export class PostgresSpaceStore implements SpaceStore {
       [parsedRuntimeId, parsed.enabled, updatedAt, actorId]
     );
     return mapCliRuntimeSetting(firstOrNotFound(result.rows, `CLI VPN setting ${parsedRuntimeId} was not updated.`));
+  }
+
+  async listAgentToolAssignments(): Promise<AgentToolAssignment[]> {
+    const result = await this.pool.query<AgentToolAssignmentRow>(`${agentToolAssignmentsSelect} ORDER BY tool_id ASC`);
+    return result.rows.map(mapAgentToolAssignment);
+  }
+
+  async getAgentToolAssignment(toolId: string): Promise<AgentToolAssignment | null> {
+    const parsedToolId = idSchema.parse(toolId);
+    const result = await this.pool.query<AgentToolAssignmentRow>(
+      `${agentToolAssignmentsSelect} WHERE tool_id = $1`,
+      [parsedToolId]
+    );
+    return result.rows[0] ? mapAgentToolAssignment(result.rows[0]) : null;
+  }
+
+  async updateAgentToolAssignment(
+    toolId: string,
+    input: UpdateAgentToolAssignmentInput,
+    updatedBy: string
+  ): Promise<AgentToolAssignment> {
+    const parsedToolId = idSchema.parse(toolId);
+    const parsed = updateAgentToolAssignmentInputSchema.parse(input);
+    const actorId = idSchema.parse(updatedBy);
+    const updatedAt = nowIso();
+    const result = await this.pool.query<AgentToolAssignmentRow>(
+      `
+        INSERT INTO agent_tool_assignments (tool_id, kind, scope, runtime_ids, updated_at, updated_by)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (tool_id) DO UPDATE SET
+          kind = EXCLUDED.kind,
+          scope = EXCLUDED.scope,
+          runtime_ids = EXCLUDED.runtime_ids,
+          updated_at = EXCLUDED.updated_at,
+          updated_by = EXCLUDED.updated_by
+        RETURNING
+          tool_id AS "toolId",
+          kind,
+          scope,
+          runtime_ids AS "runtimeIds",
+          updated_at AS "updatedAt",
+          updated_by AS "updatedBy"
+      `,
+      [parsedToolId, parsed.kind, parsed.scope, parsed.runtimeIds, updatedAt, actorId]
+    );
+    return mapAgentToolAssignment(firstOrNotFound(result.rows, `Agent tool ${parsedToolId} was not updated.`));
+  }
+
+  async deleteAgentToolAssignment(toolId: string): Promise<AgentToolAssignment | null> {
+    const parsedToolId = idSchema.parse(toolId);
+    const result = await this.pool.query<AgentToolAssignmentRow>(
+      `${agentToolAssignmentsSelect} WHERE tool_id = $1`,
+      [parsedToolId]
+    );
+    const existing = result.rows[0];
+    if (!existing) return null;
+    await this.pool.query("DELETE FROM agent_tool_assignments WHERE tool_id = $1", [parsedToolId]);
+    return mapAgentToolAssignment(existing);
   }
 
   async createAdminOperationRun(input: CreateAdminOperationRunInput): Promise<AdminOperationRun> {
@@ -8491,6 +8814,20 @@ export class PostgresSpaceStore implements SpaceStore {
       }
       return updated;
     }, { deadlockRetries: 1 });
+  }
+
+  async touchPaneCliSessionActivity(
+    sessionId: string,
+    _traceId = makeSpaceId("trace")
+  ): Promise<void> {
+    await this.withTransaction(async (client) => {
+      await client.query(
+        `UPDATE pane_cli_sessions
+         SET updated_at = now()
+         WHERE session_id = $1 AND status = 'RUNNING'`,
+        [sessionId]
+      );
+    });
   }
 
   async appendPaneCliTranscriptChunk(

@@ -1,4 +1,4 @@
-import { BrainCircuit, Check } from "../ui-theme/app-icons.js";
+import { BrainCircuit, Check, ChevronLeft } from "../ui-theme/app-icons.js";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PaneCliModelSettings } from "@space/contracts";
 
@@ -39,6 +39,7 @@ export function CodexModelPicker({
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [step, setStep] = useState<"models" | "reasoning">("models");
   const [feedback, setFeedback] = useState<{ message: string; tone: "good" | "bad" } | null>(null);
   const [draft, setDraft] = useState<{ modelId: string; reasoningEffort: string } | null>(null);
   const [confirmed, setConfirmed] = useState(settings.current);
@@ -70,6 +71,7 @@ export function CodexModelPicker({
     setExpanded(false);
     setDraft(null);
     setFeedback(null);
+    setStep("models");
     if (restoreFocus) triggerRef.current?.focus();
   }
 
@@ -80,6 +82,7 @@ export function CodexModelPicker({
     setExpanded(true);
     setDraft(null);
     setFeedback(null);
+    setStep("models");
     triggerRef.current?.focus();
     collapseTimerRef.current = window.setTimeout(() => {
       collapseTimerRef.current = null;
@@ -199,8 +202,26 @@ export function CodexModelPicker({
       : (selectedModel?.displayName ?? current.modelId)
     : "Select model";
 
+  function modelReasoningOptions(
+    model: NonNullable<PaneCliModelSettings["models"][number]>
+  ): Array<{ reasoningEffort: string; description?: string }> {
+    return model.reasoningOptions ?? model.supportedReasoningEfforts.map((reasoningEffort) => ({ reasoningEffort })) ?? [];
+  }
+
   function selectModel(modelId: string, reasoningEffort: string) {
+    const target = settings.models.find((model) => model.id === modelId);
+    if (target && modelReasoningOptions(target).length > 0) {
+      setDraft({ modelId, reasoningEffort });
+      setStep("reasoning");
+      return;
+    }
     void apply(modelId, reasoningEffort);
+  }
+
+  function backToModels() {
+    setDraft(null);
+    setStep("models");
+    setFeedback(null);
   }
 
   async function apply(modelId: string, effort: string) {
@@ -260,71 +281,90 @@ export function CodexModelPicker({
           aria-label="Codex model and reasoning"
           style={popoverMaxHeight === null ? undefined : { maxHeight: `${popoverMaxHeight}px` }}
         >
-          <div className="terminal-model-popover-head">
-            <div>
-              <strong>Model & reasoning</strong>
-              <small>
-                {settings.controlMode === "OPENCODE"
-                  ? "Applies to subsequent turns in this session"
-                  : settings.isTurnActive
-                    ? "Continues this turn in the same session"
-                    : "Until the next Build/Plan switch"}
-              </small>
-            </div>
-            <span className="terminal-model-transport">Live</span>
-          </div>
-          <div className="terminal-model-options" role="radiogroup" aria-label="Model">
-            {settings.models.map((model) => {
-              const selected = model.id === drafted?.modelId;
-              const isActive = model.id === current?.modelId;
-              const modelEffort = isActive && current ? current.reasoningEffort : model.defaultReasoningEffort;
-              const modelHasReasoning = (model.supportedReasoningEfforts?.length ?? 0) > 0;
-              return (
-                <button
-                  key={model.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  className={selected ? "is-selected" : ""}
-                  disabled={disabled || switching}
-                  onClick={() => selectModel(model.id, modelEffort)}
-                >
-                  <span>{model.displayName}</span>
-                  {modelHasReasoning ? (
-                    <span className="terminal-model-row-reasoning">
-                      {reasoningEffortLabel(modelEffort)}
-                    </span>
-                  ) : null}
-                  {selected ? <Check className="terminal-model-selection-check" size={16} strokeWidth={2.5} aria-hidden="true" /> : null}
-                </button>
-              );
-            })}
-          </div>
-          {reasoningOptions.length > 0 ? (
-            <div ref={reasoningSectionRef} className="terminal-reasoning-section">
-              <span>Reasoning</span>
-              <div className="terminal-reasoning-options" role="radiogroup" aria-label="Reasoning effort">
-                {reasoningOptions.map((option) => {
-                  const selected = option.reasoningEffort === drafted?.reasoningEffort;
+          {step === "models" ? (
+            <>
+              <div className="terminal-model-popover-head">
+                <div>
+                  <strong>Model</strong>
+                  <small>
+                    {settings.controlMode === "OPENCODE"
+                      ? "Applies to subsequent turns in this session"
+                      : settings.isTurnActive
+                        ? "Continues this turn in the same session"
+                        : "Until the next Build/Plan switch"}
+                  </small>
+                </div>
+                <span className="terminal-model-transport">Live</span>
+              </div>
+              <div className="terminal-model-options" role="radiogroup" aria-label="Model">
+                {settings.models.map((model) => {
+                  const selected = model.id === drafted?.modelId;
+                  const modelEffort =
+                    model.id === current?.modelId && current
+                      ? current.reasoningEffort
+                      : model.defaultReasoningEffort;
                   return (
                     <button
-                      key={option.reasoningEffort}
+                      key={model.id}
                       type="button"
                       role="radio"
-                      aria-label={option.reasoningEffort}
                       aria-checked={selected}
                       className={selected ? "is-selected" : ""}
                       disabled={disabled || switching}
-                      onClick={() => void apply(draftedModel?.id ?? drafted?.modelId ?? "", option.reasoningEffort)}
+                      onClick={() => selectModel(model.id, modelEffort)}
                     >
-                      <span>{reasoningEffortLabel(option.reasoningEffort)}</span>
-                      {selected ? <Check className="terminal-model-selection-check" size={14} strokeWidth={2.5} aria-hidden="true" /> : null}
+                      <span>{model.displayName}</span>
+                      {selected ? <Check className="terminal-model-selection-check" size={16} strokeWidth={2.5} aria-hidden="true" /> : null}
                     </button>
                   );
                 })}
               </div>
-            </div>
-          ) : null}
+            </>
+          ) : (
+            <>
+              <div className="terminal-model-popover-head">
+                <button
+                  type="button"
+                  className="terminal-model-back"
+                  aria-label="Back to models"
+                  onClick={backToModels}
+                >
+                  <ChevronLeft size={16} strokeWidth={2.5} aria-hidden="true" />
+                </button>
+                <div>
+                  <strong>{draftedModel?.displayName ?? "Reasoning"}</strong>
+                  <small>Choose reasoning effort for this model</small>
+                </div>
+                <span className="terminal-model-transport">Live</span>
+              </div>
+              {reasoningOptions.length > 0 ? (
+                <div ref={reasoningSectionRef} className="terminal-reasoning-section">
+                  <span>Reasoning</span>
+                  <div className="terminal-reasoning-options" role="radiogroup" aria-label="Reasoning effort">
+                    {reasoningOptions.map((option) => {
+                      const selected = option.reasoningEffort === drafted?.reasoningEffort;
+                      return (
+                        <button
+                          key={option.reasoningEffort}
+                          type="button"
+                          role="radio"
+                          aria-label={option.reasoningEffort}
+                          aria-checked={selected}
+                          className={selected ? "is-selected" : ""}
+                          disabled={disabled || switching}
+                          onClick={() => void apply(draftedModel?.id ?? drafted?.modelId ?? "", option.reasoningEffort)}
+                        >
+                          <span>{reasoningEffortLabel(option.reasoningEffort)}</span>
+                          {option.description ? <small>{option.description}</small> : null}
+                          {selected ? <Check className="terminal-model-selection-check" size={14} strokeWidth={2.5} aria-hidden="true" /> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+            </>
+          )}
           {feedback ? (
             <div className={`terminal-model-feedback ${feedback.tone}`} role={feedback.tone === "bad" ? "alert" : "status"}>
               {feedback.message}

@@ -3,6 +3,7 @@ import type {
   Artifact,
   AuthMe,
   ClipboardItem,
+  TaskItem,
   CliSessionReapResponse,
   CliSessionStats,
   CodexCliModeDefaultsResponse,
@@ -58,6 +59,7 @@ export type DemoFixture = {
   artifacts: Artifact[];
   auth: AuthMe;
   clipboardItems: ClipboardItem[];
+  taskItems: TaskItem[];
   links: UserLink[];
   rooms: Room[];
   panes: Pane[];
@@ -536,6 +538,33 @@ export function createDemoFixture(): DemoFixture {
       paneTitle: "Product Copilot",
       occurrenceCount: 1,
       characterCount: 98,
+      createdAt: DEMO_FIXED_AT,
+      lastUsedAt: DEMO_FIXED_AT
+    }],
+    taskItems: [{
+      id: "task:demo-welcome",
+      title: "Welcome task",
+      objective: "Run the guided tour of this demo workspace.",
+      status: "OPEN",
+      source: "MANUAL",
+      roomId: rooms[0]!.id,
+      paneId: "pane:demo-chat",
+      paneTitle: "Product Copilot",
+      occurrenceCount: 1,
+      characterCount: Array.from("Run the guided tour of this demo workspace.").length,
+      createdAt: DEMO_FIXED_AT,
+      lastUsedAt: DEMO_FIXED_AT
+    }, {
+      id: "task:demo-verify",
+      title: "Verify release",
+      objective: "Verify the release candidate passes readyz checks.",
+      status: "RUNNING",
+      source: "AGENT",
+      roomId: rooms[0]!.id,
+      paneId: "pane:demo-chat",
+      paneTitle: "Product Copilot",
+      occurrenceCount: 1,
+      characterCount: Array.from("Verify the release candidate passes readyz checks.").length,
       createdAt: DEMO_FIXED_AT,
       lastUsedAt: DEMO_FIXED_AT
     }],

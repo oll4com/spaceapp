@@ -41,6 +41,7 @@ import type {
   ClipboardItem,
   ClipboardSource,
   CreateClipboardItemRequest,
+  CreateTaskItemRequest,
   CreateRoomPanesRequest,
   DeleteRoomAgentFilesResponse,
   DeleteRoomMediaResponse,
@@ -58,7 +59,16 @@ import type {
   CliVpnRoutingStatus,
   CliMaintenanceRequest,
   CliRuntimeSettingsResponse,
+  AgentToolsCatalogResponse,
+  AgentToolAssignment,
+  AgentToolLaunchTaskInput,
+  AgentToolLaunchTaskResponse,
+  ApplyAgentToolsInput,
+  ApplyAgentToolsResult,
+  UpdateAgentToolAssignmentInput,
   RestartCliRuntimeVpnSessionsResult,
+  CliRuntimeRestartSessionsResult,
+  CliRuntimeRestartAllResult,
   CliSessionStats,
   CliTaskHistoryResponse,
   CodexEnvironment,
@@ -177,6 +187,8 @@ import type {
   SwarmTask,
   SwarmTaskRole,
   SwarmTaskStatus,
+  TaskItem,
+  TaskStatus,
   TelegramIntegrationStatus,
   TelegramPairingResponse,
   Turn,
@@ -729,6 +741,31 @@ export const api = {
     }),
   clearClipboardItems: () =>
     request<{ deletedCount: number }>("/api/clipboard-items", { method: "DELETE" }),
+  taskItems: (query: { q?: string; status?: TaskStatus; page?: number; pageSize?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (query.q) params.set("q", query.q);
+    if (query.status) params.set("status", query.status);
+    if (query.page !== undefined) params.set("page", String(query.page));
+    if (query.pageSize !== undefined) params.set("pageSize", String(query.pageSize));
+    const suffix = params.toString();
+    return request<Paginated<TaskItem>>(`/api/task-items${suffix ? `?${suffix}` : ""}`);
+  },
+  createTaskItem: (input: CreateTaskItemRequest) =>
+    request<TaskItem>("/api/task-items", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateTaskItem: (taskItemId: string, input: { title?: string; objective?: string; status?: TaskStatus }) =>
+    request<TaskItem>(`/api/task-items/${encodeURIComponent(taskItemId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteTaskItem: (taskItemId: string) =>
+    request<{ id: string; deleted: true }>(`/api/task-items/${encodeURIComponent(taskItemId)}`, {
+      method: "DELETE"
+    }),
+  clearTaskItems: () =>
+    request<{ deletedCount: number }>("/api/task-items", { method: "DELETE" }),
   links: (query: { q?: string; isQuick?: boolean; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
@@ -1077,6 +1114,34 @@ export const api = {
   warmCliRuntimes,
   invalidateCliRuntimes,
   cliRuntimeSettings: () => request<CliRuntimeSettingsResponse>("/api/cli/runtime-settings"),
+  cliRuntimeRestart: (runtimeId: string) =>
+    request<CliRuntimeRestartSessionsResult>(`/api/admin/cli/runtime/${encodeURIComponent(runtimeId)}/restart`, {
+      method: "POST"
+    }),
+  cliRuntimeRestartAll: () =>
+    request<CliRuntimeRestartAllResult>("/api/admin/cli/runtime/restart-all", {
+      method: "POST"
+    }),
+  agentToolsCatalog: () => request<AgentToolsCatalogResponse>("/api/agent-tools/catalog"),
+  updateAgentToolAssignment: (toolId: string, input: UpdateAgentToolAssignmentInput) =>
+    request<AgentToolAssignment>(`/api/agent-tools/assignments/${encodeURIComponent(toolId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteAgentToolAssignment: (toolId: string) =>
+    request<{ toolId: string; deleted: true }>(`/api/agent-tools/assignments/${encodeURIComponent(toolId)}`, {
+      method: "DELETE"
+    }),
+  applyAgentTools: (assignments: ApplyAgentToolsInput["assignments"]) =>
+    request<ApplyAgentToolsResult>("/api/agent-tools/apply", {
+      method: "POST",
+      body: JSON.stringify({ assignments })
+    }),
+  agentToolLaunchTask: (input: AgentToolLaunchTaskInput) =>
+    request<AgentToolLaunchTaskResponse>("/api/agent-tools/launch", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   cliGlobalEgress: () => request<CliGlobalEgressStatus>("/api/cli/egress"),
   updateCliGlobalEgress: (routeId: CliEgressRouteId) =>
     request<UpdateCliGlobalEgressResult>("/api/cli/egress/route", {

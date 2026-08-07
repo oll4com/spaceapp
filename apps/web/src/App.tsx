@@ -31,6 +31,7 @@ import {
   History,
   Images,
   Link as LinkIcon,
+  ListTodo,
   Loader2,
   Lock,
   LogOut,
@@ -90,6 +91,7 @@ import type {
   CodexAppServerHandshakeCheck,
   CodexAppServerStatus,
   CodexAppServerTurnSmokeCheck,
+  TaskItem,
   CreateProviderInput,
   CreateRoomPanesRequest,
   Event as SpaceEvent,
@@ -184,6 +186,7 @@ import {
   type BrowserPaneAction
 } from "./features/browser-pane/events.js";
 import { ClipboardDock } from "./features/clipboard-dock/ClipboardDock.js";
+import { TaskDock } from "./features/task-dock/TaskDock.js";
 import {
   AppDiagnosticsGlobalIndicators,
   AppDiagnosticsSettingsCard
@@ -205,6 +208,8 @@ import { MediaDock } from "./features/media-dock/MediaDock.js";
 import { reorderPanesByTarget, setPaneDragData } from "./features/pane-drag/pane-drag.js";
 import { ActivityLogDock } from "./features/activity-log/ActivityLogDock.js";
 import { AgentFilesDock } from "./features/agent-files/AgentFilesDock.js";
+import { AgentToolsDock } from "./features/agent-tools/AgentToolsDock.js";
+import { CliDock } from "./features/cli-dock/CliDock.js";
 import { PANE_LAYOUT_MENU_ID, PaneLayoutMenu } from "./features/pane-layout/PaneLayoutMenu.js";
 import { PANE_SPAN_ALL_MENU_ID, PaneSpanAllMenu } from "./features/pane-layout/PaneSpanAllMenu.js";
 import { EmbeddedDashboardDialog } from "./features/embedded-dashboard/EmbeddedDashboardDialog.js";
@@ -352,7 +357,7 @@ function PaneModeIcon({ pane }: { pane: Pick<Pane, "mode" | "terminalRuntimeId">
   return <Icon aria-hidden="true" />;
 }
 
-type SideSurface = "rooms" | "room-agent" | "media" | "agent-files" | "clipboard" | "links" | "settings" | "health" | "logs";
+type SideSurface = "rooms" | "room-agent" | "media" | "agent-files" | "clipboard" | "tasks" | "links" | "settings" | "health" | "logs" | "agent-tools" | "cli";
 type EventStreamStatus = "idle" | "connecting" | "connected" | "reconnecting" | "unavailable";
 type ActiveRoomEventStreamStatus = "idle" | "connecting" | "connected" | "disconnected" | "unavailable";
 type RoomRefreshCategory = "panes" | "turns" | "swarm" | "events";
@@ -579,6 +584,7 @@ type TerminalPaneAction =
   | { action: "attach_clip_image"; file: File }
   | { action: "insert_text"; text: string }
   | { action: "insert_clipboard_text"; text: string }
+  | { action: "start_task_item"; objective: string }
   | { action: "ensure_plan_mode" }
   | { action: "enter_native_plan_mode"; runtimeId: "cli:gemini" | "cli:qwen" }
   | { action: "control_key"; key: "shift_tab" | "escape" }
@@ -669,10 +675,13 @@ const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: string; su
   media: { icon: Images, label: "media dock", surfaceLabel: "Media dock" },
   "agent-files": { icon: FolderOpen, label: "Agent Files", surfaceLabel: "Agent Files" },
   clipboard: { icon: Clipboard, label: "clipboard", surfaceLabel: "Clipboard" },
+  tasks: { icon: ListTodo, label: "tasks", surfaceLabel: "Tasks" },
   links: { icon: LinkIcon, label: "links", surfaceLabel: "Links" },
   settings: { icon: Settings2, label: "settings dock", surfaceLabel: "Settings dock" },
   health: { icon: Activity, label: "health dock", surfaceLabel: "Health dock" },
-  logs: { icon: History, label: "activity log", surfaceLabel: "Activity log" }
+  logs: { icon: History, label: "activity log", surfaceLabel: "Activity log" },
+  "agent-tools": { icon: Wrench, label: "agent tools", surfaceLabel: "Agent Tools" },
+  cli: { icon: Terminal, label: "cli dock", surfaceLabel: "CLI dock" }
 };
 
 type BlueprintStatus = "LIVE" | "GATED" | "NEXT";
@@ -2295,6 +2304,12 @@ export function App() {
   const [serverRestartError, setServerRestartError] = useState<string | null>(null);
   useAutoDismiss(serverRestartMessage, setServerRestartMessage);
   useAutoDismiss(serverRestartError, setServerRestartError);
+  const [isCliRuntimeRestartAllDialogOpen, setIsCliRuntimeRestartAllDialogOpen] = useState(false);
+  const [cliRuntimeRestartAllPending, setCliRuntimeRestartAllPending] = useState(false);
+  const [cliRuntimeRestartAllMessage, setCliRuntimeRestartAllMessage] = useState<string | null>(null);
+  const [cliRuntimeRestartAllError, setCliRuntimeRestartAllError] = useState<string | null>(null);
+  useAutoDismiss(cliRuntimeRestartAllMessage, setCliRuntimeRestartAllMessage);
+  useAutoDismiss(cliRuntimeRestartAllError, setCliRuntimeRestartAllError);
   const [restoreAllPending, setRestoreAllPending] = useState(false);
   const [isRoomRenameOpen, setIsRoomRenameOpen] = useState(false);
   const [isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen] = useState(false);
@@ -4585,6 +4600,17 @@ export function App() {
     }
   }
 
+  function insertTaskItem(item: TaskItem) {
+    if (!activePane) return;
+    if (activePane.mode === "CHAT") {
+      dispatchAgentPaneAction(activePane.id, { action: "insert_text", text: item.objective });
+      return;
+    }
+    if (activePane.mode === "TERMINAL") {
+      dispatchTerminalPaneAction(activePane.id, { action: "start_task_item", objective: item.objective });
+    }
+  }
+
   useEffect(() => {
     if (
       !auth?.isAuthenticated ||
@@ -5081,6 +5107,40 @@ export function App() {
     setIsServerRestartDialogOpen(true);
   }
 
+  function openCliRuntimeRestartAllDialog() {
+    setCliRuntimeRestartAllError(null);
+    setCliRuntimeRestartAllMessage(null);
+    setIsCliRuntimeRestartAllDialogOpen(true);
+  }
+
+  function closeCliRuntimeRestartAllDialog() {
+    if (cliRuntimeRestartAllPending) return;
+    setIsCliRuntimeRestartAllDialogOpen(false);
+    window.requestAnimationFrame(() => serverActionsButtonRef.current?.focus());
+  }
+
+  async function confirmCliRuntimeRestartAll() {
+    if (cliRuntimeRestartAllPending) return;
+    setCliRuntimeRestartAllPending(true);
+    setCliRuntimeRestartAllError(null);
+    setCliRuntimeRestartAllMessage("Restarting every CLI runtime session...");
+    try {
+      const result = await api.cliRuntimeRestartAll();
+      const restarted = result.restartedSessionIds.length;
+      const failed = result.failedSessionIds.length;
+      setCliRuntimeRestartAllMessage(
+        failed > 0
+          ? `Restart requested: ${restarted} sessions restarted across ${result.requestedRuntimes.length} runtimes, ${failed} failed.`
+          : `Restart requested: ${restarted} sessions restarted across ${result.requestedRuntimes.length} runtimes.`
+      );
+    } catch (err) {
+      setCliRuntimeRestartAllMessage(null);
+      setCliRuntimeRestartAllError(err instanceof Error ? err.message : "CLI restart-all failed.");
+    } finally {
+      setCliRuntimeRestartAllPending(false);
+    }
+  }
+
   function closeServerRestartDialog() {
     if (serverRestartPending) return;
     setIsServerRestartDialogOpen(false);
@@ -5479,6 +5539,14 @@ export function App() {
           icon: ServerCog,
           disabled: serverRestartPending,
           onSelect: openServerRestartDialog
+        },
+        {
+          id: "restart-all-cli-runtimes",
+          label: "Restart all CLI runtimes",
+          description: "Restart sessions for every CLI type (codex, claude, gemini, opencode, kimi, ...).",
+          icon: Terminal,
+          disabled: cliRuntimeRestartAllPending,
+          onSelect: openCliRuntimeRestartAllDialog
         },
         {
           id: "space-cli-maintenance",
@@ -6234,16 +6302,9 @@ export function App() {
         canManageDiagnostics={auth?.user?.role === "ADMIN"}
         canManageSourceControl={auth?.user?.role === "ADMIN"}
         canManageTelegram={auth?.user?.role === "ADMIN"}
-        cliImagePreviewLimit={cliImagePreviewLimit}
-        warmRoomEnabled={warmRoomEnabled}
-        warmRoomCapacity={warmRoomLiveCapacity}
         suppressNotifications={suppressNotifications}
         providerSettings={providerSettings}
         providers={providers}
-        onCliImagePreviewLimitChange={setCliImagePreviewLimit}
-        onWarmRoomEnabledChange={(enabled) => {
-          setWarmRoomEnabled(writeStoredWarmRoomEnabled(enabled));
-        }}
         onSuppressNotificationsChange={(suppressed) => {
           setSuppressNotifications(writeStoredSuppressNotifications(suppressed));
         }}
@@ -6257,6 +6318,24 @@ export function App() {
       />
     ) : activeSideSurface === "media" ? (
       <MediaDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
+    ) : activeSideSurface === "agent-tools" ? (
+      <AgentToolsDock
+        canManage={auth?.user?.role === "ADMIN"}
+        refreshKey={roomEvents.at(-1)?.id ?? null}
+      />
+    ) : activeSideSurface === "cli" ? (
+      <CliDock
+        canManage={auth?.user?.role === "ADMIN"}
+        cliImagePreviewLimit={cliImagePreviewLimit}
+        warmRoomEnabled={warmRoomEnabled}
+        warmRoomCapacity={warmRoomLiveCapacity}
+        onCliImagePreviewLimitChange={setCliImagePreviewLimit}
+        onWarmRoomEnabledChange={(enabled) => {
+          setWarmRoomEnabled(writeStoredWarmRoomEnabled(enabled));
+        }}
+        onOpenRestartAll={openCliRuntimeRestartAllDialog}
+        restartAllPending={cliRuntimeRestartAllPending}
+      />
     ) : activeSideSurface === "agent-files" ? (
       <AgentFilesDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
     ) : activeSideSurface === "clipboard" ? (
@@ -6264,6 +6343,12 @@ export function App() {
         canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}
         activePaneLabel={activePane ? displayPaneTitle(activePane) : null}
         onInsert={insertClipboardItem}
+      />
+    ) : activeSideSurface === "tasks" ? (
+      <TaskDock
+        canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}
+        activePaneLabel={activePane ? displayPaneTitle(activePane) : null}
+        onInsert={insertTaskItem}
       />
     ) : activeSideSurface === "links" ? (
       <LinksPanel onOpen={openUserLink} />
@@ -7067,6 +7152,45 @@ export function App() {
                   </section>
                 </div>
               ) : null}
+              {isCliRuntimeRestartAllDialogOpen ? (
+                <div
+                  className="attachment-modal server-restart-modal"
+                  onClick={closeCliRuntimeRestartAllDialog}
+                >
+                  <section
+                    className="attachment-modal-body server-restart-modal-body"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Restart all CLI runtimes"
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape" && !cliRuntimeRestartAllPending) {
+                        event.preventDefault();
+                        closeCliRuntimeRestartAllDialog();
+                      }
+                    }}
+                  >
+                    <header>
+                      <Terminal aria-hidden="true" />
+                      <div>
+                        <h3>Restart all CLI runtimes</h3>
+                        <p>Stops and restarts the sessions of every CLI type one after another.</p>
+                      </div>
+                    </header>
+                    <p>Codex, claude, gemini, opencode, kimi, and the other CLI runtimes are restarted individually; the pane host service itself is not restarted.</p>
+                    {cliRuntimeRestartAllMessage ? <p className="server-restart-status" role="status"><span>{cliRuntimeRestartAllMessage}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setCliRuntimeRestartAllMessage(null)}><X aria-hidden="true" /></button></p> : null}
+                    {cliRuntimeRestartAllError ? <p className="server-restart-error" role="alert"><span>{cliRuntimeRestartAllError}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setCliRuntimeRestartAllError(null)}><X aria-hidden="true" /></button></p> : null}
+                    <div className="server-restart-modal-actions">
+                      <button type="button" autoFocus onClick={closeCliRuntimeRestartAllDialog} disabled={cliRuntimeRestartAllPending}>
+                        Cancel
+                      </button>
+                      <button type="button" className="danger" onClick={() => void confirmCliRuntimeRestartAll()} disabled={cliRuntimeRestartAllPending}>
+                        {cliRuntimeRestartAllPending ? "Restarting..." : "Restart all CLI runtimes"}
+                      </button>
+                    </div>
+                  </section>
+                </div>
+              ) : null}
               {roomToolbar.actionMenu ? (
                 <div
                   className="icon-context-menu"
@@ -7840,19 +7964,14 @@ function AgentSettingsDock({
   canManageDiagnostics,
   canManageSourceControl,
   canManageTelegram,
-  cliImagePreviewLimit,
   currentAppearance,
   currentIconPack,
   currentUiTheme,
   isCodexEnabled,
-  warmRoomEnabled,
-  warmRoomCapacity,
   suppressNotifications,
   providerSettings,
   providers,
-  onCliImagePreviewLimitChange,
   onUiThemeApply,
-  onWarmRoomEnabledChange,
   onSuppressNotificationsChange,
   onProviderSettingsRefresh
 }: {
@@ -7861,19 +7980,14 @@ function AgentSettingsDock({
   canManageDiagnostics: boolean;
   canManageSourceControl: boolean;
   canManageTelegram: boolean;
-  cliImagePreviewLimit: number;
   currentAppearance: ModernAppearance;
   currentIconPack: ModernIconPack;
   currentUiTheme: UiTheme;
   isCodexEnabled: boolean;
-  warmRoomEnabled: boolean;
-  warmRoomCapacity: WarmRoomCapacitySnapshot;
   suppressNotifications: boolean;
   providerSettings: ProviderSettings | null;
   providers: Provider[];
-  onCliImagePreviewLimitChange: (limit: number) => void;
   onUiThemeApply: (selection: { appearance: ModernAppearance; iconPack: ModernIconPack; theme: UiTheme }) => void;
-  onWarmRoomEnabledChange: (enabled: boolean) => void;
   onSuppressNotificationsChange: (suppressed: boolean) => void;
   onProviderSettingsRefresh: (settings: ProviderSettings) => void;
 }) {
@@ -8005,8 +8119,6 @@ function AgentSettingsDock({
         ) : null}
       </section>
 
-      <CliRuntimeSettingsCard canManage={canManageCliRuntimes} />
-
       <SourceControlPublishingCard canManage={canManageSourceControl} />
 
       <CodexCliDefaultsCard client={api} isCodexEnabled={isCodexEnabled} />
@@ -8014,81 +8126,6 @@ function AgentSettingsDock({
       <TelegramIntegrationCard canManage={canManageTelegram} isCodexEnabled={isCodexEnabled} />
 
       <VoiceSettingsCard />
-
-      <section className="agent-settings-card warm-room-cache-settings-card" aria-label="Warm room cache settings">
-        <div className="agent-settings-section-title">
-          <Gauge aria-hidden="true" />
-          <span>
-            <strong>Warm room cache</strong>
-            <small>{warmRoomEnabled ? "Capacity adapts to this browser." : "Disabled in this browser."}</small>
-          </span>
-        </div>
-        <label className="settings-toggle-row warm-room-enable-toggle">
-          <input
-            type="checkbox"
-            name="warm-room-cache-enabled"
-            checked={warmRoomEnabled}
-            onChange={(event) => onWarmRoomEnabledChange(event.target.checked)}
-            aria-label="Enable warm room cache"
-          />
-          <span>Enable warm room cache</span>
-        </label>
-        <dl
-          className="warm-room-capacity-status"
-          role="status"
-          aria-label="Warm room capacity status"
-        >
-          <div><dt>Safe capacity</dt><dd>{warmRoomCapacity.effectiveSafeRoomCapacity} rooms</dd></div>
-          <div><dt>Warm rooms</dt><dd>{warmRoomCapacity.warmRoomCount}</dd></div>
-          <div><dt>Connected panes</dt><dd>{warmRoomCapacity.connectedPaneCount}</dd></div>
-          <div><dt>Memory source</dt><dd>{warmRoomCapacity.memorySource}</dd></div>
-          <div>
-            <dt>Pressure</dt>
-            <dd>{warmRoomCapacity.pressureReasons.length
-              ? warmRoomCapacity.pressureReasons.join(", ")
-              : "Healthy"}</dd>
-          </div>
-          <div>
-            <dt>Admission</dt>
-            <dd>{warmRoomEnabled ? "Auto Open safely" : "Disabled"}</dd>
-          </div>
-        </dl>
-        <p className="settings-card-note">
-          {warmRoomEnabled
-            ? "Space keeps one full-room reserve for an atomic cold reveal."
-            : "Only the active room is mounted while the cache is off."}
-        </p>
-        <p className="settings-card-note">
-          {warmRoomEnabled
-            ? "Pressure reduces hidden warm rooms before affecting navigation."
-            : "CLI processes continue running on the pane host when you leave a room."}
-        </p>
-      </section>
-
-      <section className="agent-settings-card cli-upload-settings-card" aria-label="CLI photo preview settings">
-        <div className="agent-settings-section-title">
-          <Images aria-hidden="true" />
-          <span>
-            <strong>CLI photo previews</strong>
-            <small>{cliImagePreviewLimit} images retained in the floating preview strip.</small>
-          </span>
-        </div>
-        <div className="basic-settings-grid">
-          <label>
-            <span>Photo previews</span>
-            <input
-              type="number"
-              min={MIN_CLI_IMAGE_PREVIEW_LIMIT}
-              max={MAX_CLI_IMAGE_PREVIEW_LIMIT}
-              step={1}
-              aria-label="CLI photo preview limit"
-              name="cli-image-preview-limit"
-              value={cliImagePreviewLimit}
-              onChange={(event) => onCliImagePreviewLimitChange(normalizeCliImagePreviewLimit(event.target.value))}
-            />
-          </label>
-        </div>
-      </section>
 
       <section className="agent-settings-card suppress-notifications-settings-card" aria-label="Notification settings">
         <div className="agent-settings-section-title">

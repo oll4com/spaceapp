@@ -22,6 +22,8 @@ export interface OpenCodeModelDescriptor {
   providerId: string;
   modelId: string;
   displayName: string;
+  variants: string[];
+  defaultVariant: string | null;
 }
 
 export const openCodeReasoningEfforts = [
@@ -138,10 +140,17 @@ interface OpenCodeProviderModel {
   name?: string;
   status?: string;
   enabled?: boolean;
+  variants?: unknown;
+  defaultVariant?: unknown;
 }
 
 interface OpenCodeModelCatalogPayload {
   data?: OpenCodeProviderModel[];
+}
+
+function parseOpenCodeModelVariants(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
 }
 
 export async function fetchOpenCodeSessionModels(
@@ -162,7 +171,9 @@ export async function fetchOpenCodeSessionModels(
   return usable.map((model) => ({
     providerId: typeof model.providerID === "string" && model.providerID.length > 0 ? model.providerID : "opencode",
     modelId: model.id,
-    displayName: typeof model.name === "string" && model.name.length > 0 ? model.name : model.id
+    displayName: typeof model.name === "string" && model.name.length > 0 ? model.name : model.id,
+    variants: parseOpenCodeModelVariants(model.variants),
+    defaultVariant: typeof model.defaultVariant === "string" && model.defaultVariant.length > 0 ? model.defaultVariant : null
   }));
 }
 
@@ -247,11 +258,13 @@ export async function switchOpenCodeSessionModel(
   nativeSessionId: string,
   providerId: string,
   modelId: string,
-  variant?: string | null
+  variant?: string | null,
+  advertisedVariants?: readonly string[] | null
 ): Promise<void> {
   const model: Record<string, string> = { id: modelId, providerID: providerId };
-  if (typeof variant === "string" && variant.length > 0) {
-    model.variant = variant;
+  const namedVariant = typeof variant === "string" && variant.length > 0 ? variant : null;
+  if (namedVariant !== null && (advertisedVariants ?? []).includes(namedVariant)) {
+    model.variant = namedVariant;
   }
   const response = await openCodeServerFetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}/model`, {
     method: "POST",

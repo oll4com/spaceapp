@@ -396,6 +396,14 @@ const clipboardContextTail = [
   "Action bodies: clipboard:list uses type=list with optional q/source/pageSize; clipboard:get uses type=get with clipboardItemId; clipboard:save uses type=save with text; clipboard:save-plan uses type=save-plan with text and an optional title.",
   "V1 allows at most 3 actions per turn. clipboard:save creates an AGENT_NOTE and accepts at most 10,000 characters. clipboard:save-plan stores a PLAN (the full designed plan) and accepts up to 100,000 characters. CLI agents do not have clipboard API access."
 ];
+const taskContextOpening = "Space private task tools selected:";
+const taskContextTail = [
+  "Use these tools only when the operator explicitly asks to list, read, save, or update Space task declarations. Never add task declarations to an ordinary prompt.",
+  "To request a task action, include one fenced block named space-task-actions with JSON only:",
+  '```space-task-actions\n{"version":1,"actions":[{"toolId":"tasks:list","action":{"type":"list","pageSize":10}}]}\n```',
+  "Action bodies: tasks:list uses type=list with optional q/status/pageSize; tasks:get uses type=get with taskItemId; tasks:save uses type=save with title and objective; tasks:update uses type=update with taskItemId and optional status/objective.",
+  "V1 allows at most 3 actions per turn. tasks:save creates an OPEN task with source AGENT and accepts objectives up to 10,000 characters. CLI agents do not have task API access."
+];
 const restartRecoveryPrompt =
   "Continue only unfinished work after the Space worker restarted. Inspect durable room and thread progress before acting, and do not repeat completed actions.";
 const trailingRoomActionMarker = /(?:\n\n)?<space-room-action marker="[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}">Internal recovery marker; ignore and do not mention\.<\/space-room-action>\s*$/i;
@@ -427,11 +435,19 @@ function isTrustedClipboardContext(value: string): boolean {
   return lines.slice(2).join("\n") === clipboardContextTail.join("\n");
 }
 
+function isTrustedTaskContext(value: string): boolean {
+  const lines = value.split("\n");
+  if (lines[0] !== taskContextOpening || !/^tools=tasks:(?:list|get|save|update)(?:, tasks:(?:list|get|save|update))*$/.test(lines[1] ?? "")) {
+    return false;
+  }
+  return lines.slice(2).join("\n") === taskContextTail.join("\n");
+}
+
 function stripTrustedSpacePromptWrapper(value: string): string {
   const separator = "\n\nUser prompt:\n";
   const separatorIndex = value.indexOf(separator);
   const contexts = value.slice(0, separatorIndex < 0 ? undefined : separatorIndex).split("\n\n");
-  if (!contexts.length || !contexts.every((context) => isTrustedArtifactContext(context) || isTrustedClipboardContext(context))) {
+  if (!contexts.length || !contexts.every((context) => isTrustedArtifactContext(context) || isTrustedClipboardContext(context) || isTrustedTaskContext(context))) {
     return value;
   }
   if (separatorIndex < 0) return "";

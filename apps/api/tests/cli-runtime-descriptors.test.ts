@@ -15,10 +15,10 @@ describe("CLI runtime descriptors", () => {
 
   it("keeps every non-root CLI in the canonical Space UI order", () => {
     expect(cliRuntimeDescriptors.map((descriptor) => descriptor.id)).toEqual([
+      "cli:opencode",
       "cli:codex",
       "cli:claude",
       "cli:gemini",
-      "cli:opencode",
       "cli:autohand",
       "cli:qwen",
       "cli:kimi",
@@ -33,10 +33,10 @@ describe("CLI runtime descriptors", () => {
       missingAuthState,
       loginAction
     }))).toEqual([
+      { id: "cli:opencode", authMode: "MANAGED", missingAuthState: "UNAVAILABLE", loginAction: null },
       { id: "cli:codex", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:claude", authMode: "MANAGED", missingAuthState: "UNAVAILABLE", loginAction: null },
       { id: "cli:gemini", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
-      { id: "cli:opencode", authMode: "MANAGED", missingAuthState: "UNAVAILABLE", loginAction: null },
       { id: "cli:autohand", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
       { id: "cli:qwen", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
       { id: "cli:kimi", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
@@ -45,6 +45,34 @@ describe("CLI runtime descriptors", () => {
       { id: "cli:cursor", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:copilot", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" }
     ]);
+  });
+
+  it("defines OpenCode as the first setup connection with the free DeepSeek V4 Flash default model", () => {
+    expect(cliRuntimeDescriptors[0]).toMatchObject({
+      key: "opencode",
+      id: "cli:opencode",
+      providerId: "opencode",
+      providerName: "OpenCode",
+      agentName: "OpenCode CLI",
+      commandName: "opencode-vscode-parity",
+      commandEnv: "SPACE_CLI_OPENCODE_COMMAND",
+      credentialSmokeEnv: "SPACE_CLI_OPENCODE_CREDENTIAL_SMOKE",
+      authMode: "MANAGED",
+      missingAuthState: "UNAVAILABLE",
+      loginAction: null,
+      credentialObservationAction: "credential-observation",
+      credentialSmokeMarker: "SPACE_OPENCODE_OK",
+      stateRoot: "/var/lib/spaceapp-user/.codex/space-opencode",
+      tempDir: "/var/lib/spaceapp-user/.codex/space-opencode/tmp",
+      environment: {
+        XDG_CONFIG_HOME: "/var/lib/spaceapp-user/.config",
+        XDG_DATA_HOME: "/var/lib/spaceapp-user/.codex/space-opencode/data",
+        XDG_CACHE_HOME: "/var/lib/spaceapp-user/.codex/space-opencode/cache",
+        XDG_STATE_HOME: "/var/lib/spaceapp-user/.codex/space-opencode/state"
+      },
+      nativeResumeArgs: ["--continue"],
+      defaultModelId: "opencode/deepseek-v4-flash-free"
+    });
   });
 
   it("defines isolated Autohand setup with fixed OpenRouter and no native resume", () => {

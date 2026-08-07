@@ -1699,6 +1699,9 @@ export class CliTerminalManager {
       this.scheduleCodexNullAgentMessageCheck(managed, markerAtMs - 1000, terminalData);
       this.scheduleCodexThreadBind(managed, markerAtMs - 1000);
     }
+    if (terminalData.trim()) {
+      await this.options.store.touchPaneCliSessionActivity(sessionId, traceId);
+    }
     return { turnMarker, markerAtMs };
   }
 

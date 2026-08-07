@@ -20,10 +20,10 @@ export interface CliRuntimePresentation {
 }
 
 export const CLI_RUNTIME_PRESENTATIONS = Object.freeze([
+  { id: "cli:opencode", brand: "opencode", displayName: "OpenCode CLI", shortLabel: "OpenCode", iconSrc: openCodeLogoUrl },
   { id: "cli:codex", brand: "codex", displayName: "Codex CLI", shortLabel: "Codex", iconSrc: codexLogoUrl },
   { id: "cli:claude", brand: "claude", displayName: "Claude Code CLI", shortLabel: "Claude Code", iconSrc: claudeLogoUrl },
   { id: "cli:gemini", brand: "gemini", displayName: "Gemini CLI", shortLabel: "Gemini", iconSrc: geminiLogoUrl },
-  { id: "cli:opencode", brand: "opencode", displayName: "OpenCode CLI", shortLabel: "OpenCode", iconSrc: openCodeLogoUrl },
   { id: "cli:autohand", brand: "autohand", displayName: "Autohand Code CLI", shortLabel: "Autohand Code", iconSrc: autohandIconUrl },
   { id: "cli:qwen", brand: "qwen", displayName: "Qwen Code CLI", shortLabel: "Qwen Code", iconSrc: qwenCodeLogoUrl },
   { id: "cli:kimi", brand: "kimi", displayName: "Kimi Code CLI", shortLabel: "Kimi Code", iconSrc: kimiLogoUrl },

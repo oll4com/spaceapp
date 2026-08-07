@@ -7,6 +7,7 @@ import {
   adminOperationRunSchema,
   agentPaneBindingSchema,
   agentPaneStoredSessionSchema,
+  agentToolAssignmentSchema,
   artifactSchema,
   authUserSchema,
   browserCaptureJobSchema,
@@ -57,6 +58,10 @@ import {
   memoryChangeSetSummarySchema,
   linkMemoryCacheInputSchema,
   listClipboardItemsQuerySchema,
+  listTaskItemsQuerySchema,
+  taskItemSchema,
+  updateTaskItemInputSchema,
+  upsertTaskItemInputSchema,
   listUserLinksQuerySchema,
   listMemoryCacheLinksQuerySchema,
   memoryCacheLinkSchema,
@@ -115,6 +120,7 @@ import {
   updateSpaceAgentSessionInputSchema,
   upsertAgentPaneStoredSessionInputSchema,
   updateAgentPaneBindingInputSchema,
+  updateAgentToolAssignmentInputSchema,
   upsertAgentPaneBindingInputSchema,
   upsertClipboardItemInputSchema,
   updateUserLinkRequestSchema,
@@ -125,6 +131,7 @@ import type {
   AgentPaneBinding,
   AgentPaneHistoryItem,
   AgentPaneStoredSession,
+  AgentToolAssignment,
   Artifact,
   AuditEvent,
   BrowserCaptureJob,
@@ -183,6 +190,7 @@ import type {
   ClaimSwarmLockInput,
   ListArtifactsQuery,
   ListClipboardItemsQuery,
+  ListTaskItemsQuery,
   ListUserLinksQuery,
   ListImportCandidatesQuery,
   ListMemoryChangeSetsQuery,
@@ -258,6 +266,7 @@ import type {
   TurnRuntime,
   UpdateAgentPaneBindingInput,
   UpdateAdminOperationRunInput,
+  UpdateAgentToolAssignmentInput,
   UpdateCliMaintenanceAuthHandoffInput,
   UpdateArtifactRetentionInput,
   UpdateUserLinkRequest,
@@ -286,11 +295,14 @@ import type {
   UpdateSpaceAgentSessionInput,
   UpdateSwarmTaskInput,
   UpdatePaneInput,
+  UpdateTaskItemInput,
   UpsertClipboardItemInput,
+  UpsertTaskItemInput,
   UpsertAgentPaneStoredSessionInput,
   UpsertRoomAgentTaskRunInput,
   UpsertAgentPaneBindingInput,
   AuthUser,
+  TaskItem,
   UserLink,
   WorkflowRun
 } from "@space/contracts";
@@ -539,6 +551,11 @@ type StoreEventInput = Omit<Event, "id" | "createdAt" | "workflowId"> & { workfl
 
 export interface ClipboardItemListResult {
   items: ClipboardItem[];
+  total: number;
+}
+
+export interface TaskItemListResult {
+  items: TaskItem[];
   total: number;
 }
 
@@ -800,6 +817,12 @@ export interface SpaceStore {
   listClipboardItems(ownerUserId: string, query?: ListClipboardItemsQuery): MaybePromise<ClipboardItemListResult>;
   deleteClipboardItem(ownerUserId: string, clipboardItemId: string): MaybePromise<ClipboardItem>;
   clearClipboardItems(ownerUserId: string): MaybePromise<number>;
+  upsertTaskItem(input: UpsertTaskItemInput): MaybePromise<TaskItem>;
+  getTaskItem(ownerUserId: string, taskItemId: string): MaybePromise<TaskItem | null>;
+  listTaskItems(ownerUserId: string, query?: ListTaskItemsQuery): MaybePromise<TaskItemListResult>;
+  updateTaskItem(ownerUserId: string, taskItemId: string, input: UpdateTaskItemInput): MaybePromise<TaskItem>;
+  deleteTaskItem(ownerUserId: string, taskItemId: string): MaybePromise<TaskItem>;
+  clearTaskItems(ownerUserId: string): MaybePromise<number>;
   listUserLinks(ownerUserId: string, query?: ListUserLinksQuery): MaybePromise<UserLinkListResult>;
   createUserLink(input: CreateUserLinkInput): MaybePromise<UserLink>;
   updateUserLink(ownerUserId: string, linkId: string, input: UpdateUserLinkRequest): MaybePromise<UserLink>;
@@ -818,6 +841,14 @@ export interface SpaceStore {
     input: UpdateCliRuntimeVpnInput,
     updatedBy: string
   ): MaybePromise<CliRuntimeSetting>;
+  listAgentToolAssignments(): MaybePromise<AgentToolAssignment[]>;
+  getAgentToolAssignment(toolId: string): MaybePromise<AgentToolAssignment | null>;
+  updateAgentToolAssignment(
+    toolId: string,
+    input: UpdateAgentToolAssignmentInput,
+    updatedBy: string
+  ): MaybePromise<AgentToolAssignment>;
+  deleteAgentToolAssignment(toolId: string): MaybePromise<AgentToolAssignment | null>;
   createAdminOperationRun(input: CreateAdminOperationRunInput): MaybePromise<AdminOperationRun>;
   getAdminOperationRun(runId: string): MaybePromise<AdminOperationRun | null>;
   listAdminOperationRuns(limit?: number): MaybePromise<AdminOperationRun[]>;
@@ -954,6 +985,7 @@ export interface SpaceStore {
   ): MaybePromise<PaneCliCodexThreadOwnership>;
   createPaneCliSession(input: CreatePaneCliSessionInput, traceId?: string): MaybePromise<PaneCliSession>;
   updatePaneCliSession(sessionId: string, input: UpdatePaneCliSessionInput, traceId?: string): MaybePromise<PaneCliSession>;
+  touchPaneCliSessionActivity(sessionId: string, traceId?: string): MaybePromise<void>;
   appendPaneCliTranscriptChunk(
     input: CreatePaneCliTranscriptChunkInput,
     traceId?: string
@@ -1533,6 +1565,7 @@ export interface SpaceStoreSnapshot {
   rooms: Room[];
   panes: Pane[];
   clipboardItems: Array<{ ownerUserId: string; item: ClipboardItem }>;
+  taskItems: Array<{ ownerUserId: string; item: TaskItem }>;
   userLinks: Array<{ ownerUserId: string; item: UserLink }>;
   roomAgentRequests: RoomAgentRequestRecord[];
   roomAgentMissions: RoomAgentMissionRecord[];
@@ -1559,6 +1592,7 @@ export interface SpaceStoreSnapshot {
   providerSettings: ProviderSettings;
   codexCliModeDefaults: CodexCliModeDefaults | null;
   cliRuntimeSettings: CliRuntimeSetting[];
+  agentToolAssignments: AgentToolAssignment[];
   adminOperationRuns: AdminOperationRun[];
   cliMaintenanceEvents: CliMaintenanceEvent[];
   cliMaintenanceAuthHandoffs: CliMaintenanceAuthHandoff[];
@@ -2180,6 +2214,13 @@ interface InMemoryClipboardRecord {
   item: ClipboardItem;
 }
 
+interface InMemoryTaskItemRecord {
+  ownerUserId: string;
+  contentHash: string;
+  sequence: number;
+  item: TaskItem;
+}
+
 interface InMemoryUserLinkRecord {
   ownerUserId: string;
   item: UserLink;
@@ -2244,12 +2285,15 @@ export class InMemorySpaceStore implements SpaceStore {
   private publicWaitlistSignups = new Map<string, PublicWaitlistSignupInput>();
   private clipboardItems = new Map<string, InMemoryClipboardRecord>();
   private clipboardSequence = 0;
+  private taskItems = new Map<string, InMemoryTaskItemRecord>();
+  private taskSequence = 0;
   private userLinks = new Map<string, InMemoryUserLinkRecord>();
   private initializedUserLinkLibraries = new Set<string>();
   private providers: Provider[];
   private providerSettings: ProviderSettings;
   private codexCliModeDefaults: CodexCliModeDefaults | null = null;
   private cliRuntimeSettings = new Map<CliToggleRuntimeId, CliRuntimeSetting>();
+  private agentToolAssignments = new Map<string, AgentToolAssignment>();
   private adminOperationRuns = new Map<string, AdminOperationRun>();
   private cliMaintenanceEvents = new Map<string, CliMaintenanceEvent>();
   private cliMaintenanceAuthHandoffs = new Map<string, CliMaintenanceAuthHandoff>();
@@ -2318,6 +2362,10 @@ export class InMemorySpaceStore implements SpaceStore {
         ownerUserId: record.ownerUserId,
         item: { ...record.item }
       })),
+      taskItems: [...this.taskItems.values()].map((record) => ({
+        ownerUserId: record.ownerUserId,
+        item: { ...record.item }
+      })),
       userLinks: [...this.userLinks.values()].map((record) => ({
         ownerUserId: record.ownerUserId,
         item: { ...record.item }
@@ -2347,6 +2395,7 @@ export class InMemorySpaceStore implements SpaceStore {
       providerSettings: this.providerSettings,
       codexCliModeDefaults: this.codexCliModeDefaults,
       cliRuntimeSettings: this.listCliRuntimeSettings(),
+      agentToolAssignments: this.listAgentToolAssignments(),
       adminOperationRuns: this.listAdminOperationRuns(500),
       cliMaintenanceEvents: [...this.cliMaintenanceEvents.values()]
         .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id)),
@@ -2704,6 +2753,108 @@ export class InMemorySpaceStore implements SpaceStore {
     return deleted;
   }
 
+  upsertTaskItem(input: UpsertTaskItemInput): TaskItem {
+    const parsed = upsertTaskItemInputSchema.parse(input);
+    const contentHash = createHash("sha256").update(parsed.objective).digest("hex");
+    const existing = [...this.taskItems.values()].find(
+      (record) => record.ownerUserId === parsed.ownerUserId && record.contentHash === contentHash
+    );
+    const timestamp = nowIso();
+    const item = taskItemSchema.parse({
+      id: existing?.item.id ?? makeSpaceId("task"),
+      title: parsed.title,
+      objective: parsed.objective,
+      status: parsed.status,
+      source: parsed.source,
+      roomId: parsed.roomId ?? null,
+      paneId: parsed.paneId ?? null,
+      paneTitle: parsed.paneTitle ?? null,
+      occurrenceCount: (existing?.item.occurrenceCount ?? 0) + 1,
+      characterCount: Array.from(parsed.objective).length,
+      createdAt: existing?.item.createdAt ?? timestamp,
+      lastUsedAt: timestamp
+    });
+    this.taskSequence += 1;
+    this.taskItems.set(item.id, {
+      ownerUserId: parsed.ownerUserId,
+      contentHash,
+      sequence: this.taskSequence,
+      item
+    });
+
+    const stale = [...this.taskItems.values()]
+      .filter((record) => record.ownerUserId === parsed.ownerUserId)
+      .sort((left, right) => right.sequence - left.sequence)
+      .slice(100);
+    for (const record of stale) this.taskItems.delete(record.item.id);
+    return item;
+  }
+
+  getTaskItem(ownerUserId: string, taskItemId: string): TaskItem | null {
+    const record = this.taskItems.get(taskItemId);
+    return record?.ownerUserId === ownerUserId ? record.item : null;
+  }
+
+  listTaskItems(
+    ownerUserId: string,
+    query: ListTaskItemsQuery = { page: 1, pageSize: 25 }
+  ): TaskItemListResult {
+    const parsed = listTaskItemsQuerySchema.parse(query);
+    const search = parsed.q?.toLocaleLowerCase() ?? null;
+    const matching = [...this.taskItems.values()]
+      .filter((record) => record.ownerUserId === ownerUserId)
+      .filter((record) => !parsed.status || record.item.status === parsed.status)
+      .filter(
+        (record) =>
+          !search ||
+          record.item.title.toLocaleLowerCase().includes(search) ||
+          record.item.objective.toLocaleLowerCase().includes(search)
+      )
+      .sort((left, right) => right.sequence - left.sequence);
+    const offset = (parsed.page - 1) * parsed.pageSize;
+    return {
+      items: matching.slice(offset, offset + parsed.pageSize).map((record) => record.item),
+      total: matching.length
+    };
+  }
+
+  updateTaskItem(ownerUserId: string, taskItemId: string, input: UpdateTaskItemInput): TaskItem {
+    const parsed = updateTaskItemInputSchema.parse(input);
+    const record = this.taskItems.get(taskItemId);
+    if (!record || record.ownerUserId !== ownerUserId) {
+      throw new SpaceNotFoundError(`Task item ${taskItemId} was not found.`);
+    }
+    const updated = taskItemSchema.parse({
+      ...record.item,
+      ...(parsed.title !== undefined ? { title: parsed.title } : {}),
+      ...(parsed.objective !== undefined ? { objective: parsed.objective } : {}),
+      ...(parsed.status !== undefined ? { status: parsed.status } : {}),
+      characterCount: parsed.objective !== undefined ? Array.from(parsed.objective).length : record.item.characterCount,
+      lastUsedAt: nowIso()
+    });
+    record.item = updated;
+    return updated;
+  }
+
+  deleteTaskItem(ownerUserId: string, taskItemId: string): TaskItem {
+    const record = this.taskItems.get(taskItemId);
+    if (!record || record.ownerUserId !== ownerUserId) {
+      throw new SpaceNotFoundError(`Task item ${taskItemId} was not found.`);
+    }
+    this.taskItems.delete(taskItemId);
+    return record.item;
+  }
+
+  clearTaskItems(ownerUserId: string): number {
+    let deleted = 0;
+    for (const [taskItemId, record] of this.taskItems.entries()) {
+      if (record.ownerUserId !== ownerUserId) continue;
+      this.taskItems.delete(taskItemId);
+      deleted += 1;
+    }
+    return deleted;
+  }
+
   private initializeUserLinks(ownerUserId: string) {
     if (this.initializedUserLinkLibraries.has(ownerUserId)) return;
     this.initializedUserLinkLibraries.add(ownerUserId);
@@ -2824,6 +2975,47 @@ export class InMemorySpaceStore implements SpaceStore {
     });
     this.cliRuntimeSettings.set(parsedRuntimeId, setting);
     return setting;
+  }
+
+  listAgentToolAssignments(): AgentToolAssignment[] {
+    return [...this.agentToolAssignments.values()].sort(
+      (left, right) => left.toolId.localeCompare(right.toolId) || left.kind.localeCompare(right.kind)
+    );
+  }
+
+  getAgentToolAssignment(toolId: string): AgentToolAssignment | null {
+    return this.agentToolAssignments.get(idSchema.parse(toolId)) ?? null;
+  }
+
+  updateAgentToolAssignment(
+    toolId: string,
+    input: UpdateAgentToolAssignmentInput,
+    updatedBy: string
+  ): AgentToolAssignment {
+    const parsedToolId = idSchema.parse(toolId);
+    if (!parsedToolId) {
+      throw new SpaceConflictError("Agent tool assignment requires a non-empty toolId.");
+    }
+    const parsed = updateAgentToolAssignmentInputSchema.parse(input);
+    const existing = this.agentToolAssignments.get(parsedToolId);
+    const assignment = agentToolAssignmentSchema.parse({
+      toolId: parsedToolId,
+      kind: existing?.kind ?? parsed.kind,
+      scope: parsed.scope,
+      runtimeIds: parsed.runtimeIds,
+      updatedAt: nowIso(),
+      updatedBy: idSchema.parse(updatedBy)
+    });
+    this.agentToolAssignments.set(parsedToolId, assignment);
+    return assignment;
+  }
+
+  deleteAgentToolAssignment(toolId: string): AgentToolAssignment | null {
+    const parsedToolId = idSchema.parse(toolId);
+    const existing = this.agentToolAssignments.get(parsedToolId);
+    if (!existing) return null;
+    this.agentToolAssignments.delete(parsedToolId);
+    return existing;
   }
 
   createAdminOperationRun(input: CreateAdminOperationRunInput): AdminOperationRun {
@@ -4951,6 +5143,15 @@ export class InMemorySpaceStore implements SpaceStore {
       });
     }
     return updated;
+  }
+
+  touchPaneCliSessionActivity(
+    sessionId: string,
+    _traceId = makeSpaceId("trace")
+  ): void {
+    const current = this.paneCliSessions.get(sessionId);
+    if (!current || current.status !== "RUNNING") return;
+    this.paneCliSessions.set(sessionId, { ...current, updatedAt: nowIso() });
   }
 
   appendPaneCliTranscriptChunk(

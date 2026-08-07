@@ -31,6 +31,7 @@ import {
 } from "@space/runtime";
 import { executeBrowserActionBridge, parseBrowserActionBlock } from "./browser-action-bridge.js";
 import { executeClipboardActionBridge, parseClipboardActionBlock } from "./clipboard-action-bridge.js";
+import { executeTaskActionBridge } from "./task-action-bridge.js";
 import { buildCodexAppServerTurnWorkflowId, buildDummyTurnWorkflowId } from "./ids.js";
 import { executeMemoryActionBridge, parseMemoryActionBlock } from "./memory-action-bridge.js";
 import { executeMcpActionBridge, parseMcpActionBlock } from "./mcp-action-bridge.js";
@@ -1203,7 +1204,11 @@ async function recordSpaceAgentRunCompleted(
   const clipboardBridge = clipboardContent
     ? await executeClipboardActionBridge({ turnInput: input, assistantContent: clipboardContent, store })
     : null;
-  const skillContent = clipboardBridge?.cleanedContent ?? clipboardContent;
+  const taskContent = clipboardBridge?.cleanedContent ?? clipboardContent;
+  const taskBridge = taskContent
+    ? await executeTaskActionBridge({ turnInput: input, assistantContent: taskContent, store })
+    : null;
+  const skillContent = taskBridge?.cleanedContent ?? taskContent;
   const skillBridge = skillContent ? await executeSkillActionBridge({ turnInput: input, assistantContent: skillContent, store }) : null;
   const mcpContent = skillBridge?.cleanedContent ?? skillContent;
   const mcpBridge = mcpContent

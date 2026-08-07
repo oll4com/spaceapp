@@ -1567,6 +1567,26 @@ export const restartCliRuntimeVpnSessionsResultSchema = z
   })
   .strict();
 
+export const cliRuntimeRestartSessionsResultSchema = z
+  .object({
+    runtimeId: cliToggleRuntimeIdSchema,
+    requestedSessionIds: z.array(idSchema).max(10_000),
+    restartedSessionIds: z.array(idSchema).max(10_000),
+    replacementSessionIds: z.array(idSchema).max(10_000),
+    failedSessionIds: z.array(idSchema).max(10_000)
+  })
+  .strict();
+
+export const cliRuntimeRestartAllResultSchema = z
+  .object({
+    requestedRuntimes: z.array(cliToggleRuntimeIdSchema).max(cliToggleRuntimeIds.length),
+    restartedSessionIds: z.array(idSchema).max(10_000),
+    replacementSessionIds: z.array(idSchema).max(10_000),
+    failedSessionIds: z.array(idSchema).max(10_000),
+    checkedAt: isoDateTimeSchema
+  })
+  .strict();
+
 export function isAgentRuntimeReady(
   runtime: Pick<AgentRuntime, "adapterStatus" | "authState" | "status">
 ): boolean {
@@ -1960,6 +1980,153 @@ export const cliLoginResponseSchema = z.object({
   pane: paneSchema,
   session: paneCliSessionResponseSchema,
   reused: z.boolean()
+});
+
+export const agentToolRuntimeIdSchema = z.string().min(5).max(80).regex(/^cli:[a-z][a-z0-9-]*$/);
+
+export const agentToolKindSchema = z.enum(["MCP", "SKILL"]);
+
+export const agentToolScopeSchema = z.enum(["COMMON", "SPECIFIC", "NONE"]);
+
+export const agentToolMcpDefinitionSchema = z
+  .object({
+    transport: z.enum(["stdio", "http"]),
+    command: z.string().min(1).max(500).nullable(),
+    args: z.array(z.string().min(1).max(500)).max(50).optional(),
+    url: z.string().min(1).max(1000).nullable(),
+    env: z.record(z.string().min(1).max(300), z.string().min(1).max(2000)).optional()
+  })
+  .superRefine((value, context) => {
+    if (value.transport === "stdio" && !value.command) {
+      context.addIssue({
+        code: "custom",
+        message: "stdio MCP servers require a command"
+      });
+    }
+    if (value.transport === "http" && !value.url) {
+      context.addIssue({
+        code: "custom",
+        message: "http MCP servers require a url"
+      });
+    }
+  });
+
+export const agentToolCatalogEntrySchema = z.object({
+  toolId: idSchema,
+  kind: agentToolKindSchema,
+  name: z.string().min(1).max(120),
+  description: z.string().min(1).max(500),
+  sourceRuntimeIds: z.array(agentToolRuntimeIdSchema).min(1).max(20),
+  mcp: agentToolMcpDefinitionSchema.optional(),
+  skillPath: z.string().min(1).max(1000).optional(),
+  readOnlyRuntimeIds: z.array(agentToolRuntimeIdSchema).max(20).optional()
+});
+
+const agentToolScopeRuntimeIdsRefine = (value: {
+  scope: z.infer<typeof agentToolScopeSchema>;
+  runtimeIds: string[];
+}, context: z.RefinementCtx) => {
+  if (value.scope === "SPECIFIC" && value.runtimeIds.length === 0) {
+    context.addIssue({
+      code: "custom",
+      message: "SPECIFIC scope requires at least one runtime"
+    });
+  }
+  if (value.scope !== "SPECIFIC" && value.runtimeIds.length > 0) {
+    context.addIssue({
+      code: "custom",
+      message: "only SPECIFIC scope accepts runtimeIds"
+    });
+  }
+};
+
+export const agentToolAssignmentSchema = z
+  .object({
+    toolId: idSchema,
+    kind: agentToolKindSchema,
+    scope: agentToolScopeSchema,
+    runtimeIds: z.array(agentToolRuntimeIdSchema).max(20),
+    updatedAt: isoDateTimeSchema,
+    updatedBy: idSchema.nullable()
+  })
+  .superRefine(agentToolScopeRuntimeIdsRefine);
+
+export const updateAgentToolAssignmentInputSchema = z
+  .object({
+    kind: agentToolKindSchema,
+    scope: agentToolScopeSchema,
+    runtimeIds: z.array(agentToolRuntimeIdSchema).max(20)
+  })
+  .superRefine(agentToolScopeRuntimeIdsRefine);
+
+export const agentToolEffectiveStateSchema = z.object({
+  toolId: idSchema,
+  runtimeId: agentToolRuntimeIdSchema,
+  enabled: z.boolean()
+});
+
+export const agentToolRuntimeCatalogInfoSchema = z.object({
+  runtimeId: agentToolRuntimeIdSchema,
+  displayName: z.string().min(1).max(120),
+  supported: z.boolean(),
+  readOnly: z.boolean(),
+  reason: z.string().min(1).max(300).nullable()
+});
+
+export const agentToolsCatalogResponseSchema = z.object({
+  entries: z.array(agentToolCatalogEntrySchema).max(500),
+  runtimes: z.array(agentToolRuntimeCatalogInfoSchema).max(30),
+  states: z.array(agentToolEffectiveStateSchema).max(200),
+  assignments: z.array(agentToolAssignmentSchema).max(500),
+  writableRuntimeIds: z.array(agentToolRuntimeIdSchema).max(30),
+  appliedAt: isoDateTimeSchema.nullable()
+});
+
+export const agentToolApplyFileSchema = z.object({
+  path: z.string().min(1).max(1000),
+  action: z.enum(["UPDATED", "UNCHANGED", "BACKUP_CREATED"]),
+  changed: z.boolean()
+});
+
+export const agentToolApplyRuntimeResultSchema = z.object({
+  runtimeId: agentToolRuntimeIdSchema,
+  status: z.enum(["OK", "UNSUPPORTED", "SKIPPED", "ERROR"]),
+  reason: z.string().min(1).max(500).nullable(),
+  files: z.array(agentToolApplyFileSchema).max(20),
+  enabledMcpIds: z.array(idSchema).max(50),
+  enabledSkillIds: z.array(idSchema).max(50)
+});
+
+export const applyAgentToolsResultSchema = z.object({
+  results: z.array(agentToolApplyRuntimeResultSchema).max(30)
+});
+
+export const applyAgentToolsInputSchema = z.object({
+  assignments: z.array(
+    z
+      .object({
+        toolId: idSchema,
+        kind: agentToolKindSchema,
+        scope: agentToolScopeSchema,
+        runtimeIds: z.array(agentToolRuntimeIdSchema).max(20)
+      })
+      .superRefine(agentToolScopeRuntimeIdsRefine)
+  ).max(500)
+});
+
+export const agentToolLaunchTaskInputSchema = z.object({
+  roomId: idSchema,
+  runtimeId: agentToolRuntimeIdSchema,
+  taskText: z.string().min(1).max(20000),
+  paneId: idSchema.optional(),
+  cwd: z.string().min(1).max(1000).optional()
+});
+
+export const agentToolLaunchTaskResponseSchema = z.object({
+  pane: paneSchema,
+  session: paneCliSessionResponseSchema,
+  loaded: z.boolean(),
+  reusedPane: z.boolean()
 });
 
 export const paneCliModelOptionSchema = codexModelCatalogOptionSchema;
@@ -5929,6 +6096,85 @@ export const spaceAgentClipboardActionEnvelopeSchema = z.object({
   actions: z.array(spaceAgentClipboardActionRequestSchema).min(1).max(3)
 });
 
+export const taskStatusSchema = z.enum(["OPEN", "RUNNING", "DONE", "ARCHIVED"]);
+export const taskSourceSchema = z.enum(["MANUAL", "AGENT"]);
+export const taskTitleMaxCharacters = 160;
+export const taskObjectiveMaxCharacters = 10_000;
+
+export const spaceTaskToolIdSchema = z.enum(["tasks:list", "tasks:get", "tasks:save", "tasks:update"]);
+
+export const spaceAgentTaskListActionSchema = z.object({
+  type: z.literal("list"),
+  q: z.string().trim().min(1).max(500).optional(),
+  status: taskStatusSchema.optional(),
+  pageSize: z.number().int().min(1).max(10).default(10)
+});
+
+export const spaceAgentTaskGetActionSchema = z.object({
+  type: z.literal("get"),
+  taskItemId: idSchema
+});
+
+export const spaceAgentTaskSaveActionSchema = z.object({
+  type: z.literal("save"),
+  title: z.string().trim().min(1).max(taskTitleMaxCharacters),
+  objective: nonBlankExactText(taskObjectiveMaxCharacters)
+});
+
+export const spaceAgentTaskUpdateActionSchema = z
+  .object({
+    type: z.literal("update"),
+    taskItemId: idSchema,
+    status: taskStatusSchema.optional(),
+    objective: nonBlankExactText(taskObjectiveMaxCharacters).optional()
+  })
+  .refine((input) => input.status !== undefined || input.objective !== undefined, {
+    message: "Task update must include status or objective."
+  });
+
+export const spaceAgentTaskActionInputSchema = z.discriminatedUnion("type", [
+  spaceAgentTaskListActionSchema,
+  spaceAgentTaskGetActionSchema,
+  spaceAgentTaskSaveActionSchema,
+  spaceAgentTaskUpdateActionSchema
+]);
+
+function expectedTaskToolIdForAction(
+  type: z.infer<typeof spaceAgentTaskActionInputSchema>["type"]
+): z.infer<typeof spaceTaskToolIdSchema> {
+  switch (type) {
+    case "list":
+      return "tasks:list";
+    case "get":
+      return "tasks:get";
+    case "save":
+      return "tasks:save";
+    case "update":
+      return "tasks:update";
+  }
+}
+
+export const spaceAgentTaskActionRequestSchema = z
+  .object({
+    toolId: spaceTaskToolIdSchema,
+    action: spaceAgentTaskActionInputSchema
+  })
+  .superRefine((input, context) => {
+    const expected = expectedTaskToolIdForAction(input.action.type);
+    if (input.toolId !== expected) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["toolId"],
+        message: `toolId ${input.toolId} does not match task action type ${input.action.type}.`
+      });
+    }
+  });
+
+export const spaceAgentTaskActionEnvelopeSchema = z.object({
+  version: z.literal(1),
+  actions: z.array(spaceAgentTaskActionRequestSchema).min(1).max(3)
+});
+
 export const spaceMemoryToolIdSchema = z.enum(["memory:search", "memory:save"]);
 
 export const spaceAgentMemorySearchActionSchema = z.object({
@@ -6804,6 +7050,90 @@ export type UpsertClipboardItemInput = z.infer<typeof upsertClipboardItemInputSc
 export type ListClipboardItemsQuery = z.infer<typeof listClipboardItemsQuerySchema>;
 export type ClipboardItemListResponse = z.infer<typeof clipboardItemListResponseSchema>;
 
+export const taskItemSchema = z
+  .object({
+    id: idSchema,
+    title: z.string().trim().min(1).max(taskTitleMaxCharacters),
+    objective: nonBlankExactText(taskObjectiveMaxCharacters),
+    status: taskStatusSchema,
+    source: taskSourceSchema,
+    roomId: idSchema.nullable().default(null),
+    paneId: idSchema.nullable().default(null),
+    paneTitle: z.string().min(1).max(160).nullable().default(null),
+    occurrenceCount: z.number().int().min(1),
+    characterCount: z.number().int().min(1).max(taskObjectiveMaxCharacters),
+    createdAt: isoDateTimeSchema,
+    lastUsedAt: isoDateTimeSchema
+  })
+  .strict();
+
+export const createTaskItemRequestSchema = z
+  .object({
+    title: z.string().trim().min(1).max(taskTitleMaxCharacters),
+    objective: nonBlankExactText(taskObjectiveMaxCharacters),
+    status: taskStatusSchema.optional(),
+    roomId: idSchema.nullable().optional(),
+    paneId: idSchema.nullable().optional(),
+    paneTitle: z.string().min(1).max(160).nullable().optional()
+  })
+  .strict();
+
+export const saveAgentTaskItemInputSchema = z
+  .object({
+    title: z.string().trim().min(1).max(taskTitleMaxCharacters),
+    objective: nonBlankExactText(taskObjectiveMaxCharacters),
+    roomId: idSchema.nullable().optional(),
+    paneId: idSchema.nullable().optional(),
+    paneTitle: z.string().min(1).max(160).nullable().optional()
+  })
+  .strict();
+
+export const upsertTaskItemInputSchema = z
+  .object({
+    ownerUserId: idSchema,
+    title: z.string().trim().min(1).max(taskTitleMaxCharacters),
+    objective: nonBlankExactText(taskObjectiveMaxCharacters),
+    status: taskStatusSchema,
+    source: taskSourceSchema,
+    roomId: idSchema.nullable().optional(),
+    paneId: idSchema.nullable().optional(),
+    paneTitle: z.string().min(1).max(160).nullable().optional()
+  })
+  .strict();
+
+export const updateTaskItemInputSchema = z
+  .object({
+    title: z.string().trim().min(1).max(taskTitleMaxCharacters).optional(),
+    objective: nonBlankExactText(taskObjectiveMaxCharacters).optional(),
+    status: taskStatusSchema.optional()
+  })
+  .strict()
+  .refine(
+    (input) => input.title !== undefined || input.objective !== undefined || input.status !== undefined,
+    { message: "Task update must include title, objective, or status." }
+  );
+
+export const listTaskItemsQuerySchema = z
+  .object({
+    q: z.string().trim().min(1).max(500).optional(),
+    status: taskStatusSchema.optional(),
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(1).max(100).default(25)
+  })
+  .strict();
+
+export const taskItemListResponseSchema = paginated(taskItemSchema);
+
+export type TaskStatus = z.infer<typeof taskStatusSchema>;
+export type TaskSource = z.infer<typeof taskSourceSchema>;
+export type TaskItem = z.infer<typeof taskItemSchema>;
+export type CreateTaskItemRequest = z.infer<typeof createTaskItemRequestSchema>;
+export type SaveAgentTaskItemInput = z.infer<typeof saveAgentTaskItemInputSchema>;
+export type UpsertTaskItemInput = z.infer<typeof upsertTaskItemInputSchema>;
+export type UpdateTaskItemInput = z.infer<typeof updateTaskItemInputSchema>;
+export type ListTaskItemsQuery = z.infer<typeof listTaskItemsQuerySchema>;
+export type TaskItemListResponse = z.infer<typeof taskItemListResponseSchema>;
+
 export type ApiError = z.infer<typeof apiErrorSchema>;
 export type PaginationRequest = z.infer<typeof paginationRequestSchema>;
 export type Pagination = z.infer<typeof paginationSchema>;
@@ -6933,6 +7263,8 @@ export type CliRuntimeVpnStatus = z.infer<typeof cliRuntimeVpnStatusSchema>;
 export type CliVpnRoutingStatus = z.infer<typeof cliVpnRoutingStatusSchema>;
 export type UpdateCliRuntimeVpnResult = z.infer<typeof updateCliRuntimeVpnResultSchema>;
 export type RestartCliRuntimeVpnSessionsResult = z.infer<typeof restartCliRuntimeVpnSessionsResultSchema>;
+export type CliRuntimeRestartSessionsResult = z.infer<typeof cliRuntimeRestartSessionsResultSchema>;
+export type CliRuntimeRestartAllResult = z.infer<typeof cliRuntimeRestartAllResultSchema>;
 export type AdminOperationType = z.infer<typeof adminOperationTypeSchema>;
 export type AdminOperationStatus = z.infer<typeof adminOperationStatusSchema>;
 export type AdminOperationRun = z.infer<typeof adminOperationRunSchema>;
@@ -6998,6 +7330,22 @@ export type PaneCliWebSocketClientMessage = z.infer<typeof paneCliWebSocketClien
 export type PaneCliWebSocketServerMessage = z.infer<typeof paneCliWebSocketServerMessageSchema>;
 export type PaneCliSessionResponse = z.infer<typeof paneCliSessionResponseSchema>;
 export type CliLoginResponse = z.infer<typeof cliLoginResponseSchema>;
+export type AgentToolRuntimeId = z.infer<typeof agentToolRuntimeIdSchema>;
+export type AgentToolKind = z.infer<typeof agentToolKindSchema>;
+export type AgentToolScope = z.infer<typeof agentToolScopeSchema>;
+export type AgentToolMcpDefinition = z.infer<typeof agentToolMcpDefinitionSchema>;
+export type AgentToolCatalogEntry = z.infer<typeof agentToolCatalogEntrySchema>;
+export type AgentToolAssignment = z.infer<typeof agentToolAssignmentSchema>;
+export type UpdateAgentToolAssignmentInput = z.infer<typeof updateAgentToolAssignmentInputSchema>;
+export type AgentToolEffectiveState = z.infer<typeof agentToolEffectiveStateSchema>;
+export type AgentToolRuntimeCatalogInfo = z.infer<typeof agentToolRuntimeCatalogInfoSchema>;
+export type AgentToolsCatalogResponse = z.infer<typeof agentToolsCatalogResponseSchema>;
+export type AgentToolApplyFile = z.infer<typeof agentToolApplyFileSchema>;
+export type AgentToolApplyRuntimeResult = z.infer<typeof agentToolApplyRuntimeResultSchema>;
+export type ApplyAgentToolsResult = z.infer<typeof applyAgentToolsResultSchema>;
+export type ApplyAgentToolsInput = z.infer<typeof applyAgentToolsInputSchema>;
+export type AgentToolLaunchTaskInput = z.infer<typeof agentToolLaunchTaskInputSchema>;
+export type AgentToolLaunchTaskResponse = z.infer<typeof agentToolLaunchTaskResponseSchema>;
 export type PaneCliModelOption = z.infer<typeof paneCliModelOptionSchema>;
 export type PaneCliModelSettings = z.infer<typeof paneCliModelSettingsSchema>;
 export type PaneCliModelSettingsStatus = z.infer<typeof paneCliModelSettingsStatusSchema>;
@@ -7248,6 +7596,8 @@ export type SpaceAgentMemoryActionEnvelope = z.infer<typeof spaceAgentMemoryActi
 export type SpaceMemoryToolId = z.infer<typeof spaceMemoryToolIdSchema>;
 export type SpaceAgentClipboardActionEnvelope = z.infer<typeof spaceAgentClipboardActionEnvelopeSchema>;
 export type SpaceClipboardToolId = z.infer<typeof spaceClipboardToolIdSchema>;
+export type SpaceAgentTaskActionEnvelope = z.infer<typeof spaceAgentTaskActionEnvelopeSchema>;
+export type SpaceTaskToolId = z.infer<typeof spaceTaskToolIdSchema>;
 export type MemoryEmbeddingSmokeCode = z.infer<typeof memoryEmbeddingSmokeCodeSchema>;
 export type MemoryEmbeddingSmokeResult = z.infer<typeof memoryEmbeddingSmokeResultSchema>;
 export type MemoryEmbeddingSmokeCheck = z.infer<typeof memoryEmbeddingSmokeCheckSchema>;

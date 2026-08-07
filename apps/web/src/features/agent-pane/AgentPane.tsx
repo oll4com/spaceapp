@@ -4,6 +4,7 @@ import type { AgentPaneGoal, AgentPaneSession, Artifact, CodexEnvironment, Codex
 import { api } from "../../api.js";
 import { dispatchArtifactsUpdated } from "../../artifact-events.js";
 import { SPACE_CLIPBOARD_ITEM_MIME, captureClipboardText, writeClipboardText } from "../clipboard-dock/clipboard-events.js";
+import { SPACE_TASK_ITEM_MIME } from "../task-dock/task-events.js";
 import { readArtifactDragPayload, resolveArtifactDragFile, type ArtifactDragPayload } from "../artifacts/artifact-drag.js";
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
 import { clearAgentPaneDraft, readAgentPaneDraft, writeAgentPaneDraft } from "./agent-pane-draft.js";
@@ -707,6 +708,8 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
     const clipboardItemId = event.dataTransfer?.getData(SPACE_CLIPBOARD_ITEM_MIME) ?? "";
     const text = event.dataTransfer?.getData("text/plain") ?? "";
     if (clipboardItemId && text) setPrompt((current) => appendClipboardText(current, text));
+    const taskItemId = event.dataTransfer?.getData(SPACE_TASK_ITEM_MIME) ?? "";
+    if (taskItemId && text) setPrompt((current) => appendClipboardText(current, text));
     setDragActive(false);
   }
 

@@ -64,6 +64,7 @@ import {
   createPaneCliSessionRequestSchema,
   createArtifactInputSchema,
   createClipboardItemRequestSchema,
+  createTaskItemRequestSchema,
   createUserLinkRequestSchema,
   createBrowserEvidenceInputSchema,
   createImportCandidateInputSchema,
@@ -91,6 +92,7 @@ import {
   type CliToggleRuntimeId,
   cliVpnConnectionSchema,
   clipboardItemListResponseSchema,
+  taskItemListResponseSchema,
   codexEnvironmentSchema,
   codexLbSpeedDefaultUpdateRequestSchema,
   codexLbSpeedDefaultsResponseSchema,
@@ -128,12 +130,18 @@ import {
   updateAppDiagnosticsInputSchema,
   updateCodexCliModeDefaultsInputSchema,
   updateCliRuntimeSettingInputSchema,
+  agentToolAssignmentSchema,
+  agentToolLaunchTaskInputSchema,
+  agentToolLaunchTaskResponseSchema,
+  applyAgentToolsInputSchema,
+  updateAgentToolAssignmentInputSchema,
   updateCliRuntimeSettingResultSchema,
   updateCliRuntimeVpnInputSchema,
   updateCliRuntimeVpnResultSchema,
   restartCliRuntimeVpnSessionsResultSchema,
   replaceCliVpnProfileInputSchema,
   updateRoomInputSchema,
+  updateTaskItemInputSchema,
   updateUserLinkRequestSchema,
   createSkillProposalInputSchema,
   claimSwarmLockInputSchema,
@@ -150,6 +158,7 @@ import {
   listActivityLogEventsQuerySchema,
   listArtifactsQuerySchema,
   listClipboardItemsQuerySchema,
+  listTaskItemsQuerySchema,
   listUserLinksQuerySchema,
   importCandidateDecisionInputSchema,
   importCandidateDecisionResultSchema,
@@ -426,7 +435,6 @@ import {
   fetchOpenCodeSessionModels,
   fetchOpenCodeSessionTitle,
   openCodeDefaultReasoningEffort,
-  openCodeReasoningEfforts,
   openCodeServerIsHealthy,
   parseOpenCodeCompositeModelId,
   readOpenCodeServerControl,
@@ -475,6 +483,11 @@ import {
   CliMaintenanceError,
   CliMaintenanceManager
 } from "./cli-maintenance.js";
+import {
+  applyAgentTools,
+  buildAgentToolsCatalog,
+  type AgentToolsOptions
+} from "./agent-tools.js";
 import { getApiConfig, type SpaceApiConfig } from "./config.js";
 import type { OwnerSetupBootstrap } from "./owner-setup.js";
 import {
@@ -504,6 +517,10 @@ import {
   writeServiceRestartCooldown,
   type CoreServiceRestarter
 } from "./service-restarts.js";
+import {
+  restartAllCliRuntimes,
+  restartCliRuntimeSessions
+} from "./cli-runtime-restarts.js";
 import {
   SourceControlPublishingError,
   SourceControlPublishingManager
@@ -607,6 +624,7 @@ export interface CreateAppOptions {
   opencodeStateRoot?: string;
   cliLoginTimeoutMs?: number;
   cliLoginObservationIntervalMs?: number;
+  agentToolsOptions?: AgentToolsOptions;
   cliRuntimeSessionTerminator?: (sessionId: string) => Promise<boolean>;
   cliVpnBroker?: CliVpnBroker;
   cliVpnSessionPidResolver?: (sessions: readonly PaneCliSession[]) => Promise<Map<string, number>>;
@@ -3982,13 +4000,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const currentModelId = currentModel ? `${currentModel.providerID}/${currentModel.id}` : null;
       models = descriptors.map((descriptor) => {
         const optionId = `${descriptor.providerId}/${descriptor.modelId}`;
+        const listedVariants = descriptor.variants.length > 0 ? descriptor.variants : [];
         return {
           id: optionId,
           displayName: descriptor.displayName,
           isDefault: optionId === currentModelId,
-          defaultReasoningEffort: openCodeDefaultReasoningEffort,
-          supportedReasoningEfforts: [...openCodeReasoningEfforts],
-          reasoningOptions: openCodeReasoningEfforts.map((reasoningEffort) => ({ reasoningEffort }))
+          defaultReasoningEffort:
+            descriptor.defaultVariant ?? listedVariants[0] ?? openCodeDefaultReasoningEffort,
+          supportedReasoningEfforts: [...listedVariants],
+          reasoningOptions: listedVariants.map((reasoningEffort) => ({ reasoningEffort }))
         };
       });
     } catch {
@@ -4001,11 +4021,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       throw new SpaceFeatureDisabledError("OPENCODE_MODEL_CATALOG_UNAVAILABLE", "OpenCode did not advertise any selectable models.");
     }
     const currentModel = await fetchOpenCodeCurrentModel(control, control.nativeSessionId).catch(() => null);
+    const currentModelOption = currentModel
+      ? models.find(
+          (model) => model.id === `${currentModel.providerID}/${currentModel.id}`
+        ) ?? null
+      : null;
     const current = currentModel
       ? {
           modelId: `${currentModel.providerID}/${currentModel.id}`,
-          reasoningEffort: openCodeReasoningEfforts.includes(currentModel.variant as never)
-            ? (currentModel.variant as string)
+          reasoningEffort: currentModelOption && currentModel.variant
+            ? (currentModelOption.supportedReasoningEfforts.includes(currentModel.variant)
+              ? currentModel.variant
+              : currentModelOption.defaultReasoningEffort)
             : openCodeDefaultReasoningEffort
         }
       : null;
@@ -5249,6 +5276,62 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { deletedCount: await store.clearClipboardItems(owner.id) };
   });
 
+  app.get("/api/task-items", async (request) => {
+    const query = parseQuery(listTaskItemsQuerySchema, request.query);
+    const owner = await store.upsertUser(request.user!);
+    const result = await store.listTaskItems(owner.id, query);
+    return taskItemListResponseSchema.parse({
+      data: result.items,
+      pagination: {
+        page: query.page,
+        pageSize: query.pageSize,
+        totalItems: result.total,
+        totalPages: Math.ceil(result.total / query.pageSize)
+      }
+    });
+  });
+
+  app.get("/api/task-items/:id", async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const owner = await store.upsertUser(request.user!);
+    const item = await store.getTaskItem(owner.id, params.id);
+    if (!item) {
+      throw new SpaceNotFoundError("Task item was not found.");
+    }
+    return item;
+  });
+
+  app.post("/api/task-items", async (request, reply) => {
+    const input = parseBody(createTaskItemRequestSchema, request.body);
+    const owner = await store.upsertUser(request.user!);
+    const item = await store.upsertTaskItem({
+      ...input,
+      status: input.status ?? "OPEN",
+      source: "MANUAL",
+      ownerUserId: owner.id
+    });
+    return reply.code(201).send(item);
+  });
+
+  app.patch("/api/task-items/:id", async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const input = parseBody(updateTaskItemInputSchema, request.body);
+    const owner = await store.upsertUser(request.user!);
+    return store.updateTaskItem(owner.id, params.id, input);
+  });
+
+  app.delete("/api/task-items/:id", async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const owner = await store.upsertUser(request.user!);
+    const deleted = await store.deleteTaskItem(owner.id, params.id);
+    return { id: deleted.id, deleted: true };
+  });
+
+  app.delete("/api/task-items", async (request) => {
+    const owner = await store.upsertUser(request.user!);
+    return { deletedCount: await store.clearTaskItems(owner.id) };
+  });
+
   app.get("/api/links", async (request) => {
     const query = parseQuery(listUserLinksQuerySchema, request.query);
     const owner = await store.upsertUser(request.user!);
@@ -6023,6 +6106,105 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
+  const agentToolsOptions = options.agentToolsOptions;
+  const agentToolIdParamSchema = z.object({ toolId: idSchema });
+
+  app.get("/api/agent-tools/catalog", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Agent tools require the ADMIN role.");
+    }
+    return await buildAgentToolsCatalog(store, agentToolsOptions);
+  });
+
+  app.patch("/api/agent-tools/assignments/:toolId", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Agent tool assignments require the ADMIN role.");
+    }
+    const params = parseQuery(agentToolIdParamSchema, request.params);
+    const input = parseBody(updateAgentToolAssignmentInputSchema, request.body ?? {});
+    const assignment = await store.updateAgentToolAssignment(params.toolId, input, request.user?.id ?? "operator:unknown");
+    return agentToolAssignmentSchema.parse(assignment);
+  });
+
+  app.delete("/api/agent-tools/assignments/:toolId", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Agent tool assignments require the ADMIN role.");
+    }
+    const params = parseQuery(agentToolIdParamSchema, request.params);
+    const deleted = await store.deleteAgentToolAssignment(params.toolId);
+    if (!deleted) {
+      throw new SpaceNotFoundError(`Agent tool assignment ${params.toolId} was not found.`);
+    }
+    return { toolId: params.toolId, deleted: true };
+  });
+
+  app.post("/api/agent-tools/apply", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Applying agent tools requires the ADMIN role.");
+    }
+    const input = parseBody(applyAgentToolsInputSchema, request.body ?? {});
+    return await applyAgentTools(store, input.assignments, agentToolsOptions);
+  });
+
+  app.post("/api/agent-tools/launch", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Launching agent tool tasks requires the ADMIN role.");
+    }
+    const input = parseBody(agentToolLaunchTaskInputSchema, request.body ?? {});
+    const registry = await discoverAgentRuntimes(config);
+    const runtime = findRuntime(registry, input.runtimeId);
+    if (!runtime) {
+      throw new SpaceNotFoundError(`CLI runtime ${input.runtimeId} was not found.`);
+    }
+    if (!runtime.capabilities.includes("CLI")) {
+      throw new SpaceConflictError(`Runtime ${runtime.id} does not support CLI sessions.`);
+    }
+    await cliRuntimeVisibility.assertEnabled(input.runtimeId);
+    let pane: Pane;
+    let reusedPane: boolean;
+    if (input.paneId) {
+      pane = await getPaneById(store, input.paneId);
+      if (pane.roomId !== input.roomId) {
+        throw new SpaceConflictError("The pane does not belong to the requested room.");
+      }
+      if (pane.mode !== "TERMINAL") {
+        throw new SpaceConflictError("Agent tool tasks require a TERMINAL pane.");
+      }
+      reusedPane = true;
+    } else {
+      pane = await store.createPane({
+        roomId: input.roomId,
+        title: "Agent Tools task",
+        mode: "TERMINAL",
+        terminalRuntimeId: input.runtimeId
+      }, request.requestIdForSpace);
+      reusedPane = false;
+    }
+    const session = await cliTerminalManager.ensurePaneControlReady(pane, request.requestIdForSpace);
+    await cliTerminalManager.sendInput(
+      session.sessionId,
+      input.taskText,
+      request.requestIdForSpace,
+      null,
+      `agent-tools-launch:${pane.id}:${input.taskText.slice(0, 40)}`
+    );
+    const response = await buildPaneCliSessionResponse({
+      store,
+      runtime,
+      sessionId: session.sessionId,
+      includeWebsocket: true,
+      includeTranscript: false,
+      tokenTtlMs: config.cliTokenTtlMs,
+      issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
+    });
+    return agentToolLaunchTaskResponseSchema.parse({
+      pane,
+      session: response,
+      loaded: true,
+      reusedPane
+    });
+  });
+
   app.get("/api/cli/egress", async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
@@ -6569,6 +6751,101 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
 
+  const guardCliRuntimeRestartPane = async (paneId: string, runtimeId: string) => {
+    const pane = await getPaneById(store, paneId);
+    assertCliPaneCompatible(pane);
+    if (pane.terminalRuntimeId && pane.terminalRuntimeId !== runtimeId) {
+      throw new SpaceConflictError(`Pane ${pane.id} no longer uses ${runtimeId}.`);
+    }
+  };
+
+  const cliRuntimeRestartPendingRuntimes = new Set<string>();
+  app.post("/api/admin/cli/runtime/:runtimeId/restart", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI runtime session restarts require the ADMIN role.");
+    }
+    const params = parseQuery(cliRuntimeSettingParamSchema, request.params);
+    if (cliRuntimeRestartPendingRuntimes.has(params.runtimeId)) {
+      throw new SpaceConflictError(`A CLI session restart is already running for ${params.runtimeId}.`);
+    }
+    cliRuntimeRestartPendingRuntimes.add(params.runtimeId);
+    try {
+      await cliRuntimeVisibility.assertEnabled(params.runtimeId);
+      const registry = await discoverAgentRuntimes(config);
+      const runtime = findRuntime(registry, params.runtimeId);
+      if (!runtime || !runtime.capabilities.includes("CLI") || !isCliRuntimeTerminalLaunchable(runtime)) {
+        throw new SpaceFeatureDisabledError(
+          "CLI_RUNTIME_DISABLED",
+          runtime?.statusReason ?? `CLI runtime ${params.runtimeId} is unavailable.`,
+          { runtimeId: params.runtimeId }
+        );
+      }
+      const result = await restartCliRuntimeSessions(
+        {
+          store,
+          traceId: request.requestIdForSpace,
+          restarter: cliVpnSessionRestarter,
+          guardPane: guardCliRuntimeRestartPane
+        },
+        params.runtimeId,
+        runtime
+      );
+      await recordAudit(store, request, {
+        action: "cli.runtime.restart_requested",
+        targetType: "cli_runtime",
+        targetId: params.runtimeId,
+        metadata: {
+          requestedSessionCount: result.requestedSessionIds.length,
+          restartedSessionCount: result.restartedSessionIds.length,
+          failedSessionCount: result.failedSessionIds.length
+        }
+      });
+      return result;
+    } finally {
+      cliRuntimeRestartPendingRuntimes.delete(params.runtimeId);
+    }
+  });
+
+  let cliRuntimeRestartAllInFlight = false;
+  app.post("/api/admin/cli/runtime/restart-all", async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI runtime session restarts require the ADMIN role.");
+    }
+    if (cliRuntimeRestartAllInFlight) {
+      throw new SpaceConflictError("A CLI restart-all request is already running.");
+    }
+    cliRuntimeRestartAllInFlight = true;
+    try {
+      const registry = await discoverAgentRuntimes(config);
+      const result = await restartAllCliRuntimes(
+        {
+          store,
+          traceId: request.requestIdForSpace,
+          restarter: cliVpnSessionRestarter,
+          guardPane: guardCliRuntimeRestartPane
+        },
+        registry.data,
+        (runtime) =>
+          runtime.capabilities.includes("CLI") &&
+          isCliRuntimeTerminalLaunchable(runtime) &&
+          !cliRuntimeRestartPendingRuntimes.has(runtime.id)
+      );
+      await recordAudit(store, request, {
+        action: "cli.runtime.restart_all_requested",
+        targetType: "cli_runtime",
+        targetId: "all",
+        metadata: {
+          requestedRuntimeCount: result.requestedRuntimes.length,
+          restartedSessionCount: result.restartedSessionIds.length,
+          failedSessionCount: result.failedSessionIds.length
+        }
+      });
+      return result;
+    } finally {
+      cliRuntimeRestartAllInFlight = false;
+    }
+  });
+
   const openCliLogin = async (
     request: FastifyRequest,
     roomId: string,
@@ -6910,12 +7187,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
       const wasActive = before.settings.isTurnActive;
       try {
+        const advertisedModel = before.settings.models.find((model) => model.id === input.modelId) ?? null;
         await switchOpenCodeSessionModel(
           control,
           control.nativeSessionId,
           parsedRef.providerId,
           parsedRef.modelId,
-          input.reasoningEffort
+          input.reasoningEffort,
+          advertisedModel?.supportedReasoningEfforts ?? []
         );
       } catch (error) {
         throw new SpaceConflictError("OpenCode rejected the model switch; the current session was left unchanged.");

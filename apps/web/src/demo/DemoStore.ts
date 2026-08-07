@@ -11,6 +11,7 @@ import type {
   UpdateCodexCliModeDefaultsInput,
   CreateClipboardItemRequest,
   CreateRoomPanesRequest,
+  CreateTaskItemRequest,
   CreateUserLinkRequest,
   MemoryChangeSet,
   MemoryChangeSetSummary,
@@ -24,6 +25,7 @@ import type {
   SetupConnectionCheckReplay,
   SetupConnectionCheckRun,
   SetupOverview,
+  TaskItem,
   UpdateProviderSettingsInput,
   UpdateTelegramIntegrationInput,
   UpdateUserLinkRequest,
@@ -700,6 +702,23 @@ export class DemoStore {
       case "previewCodexHistoryPurge": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.historyPurgePreview));
       case "executeCodexHistoryPurge": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.historyPurgeResult));
       case "restartCoreServices": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.serviceRestart));
+      case "cliRuntimeRestart": {
+        const runtimeId = String(args[0] ?? "cli:opencode");
+        return Promise.resolve({
+          runtimeId,
+          requestedSessionIds: ["demo-session-1"],
+          restartedSessionIds: ["demo-session-1"],
+          replacementSessionIds: ["demo-session-1-r"],
+          failedSessionIds: []
+        });
+      }
+      case "cliRuntimeRestartAll": return Promise.resolve({
+        requestedRuntimes: cliToggleRuntimeIds,
+        restartedSessionIds: ["demo-session-1", "demo-session-2"],
+        replacementSessionIds: ["demo-session-1-r", "demo-session-2-r"],
+        failedSessionIds: [],
+        checkedAt: DEMO_FIXED_AT
+      });
       case "listCliMaintenanceRuns":
       case "listReleaseRuns": return Promise.resolve({ data: [] });
       case "getCliMaintenanceReplay": {
@@ -1248,6 +1267,47 @@ export class DemoStore {
       }
       case "deleteClipboardItem": return Promise.resolve({ id: roomId!, deleted: true as const });
       case "clearClipboardItems": return Promise.resolve({ deletedCount: 0 });
+      case "taskItems": {
+        const query = (args[0] ?? {}) as { q?: string; status?: TaskItem["status"]; page?: number; pageSize?: number };
+        const needle = query.q?.trim().toLowerCase();
+        const items = this.fixture.taskItems.filter((item) =>
+          (query.status === undefined || item.status === query.status) &&
+          (!needle || item.title.toLowerCase().includes(needle) || item.objective.toLowerCase().includes(needle))
+        );
+        return Promise.resolve(structuredClone(requestedPage(items, query)));
+      }
+      case "createTaskItem": {
+        const input = args[0] as CreateTaskItemRequest;
+        const item: TaskItem = {
+          id: this.nextId("task"),
+          title: input.title,
+          objective: input.objective,
+          status: input.status ?? "OPEN",
+          source: "MANUAL",
+          roomId: input.roomId ?? null,
+          paneId: input.paneId ?? null,
+          paneTitle: input.paneTitle ?? null,
+          occurrenceCount: 1,
+          characterCount: Array.from(input.objective).length,
+          createdAt: DEMO_FIXED_AT,
+          lastUsedAt: DEMO_FIXED_AT
+        };
+        this.fixture.taskItems.unshift(item);
+        return Promise.resolve(structuredClone(item));
+      }
+      case "updateTaskItem": {
+        const task = this.fixture.taskItems.find((candidate) => candidate.id === roomId);
+        if (!task) throw new SpaceApiError("Task not found.", { status: 404, code: "NOT_FOUND" });
+        Object.assign(task, args[1], {
+          characterCount: "objective" in (args[1] as { objective?: string })
+            ? Array.from((args[1] as { objective: string }).objective).length
+            : task.characterCount,
+          lastUsedAt: DEMO_FIXED_AT
+        });
+        return Promise.resolve(structuredClone(task));
+      }
+      case "deleteTaskItem": return Promise.resolve({ id: roomId!, deleted: true as const });
+      case "clearTaskItems": return Promise.resolve({ deletedCount: 0 });
       case "createRoom": {
         const name = String(args[0] ?? "Demo room").trim() || "Demo room";
         const initialPaneCount = Math.min(16, Math.max(0, Number(args[1] ?? 4)));

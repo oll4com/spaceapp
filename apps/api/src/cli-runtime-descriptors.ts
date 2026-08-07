@@ -44,6 +44,36 @@ const codexHome = `${proxmoxHome}/.codex`;
 
 export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
   {
+    key: "opencode",
+    id: "cli:opencode",
+    providerId: "opencode",
+    providerName: "OpenCode",
+    agentName: "OpenCode CLI",
+    commandName: "opencode-vscode-parity",
+    commandEnv: "SPACE_CLI_OPENCODE_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_OPENCODE_CREDENTIAL_SMOKE",
+    authMode: "MANAGED",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "OpenCode managed credentials have not been verified by the operator.",
+    loginAction: null,
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_OPENCODE_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-opencode`,
+    tempDir: `${codexHome}/space-opencode/tmp`,
+    environment: {
+      XDG_CONFIG_HOME: `${proxmoxHome}/.config`,
+      XDG_DATA_HOME: `${codexHome}/space-opencode/data`,
+      XDG_CACHE_HOME: `${codexHome}/space-opencode/cache`,
+      XDG_STATE_HOME: `${codexHome}/space-opencode/state`
+    },
+    nativeResumeArgs: ["--continue"],
+    defaultModelId: "opencode/deepseek-v4-flash-free",
+    credentialVerifiedReason: "OpenCode CLI direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
+    loginBootstrapReason: null
+  },
+  {
     key: "codex",
     id: "cli:codex",
     providerId: "codex",
@@ -116,36 +146,6 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     nativeResumeArgs: ["--continue"],
     defaultModelId: null,
     credentialVerifiedReason: "Google Antigravity CLI migration wrapper, browser OAuth, /etc cwd, MCP access, and credential smoke are verified.",
-    loginBootstrapReason: null
-  },
-  {
-    key: "opencode",
-    id: "cli:opencode",
-    providerId: "opencode",
-    providerName: "OpenCode",
-    agentName: "OpenCode CLI",
-    commandName: "opencode-vscode-parity",
-    commandEnv: "SPACE_CLI_OPENCODE_COMMAND",
-    credentialSmokeEnv: "SPACE_CLI_OPENCODE_CREDENTIAL_SMOKE",
-    authMode: "MANAGED",
-    missingAuthState: "UNAVAILABLE",
-    missingAuthReason: "OpenCode managed credentials have not been verified by the operator.",
-    loginAction: null,
-    credentialObservationAction: "credential-observation",
-    credentialSmokeMarker: "SPACE_OPENCODE_OK",
-    loginBootstrapEnv: null,
-    loginBootstrapRuntimeEnv: null,
-    stateRoot: `${codexHome}/space-opencode`,
-    tempDir: `${codexHome}/space-opencode/tmp`,
-    environment: {
-      XDG_CONFIG_HOME: `${proxmoxHome}/.config`,
-      XDG_DATA_HOME: `${codexHome}/space-opencode/data`,
-      XDG_CACHE_HOME: `${codexHome}/space-opencode/cache`,
-      XDG_STATE_HOME: `${codexHome}/space-opencode/state`
-    },
-    nativeResumeArgs: ["--continue"],
-    defaultModelId: null,
-    credentialVerifiedReason: "OpenCode CLI direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
   {

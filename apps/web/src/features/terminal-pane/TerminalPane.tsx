@@ -53,8 +53,9 @@ import {
   writeClipboardText
 } from "../clipboard-dock/clipboard-events.js";
 import { readArtifactDragPayload, resolveArtifactDragFile, type ArtifactDragPayload } from "../artifacts/artifact-drag.js";
+import { SPACE_TASK_ITEM_MIME } from "../task-dock/task-events.js";
 import {
-  buildPaneContextTranscriptBlock,
+  buildPaneTaskContextBlock,
   formatPaneContextBlock,
   readPaneContextDragPayload,
   type PaneContextDragPayload
@@ -285,6 +286,7 @@ type TerminalPaneActionDetail =
   | { paneId: string; action: "attach_clip_image"; file: File }
   | { paneId: string; action: "insert_text"; text: string }
   | { paneId: string; action: "insert_clipboard_text"; text: string }
+  | { paneId: string; action: "start_task_item"; objective: string }
   | { paneId: string; action: "ensure_plan_mode" }
   | { paneId: string; action: "enter_native_plan_mode"; runtimeId: NativePlanRuntimeId }
   | { paneId: string; action: "control_key"; key: "shift_tab" | "escape" }
@@ -693,6 +695,7 @@ function isTerminalPaneAction(detail: unknown): detail is TerminalPaneActionDeta
     action?: unknown;
     file?: unknown;
     text?: unknown;
+    objective?: unknown;
     key?: unknown;
     runtimeId?: unknown;
     session?: unknown;
@@ -713,6 +716,9 @@ function isTerminalPaneAction(detail: unknown): detail is TerminalPaneActionDeta
   }
   if (maybeDetail.action === "insert_text" || maybeDetail.action === "insert_clipboard_text") {
     return typeof maybeDetail.text === "string";
+  }
+  if (maybeDetail.action === "start_task_item") {
+    return typeof maybeDetail.objective === "string";
   }
   if (maybeDetail.action === "control_key") return maybeDetail.key === "shift_tab" || maybeDetail.key === "escape";
   if (maybeDetail.action === "enter_native_plan_mode") {
@@ -4589,15 +4595,16 @@ export function TerminalPane({
 
   function buildPaneContextDropBlock(payload: PaneContextDragPayload): Promise<string> {
     if (!payload.runtimeId) return Promise.resolve(formatPaneContextBlock(payload));
-    return api
-      .activeCliSession(payload.id, { includeTranscript: true })
-      .then((response) => {
-        const transcript = response?.transcript;
-        if (!transcript || transcript.length === 0) return formatPaneContextBlock(payload);
-        const targetRuntime = sessionResponseRef.current?.session.runtimeId ?? null;
-        return buildPaneContextTranscriptBlock(payload, transcript, targetRuntime);
-      })
-      .catch(() => formatPaneContextBlock(payload));
+    return Promise.allSettled([
+      api.recoveryCliTask(payload.id),
+      api.activeCliSession(payload.id, { includeTranscript: false })
+    ]).then(([taskResult, sessionResult]) => {
+      const task = taskResult.status === "fulfilled" ? taskResult.value.threads[0] ?? null : null;
+      const session = sessionResult.status === "fulfilled" ? sessionResult.value?.session ?? null : null;
+      if (!task) return formatPaneContextBlock(payload);
+      const targetRuntime = sessionResponseRef.current?.session.runtimeId ?? null;
+      return buildPaneTaskContextBlock(payload, task, session, targetRuntime);
+    });
   }
 
   function dropPaneContext(payload: PaneContextDragPayload) {
@@ -4647,7 +4654,22 @@ export function TerminalPane({
     if (clipboardItemId && text) {
       void insertClipboardText(text, "clipboard history drop");
     }
+    const taskItemId = event.dataTransfer.getData(SPACE_TASK_ITEM_MIME);
+    if (taskItemId && text) {
+      void startDroppedTask(text);
+    }
     setDragActive(false);
+  }
+
+  async function startDroppedTask(objective: string) {
+    setNotice(null);
+    const sent = sendTerminalSubmit(`${objective}\r`, "task dock drop");
+    updateClipboardDebug(
+      sent ? "good" : "bad",
+      "task dock drop",
+      `received task drop; objectiveLength=${objective.length}; autoStart=true; display=visible.`
+    );
+    if (!sent) setError("Attach a running CLI before dropping a task into it.");
   }
 
   function collectTerminalContent(): string {
@@ -4759,7 +4781,8 @@ export function TerminalPane({
         event.detail.action !== "reconnect" &&
         event.detail.action !== "focus" &&
         event.detail.action !== "insert_text" &&
-        event.detail.action !== "insert_clipboard_text"
+        event.detail.action !== "insert_clipboard_text" &&
+        event.detail.action !== "start_task_item"
       ) return;
       if (event.detail.action === "enter_native_plan_mode") {
         const actionSession = sessionResponseRef.current?.session;
@@ -4910,6 +4933,17 @@ export function TerminalPane({
       }
       if (event.detail.action === "insert_clipboard_text") {
         await insertClipboardText(event.detail.text, "clipboard history insert");
+        return;
+      }
+      if (event.detail.action === "start_task_item") {
+        setNotice(null);
+        const sent = sendTerminalSubmit(`${event.detail.objective}\r`, "task dock start");
+        updateClipboardDebug(
+          sent ? "good" : "bad",
+          "terminal action start_task_item",
+          `received start_task_item action; objectiveLength=${event.detail.objective.length}; autoStart=true; display=visible.`
+        );
+        if (!sent) setError("Attach a running CLI before starting a task in it.");
         return;
       }
       if (event.detail.action === "focus") {

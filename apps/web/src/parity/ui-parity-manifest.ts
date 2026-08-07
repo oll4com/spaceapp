@@ -23,7 +23,7 @@ export const UI_PARITY_REACHABLE_STATES = [
 
 export type UiParitySurface =
   | "auth" | "rooms" | "toolbar" | "pane" | "chat" | "cli" | "browser" | "youtube"
-  | "review" | "code" | "swarm" | "design" | "media" | "clipboard" | "links"
+  | "review" | "code" | "swarm" | "design" | "media" | "clipboard" | "tasks" | "links"
   | "settings" | "health" | "memory" | "quick-links" | "help" | "music"
   | "admin" | "responsive";
 
@@ -50,6 +50,7 @@ export const UI_PARITY_SURFACE_EVIDENCE = {
   design: ["tests/smoke.test.tsx", "tests/demo-app.test.tsx"],
   media: ["tests/media-dock.test.tsx", "tests/demo-app.test.tsx"],
   clipboard: ["tests/clipboard-dock.test.tsx", "tests/clipboard-capture.test.tsx", "tests/demo-app.test.tsx"],
+  tasks: ["tests/task-dock.test.tsx", "tests/demo-store.test.ts"],
   links: ["tests/user-links.test.tsx", "tests/responsive-shell.test.tsx", "tests/demo-app.test.tsx"],
   settings: ["tests/smoke.test.tsx", "tests/telegram-integration-card.test.tsx", "tests/demo-app.test.tsx"],
   health: ["tests/smoke.test.tsx", "tests/demo-app.test.tsx"],
@@ -82,7 +83,7 @@ export const UI_PARITY_ACTIONS = [
   ]),
   ...actions("toolbar", [
     "metric-all", "metric-cli", "metric-ram", "metric-cpu", "metric-swap", "metric-provider",
-    "toggle-rooms", "toggle-room-agent", "toggle-media", "toggle-clipboard", "toggle-links",
+    "toggle-rooms", "toggle-room-agent", "toggle-media", "toggle-clipboard", "toggle-tasks", "toggle-links",
     "toggle-settings", "toggle-health", "open-memory", "open-quick-links", "pane-layout",
     "room-theme", "toggle-cli-floats", "workspace-text-size", "add-chat", "add-cli",
     "add-browser", "add-youtube", "add-review", "reload", "clip-tool", "print", "add-root-cli",
@@ -130,6 +131,9 @@ export const UI_PARITY_ACTIONS = [
   ]),
   ...actions("clipboard", [
     "load", "search", "filter", "create", "copy", "delete", "clear-confirm", "clear-cancel", "pause", "empty", "error"
+  ]),
+  ...actions("tasks", [
+    "load", "search", "filter", "create", "status", "copy", "start", "delete", "clear-confirm", "clear-cancel", "empty", "error"
   ]),
   ...actions("links", [
     "load", "search", "create", "edit", "quick-toggle", "open-same-tab", "open-new-tab",

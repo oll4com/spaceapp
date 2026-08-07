@@ -57,6 +57,7 @@ export const appIconMaterialSymbols = {
   "LayoutDashboard": "dashboard",
   "Link": "link",
   "ListFilter": "filter_list",
+  "ListTodo": "list_alt",
   "Loader2": "progress_activity",
   "Lock": "lock",
   "LogOut": "logout",
