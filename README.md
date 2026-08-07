@@ -16,6 +16,11 @@ This repository is intentionally independent from any operator workstation or ed
   non-secret identity env vars (`SPACE_ROOM_ID`, `SPACE_PANE_ID`,
   `SPACE_CLI_SESSION_ID`, and runtime ids) so CLI agents know their room,
   pane, session, and runtime without receiving Space internal auth tokens.
+- The clean setup presents **OpenCode as the first and pre-defined CLI**, with
+  the free `opencode/deepseek-v4-flash-free` model as its default, so a fresh
+  installation gets a working agent without a paid plan or API key. See
+  [CLI providers](docs/cli-providers.md) and
+  [Getting started](docs/getting-started.md).
 - Root disk was reduced from 91% to 72% by deleting the generated Go build cache at `/var/lib/spaceapp-user/.cache/go-build`.
 - `/opt/spaceapp` still lives on the 160GB root disk. Production/browser-heavy launch still needs a dedicated larger app volume or disk expansion to meet the 150-250GB target.
 - Package manager default is `npm workspaces` because the current Corepack/pnpm path fails under Node 22.23.0.

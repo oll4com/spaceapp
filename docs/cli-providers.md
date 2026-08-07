@@ -6,11 +6,15 @@ grants, subscriptions, or usage credits.
 
 ## Bundled inventory
 
+OpenCode is the pre-defined first CLI of the clean setup. Its default model is
+the free DeepSeek V4 Flash (`opencode/deepseek-v4-flash-free`), so a fresh
+install can connect a working agent without a paid subscription or API key.
+
 | Runtime | Package and pinned version | Normal owner setup |
 | --- | --- | --- |
+| **OpenCode (first)** | `opencode-ai@1.18.4` | `opencode auth login` provider flow; default free model `deepseek-v4-flash-free` |
 | Codex CLI | `@openai/codex@0.145.0` | official device-code login or API key |
 | Gemini CLI | `@google/gemini-cli@0.52.0` | official Google OAuth or API key |
-| OpenCode | `opencode-ai@1.18.4` | `opencode auth login` provider flow |
 | Qwen Code | `@qwen-code/qwen-code@0.20.1` | official `/auth` provider menu or API key |
 | Kimi Code | `@moonshot-ai/kimi-code@0.29.0` | official Kimi OAuth login |
 | Grok Build | `@xai-official/grok@0.2.111` | official xAI device-code login |

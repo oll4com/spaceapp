@@ -56,7 +56,7 @@ const SECRET_FIELD = /password|secret|token|api.?key|credential/i;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const BACKUP_ID_PATTERN = /^spaceapp-backup-\d{8}T\d{9}Z$/;
 const PROVIDERS = Object.freeze({
-  bundled: Object.freeze(["codex", "gemini", "opencode", "qwen", "kimi", "grok", "autohand", "cursor", "copilot"]),
+  bundled: Object.freeze(["opencode", "codex", "gemini", "qwen", "kimi", "grok", "autohand", "cursor", "copilot"]),
   ownerInstalled: Object.freeze(["claude"]),
   experimental: Object.freeze(["deepseek"])
 });

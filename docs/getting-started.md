@@ -235,7 +235,9 @@ On the first page:
    paste it into the field with the same name;
 2. create the owner email and a password of at least 6 characters;
 3. sign in as that owner;
-4. connect one CLI provider at a time;
+4. connect one CLI provider at a time, **starting with OpenCode** — its default
+   model is the free DeepSeek V4 Flash (`opencode/deepseek-v4-flash-free`), so
+   no paid account or API key is required to get a working agent;
 5. create a test room and verify the selected workspace;
 6. run `npx --yes run-spaceapp@latest backup` before the first update.
 
@@ -254,7 +256,10 @@ Rotation is refused after an owner exists.
 ## Connect providers
 
 Open the CLI provider setup inside SpaceApp and use the provider's official
-OAuth, device-code, or login flow. For providers that support direct API keys,
+OAuth, device-code, or login flow. **Connect OpenCode first**: the bundled
+OpenCode runtime defaults to the free DeepSeek V4 Flash model, which gives a
+working agent immediately without a paid plan or API key. Then continue with
+the other providers as needed. For providers that support direct API keys,
 the launcher also accepts a value from masked standard input:
 
 ```bash

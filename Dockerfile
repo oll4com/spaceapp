@@ -82,7 +82,8 @@ ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
 FROM runtime-base AS cli
 ARG TARGETARCH
-RUN npm install --global --ignore-scripts --no-audit --no-fund \
+RUN npm install --global --no-audit --no-fund opencode-ai@1.18.4 \
+    && npm install --global --ignore-scripts --no-audit --no-fund \
       @openai/codex@0.145.0 \
       @google/gemini-cli@0.52.0 \
       @qwen-code/qwen-code@0.20.1 \
@@ -90,7 +91,6 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund \
       @xai-official/grok@0.2.111 \
       autohand-cli@0.9.3 \
       @github/copilot@1.0.78 \
-    && npm install --global --no-audit --no-fund opencode-ai@1.18.4 \
     && npm install --global --ignore-scripts --no-audit --no-fund \
       run-deepseek-cli@0.1.1 \
     && install -d -o spaceapp -g spaceapp -m 0700 \

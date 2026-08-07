@@ -11,7 +11,7 @@ import {
 
 test("credential providers distinguish bundled, owner-installed and experimental CLIs", () => {
   assert.deepEqual(credentialProviders(), {
-    bundled: ["codex", "gemini", "opencode", "qwen", "kimi", "grok", "autohand", "cursor", "copilot"],
+    bundled: ["opencode", "codex", "gemini", "qwen", "kimi", "grok", "autohand", "cursor", "copilot"],
     ownerInstalled: ["claude"],
     experimental: ["deepseek"]
   });
