@@ -100,7 +100,7 @@ setup token and exact paste instructions. Enter it in the first browser page,
 create the owner, register only the host workspaces SpaceApp may access, and
 connect providers through official login flows or masked credential input. If
 the token expires, run
-`npx --yes run-spaceapp@latest owner rotate-setup-token`. The default address is
+`npx --yes run-spaceapp@personal owner rotate-setup-token`. The default address is
 `http://127.0.0.1:4911`; do not expose it directly to an untrusted network.
 
 See [Getting started](docs/getting-started.md) for platform-specific paths,
