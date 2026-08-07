@@ -1,7 +1,7 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "34195c0f41f35f3a450539cc0b26ef7f6916b694",
+  "sourceCommit": "2589ebea81ce296a158e393c0ce7866b4b358ede",
   "fileCount": 417,
   "transformations": 42,
   "files": [
@@ -1633,9 +1633,9 @@
     },
     {
       "path": "package.json",
-      "sourceObjectId": "3ce6b80491b60ff898dda1f4bea53995015e702f",
-      "sha256": "d3c4401f2828aa3e152e2017c72785577a60bcdd821e2747b16f588d4e5b3126",
-      "size": 4794
+      "sourceObjectId": "f7ca3eef0952b50fcecaac719e91b60f58469182",
+      "sha256": "53d1fa505ac623e7b34fd5cef238f91ce1ca3ed75808403bb8edf4db60aa29fa",
+      "size": 5467
     },
     {
       "path": "packages/browser-host/package.json",
