@@ -91,15 +91,23 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
 
   assert.match(
     normalizedRuntimeStage,
-    /npm pack --ignore-scripts --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.8 tar@7\.5\.21/
+    /npm pack --ignore-scripts --no-audit --no-fund --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.9 tar@7\.5\.21 ip-address@10\.3\.1 undici@6\.28\.0/
   );
   assert.match(
     normalizedRuntimeStage,
-    /tar -xzf \/tmp\/npm-security-patches\/brace-expansion-5\.0\.8\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/brace-expansion --strip-components=1/
+    /tar -xzf \/tmp\/npm-security-patches\/brace-expansion-5\.0\.9\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/brace-expansion --strip-components=1/
   );
   assert.match(
     normalizedRuntimeStage,
     /tar -xzf \/tmp\/npm-security-patches\/tar-7\.5\.21\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/tar --strip-components=1/
+  );
+  assert.match(
+    normalizedRuntimeStage,
+    /tar -xzf \/tmp\/npm-security-patches\/ip-address-10\.3\.1\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/ip-address --strip-components=1/
+  );
+  assert.match(
+    normalizedRuntimeStage,
+    /tar -xzf \/tmp\/npm-security-patches\/undici-6\.28\.0\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/undici --strip-components=1/
   );
   assert.match(
     normalizedRuntimeStage,
