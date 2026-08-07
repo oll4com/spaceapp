@@ -13,7 +13,7 @@ const outputBufferBytes = positiveInteger(process.env.SPACE_CLI_HOST_OUTPUT_BUFF
 const inactiveSessionMs = positiveInteger(process.env.SPACE_CLI_HOST_INACTIVE_SESSION_MS, 2 * 60 * 60_000);
 const inactiveSweepMs = positiveInteger(process.env.SPACE_CLI_HOST_INACTIVE_SWEEP_MS, 60_000, 1_000);
 const registry = new CliHostSessionRegistry({ spawn: spawnNodePty, outputBufferBytes });
-const server = await createCliHostServer({ socketPath, registry });
+const server = await createCliHostServer({ socketPath, socketMode: 0o660, registry });
 let shuttingDown = false;
 const inactiveSweep = setInterval(() => {
   const sessionIds = registry.reapInactiveSessions(Date.now(), inactiveSessionMs);

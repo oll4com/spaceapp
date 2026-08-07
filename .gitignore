@@ -11,6 +11,8 @@ test-results/
 secrets/
 backups/
 bin/
+!packages/run-spaceapp/bin/
+!packages/run-spaceapp/bin/spaceapp.mjs
 var/
 /lost+found/
 

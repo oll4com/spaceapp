@@ -2,6 +2,11 @@
   "name": "space",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oll4com/spaceapp.git"
+  },
   "type": "module",
   "workspaces": [
     "packages/*",
