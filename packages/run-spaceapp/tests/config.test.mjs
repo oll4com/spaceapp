@@ -122,7 +122,7 @@ test("loads schema 2 installations as isolated without changing durable settings
 });
 
 test("host-root Compose access is explicit, bounded, and reversible", () => {
-  const isolated = createDefaultConfig({ version: "0.1.15" });
+  const isolated = createDefaultConfig({ version: "0.1.17" });
   assert.equal(renderHostAccessCompose(isolated), "services: {}\n");
 
   const hostRoot = {

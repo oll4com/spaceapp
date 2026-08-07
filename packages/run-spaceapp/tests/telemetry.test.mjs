@@ -20,16 +20,16 @@ test("buildInstallPing carries os, version, runtime, and install date", () => {
   const ping = buildInstallPing({
     platform: "darwin",
     arch: "arm64",
-    launcherVersion: "0.1.15",
-    runtimeVersion: "0.1.15",
+    launcherVersion: "0.1.17",
+    runtimeVersion: "0.1.17",
     now: new Date("2026-08-05T12:34:56Z")
   });
   assert.equal(ping.app, "spaceapp");
   assert.match(ping.uid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   assert.equal(ping.os, "macos");
   assert.equal(ping.arch, "arm64");
-  assert.equal(ping.version, "0.1.15");
-  assert.equal(ping.runtime, "0.1.15");
+  assert.equal(ping.version, "0.1.17");
+  assert.equal(ping.runtime, "0.1.17");
   assert.equal(ping.install_date, "2026-08-05");
 });
 
@@ -53,8 +53,8 @@ test("sendInstallPing POSTs JSON and accepts a 204", async () => {
     uid: "00000000-0000-4000-8000-000000000000",
     os: "linux",
     arch: "x64",
-    version: "0.1.15",
-    runtime: "0.1.15",
+    version: "0.1.17",
+    runtime: "0.1.17",
     install_date: "2026-08-05"
   };
   const sent = await sendInstallPing(payload, { request: fakeRequest });
@@ -89,8 +89,8 @@ test("reportFirstInstallPing only pings fresh installs with telemetry on", async
     env: {},
     platform: "linux",
     arch: "x64",
-    launcherVersion: "0.1.15",
-    runtimeVersion: "0.1.15"
+    launcherVersion: "0.1.17",
+    runtimeVersion: "0.1.17"
   };
   const fresh = await reportFirstInstallPing(base, { request: fakeRequest });
   assert.ok(fresh);

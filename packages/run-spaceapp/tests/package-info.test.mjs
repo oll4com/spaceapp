@@ -8,8 +8,8 @@ test("amd64 host-root launcher metadata pins the matching runtime", async () => 
     await readFile(new URL("../package.json", import.meta.url), "utf8")
   );
 
-  assert.equal(manifest.version, "0.1.15");
-  assert.equal(manifest.spaceappRuntimeVersion, "0.1.15");
+  assert.equal(manifest.version, "0.1.17");
+  assert.equal(manifest.spaceappRuntimeVersion, "0.1.17");
   assert.equal(manifest.spaceappHostRootRuntimeCompatible, true);
   assert.deepEqual(manifest.cpu, ["x64"]);
   assert.equal(packageInfo.PACKAGE_VERSION, manifest.version);

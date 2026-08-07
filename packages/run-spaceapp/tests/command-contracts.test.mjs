@@ -55,19 +55,19 @@ test("init and the default update target the pinned runtime image version", asyn
   });
 
   let config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(config.version, "0.1.15");
+  assert.equal(config.version, "0.1.17");
   assert.match(
     await readFile(join(root, "runtime.env"), "utf8"),
-    /^SPACEAPP_IMAGE_TAG=0\.1\.15$/m
+    /^SPACEAPP_IMAGE_TAG=0\.1\.17$/m
   );
 
   assert.equal(await run(["update"], options), 0);
   config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(config.version, "0.1.15");
+  assert.equal(config.version, "0.1.17");
   assert.equal(config.previousVersion, null);
   assert.match(
     await readFile(join(root, "runtime.env"), "utf8"),
-    /^SPACEAPP_IMAGE_TAG=0\.1\.15$/m
+    /^SPACEAPP_IMAGE_TAG=0\.1\.17$/m
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
     "pull",
@@ -233,14 +233,14 @@ test("update and rollback persist version state only after both Docker operation
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.6", previousVersion: "0.1.15" }
+    { version: "0.1.6", previousVersion: "0.1.17" }
   );
   assert.equal(await run(["rollback"], options), 0);
   assert.deepEqual(
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.15", previousVersion: "0.1.6" }
+    { version: "0.1.17", previousVersion: "0.1.6" }
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
     "pull",
@@ -249,7 +249,7 @@ test("update and rollback persist version state only after both Docker operation
     "--remove-orphans"
   ]);
   assert.match(stdout.value(), /Updated to SpaceApp 0\.1\.6/);
-  assert.match(stdout.value(), /Rolled back to SpaceApp 0\.1\.15/);
+  assert.match(stdout.value(), /Rolled back to SpaceApp 0\.1\.17/);
 });
 
 test("doctor is read-only for installation configuration and generated runtime files", async () => {
