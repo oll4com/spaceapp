@@ -4199,8 +4199,8 @@ export const sourceControlVerificationCodeSchema = z.enum([
 export const sourceControlConnectionSchema = z
   .object({
     provider: sourceControlProviderSchema,
-    repositoryOwner: z.literal("oll4com"),
-    repositoryName: z.literal("space"),
+    repositoryOwner: z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9_.-]+$/),
+    repositoryName: z.string().trim().min(1).max(240).regex(/^[A-Za-z0-9_.-]+$/),
     accountLogin: z.string().trim().min(1).max(160).nullable(),
     status: sourceControlConnectionStatusSchema,
     secretConfigured: z.boolean(),
@@ -4208,16 +4208,7 @@ export const sourceControlConnectionSchema = z
     lastVerificationCode: sourceControlVerificationCodeSchema,
     updatedAt: isoDateTimeSchema
   })
-  .strict()
-  .superRefine((connection, context) => {
-    if (connection.repositoryName !== "space") {
-      context.addIssue({
-        code: "custom",
-        path: ["repositoryName"],
-        message: `${connection.provider} is bound to the fixed space repository.`
-      });
-    }
-  });
+  .strict();
 
 export const updateSourceControlConnectionInputSchema = z
   .object({

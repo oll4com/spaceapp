@@ -1634,7 +1634,11 @@ export interface StaticCatalogOptions {
 }
 
 const mcpTargetSpecVersion = "2025-11-25";
-const defaultProviderId = "headroom-gateway";
+const defaultProviderId = "codex-lb";
+const defaultSourceControlRepository = {
+  repositoryOwner: "spaceapp-owner",
+  repositoryName: "spaceapp"
+} as const;
 const defaultTitleGenerationReasoningEffort: ProviderSettings["titleGenerationReasoningEffort"] = "low";
 const spaceDefaultMcpMetadata: Array<Pick<McpServer, "id" | "displayName" | "transport">> = [
   { id: "capturelab", displayName: "CaptureLab", transport: "stdio" },
@@ -2010,72 +2014,24 @@ export function createStaticCatalog(options: StaticCatalogOptions = {}) {
 
   const providers: Provider[] = [
     {
-      id: "headroom-gateway",
-      displayName: "Headroom Gateway",
+      id: "codex-lb",
+      displayName: "Codex-LB",
       type: "CODEX_LB",
       status: "DISABLED",
       statusReason: codexConfigured
-        ? "Headroom route is registered, but Space keeps it disabled until an explicit credential smoke passes."
-        : "Dedicated Space Codex-LB key has not been verified yet.",
-      healthCheckedAt: null,
-      maskedKeyPrefix: null,
-      baseUrl: "https://headroom.example.invalid:8787/v1",
-      routeProfile: "headroom",
-      backingProviderId: "codex-lb",
-      credentialRef: null,
-      isBuiltIn: true
-    },
-    {
-      id: "direct-246-primary",
-      displayName: "Direct .246 Primary",
-      type: "CODEX_LB",
-      status: "DISABLED",
-      statusReason: codexConfigured
-        ? "Direct .246 route is registered, but Space keeps it disabled until an explicit credential smoke passes."
-        : "Dedicated Space Codex-LB key has not been verified yet.",
-      healthCheckedAt: null,
-      maskedKeyPrefix: null,
-      baseUrl: "http://192.0.2.246:2455/v1",
-      routeProfile: "direct-primary",
-      backingProviderId: "codex-lb",
-      credentialRef: null,
-      isBuiltIn: true
-    },
-    {
-      id: "direct-auto-failover",
-      displayName: "Direct Auto Failover",
-      type: "CODEX_LB",
-      status: "DISABLED",
-      statusReason: codexConfigured
-        ? "Direct auto-failover route is registered, but Space keeps it disabled until an explicit credential smoke passes."
+        ? "Codex-LB config is present, but Space keeps the provider disabled until an explicit credential smoke passes."
         : "Dedicated Space Codex-LB key has not been verified yet.",
       healthCheckedAt: null,
       maskedKeyPrefix: null,
       baseUrl: options.codexLbBaseUrl ?? "http://127.0.0.1:2458/v1",
-      routeProfile: "direct-auto",
-      backingProviderId: "codex-lb",
+      routeProfile: "custom",
+      backingProviderId: null,
       credentialRef: null,
       isBuiltIn: true
     },
     {
-      id: "strict-234-direct",
-      displayName: "Strict .234 Direct",
-      type: "CODEX_LB",
-      status: "DISABLED",
-      statusReason: codexConfigured
-        ? "Strict .234 route is registered, but Space keeps it disabled until an explicit credential smoke passes."
-        : "Dedicated Space Codex-LB key has not been verified yet.",
-      healthCheckedAt: null,
-      maskedKeyPrefix: null,
-      baseUrl: "http://192.0.2.234:2455/v1",
-      routeProfile: "direct-fallback",
-      backingProviderId: "codex-lb",
-      credentialRef: null,
-      isBuiltIn: true
-    },
-    {
-      id: "openai-chatgpt-plus-pro",
-      displayName: "OpenAI / ChatGPT Plus-Pro",
+      id: "openai",
+      displayName: "OpenAI",
       type: "OPENAI",
       status: "DISABLED",
       statusReason: "OpenAI direct route remains disabled until an explicit Space credential/config smoke passes.",
@@ -2086,22 +2042,6 @@ export function createStaticCatalog(options: StaticCatalogOptions = {}) {
       backingProviderId: "openai",
       credentialRef: null,
       isBuiltIn: true
-    },
-    {
-      id: "codex-lb",
-      displayName: "Codex-LB",
-      type: "CODEX_LB",
-      status: "DISABLED",
-      statusReason: codexConfigured
-        ? "Codex-LB config is present, but Space keeps the provider disabled until an explicit credential smoke passes."
-        : "Dedicated Space Codex-LB key has not been verified yet.",
-      healthCheckedAt: null,
-      maskedKeyPrefix: null,
-      baseUrl: options.codexLbBaseUrl ?? null,
-      routeProfile: "custom",
-      backingProviderId: null,
-      credentialRef: null,
-      isBuiltIn: false
     },
     {
       id: "anthropic",
@@ -2226,12 +2166,7 @@ interface InMemoryUserLinkRecord {
   item: UserLink;
 }
 
-export const defaultUserLinks = [
-  { title: "Codex LB", description: "Codex load-balancer dashboard and account routing.", url: "https://codex-lb.example.invalid:2455/", openMode: "EMBEDDED" as const, isQuick: true },
-  { title: "Headroom", description: "Headroom capacity and routing dashboard.", url: "https://headroom.example.invalid:8787/dashboard", openMode: "EMBEDDED" as const, isQuick: true },
-  { title: "Will Codex Quota Reset?", description: "Track Codex quota reset timing.", url: "https://www.willcodexquotareset.com/", openMode: "EMBEDDED" as const, isQuick: false },
-  { title: "OpenAI Status", description: "Official OpenAI service status.", url: "https://status.openai.com/", openMode: "NEW_TAB" as const, isQuick: false }
-];
+export const defaultUserLinks: Array<Omit<UserLink, "id" | "sortOrder" | "createdAt" | "updatedAt">> = [];
 
 export class InMemorySpaceStore implements SpaceStore {
   private rooms = new Map<string, Room>();
@@ -3162,11 +3097,11 @@ export class InMemorySpaceStore implements SpaceStore {
     const parsedProvider = sourceControlProviderSchema.parse(provider);
     const existing = this.sourceControlConnections.get(parsedProvider);
     if (existing) return existing;
-    const repositoryName = "space";
+    const { repositoryOwner, repositoryName } = defaultSourceControlRepository;
     return {
       ...sourceControlConnectionSchema.parse({
         provider: parsedProvider,
-        repositoryOwner: "oll4com",
+        repositoryOwner,
         repositoryName,
         accountLogin: null,
         status: "DISCONNECTED",
@@ -3187,8 +3122,8 @@ export class InMemorySpaceStore implements SpaceStore {
     const connection = {
       ...sourceControlConnectionSchema.parse({
         provider,
-        repositoryOwner: "oll4com",
-        repositoryName: "space",
+        repositoryOwner: defaultSourceControlRepository.repositoryOwner,
+        repositoryName: defaultSourceControlRepository.repositoryName,
         accountLogin: input.accountLogin,
         status: input.connectionStatus,
         secretConfigured: secretRef !== null,

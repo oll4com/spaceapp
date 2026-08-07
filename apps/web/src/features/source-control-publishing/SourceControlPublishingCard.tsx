@@ -160,7 +160,7 @@ export function SourceControlPublishingCard({
               <div className="source-control-provider-heading">
                 <span>
                   <strong>{label}</strong>
-                  <small>spaceapp.example/spaceapp</small>
+                  <small>{connection ? `${connection.repositoryOwner}/${connection.repositoryName}` : "spaceapp-owner/spaceapp"}</small>
                 </span>
                 <span className={`source-control-status ${connection?.status.toLowerCase() ?? "disconnected"}`}>
                   {connected ? <CheckCircle2 aria-hidden="true" /> : <Unplug aria-hidden="true" />}

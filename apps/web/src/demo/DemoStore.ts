@@ -803,8 +803,8 @@ export class DemoStore {
       case "listSourceControlConnections": return Promise.resolve({
         data: (["gitea", "github"] as const).map((provider) => ({
           provider,
-          repositoryOwner: "oll4com",
-          repositoryName: "space",
+          repositoryOwner: "spaceapp-owner",
+          repositoryName: "spaceapp",
           accountLogin: null,
           status: "DISCONNECTED",
           secretConfigured: false,
@@ -818,8 +818,8 @@ export class DemoStore {
         const provider = String(args[0]) === "gitea" ? "gitea" : "github";
         return Promise.resolve({
           provider,
-          repositoryOwner: "oll4com",
-          repositoryName: "space",
+          repositoryOwner: "spaceapp-owner",
+          repositoryName: "spaceapp",
           accountLogin: "demo-admin",
           status: "CONNECTED",
           secretConfigured: true,
@@ -832,8 +832,8 @@ export class DemoStore {
         const provider = String(args[0]) === "gitea" ? "gitea" : "github";
         return Promise.resolve({
           provider,
-          repositoryOwner: "oll4com",
-          repositoryName: "space",
+          repositoryOwner: "spaceapp-owner",
+          repositoryName: "spaceapp",
           accountLogin: null,
           status: "DISCONNECTED",
           secretConfigured: false,

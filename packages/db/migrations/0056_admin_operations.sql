@@ -22,11 +22,8 @@ CREATE INDEX IF NOT EXISTS idx_admin_operation_runs_active
 
 CREATE TABLE IF NOT EXISTS source_control_connections (
   provider text PRIMARY KEY CHECK (provider IN ('gitea', 'github')),
-  repository_owner text NOT NULL CHECK (repository_owner = 'oll4com'),
-  repository_name text NOT NULL CHECK (
-    (provider = 'gitea' AND repository_name = 'spaceapp-rooms')
-    OR (provider = 'github' AND repository_name = 'space')
-  ),
+  repository_owner text NOT NULL CHECK (repository_owner ~ '^[A-Za-z0-9_.-]{1,160}$'),
+  repository_name text NOT NULL CHECK (repository_name ~ '^[A-Za-z0-9_.-]{1,240}$'),
   account_login text,
   connection_status text NOT NULL CHECK (connection_status IN ('DISCONNECTED', 'CONNECTED', 'ERROR')),
   secret_ref text,
@@ -55,8 +52,8 @@ INSERT INTO source_control_connections (
   updated_at
 )
 VALUES
-  ('gitea', 'oll4com', 'spaceapp-rooms', NULL, 'DISCONNECTED', NULL, NULL, 'NOT_VERIFIED', now()),
-  ('github', 'oll4com', 'space', NULL, 'DISCONNECTED', NULL, NULL, 'NOT_VERIFIED', now())
+  ('gitea', 'spaceapp-owner', 'spaceapp', NULL, 'DISCONNECTED', NULL, NULL, 'NOT_VERIFIED', now()),
+  ('github', 'spaceapp-owner', 'spaceapp', NULL, 'DISCONNECTED', NULL, NULL, 'NOT_VERIFIED', now())
 ON CONFLICT (provider) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS release_previews (

@@ -1,9 +1,9 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "4614e694acc1b42911e978846466965025fb4837",
+  "sourceCommit": "b829545c93d1a47d868bab89cd04098abcba21f7",
   "fileCount": 417,
-  "transformations": 41,
+  "transformations": 39,
   "files": [
     {
       "path": ".gitignore",
@@ -733,9 +733,9 @@
     },
     {
       "path": "apps/web/src/demo/DemoStore.ts",
-      "sourceObjectId": "e8b5110fe19f3716aa83640e5d987d04ba767d00",
-      "sha256": "4624a0cb9d6720aa939589552b67ee23d21b9814605214f433cf3f17d3381850",
-      "size": 72808
+      "sourceObjectId": "305c245f6b9506e6d42722287aba381f3f931be6",
+      "sha256": "6ed15f1bbf376c3dc65f950d8738bc500454003160bea3f4f47b2812c4034dad",
+      "size": 72838
     },
     {
       "path": "apps/web/src/demo/demo-fixture.ts",
@@ -1141,9 +1141,9 @@
     },
     {
       "path": "apps/web/src/features/source-control-publishing/SourceControlPublishingCard.tsx",
-      "sourceObjectId": "54c9a5b19595bbc7742b1525000a61a7eba273cf",
-      "sha256": "998293d1d50c9c87a945251baedcc771bd5fb05901f3099172ec6e4073789d5e",
-      "size": 10119
+      "sourceObjectId": "89b45c256409368580914ded9e73233b1281f544",
+      "sha256": "6bf9cd4ca20facf80dbbb82f203cbe8fef218c88ea49cb28dbce62660ba7646a",
+      "size": 10197
     },
     {
       "path": "apps/web/src/features/source-control-publishing/source-control-publishing.css",
@@ -1825,9 +1825,9 @@
     },
     {
       "path": "packages/contracts/src/schemas.ts",
-      "sourceObjectId": "79644dfa085f724b3d191fe07ba176e0855f21a7",
-      "sha256": "bce65523bf5c5205af5f29156de2b613f945e42695a8e8fc3780987704553133",
-      "size": 309429
+      "sourceObjectId": "a370fd77dd3569724b98ab4a3dfcef460c1b54a6",
+      "sha256": "aa4b141a459bf45fbd68aded65bc2b6c4482b2e75d80dd5555f105b53597fbd6",
+      "size": 309234
     },
     {
       "path": "packages/contracts/src/workflows.ts",
@@ -1975,9 +1975,9 @@
     },
     {
       "path": "packages/db/migrations/0023_provider_global_settings.sql",
-      "sourceObjectId": "a235fbf44ee3e25bf983ba2c4f817bb8edde15f4",
-      "sha256": "9884d9105d4ffa08e413a7106cacb18c9b75d74500f37f90e71cef99cb6989ba",
-      "size": 911
+      "sourceObjectId": "6a690bc61fe0ee6a6bc2f7a106836acba0565088",
+      "sha256": "d45a79af2f6f474892e4862b0cba177699ba08fd52cefcaf7675d7bf0e839fe3",
+      "size": 903
     },
     {
       "path": "packages/db/migrations/0024_pane_cli_session_codex_thread.sql",
@@ -2179,9 +2179,9 @@
     },
     {
       "path": "packages/db/migrations/0056_admin_operations.sql",
-      "sourceObjectId": "10341695da545e4e9a9d8855342720865dae9552",
-      "sha256": "bd5a5633a162148029c17f84966f91eece7561aab751d20a3c7ada0a6b5b60c4",
-      "size": 2708
+      "sourceObjectId": "cf384dc8397c01782e06412d5aaa2268bacaa9be",
+      "sha256": "72f88e1d2826d2589b709ccc6e722dcdeee459d20212cc17ab45bf090b0214b4",
+      "size": 2652
     },
     {
       "path": "packages/db/migrations/0057_pane_cli_terminal_control_leases.sql",
@@ -2329,9 +2329,9 @@
     },
     {
       "path": "packages/db/src/space-store.ts",
-      "sourceObjectId": "773138b8779075f4ecc2e08b94a3b74976e46059",
-      "sha256": "e05bfea4ea976951e8983be9717e79e259aeac888773ba9790e241c58d42abd2",
-      "size": 515631
+      "sourceObjectId": "7c6fddb1186065da5a1e71a7c13b3ec551863836",
+      "sha256": "3281e7ad01271618ddaf88b055d447cf28adb8233e72b45dad070a698b1d0ad5",
+      "size": 515644
     },
     {
       "path": "packages/db/src/telegram-persistence.ts",
@@ -2461,9 +2461,9 @@
     },
     {
       "path": "packages/runtime/src/store.ts",
-      "sourceObjectId": "f2bd91d84035f5c7ae04d1abb529c755174cc8ea",
-      "sha256": "801ede764d5056fd175908c388750acc1ca7d1a82f0cc8ad12ed47aef92c2cd4",
-      "size": 303434
+      "sourceObjectId": "f6912022bb81d0891d3c0eab75f97545666b0e1f",
+      "sha256": "f39dc7ab05680e5aab95185a8a435fecb19121d3c9a782edeeddcd8966341937",
+      "size": 300629
     },
     {
       "path": "packages/runtime/src/telegram-notifications.ts",

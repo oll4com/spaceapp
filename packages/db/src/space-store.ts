@@ -1018,8 +1018,8 @@ type CliMaintenanceAuthHandoffRow = Omit<
 
 type SourceControlConnectionRow = {
   provider: SourceControlProvider;
-  repositoryOwner: "oll4com";
-  repositoryName: "space";
+  repositoryOwner: string;
+  repositoryName: string;
   accountLogin: string | null;
   connectionStatus: SourceControlConnectionRecord["status"];
   secretRef: string | null;
@@ -5118,8 +5118,8 @@ export class PostgresSpaceStore implements SpaceStore {
     return {
       ...sourceControlConnectionSchema.parse({
         provider,
-        repositoryOwner: "oll4com",
-        repositoryName: "space",
+        repositoryOwner: "spaceapp-owner",
+        repositoryName: "spaceapp",
         accountLogin: null,
         status: "DISCONNECTED",
         secretConfigured: false,
@@ -5148,7 +5148,7 @@ export class PostgresSpaceStore implements SpaceStore {
           provider, repository_owner, repository_name, account_login, connection_status,
           secret_ref, last_verified_at, last_verification_code, updated_at
         )
-        VALUES ($1, 'oll4com', $2, $3, $4, $5, $6, $7, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (provider) DO UPDATE SET
           repository_owner = EXCLUDED.repository_owner,
           repository_name = EXCLUDED.repository_name,
@@ -5171,7 +5171,8 @@ export class PostgresSpaceStore implements SpaceStore {
       `,
       [
         provider,
-        repositoryName,
+        "spaceapp-owner",
+        "spaceapp",
         input.accountLogin,
         input.connectionStatus,
         secretRef,
@@ -10733,7 +10734,7 @@ export class PostgresSpaceStore implements SpaceStore {
     const result = await this.pool.query<ProviderSettingsRow>(`${providerSettingsSelect} WHERE id = 'global' LIMIT 1`);
     if (result.rows[0]) return mapProviderSettings(result.rows[0]);
     return providerSettingsSchema.parse({
-      defaultProviderId: "headroom-gateway",
+      defaultProviderId: "codex-lb",
       titleGenerationModelId: null,
       titleGenerationReasoningEffort: "low",
       updatedAt: nowIso()
