@@ -4401,6 +4401,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     timeWindow: "1 minute",
     keyGenerator: (request) => requestIpForLog(request) ?? "unknown"
   });
+  const defaultRouteRateLimitOptions = {
+    config: {
+      rateLimit: {
+        max: config.apiRateLimitMax,
+        timeWindow: "1 minute"
+      }
+    }
+  };
+  const defaultWebsocketRateLimitOptions = {
+    ...defaultRouteRateLimitOptions,
+    websocket: true as const
+  };
   await app.register(websocket, {
     options: {
       maxPayload: 64 * 1024,
@@ -4622,8 +4634,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return sendApiError(reply, 500, "INTERNAL_ERROR", "The request could not be completed.");
   });
 
-  app.get("/healthz", async () => ({ ok: true, service: "space-api" }));
-  app.get("/readyz", async () => {
+  app.get("/healthz", defaultRouteRateLimitOptions, async () => ({ ok: true, service: "space-api" }));
+  app.get("/readyz", defaultRouteRateLimitOptions, async () => {
     const [worker, appDiagnostics] = await Promise.all([
       workerReadinessChecker(),
       appDiagnosticsService.getStatus()
@@ -4679,18 +4691,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     };
   });
-  app.get("/version", async () => ({
+  app.get("/version", defaultRouteRateLimitOptions, async () => ({
     name: "space-api",
     version: config.version,
     node: process.version,
     git: await readGitVersionMetadata()
   }));
-  app.get("/metrics", async (_request, reply) => {
+  app.get("/metrics", defaultRouteRateLimitOptions, async (_request, reply) => {
     reply.header("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
     return observability.renderPrometheus();
   });
 
-  app.get("/api/auth/me", async (request) => {
+  app.get("/api/auth/me", defaultRouteRateLimitOptions, async (request) => {
     const setupStatus = auth.devLogin
       ? { setupRequired: false }
       : await store.getOwnerSetupStatus();
@@ -4701,7 +4713,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.get("/api/setup/status", async () => {
+  app.get("/api/setup/status", defaultRouteRateLimitOptions, async () => {
     return setupStatusSchema.parse(await store.getOwnerSetupStatus());
   });
 
@@ -4753,7 +4765,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   );
 
-  app.get("/api/setup/overview", async (request, reply) => {
+  app.get("/api/setup/overview", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "FORBIDDEN", "Owner access is required.");
     }
@@ -4971,7 +4983,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   );
 
-  app.post("/api/setup/starter-room", async (request, reply) => {
+  app.post("/api/setup/starter-room", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "FORBIDDEN", "Owner access is required.");
     }
@@ -4985,7 +4997,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return setupStarterRoomResponseSchema.parse(result);
   });
 
-  app.post("/api/setup/finish", async (request, reply) => {
+  app.post("/api/setup/finish", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "FORBIDDEN", "Owner access is required.");
     }
@@ -5036,7 +5048,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   );
 
-  app.get("/api/auth/csrf", async (request, reply) => {
+  app.get("/api/auth/csrf", defaultRouteRateLimitOptions, async (request, reply) => {
     const csrfToken = createCsrfToken(request.cookies[cookieName], auth.sessionSecret);
     if (!csrfToken) {
       return sendApiError(reply, 401, "UNAUTHENTICATED", "Authentication is required.");
@@ -5044,9 +5056,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { csrfToken, headerName: csrfHeaderName };
   });
 
-  app.get("/api/app-diagnostics", async () => appDiagnosticsService.getStatus());
+  app.get("/api/app-diagnostics", defaultRouteRateLimitOptions, async () => appDiagnosticsService.getStatus());
 
-  app.patch("/api/admin/app-diagnostics", async (request, reply) => {
+  app.patch("/api/admin/app-diagnostics", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics settings require the ADMIN role.");
     }
@@ -5067,14 +5079,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return status;
   });
 
-  app.get("/api/activity-log", async (request, reply) => {
+  app.get("/api/activity-log", defaultRouteRateLimitOptions, async (request, reply) => {
     const query = parseQuery(listActivityLogEventsQuerySchema, request.query);
     return activityLogService.listEvents(query);
   });
 
-  app.get("/api/activity-log/settings", async () => activityLogService.getSettings());
+  app.get("/api/activity-log/settings", defaultRouteRateLimitOptions, async () => activityLogService.getSettings());
 
-  app.patch("/api/admin/activity-log/settings", async (request, reply) => {
+  app.patch("/api/admin/activity-log/settings", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Activity log settings require the ADMIN role.");
     }
@@ -5118,7 +5130,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   );
 
-  app.post("/api/admin/app-diagnostics/video-leases", async (request, reply) => {
+  app.post("/api/admin/app-diagnostics/video-leases", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics recording requires the ADMIN role.");
     }
@@ -5129,7 +5141,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/admin/app-diagnostics/video-leases/:leaseId/heartbeats", async (request, reply) => {
+  app.post("/api/admin/app-diagnostics/video-leases/:leaseId/heartbeats", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics recording requires the ADMIN role.");
     }
@@ -5138,7 +5150,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return appDiagnosticsService.heartbeatVideoLease(params.leaseId, input.captureId, request.user.id);
   });
 
-  app.delete("/api/admin/app-diagnostics/video-leases/:leaseId", async (request, reply) => {
+  app.delete("/api/admin/app-diagnostics/video-leases/:leaseId", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics recording requires the ADMIN role.");
     }
@@ -5172,14 +5184,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   );
 
-  app.get("/api/admin/app-diagnostics/segments", async (request, reply) => {
+  app.get("/api/admin/app-diagnostics/segments", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics segments require the ADMIN role.");
     }
     return appDiagnosticsService.listSegments(request.query);
   });
 
-  app.get("/api/admin/app-diagnostics/segments/:segmentId/content", async (request, reply) => {
+  app.get("/api/admin/app-diagnostics/segments/:segmentId/content", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics segments require the ADMIN role.");
     }
@@ -5229,7 +5241,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { user: persistedUser, isAuthenticated: true, isSetupRequired: false };
   });
 
-  app.post("/api/auth/logout", async (request, reply) => {
+  app.post("/api/auth/logout", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user) {
       await recordAudit(store, request, {
         action: "auth.logout",
@@ -5242,7 +5254,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true };
   });
 
-  app.get("/api/clipboard-items", async (request) => {
+  app.get("/api/clipboard-items", defaultRouteRateLimitOptions, async (request) => {
     const query = parseQuery(listClipboardItemsQuerySchema, request.query);
     const owner = await store.upsertUser(request.user!);
     const result = await store.listClipboardItems(owner.id, query);
@@ -5257,26 +5269,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/clipboard-items", async (request, reply) => {
+  app.post("/api/clipboard-items", defaultRouteRateLimitOptions, async (request, reply) => {
     const input = parseBody(createClipboardItemRequestSchema, request.body);
     const owner = await store.upsertUser(request.user!);
     const item = await store.upsertClipboardItem({ ...input, ownerUserId: owner.id });
     return reply.code(201).send(item);
   });
 
-  app.delete("/api/clipboard-items/:id", async (request) => {
+  app.delete("/api/clipboard-items/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const owner = await store.upsertUser(request.user!);
     const deleted = await store.deleteClipboardItem(owner.id, params.id);
     return { id: deleted.id, deleted: true };
   });
 
-  app.delete("/api/clipboard-items", async (request) => {
+  app.delete("/api/clipboard-items", defaultRouteRateLimitOptions, async (request) => {
     const owner = await store.upsertUser(request.user!);
     return { deletedCount: await store.clearClipboardItems(owner.id) };
   });
 
-  app.get("/api/task-items", async (request) => {
+  app.get("/api/task-items", defaultRouteRateLimitOptions, async (request) => {
     const query = parseQuery(listTaskItemsQuerySchema, request.query);
     const owner = await store.upsertUser(request.user!);
     const result = await store.listTaskItems(owner.id, query);
@@ -5291,7 +5303,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/task-items/:id", async (request) => {
+  app.get("/api/task-items/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const owner = await store.upsertUser(request.user!);
     const item = await store.getTaskItem(owner.id, params.id);
@@ -5301,7 +5313,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return item;
   });
 
-  app.post("/api/task-items", async (request, reply) => {
+  app.post("/api/task-items", defaultRouteRateLimitOptions, async (request, reply) => {
     const input = parseBody(createTaskItemRequestSchema, request.body);
     const owner = await store.upsertUser(request.user!);
     const item = await store.upsertTaskItem({
@@ -5313,26 +5325,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return reply.code(201).send(item);
   });
 
-  app.patch("/api/task-items/:id", async (request) => {
+  app.patch("/api/task-items/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updateTaskItemInputSchema, request.body);
     const owner = await store.upsertUser(request.user!);
     return store.updateTaskItem(owner.id, params.id, input);
   });
 
-  app.delete("/api/task-items/:id", async (request) => {
+  app.delete("/api/task-items/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const owner = await store.upsertUser(request.user!);
     const deleted = await store.deleteTaskItem(owner.id, params.id);
     return { id: deleted.id, deleted: true };
   });
 
-  app.delete("/api/task-items", async (request) => {
+  app.delete("/api/task-items", defaultRouteRateLimitOptions, async (request) => {
     const owner = await store.upsertUser(request.user!);
     return { deletedCount: await store.clearTaskItems(owner.id) };
   });
 
-  app.get("/api/links", async (request) => {
+  app.get("/api/links", defaultRouteRateLimitOptions, async (request) => {
     const query = parseQuery(listUserLinksQuerySchema, request.query);
     const owner = await store.upsertUser(request.user!);
     const result = await store.listUserLinks(owner.id, query);
@@ -5347,7 +5359,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.post("/api/links", async (request, reply) => {
+  app.post("/api/links", defaultRouteRateLimitOptions, async (request, reply) => {
     const input = parseBody(createUserLinkRequestSchema, request.body);
     const owner = await store.upsertUser(request.user!);
     const link = await store.createUserLink({ ...input, ownerUserId: owner.id });
@@ -5360,7 +5372,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return reply.code(201).send(link);
   });
 
-  app.patch("/api/links/:id", async (request) => {
+  app.patch("/api/links/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updateUserLinkRequestSchema, request.body);
     const link = await store.updateUserLink(request.user!.id, params.id, input);
@@ -5373,7 +5385,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return link;
   });
 
-  app.delete("/api/links/:id", async (request) => {
+  app.delete("/api/links/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const link = await store.deleteUserLink(request.user!.id, params.id);
     await recordAudit(store, request, {
@@ -5385,7 +5397,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { id: link.id, deleted: true };
   });
 
-  app.get("/api/codex/history", async (request) => {
+  app.get("/api/codex/history", defaultRouteRateLimitOptions, async (request) => {
     const query = parseQuery(codexHistoryQuerySchema, request.query);
     return codexHistoryResponseSchema.parse(
       await codexParity.listHistory({
@@ -5401,7 +5413,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   // Unified CLI task history endpoint (all providers)
-  app.get("/api/cli/tasks", async (request) => {
+  app.get("/api/cli/tasks", defaultRouteRateLimitOptions, async (request) => {
     const query = parseQuery(cliTaskHistoryQuerySchema, request.query);
     const visibleRuntimeIds = await visibleCliRuntimeIds();
     if (!visibleRuntimeIds.includes("cli:codex")) visibleRuntimeIds.push("cli:codex");
@@ -5423,7 +5435,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/panes/:id/cli/recovery-task", async (request) => {
+  app.get("/api/panes/:id/cli/recovery-task", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertCliPaneCompatible(pane);
@@ -5438,13 +5450,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/codex/threads/:id", async (request) => {
+  app.get("/api/codex/threads/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(codexThreadParamSchema, request.params);
     const query = parseQuery(codexThreadQuerySchema, request.query);
     return codexThreadResponseSchema.parse(await codexParity.getThread(params.id, { presentation: query.presentation }));
   });
 
-  app.get("/api/codex/environment", async () => {
+  app.get("/api/codex/environment", defaultRouteRateLimitOptions, async () => {
     const [environment, spaceStats, hostStats, isCodexEnabled] = await Promise.all([
       codexParity.getEnvironment(),
       readCodexEnvironmentSpaceStats(),
@@ -5459,7 +5471,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/rooms", async (request) => {
+  app.get("/api/rooms", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(paginationRequestSchema, request.query);
     const rooms = await store.listRooms();
     const start = (page.page - 1) * page.pageSize;
@@ -5474,7 +5486,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.get("/api/rooms/cli-activity", async () => {
+  app.get("/api/rooms/cli-activity", defaultRouteRateLimitOptions, async () => {
     const runtimeIds = await visibleCliRuntimeIds();
     const [rooms, activity] = await Promise.all([
       store.listRooms(),
@@ -5490,7 +5502,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/rooms", async (request) => {
+  app.post("/api/rooms", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createRoomInputSchema, request.body);
     if (input.initialPaneCount > 0) await cliRuntimeVisibility.assertEnabled("cli:codex");
     const room = await store.createRoom(input, request.requestIdForSpace);
@@ -5684,7 +5696,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
 
-  app.get("/api/proof-rooms/:id", async (request) => {
+  app.get("/api/proof-rooms/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     return readProofRoom(params.id);
   });
@@ -5823,12 +5835,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   );
 
-  app.post("/api/rooms/reorder", async (request) => {
+  app.post("/api/rooms/reorder", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(reorderRoomsInputSchema, request.body);
     return store.reorderRooms(input.roomIds, request.requestIdForSpace);
   });
 
-  app.post("/api/rooms/:id/panes/reorder", async (request) => {
+  app.post("/api/rooms/:id/panes/reorder", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(reorderPanesInputSchema, request.body);
     const panes = await store.reorderPanes(params.id, input.paneIds, request.requestIdForSpace);
@@ -5841,7 +5853,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return panes;
   });
 
-  app.patch("/api/rooms/:id", async (request) => {
+  app.patch("/api/rooms/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updateRoomInputSchema, request.body);
     const room = await store.updateRoom(params.id, input, request.requestIdForSpace);
@@ -5854,7 +5866,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return room;
   });
 
-  app.put("/api/rooms/:id/pane-layout", async (request) => {
+  app.put("/api/rooms/:id/pane-layout", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updatePaneLayoutInputSchema, request.body);
     const result = await store.updateRoomPaneLayout(params.id, input, request.requestIdForSpace);
@@ -5867,7 +5879,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result;
   });
 
-  app.delete("/api/rooms/:id", async (request) => {
+  app.delete("/api/rooms/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const panes = await store.listPanes(params.id, true);
     let interruptedCliSessions = 0;
@@ -5910,7 +5922,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true, roomId: room.id };
   });
 
-  app.get("/api/rooms/:id/agent-history", async (request) => {
+  app.get("/api/rooms/:id/agent-history", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     await store.getRoom(params.id);
     const history = [...(await store.listSpaceAgentHistory(params.id)), ...(await store.listAgentPaneHistory(params.id))]
@@ -6073,7 +6085,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
-  app.get("/api/cli/runtimes", async (request) => {
+  app.get("/api/cli/runtimes", defaultRouteRateLimitOptions, async (request) => {
     const registry = await cliRuntimeRegistryCache.read();
     const settings = new Map((await store.listCliRuntimeSettings()).map((setting) => [setting.runtimeId, setting.enabled]));
     const visible = registry.data.filter((runtime) => {
@@ -6086,7 +6098,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const cliRuntimeSettingParamSchema = z.object({ runtimeId: cliToggleRuntimeIdSchema });
 
-  app.get("/api/cli/runtime-settings", async (request, reply) => {
+  app.get("/api/cli/runtime-settings", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI runtime settings require the ADMIN role.");
     }
@@ -6109,14 +6121,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const agentToolsOptions = options.agentToolsOptions;
   const agentToolIdParamSchema = z.object({ toolId: idSchema });
 
-  app.get("/api/agent-tools/catalog", async (request, reply) => {
+  app.get("/api/agent-tools/catalog", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Agent tools require the ADMIN role.");
     }
     return await buildAgentToolsCatalog(store, agentToolsOptions);
   });
 
-  app.patch("/api/agent-tools/assignments/:toolId", async (request, reply) => {
+  app.patch("/api/agent-tools/assignments/:toolId", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Agent tool assignments require the ADMIN role.");
     }
@@ -6126,7 +6138,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return agentToolAssignmentSchema.parse(assignment);
   });
 
-  app.delete("/api/agent-tools/assignments/:toolId", async (request, reply) => {
+  app.delete("/api/agent-tools/assignments/:toolId", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Agent tool assignments require the ADMIN role.");
     }
@@ -6138,7 +6150,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { toolId: params.toolId, deleted: true };
   });
 
-  app.post("/api/agent-tools/apply", async (request, reply) => {
+  app.post("/api/agent-tools/apply", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Applying agent tools requires the ADMIN role.");
     }
@@ -6146,7 +6158,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return await applyAgentTools(store, input.assignments, agentToolsOptions);
   });
 
-  app.post("/api/agent-tools/launch", async (request, reply) => {
+  app.post("/api/agent-tools/launch", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Launching agent tool tasks requires the ADMIN role.");
     }
@@ -6205,7 +6217,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/cli/egress", async (request, reply) => {
+  app.get("/api/cli/egress", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
     }
@@ -6213,7 +6225,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return (await readCliVpnApplications(settings)).egress;
   });
 
-  app.get("/api/cli/vpn/routing-status", async () => {
+  app.get("/api/cli/vpn/routing-status", defaultRouteRateLimitOptions, async () => {
     const settings = await store.listCliRuntimeSettings();
     const vpn = await readCliVpnApplications(settings);
     return cliVpnRoutingStatusSchema.parse({
@@ -6228,7 +6240,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/cli/vpn", async (request, reply) => {
+  app.get("/api/cli/vpn", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
     }
@@ -6236,7 +6248,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return cliVpnConnectionSchema.parse(await cliVpnBroker.status());
   });
 
-  app.put("/api/cli/vpn/profile", async (request, reply) => {
+  app.put("/api/cli/vpn/profile", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
     }
@@ -6257,7 +6269,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return connection;
   });
 
-  app.post("/api/cli/vpn/verify", async (request, reply) => {
+  app.post("/api/cli/vpn/verify", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
     }
@@ -6277,7 +6289,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return connection;
   });
 
-  app.delete("/api/cli/vpn/profile", async (request, reply) => {
+  app.delete("/api/cli/vpn/profile", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
     }
@@ -6294,7 +6306,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const cliVpnProfileParamSchema = z.object({ profileId: cliVpnProfileIdSchema });
 
-  app.put("/api/cli/egress/profiles/:profileId", async (request, reply) => {
+  app.put("/api/cli/egress/profiles/:profileId", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
     }
@@ -6316,7 +6328,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return connection;
   });
 
-  app.post("/api/cli/egress/profiles/:profileId/verify", async (request, reply) => {
+  app.post("/api/cli/egress/profiles/:profileId/verify", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
     }
@@ -6332,7 +6344,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return connection;
   });
 
-  app.post("/api/cli/egress/profiles/mullvad/random-city", async (request, reply) => {
+  app.post("/api/cli/egress/profiles/mullvad/random-city", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
     }
@@ -6351,7 +6363,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return connection;
   });
 
-  app.delete("/api/cli/egress/profiles/:profileId", async (request, reply) => {
+  app.delete("/api/cli/egress/profiles/:profileId", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
     }
@@ -6485,7 +6497,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   }
 
-  app.put("/api/cli/egress/route", async (request, reply) => {
+  app.put("/api/cli/egress/route", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
     }
@@ -6493,7 +6505,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return switchGlobalCliEgress(request, input.routeId);
   });
 
-  app.post("/api/cli/runtime-settings/:runtimeId/disable-preview", async (request, reply) => {
+  app.post("/api/cli/runtime-settings/:runtimeId/disable-preview", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI runtime settings require the ADMIN role.");
     }
@@ -6501,7 +6513,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return cliRuntimeDisablePreviewSchema.parse(await cliRuntimeVisibility.createDisablePreview(params.runtimeId));
   });
 
-  app.patch("/api/cli/runtime-settings/:runtimeId", async (request, reply) => {
+  app.patch("/api/cli/runtime-settings/:runtimeId", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI runtime settings require the ADMIN role.");
     }
@@ -6527,7 +6539,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return updateCliRuntimeSettingResultSchema.parse(result);
   });
 
-  app.patch("/api/cli/runtime-settings/:runtimeId/vpn", async (request, reply) => {
+  app.patch("/api/cli/runtime-settings/:runtimeId/vpn", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
     }
@@ -6636,7 +6648,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   const cliVpnRestartPendingRuntimes = new Set<string>();
-  app.post("/api/cli/runtime-settings/:runtimeId/vpn/restart-required", async (request, reply) => {
+  app.post("/api/cli/runtime-settings/:runtimeId/vpn/restart-required", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN session restarts require the ADMIN role.");
     }
@@ -6760,7 +6772,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   };
 
   const cliRuntimeRestartPendingRuntimes = new Set<string>();
-  app.post("/api/admin/cli/runtime/:runtimeId/restart", async (request, reply) => {
+  app.post("/api/admin/cli/runtime/:runtimeId/restart", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI runtime session restarts require the ADMIN role.");
     }
@@ -6807,7 +6819,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   let cliRuntimeRestartAllInFlight = false;
-  app.post("/api/admin/cli/runtime/restart-all", async (request, reply) => {
+  app.post("/api/admin/cli/runtime/restart-all", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI runtime session restarts require the ADMIN role.");
     }
@@ -6964,18 +6976,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   };
 
-  app.post("/api/rooms/:id/cli-login", async (request) => {
+  app.post("/api/rooms/:id/cli-login", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(cliLoginRequestSchema, request.body ?? {});
     return openCliLogin(request, params.id, input.runtimeId);
   });
 
-  app.get("/api/cli/codex-defaults", async () => {
+  app.get("/api/cli/codex-defaults", defaultRouteRateLimitOptions, async () => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     return codexCliModeDefaultsService.read();
   });
 
-  app.patch("/api/cli/codex-defaults", async (request) => {
+  app.patch("/api/cli/codex-defaults", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(updateCodexCliModeDefaultsInputSchema, request.body ?? {});
     const response = await codexCliModeDefaultsService.update(input);
@@ -7036,7 +7048,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   );
 
-  app.get("/api/panes/:id/cli/terminal", { websocket: true }, (socket, request) => {
+  app.get("/api/panes/:id/cli/terminal", defaultWebsocketRateLimitOptions, (socket, request) => {
     try {
       const params = parseQuery(idParamSchema, request.params);
       const query = parseQuery(cliTerminalQuerySchema, request.query);
@@ -7072,7 +7084,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
 
-  app.get("/api/panes/:id/cli/session", async (request) => {
+  app.get("/api/panes/:id/cli/session", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const query = parseQuery(cliSessionQuerySchema, request.query);
     const pane = await getPaneById(store, params.id);
@@ -7110,7 +7122,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/panes/:id/cli/model-settings", async (request) => {
+  app.get("/api/panes/:id/cli/model-settings", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertCliPaneCompatible(pane);
@@ -7126,7 +7138,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       : (await readPaneCliModelSettings(pane, active, request.requestIdForSpace)).settings;
   });
 
-  app.get("/api/panes/:id/cli/model-settings/status", async (request) => {
+  app.get("/api/panes/:id/cli/model-settings/status", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertCliPaneCompatible(pane);
@@ -7160,7 +7172,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
 
-  app.patch("/api/panes/:id/cli/model-settings", async (request) => {
+  app.patch("/api/panes/:id/cli/model-settings", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updateCliModelSettingsBodySchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -7375,7 +7387,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.get("/api/panes/:id/cli/turn-activity", async (request) => {
+  app.get("/api/panes/:id/cli/turn-activity", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const query = parseQuery(cliTurnActivityQuerySchema, request.query);
     const pane = await getPaneById(store, params.id);
@@ -7392,7 +7404,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return paneCliTurnActivityResponseSchema.parse(await cliTerminalManager.getTurnActivity(active.sessionId, query.marker));
   });
 
-  app.get("/api/panes/:id/browser/frames", { websocket: true }, (socket, request) => {
+  app.get("/api/panes/:id/browser/frames", defaultWebsocketRateLimitOptions, (socket, request) => {
     void (async () => {
       const params = parseQuery(idParamSchema, request.params);
       const query = parseQuery(browserFrameQuerySchema.required({ token: true }), request.query);
@@ -7434,7 +7446,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/panes/:id/browser/stream-ticket", async (request) => {
+  app.post("/api/panes/:id/browser/stream-ticket", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -7449,7 +7461,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/panes/:id/browser/stream", { websocket: true }, (socket, request) => {
+  app.get("/api/panes/:id/browser/stream", defaultWebsocketRateLimitOptions, (socket, request) => {
     void (async () => {
       const params = parseQuery(idParamSchema, request.params);
       const query = parseQuery(browserStreamQuerySchema, request.query);
@@ -7569,7 +7581,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/panes/:id/browser/audio-ticket", async (request) => {
+  app.post("/api/panes/:id/browser/audio-ticket", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -7584,7 +7596,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/panes/:id/browser/audio", { websocket: true }, (socket, request) => {
+  app.get("/api/panes/:id/browser/audio", defaultWebsocketRateLimitOptions, (socket, request) => {
     void (async () => {
       const params = parseQuery(idParamSchema, request.params);
       const query = parseQuery(browserAudioQuerySchema, request.query);
@@ -7631,7 +7643,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/panes", async (request) => {
+  app.get("/api/panes", defaultRouteRateLimitOptions, async (request) => {
     const query = parseQuery(listPanesQuerySchema, request.query);
     const enabledRuntimeIds = new Set(await cliRuntimeVisibility.enabledRuntimeIds());
     const panes = (await store.listPanes(query.roomId, query.includeClosed)).filter((pane) => {
@@ -7650,7 +7662,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.post("/api/rooms/:id/panes", async (request) => {
+  app.post("/api/rooms/:id/panes", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createRoomPanesRequestSchema, request.body);
     const registry = await discoverAgentRuntimes(config);
@@ -7712,7 +7724,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return roomPanesResultSchema.parse({ roomId: params.id, data: panes });
   });
 
-  app.post("/api/panes", async (request) => {
+  app.post("/api/panes", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createPaneInputSchema, request.body);
     assertRootAdmin(request, input.terminalRuntimeId);
     if (input.mode === "CHAT") {
@@ -7734,7 +7746,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return pane;
   });
 
-  app.patch("/api/panes/:id", async (request) => {
+  app.patch("/api/panes/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = request.params as { id: string };
     const input = parseBody(updatePaneInputSchema, request.body);
     const existingPane = await getPaneById(store, params.id);
@@ -7809,7 +7821,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return pane;
   });
 
-  app.post("/api/panes/:id/move", async (request) => {
+  app.post("/api/panes/:id/move", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(movePaneInputSchema, request.body);
     const move = await store.movePane(params.id, input, request.requestIdForSpace);
@@ -7837,7 +7849,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return move;
   });
 
-  app.post("/api/panes/:id/title/generate", async (request) => {
+  app.post("/api/panes/:id/title/generate", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     if (pane.mode !== "TERMINAL" && pane.mode !== "CHAT") {
@@ -7971,13 +7983,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return updated;
   });
 
-  app.get("/api/panes/:id/capabilities", async (request) => {
+  app.get("/api/panes/:id/capabilities", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     return buildPaneCapabilityMatrix(store, pane);
   });
 
-  app.delete("/api/panes/:id", async (request) => {
+  app.delete("/api/panes/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = request.params as { id: string };
     const current = await getPaneById(store, params.id);
     let interruptedCliSessionId: string | null = null;
@@ -8019,9 +8031,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return pane;
   });
 
-  app.get("/api/browser/status", async () => browserSessionManager.status());
+  app.get("/api/browser/status", defaultRouteRateLimitOptions, async () => browserSessionManager.status());
 
-  app.post("/api/cli/agent-files", async (request, reply) => {
+  app.post("/api/cli/agent-files", defaultRouteRateLimitOptions, async (request, reply) => {
     const bridge = await requireCliAgentFilesContext(request, reply);
     if (!bridge) return undefined;
     if (!request.isMultipart()) {
@@ -8110,7 +8122,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { artifacts };
   });
 
-  app.get("/api/cli/browser/context", async (request, reply) => {
+  app.get("/api/cli/browser/context", defaultRouteRateLimitOptions, async (request, reply) => {
     const bridge = await requireCliBrowserBridgeContext(request, reply);
     if (!bridge) return undefined;
     const browserSessions = await store.listActivePaneBrowserSessions(bridge.claims.roomId);
@@ -8132,7 +8144,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/cli/browser/session", async (request, reply) => {
+  app.post("/api/cli/browser/session", defaultRouteRateLimitOptions, async (request, reply) => {
     const bridge = await requireCliBrowserBridgeContext(request, reply);
     if (!bridge) return undefined;
     const input = parseBody(spaceCliBrowserSessionStartRequestSchema, request.body ?? {});
@@ -8180,7 +8192,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/cli/browser/actions", async (request, reply) => {
+  app.post("/api/cli/browser/actions", defaultRouteRateLimitOptions, async (request, reply) => {
     const bridge = await requireCliBrowserBridgeContext(request, reply);
     if (!bridge) return undefined;
     const input = parseBody(spaceCliBrowserActionBridgeRequestSchema, request.body ?? {});
@@ -8252,7 +8264,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return spaceCliBrowserActionBridgeResponseSchema.parse({ results });
   });
 
-  app.post("/api/cli/browser/commands", async (request, reply) => {
+  app.post("/api/cli/browser/commands", defaultRouteRateLimitOptions, async (request, reply) => {
     const bridge = await requireCliBrowserBridgeContext(request, reply);
     if (!bridge) return undefined;
     const input = parseBody(spaceCliBrowserCommandRequestSchema, request.body ?? {});
@@ -8423,7 +8435,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result;
   });
 
-  app.get("/api/panes/:id/browser/session", async (request) => {
+  app.get("/api/panes/:id/browser/session", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8434,7 +8446,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return session;
   });
 
-  app.get("/api/panes/:id/browser/handoff", async (request) => {
+  app.get("/api/panes/:id/browser/handoff", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8447,7 +8459,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserHandoffRequestResponseSchema.parse({ handoff });
   });
 
-  app.post("/api/panes/:id/browser/session", async (request) => {
+  app.post("/api/panes/:id/browser/session", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createPaneBrowserSessionRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8474,7 +8486,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return session;
   });
 
-  app.patch("/api/panes/:id/browser/session", async (request) => {
+  app.patch("/api/panes/:id/browser/session", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updatePaneBrowserSessionRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8506,7 +8518,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return response;
   });
 
-  app.post("/api/panes/:id/browser/navigate", async (request) => {
+  app.post("/api/panes/:id/browser/navigate", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserNavigateInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8521,7 +8533,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return response;
   });
 
-  app.get("/api/panes/:id/browser/pages", async (request) => {
+  app.get("/api/panes/:id/browser/pages", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8531,7 +8543,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.listPages(pane);
   });
 
-  app.post("/api/panes/:id/browser/pages", async (request) => {
+  app.post("/api/panes/:id/browser/pages", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createBrowserPageInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8542,7 +8554,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.createPage(pane, input.url, input.activate, request.requestIdForSpace, operatorBrowserActor(request));
   });
 
-  app.post("/api/panes/:id/browser/pages/:pageId/activate", async (request) => {
+  app.post("/api/panes/:id/browser/pages/:pageId/activate", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(browserPageParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8552,7 +8564,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.activatePage(pane, params.pageId, request.requestIdForSpace, operatorBrowserActor(request));
   });
 
-  app.post("/api/panes/:id/browser/pages/:pageId/close", async (request) => {
+  app.post("/api/panes/:id/browser/pages/:pageId/close", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(browserPageParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8562,7 +8574,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.closePage(pane, params.pageId, request.requestIdForSpace, operatorBrowserActor(request));
   });
 
-  app.post("/api/panes/:id/browser/control/acquire", async (request) => {
+  app.post("/api/panes/:id/browser/control/acquire", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(acquireBrowserControlInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8596,7 +8608,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserControlLeaseResponseSchema.parse({ lease });
   });
 
-  app.post("/api/panes/:id/browser/control/heartbeat", async (request) => {
+  app.post("/api/panes/:id/browser/control/heartbeat", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserControlLeaseActionInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8609,7 +8621,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/panes/:id/browser/control/release", async (request) => {
+  app.post("/api/panes/:id/browser/control/release", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserControlLeaseActionInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8636,7 +8648,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserControlLeaseResponseSchema.parse({ lease });
   });
 
-  app.post("/api/panes/:id/browser/input", async (request) => {
+  app.post("/api/panes/:id/browser/input", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserRuntimeInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8647,7 +8659,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.input(pane, input, request.requestIdForSpace, operatorBrowserActor(request));
   });
 
-  app.post("/api/panes/:id/browser/captures", async (request, reply) => {
+  app.post("/api/panes/:id/browser/captures", defaultRouteRateLimitOptions, async (request, reply) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createBrowserCaptureJobRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8669,7 +8681,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return reply.code(202).send(browserCaptureJobResponseSchema.parse({ job }));
   });
 
-  app.get("/api/panes/:id/browser/captures/:jobId", async (request) => {
+  app.get("/api/panes/:id/browser/captures/:jobId", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(browserCaptureParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8679,7 +8691,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserCaptureJobResponseSchema.parse({ job: await browserSessionManager.getCapture(pane, params.jobId) });
   });
 
-  app.get("/api/panes/:id/browser/captures/:jobId/segments", async (request) => {
+  app.get("/api/panes/:id/browser/captures/:jobId/segments", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(browserCaptureParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8691,7 +8703,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/panes/:id/browser/captures/:jobId/timeline", async (request) => {
+  app.get("/api/panes/:id/browser/captures/:jobId/timeline", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(browserCaptureParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8721,7 +8733,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/panes/:id/browser/captures/:jobId/stop", async (request) => {
+  app.post("/api/panes/:id/browser/captures/:jobId/stop", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(browserCaptureParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8743,7 +8755,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserCaptureJobResponseSchema.parse({ job });
   });
 
-  app.post("/api/panes/:id/browser/captures/:jobId/cancel", async (request) => {
+  app.post("/api/panes/:id/browser/captures/:jobId/cancel", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(browserCaptureParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8765,7 +8777,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserCaptureJobResponseSchema.parse({ job });
   });
 
-  app.get("/api/panes/:id/browser/diagnostics", async (request) => {
+  app.get("/api/panes/:id/browser/diagnostics", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const query = parseQuery(browserDiagnosticsQuerySchema, request.query);
     const pane = await getPaneById(store, params.id);
@@ -8776,7 +8788,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserDiagnosticsResponseSchema.parse(await browserSessionManager.diagnostics(pane, query.includeNetwork, query.limit));
   });
 
-  app.get("/api/panes/:id/browser/bookmarks", async (request) => {
+  app.get("/api/panes/:id/browser/bookmarks", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8784,7 +8796,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return listManagedBrowserBookmarks(session);
   });
 
-  app.post("/api/panes/:id/browser/bookmarks", async (request) => {
+  app.post("/api/panes/:id/browser/bookmarks", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createBrowserBookmarkInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8809,7 +8821,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserBookmarkListResponseSchema.parse(bookmarks);
   });
 
-  app.post("/api/panes/:id/browser/bookmarks/import", async (request, reply) => {
+  app.post("/api/panes/:id/browser/bookmarks/import", defaultRouteRateLimitOptions, async (request, reply) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8884,7 +8896,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserBookmarkImportResponseSchema.parse(imported);
   });
 
-  app.get("/api/panes/:id/browser/bookmarks/export", async (request, reply) => {
+  app.get("/api/panes/:id/browser/bookmarks/export", defaultRouteRateLimitOptions, async (request, reply) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -8902,7 +8914,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       .send(`${JSON.stringify(data, null, 2)}\n`);
   });
 
-  app.post("/api/panes/:id/browser/bookmarks/open", async (request) => {
+  app.post("/api/panes/:id/browser/bookmarks/open", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(openBrowserBookmarkInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8923,7 +8935,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return response;
   });
 
-  app.post("/api/panes/:id/browser/viewport", async (request) => {
+  app.post("/api/panes/:id/browser/viewport", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserSetViewportInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8938,7 +8950,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return response;
   });
 
-  app.post("/api/panes/:id/browser/action", async (request) => {
+  app.post("/api/panes/:id/browser/action", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(browserToolActionInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -8953,7 +8965,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result;
   });
 
-  app.post("/api/internal/agent/browser-actions", async (request) => {
+  app.post("/api/internal/agent/browser-actions", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     if (!config.browserToolBridgeEnabled) {
       throw new SpaceFeatureDisabledError(
@@ -9092,7 +9104,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return spaceAgentBrowserActionBridgeResponseSchema.parse({ results });
   });
 
-  app.post("/api/internal/agent/room-actions", async (request) => {
+  app.post("/api/internal/agent/room-actions", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(spaceAgentRoomActionBridgeRequestSchema, request.body ?? {});
     const roomAgentPane = await store.getOrCreateRoomAgentPane(input.roomId, request.requestIdForSpace);
@@ -9133,7 +9145,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result;
   });
 
-  app.get("/api/panes/:id/browser/frame", async (request) => {
+  app.get("/api/panes/:id/browser/frame", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const query = parseQuery(browserFrameQuerySchema, request.query);
     const pane = await getPaneById(store, params.id);
@@ -9145,7 +9157,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return browserSessionManager.captureFrame(session.sessionId);
   });
 
-  app.post("/api/panes/:id/browser/stop", async (request) => {
+  app.post("/api/panes/:id/browser/stop", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
@@ -9159,7 +9171,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true, paneId: pane.id };
   });
 
-  app.post("/api/panes/:id/cli/session", async (request) => {
+  app.post("/api/panes/:id/cli/session", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createPaneCliSessionRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -9431,7 +9443,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/panes/:id/cli/resume", async (request) => {
+  app.post("/api/panes/:id/cli/resume", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(resumePaneCliSessionRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -9632,7 +9644,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       : resumeOperation();
   });
 
-  app.post("/api/panes/:id/cli/uploads", async (request, reply) => {
+  app.post("/api/panes/:id/cli/uploads", defaultRouteRateLimitOptions, async (request, reply) => {
     const params = parseQuery(idParamSchema, request.params);
     const query = parseQuery(cliUploadsQuerySchema, request.query);
     const pane = await getPaneById(store, params.id);
@@ -9783,7 +9795,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.post("/api/panes/:id/cli/clipboard-debug", async (request) => {
+  app.post("/api/panes/:id/cli/clipboard-debug", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(cliClipboardDebugInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -9822,7 +9834,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.post("/api/panes/:id/cli/interrupt", async (request) => {
+  app.post("/api/panes/:id/cli/interrupt", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(paneCliInterruptInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -9875,19 +9887,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
-  app.get("/api/panes/:id/agent-session", async (request) => {
+  app.get("/api/panes/:id/agent-session", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertAgentPaneCompatible(pane);
     return spaceAgentAdapter.loadSession({ pane });
   });
 
-  app.get("/api/rooms/:id/room-agent", async (request) => {
+  app.get("/api/rooms/:id/room-agent", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     return roomAgentService.load(params.id);
   });
 
-  app.post("/api/rooms/:id/room-agent/messages", async (request, reply) => {
+  app.post("/api/rooms/:id/room-agent/messages", defaultRouteRateLimitOptions, async (request, reply) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(roomAgentMessageInputSchema, request.body);
@@ -9901,7 +9913,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return reply.code(202).send(session);
   });
 
-  app.post("/api/rooms/:id/room-agent/stop", async (request) => {
+  app.post("/api/rooms/:id/room-agent/stop", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(roomAgentStopInputSchema, request.body ?? {});
     const session = await roomAgentService.stop(params.id, input.reason, request.requestIdForSpace);
@@ -9914,7 +9926,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return session;
   });
 
-  app.post("/api/rooms/:id/room-agent/control", async (request) => {
+  app.post("/api/rooms/:id/room-agent/control", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(roomAgentControlInputSchema, request.body ?? {});
     if (input.action !== "STOP") await cliRuntimeVisibility.assertEnabled("cli:codex");
@@ -9928,7 +9940,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return session;
   });
 
-  app.delete("/api/rooms/:id/room-agent/transcript", async (request) => {
+  app.delete("/api/rooms/:id/room-agent/transcript", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const session = await roomAgentService.clearTranscript(params.id, request.requestIdForSpace);
@@ -9941,7 +9953,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return session;
   });
 
-  app.post("/api/panes/:id/agent-session", async (request) => codexHistoryAccessCoordinator.withHistoryAttachment(async () => {
+  app.post("/api/panes/:id/agent-session", defaultRouteRateLimitOptions, async (request) => codexHistoryAccessCoordinator.withHistoryAttachment(async () => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createAgentPaneSessionInputSchema, request.body ?? {});
@@ -9957,7 +9969,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   }));
 
-  app.post("/api/panes/:id/agent/messages", async (request) => {
+  app.post("/api/panes/:id/agent/messages", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneSendMessageInputSchema, request.body);
@@ -9981,7 +9993,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result.session;
   });
 
-  app.post("/api/panes/:id/agent/interrupt", async (request) => {
+  app.post("/api/panes/:id/agent/interrupt", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneInterruptInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -9996,7 +10008,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result.session;
   });
 
-  app.patch("/api/panes/:id/agent/settings", async (request) => {
+  app.patch("/api/panes/:id/agent/settings", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneSettingsInputSchema, request.body);
@@ -10024,7 +10036,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result.session;
   });
 
-  app.put("/api/panes/:id/agent/goal", async (request) => {
+  app.put("/api/panes/:id/agent/goal", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneGoalInputSchema, request.body);
@@ -10046,7 +10058,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result.session;
   });
 
-  app.delete("/api/panes/:id/agent/goal", async (request) => {
+  app.delete("/api/panes/:id/agent/goal", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
@@ -10066,9 +10078,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result.session;
   });
 
-  app.get("/api/voice/transcription/settings", async () => buildVoiceTranscriptionSettings(config));
+  app.get("/api/voice/transcription/settings", defaultRouteRateLimitOptions, async () => buildVoiceTranscriptionSettings(config));
 
-  app.post("/api/voice/realtime/calls", async (request, reply) => {
+  app.post("/api/voice/realtime/calls", defaultRouteRateLimitOptions, async (request, reply) => {
     const settings = buildVoiceTranscriptionSettings(config);
     if (!settings.enabled) {
       throw new SpaceFeatureDisabledError("VOICE_TRANSCRIPTION_DISABLED", settings.statusReason);
@@ -10100,7 +10112,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
 
-  app.get("/api/turns", async (request) => {
+  app.get("/api/turns", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(listTurnsQuerySchema, request.query);
     if (page.roomId) {
       await store.getRoom(page.roomId);
@@ -10122,7 +10134,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.post("/api/turns", async (request) => {
+  app.post("/api/turns", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createTurnInputSchema, request.body);
     if (input.runtime === "CODEX_APP_SERVER") await cliRuntimeVisibility.assertEnabled("cli:codex");
     await store.getRoom(input.roomId);
@@ -10211,7 +10223,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ...result, artifactIds: turnInput.artifactIds, turnId: queued.turn.id };
   });
 
-  app.get("/api/events", async (request, reply) => {
+  app.get("/api/events", defaultRouteRateLimitOptions, async (request, reply) => {
     const parsedQuery = listEventsQuerySchema.safeParse(request.query);
     if (!parsedQuery.success) {
       return sendApiError(reply, 400, "VALIDATION_ERROR", "Invalid request data.", parsedQuery.error.flatten());
@@ -10232,7 +10244,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.get("/api/events/stream", { compress: false }, async (request, reply) => {
+  app.get("/api/events/stream", { config: { rateLimit: defaultRouteRateLimitOptions.config.rateLimit }, compress: false }, async (request, reply) => {
     const query = parseQuery(eventStreamQuerySchema, request.query);
     if (query.roomId) {
       await store.getRoom(query.roomId);
@@ -10813,7 +10825,7 @@ app.post(
       }
     }
   );
-  app.get("/api/providers", async () => {
+  app.get("/api/providers", defaultRouteRateLimitOptions, async () => {
     const providers = await store.listProviders();
     return { data: providers, pagination: { page: 1, pageSize: 100, totalItems: providers.length, totalPages: providers.length ? 1 : 0 } };
   });
@@ -11378,8 +11390,8 @@ app.post(
       return status;
     }
   );
-  app.get("/api/provider-settings", async () => store.getProviderSettings());
-  app.patch("/api/provider-settings", async (request) => {
+  app.get("/api/provider-settings", defaultRouteRateLimitOptions, async () => store.getProviderSettings());
+  app.patch("/api/provider-settings", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(updateProviderSettingsInputSchema, request.body);
     const currentSettings = await store.getProviderSettings();
@@ -11399,7 +11411,7 @@ app.post(
     });
     return settings;
   });
-  app.post("/api/providers", async (request) => {
+  app.post("/api/providers", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(createProviderInputSchema, request.body);
     const provider = await store.createProvider(input);
@@ -11415,7 +11427,7 @@ app.post(
     });
     return provider;
   });
-  app.patch("/api/providers/:id", async (request) => {
+  app.patch("/api/providers/:id", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = request.params as { id: string };
     const input = parseBody(updateProviderInputSchema, request.body);
@@ -11432,7 +11444,7 @@ app.post(
     });
     return provider;
   });
-  app.post("/api/providers/:id/validate", async (request) => {
+  app.post("/api/providers/:id/validate", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = request.params as { id: string };
     const providers = await store.listProviders();
@@ -11458,7 +11470,7 @@ app.post(
     });
     return result.models ? { ...recorded, models: persistedModels } : recorded;
   });
-  app.get("/api/providers/:id/validation", async (request) => {
+  app.get("/api/providers/:id/validation", defaultRouteRateLimitOptions, async (request) => {
     const params = request.params as { id: string };
     const providers = await store.listProviders();
     if (!providers.some((provider) => provider.id === params.id)) {
@@ -11466,7 +11478,7 @@ app.post(
     }
     return { data: await store.getLatestProviderValidation(params.id) };
   });
-  app.get("/api/models", async () => {
+  app.get("/api/models", defaultRouteRateLimitOptions, async () => {
     const models = await store.listModels();
     return { data: models, pagination: { page: 1, pageSize: 100, totalItems: models.length, totalPages: models.length ? 1 : 0 } };
   });
@@ -11676,7 +11688,7 @@ app.post(
     }
   }
 
-  app.get("/api/mcp", async () => {
+  app.get("/api/mcp", defaultRouteRateLimitOptions, async () => {
     const capabilities = (await store.listCapabilities()).filter((item) => item.kind === "MCP_SERVER" || item.kind === "MCP_TOOL");
     const gateway = await store.getMcpGatewayStatus();
     const servers = await store.listMcpServers();
@@ -11689,12 +11701,12 @@ app.post(
       pagination: { page: 1, pageSize: 100, totalItems: capabilities.length, totalPages: capabilities.length ? 1 : 0 }
     };
   });
-  app.post("/api/mcp/tools/execute", async (request) => {
+  app.post("/api/mcp/tools/execute", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createMcpToolExecutionInputSchema, request.body);
     return executeMcpToolWithPolicy(input, request);
   });
 
-  app.post("/api/internal/agent/mcp-actions", async (request) => {
+  app.post("/api/internal/agent/mcp-actions", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     if (!config.mcpToolBridgeEnabled) {
       throw new SpaceFeatureDisabledError(
@@ -11765,11 +11777,11 @@ app.post(
     });
   });
 
-  app.get("/api/skills", async () => {
+  app.get("/api/skills", defaultRouteRateLimitOptions, async () => {
     const skills = await store.listSkills();
     return { data: skills, pagination: { page: 1, pageSize: 100, totalItems: skills.length, totalPages: skills.length ? 1 : 0 } };
   });
-  app.post("/api/skills", async (request) => {
+  app.post("/api/skills", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createSkillProposalInputSchema, request.body);
     const record = await store.createSkillProposal(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -11787,7 +11799,7 @@ app.post(
     });
     return record.skill;
   });
-  app.get("/api/imports", async (request) => {
+  app.get("/api/imports", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(listImportCandidatesQuerySchema, request.query);
     const candidates = await store.listImportCandidates(page);
     const start = (page.page - 1) * page.pageSize;
@@ -11801,7 +11813,7 @@ app.post(
       }
     };
   });
-  app.post("/api/imports", async (request) => {
+  app.post("/api/imports", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createImportCandidateInputSchema, request.body);
     const record = await store.createImportCandidate(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -11818,7 +11830,7 @@ app.post(
     });
     return record.candidate;
   });
-  app.post("/api/imports/:id/decision", async (request) => {
+  app.post("/api/imports/:id/decision", defaultRouteRateLimitOptions, async (request) => {
     const params = request.params as { id: string };
     const input = parseBody(importCandidateDecisionInputSchema, request.body);
     const record = await store.decideImportCandidate(params.id, input, request.requestIdForSpace);
@@ -11843,7 +11855,7 @@ app.post(
       skill: record.skill
     });
   });
-  app.get("/api/memory", async (request) => {
+  app.get("/api/memory", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(listMemoryQuerySchema, request.query);
     const [latestEmbeddingSmoke, vectorReadiness] = await Promise.all([
       store.getLatestMemoryEmbeddingSmoke(),
@@ -11912,7 +11924,7 @@ app.post(
       search: buildMemorySearchStatus(page.searchMode, latestEmbeddingSmoke, vectorReadiness, geminiEntries.length)
     };
   });
-  app.post("/api/memory", async (request) => {
+  app.post("/api/memory", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createMemoryEntryInputSchema, request.body);
     const entry = await canonicalMemory.save(input, request.requestIdForSpace);
     await memoryGraphService.invalidateCachedSnapshot();
@@ -11953,7 +11965,7 @@ app.post(
     });
     return entry;
   });
-  app.get("/api/tasks", async (request) => {
+  app.get("/api/tasks", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(listSharedTasksQuerySchema, request.query);
     const tasks: SharedTask[] = [];
     if (page.source === "all" || page.source === "space_swarm") {
@@ -11975,7 +11987,7 @@ app.post(
       }
     };
   });
-  app.patch("/api/tasks/codex-goals/:threadId", async (request) => {
+  app.patch("/api/tasks/codex-goals/:threadId", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseBody(codexGoalThreadParamSchema, request.params);
     const input = parseBody(updateCodexGoalTaskInputSchema, request.body);
@@ -11994,7 +12006,7 @@ app.post(
     });
     return updated;
   });
-  app.get("/api/artifacts", async (request) => {
+  app.get("/api/artifacts", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(listArtifactsQuerySchema, request.query);
     const artifacts = await store.listArtifacts(page);
     const start = (page.page - 1) * page.pageSize;
@@ -12008,7 +12020,7 @@ app.post(
       }
     };
   });
-  app.get("/api/artifacts/:id/file", async (request, reply) => {
+  app.get("/api/artifacts/:id/file", defaultRouteRateLimitOptions, async (request, reply) => {
     const params = parseBody(idParamSchema, request.params);
     const artifact = await store.getArtifact(params.id);
     if (artifact.deletedAt) {
@@ -12034,7 +12046,7 @@ app.post(
       .header("content-disposition", `inline; filename="${filename.replace(/["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
     return reply.send(createReadStream(filePath));
   });
-  app.get("/api/artifacts/:id/download", async (request, reply) => {
+  app.get("/api/artifacts/:id/download", defaultRouteRateLimitOptions, async (request, reply) => {
     const params = parseBody(idParamSchema, request.params);
     const artifact = await store.getArtifact(params.id);
     if (artifact.deletedAt || !isAgentFileArtifact(artifact)) {
@@ -12058,7 +12070,7 @@ app.post(
       .header("content-disposition", `attachment; filename="${filename.replace(/["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
     return reply.send(createReadStream(filePath));
   });
-  app.get("/api/artifacts/:id/preview", async (request, reply) => {
+  app.get("/api/artifacts/:id/preview", defaultRouteRateLimitOptions, async (request, reply) => {
     const params = parseBody(idParamSchema, request.params);
     const artifact = await store.getArtifact(params.id);
     if (artifact.deletedAt || !isAgentFileArtifact(artifact)) {
@@ -12113,7 +12125,7 @@ app.post(
     }
     return sendApiError(reply, 415, "PREVIEW_UNSUPPORTED", "Preview is not available for this file type. Download remains available.");
   });
-  app.patch("/api/artifacts/:id/retention", async (request) => {
+  app.patch("/api/artifacts/:id/retention", defaultRouteRateLimitOptions, async (request) => {
     const params = parseBody(idParamSchema, request.params);
     const input = parseBody(updateArtifactRetentionInputSchema, request.body ?? {});
     const current = await store.getArtifact(params.id);
@@ -12134,7 +12146,7 @@ app.post(
     });
     return artifact;
   });
-  app.delete("/api/artifacts/:id", async (request, reply) => {
+  app.delete("/api/artifacts/:id", defaultRouteRateLimitOptions, async (request, reply) => {
     const params = parseBody(idParamSchema, request.params);
     const artifact = await store.getArtifact(params.id);
     const deleted = await permanentlyDeleteLocalArtifact({ store, artifactRoot: config.browserEvidenceArtifactRoot, artifact });
@@ -12152,7 +12164,7 @@ app.post(
     });
     return { ok: true, artifactId: deleted.id };
   });
-  app.delete("/api/rooms/:id/media", async (request) => {
+  app.delete("/api/rooms/:id/media", defaultRouteRateLimitOptions, async (request) => {
     const params = parseBody(idParamSchema, request.params);
     await store.getRoom(params.id);
     const mediaArtifacts = (await store.listArtifacts({
@@ -12199,7 +12211,7 @@ app.post(
     });
     return result;
   });
-  app.delete("/api/rooms/:id/agent-files", async (request) => {
+  app.delete("/api/rooms/:id/agent-files", defaultRouteRateLimitOptions, async (request) => {
     const params = parseBody(idParamSchema, request.params);
     await store.getRoom(params.id);
     const agentFiles = await store.listArtifacts({
@@ -12250,7 +12262,7 @@ app.post(
     });
     return result;
   });
-  app.post("/api/artifacts/uploads", async (request, reply) => {
+  app.post("/api/artifacts/uploads", defaultRouteRateLimitOptions, async (request, reply) => {
     const query = parseQuery(uploadArtifactsQuerySchema, request.query);
     await store.getRoom(query.roomId);
     await assertPaneBelongsToRoom(store, query.roomId, query.paneId ?? null);
@@ -12360,7 +12372,7 @@ app.post(
     return { artifacts };
   });
 
-  app.post("/api/artifacts/file-uploads", async (request, reply) => {
+  app.post("/api/artifacts/file-uploads", defaultRouteRateLimitOptions, async (request, reply) => {
     const query = parseQuery(uploadArtifactsQuerySchema, request.query);
     await store.getRoom(query.roomId);
     await assertPaneBelongsToRoom(store, query.roomId, query.paneId ?? null);
@@ -12480,7 +12492,7 @@ app.post(
     return { artifacts };
   });
 
-  app.post("/api/rooms/:id/screen-capture", async (request) => {
+  app.post("/api/rooms/:id/screen-capture", defaultRouteRateLimitOptions, async (request) => {
     const params = parseBody(idParamSchema, request.params);
     const input = parseBody(screenCaptureInputSchema, request.body ?? {});
     await store.getRoom(params.id);
@@ -12540,7 +12552,7 @@ app.post(
     });
     return { ...parsedCapture, artifact: screenshot };
   });
-  app.post("/api/artifacts", async (request) => {
+  app.post("/api/artifacts", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createArtifactInputSchema, request.body);
     const record = await store.createArtifact(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -12559,11 +12571,11 @@ app.post(
     });
     return record.artifact;
   });
-  app.get("/api/browser", async () => {
+  app.get("/api/browser", defaultRouteRateLimitOptions, async () => {
     const capabilities = (await store.listCapabilities()).filter((item) => item.kind === "BROWSER_POOL");
     return { data: capabilities, pagination: { page: 1, pageSize: 100, totalItems: capabilities.length, totalPages: capabilities.length ? 1 : 0 } };
   });
-  app.post("/api/browser/evidence-smoke", async (request) => {
+  app.post("/api/browser/evidence-smoke", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createBrowserEvidenceInputSchema, request.body);
     const targetUrl = buildBrowserEvidenceTargetUrl(config.browserEvidenceTargetOrigin);
     const capture = await browserEvidenceCapture({
@@ -12612,7 +12624,7 @@ app.post(
       artifacts
     });
   });
-  app.get("/api/reviews", async (request) => {
+  app.get("/api/reviews", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(listReviewDecisionsQuerySchema, request.query);
     const decisions = await store.listReviewDecisions(page);
     const start = (page.page - 1) * page.pageSize;
@@ -12626,7 +12638,7 @@ app.post(
       }
     };
   });
-  app.post("/api/reviews", async (request) => {
+  app.post("/api/reviews", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createReviewDecisionInputSchema, request.body);
     const record = await store.createReviewDecision(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -12643,7 +12655,7 @@ app.post(
     });
     return record.decision;
   });
-  app.get("/api/reviews/state", async (request) => {
+  app.get("/api/reviews/state", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(listReviewDecisionsQuerySchema, request.query);
     const [decisions, checks, diffs, artifacts] = await Promise.all([
       store.listReviewDecisions(page),
@@ -12659,7 +12671,7 @@ app.post(
       ...reviewGateStatus(checks)
     });
   });
-  app.get("/api/review-checks", async (request) => {
+  app.get("/api/review-checks", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(listReviewChecksQuerySchema, request.query);
     const checks = await store.listReviewChecks(page);
     const start = (page.page - 1) * page.pageSize;
@@ -12673,7 +12685,7 @@ app.post(
       }
     };
   });
-  app.post("/api/review-checks", async (request) => {
+  app.post("/api/review-checks", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createReviewCheckInputSchema, request.body);
     const record = await store.createReviewCheck(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -12690,7 +12702,7 @@ app.post(
     });
     return record.check;
   });
-  app.get("/api/review-diffs", async (request) => {
+  app.get("/api/review-diffs", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(listReviewDiffSummariesQuerySchema, request.query);
     const diffs = await store.listReviewDiffSummaries(page);
     const start = (page.page - 1) * page.pageSize;
@@ -12704,7 +12716,7 @@ app.post(
       }
     };
   });
-  app.post("/api/review-diffs", async (request) => {
+  app.post("/api/review-diffs", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createReviewDiffSummaryInputSchema, request.body);
     const record = await store.createReviewDiffSummary(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -12723,11 +12735,11 @@ app.post(
     });
     return record.diff;
   });
-  app.get("/api/swarm", async (request) => {
+  app.get("/api/swarm", defaultRouteRateLimitOptions, async (request) => {
     const query = parseQuery(swarmStateQuerySchema, request.query);
     return swarmStateForResponse(await store.getSwarmState(query.roomId), config);
   });
-  app.get("/api/swarm/tasks", async (request) => {
+  app.get("/api/swarm/tasks", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(listSwarmTasksQuerySchema, request.query);
     const tasks = await store.listSwarmTasks(page);
     const start = (page.page - 1) * page.pageSize;
@@ -12741,7 +12753,7 @@ app.post(
       }
     };
   });
-  app.post("/api/swarm/tasks", async (request) => {
+  app.post("/api/swarm/tasks", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createSwarmTaskInputSchema, request.body);
     const record = await store.createSwarmTask(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -12759,7 +12771,7 @@ app.post(
     });
     return record.task;
   });
-  app.patch("/api/swarm/tasks/:id", async (request) => {
+  app.patch("/api/swarm/tasks/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseBody(idParamSchema, request.params);
     const input = parseBody(updateSwarmTaskInputSchema, request.body);
     const record = await store.updateSwarmTask(params.id, input, request.requestIdForSpace);
@@ -12778,7 +12790,7 @@ app.post(
     });
     return record.task;
   });
-  app.post("/api/swarm/tasks/:id/run", async (request) => {
+  app.post("/api/swarm/tasks/:id/run", defaultRouteRateLimitOptions, async (request) => {
     const params = parseBody(idParamSchema, request.params);
     const input = parseBody(runSwarmTaskInputSchema, request.body ?? {});
     const gate = swarmExecutionGate(config);
@@ -12859,7 +12871,7 @@ app.post(
       message: messageRecord.message
     });
   });
-  app.post("/api/swarm/locks", async (request) => {
+  app.post("/api/swarm/locks", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(claimSwarmLockInputSchema, request.body);
     const record = await store.claimSwarmLock(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -12877,7 +12889,7 @@ app.post(
     });
     return record.lock;
   });
-  app.post("/api/swarm/locks/:id/release", async (request) => {
+  app.post("/api/swarm/locks/:id/release", defaultRouteRateLimitOptions, async (request) => {
     const params = parseBody(idParamSchema, request.params);
     const input = parseBody(releaseSwarmLockInputSchema, request.body ?? {});
     const record = await store.releaseSwarmLock(params.id, input, request.requestIdForSpace);
@@ -12896,7 +12908,7 @@ app.post(
     });
     return record.lock;
   });
-  app.post("/api/swarm/messages", async (request) => {
+  app.post("/api/swarm/messages", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(postSwarmMessageInputSchema, request.body);
     const record = await store.postSwarmMessage(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -12913,7 +12925,7 @@ app.post(
     });
     return record.message;
   });
-  app.post("/api/swarm/reconciles", async (request) => {
+  app.post("/api/swarm/reconciles", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createSwarmReconcileInputSchema, request.body);
     const record = await store.createSwarmReconcile(input, request.requestIdForSpace);
     eventBus.publish(record.event);
@@ -12929,10 +12941,10 @@ app.post(
     });
     return record.reconcile;
   });
-  app.get("/api/admin/integrations/space", async () =>
+  app.get("/api/admin/integrations/space", defaultRouteRateLimitOptions, async () =>
     spaceCapabilitySnapshotSchema.parse(await spaceCapabilityInventoryCollector({ store, config }))
   );
-  app.get("/api/admin/audit", async (request) => {
+  app.get("/api/admin/audit", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(paginationRequestSchema, request.query);
     const events = await store.listAuditEvents();
     const start = (page.page - 1) * page.pageSize;
@@ -12946,10 +12958,10 @@ app.post(
       }
     };
   });
-  app.get("/api/admin/mcp/discovery-smoke", async () => ({
+  app.get("/api/admin/mcp/discovery-smoke", defaultRouteRateLimitOptions, async () => ({
     data: await store.getLatestMcpDiscoverySmoke()
   }));
-  app.post("/api/admin/mcp/discovery-smoke", async (request) => {
+  app.post("/api/admin/mcp/discovery-smoke", defaultRouteRateLimitOptions, async (request) => {
     const context = {
       gatewayStatus: await store.getMcpGatewayStatus(),
       servers: await store.listMcpServers()
@@ -12989,10 +13001,10 @@ app.post(
     });
     return recorded;
   });
-  app.get("/api/admin/memory/embedding-smoke", async () => ({
+  app.get("/api/admin/memory/embedding-smoke", defaultRouteRateLimitOptions, async () => ({
     data: await store.getLatestMemoryEmbeddingSmoke()
   }));
-  app.get("/api/admin/memory/vector-readiness", async () => ({
+  app.get("/api/admin/memory/vector-readiness", defaultRouteRateLimitOptions, async () => ({
     data: await store.getMemoryVectorReadiness(config.memoryEmbeddingDimensions)
   }));
   registerMemoryGraphRoutes(app, {
@@ -13003,7 +13015,7 @@ app.post(
     mutationCoordinator: memoryMutationCoordinator,
     recordAudit: (request, input) => recordAudit(store, request, input)
   });
-  app.post("/api/admin/memory/embedding-smoke", async (request) => {
+  app.post("/api/admin/memory/embedding-smoke", defaultRouteRateLimitOptions, async (request) => {
     const vectorReadiness = await store.getMemoryVectorReadiness(config.memoryEmbeddingDimensions);
     const result = await runMemoryEmbeddingSmoke(config, {
       pgvectorReady: vectorReadiness.status === "VERIFIED"
@@ -13034,11 +13046,11 @@ app.post(
     });
     return recorded;
   });
-  app.get("/api/admin/codex-app-server", async () => getCodexAppServerStatus(config));
-  app.get("/api/admin/codex-app-server/handshake", async () => ({
+  app.get("/api/admin/codex-app-server", defaultRouteRateLimitOptions, async () => getCodexAppServerStatus(config));
+  app.get("/api/admin/codex-app-server/handshake", defaultRouteRateLimitOptions, async () => ({
     data: await store.getLatestCodexAppServerHandshake()
   }));
-  app.post("/api/admin/codex-app-server/handshake", async (request) => {
+  app.post("/api/admin/codex-app-server/handshake", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const status = getCodexAppServerStatus(config);
     const result = await runCodexAppServerHandshake(config, { schemaManifest: status.schemaManifest });
@@ -13064,10 +13076,10 @@ app.post(
     });
     return recorded;
   });
-  app.get("/api/admin/codex-app-server/turn-smoke", async () => ({
+  app.get("/api/admin/codex-app-server/turn-smoke", defaultRouteRateLimitOptions, async () => ({
     data: await store.getLatestCodexAppServerTurnSmoke()
   }));
-  app.post("/api/admin/codex-app-server/turn-smoke", async (request) => {
+  app.post("/api/admin/codex-app-server/turn-smoke", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(codexAppServerTurnSmokeInputSchema, request.body ?? {});
     const status = getCodexAppServerStatus(config);
@@ -13099,7 +13111,7 @@ app.post(
     });
     return recorded;
   });
-  app.post("/api/admin/service-restarts", async (request, reply) => {
+  app.post("/api/admin/service-restarts", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Server restart requires the ADMIN role.");
     }
@@ -13151,19 +13163,22 @@ app.post(
       serviceRestartInFlight = false;
     }
   });
-  app.get("/api/admin", async () => {
+  app.get("/api/admin", defaultRouteRateLimitOptions, async () => {
     const storageReadiness = storageReadinessSchema.parse(await storageReadinessChecker());
     return {
       status: "ok",
       mode: config.runtimeStore === "postgres" ? "v0-postgres" : "v0-in-memory",
       capabilities: await store.listCapabilities(),
-      storageWarning: storageReadiness.status === "VERIFIED" ? "" : storageReadiness.statusReason
+      storageWarning:
+        config.browserSessionsEnabled && storageReadiness.status !== "VERIFIED"
+          ? storageReadiness.statusReason
+          : ""
     };
   });
-  app.get("/api/admin/storage", async () => storageReadinessSchema.parse(await storageReadinessChecker()));
-  app.get("/api/admin/observability", async () => observabilitySnapshotSchema.parse(observability.snapshot()));
-  app.get("/api/admin/worker", async () => workerReadinessSchema.parse(await workerReadinessChecker()));
-  app.get("/api/admin/launch-readiness", async () =>
+  app.get("/api/admin/storage", defaultRouteRateLimitOptions, async () => storageReadinessSchema.parse(await storageReadinessChecker()));
+  app.get("/api/admin/observability", defaultRouteRateLimitOptions, async () => observabilitySnapshotSchema.parse(observability.snapshot()));
+  app.get("/api/admin/worker", defaultRouteRateLimitOptions, async () => workerReadinessSchema.parse(await workerReadinessChecker()));
+  app.get("/api/admin/launch-readiness", defaultRouteRateLimitOptions, async () =>
     buildLaunchReadinessReport({
       store,
       config,
