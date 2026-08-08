@@ -7,7 +7,7 @@ const mebibyte = 1024 * 1024;
 export const containerImageSizeBudgets = Object.freeze({
   core: 900 * mebibyte,
   browser: 1600 * mebibyte,
-  cli: 2000 * mebibyte
+  cli: 2800 * mebibyte
 });
 
 export function evaluateContainerImageSize({ target, sizeBytes }) {

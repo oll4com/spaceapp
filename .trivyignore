@@ -2,3 +2,16 @@
 # @temporalio/core-bridge 1.21.0. The locked all-target cargo tree reports no dependency path.
 # Recheck after the next Temporal SDK release.
 GHSA-4w2j-m93h-cj5j exp:2026-08-25
+
+# CVE-2026-39244 is in adm-zip 0.5.17, nested deep inside the vendored
+# cursor-agent package (agent cli lab tarball) under foundry-local-sdk.
+# Version there is pinned upstream; recheck after a new cursor-agent build.
+CVE-2026-39244 exp:2026-08-25
+
+# CVE-2026-55388 is in piscina 4.9.0, bundled inside the vendored cursor-agent
+# node_modules tree. The agent package pins it; recheck after the next vendor refresh.
+CVE-2026-55388 exp:2026-08-25
+
+# CVE-2026-41907 is in uuid 8.3.2, bundled inside the vendored autohand-cli
+# node_modules tree. Pinned by the upstream package; recheck after the next vendor refresh.
+CVE-2026-41907 exp:2026-08-25

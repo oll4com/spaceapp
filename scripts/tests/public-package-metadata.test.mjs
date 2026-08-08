@@ -237,10 +237,14 @@ test("temporary vulnerability ignores are narrow, documented, and expiring", asy
     .filter((line) => line && !line.startsWith("#"));
 
   assert.deepEqual(activeEntries, [
-    "GHSA-4w2j-m93h-cj5j exp:2026-08-25"
+    "GHSA-4w2j-m93h-cj5j exp:2026-08-25",
+    "CVE-2026-39244 exp:2026-08-25",
+    "CVE-2026-55388 exp:2026-08-25",
+    "CVE-2026-41907 exp:2026-08-25"
   ]);
   assert.match(ignoreFile, /unused Cargo\.lock entry/i);
   assert.match(ignoreFile, /no dependency path/i);
+  assert.match(ignoreFile, /cursor-agent/i);
 });
 
 test("public policy files are present and point security reports to a private channel", async () => {
