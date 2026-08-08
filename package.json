@@ -43,6 +43,7 @@
     "inventory:space": "node scripts/space-inventory-snapshot.mjs",
     "memory:eval": "npm run build -w @space/memory-graph && node scripts/memory-query-eval.mjs",
     "memory:performance": "npm run build && node scripts/memory-performance-gates.mjs",
+    "public:export:verify": "node scripts/public-export.mjs --verify",
     "version:json": "node scripts/version.mjs"
   },
   "devDependencies": {
