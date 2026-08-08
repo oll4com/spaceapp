@@ -31,7 +31,8 @@
     "win32"
   ],
   "cpu": [
-    "x64"
+    "x64",
+    "arm64"
   ],
   "scripts": {
     "test": "node --test tests/*.test.mjs",

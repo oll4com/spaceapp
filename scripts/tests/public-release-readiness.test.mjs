@@ -121,7 +121,7 @@ test("amd64 core and CLI readiness blocks a launcher that could install on arm64
   });
 
   assert.equal(result.ok, false);
-  assert.match(result.blockers.join("\n"), /x64-only/i);
+  assert.match(result.blockers.join("\n"), /must support x64 hosts/i);
 });
 
 test("public release readiness reserves host-root versions for the personal tag", () => {

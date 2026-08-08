@@ -155,7 +155,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
   );
   assert.equal(launcherPackage.spaceappRuntimeVersion, "0.1.17");
   assert.equal(launcherPackage.spaceappHostRootRuntimeCompatible, true);
-  assert.deepEqual(launcherPackage.cpu, ["x64"]);
+  assert.deepEqual(launcherPackage.cpu, ["x64", "arm64"]);
   assert.equal(launcherPackage.publishConfig.tag, undefined);
 });
 

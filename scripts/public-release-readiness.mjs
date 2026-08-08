@@ -79,11 +79,10 @@ export function evaluatePublicRelease({
     }
     if (
       !Array.isArray(packageCpu) ||
-      packageCpu.length !== 1 ||
-      packageCpu[0] !== "x64"
+      !packageCpu.includes("x64")
     ) {
       blockers.push(
-        "The amd64 core and CLI release must publish an x64-only launcher."
+        "The amd64 core and CLI release must support x64 hosts."
       );
     }
     if (packageHostRootRuntimeCompatible !== true) {
