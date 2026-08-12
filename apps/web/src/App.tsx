@@ -143,6 +143,7 @@ import type {
   CliRuntimeSettingsResponse,
   AgentSessionHistoryItem
 } from "@space/contracts";
+import { paneCategoryColors, type PaneCategoryColor } from "@space/contracts";
 import { SpaceApiError, api, type McpPayload, type ReadyzPayload } from "./api.js";
 import {
   acknowledgePaneCompletion,
@@ -4415,6 +4416,7 @@ export function App() {
       isMinimized: false,
       isClosed: false,
       split: { parentId: null, direction: null, size: null },
+      categoryColor: null,
       createdAt: nowIso,
       updatedAt: nowIso
     };
@@ -9048,6 +9050,7 @@ const PaneCard = memo(function PaneCard({
   const [titleSavePending, setTitleSavePending] = useState(false);
   const [titleGeneratePending, setTitleGeneratePending] = useState(false);
   const [badgeMenuPosition, setBadgeMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const [categoryColorPending, setCategoryColorPending] = useState(false);
   const [resumeHistoryOpen, setResumeHistoryOpen] = useState(false);
   const [resumeHistoryMode, setResumeHistoryMode] = useState<"chat" | "cli">("cli");
   const [resumeHistoryItems, setResumeHistoryItems] = useState<TaskHistoryDialogItem[]>([]);
@@ -9412,6 +9415,22 @@ const PaneCard = memo(function PaneCard({
     setTitleDraft(pane.title);
     setTitleEditOpen(true);
     setTitleError(null);
+  }
+
+  async function applyPaneCategoryColor(color: PaneCategoryColor | null) {
+    if (color === pane.categoryColor || categoryColorPending || codexMutationBlocked) return;
+    setCategoryColorPending(true);
+    try {
+      const updated = await api.updatePane(pane.id, { categoryColor: color });
+      onPaneUpdated(updated);
+    } catch (err) {
+      window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_NOTICE_EVENT, {
+        detail: { message: err instanceof Error ? err.message : "Pane color update failed" }
+      }));
+    } finally {
+      setCategoryColorPending(false);
+      setBadgeMenuPosition(null);
+    }
   }
 
   async function copyPaneIdentityInfo() {
@@ -9967,6 +9986,7 @@ const PaneCard = memo(function PaneCard({
               title={paneIdentityTitle}
               role="img"
               aria-label={paneIdentityTitle}
+              data-category-color={pane.categoryColor ?? undefined}
               draggable={!paneReorderPending}
               onDragStart={(event) => onPaneDragStart(event, pane)}
               onDragEnd={onPaneDragEnd}
@@ -10028,6 +10048,33 @@ const PaneCard = memo(function PaneCard({
                   Generate pane title
                 </button>
               ) : null}
+              <div className="icon-context-menu-separator" role="separator" />
+              <span className="icon-context-menu-label">Color</span>
+              <div className="icon-context-menu-swatches" role="group" aria-label="Pane category color">
+                {paneCategoryColors.map((color) => (
+                  <button
+                    key={color}
+                    type="button"
+                    className={`category-swatch ${color}${pane.categoryColor === color ? " selected" : ""}`}
+                    aria-label={`Set category color ${color}`}
+                    aria-pressed={pane.categoryColor === color}
+                    title={color}
+                    disabled={categoryColorPending}
+                    onClick={() => void applyPaneCategoryColor(color)}
+                  />
+                ))}
+                <button
+                  type="button"
+                  className={`category-swatch none${pane.categoryColor === null ? " selected" : ""}`}
+                  aria-label="Clear category color"
+                  aria-pressed={pane.categoryColor === null}
+                  title="No color"
+                  disabled={categoryColorPending}
+                  onClick={() => void applyPaneCategoryColor(null)}
+                >
+                  <X aria-hidden="true" />
+                </button>
+              </div>
             </div>
           ) : null}
         </div>

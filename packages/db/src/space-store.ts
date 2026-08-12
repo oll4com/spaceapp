@@ -536,6 +536,7 @@ type PaneRow = {
   isMinimized: boolean;
   isClosed: boolean;
   split: Pane["split"];
+  categoryColor: Pane["categoryColor"];
   createdAt: Date | string;
   updatedAt: Date | string;
 };
@@ -1454,6 +1455,7 @@ const paneSelect = `
     is_minimized AS "isMinimized",
     is_closed AS "isClosed",
     split,
+    category_color AS "categoryColor",
     created_at AS "createdAt",
     updated_at AS "updatedAt"
   FROM panes
@@ -2525,6 +2527,7 @@ function mapPane(row: PaneRow): Pane {
     isMinimized: row.isMinimized,
     isClosed: row.isClosed,
     split: row.split,
+    categoryColor: row.categoryColor,
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt)
   });
@@ -5624,6 +5627,7 @@ export class PostgresSpaceStore implements SpaceStore {
             p.is_minimized AS "isMinimized",
             p.is_closed AS "isClosed",
             p.split,
+            p.category_color AS "categoryColor",
             p.created_at AS "createdAt",
             p.updated_at AS "updatedAt"
           FROM room_agent_bindings b
@@ -5672,6 +5676,7 @@ export class PostgresSpaceStore implements SpaceStore {
             is_minimized AS "isMinimized",
             is_closed AS "isClosed",
             split,
+            category_color AS "categoryColor",
             created_at AS "createdAt",
             updated_at AS "updatedAt"
         `,
@@ -6582,7 +6587,8 @@ export class PostgresSpaceStore implements SpaceStore {
               is_minimized = $14,
               is_closed = $15,
               split = $16,
-              updated_at = $17
+              category_color = $17,
+              updated_at = $18
           WHERE id = $1
           RETURNING
             id,
@@ -6602,6 +6608,7 @@ export class PostgresSpaceStore implements SpaceStore {
             is_minimized AS "isMinimized",
             is_closed AS "isClosed",
             split,
+            category_color AS "categoryColor",
             created_at AS "createdAt",
             updated_at AS "updatedAt"
         `,
@@ -6622,6 +6629,7 @@ export class PostgresSpaceStore implements SpaceStore {
           updated.isMinimized,
           updated.isClosed,
           JSON.stringify(updated.split),
+          updated.categoryColor,
           timestamp
         ]
       );
@@ -6696,6 +6704,7 @@ export class PostgresSpaceStore implements SpaceStore {
             is_minimized AS "isMinimized",
             is_closed AS "isClosed",
             split,
+            category_color AS "categoryColor",
             created_at AS "createdAt",
             updated_at AS "updatedAt"
         `,
@@ -14040,6 +14049,7 @@ export class PostgresSpaceStore implements SpaceStore {
           is_minimized AS "isMinimized",
           is_closed AS "isClosed",
           split,
+          category_color AS "categoryColor",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
       `,

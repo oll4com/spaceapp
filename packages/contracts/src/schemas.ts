@@ -99,6 +99,9 @@ export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"])
 export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
 export const paneTitleSourceSchema = z.enum(["auto", "manual", "ai"]);
+export const paneCategoryColors = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
+export const paneCategoryColorSchema = z.enum(paneCategoryColors).nullable();
+export type PaneCategoryColor = z.infer<typeof paneCategoryColorSchema>;
 export const paneColumnSpanSchema = z.number().int().min(1).max(4);
 export const paneSplitSchema = z.object({
   parentId: idSchema.nullable(),
@@ -341,6 +344,7 @@ export const paneSchema = z.object({
   isMinimized: z.boolean(),
   isClosed: z.boolean(),
   split: paneSplitSchema,
+  categoryColor: paneCategoryColorSchema.default(null),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema
 });
@@ -484,7 +488,8 @@ export const updatePaneInputSchema = z
     isMaximized: z.boolean().optional(),
     isMinimized: z.boolean().optional(),
     isClosed: z.boolean().optional(),
-    split: paneSplitSchema.optional()
+    split: paneSplitSchema.optional(),
+    categoryColor: paneCategoryColorSchema.optional()
   })
   .refine((input) => !(input.isMaximized === true && input.isMinimized === true), {
     message: "A pane cannot be maximized and minimized at the same time."

@@ -1689,7 +1689,7 @@ export class DemoStore {
       terminalRuntimeId: options.terminalRuntimeId ?? (mode === "TERMINAL" ? "codex" : null), reasoningEffort: "high",
       cwd: options.cwd ?? (mode === "TERMINAL" ? "/workspace/space-demo" : null), order: roomPanes.length,
       columnSpan: 1, isMaximized: false, isMinimized: false, isClosed: false,
-      split: options.split ?? { parentId: null, direction: null, size: null }, createdAt: DEMO_FIXED_AT, updatedAt: DEMO_FIXED_AT
+      split: options.split ?? { parentId: null, direction: null, size: null }, categoryColor: null, createdAt: DEMO_FIXED_AT, updatedAt: DEMO_FIXED_AT
     };
     this.fixture.panes.push(pane);
     return structuredClone(pane);

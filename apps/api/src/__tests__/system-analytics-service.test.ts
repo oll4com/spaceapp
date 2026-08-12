@@ -43,6 +43,7 @@ function fixture() {
     isMinimized: false,
     isClosed: false,
     split: { parentId: null, direction: null, size: null },
+    categoryColor: null,
     createdAt: sampledAt,
     updatedAt: sampledAt
   };

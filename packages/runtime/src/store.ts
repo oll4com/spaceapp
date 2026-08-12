@@ -3487,6 +3487,7 @@ export class InMemorySpaceStore implements SpaceStore {
       isMinimized: false,
       isClosed: false,
       split: { parentId: null, direction: null, size: null },
+      categoryColor: null,
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -3537,6 +3538,7 @@ export class InMemorySpaceStore implements SpaceStore {
       isMinimized: false,
       isClosed: false,
       split: input.split ?? { parentId: null, direction: null, size: null },
+      categoryColor: null,
       createdAt: timestamp,
       updatedAt: timestamp
     }));

@@ -2967,6 +2967,74 @@ button:focus-visible {
   color: var(--room-accent, #6db7aa);
 }
 
+.icon-context-menu-separator {
+  height: 1px;
+  margin: 0.35rem 0.25rem 0.25rem;
+  background: #262b2d;
+}
+
+.icon-context-menu-label {
+  display: block;
+  padding: 0.1rem 0.5rem 0.2rem;
+  color: #87918e;
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.icon-context-menu-swatches {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem 0.5rem;
+}
+
+.icon-context-menu .category-swatch {
+  width: auto;
+  min-height: 1.2rem;
+  height: 1.2rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 5px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  justify-content: center;
+  gap: 0;
+  cursor: pointer;
+}
+
+.icon-context-menu .category-swatch.red { --category-swatch-color: #e5484d; background: var(--category-swatch-color); }
+.icon-context-menu .category-swatch.orange { --category-swatch-color: #f07632; background: var(--category-swatch-color); }
+.icon-context-menu .category-swatch.yellow { --category-swatch-color: #e3b341; background: var(--category-swatch-color); }
+.icon-context-menu .category-swatch.green { --category-swatch-color: #46a758; background: var(--category-swatch-color); }
+.icon-context-menu .category-swatch.cyan { --category-swatch-color: #3aa8b8; background: var(--category-swatch-color); }
+.icon-context-menu .category-swatch.blue { --category-swatch-color: #4c9aff; background: var(--category-swatch-color); }
+.icon-context-menu .category-swatch.purple { --category-swatch-color: #8e4ec6; background: var(--category-swatch-color); }
+.icon-context-menu .category-swatch.pink { --category-swatch-color: #e93d82; background: var(--category-swatch-color); }
+
+.icon-context-menu .category-swatch.none {
+  background: transparent;
+  color: #87918e;
+}
+
+.icon-context-menu .category-swatch.none svg {
+  width: 0.72rem;
+  height: 0.72rem;
+  color: currentColor;
+}
+
+.icon-context-menu .category-swatch.selected {
+  box-shadow:
+    0 0 0 2px #16191a,
+    0 0 0 3px #f4efe5;
+}
+
+.icon-context-menu .category-swatch:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .icon-action-manager {
   position: fixed;
   right: auto;
@@ -5024,6 +5092,54 @@ button:focus-visible {
 .pane-agent-badge.is-blocked .pane-agent-vpn-indicator {
   background: #431b23;
   color: #ffc1c9;
+}
+
+.pane-agent-badge[data-category-color="red"] {
+  box-shadow:
+    0 0 0 1px #e5484d,
+    inset 0 0 0 1px color-mix(in srgb, #e5484d 30%, transparent);
+}
+
+.pane-agent-badge[data-category-color="orange"] {
+  box-shadow:
+    0 0 0 1px #f07632,
+    inset 0 0 0 1px color-mix(in srgb, #f07632 30%, transparent);
+}
+
+.pane-agent-badge[data-category-color="yellow"] {
+  box-shadow:
+    0 0 0 1px #e3b341,
+    inset 0 0 0 1px color-mix(in srgb, #e3b341 30%, transparent);
+}
+
+.pane-agent-badge[data-category-color="green"] {
+  box-shadow:
+    0 0 0 1px #46a758,
+    inset 0 0 0 1px color-mix(in srgb, #46a758 30%, transparent);
+}
+
+.pane-agent-badge[data-category-color="cyan"] {
+  box-shadow:
+    0 0 0 1px #3aa8b8,
+    inset 0 0 0 1px color-mix(in srgb, #3aa8b8 30%, transparent);
+}
+
+.pane-agent-badge[data-category-color="blue"] {
+  box-shadow:
+    0 0 0 1px #4c9aff,
+    inset 0 0 0 1px color-mix(in srgb, #4c9aff 30%, transparent);
+}
+
+.pane-agent-badge[data-category-color="purple"] {
+  box-shadow:
+    0 0 0 1px #8e4ec6,
+    inset 0 0 0 1px color-mix(in srgb, #8e4ec6 30%, transparent);
+}
+
+.pane-agent-badge[data-category-color="pink"] {
+  box-shadow:
+    0 0 0 1px #e93d82,
+    inset 0 0 0 1px color-mix(in srgb, #e93d82 30%, transparent);
 }
 
 .pane-card strong {
