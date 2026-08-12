@@ -373,7 +373,6 @@ import {
   AppDiagnosticsServiceError
 } from "./app-diagnostics.js";
 import { ActivityLogService } from "./activity-log.js";
-import { createActiveAgentCountProvider } from "./active-agent-count.js";
 import { buildCliAgentBootstrapMarkdown } from "./agent-bootstrap.js";
 import {
   AgentFileDocxNormalizationError,
@@ -1686,14 +1685,14 @@ async function writeCliWorkspaceBootstrap(
 function shouldUseManagedCliWorkspace(cwd: string | null | undefined, workspaceRoot: string): boolean {
   if (!cwd) return true;
   const resolved = resolve(cwd);
-  return resolved === "/srv/space" || pathInside(workspaceRoot, resolved);
+  return resolved === "/opt/spaceapp" || pathInside(workspaceRoot, resolved);
 }
 
 function isLegacyCliWorkspace(cwd: string | null | undefined, workspaceRoot: string, runtimeId: string): boolean {
   if (isDirectOperatorParityRuntime(runtimeId)) {
     return isLegacyCodexCliCwd(cwd, workspaceRoot);
   }
-  return !cwd || resolve(cwd) === "/srv/space";
+  return !cwd || resolve(cwd) === "/opt/spaceapp";
 }
 
 async function assertPaneBelongsToRoom(store: SpaceStore, roomId: string, paneId?: string | null) {
@@ -2697,11 +2696,11 @@ function isSemanticMemoryReady(
   );
 }
 
-const spaceCapabilityInventorySnapshotPath = "/srv/space/var/inventory/space-capabilities.json";
-const geminiMemoryIndexPath = "/etc/docs/gemini_history.md";
+const spaceCapabilityInventorySnapshotPath = "/opt/spaceapp/var/inventory/space-capabilities.json";
+const geminiMemoryIndexPath = "/opt/spaceapp/docs/gemini_history.md";
 
 function currentGeminiMonthlyPath(): string {
-  return `/etc/docs/gemini_history_${nowIso().slice(0, 7)}.md`;
+  return `/opt/spaceapp/docs/gemini_history_${nowIso().slice(0, 7)}.md`;
 }
 
 async function readSpaceCapabilityInventorySnapshotFile(): Promise<SpaceCapabilitySnapshot | null> {
@@ -2743,7 +2742,7 @@ async function collectDefaultSpaceCapabilityInventory(context: {
         id: "bounded-helper-snapshot",
         label: "Bounded Space helper snapshot",
         status: "DISABLED",
-        statusReason: "No readable helper snapshot was found under /srv/space/var/inventory.",
+        statusReason: "No readable helper snapshot was found under /opt/spaceapp/var/inventory.",
         lastCheckedAt: generatedAt
       }
     ],
@@ -3436,15 +3435,15 @@ async function collectStorageMount(targetPath: string) {
 }
 
 async function collectStorageReadiness(): Promise<StorageReadiness> {
-  const [root, app] = await Promise.all([collectStorageMount("/"), collectStorageMount("/srv/space")]);
+  const [root, app] = await Promise.all([collectStorageMount("/"), collectStorageMount("/opt/spaceapp")]);
   const dedicatedAppVolume = root.deviceId !== app.deviceId;
   const freeSpaceBlocked = app.availableBytes < storageMinimumRecommendedFreeBytes;
   const rootWarn = root.usedPercent >= 80;
   const status = !dedicatedAppVolume || freeSpaceBlocked ? "BLOCKED" : rootWarn ? "WARN" : "VERIFIED";
   const statusReason = !dedicatedAppVolume
-    ? "Dedicated /srv/space volume is not detected; production/browser-heavy launch requires isolated 150-250GB app storage."
+    ? "Dedicated /opt/spaceapp volume is not detected; production/browser-heavy launch requires isolated 150-250GB app storage."
     : freeSpaceBlocked
-      ? "Dedicated /srv/space volume exists but available space is below the 150GB minimum recommendation."
+      ? "Dedicated /opt/spaceapp volume exists but available space is below the 150GB minimum recommendation."
       : rootWarn
         ? "Root filesystem is above the 80% warning threshold."
         : "Storage readiness meets the current Space launch thresholds.";
@@ -3602,7 +3601,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           }
         : null,
       projectionPath: store instanceof PostgresSpaceStore
-        ? "/srv/space/var/codex-cli-mode-defaults-v1.json"
+        ? "/opt/spaceapp/var/codex-cli-mode-defaults-v1.json"
         : null
     });
   const codexSessionSocketProbe = options.codexSessionSocketProbe ?? (async (socketPath: string) => {
@@ -3695,7 +3694,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const codexParity =
     options.codexParity ??
     createCodexParityService({
-      codexHome: config.codexAppServerHome ?? "/home/proxmoxusr/.codex",
+      codexHome: config.codexAppServerHome ?? "/var/lib/spaceapp-user/.codex",
       threadRenameCommand: config.codexAppServerCommand,
       codexLbBaseUrl: config.codexLbBaseUrl,
       codexLbKeyFile: config.codexLbKeyFile,
@@ -4041,7 +4040,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       : new InMemorySystemAnalyticsRepository(),
     store,
     stateRoot: options.opencodeStateRoot,
-    codexHome: config.codexAppServerHome ?? "/home/proxmoxusr/.codex",
+    codexHome: config.codexAppServerHome ?? "/var/lib/spaceapp-user/.codex",
     liveSessions: async () => {
       const health = await Promise.all([
         cliTerminalManager.hostHealth("cli:codex").catch(() => null),
@@ -4087,21 +4086,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         : join(tmpdir(), `space-streaming-secrets-${process.pid}-${nanoid(8)}`)
     ),
     store,
-    activeAgentCountProvider: createActiveAgentCountProvider({
-      store,
-      isCliTurnActive: async (session) => {
-        if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
-          const control = await readOpenCodeServerControl(session.sessionId, options.opencodeStateRoot);
-          return control
-            ? fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId)
-            : false;
-        }
-        if (isCodexDirectParityRuntime(session.runtimeId)) {
-          return (await cliTerminalManager.getCurrentTurnActivity(session.sessionId)).status === "RUNNING";
-        }
-        return false;
-      }
-    }),
     youtubeDailyQuotaBudget: config.streamingYoutubeDailyQuotaBudget,
     cleanupCredentialRootOnDispose: !(store instanceof PostgresSpaceStore)
   });
@@ -4527,8 +4511,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   }
 
   const app = Fastify({
-    // VM100 is the only public marketing proxy; forwarded IPs from every other remote remain untrusted.
-    trustProxy: ["127.0.0.1", "::1", "::ffff:127.0.0.1", "10.100.0.2"],
+    // public-host is the only public marketing proxy; forwarded IPs from every other remote remain untrusted.
+    trustProxy: ["127.0.0.1", "::1", "::ffff:127.0.0.1", "192.0.2.2"],
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
       redact: ["req.headers.authorization", "req.headers.cookie", "password"],
@@ -8482,16 +8466,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
       }
     }
-    if (current.mode === "CHAT") {
-      const active = await store.getActiveSpaceAgentSession(current.id);
-      if (active && !(await store.hasRunningSpaceAgentRun(active.sessionId))) {
-        await store.updateSpaceAgentSession(
-          active.sessionId,
-          { status: "READY", isActive: false, title: active.title },
-          request.requestIdForSpace
-        );
-      }
-    }
     const pane = await store.updatePane(params.id, { isClosed: true, status: "CLOSED" }, request.requestIdForSpace);
     await recordAudit(store, request, {
       action: "pane.close",
@@ -9827,7 +9801,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
               ? directCodexParity
                 ? "CLI session replaced with direct VS Code/Codex parity workspace."
                 : directClaudeParity
-                  ? "CLI session replaced with direct Claude Code via Yunwu operator parity workspace."
+                  ? "CLI session replaced with direct Claude Code via Legacy operator parity workspace."
                   : directKimiParity
                     ? "CLI session replaced with direct Kimi Code subscription operator parity workspace."
                     : directGrokParity
@@ -9838,7 +9812,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
                 : directCodexParity
                   ? "CLI session replaced to apply updated Codex CLI session settings."
                   : directClaudeParity
-                    ? "CLI session replaced to apply updated Claude Code via Yunwu CLI session settings."
+                    ? "CLI session replaced to apply updated Claude Code via Legacy CLI session settings."
                     : directKimiParity
                       ? "CLI session replaced to apply updated Kimi Code CLI session settings."
                       : directGrokParity
