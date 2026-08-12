@@ -14,6 +14,12 @@ import {
   writeCredential
 } from "../src/index.mjs";
 
+const launcherManifest = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8")
+);
+const CURRENT_VERSION = launcherManifest.version;
+const RUNTIME_VERSION = launcherManifest.spaceappRuntimeVersion;
+
 function capture() {
   let value = "";
   const stream = new Writable({
@@ -820,7 +826,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
         );
         assert.match(
           await readFile(join(stagedStateRoot, "runtime.env"), "utf8"),
-          /^SPACEAPP_IMAGE_TAG=0\.1\.18$/m
+          new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
         );
       }
       return 0;
@@ -830,7 +836,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   assert.equal(await run(["install", "--no-open"], options), 0);
 
   const upgradedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(upgradedConfig.version, "0.1.18");
+  assert.equal(upgradedConfig.version, CURRENT_VERSION);
   assert.equal(upgradedConfig.previousVersion, "0.1.10");
   assert.equal(upgradedConfig.profile, "light");
   assert.deepEqual(upgradedConfig.workspaces, staleConfig.workspaces);
@@ -853,8 +859,8 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   for (const spec of calls) {
     assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
   }
-  assert.match(stdout.value(), /Launcher version: 0\.1\.18/);
-  assert.match(stdout.value(), /Runtime image version: 0\.1\.10 -> 0\.1\.18/);
+  assert.match(stdout.value(), new RegExp(`Launcher version: ${CURRENT_VERSION}`));
+  assert.match(stdout.value(), new RegExp(`Runtime image version: 0\\.1\\.10 -> ${CURRENT_VERSION}`));
   assert.match(stdout.value(), /Profile: standard -> light/);
   assert.match(stdout.value(), /data.*workspaces.*credentials.*secrets.*persistent Docker volumes/i);
 
@@ -865,7 +871,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
     stdout: refreshOutput.stream
   }), 0);
   const refreshedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(refreshedConfig.version, "0.1.18");
+  assert.equal(refreshedConfig.version, CURRENT_VERSION);
   assert.equal(refreshedConfig.previousVersion, "0.1.10");
   assert.equal(refreshedConfig.profile, "light");
   assert.deepEqual(refreshedConfig.workspaces, staleConfig.workspaces);
@@ -890,7 +896,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   }
   assert.match(
     refreshOutput.value(),
-    /Runtime image version: 0\.1\.18 -> 0\.1\.18/
+    new RegExp(`Runtime image version: ${CURRENT_VERSION} -> ${CURRENT_VERSION}`)
   );
   assert.match(refreshOutput.value(), /Profile: light -> light/);
 });
