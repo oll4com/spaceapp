@@ -14,6 +14,7 @@ const {
   createScheduledMemoryAudit,
   finalizeMemoryRepair,
   prepareMemoryConsolidation,
+  reconcileStaleSpaceAgentSessions,
   refreshMemoryGraphSnapshot,
   refreshAllMonthsMemoryGraphSnapshot
 } = proxyActivities<typeof activities>({
@@ -35,6 +36,11 @@ export async function memoryMaintenanceWorkflow(input: MemoryMaintenanceInput): 
     await refreshAllMonthsMemoryGraphSnapshot(input);
   } catch (error) {
     console.warn("All-months memory graph refresh failed; the live snapshot and maintenance continue.", error);
+  }
+  try {
+    await reconcileStaleSpaceAgentSessions();
+  } catch (error) {
+    console.warn("Stale space agent session reconciliation failed; maintenance continues.", error);
   }
   const run = await createScheduledMemoryAudit({ ...input, sourceHash: result.sourceHash });
   await executeChild(memoryConsolidationWorkflow, {

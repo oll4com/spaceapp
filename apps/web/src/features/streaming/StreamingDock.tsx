@@ -31,6 +31,7 @@ import {
   StreamingMetricGrid,
   useStreamingOverlay
 } from "./StreamingOverlay.js";
+import { StreamingBotTab } from "./StreamingBotTab.js";
 import "./streaming.css";
 
 type StreamingDraft = Pick<StreamingOverlaySettings, "tiles" | "customTextEnabled" | "customText"> & {
@@ -114,12 +115,15 @@ function draftPreview(
     settingsVersion: draft.expectedVersion,
     tiles,
     customTextEnabled: draft.customTextEnabled,
-    customText: draft.customText
+    customText: draft.customText,
+    botTickerEnabled: snapshot?.botTickerEnabled ?? false,
+    botTicker: snapshot?.botTicker ?? []
   };
 }
 
 export function StreamingDock() {
   const runtime = getSpaceRuntime();
+  const [activeTab, setActiveTab] = useState<"overlay" | "bot">("overlay");
   const {
     enabled,
     setEnabled,
@@ -305,7 +309,12 @@ export function StreamingDock() {
           <RefreshCw className={loading ? "spin" : undefined} aria-hidden="true" />
         </button>
       </header>
+      <nav className="streaming-dock-tabs" aria-label="Streaming dock sections">
+        <button type="button" className={activeTab === "overlay" ? "active" : ""} onClick={() => setActiveTab("overlay")}>Overlay</button>
+        <button type="button" className={activeTab === "bot" ? "active" : ""} onClick={() => setActiveTab("bot")}>Bot</button>
+      </nav>
 
+      {activeTab === "bot" ? <StreamingBotTab /> : (<>
       <section className="streaming-session-card" aria-labelledby="streaming-session-heading">
         <div>
           <h3 id="streaming-session-heading">This window</h3>
@@ -486,6 +495,7 @@ export function StreamingDock() {
           {pendingAction === "save" ? <Loader2 className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />} Save overlay
         </button>
       </section>
+      </>)}
     </div>
   );
 }

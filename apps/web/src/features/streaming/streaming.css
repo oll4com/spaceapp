@@ -643,6 +643,252 @@
   to { transform: rotate(360deg); }
 }
 
+.streaming-dock-tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.9rem;
+}
+
+.streaming-dock-tabs button {
+  flex: 1;
+  justify-content: center;
+  font-weight: 600;
+}
+
+.streaming-dock-tabs button.active {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+.streaming-bot-loading {
+  padding: 1.2rem 0.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.streaming-bot-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.streaming-bot-enabled {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+}
+
+.streaming-bot-overview-grid,
+.streaming-bot-platform-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 0.7rem;
+}
+
+.streaming-bot-overview-card,
+.streaming-bot-platform-card {
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.streaming-bot-overview-card strong {
+  font-size: 1.05rem;
+}
+
+.streaming-bot-overview-card small {
+  opacity: 0.7;
+}
+
+.streaming-bot-platform-card .streaming-account-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.streaming-bot-platform-card .streaming-account-heading span {
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+.streaming-bot-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  opacity: 0.7;
+}
+
+.streaming-bot-badge.ok {
+  opacity: 1;
+  color: var(--space-success, #22c55e);
+}
+
+.streaming-bot-last-poll {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.streaming-bot-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.streaming-bot-field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-bottom: 0.55rem;
+}
+
+.streaming-bot-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+}
+
+.streaming-bot-field input,
+.streaming-bot-field select,
+.streaming-bot-tab textarea,
+.streaming-bot-test-row input,
+.streaming-bot-test-row select {
+  font-size: 0.85rem;
+}
+
+.streaming-bot-pair-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.streaming-bot-pair {
+  display: grid;
+  grid-template-columns: 1fr 2fr auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.streaming-bot-test-row {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.streaming-bot-test-row input {
+  flex: 1;
+}
+
+.streaming-bot-test-reply {
+  margin-top: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+
+.streaming-bot-memory-results {
+  list-style: none;
+  padding: 0;
+  margin: 0.6rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.streaming-bot-memory-results li {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.6rem;
+}
+
+.streaming-bot-memory-results p {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+.streaming-bot-activity {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.streaming-bot-activity li {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.streaming-bot-activity p {
+  margin: 0.25rem 0 0;
+}
+
+.streaming-bot-activity-reply {
+  opacity: 0.8;
+}
+
+.streaming-bot-activity-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.streaming-bot-activity-heading time {
+  margin-left: auto;
+  opacity: 0.6;
+  font-size: 0.72rem;
+}
+
+.streaming-bot-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.streaming-bot-actions .streaming-save-button {
+  margin: 0;
+  flex: 1;
+}
+
+.streaming-overlay-bot-ticker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.streaming-overlay-bot-ticker p {
+  margin: 0;
+  line-height: 1.35;
+}
+
+.streaming-overlay-bot-ticker strong {
+  margin-right: 0.25rem;
+}
+
 @media (max-width: 700px) {
   .streaming-overlay {
     left: max(0.65rem, env(safe-area-inset-left));

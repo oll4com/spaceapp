@@ -54,6 +54,7 @@ interface MemoryMaintenanceCacheStore {
     canonicalMemoryId: string;
     linkSource: "EXACT_BACKFILL";
   }): Promise<MemoryCacheLink> | MemoryCacheLink;
+  reconcileStaleSpaceAgentSessions(): Promise<number> | number;
 }
 
 interface MemoryConsolidationStore {
@@ -730,6 +731,19 @@ export async function refreshAllMonthsMemoryGraphSnapshot(
     summary: snapshot.summary,
     durationMs: Math.max(0, Date.now() - startedAt)
   });
+}
+
+export interface ReconcileStaleSpaceAgentSessionsOptions {
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  store?: MemoryMaintenanceCacheStore;
+}
+
+export async function reconcileStaleSpaceAgentSessions(
+  options: ReconcileStaleSpaceAgentSessionsOptions = {}
+): Promise<number> {
+  const store = await resolveCacheStore(options);
+  if (!store) return 0;
+  return store.reconcileStaleSpaceAgentSessions();
 }
 
 export async function refreshMemoryGraphSnapshot(

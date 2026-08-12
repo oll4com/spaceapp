@@ -21,7 +21,8 @@ import {
   type StreamingOverlayTile,
   type StreamingPlatformAccount,
   type StreamingVerifyAccountResponse,
-  type UpdateStreamingOverlaySettingsInput
+  type UpdateStreamingOverlaySettingsInput,
+  type StreamingBotTickerItem
 } from "@space/contracts";
 import {
   StreamingSettingsVersionConflictError,
@@ -30,6 +31,7 @@ import {
   type StreamingRepository
 } from "@space/db";
 import type { SpaceStore } from "@space/runtime";
+import type { ActiveAgentCountProvider } from "./active-agent-count.js";
 import { StreamingCredentialStore, streamingProviderScopes } from "./streaming-credential-store.js";
 import {
   createStreamingProviderAdapters,
@@ -64,10 +66,12 @@ interface StreamingServiceOptions {
   repository: StreamingRepository;
   credentialStore: StreamingCredentialStore;
   store: SpaceStore;
+  activeAgentCountProvider?: ActiveAgentCountProvider;
   adapters?: Record<StreamingOAuthProvider, StreamingProviderAdapter>;
   now?: () => Date;
   youtubeDailyQuotaBudget?: number;
   cleanupCredentialRootOnDispose?: boolean;
+  botTickerProvider?: () => Promise<{ enabled: boolean; ticker: StreamingBotTickerItem[] }>;
 }
 
 class YouTubeQuotaGovernor {
@@ -477,7 +481,10 @@ export class StreamingService {
       settingsVersion: settings.version,
       tiles,
       customTextEnabled: settings.customTextEnabled,
-      customText: settings.customText
+      customText: settings.customText,
+      ...(this.options.botTickerProvider
+        ? await this.options.botTickerProvider()
+        : { botTickerEnabled: false, botTicker: [] })
     });
   }
 
@@ -497,16 +504,15 @@ export class StreamingService {
     if (this.spaceCache && this.spaceCache.expiresAt > now) return this.spaceCache.values;
     const sampledAt = this.now().toISOString();
     const rooms = await this.options.store.listRooms();
-    const [activity, paneLists] = await Promise.all([
+    const [activity, activeAgentCount] = await Promise.all([
       this.options.store.listRunningCliSessionCountsByRoom(),
-      Promise.all(rooms.map((room) => this.options.store.listPanes(room.id, false)))
+      this.options.activeAgentCountProvider
+        ? this.options.activeAgentCountProvider()
+        : this.options.store.countActiveSpaceAgentSessions()
     ]);
-    const agentSessions = await Promise.all(
-      paneLists.flat().filter((pane) => pane.mode === "CHAT").map((pane) => this.options.store.getActiveSpaceAgentSession(pane.id))
-    );
     const values = {
       "space.rooms": { value: rooms.length, state: "FRESH", sampledAt },
-      "space.active_agents": { value: agentSessions.filter(Boolean).length, state: "FRESH", sampledAt },
+      "space.active_agents": { value: activeAgentCount, state: "FRESH", sampledAt },
       "space.active_cli_sessions": {
         value: activity.reduce((sum, room) => sum + room.runningCliCount, 0),
         state: "FRESH",

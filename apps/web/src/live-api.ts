@@ -199,6 +199,12 @@ import type {
   StreamingOverlaySnapshot,
   StreamingPlatformAccount,
   StreamingVerifyAccountResponse,
+  StreamingBotActivity,
+  StreamingBotMcpExecuteResponse,
+  StreamingBotSettings,
+  StreamingBotStatus,
+  StreamingBotTestInput,
+  UpdateStreamingBotSettingsInput,
   SourceControlConnection,
   SourceControlProvider,
   SwarmLock,
@@ -1188,6 +1194,37 @@ export const api = {
     }),
   streamingOverlaySnapshot: () =>
     request<StreamingOverlaySnapshot>("/api/admin/streaming/overlay-snapshot"),
+  streamingBotSettings: () =>
+    request<{ settings: StreamingBotSettings; memoryCount: number }>("/api/admin/streaming/bot/settings"),
+  updateStreamingBotSettings: (input: UpdateStreamingBotSettingsInput) =>
+    request<StreamingBotSettings>("/api/admin/streaming/bot/settings", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  pauseStreamingBot: () =>
+    request<StreamingBotSettings>("/api/admin/streaming/bot/pause", { method: "POST", body: JSON.stringify({}) }),
+  resumeStreamingBot: () =>
+    request<StreamingBotSettings>("/api/admin/streaming/bot/resume", { method: "POST", body: JSON.stringify({}) }),
+  streamingBotStatus: () =>
+    request<StreamingBotStatus>("/api/admin/streaming/bot/status"),
+  streamingBotActivity: (limit = 50) =>
+    request<{ data: StreamingBotActivity[]; pagination: { page: number; pageSize: number; totalItems: number; totalPages: number } }>(
+      `/api/admin/streaming/bot/activity?limit=${Math.max(1, Math.min(limit, 200))}`
+    ),
+  testStreamingBot: (input: StreamingBotTestInput) =>
+    request<{ reply: string | null; errorCode: string | null; model: string | null }>("/api/admin/streaming/bot/test", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  clearStreamingBotMemory: () =>
+    request<{ removed: number }>("/api/admin/streaming/bot/memory/clear", {
+      method: "POST",
+      body: JSON.stringify({})
+    }),
+  searchStreamingBotMemory: (query: string, limit = 20) =>
+    request<{ entries: Array<{ id: string; title: string; body: string; createdAt: string }> }>(
+      `/api/admin/streaming/bot/memory/search?q=${encodeURIComponent(query)}&limit=${Math.max(1, Math.min(limit, 50))}`
+    ),
   listCliMaintenanceRuns: () =>
     request<{ data: AdminOperationRun[] }>("/api/admin/cli-maintenance/runs"),
   getCliMaintenanceReplay: (runId: string, afterSequence = 0) =>

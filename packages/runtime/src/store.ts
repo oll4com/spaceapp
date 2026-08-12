@@ -927,6 +927,8 @@ export interface SpaceStore {
   upsertAgentPaneBinding(input: UpsertAgentPaneBindingInput, traceId?: string): MaybePromise<AgentPaneBinding>;
   updateAgentPaneBinding(paneId: string, input: UpdateAgentPaneBindingInput, traceId?: string): MaybePromise<AgentPaneBinding>;
   getActiveSpaceAgentSession(paneId: string): MaybePromise<SpaceAgentSessionRecord | null>;
+  countActiveSpaceAgentSessions(): MaybePromise<number>;
+  reconcileStaleSpaceAgentSessions(): MaybePromise<number>;
   getSpaceAgentSession(sessionId: string): MaybePromise<SpaceAgentSessionRecord | null>;
   listSpaceAgentHistory(roomId?: string): MaybePromise<AgentPaneHistoryItem[]>;
   createSpaceAgentSession(input: CreateSpaceAgentSessionInput, traceId?: string): MaybePromise<SpaceAgentSessionRecord>;
@@ -952,6 +954,7 @@ export interface SpaceStore {
   ): MaybePromise<SpaceAgentRunRecord>;
   completeSpaceAgentRun(input: CompleteSpaceAgentRunInput): MaybePromise<CompletedSpaceAgentRunRecord>;
   getLatestSpaceAgentRun(sessionId: string): MaybePromise<SpaceAgentRunRecord | null>;
+  hasRunningSpaceAgentRun(sessionId: string): MaybePromise<boolean>;
   getActivePaneCliSession(paneId: string): MaybePromise<PaneCliSession | null>;
   getActivePaneCliSessionByCodexThreadId(codexThreadId: string): MaybePromise<PaneCliSession | null>;
   getLatestPaneCliSessionByCodexThreadId(codexThreadId: string): MaybePromise<PaneCliSession | null>;
@@ -4257,6 +4260,34 @@ export class InMemorySpaceStore implements SpaceStore {
     return [...this.spaceAgentSessions.values()].find((session) => session.paneId === paneId && session.isActive) ?? null;
   }
 
+  countActiveSpaceAgentSessions(): number {
+    const runningSessionIds = new Set(
+      [...this.spaceAgentRuns.values()].filter((run) => run.status === "RUNNING").map((run) => run.sessionId)
+    );
+    return [...this.spaceAgentSessions.values()].filter((session) => session.isActive && runningSessionIds.has(session.sessionId)).length;
+  }
+
+  reconcileStaleSpaceAgentSessions(): number {
+    let deactivated = 0;
+    for (const session of this.spaceAgentSessions.values()) {
+      if (!session.isActive) continue;
+      const hasRunningRun = [...this.spaceAgentRuns.values()].some(
+        (run) => run.sessionId === session.sessionId && run.status === "RUNNING"
+      );
+      if (hasRunningRun) continue;
+      const pane = session.paneId ? this.panes.get(session.paneId) : undefined;
+      if (pane && !pane.isClosed) continue;
+      this.spaceAgentSessions.set(session.sessionId, {
+        ...session,
+        status: "READY",
+        isActive: false,
+        updatedAt: nowIso()
+      });
+      deactivated += 1;
+    }
+    return deactivated;
+  }
+
   getSpaceAgentSession(sessionId: string): SpaceAgentSessionRecord | null {
     return this.spaceAgentSessions.get(sessionId) ?? null;
   }
@@ -4569,10 +4600,16 @@ export class InMemorySpaceStore implements SpaceStore {
       errorMessage: null,
       completedAt: input.completedAt
     });
+    const pane = this.panes.get(currentRun.paneId);
+    const paneClosed = pane?.isClosed ?? false;
+    const hasOtherRunningRun = [...this.spaceAgentRuns.values()].some(
+      (candidate) => candidate.sessionId === input.sessionId && candidate.status === "RUNNING" && candidate.runId !== input.runId
+    );
     const session = this.updateSpaceAgentSession(input.sessionId, {
       status: "READY",
       threadId: input.codexThreadId,
-      lastSyncedAt: input.completedAt
+      lastSyncedAt: input.completedAt,
+      isActive: !paneClosed || hasOtherRunningRun
     });
     const event = this.appendEvent({
       roomId: run.roomId,
@@ -4602,6 +4639,13 @@ export class InMemorySpaceStore implements SpaceStore {
         .filter((run) => run.sessionId === sessionId)
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null
     );
+  }
+
+  hasRunningSpaceAgentRun(sessionId: string): boolean {
+    if (!this.spaceAgentSessions.has(sessionId)) {
+      throw new SpaceNotFoundError(`Space agent session ${sessionId} was not found.`);
+    }
+    return [...this.spaceAgentRuns.values()].some((run) => run.sessionId === sessionId && run.status === "RUNNING");
   }
 
   getActivePaneCliSession(paneId: string): PaneCliSession | null {

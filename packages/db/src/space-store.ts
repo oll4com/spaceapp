@@ -7130,6 +7130,45 @@ export class PostgresSpaceStore implements SpaceStore {
     return result.rows[0] ? mapSpaceAgentSession(result.rows[0]) : null;
   }
 
+  async countActiveSpaceAgentSessions(): Promise<number> {
+    const result = await this.pool.query<CountRow>(
+      `
+        SELECT count(*) AS count
+        FROM space_agent_sessions s
+        WHERE s.is_active = true
+          AND EXISTS (
+            SELECT 1 FROM space_agent_runs r
+            WHERE r.session_id = s.session_id AND r.status = 'RUNNING'
+          )
+      `
+    );
+    return countValue(result.rows);
+  }
+
+  async reconcileStaleSpaceAgentSessions(): Promise<number> {
+    const result = await this.pool.query<{ sessionId: string }>(
+      `
+        UPDATE space_agent_sessions AS session_record
+        SET is_active = false, status = 'READY', updated_at = $1
+        WHERE session_record.is_active = true
+          AND NOT EXISTS (
+            SELECT 1 FROM space_agent_runs AS run_record
+            WHERE run_record.session_id = session_record.session_id AND run_record.status = 'RUNNING'
+          )
+          AND (
+            session_record.pane_id IS NULL
+            OR NOT EXISTS (
+              SELECT 1 FROM panes AS pane_record
+              WHERE pane_record.id = session_record.pane_id AND pane_record.is_closed = false
+            )
+          )
+        RETURNING session_record.session_id
+      `,
+      [nowIso()]
+    );
+    return result.rows.length;
+  }
+
   async getSpaceAgentSession(sessionId: string): Promise<SpaceAgentSessionRecord | null> {
     const result = await this.pool.query<SpaceAgentSessionRow>(`${spaceAgentSessionSelect} WHERE session_id = $1`, [sessionId]);
     return result.rows[0] ? mapSpaceAgentSession(result.rows[0]) : null;
@@ -7739,10 +7778,20 @@ export class PostgresSpaceStore implements SpaceStore {
         `,
         [input.runId, input.codexThreadId, input.codexTurnId, input.completedAt]
       );
+      const paneResult = await client.query<{ isClosed: boolean }>(
+        'SELECT is_closed AS "isClosed" FROM panes WHERE id = $1',
+        [currentRun.paneId]
+      );
+      const paneClosed = paneResult.rows[0]?.isClosed ?? false;
+      const otherRunningRunResult = await client.query<{ exists: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM space_agent_runs WHERE session_id = $1 AND status = 'RUNNING' AND run_id <> $2) AS exists",
+        [input.sessionId, input.runId]
+      );
+      const keepActive = !paneClosed || (otherRunningRunResult.rows[0]?.exists ?? false);
       const updatedSession = await client.query<SpaceAgentSessionRow>(
         `
           UPDATE space_agent_sessions
-          SET status = 'READY', thread_id = $2, last_synced_at = $3, updated_at = $3
+          SET status = 'READY', thread_id = $2, last_synced_at = $3, updated_at = $3, is_active = $4
           WHERE session_id = $1
           RETURNING
             session_id AS "sessionId", pane_id AS "paneId", room_id AS "roomId", source, status, title,
@@ -7753,7 +7802,7 @@ export class PostgresSpaceStore implements SpaceStore {
             collaboration_mode AS "collaborationMode", is_active AS "isActive",
             last_synced_at AS "lastSyncedAt", created_at AS "createdAt", updated_at AS "updatedAt"
         `,
-        [input.sessionId, input.codexThreadId, input.completedAt]
+        [input.sessionId, input.codexThreadId, input.completedAt, keepActive]
       );
       const event = await this.appendEvent(client, {
         roomId: currentRun.roomId,
@@ -7837,6 +7886,14 @@ export class PostgresSpaceStore implements SpaceStore {
       [sessionId]
     );
     return result.rows[0] ? mapSpaceAgentRun(result.rows[0]) : null;
+  }
+
+  async hasRunningSpaceAgentRun(sessionId: string): Promise<boolean> {
+    const result = await this.pool.query<{ exists: boolean }>(
+      "SELECT EXISTS (SELECT 1 FROM space_agent_runs WHERE session_id = $1 AND status = 'RUNNING') AS exists",
+      [sessionId]
+    );
+    return result.rows[0]?.exists ?? false;
   }
 
   async getActivePaneCliSession(paneId: string): Promise<PaneCliSession | null> {

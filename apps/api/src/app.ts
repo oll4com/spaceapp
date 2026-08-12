@@ -182,7 +182,13 @@ import {
   streamingOverlaySnapshotSchema,
   streamingVerifyAccountResponseSchema,
   streamingDisconnectAuthorizationResponseSchema,
-  updateStreamingOverlaySettingsInputSchema,
+updateStreamingOverlaySettingsInputSchema,
+  updateStreamingBotSettingsInputSchema,
+  streamingBotSettingsSchema,
+  streamingBotStatusSchema,
+  streamingBotActivitySchema,
+  streamingBotTestInputSchema,
+  streamingBotMcpExecuteInputSchema,
   toolbarModelStatsSchema,
   launchReadinessSchema,
   listImportCandidatesQuerySchema,
@@ -327,10 +333,12 @@ import {
   InMemoryAppDiagnosticsRepository,
   InMemorySystemAnalyticsRepository,
   InMemoryStreamingRepository,
+  InMemoryStreamingBotRepository,
   PostgresActivityLogRepository,
   PostgresAppDiagnosticsRepository,
   PostgresSystemAnalyticsRepository,
   PostgresStreamingRepository,
+  PostgresStreamingBotRepository,
   PostgresSpaceStore
 } from "@space/db";
 import {
@@ -373,6 +381,7 @@ import {
   AppDiagnosticsServiceError
 } from "./app-diagnostics.js";
 import { ActivityLogService } from "./activity-log.js";
+import { createActiveAgentCountProvider } from "./active-agent-count.js";
 import { buildCliAgentBootstrapMarkdown } from "./agent-bootstrap.js";
 import {
   AgentFileDocxNormalizationError,
@@ -561,6 +570,11 @@ import {
   StreamingSettingsVersionConflictError
 } from "./streaming-service.js";
 import {
+  StreamingBotService,
+  StreamingBotServiceError,
+  toMcpExecuteResponse
+} from "./streaming-bot-service.js";
+import {
   CORE_RESTART_SERVICES,
   CORE_SERVICE_RESTART_COMMAND,
   readServiceRestartCooldown,
@@ -716,6 +730,7 @@ export interface CreateAppOptions {
   toolbarModelStatsCollector?: ToolbarModelStatsCollector;
   systemAnalyticsService?: SystemAnalyticsService;
   streamingService?: StreamingService;
+  streamingBotService?: StreamingBotService;
   toolbarCliSessionReaper?: () => Promise<CliHostReapAggregate>;
   toolbarKernelCacheReclaimer?: () => Promise<KernelCacheReclaimResult>;
   toolbarProviderRouteApplier?: (provider: Provider) => Promise<void>;
@@ -4067,6 +4082,34 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return [...unique.values()];
     }
   });
+  const streamingBotService = options.streamingBotService ?? new StreamingBotService({
+    botRepository: store instanceof PostgresSpaceStore
+      ? PostgresStreamingBotRepository.fromConnectionString(
+          config.databaseUrl ?? (() => {
+            throw new Error("SPACE_DATABASE_URL is required when SPACE_RUNTIME_STORE=postgres.");
+          })(),
+          {
+            max: 2,
+            idleTimeoutMillis: config.databasePoolIdleTimeoutMs,
+            connectionTimeoutMillis: config.databasePoolConnectionTimeoutMs
+          }
+        )
+      : new InMemoryStreamingBotRepository(),
+    streamingRepository: store instanceof PostgresSpaceStore
+      ? PostgresStreamingRepository.fromConnectionString(
+          config.databaseUrl ?? (() => {
+            throw new Error("SPACE_DATABASE_URL is required when SPACE_RUNTIME_STORE=postgres.");
+          })(),
+          {
+            max: 2,
+            idleTimeoutMillis: config.databasePoolIdleTimeoutMs,
+            connectionTimeoutMillis: config.databasePoolConnectionTimeoutMs
+          }
+        )
+      : new InMemoryStreamingRepository(),
+    store,
+    youtubeDailyBudget: config.streamingYoutubeDailyQuotaBudget
+  });
   const streamingService = options.streamingService ?? new StreamingService({
     repository: store instanceof PostgresSpaceStore
       ? PostgresStreamingRepository.fromConnectionString(
@@ -4086,8 +4129,24 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         : join(tmpdir(), `space-streaming-secrets-${process.pid}-${nanoid(8)}`)
     ),
     store,
+    activeAgentCountProvider: createActiveAgentCountProvider({
+      store,
+      isCliTurnActive: async (session) => {
+        if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
+          const control = await readOpenCodeServerControl(session.sessionId, options.opencodeStateRoot);
+          return control
+            ? fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId)
+            : false;
+        }
+        if (isCodexDirectParityRuntime(session.runtimeId)) {
+          return (await cliTerminalManager.getCurrentTurnActivity(session.sessionId)).status === "RUNNING";
+        }
+        return false;
+      }
+    }),
     youtubeDailyQuotaBudget: config.streamingYoutubeDailyQuotaBudget,
-    cleanupCredentialRootOnDispose: !(store instanceof PostgresSpaceStore)
+    cleanupCredentialRootOnDispose: !(store instanceof PostgresSpaceStore),
+    botTickerProvider: () => streamingBotService.botTicker()
   });
   const toolbarKernelCacheReclaimer = options.toolbarKernelCacheReclaimer ?? runKernelCacheReclaim;
   const toolbarProviderRouteApplier =
@@ -8466,6 +8525,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
       }
     }
+    if (current.mode === "CHAT") {
+      const active = await store.getActiveSpaceAgentSession(current.id);
+      if (active && !(await store.hasRunningSpaceAgentRun(active.sessionId))) {
+        await store.updateSpaceAgentSession(
+          active.sessionId,
+          { status: "READY", isActive: false, title: active.title },
+          request.requestIdForSpace
+        );
+      }
+    }
     const pane = await store.updatePane(params.id, { isClosed: true, status: "CLOSED" }, request.requestIdForSpace);
     await recordAudit(store, request, {
       action: "pane.close",
@@ -11144,6 +11213,159 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return streamingOverlaySnapshotSchema.parse(await streamingService.overlaySnapshot());
     }
   );
+  app.get(
+    "/api/admin/streaming/bot/settings",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot settings require the ADMIN role.");
+      }
+      const { settings, memoryCount } = await streamingBotService.getSettings();
+      return { settings: streamingBotSettingsSchema.parse(settings), memoryCount };
+    }
+  );
+  app.patch(
+    "/api/admin/streaming/bot/settings",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot settings require the ADMIN role.");
+      }
+      const input = parseBody(updateStreamingBotSettingsInputSchema, request.body);
+      try {
+        const settings = await streamingBotService.updateSettings(input, request.user.id);
+        await recordAudit(store, request, {
+          action: "admin.streaming.bot_saved",
+          targetType: "streaming_bot_settings",
+          targetId: "global",
+          metadata: { version: settings.version, enabled: settings.enabled, memoryEnabled: settings.memoryEnabled }
+        });
+        return streamingBotSettingsSchema.parse(settings);
+      } catch (error) {
+        if (error instanceof StreamingBotServiceError) {
+          return sendApiError(reply, error.statusCode, error.code, error.message);
+        }
+        throw error;
+      }
+    }
+  );
+  app.post(
+    "/api/admin/streaming/bot/pause",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot controls require the ADMIN role.");
+      }
+      const settings = await streamingBotService.setPaused(true, request.user.id);
+      await recordAudit(store, request, { action: "admin.streaming.bot_paused", targetType: "streaming_bot_settings", targetId: "global", metadata: { version: settings.version } });
+      return streamingBotSettingsSchema.parse(settings);
+    }
+  );
+  app.post(
+    "/api/admin/streaming/bot/resume",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot controls require the ADMIN role.");
+      }
+      const settings = await streamingBotService.setPaused(false, request.user.id);
+      await recordAudit(store, request, { action: "admin.streaming.bot_resumed", targetType: "streaming_bot_settings", targetId: "global", metadata: { version: settings.version } });
+      return streamingBotSettingsSchema.parse(settings);
+    }
+  );
+  app.get(
+    "/api/admin/streaming/bot/status",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot status requires the ADMIN role.");
+      }
+      return streamingBotStatusSchema.parse(await streamingBotService.getStatus());
+    }
+  );
+  app.get(
+    "/api/admin/streaming/bot/activity",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot activity requires the ADMIN role.");
+      }
+      const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }).strict().parse(request.query);
+      const activity = await streamingBotService.listActivity(limit);
+      return { data: activity.map((record) => streamingBotActivitySchema.parse(record)), pagination: { page: 1, pageSize: limit, totalItems: activity.length, totalPages: 1 } };
+    }
+  );
+  app.post(
+    "/api/admin/streaming/bot/test",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot test requires the ADMIN role.");
+      }
+      const input = parseBody(streamingBotTestInputSchema, request.body);
+      const result = await streamingBotService.test(input);
+      await recordAudit(store, request, {
+        action: "admin.streaming.bot_tested",
+        targetType: "streaming_bot_settings",
+        targetId: "global",
+        metadata: { platform: input.platform, errorCode: result.errorCode, model: result.model }
+      });
+      return result;
+    }
+  );
+  app.post(
+    "/api/admin/streaming/bot/memory/clear",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory controls require the ADMIN role.");
+      }
+      parseBody(z.object({}).strict(), request.body ?? {});
+      const result = await streamingBotService.clearMemory();
+      await recordAudit(store, request, {
+        action: "admin.streaming.bot_memory_cleared",
+        targetType: "streaming_bot_settings",
+        targetId: "global",
+        metadata: { removed: result.removed }
+      });
+      return result;
+    }
+  );
+  app.get(
+    "/api/admin/streaming/bot/memory/search",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory search requires the ADMIN role.");
+      }
+      const { q, limit } = z.object({ q: z.string().trim().min(1).max(200), limit: z.coerce.number().int().min(1).max(50).default(20) }).strict().parse(request.query);
+      return streamingBotService.searchMemory(q, limit);
+    }
+  );
+  app.post("/api/internal/streaming/bot/mcp-execute", defaultRouteRateLimitOptions, async (request) => {
+    const input = parseBody(streamingBotMcpExecuteInputSchema, request.body ?? {});
+    const result = await executeMcpToolWithPolicy({
+      toolId: input.toolId,
+      arguments: input.arguments ?? {}
+    }, request);
+    return toMcpExecuteResponse({
+      status: result.status === "EXECUTED" ? "EXECUTED" : "FAILED",
+      code: result.code,
+      message: result.message,
+      serverId: result.serverId,
+      toolName: result.toolName,
+      observation: result.artifact?.storageUri ?? null
+    });
+  });
+  app.get("/api/internal/streaming/bot/skills/:name", defaultRouteRateLimitOptions, async (request) => {
+    const { name } = z.object({ name: z.string().trim().min(1).max(160) }).strict().parse(request.params);
+    const skills = await store.listSkills();
+    const skill = skills.find((candidate) => candidate.id === name || candidate.displayName === name);
+    if (!skill || skill.status !== "VERIFIED") {
+      throw new SpaceNotFoundError(`Skill ${name} was not found or is not active.`);
+    }
+    return { content: skill.body };
+  });
   app.get(
     "/api/admin/system-analytics/overview",
     { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },

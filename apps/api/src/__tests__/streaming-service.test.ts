@@ -79,6 +79,23 @@ function adapters(youtube: StreamingProviderAdapter) {
 }
 
 describe("StreamingService", () => {
+  it("uses the active-agent provider for the Space overlay metric", async () => {
+    const repository = new InMemoryStreamingRepository();
+    const credentials = await secretRoot();
+    const service = new StreamingService({
+      repository,
+      credentialStore: credentials,
+      store: new InMemorySpaceStore(),
+      adapters: adapters(adapter()),
+      activeAgentCountProvider: async () => 4
+    });
+
+    const tile = (await service.overlaySnapshot()).tiles.find(
+      (candidate) => candidate.metricKey === "space.active_agents"
+    );
+    expect(tile).toMatchObject({ value: 4, state: "FRESH" });
+  });
+
   it("binds one-time OAuth state to the browser session and discovers multiple owned channels", async () => {
     const repository = new InMemoryStreamingRepository();
     const credentials = await secretRoot();

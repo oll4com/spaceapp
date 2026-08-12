@@ -59,6 +59,7 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
   const [saving, setSaving] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -226,7 +227,10 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
 
         {error ? <div className="banner bad">{error}</div> : null}
         <div className="task-list" role="list" aria-label="Task items">
-          {items.map((item) => (
+          {items.map((item) => {
+            const expanded = expandedIds.has(item.id);
+            const isLong = item.characterCount > 360;
+            return (
             <article className={`task-card is-${item.status.toLocaleLowerCase()}`} role="listitem" key={item.id}>
               <div className="task-card-meta">
                 <strong>{item.status}</strong>
@@ -234,11 +238,16 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
                 {item.occurrenceCount > 1 ? <small>Used {item.occurrenceCount} times</small> : null}
               </div>
               <div className="task-card-title">{item.title}</div>
-              <button className="task-card-objective" onClick={() => void copyItem(item)}
+              <button className={`task-card-objective${expanded ? " expanded" : ""}`} onClick={() => void copyItem(item)}
                 aria-label="Copy task objective">{item.objective}</button>
               {copiedId === item.id ? (
                 <span className="task-copied" role="status">{runtime.kind === "demo" ? DEMO_LOCAL_REPLY : "Copied"}</span>
               ) : null}
+              {isLong ? <button className="task-expand" onClick={() => setExpandedIds((current) => {
+                const next = new Set(current);
+                if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+                return next;
+              })}>{expanded ? "Collapse" : "Expand"}</button> : null}
               <div className="task-card-statuses" aria-label="Task status actions">
                 {acceptedStatuses.map((status) => (
                   <button key={status} className={item.status === status ? "active" : ""}
@@ -258,7 +267,8 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
                 <button onClick={() => void deleteItem(item)} aria-label="Delete task"><Trash2 aria-hidden="true" /></button>
               </div>
             </article>
-          ))}
+            );
+          })}
           {!loading && !items.length ? <div className="empty-state" role="status">No tasks match this view.</div> : null}
         </div>
       </div>

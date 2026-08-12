@@ -173,7 +173,7 @@ export function StreamingMetricGrid({
 
 export function StreamingOverlay({ theme }: { theme: "classic" | "modern" }) {
   const { enabled, snapshot } = useStreamingOverlay();
-  if (!enabled || !snapshot || (snapshot.tiles.length === 0 && !snapshot.customTextEnabled)) return null;
+  if (!enabled || !snapshot || (snapshot.tiles.length === 0 && !snapshot.customTextEnabled && !snapshot.botTickerEnabled)) return null;
 
   return (
     <aside
@@ -182,6 +182,15 @@ export function StreamingOverlay({ theme }: { theme: "classic" | "modern" }) {
       data-settings-version={snapshot.settingsVersion}
     >
       {snapshot.tiles.length > 0 ? <StreamingMetricGrid snapshot={snapshot} /> : null}
+      {snapshot.botTickerEnabled && snapshot.botTicker.length > 0 ? (
+        <div className="streaming-overlay-bot-ticker" aria-label="Live Q&A">
+          {snapshot.botTicker.map((item, index) => (
+            <p key={`${item.createdAt}:${index}`}>
+              {item.author ? <strong>{item.author}:</strong> : null} {item.reply ?? item.message}
+            </p>
+          ))}
+        </div>
+      ) : null}
       {snapshot.customTextEnabled && snapshot.customText ? (
         <p className="streaming-overlay-custom-text">{snapshot.customText}</p>
       ) : null}

@@ -25,12 +25,16 @@ import type {
   SetupConnectionCheckReplay,
   SetupConnectionCheckRun,
   SetupOverview,
+  StreamingBotActivity,
+  StreamingBotSettings,
+  StreamingBotStatus,
   StreamingCatalogResponse,
   StreamingMetricTileSnapshot,
   StreamingOverlaySettings,
   StreamingOverlaySnapshot,
   TaskItem,
   UpdateProviderSettingsInput,
+  UpdateStreamingBotSettingsInput,
   UpdateStreamingOverlaySettingsInput,
   UpdateTelegramIntegrationInput,
   UpdateUserLinkRequest,
@@ -79,6 +83,40 @@ function initialStreamingSettings(): StreamingOverlaySettings {
     customText: "",
     updatedAt: DEMO_FIXED_AT,
     updatedBy: "user:demo-admin"
+  };
+}
+
+function initialStreamingBotSettings(): StreamingBotSettings {
+  return {
+    version: 1,
+    enabled: false,
+    persona: { name: "Live Assistant", tone: "Friendly, concise and helpful. Answer only questions about the stream." },
+    platforms: {
+      YOUTUBE: { enabled: false, accountId: null },
+      TWITCH: { enabled: false, accountId: null }
+    },
+    facts: [{ key: "website", value: "https://spaceapp.dev" }],
+    faq: [{ question: "What is Space?", answer: "Space is a local-first agent platform." }],
+    instructions: "",
+    guardrails: { cooldownSeconds: 15, maxRepliesPerMinute: 5, replyToQuestionsOnly: true },
+    memoryEnabled: true,
+    overlayTickerEnabled: false,
+    updatedAt: DEMO_FIXED_AT,
+    updatedBy: "user:demo-admin"
+  };
+}
+
+function initialStreamingBotStatus(): StreamingBotStatus {
+  return {
+    enabled: false,
+    paused: true,
+    llmConfigured: false,
+    model: null,
+    youtubeQuota: { day: DEMO_FIXED_AT.slice(0, 10), unitsConsumed: 0, budget: 8000 },
+    platforms: {
+      YOUTUBE: { connected: false, live: false, chatId: null, lastPollAt: null, lastReplyAt: null, pendingCount: 0 },
+      TWITCH: { connected: false, live: false, chatId: null, lastPollAt: null, lastReplyAt: null, pendingCount: 0 }
+    }
   };
 }
 
@@ -155,6 +193,8 @@ export class DemoStore {
   private setupCheckRuns = new Map<string, DemoSetupCheckRunState>();
   private setupCheckSequence = 0;
   private streamingSettings = initialStreamingSettings();
+  private streamingBotSettings = initialStreamingBotSettings();
+  private streamingBotStatus = initialStreamingBotStatus();
   readonly api: SpaceApiClient;
 
   constructor() {
@@ -180,6 +220,8 @@ export class DemoStore {
     this.setupCheckRuns.clear();
     this.setupCheckSequence = 0;
     this.streamingSettings = initialStreamingSettings();
+    this.streamingBotSettings = initialStreamingBotSettings();
+    this.streamingBotStatus = initialStreamingBotStatus();
   }
 
   private nextId(prefix: string): string {
@@ -514,6 +556,100 @@ export class DemoStore {
     });
   }
 
+  private invokeStreamingBot(method: string, args: unknown[]): unknown {
+    switch (method) {
+      case "streamingBotSettings":
+        return Promise.resolve({ settings: structuredClone(this.streamingBotSettings), memoryCount: 3 });
+      case "updateStreamingBotSettings": {
+        const input = args[0] as UpdateStreamingBotSettingsInput;
+        if (input.expectedVersion !== this.streamingBotSettings.version) {
+          throw new SpaceApiError("The demo bot settings changed.", {
+            status: 409,
+            code: "STREAMING_BOT_SETTINGS_VERSION_CONFLICT"
+          });
+        }
+        this.streamingBotSettings = {
+          version: this.streamingBotSettings.version + 1,
+          enabled: input.enabled,
+          persona: structuredClone(input.persona),
+          platforms: structuredClone(input.platforms),
+          facts: structuredClone(input.facts),
+          faq: structuredClone(input.faq),
+          instructions: input.instructions,
+          guardrails: structuredClone(input.guardrails),
+          memoryEnabled: input.memoryEnabled,
+          overlayTickerEnabled: input.overlayTickerEnabled,
+          updatedAt: DEMO_FIXED_AT,
+          updatedBy: "user:demo-admin"
+        };
+        this.streamingBotStatus = {
+          ...this.streamingBotStatus,
+          enabled: this.streamingBotSettings.enabled,
+          paused: !this.streamingBotSettings.enabled
+        };
+        return Promise.resolve(structuredClone(this.streamingBotSettings));
+      }
+      case "pauseStreamingBot":
+        this.streamingBotSettings = { ...this.streamingBotSettings, enabled: false, version: this.streamingBotSettings.version + 1 };
+        this.streamingBotStatus = { ...this.streamingBotStatus, enabled: false, paused: true };
+        return Promise.resolve(structuredClone(this.streamingBotSettings));
+      case "resumeStreamingBot":
+        this.streamingBotSettings = { ...this.streamingBotSettings, enabled: true, version: this.streamingBotSettings.version + 1 };
+        this.streamingBotStatus = { ...this.streamingBotStatus, enabled: true, paused: false };
+        return Promise.resolve(structuredClone(this.streamingBotSettings));
+      case "streamingBotStatus":
+        return Promise.resolve(structuredClone(this.streamingBotStatus));
+      case "streamingBotActivity": {
+        const demoActivity: StreamingBotActivity[] = [
+          {
+            id: "activity:demo-001",
+            platform: "YOUTUBE",
+            direction: "IN",
+            author: "Viewer 1",
+            message: "What stack does Space run on?",
+            reply: null,
+            status: "SKIPPED",
+            createdAt: DEMO_FIXED_AT
+          },
+          {
+            id: "activity:demo-002",
+            platform: "TWITCH",
+            direction: "OUT",
+            author: "Live Assistant",
+            message: "Space runs on Node.js with a local-first architecture.",
+            reply: "Space runs on Node.js with a local-first architecture.",
+            status: "REPLIED",
+            createdAt: DEMO_FIXED_AT
+          }
+        ];
+        return Promise.resolve({ data: demoActivity, pagination: { page: 1, pageSize: demoActivity.length, totalItems: demoActivity.length, totalPages: 1 } });
+      }
+      case "testStreamingBot": {
+        const input = args[0] as { message: string };
+        return Promise.resolve({
+          reply: `Demo reply to "${input.message.slice(0, 80)}" — live replies are disabled in the local demo.`,
+          errorCode: null,
+          model: "demo-local"
+        });
+      }
+      case "clearStreamingBotMemory":
+        return Promise.resolve({ removed: 3 });
+      case "searchStreamingBotMemory": {
+        const query = String(args[0] ?? "");
+        return Promise.resolve({
+          entries: [{
+            id: "memory:demo-001",
+            title: query ? `Demo result for "${query}"` : "Demo memory",
+            body: "This is a demo memory entry. Live bot memory is only available in a running Space installation.",
+            createdAt: DEMO_FIXED_AT
+          }]
+        });
+      }
+      default:
+        throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
+    }
+  }
+
   private invoke(method: string, args: unknown[]): unknown {
     const roomId = typeof args[0] === "string" ? args[0] : null;
     switch (method) {
@@ -817,7 +953,9 @@ export class DemoStore {
           settingsVersion: this.streamingSettings.version,
           tiles,
           customTextEnabled: this.streamingSettings.customTextEnabled,
-          customText: this.streamingSettings.customText
+          customText: this.streamingSettings.customText,
+          botTickerEnabled: this.streamingBotSettings.overlayTickerEnabled && this.streamingBotSettings.enabled,
+          botTicker: []
         };
         return Promise.resolve(response);
       }
@@ -826,6 +964,16 @@ export class DemoStore {
       case "removeStreamingAccount":
       case "disconnectStreamingAuthorization":
         throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
+      case "streamingBotSettings":
+      case "updateStreamingBotSettings":
+      case "pauseStreamingBot":
+      case "resumeStreamingBot":
+      case "streamingBotStatus":
+      case "streamingBotActivity":
+      case "testStreamingBot":
+      case "clearStreamingBotMemory":
+      case "searchStreamingBotMemory":
+        return this.invokeStreamingBot(String(method), args);
       case "cliRuntimeRestart": {
         const runtimeId = String(args[0] ?? "cli:opencode");
         return Promise.resolve({

@@ -51,3 +51,17 @@ export {
   type UpsertStreamingAuthorizationInput,
   type UpsertStreamingPlatformAccountInput
 } from "./streaming-repository.js";
+
+export {
+  InMemoryStreamingBotRepository,
+  PostgresStreamingBotRepository,
+  StreamingBotSettingsVersionConflictError,
+  toPublicActivity
+} from "./streaming-bot-repository.js";
+export type {
+  CreateStreamingBotActivityInput,
+  StreamingBotActivityRecord,
+  StreamingBotChatStateRecord,
+  StreamingBotQuotaRecord,
+  StreamingBotRepository
+} from "./streaming-bot-repository.js";

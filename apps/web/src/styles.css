@@ -13200,6 +13200,21 @@ button:focus-visible {
   background: color-mix(in srgb, var(--room-accent, #6db7aa) 9%, var(--room-terminal-bg, #101112));
 }
 
+.task-card-objective.expanded {
+  max-height: none;
+}
+
+.task-expand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-height: 2rem;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.68rem;
+  justify-self: start;
+}
+
 .task-copied {
   position: absolute;
   top: 2.35rem;
