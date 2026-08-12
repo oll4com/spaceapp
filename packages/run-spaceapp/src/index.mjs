@@ -23,6 +23,7 @@ const CONFIG_SCHEMA_VERSION = 3;
 const MIN_INSTALL_CPU_COUNT = 4;
 const MIN_INSTALL_MEMORY_BYTES = 7 * 1024 ** 3;
 const MIN_INSTALL_MEMORY_LABEL = "7 GiB usable (8 GB-class system)";
+const CONTAINER_SECRET_MODE = 0o644;
 const MIN_INSTALL_FREE_DISK_BYTES = 15 * 1024 ** 3;
 const PROFILE_RUNTIME_SETTINGS = Object.freeze({
   light: Object.freeze({
@@ -603,8 +604,9 @@ export async function prepareInstallation(root, {
       throw error;
     }
     postgresPassword = randomBytes(32).toString("base64url");
-    await atomicWrite(postgresPasswordPath, postgresPassword);
+    await atomicWrite(postgresPasswordPath, postgresPassword, CONTAINER_SECRET_MODE);
   }
+  await ensureContainerSecretReadable(postgresPasswordPath);
   const databaseUrlPath = join(root, "secrets", "database-url");
   try {
     await stat(databaseUrlPath);
@@ -615,9 +617,11 @@ export async function prepareInstallation(root, {
     const encodedPassword = encodeURIComponent(postgresPassword);
     await atomicWrite(
       databaseUrlPath,
-      `postgresql://spaceapp:${encodedPassword}@postgres:5432/spaceapp`
+      `postgresql://spaceapp:${encodedPassword}@postgres:5432/spaceapp`,
+      CONTAINER_SECRET_MODE
     );
   }
+  await ensureContainerSecretReadable(databaseUrlPath);
 
   const sessionSecretPath = join(root, "secrets", "session-secret");
   try {
@@ -626,8 +630,9 @@ export async function prepareInstallation(root, {
     if (error?.code !== "ENOENT") {
       throw error;
     }
-    await atomicWrite(sessionSecretPath, randomBytes(48).toString("base64url"));
+    await atomicWrite(sessionSecretPath, randomBytes(48).toString("base64url"), CONTAINER_SECRET_MODE);
   }
+  await ensureContainerSecretReadable(sessionSecretPath);
 
   const setupTokenPath = join(root, "secrets", "setup-token");
   let setupToken = null;
@@ -638,8 +643,9 @@ export async function prepareInstallation(root, {
       throw error;
     }
     setupToken = randomBytes(32).toString("base64url");
-    await atomicWrite(setupTokenPath, setupToken);
+    await atomicWrite(setupTokenPath, setupToken, CONTAINER_SECRET_MODE);
   }
+  await ensureContainerSecretReadable(setupTokenPath);
   return { config, setupToken };
 }
 
@@ -707,18 +713,29 @@ function formatGibibytes(bytes) {
   return Math.floor((bytes / 1024 ** 3) * 10) / 10;
 }
 
-async function atomicWrite(target, value) {
+async function atomicWrite(target, value, mode = 0o600) {
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
   const temporary = `${target}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
   try {
-    await writeFile(temporary, value, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await chmod(temporary, 0o600);
+    await writeFile(temporary, value, { encoding: "utf8", mode, flag: "wx" });
+    await chmod(temporary, mode);
     await rename(temporary, target);
-    await chmod(target, 0o600);
+    await chmod(target, mode);
   } catch (error) {
     await rm(temporary, { force: true }).catch(() => {});
     throw error;
   }
+}
+
+async function ensureContainerSecretReadable(path) {
+  if (process.platform === "win32") {
+    return;
+  }
+  await chmod(path, CONTAINER_SECRET_MODE).catch((error) => {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  });
 }
 
 function defaultTemplateDir() {

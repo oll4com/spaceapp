@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -564,6 +564,30 @@ test("host-root install is rejected on non-Linux hosts before Docker or installa
       execute: 0
     });
     await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
+  }
+});
+
+test("container secrets are world-readable so non-root container users can mount them", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-secret-modes-"));
+  await initializeInstallation(root, {
+    version: "0.1.0",
+    profile: "light"
+  });
+  for (const name of ["postgres-password", "database-url", "session-secret", "setup-token"]) {
+    const metadata = await stat(join(root, "secrets", name));
+    assert.equal(metadata.isFile(), true);
+    if (process.platform !== "win32") {
+      assert.equal(metadata.mode & 0o777, 0o644);
+    }
+  }
+  await chmod(join(root, "secrets", "postgres-password"), 0o600);
+  await initializeInstallation(root, {
+    version: "0.1.0",
+    profile: "light"
+  });
+  const repaired = await stat(join(root, "secrets", "postgres-password"));
+  if (process.platform !== "win32") {
+    assert.equal(repaired.mode & 0o777, 0o644);
   }
 });
 

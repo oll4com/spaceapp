@@ -176,7 +176,7 @@ test("saved config rejects secret-shaped fields", async () => {
   await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
 });
 
-test("initialization creates idempotent secrets with owner-only POSIX permissions", async () => {
+test("initialization creates idempotent secrets with container-readable POSIX permissions", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-init-"));
   const templateDir = join(root, "templates");
   await mkdir(templateDir);
@@ -203,7 +203,7 @@ test("initialization creates idempotent secrets with owner-only POSIX permission
     /^postgresql:\/\/spaceapp:[^@]+@postgres:5432\/spaceapp$/
   );
   for (const file of ["setup-token", "session-secret", "postgres-password", "database-url"]) {
-    await assertOwnerOnlyFile(join(root, "secrets", file));
+    await assertContainerSecretFile(join(root, "secrets", file));
   }
   assert.doesNotMatch(
     await readFile(join(root, "config.json"), "utf8"),
@@ -300,5 +300,13 @@ async function assertOwnerOnlyFile(path) {
   assert.equal(metadata.isFile(), true);
   if (process.platform !== "win32") {
     assert.equal(metadata.mode & 0o777, 0o600);
+  }
+}
+
+async function assertContainerSecretFile(path) {
+  const metadata = await stat(path);
+  assert.equal(metadata.isFile(), true);
+  if (process.platform !== "win32") {
+    assert.equal(metadata.mode & 0o777, 0o644);
   }
 }
