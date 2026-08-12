@@ -159,6 +159,9 @@ textReplacements.push([
   new RegExp(`${escaped(joined("oll4com/", "space"))}(?!app)`, "g"),
   "spaceapp.example/spaceapp"
 ]);
+// Any Proxmox VM identifier is private infra and must not leak into the
+// public installer; generic rule covers current and future ids.
+textReplacements.push([new RegExp("\\bVM\\d{2,4}\\b", "g"), "public-host"]);
 
 const contentRules = [
   {
