@@ -742,6 +742,7 @@ export function createDemoFixture(): DemoFixture {
       description: "Explore the sanitized public workspace guide.",
       url: "https://demo.invalid/space-guide",
       openMode: "EMBEDDED",
+      category: "GENERAL",
       isQuick: true,
       sortOrder: 0,
       createdAt: DEMO_FIXED_AT,

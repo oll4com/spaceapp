@@ -837,7 +837,7 @@ function containsCliUploadPath(text: string): boolean {
   return text.includes("/opt/spaceapp/var/artifacts/cli-uploads/") || text.includes("/cli-uploads/");
 }
 
-function hiddenEchoCandidates(data: string): string[] {
+export function hiddenEchoCandidates(data: string): string[] {
   const candidates = new Set<string>();
   if (data) candidates.add(data);
   if (data.startsWith(BRACKETED_PASTE_START) && data.endsWith(BRACKETED_PASTE_END)) {
@@ -848,6 +848,10 @@ function hiddenEchoCandidates(data: string): string[] {
     if (token.length >= 8) candidates.add(token);
   }
   return Array.from(candidates);
+}
+
+export function plainTextHiddenEchoCandidates(data: string): string[] {
+  return hiddenEchoCandidates(data).filter((candidate) => !/[\u0000-\u001f\u007f-\u009f]/.test(candidate));
 }
 
 function longestHiddenEchoPrefixAtEnd(output: string, hidden: string): number {
@@ -944,6 +948,12 @@ function isPasteShortcutEvent(event: Pick<KeyboardEvent, "altKey" | "code" | "ct
   if (event.defaultPrevented || event.altKey || event.shiftKey || (!event.ctrlKey && !event.metaKey)) return false;
   if (event.code === "KeyV") return true;
   return event.key.toLowerCase() === "v";
+}
+
+function isCopyShortcutEvent(event: Pick<KeyboardEvent, "altKey" | "code" | "ctrlKey" | "defaultPrevented" | "key" | "metaKey" | "shiftKey">): boolean {
+  if (event.defaultPrevented || event.altKey || event.shiftKey || (!event.ctrlKey && !event.metaKey)) return false;
+  if (event.code === "KeyC") return true;
+  return event.key.toLowerCase() === "c";
 }
 
 function fileFromDataUrl(src: string, index: number): File | null {
@@ -1687,11 +1697,12 @@ export function TerminalPane({
       return;
     }
     if (terminalControlRequestPendingRef.current) return;
-    if (control.state === "HELD_BY_OTHER" && control.holderLeaseId) {
+    if (realInteraction && control.state === "HELD_BY_OTHER" && control.holderLeaseId) {
       terminalControlRequestPendingRef.current = true;
       socket.send(JSON.stringify({
         type: "control_takeover",
-        expectedLeaseId: control.holderLeaseId
+        expectedLeaseId: control.holderLeaseId,
+        interactionId: createCliTurnMarker()
       }));
       return;
     }
@@ -2722,6 +2733,7 @@ export function TerminalPane({
     };
     syncTerminalOutputVisibilityRef.current = syncOutputVisibility;
     const nativePasteTargets: EventTarget[] = [];
+    const nativeCopyTargets: EventTarget[] = [];
     const terminalIntentTargets: Array<{ target: EventTarget; type: string; listener: EventListener }> = [];
     const replayWriteQueue = createTerminalReplayWriteQueue(
       (data, mode) => outputCoordinator.enqueue(data, undefined, mode),
@@ -2899,6 +2911,23 @@ export function TerminalPane({
       handleTerminalBeforeInput(event);
     };
 
+    const nativeCopyShortcutListener: EventListener = (event) => {
+      if (!(event instanceof KeyboardEvent) || !isCopyShortcutEvent(event)) return;
+      const activeElement = typeof document !== "undefined" ? document.activeElement : null;
+      const targetInTerminal = event.target instanceof Node && terminalHost.contains(event.target);
+      const activeInTerminal = activeElement instanceof Node && terminalHost.contains(activeElement);
+      if (!targetInTerminal && !activeInTerminal && !hasRecentTerminalIntent()) return;
+      if (isEditablePasteTarget(event.target) || isEditablePasteTarget(activeElement)) return;
+      const terminal = terminalRef.current;
+      const selection = terminal?.getSelection?.() ?? "";
+      if (!selection) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      markTerminalIntent();
+      void handleTerminalCopyShortcut(selection);
+    };
+
     async function attachTerminal() {
       setTerminalStatus("connecting");
       const { Terminal, FitAddon } = await loadTerminalModules();
@@ -2974,10 +3003,15 @@ export function TerminalPane({
         target.addEventListener("beforeinput", nativeBeforeInputListener, { capture: true });
         nativePasteTargets.push(target);
       };
+      const addNativeCopyTarget = (target: EventTarget | null | undefined) => {
+        if (!target || nativeCopyTargets.includes(target)) return;
+        target.addEventListener("keydown", nativeCopyShortcutListener, { capture: true });
+        nativeCopyTargets.push(target);
+      };
       const addTerminalIntentTarget = (target: EventTarget | null | undefined, type: string) => {
         if (!target) return;
         const listener: EventListener = () => {
-          markTerminalIntent();
+          if (type === "pointerdown") markTerminalIntent();
           if (type === "focus" || type === "focusin") {
             terminal?.scrollToBottom();
             syncTerminalViewportEvidence(terminalHost, terminal);
@@ -2999,9 +3033,13 @@ export function TerminalPane({
         };
         nameTerminalInput(terminalDom.textarea);
         addNativePasteTarget(terminalHost);
+        addNativeCopyTarget(terminalHost);
         addNativePasteTarget(terminalDom.element);
+        addNativeCopyTarget(terminalDom.element);
         addNativePasteTarget(terminalDom.textarea);
+        addNativeCopyTarget(terminalDom.textarea);
         addNativePasteTarget(document);
+        addNativeCopyTarget(document);
         addTerminalIntentTarget(terminalHost, "pointerdown");
         addTerminalIntentTarget(terminalHost, "focusin");
         addTerminalIntentTarget(terminalDom.textarea, "focus");
@@ -3654,6 +3692,9 @@ export function TerminalPane({
         target.removeEventListener("keydown", nativePasteShortcutListener, { capture: true });
         target.removeEventListener("beforeinput", nativeBeforeInputListener, { capture: true });
       }
+      for (const target of nativeCopyTargets) {
+        target.removeEventListener("keydown", nativeCopyShortcutListener, { capture: true });
+      }
       for (const { target, type, listener } of terminalIntentTargets) {
         target.removeEventListener(type, listener, { capture: true });
       }
@@ -3996,7 +4037,6 @@ export function TerminalPane({
 
   function focusTerminal() {
     if (!isTargetRef.current) return;
-    markTerminalIntent();
     const terminal = terminalRef.current;
     terminal?.scrollToBottom();
     syncTerminalViewportEvidence(xtermHostRef.current, terminal);
@@ -4523,7 +4563,7 @@ export function TerminalPane({
     const expiresAtMs = now + HIDDEN_INPUT_ECHO_TTL_MS;
     hiddenInputEchoFiltersRef.current = [
       ...hiddenInputEchoFiltersRef.current.filter((item) => item.expiresAtMs > now),
-      ...hiddenEchoCandidates(data).map((candidate) => ({ value: candidate, remaining: candidate, expiresAtMs }))
+      ...plainTextHiddenEchoCandidates(data).map((candidate) => ({ value: candidate, remaining: candidate, expiresAtMs }))
     ];
   }
 
@@ -4972,6 +5012,25 @@ export function TerminalPane({
       "Ctrl+V shortcut",
       `keydown intercepted before Codex CLI; paste event did not expose clipboard data; ${routing}`
     );
+  }
+
+  async function handleTerminalCopyShortcut(text: string) {
+    try {
+      const runtimeKind = await writeClipboardText(text);
+      void captureClipboardText({
+        text,
+        source: "COPY",
+        roomId: pane.roomId,
+        paneId: pane.id,
+        paneTitle: pane.title
+      });
+      setError(null);
+      setNotice(runtimeKind === "demo" ? DEMO_LOCAL_REPLY : "CLI selection copied.");
+      focusTerminal();
+    } catch (err) {
+      setNotice(null);
+      setError(err instanceof Error ? err.message : "CLI selection copy failed");
+    }
   }
 
   function handleTerminalBeforeInput(event: InputEvent) {

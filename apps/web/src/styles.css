@@ -11192,6 +11192,22 @@ button:focus-visible {
   resize: vertical;
 }
 
+.link-main small.link-category-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  width: fit-content;
+  margin-top: 0.3rem;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid #3d6b5f;
+  border-radius: 999px;
+  background: #14201d;
+  color: #8fd6c3;
+  font-size: 0.7rem;
+  line-height: 1.3;
+  overflow: visible;
+}
+
 .links-list,
 .quick-links-list {
   display: grid;

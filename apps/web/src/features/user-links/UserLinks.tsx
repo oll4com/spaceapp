@@ -1,6 +1,6 @@
-import { ExternalLink, Link as LinkIcon, Pencil, Plus, Search, Star, Trash2, X } from "../ui-theme/app-icons.js";
+import { ExternalLink, Link as LinkIcon, Music2, Pencil, Plus, Search, Star, Trash2, X } from "../ui-theme/app-icons.js";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { UserLink, UserLinkOpenMode } from "@space/contracts";
+import type { UserLink, UserLinkCategory, UserLinkOpenMode } from "@space/contracts";
 import { api } from "../../api.js";
 import { resolveExternalResource } from "../../runtime/SpaceRuntime.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
@@ -8,6 +8,11 @@ import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 
 export const USER_LINKS_UPDATED_EVENT = "space:user-links-updated";
 const pageSize = 10;
+
+const categoryLabels: Record<UserLinkCategory, string> = {
+  GENERAL: "General",
+  MUSIC_LIBRARY: "Music library"
+};
 
 function notifyLinksUpdated() {
   window.dispatchEvent(new Event(USER_LINKS_UPDATED_EVENT));
@@ -21,8 +26,8 @@ export function LinkFavicon({ link }: { link: UserLink }) {
   return <img src={source} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
 }
 
-type LinkDraft = { title: string; url: string; description: string; openMode: UserLinkOpenMode; isQuick: boolean };
-const emptyDraft: LinkDraft = { title: "", url: "", description: "", openMode: "EMBEDDED", isQuick: false };
+type LinkDraft = { title: string; url: string; description: string; openMode: UserLinkOpenMode; category: UserLinkCategory; isQuick: boolean };
+const emptyDraft: LinkDraft = { title: "", url: "", description: "", openMode: "EMBEDDED", category: "GENERAL", isQuick: false };
 
 export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
   const [links, setLinks] = useState<UserLink[]>([]);
@@ -34,8 +39,20 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
   const [editing, setEditing] = useState<UserLink | "new" | null>(null);
   const [draft, setDraft] = useState<LinkDraft>(emptyDraft);
   const [saving, setSaving] = useState(false);
+  const panelRef = useRef<HTMLElement | null>(null);
 
   useAutoDismiss(error, setError);
+
+  useEffect(() => {
+    if (!editing) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    if (typeof panel.scrollTo === "function") {
+      panel.scrollTo({ top: 0, behavior: "smooth" });
+    } else {
+      panel.scrollTop = 0;
+    }
+  }, [editing]);
 
   async function load(nextPage = 1, append = false) {
     setLoading(true);
@@ -60,7 +77,7 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
   }
 
   function startEdit(link: UserLink) {
-    setDraft({ title: link.title, url: link.url, description: link.description, openMode: link.openMode, isQuick: link.isQuick });
+    setDraft({ title: link.title, url: link.url, description: link.description, openMode: link.openMode, category: link.category, isQuick: link.isQuick });
     setEditing(link);
   }
 
@@ -102,7 +119,7 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
     }
   }
 
-  return <section className="links-panel side-surface-panel" aria-label="Links library">
+  return <section ref={panelRef} className="links-panel side-surface-panel" aria-label="Links library">
     <form className="links-search" onSubmit={(event) => { event.preventDefault(); void load(); }}>
       <Search aria-hidden="true" />
       <input aria-label="Search links" placeholder="Search links" value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -120,6 +137,9 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
         setDraft({ ...draft, url, openMode: /^http:\/\//i.test(url) ? "NEW_TAB" : draft.openMode });
       }} /></label>
       <label>Description<textarea maxLength={1000} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>
+      <label>Link type<select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as UserLinkCategory })}>
+        {(Object.keys(categoryLabels) as UserLinkCategory[]).map((category) => <option key={category} value={category}>{categoryLabels[category]}</option>)}
+      </select></label>
       <fieldset><legend>Open link</legend>
         <label><input type="radio" name="open-mode" checked={draft.openMode === "EMBEDDED"} disabled={/^http:\/\//i.test(draft.url)} onChange={() => setDraft({ ...draft, openMode: "EMBEDDED" })} /> Open in Space modal</label>
         <label><input type="radio" name="open-mode" checked={draft.openMode === "NEW_TAB"} onChange={() => setDraft({ ...draft, openMode: "NEW_TAB" })} /> Open in new tab</label>
@@ -131,7 +151,7 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
     <div className="links-list">
       {links.map((link) => <article className="link-card" key={link.id}>
         <button className="link-main" type="button" onClick={() => onOpen(link)} aria-label={`Open ${link.title}`}>
-          <span className="link-favicon"><LinkFavicon link={link} /></span><span><strong>{link.title}</strong>{link.description ? <small>{link.description}</small> : null}<em>{new URL(link.url).hostname}</em></span>
+          <span className="link-favicon"><LinkFavicon link={link} /></span><span><strong>{link.title}</strong>{link.description ? <small>{link.description}</small> : null}<em>{new URL(link.url).hostname}</em>{link.category === "MUSIC_LIBRARY" ? <small className="link-category-badge"><Music2 aria-hidden="true" />{categoryLabels.MUSIC_LIBRARY}</small> : null}</span>
         </button>
         <div className="link-actions">
           <button type="button" className={link.isQuick ? "selected" : ""} aria-label={`${link.isQuick ? "Remove" : "Add"} ${link.title} ${link.isQuick ? "from" : "to"} Quick Links`} title="Toggle Quick Link" onClick={() => void toggleQuick(link)}><Star aria-hidden="true" /></button>

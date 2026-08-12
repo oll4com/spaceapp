@@ -1494,6 +1494,7 @@ export class DemoStore {
           description: input.description?.trim() ?? "",
           url,
           openMode,
+          category: input.category ?? "GENERAL",
           isQuick: input.isQuick ?? false,
           sortOrder: this.fixture.links.length,
           createdAt: DEMO_FIXED_AT,

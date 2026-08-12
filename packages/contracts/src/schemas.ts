@@ -1908,7 +1908,8 @@ export const paneCliWebSocketClientMessageSchema = z.discriminatedUnion("type", 
   }),
   z.object({
     type: z.literal("control_takeover"),
-    expectedLeaseId: idSchema
+    expectedLeaseId: idSchema,
+    interactionId: z.string().uuid()
   }),
   z.object({
     type: z.literal("control_heartbeat"),
@@ -6495,7 +6496,7 @@ export const listMemoryQuerySchema = paginationRequestSchema
   });
 
 export const clipboardSourceSchema = z.enum(["COPY", "PASTE", "MANUAL_NOTE", "AGENT_NOTE", "PLAN"]);
-export const clipboardOperatorSourceSchema = z.enum(["COPY", "PASTE", "MANUAL_NOTE"]);
+export const clipboardOperatorSourceSchema = z.enum(["COPY", "PASTE", "MANUAL_NOTE", "PLAN"]);
 export const clipboardTextMaxCharacters = 100_000;
 export const agentClipboardNoteMaxCharacters = 10_000;
 export const clipboardPlanTitleMaxCharacters = 160;
@@ -7387,12 +7388,14 @@ const userLinkUrlSchema = z.string().trim().min(1).max(2048).transform((value, c
 });
 
 export const userLinkOpenModeSchema = z.enum(["EMBEDDED", "NEW_TAB"]);
+export const userLinkCategorySchema = z.enum(["GENERAL", "MUSIC_LIBRARY"]);
 export const userLinkSchema = z.object({
   id: idSchema,
   title: z.string().trim().min(1).max(160),
   description: z.string().trim().max(1000),
   url: userLinkUrlSchema,
   openMode: userLinkOpenModeSchema,
+  category: userLinkCategorySchema,
   isQuick: z.boolean(),
   sortOrder: z.number().int().min(0),
   createdAt: isoDateTimeSchema,
@@ -7408,6 +7411,7 @@ export const createUserLinkRequestSchema = z.object({
   description: z.string().trim().max(1000).default(""),
   url: userLinkUrlSchema,
   openMode: userLinkOpenModeSchema.default("EMBEDDED"),
+  category: userLinkCategorySchema.default("GENERAL"),
   isQuick: z.boolean().default(false)
 }).strict().superRefine((link, context) => {
   if (link.url.startsWith("http:") && link.openMode !== "NEW_TAB") {
@@ -7420,6 +7424,7 @@ export const updateUserLinkRequestSchema = z.object({
   description: z.string().trim().max(1000).optional(),
   url: userLinkUrlSchema.optional(),
   openMode: userLinkOpenModeSchema.optional(),
+  category: userLinkCategorySchema.optional(),
   isQuick: z.boolean().optional()
 }).strict().refine((input) => Object.keys(input).length > 0, "Link update must include at least one field.");
 
@@ -7455,11 +7460,21 @@ export const createClipboardItemRequestSchema = z
   .object({
     text: nonBlankExactText(clipboardTextMaxCharacters),
     source: clipboardOperatorSourceSchema,
+    title: z.string().trim().min(1).max(clipboardPlanTitleMaxCharacters).optional(),
     roomId: idSchema.nullable().optional(),
     paneId: idSchema.nullable().optional(),
     paneTitle: z.string().min(1).max(160).nullable().optional()
   })
-  .strict();
+  .strict()
+  .superRefine((input, context) => {
+    if (input.source !== "PLAN" && input.title != null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["title"],
+        message: "Clipboard item titles are allowed only for PLAN items."
+      });
+    }
+  });
 
 export const saveAgentClipboardItemInputSchema = z
   .object({
@@ -8283,6 +8298,7 @@ export type SetupConnectionCheckReplay = z.infer<typeof setupConnectionCheckRepl
 export type SetupStarterRoomResponse = z.infer<typeof setupStarterRoomResponseSchema>;
 export type UserLinkOpenMode = z.infer<typeof userLinkOpenModeSchema>;
 export type UserLink = z.infer<typeof userLinkSchema>;
+export type UserLinkCategory = z.infer<typeof userLinkCategorySchema>;
 export type CreateUserLinkRequest = z.infer<typeof createUserLinkRequestSchema>;
 export type UpdateUserLinkRequest = z.infer<typeof updateUserLinkRequestSchema>;
 export type ListUserLinksQuery = z.infer<typeof listUserLinksQuerySchema>;

@@ -1427,6 +1427,7 @@ const userLinkSelect = `
     description,
     url,
     open_mode AS "openMode",
+    category,
     is_quick AS "isQuick",
     sort_order AS "sortOrder",
     created_at AS "createdAt",
@@ -4601,9 +4602,9 @@ export class PostgresSpaceStore implements SpaceStore {
       if (!initialized.rowCount) return;
       for (const [sortOrder, seed] of defaultUserLinks.entries()) {
         await client.query(
-          `INSERT INTO user_links (id, owner_user_id, title, description, url, open_mode, is_quick, sort_order)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-          [makeSpaceId("link"), ownerUserId, seed.title, seed.description, seed.url, seed.openMode, seed.isQuick, sortOrder]
+          `INSERT INTO user_links (id, owner_user_id, title, description, url, open_mode, category, is_quick, sort_order)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [makeSpaceId("link"), ownerUserId, seed.title, seed.description, seed.url, seed.openMode, seed.category, seed.isQuick, sortOrder]
         );
       }
     });
@@ -4641,10 +4642,10 @@ export class PostgresSpaceStore implements SpaceStore {
       if (duplicate.rows.length) throw new SpaceConflictError("A link with this URL already exists.");
       const order = await client.query<OrderRow>(`SELECT COALESCE(max(sort_order), -1) + 1 AS "nextOrder" FROM user_links WHERE owner_user_id = $1`, [ownerUserId]);
       const result = await client.query<UserLinkRow>(
-        `INSERT INTO user_links (id, owner_user_id, title, description, url, open_mode, is_quick, sort_order)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING id, title, description, url, open_mode AS "openMode", is_quick AS "isQuick", sort_order AS "sortOrder", created_at AS "createdAt", updated_at AS "updatedAt"`,
-        [makeSpaceId("link"), ownerUserId, parsed.title, parsed.description, parsed.url, parsed.openMode, parsed.isQuick, Number(order.rows[0]?.nextOrder ?? 0)]
+        `INSERT INTO user_links (id, owner_user_id, title, description, url, open_mode, category, is_quick, sort_order)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id, title, description, url, open_mode AS "openMode", category, is_quick AS "isQuick", sort_order AS "sortOrder", created_at AS "createdAt", updated_at AS "updatedAt"`,
+        [makeSpaceId("link"), ownerUserId, parsed.title, parsed.description, parsed.url, parsed.openMode, parsed.category, parsed.isQuick, Number(order.rows[0]?.nextOrder ?? 0)]
       );
       return mapUserLink(firstOrNotFound(result.rows, "Link was not stored."));
     });
@@ -4661,10 +4662,10 @@ export class PostgresSpaceStore implements SpaceStore {
       const duplicate = await client.query(`SELECT id FROM user_links WHERE owner_user_id = $1 AND url = $2 AND id <> $3 LIMIT 1`, [ownerUserId, next.url, linkId]);
       if (duplicate.rows.length) throw new SpaceConflictError("A link with this URL already exists.");
       const result = await client.query<UserLinkRow>(
-        `UPDATE user_links SET title = $3, description = $4, url = $5, open_mode = $6, is_quick = $7, updated_at = clock_timestamp()
+        `UPDATE user_links SET title = $3, description = $4, url = $5, open_mode = $6, category = $7, is_quick = $8, updated_at = clock_timestamp()
          WHERE owner_user_id = $1 AND id = $2
-         RETURNING id, title, description, url, open_mode AS "openMode", is_quick AS "isQuick", sort_order AS "sortOrder", created_at AS "createdAt", updated_at AS "updatedAt"`,
-        [ownerUserId, linkId, next.title, next.description, next.url, next.openMode, next.isQuick]
+         RETURNING id, title, description, url, open_mode AS "openMode", category, is_quick AS "isQuick", sort_order AS "sortOrder", created_at AS "createdAt", updated_at AS "updatedAt"`,
+        [ownerUserId, linkId, next.title, next.description, next.url, next.openMode, next.category, next.isQuick]
       );
       return mapUserLink(firstOrNotFound(result.rows, `Link ${linkId} was not found.`));
     });
@@ -4673,7 +4674,7 @@ export class PostgresSpaceStore implements SpaceStore {
   async deleteUserLink(ownerUserId: string, linkId: string): Promise<UserLink> {
     const result = await this.pool.query<UserLinkRow>(
       `DELETE FROM user_links WHERE owner_user_id = $1 AND id = $2
-       RETURNING id, title, description, url, open_mode AS "openMode", is_quick AS "isQuick", sort_order AS "sortOrder", created_at AS "createdAt", updated_at AS "updatedAt"`,
+       RETURNING id, title, description, url, open_mode AS "openMode", category, is_quick AS "isQuick", sort_order AS "sortOrder", created_at AS "createdAt", updated_at AS "updatedAt"`,
       [ownerUserId, linkId]
     );
     return mapUserLink(firstOrNotFound(result.rows, `Link ${linkId} was not found.`));

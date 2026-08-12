@@ -1,8 +1,8 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "32e1b9f467663d7cf0ebec47444b99f90787f627",
-  "fileCount": 489,
+  "sourceCommit": "387a17abc7992912d62155c71039404a72eacfcb",
+  "fileCount": 491,
   "transformations": 50,
   "files": [
     {
@@ -847,15 +847,15 @@
     },
     {
       "path": "apps/web/src/demo/DemoStore.ts",
-      "sourceObjectId": "f68a50209b133d0bb2bd4ee19f090c1ec12cd129",
-      "sha256": "222e7b17eddf4f7cceea69d841d9091b3443e9c71785e988de93e706836ee8db",
-      "size": 85324
+      "sourceObjectId": "0e1565a137538581ecd7c43d7da4cdd49402a8f5",
+      "sha256": "20a24e92822a4e41de0270781544698ec1ec7fc6dbf2bf060abea5c099ca7549",
+      "size": 85373
     },
     {
       "path": "apps/web/src/demo/demo-fixture.ts",
-      "sourceObjectId": "2d7aa151c679d89ff8f250153328b62743f2e746",
-      "sha256": "4520d93f87a5a614c2016dd7b39e61760e7d48666574ea271d73e65bb72fb86f",
-      "size": 49843
+      "sourceObjectId": "d2081443bc2de4b12f37ba443ce691e383bc5929",
+      "sha256": "a92df57ab1d2ea930eaf151cb061925e4c5f9af2b32c05044d5978fb37c4e37a",
+      "size": 49870
     },
     {
       "path": "apps/web/src/demo/demo-runtime.ts",
@@ -1399,9 +1399,9 @@
     },
     {
       "path": "apps/web/src/features/terminal-pane/TerminalPane.tsx",
-      "sourceObjectId": "ae76db6f9ad06a4f06de65adc2f8f4b2bbc085d3",
-      "sha256": "1175d0413c5b46de0f93edf28141d557071b43d3f650e150e4fb4ee03f90a89d",
-      "size": 229563
+      "sourceObjectId": "5f7509f8749a94bf8ebd7d43ea744a168f3b9e45",
+      "sha256": "4a37f420ab47676aad7e6d51303d57e3e9f5f85e5b294d7748714d018c44b93f",
+      "size": 232363
     },
     {
       "path": "apps/web/src/features/terminal-pane/cli-resume-intent.ts",
@@ -1519,9 +1519,9 @@
     },
     {
       "path": "apps/web/src/features/user-links/UserLinks.tsx",
-      "sourceObjectId": "88b3c744dff17f44ec271ebf5283a3a55db7472c",
-      "sha256": "d85725a46d9bd030c9aa7da2c07fa4ea9d011ee610413e0566d6402d81a9bc21",
-      "size": 10479
+      "sourceObjectId": "dc9bf33e8ba8de0cccabdf299d168622d55812ee",
+      "sha256": "5edbb9e98afc669f1c509e4704de40315204597ddac297362489a477f6efaac1",
+      "size": 11518
     },
     {
       "path": "apps/web/src/features/vibe-music/VibeMusicPlayer.tsx",
@@ -1645,9 +1645,9 @@
     },
     {
       "path": "apps/web/src/styles.css",
-      "sourceObjectId": "ca0025500b2ef95a3ca93c13935e560074d166f2",
-      "sha256": "cfe3c228e01696fec10d119acd1d83d446a1465ee73164b46080b1a84bf3d71d",
-      "size": 303457
+      "sourceObjectId": "bdce7633a28b86188625fe1eab33cf03d0c55507",
+      "sha256": "2e7f328a78301b4977bfc8909270ba13dd023560b42247e4e08c1617f9b5575a",
+      "size": 303789
     },
     {
       "path": "apps/web/src/styles.d.ts",
@@ -1909,9 +1909,9 @@
     },
     {
       "path": "package.json",
-      "sourceObjectId": "e92ad1fded197d21a6ca871db82cc50176fe6852",
-      "sha256": "5d65355e46ddd1ff741b62e8a3053af60dd5788b5627bb80cbe0b92086f5563a",
-      "size": 6003
+      "sourceObjectId": "1839dfcbcf0b84f6ca485ed65f16e9dfbfbf748d",
+      "sha256": "702c4726b76d406946370e41ea6cfe3d5b9403bb8f8b6d5bb26dcc8f54efb562",
+      "size": 6040
     },
     {
       "path": "packages/browser-host/package.json",
@@ -2005,9 +2005,9 @@
     },
     {
       "path": "packages/cli-host/src/node-pty-spawn.ts",
-      "sourceObjectId": "3ea5c56e2ba314a1d9de381e3a920492bda794fe",
-      "sha256": "ee0681cf1da0d33eec65062cad406ec0984484475c32494b152efb2b915e3286",
-      "size": 283
+      "sourceObjectId": "47f18bfadd5b4ce8afd1da7c166362e8fcc94640",
+      "sha256": "9040fe7bd0fc4fd6554f071fdf918b3d3600de59607c123fa5546b3c99fd96f6",
+      "size": 726
     },
     {
       "path": "packages/cli-host/src/server.ts",
@@ -2101,9 +2101,9 @@
     },
     {
       "path": "packages/contracts/src/schemas.ts",
-      "sourceObjectId": "dcfb8e060672fa32e827036d1c733fe3c57ef55f",
-      "sha256": "7e81432acbeb92578c35f48f9092386e52bef1d7b0f9bbdfb5dd24c857e50d48",
-      "size": 329622
+      "sourceObjectId": "884b63f66d7a02603f68b64562a57d53205c982f",
+      "sha256": "69bc594ed84064e61b5ea6a6f94947679261827101e6c039c41a43e31b3393d1",
+      "size": 330315
     },
     {
       "path": "packages/contracts/src/streaming.ts",
@@ -2610,6 +2610,18 @@
       "size": 2767
     },
     {
+      "path": "packages/db/migrations/0081_user_link_category.sql",
+      "sourceObjectId": "b53c406215539b7491399072cef076d82e73ecd9",
+      "sha256": "bc96291e8df35e53b11558d146dc7378719af4241c3722f54c7468683a010186",
+      "size": 127
+    },
+    {
+      "path": "packages/db/migrations/0082_source_control_spaceapp_repository.sql",
+      "sourceObjectId": "08669b72a610514db6f341a562aaf3344dc1b54f",
+      "sha256": "86d040bd45df21d5ca741bad5fbea5a0552bbe700984506bd7a8e62987aca3b1",
+      "size": 502
+    },
+    {
       "path": "packages/db/package.json",
       "sourceObjectId": "5457473c123ce55ec7d270b7ae3420c79c6d3e8a",
       "sha256": "78dff84c01f8f6a016a770f4881e18a23b1ce38ed18b59b7d38e2d07883bc2a2",
@@ -2653,9 +2665,9 @@
     },
     {
       "path": "packages/db/src/space-store.ts",
-      "sourceObjectId": "c097c0293cd9ad9d27e780d09f1de44103e0e3bf",
-      "sha256": "25f78d04ebf512130552dcd02f25cf8f22c54a3518a45362d349c47efbfbfc7e",
-      "size": 522888
+      "sourceObjectId": "efad6a154ca8eb461a049b60311c2cc486e94d6e",
+      "sha256": "d037b02b6510a9a6f1235861df1bd342ceeb09d603d91c0994980849032c8502",
+      "size": 523022
     },
     {
       "path": "packages/db/src/streaming-bot-repository.ts",
