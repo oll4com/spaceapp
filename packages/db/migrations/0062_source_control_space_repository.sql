@@ -7,7 +7,12 @@ ALTER TABLE source_control_connections
 UPDATE source_control_connections
    SET repository_name = 'space'
  WHERE provider = 'gitea'
-   AND repository_name = 'spaceapp-rooms';
+   AND repository_name IN ('spaceapp-rooms', 'spaceapp');
+
+UPDATE source_control_connections
+   SET repository_name = 'space'
+ WHERE provider = 'github'
+   AND repository_name = 'spaceapp';
 
 ALTER TABLE source_control_connections
   ADD CONSTRAINT source_control_connections_repository_name_check
