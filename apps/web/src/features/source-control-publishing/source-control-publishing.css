@@ -1,5 +1,5 @@
 .source-control-publishing-card {
-  gap: 0.65rem;
+  gap: 0;
 }
 
 .source-control-publishing-title {
@@ -10,29 +10,29 @@
 .source-control-provider {
   min-width: 0;
   display: grid;
-  gap: 0.5rem;
 }
 
 .source-control-provider {
-  border: 1px solid var(--room-border, #303437);
-  border-radius: 6px;
-  background: var(--room-terminal-bg, #101112);
-  padding: 0.55rem;
+  gap: 0.45rem;
+  border: 0;
+  border-top: 1px solid var(--room-border, #303437);
+  border-radius: 0;
+  background: transparent;
+  padding: 0.55rem 0;
 }
 
-.source-control-provider-heading,
-.source-control-actions {
+.source-control-provider-heading {
   min-width: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.45rem;
+  gap: 0.5rem;
 }
 
 .source-control-provider-heading > span:first-child {
   min-width: 0;
   display: grid;
-  gap: 0.15rem;
+  gap: 0.12rem;
 }
 
 .source-control-provider-heading strong,
@@ -77,14 +77,16 @@
 }
 
 .source-control-account,
-.source-control-feedback {
+.source-control-feedback,
+.source-control-disconnect-confirmation p {
   margin: 0;
   overflow-wrap: anywhere;
 }
 
 .source-control-provider form {
+  min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 2.2rem;
   align-items: end;
   gap: 0.4rem;
 }
@@ -101,13 +103,17 @@
   font: inherit;
 }
 
-.source-control-provider button,
-.source-control-actions button {
+.source-control-provider form > button {
+  width: 2.2rem;
   min-height: 2.2rem;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
 }
 
-.source-control-actions {
-  justify-content: flex-end;
+.source-control-provider form > button svg {
+  width: 0.95rem;
+  height: 0.95rem;
 }
 
 .source-control-feedback {
@@ -126,13 +132,24 @@
   color: #f0abb4;
 }
 
-@media (max-width: 34rem) {
-  .source-control-provider form {
-    grid-template-columns: 1fr;
-  }
+.source-control-disconnect-confirmation {
+  display: grid;
+  gap: 0.45rem;
+  border: 1px solid #714047;
+  border-radius: 6px;
+  background: color-mix(in srgb, #714047 14%, transparent);
+  padding: 0.5rem;
+  color: #f0abb4;
+  font-size: 0.7rem;
+}
 
-  .source-control-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
+.source-control-disconnect-confirmation > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.source-control-disconnect-confirmation .is-danger {
+  border-color: #714047;
+  color: #f0abb4;
 }

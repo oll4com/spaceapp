@@ -38,6 +38,12 @@ import {
   type TerminalOutputPressure,
   type TerminalOutputWriteMode
 } from "./terminal-output-coordinator.js";
+import {
+  HIDDEN_WARM_SOCKET_PARK_MS,
+  resolveTerminalControlHeartbeatIntervalMs,
+  shouldParkHiddenWarmSocket,
+  shouldRefreshModelSettingsFromOutput
+} from "./hidden-warm-socket.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime, terminalGateway, type PlatformGateway } from "../../runtime/SpaceRuntime.js";
 import { DEFAULT_CLI_IMAGE_PREVIEW_LIMIT, normalizeCliImagePreviewLimit } from "../../cli-upload-settings.js";
 import { isCliRuntimeTerminalLaunchable } from "../../cli-runtime-presentation.js";
@@ -46,8 +52,10 @@ import { emitAppDiagnosticsPerformance } from "../../app-diagnostics/app-diagnos
 import { reportCliClientEventBounded } from "../../cli-client-event-reporter.js";
 import { CodexModelPicker } from "../codex-model-picker/CodexModelPicker.js";
 import { useAutoDismiss, DEFAULT_NOTICE_DISMISS_MS } from "../../use-auto-dismiss.js";
+import { publishPaneRunLifecycle } from "../../pane-run-lifecycle-events.js";
 import {
   SPACE_CLIPBOARD_ITEM_MIME,
+  SPACE_CLIPBOARD_ITEM_TITLE_MIME,
   captureClipboardEventText,
   captureClipboardText,
   writeClipboardText
@@ -60,8 +68,27 @@ import {
   readPaneContextDragPayload,
   type PaneContextDragPayload
 } from "../pane-drag/pane-drag.js";
+import { takeCliResumeIntent } from "./cli-resume-intent.js";
+import { useVoiceInput } from "../voice-input/VoiceInputProvider.js";
+import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
+import type { VoiceInsertMode } from "../../voice-settings.js";
 
 export { CodexModelPicker, isNonMutatingTerminalProtocolResponse };
+
+export function buildTerminalVoiceSubmit(
+  transcript: string,
+  draft: string,
+  insertMode: VoiceInsertMode
+): { data: string; enter: "\r"; replace: boolean } | null {
+  const normalized = transcript
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (!normalized) return null;
+  if (insertMode === "replace") return { data: `\u0015${normalized}`, enter: "\r", replace: true };
+  const separator = draft && !/\s$/.test(draft) ? " " : "";
+  return { data: `${separator}${normalized}`, enter: "\r", replace: false };
+}
 
 interface TerminalPaneProps {
   pane: Pane;
@@ -201,10 +228,14 @@ export interface TerminalSessionMetadata {
 }
 
 const DEFAULT_CLI_RUNTIME_ID = "cli:codex";
+const ROOT_CLI_RUNTIME_ID = "cli:root";
 const CLAUDE_CLI_RUNTIME_ID = "cli:claude";
 const OPENCODE_CLI_RUNTIME_ID = "cli:opencode";
 const isCliModelSettingsRuntime = (runtimeId: string | null | undefined): boolean =>
   runtimeId === DEFAULT_CLI_RUNTIME_ID || runtimeId === OPENCODE_CLI_RUNTIME_ID;
+const isRunCapableCliSession = (
+  session: Pick<PaneCliSessionResponse["session"], "purpose" | "runtimeId"> | null | undefined
+): boolean => Boolean(session?.purpose === "NORMAL" && session.runtimeId !== ROOT_CLI_RUNTIME_ID);
 type NativePlanRuntimeId = "cli:gemini" | "cli:qwen";
 const TERMINAL_PANE_ACTION_EVENT = "space:terminal-pane-action";
 const CLI_DEBUG_MODE_STORAGE_KEY = "space.cliDebugMode";
@@ -285,6 +316,7 @@ type TerminalPaneActionDetail =
   | { paneId: string; action: "upload" | "reconnect" | "copy" | "focus" | "cancel_login" }
   | { paneId: string; action: "attach_clip_image"; file: File }
   | { paneId: string; action: "insert_text"; text: string }
+  | { paneId: string; action: "keyboard_input"; text: string }
   | { paneId: string; action: "insert_clipboard_text"; text: string }
   | { paneId: string; action: "start_task_item"; objective: string }
   | { paneId: string; action: "ensure_plan_mode" }
@@ -714,7 +746,11 @@ function isTerminalPaneAction(detail: unknown): detail is TerminalPaneActionDeta
   if (maybeDetail.action === "attach_clip_image") {
     return maybeDetail.file instanceof File && SUPPORTED_CLIPBOARD_IMAGE_TYPES.has(maybeDetail.file.type.toLowerCase());
   }
-  if (maybeDetail.action === "insert_text" || maybeDetail.action === "insert_clipboard_text") {
+  if (
+    maybeDetail.action === "insert_text" ||
+    maybeDetail.action === "insert_clipboard_text" ||
+    maybeDetail.action === "keyboard_input"
+  ) {
     return typeof maybeDetail.text === "string";
   }
   if (maybeDetail.action === "start_task_item") {
@@ -1243,6 +1279,8 @@ export function TerminalPane({
   revealGeneration = 0,
   onRevealReady
 }: TerminalPaneProps) {
+  const voiceInput = useVoiceInput();
+  const voiceOwnerId = `cli:${pane.id}`;
   const [registry, setRegistry] = useState<AgentRuntimeRegistry | null>(null);
   const [selectedRuntimeId, setSelectedRuntimeId] = useState(pane.terminalRuntimeId ?? DEFAULT_CLI_RUNTIME_ID);
   const [sessionResponse, setSessionResponse] = useState<PaneCliSessionResponse | null>(null);
@@ -1260,12 +1298,15 @@ export function TerminalPane({
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [terminalStatus, setTerminalStatus] = useState<TerminalConnectionStatus>("idle");
+  const terminalStatusRef = useRef<TerminalConnectionStatus>("idle");
+  terminalStatusRef.current = terminalStatus;
   const [terminalControlState, setTerminalControlState] = useState<PaneCliTerminalControlState>("AVAILABLE");
   const [terminalReplayReady, setTerminalReplayReady] = useState(false);
   const [terminalPrefillReady, setTerminalPrefillReady] = useState(!prefillInitialReplay);
   const [connectionAlert, setConnectionAlert] = useState<TerminalConnectionAlert | null>(null);
   const [terminalPromptDraft, setTerminalPromptDraft] = useState("");
   const [activeCliTurn, setActiveCliTurn] = useState<ActiveCliTurn | null>(null);
+  const openCodeObservedRunningMarkerRef = useRef<string | null>(null);
   const [modelSettings, setModelSettings] = useState<PaneCliModelSettings | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const xtermHostRef = useRef<HTMLDivElement | null>(null);
@@ -1297,6 +1338,8 @@ export function TerminalPane({
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectCoordinatorRef = useRef(createTerminalReconnectCoordinator());
   const reconnectInProgressRef = useRef(false);
+  const intentionalSocketParkRef = useRef(false);
+  const hiddenWarmSocketParkTimerRef = useRef<number | null>(null);
   const modelSettingsRefreshTimerRef = useRef<number | null>(null);
   const modelSettingsOutputRefreshArmRef = useRef<ModelSettingsOutputRefreshArm | null>(null);
   const modelSettingsOutputRefreshTokenRef = useRef(0);
@@ -1368,6 +1411,11 @@ export function TerminalPane({
   const isCodexCliSession = sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId === DEFAULT_CLI_RUNTIME_ID;
   const isOpenCodeCliSession = sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId === OPENCODE_CLI_RUNTIME_ID;
   const isCliModelSettingsSession = isCodexCliSession || isOpenCodeCliSession;
+  const isNormalAttachedCli = Boolean(
+    sessionResponse?.session.purpose === "NORMAL" &&
+      sessionResponse.session.isActive &&
+      sessionResponse.websocket
+  );
   const isTurnRunning = Boolean(activeCliTurn || modelSettings?.isTurnActive);
   const turnControlState = isTurnRunning
     ? "running"
@@ -1378,6 +1426,32 @@ export function TerminalPane({
       ? "ready"
       : "idle";
   const canSendTurn = turnControlState === "ready";
+  const voiceOwned = voiceInput.ownerId === voiceOwnerId;
+  const voiceAttachmentEligible =
+    isNormalAttachedCli &&
+    isVisible &&
+    !pane.isMinimized &&
+    !observerOnly &&
+    terminalStatus === "attached" &&
+    terminalControlState === "CONTROLLER" &&
+    !isTurnRunning &&
+    !hideFloatingControls;
+  const voiceDisabled =
+    !voiceAttachmentEligible ||
+    !voiceInput.settings.enabled ||
+    !voiceInput.serverSettings?.enabled ||
+    voiceInput.settingsLoading ||
+    Boolean(voiceInput.ownerId && !voiceOwned) ||
+    (voiceOwned && (voiceInput.status === "connecting" || voiceInput.status === "transcribing"));
+  const voiceStatusText = !voiceOwned
+    ? null
+    : voiceInput.status === "connecting"
+      ? "Connecting microphone"
+      : voiceInput.status === "recording"
+        ? voiceInput.preview || "Listening"
+        : voiceInput.status === "transcribing"
+          ? voiceInput.preview || "Transcribing"
+          : voiceInput.error;
   const showCliDebugMode = cliDebugModeEnabled ?? readStoredCliDebugMode();
   const imagePreviewLimit = normalizeCliImagePreviewLimit(maxImagePreviews);
   const showClipboardDebugPanel = Boolean(
@@ -1443,7 +1517,10 @@ export function TerminalPane({
     clearTerminalControlHeartbeat();
     const control = terminalControlRef.current;
     if (control.protocolVersion !== 2 || control.state !== "CONTROLLER" || !control.leaseId) return;
-    const intervalMs = control.heartbeatIntervalMs;
+    const intervalMs = resolveTerminalControlHeartbeatIntervalMs(control.heartbeatIntervalMs, {
+      isVisible: isVisibleRef.current,
+      isController: true
+    });
     terminalControlHeartbeatRef.current = window.setInterval(() => {
       const current = terminalControlRef.current;
       if (
@@ -1723,6 +1800,15 @@ export function TerminalPane({
   }
 
   function armModelSettingsOutputRefresh(data: string, socket: WebSocket, sessionId: string, terminal: XtermTerminal | null) {
+    if (
+      !shouldRefreshModelSettingsFromOutput({
+        isVisible: isVisibleRef.current,
+        isMinimized: paneMinimizedRef.current,
+        documentHidden: typeof document !== "undefined" && document.visibilityState === "hidden"
+      })
+    ) {
+      return;
+    }
     if (!terminal || !shouldRefreshCliModelSettings("input", data)) return;
     if (modelSettingsRefreshTimerRef.current !== null) {
       window.clearTimeout(modelSettingsRefreshTimerRef.current);
@@ -1808,7 +1894,7 @@ export function TerminalPane({
     const session = sessionResponse?.session;
     if (!session) {
       setActiveCliTurn(null);
-    } else if (session.purpose === "NORMAL" && session.runtimeId === DEFAULT_CLI_RUNTIME_ID && session.isActive) {
+    } else if (session.purpose === "NORMAL" && isCliModelSettingsRuntime(session.runtimeId) && session.isActive) {
       setActiveCliTurn(readStoredActiveCliTurn(pane.id, session.sessionId));
     } else {
       clearStoredActiveCliTurn(pane.id);
@@ -1899,6 +1985,12 @@ export function TerminalPane({
           schedulePoll();
           return;
         }
+        publishPaneRunLifecycle({
+          roomId: pane.roomId,
+          paneId: pane.id,
+          runKey: activeTurnMarker,
+          status: activity.status === "COMPLETED" ? "COMPLETED" : "FAILED"
+        });
         setActiveCliTurn((current) => (current?.marker === activeTurnMarker ? null : current));
         clearStoredActiveCliTurn(pane.id);
       } catch {
@@ -1911,7 +2003,56 @@ export function TerminalPane({
       disposed = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [activeTurnMarker, isCodexCliSession, pane.id, sessionResponse?.session.isActive, sessionResponse?.session.sessionId]);
+  }, [activeTurnMarker, isCodexCliSession, pane.id, pane.roomId, sessionResponse?.session.isActive, sessionResponse?.session.sessionId]);
+
+  useEffect(() => {
+    if (!activeTurnMarker || !isOpenCodeCliSession || !sessionResponse?.session.isActive) return;
+    let disposed = false;
+    let timer: number | null = null;
+    const discoveryDeadlineMs = Date.now() + CLI_TURN_ACTIVITY_DISCOVERY_GRACE_MS;
+    const schedulePoll = (delayMs = CLI_TURN_ACTIVITY_POLL_MS) => {
+      timer = window.setTimeout(() => void poll(), delayMs);
+    };
+    const finish = (status: "COMPLETED" | "FAILED") => {
+      publishPaneRunLifecycle({
+        roomId: pane.roomId,
+        paneId: pane.id,
+        runKey: activeTurnMarker,
+        status
+      });
+      if (openCodeObservedRunningMarkerRef.current === activeTurnMarker) {
+        openCodeObservedRunningMarkerRef.current = null;
+      }
+      setActiveCliTurn((current) => (current?.marker === activeTurnMarker ? null : current));
+      clearStoredActiveCliTurn(pane.id);
+    };
+    const poll = async () => {
+      await refreshModelSettings(sessionResponse.session.sessionId);
+      if (disposed) return;
+      if (modelSettingsRef.current?.isTurnActive) {
+        openCodeObservedRunningMarkerRef.current = activeTurnMarker;
+        const nextTurn = { marker: activeTurnMarker, status: "RUNNING" as const };
+        setActiveCliTurn((current) => current?.marker === activeTurnMarker ? nextTurn : current);
+        storeActiveCliTurn(pane.id, sessionResponse.session.sessionId, nextTurn);
+        schedulePoll();
+        return;
+      }
+      if (openCodeObservedRunningMarkerRef.current === activeTurnMarker) {
+        finish("COMPLETED");
+        return;
+      }
+      if (Date.now() < discoveryDeadlineMs) {
+        schedulePoll(250);
+        return;
+      }
+      finish("FAILED");
+    };
+    void poll();
+    return () => {
+      disposed = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [activeTurnMarker, isOpenCodeCliSession, pane.id, pane.roomId, sessionResponse?.session.isActive, sessionResponse?.session.sessionId]);
 
   useEffect(() => {
     isVisibleRef.current = isVisible;
@@ -1934,6 +2075,34 @@ export function TerminalPane({
       document.removeEventListener("visibilitychange", reconcilePageControl);
     };
     // Refs keep visibility, session, and socket authority current without rebinding global listeners.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.id]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+    const WATCHDOG_INTERVAL_MS = 15_000;
+    const checkSocketHealth = () => {
+      if (reconnectInProgressRef.current) return;
+      if (reconnectTimerRef.current !== null) return;
+      if (intentionalSocketParkRef.current) return;
+      const status = terminalStatusRef.current;
+      if (status !== "attached" && status !== "connecting" && status !== "reconnecting") return;
+      const session = sessionResponseRef.current;
+      if (!session?.websocket || !isRecoverableCliSession(session.session)) return;
+      const socket = socketRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        triggerTerminalSocketRecovery("watchdog");
+      }
+    };
+    const intervalId = window.setInterval(checkSocketHealth, WATCHDOG_INTERVAL_MS);
+    window.addEventListener("focus", checkSocketHealth);
+    document.addEventListener("visibilitychange", checkSocketHealth);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", checkSocketHealth);
+      document.removeEventListener("visibilitychange", checkSocketHealth);
+    };
+    // Refs keep session and socket authority current; triggerTerminalSocketRecovery only touches refs and stable setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id]);
 
@@ -2861,8 +3030,7 @@ export function TerminalPane({
               continue;
             }
             const turnMarker =
-              terminalSessionResponse.session.purpose === "NORMAL" &&
-              terminalSessionResponse.session.runtimeId === DEFAULT_CLI_RUNTIME_ID &&
+              isRunCapableCliSession(terminalSessionResponse.session) &&
               isTerminalSubmitInput(segment.data)
                 ? createCliTurnMarker()
                 : undefined;
@@ -3324,6 +3492,28 @@ export function TerminalPane({
       };
       const reconnectAfterDisconnect = (event: Event) => {
         clearTerminalControlHeartbeat();
+        if (intentionalSocketParkRef.current) {
+          clearReconnectTimer();
+          reconnectAttemptRef.current = 0;
+          reconnectCoordinatorRef.current.invalidateSocketGeneration(socketGeneration);
+          if (readySocketRef.current?.socket === socket) readySocketRef.current = null;
+          if (socketRef.current === socket) socketRef.current = null;
+          setTerminalStatus("attached");
+          setConnectionAlert(null);
+          resetTerminalControl();
+          reconnectInProgressRef.current = false;
+          if (xtermHostRef.current) {
+            xtermHostRef.current.dataset.terminalSocketParked = "true";
+          }
+          recordLifecycleDebugEvent({
+            type: "terminal_socket_parked",
+            scope: "TerminalPane",
+            detail: `generation=${socketGeneration} reason=hidden-warm-idle`,
+            paneId: pane.id,
+            paneMode: pane.mode
+          });
+          return;
+        }
         if (finalSocketState || !shouldReconnectTerminalSocket(event)) {
           clearReconnectTimer();
           reconnectAttemptRef.current = 0;
@@ -3355,7 +3545,20 @@ export function TerminalPane({
           disposed ||
           protocolRejected ||
           !reconnectCoordinatorRef.current.markDisconnected(socketGeneration)
-        ) return;
+        ) {
+          if (
+            !finalSocketState &&
+            socketRef.current === socket &&
+            isRecoverableCliSession(sessionResponse?.session)
+          ) {
+            if (readySocketRef.current?.socket === socket) readySocketRef.current = null;
+            setTerminalStatus("reconnecting");
+            setConnectionAlert(null);
+            reconnectInProgressRef.current = true;
+            scheduleReconnect(socketGeneration, "SOCKET_CLOSE");
+          }
+          return;
+        }
         if (readySocketRef.current?.socket === socket) readySocketRef.current = null;
         const disconnectReason = event.type === "error" ? "SOCKET_ERROR" : "SOCKET_CLOSE";
         const closeCode =
@@ -3612,8 +3815,65 @@ export function TerminalPane({
     await requestCliSession({}, options);
   }
 
+  function triggerTerminalSocketRecovery(source: string): void {
+    if (reconnectInProgressRef.current) return;
+    if (reconnectTimerRef.current !== null) return;
+    const session = sessionResponseRef.current;
+    if (!session?.websocket || !isRecoverableCliSession(session.session)) return;
+    reconnectInProgressRef.current = true;
+    setTerminalStatus("reconnecting");
+    setConnectionAlert(null);
+    const generation = reconnectCoordinatorRef.current.beginSocketGeneration();
+    recordLifecycleDebugEvent({
+      type: "terminal_reconnect_watchdog",
+      scope: "TerminalPane",
+      detail: `source=${source} generation=${generation}`,
+      paneId: pane.id,
+      paneMode: pane.mode
+    });
+    void startOrReconnect({ automaticReconnect: true, expectedSocketGeneration: generation });
+  }
+
   async function autoAttachRunningSession() {
     try {
+      const pendingResumeIntent = takeCliResumeIntent(pane.id);
+      if (pendingResumeIntent !== null) {
+        recordLifecycleDebugEvent({
+          type: "terminal_auto_attach_deferred_by_resume_intent",
+          scope: "TerminalPane",
+          detail: `pending resume intent; taskId=${pendingResumeIntent.taskId ?? "none"} threadId=${pendingResumeIntent.threadId ?? "none"}`,
+          paneId: pane.id,
+          paneMode: pane.mode
+        });
+        setPending(true);
+        try {
+          const resumeInput = pendingResumeIntent.taskId
+            ? { taskId: pendingResumeIntent.taskId }
+            : pendingResumeIntent.threadId
+              ? { threadId: pendingResumeIntent.threadId }
+              : null;
+          if (!resumeInput) {
+            throw new Error("CLI resume intent has no task or thread reference.");
+          }
+          const resumed = await api.resumeCliSession(pane.id, resumeInput);
+          setSelectedRuntimeId(resumed.session.runtimeId);
+          setSessionResponse({
+            session: resumed.session,
+            runtime: resumed.runtime,
+            transcript: resumed.transcript,
+            websocket: resumed.websocket
+          });
+          setTerminalStatus("idle");
+        } catch (err) {
+          setTerminalStatus("closed");
+          setError(err instanceof Error ? err.message : "CLI resume failed");
+        } finally {
+          setPending(false);
+        }
+        reportTerminalBootstrapped();
+        settleTerminalPrefill();
+        return;
+      }
       const activeSession = await api.activeCliSession(pane.id, { includeTranscript: false });
       if (activeSession && isRecoverableCliSession(activeSession.session) && activeSession.session.paneId === pane.id) {
         restoreActiveSession(activeSession);
@@ -3797,6 +4057,84 @@ export function TerminalPane({
   }, [isVisible, pane.id, pane.isMinimized]);
 
   useEffect(() => {
+    if (!voiceAttachmentEligible || !voiceInput.settings.enabled || !voiceInput.serverSettings?.enabled) {
+      voiceInput.cancel(voiceOwnerId);
+    }
+  }, [voiceAttachmentEligible, voiceInput.cancel, voiceInput.serverSettings?.enabled, voiceInput.settings.enabled, voiceOwnerId]);
+
+  useEffect(() => () => voiceInput.cancel(voiceOwnerId), [voiceInput.cancel, voiceOwnerId]);
+
+  useEffect(() => {
+    if (hiddenWarmSocketParkTimerRef.current !== null) {
+      window.clearTimeout(hiddenWarmSocketParkTimerRef.current);
+      hiddenWarmSocketParkTimerRef.current = null;
+    }
+
+    const unparkHiddenWarmSocket = () => {
+      if (!intentionalSocketParkRef.current) return;
+      intentionalSocketParkRef.current = false;
+      if (xtermHostRef.current) delete xtermHostRef.current.dataset.terminalSocketParked;
+      void api.activeCliSession(pane.id, { includeTranscript: false })
+        .then((activeSession) => {
+          if (!activeSession || !isRecoverableCliSession(activeSession.session) || !activeSession.websocket) {
+            return;
+          }
+          // Fresh ticket re-opens the socket effect while the room layer stays warm.
+          setSessionResponse(activeSession);
+          setTerminalStatus("connecting");
+        })
+        .catch(() => {
+          // Best-effort reattach; user can still use explicit reconnect.
+        });
+    };
+
+    if (isVisible && intentionalSocketParkRef.current) {
+      unparkHiddenWarmSocket();
+      return;
+    }
+
+    const socket = socketRef.current;
+    const shouldPark = shouldParkHiddenWarmSocket({
+      prefillEnabled: prefillInitialReplay,
+      prefillReady: terminalPrefillReady,
+      isVisible,
+      isMinimized: pane.isMinimized,
+      documentHidden: typeof document !== "undefined" && document.visibilityState === "hidden",
+      hasOpenSocket: Boolean(socket && socket.readyState === WebSocket.OPEN),
+      alreadyParked: intentionalSocketParkRef.current
+    });
+    if (!shouldPark) return;
+
+    hiddenWarmSocketParkTimerRef.current = window.setTimeout(() => {
+      hiddenWarmSocketParkTimerRef.current = null;
+      const liveSocket = socketRef.current;
+      if (
+        !shouldParkHiddenWarmSocket({
+          prefillEnabled: prefillInitialReplayRef.current,
+          prefillReady: terminalPrefillReady,
+          isVisible: isVisibleRef.current,
+          isMinimized: paneMinimizedRef.current,
+          documentHidden: typeof document !== "undefined" && document.visibilityState === "hidden",
+          hasOpenSocket: Boolean(liveSocket && liveSocket.readyState === WebSocket.OPEN),
+          alreadyParked: intentionalSocketParkRef.current
+        })
+      ) {
+        return;
+      }
+      intentionalSocketParkRef.current = true;
+      releaseTerminalControl();
+      liveSocket?.close();
+    }, HIDDEN_WARM_SOCKET_PARK_MS);
+
+    return () => {
+      if (hiddenWarmSocketParkTimerRef.current !== null) {
+        window.clearTimeout(hiddenWarmSocketParkTimerRef.current);
+        hiddenWarmSocketParkTimerRef.current = null;
+      }
+    };
+  }, [isVisible, pane.id, pane.isMinimized, prefillInitialReplay, terminalPrefillReady]);
+
+  useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined" || !sessionResponse?.websocket) return;
     const repairTerminalAfterBrowserResume = () => {
       lastTerminalOutputRefitAtRef.current = 0;
@@ -3911,7 +4249,12 @@ export function TerminalPane({
       readySocketRef.current?.socket !== socket ||
       readySocketRef.current.sessionId !== sessionId
     ) {
-      setError("Attach a running CLI before pasting into it.");
+      if (session && isRecoverableCliSession(session)) {
+        setNotice("CLI connection was lost. Reconnecting\u2026");
+        triggerTerminalSocketRecovery("user-input");
+      } else {
+        setError("Attach a running CLI before pasting into it.");
+      }
       updateClipboardDebug("bad", "send failed", `${source}: CLI WebSocket is not open; inputLength=${terminalData.length}.`);
       return false;
     }
@@ -3967,9 +4310,17 @@ export function TerminalPane({
       }
     }
     if (options.turnMarker) {
-      const nextTurn = { marker: options.turnMarker, status: "PENDING" as const };
-      setActiveCliTurn(nextTurn);
-      storeActiveCliTurn(pane.id, sessionId, nextTurn);
+      if (session?.purpose === "NORMAL" && isCliModelSettingsRuntime(session.runtimeId)) {
+        const nextTurn = { marker: options.turnMarker, status: "PENDING" as const };
+        setActiveCliTurn(nextTurn);
+        storeActiveCliTurn(pane.id, sessionId, nextTurn);
+      }
+      publishPaneRunLifecycle({
+        roomId: pane.roomId,
+        paneId: pane.id,
+        runKey: options.turnMarker,
+        status: "STARTED"
+      });
     }
     if (!preserveNotice) setNotice(null);
     if (shouldRefocusTerminalAfterInput(terminalData)) focusTerminal();
@@ -4001,6 +4352,41 @@ export function TerminalPane({
       managedPromptAttachmentsRef.current = { videoCount: 0, fileCount: 0, pending: [] };
     }
     return sent;
+  }
+
+  function submitVoiceTranscript(transcript: string): boolean {
+    const session = sessionResponseRef.current?.session;
+    const voiceSubmit = buildTerminalVoiceSubmit(
+      transcript,
+      terminalPromptDraftRef.current.text,
+      voiceInput.settings.insertMode
+    );
+    if (!voiceSubmit || session?.purpose !== "NORMAL" || !session.isActive) return false;
+    const options = isRunCapableCliSession(session)
+      ? { turnMarker: createCliTurnMarker() }
+      : {};
+    if (voiceSubmit.replace) {
+      managedPromptAttachmentsRef.current = { videoCount: 0, fileCount: 0, pending: [] };
+      if (!sendTerminalInput(voiceSubmit.data, "voice transcript replace", "visible", true)) return false;
+    } else if (!sendTerminalInput(voiceSubmit.data, "voice transcript append", "visible", true)) {
+      return false;
+    }
+    return sendTerminalSubmit(voiceSubmit.enter, "voice transcript enter", options);
+  }
+
+  function toggleTerminalVoiceCapture() {
+    if (voiceOwned && voiceInput.status === "recording") {
+      voiceInput.stop(voiceOwnerId);
+      return;
+    }
+    void voiceInput.start({
+      id: voiceOwnerId,
+      onTranscriptComplete: (transcript) => {
+        if (!submitVoiceTranscript(transcript)) {
+          throw new Error("Voice transcript could not be sent to this CLI pane.");
+        }
+      }
+    });
   }
 
   function insertManagedPromptAttachments(
@@ -4052,8 +4438,20 @@ export function TerminalPane({
 
   function handleTurnControlClick() {
     if (isTurnRunning) {
+      if (isOpenCodeCliSession) {
+        void abortOpenCodeTurn();
+        return;
+      }
       const sent = sendTerminalInput("\u001b", "floating turn pause", "visible", true, { trackDraft: false });
       if (sent) {
+        if (activeTurnMarker) {
+          publishPaneRunLifecycle({
+            roomId: pane.roomId,
+            paneId: pane.id,
+            runKey: activeTurnMarker,
+            status: "FAILED"
+          });
+        }
         clearStoredActiveCliTurn(pane.id);
         setActiveCliTurn(null);
         setModelSettings((current) => current ? { ...current, isTurnActive: false } : current);
@@ -4062,6 +4460,25 @@ export function TerminalPane({
     }
     if (!canSendTurn) return;
     sendTerminalSubmit("\r", "floating turn submit", { turnMarker: createCliTurnMarker() });
+  }
+
+  async function abortOpenCodeTurn() {
+    try {
+      const result = await api.abortCliTurn(pane.id);
+      if (activeTurnMarker) {
+        publishPaneRunLifecycle({
+          roomId: pane.roomId,
+          paneId: pane.id,
+          runKey: activeTurnMarker,
+          status: "FAILED"
+        });
+      }
+      clearStoredActiveCliTurn(pane.id);
+      setActiveCliTurn(null);
+      setModelSettings((current) => current ? { ...current, isTurnActive: result.isTurnActive } : current);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "OpenCode turn abort failed.");
+    }
   }
 
   async function handleModelSwitch(
@@ -4650,8 +5067,12 @@ export function TerminalPane({
       return;
     }
     const clipboardItemId = event.dataTransfer.getData(SPACE_CLIPBOARD_ITEM_MIME);
+    const clipboardTitle = event.dataTransfer.getData(SPACE_CLIPBOARD_ITEM_TITLE_MIME);
     const text = event.dataTransfer.getData("text/plain");
     if (clipboardItemId && text) {
+      if (clipboardTitle) {
+        sendTerminalInput(`# ${clipboardTitle}\n\n`, "clipboard history drop: plan title");
+      }
       void insertClipboardText(text, "clipboard history drop");
     }
     const taskItemId = event.dataTransfer.getData(SPACE_TASK_ITEM_MIME);
@@ -4663,7 +5084,10 @@ export function TerminalPane({
 
   async function startDroppedTask(objective: string) {
     setNotice(null);
-    const sent = sendTerminalSubmit(`${objective}\r`, "task dock drop");
+    const droppedTaskSession = sessionResponseRef.current?.session;
+    const sent = sendTerminalSubmit(`${objective}\r`, "task dock drop", {
+      ...(isRunCapableCliSession(droppedTaskSession) ? { turnMarker: createCliTurnMarker() } : {})
+    });
     updateClipboardDebug(
       sent ? "good" : "bad",
       "task dock drop",
@@ -4781,6 +5205,7 @@ export function TerminalPane({
         event.detail.action !== "reconnect" &&
         event.detail.action !== "focus" &&
         event.detail.action !== "insert_text" &&
+        event.detail.action !== "keyboard_input" &&
         event.detail.action !== "insert_clipboard_text" &&
         event.detail.action !== "start_task_item"
       ) return;
@@ -4908,6 +5333,7 @@ export function TerminalPane({
         setError(null);
         setNotice(null);
         autoAttachAttemptRef.current = null;
+        takeCliResumeIntent(pane.id);
         setSessionResponse(event.detail.session);
         setSelectedRuntimeId(event.detail.session.session.runtimeId);
         setTerminalStatus("idle");
@@ -4931,13 +5357,31 @@ export function TerminalPane({
         );
         return;
       }
+      if (event.detail.action === "keyboard_input") {
+        const actionSession = sessionResponseRef.current?.session;
+        const submitting = isTerminalSubmitInput(event.detail.text);
+        const turnMarker =
+          submitting &&
+          isRunCapableCliSession(actionSession)
+            ? createCliTurnMarker()
+            : undefined;
+        if (submitting) {
+          sendTerminalSubmit(event.detail.text, "on-screen keyboard input", { turnMarker });
+        } else {
+          sendTerminalInput(event.detail.text, "on-screen keyboard input");
+        }
+        return;
+      }
       if (event.detail.action === "insert_clipboard_text") {
         await insertClipboardText(event.detail.text, "clipboard history insert");
         return;
       }
       if (event.detail.action === "start_task_item") {
         setNotice(null);
-        const sent = sendTerminalSubmit(`${event.detail.objective}\r`, "task dock start");
+        const actionSession = sessionResponseRef.current?.session;
+        const sent = sendTerminalSubmit(`${event.detail.objective}\r`, "task dock start", {
+          ...(isRunCapableCliSession(actionSession) ? { turnMarker: createCliTurnMarker() } : {})
+        });
         updateClipboardDebug(
           sent ? "good" : "bad",
           "terminal action start_task_item",
@@ -4981,6 +5425,12 @@ export function TerminalPane({
       data-terminal-prefill-enabled={prefillInitialReplay ? "true" : "false"}
       data-terminal-prefill-ready={terminalPrefillReady ? "true" : "false"}
       data-workspace-text-size={terminalFontSize}
+      onKeyDownCapture={(event) => {
+        if (event.key !== "Escape" || !event.repeat) return;
+        if (!(event.target instanceof Element) || !event.target.closest(".terminal-xterm")) return;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
       onPasteCapture={handleTerminalPaste}
       onDrop={handleTerminalDrop}
       onDragOver={(event) => {
@@ -5182,20 +5632,33 @@ export function TerminalPane({
             </div>
           )}
         </div>
-        {isCliModelSettingsSession && sessionResponse?.websocket && !hideFloatingControls ? (
-          <div className="terminal-floating-controls">
-            {modelSettings ? <CodexModelPicker settings={modelSettings} onSwitch={handleModelSwitch} /> : null}
-            <button
-              type="button"
-              className="terminal-turn-control"
-              data-state={turnControlState}
-              aria-label={isTurnRunning ? (isOpenCodeCliSession ? "Stop OpenCode" : "Stop Codex") : "Send prompt"}
-              title={isTurnRunning ? (isOpenCodeCliSession ? "Pause OpenCode" : "Pause Codex") : "Send prompt"}
-              disabled={isTurnRunning ? terminalStatus !== "attached" : !canSendTurn}
-              onClick={handleTurnControlClick}
-            >
-              {isTurnRunning ? <Square aria-hidden="true" fill="currentColor" /> : <ArrowUp aria-hidden="true" />}
-            </button>
+        {isNormalAttachedCli && !hideFloatingControls ? (
+          <div className="terminal-voice-controls-stack">
+            {voiceStatusText ? (
+              <div className={voiceInput.error ? "terminal-voice-status bad" : "terminal-voice-status"} role={voiceInput.error ? "alert" : "status"}>
+                <span>{voiceStatusText}</span>
+                {voiceInput.error ? <button type="button" aria-label="Dismiss voice input error" onClick={() => voiceInput.clearError(voiceOwnerId)}><X aria-hidden="true" /></button> : null}
+              </div>
+            ) : null}
+            <div className="terminal-floating-controls">
+              {voiceInput.settings.terminalVoiceButton ? (
+                <VoiceInputButton label={pane.title.replace(/^Terminal\b/i, "CLI")} active={voiceOwned && voiceInput.status === "recording"} disabled={voiceDisabled} onClick={toggleTerminalVoiceCapture} onPrewarm={voiceInput.prewarm} />
+              ) : null}
+              {isCliModelSettingsSession && modelSettings && voiceInput.settings.terminalModelPicker ? <CodexModelPicker settings={modelSettings} onSwitch={handleModelSwitch} /> : null}
+              {isCliModelSettingsSession && voiceInput.settings.terminalTurnControl ? (
+                <button
+                  type="button"
+                  className="terminal-turn-control"
+                  data-state={turnControlState}
+                  aria-label={isTurnRunning ? (isOpenCodeCliSession ? "Stop OpenCode" : "Stop Codex") : "Send prompt"}
+                  title={isTurnRunning ? (isOpenCodeCliSession ? "Pause OpenCode" : "Pause Codex") : "Send prompt"}
+                  disabled={isTurnRunning ? terminalStatus !== "attached" : !canSendTurn}
+                  onClick={handleTurnControlClick}
+                >
+                  {isTurnRunning ? <Square aria-hidden="true" fill="currentColor" /> : <ArrowUp aria-hidden="true" />}
+                </button>
+              ) : null}
+            </div>
           </div>
         ) : null}
       </div>

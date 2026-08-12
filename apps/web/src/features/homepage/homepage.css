@@ -70,8 +70,7 @@ a { color: inherit; }
 .homepage-waitlist-row button { min-height: 3.15rem; display: inline-flex; align-items: center; gap: 0.45rem; border: 1px solid #dfe4e1; border-radius: 0.42rem; padding: 0 1rem; background: #e8ece9; color: #101413; font-weight: 700; cursor: pointer; }
 .homepage-waitlist-row button:disabled { cursor: default; opacity: 0.7; }
 .homepage-waitlist-row button svg { width: 0.95rem; height: 0.95rem; }
-.homepage-consent { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 0.5rem; color: #8f9794; font-size: 0.7rem; line-height: 1.45; }
-.homepage-consent input { width: 1rem; height: 1rem; margin: 0.08rem 0 0; accent-color: #70c5b5; }
+.homepage-consent { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.65rem; color: #8f9794; font-size: 0.7rem; line-height: 1.45; }
 .homepage-honeypot { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
 .homepage-form-note, .homepage-form-success, .homepage-form-error { margin: 0; color: #747c79; font-size: 0.7rem; line-height: 1.5; }
 .homepage-form-success { color: #83d2a0; }

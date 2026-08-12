@@ -86,6 +86,7 @@ import {
   Plus as LucidePlus,
   Printer as LucidePrinter,
   Radio as LucideRadio,
+  Recycle as LucideRecycle,
   RefreshCw as LucideRefreshCw,
   Rocket as LucideRocket,
   RotateCcw as LucideRotateCcw,
@@ -448,6 +449,9 @@ export const {
   Youtube,
   Zap
 } = packAwareIcons;
+
+// Keep the three-arrow restart glyph triangular in every icon pack.
+export const Recycle = LucideRecycle;
 
 const ChromeBrand = forwardRef<SVGSVGElement, LucideProps>(function ChromeBrand(props, ref) {
   return (

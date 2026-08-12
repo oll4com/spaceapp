@@ -142,6 +142,10 @@ export class UnifiedCliTaskRegistry {
     };
   }
 
+  async listResumableCodexThreadIds(codexThreadIds: string[]): Promise<Set<string>> {
+    return this.store.listResumablePaneCliCodexThreadIds(codexThreadIds);
+  }
+
   async getTask(taskIdOrLegacyThreadId: string, runtimeIds?: string[]): Promise<ResolvedSpaceCliTask> {
     const legacySession =
       (await this.store.getPaneCliSession(taskIdOrLegacyThreadId)) ??

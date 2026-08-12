@@ -4,6 +4,7 @@ import type { UserLink, UserLinkOpenMode } from "@space/contracts";
 import { api } from "../../api.js";
 import { resolveExternalResource } from "../../runtime/SpaceRuntime.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 
 export const USER_LINKS_UPDATED_EVENT = "space:user-links-updated";
 const pageSize = 10;
@@ -123,7 +124,7 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
         <label><input type="radio" name="open-mode" checked={draft.openMode === "EMBEDDED"} disabled={/^http:\/\//i.test(draft.url)} onChange={() => setDraft({ ...draft, openMode: "EMBEDDED" })} /> Open in Space modal</label>
         <label><input type="radio" name="open-mode" checked={draft.openMode === "NEW_TAB"} onChange={() => setDraft({ ...draft, openMode: "NEW_TAB" })} /> Open in new tab</label>
       </fieldset>
-      <label className="link-check"><input type="checkbox" checked={draft.isQuick} onChange={(event) => setDraft({ ...draft, isQuick: event.target.checked })} /> Add to Quick Links</label>
+      <SpaceToggle className="link-check" label="Add to Quick Links" checked={draft.isQuick} onChange={(isQuick) => setDraft({ ...draft, isQuick })} />
       <button type="submit" disabled={saving}>{saving ? "Saving…" : "Save link"}</button>
     </form> : null}
     {!loading && links.length === 0 ? <p className="links-empty">No links found. Add a link or change your search.</p> : null}

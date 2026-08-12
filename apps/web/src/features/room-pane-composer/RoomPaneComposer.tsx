@@ -5,7 +5,7 @@ import {
   type CreateRoomPanesRequest,
   type Room
 } from "@space/contracts";
-import { ChevronRight, Loader2, Minus, Plus, RefreshCw, X } from "../ui-theme/app-icons.js";
+import { ChevronRight, Grid2X2, Loader2, Minus, Plus, RefreshCw, RotateCcw, X } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
@@ -163,6 +163,29 @@ export function RoomPaneComposer({
     });
   }
 
+  function fillRoomWithType(id: ComposerRuntimeId) {
+    setApplyError(null);
+    setNotice(null);
+    setCounts((current) => {
+      if (availableSlots <= 0) return current;
+      return Object.fromEntries(
+        Object.entries(current).map(([key]) => [key, key === id ? availableSlots : 0])
+      ) as PaneCounts;
+    });
+  }
+
+  function clearRuntimeCount(id: ComposerRuntimeId) {
+    setApplyError(null);
+    setNotice(null);
+    setCounts((current) => ({ ...current, [id]: 0 }));
+  }
+
+  function clearAllCounts() {
+    setApplyError(null);
+    setNotice(null);
+    setCounts(emptyCounts());
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!room || !canApply) return;
@@ -203,20 +226,34 @@ export function RoomPaneComposer({
       aria-labelledby="room-pane-composer-title"
     >
       <div className="room-pane-composer-heading">
-        <div>
+        <div className="room-pane-composer-heading-copy">
           <strong id="room-pane-composer-title">Add panes</strong>
           <small>{room ? `Pane target: ${room.name}` : "Select a room target"}</small>
         </div>
-        <button
-          type="button"
-          className="room-pane-composer-toggle"
-          aria-expanded={!collapsed}
-          aria-label={collapsed ? "Expand Add panes" : "Collapse Add panes"}
-          title={collapsed ? "Expand Add panes" : "Collapse Add panes"}
-          onClick={() => setCollapsed((current) => !current)}
-        >
-          <ChevronRight aria-hidden="true" />
-        </button>
+        <div className="room-pane-composer-heading-actions">
+          {!collapsed ? (
+            <button
+              type="button"
+              className="room-pane-clear-all"
+              aria-label="Clear all"
+              title="Clear all pane selections"
+              onClick={clearAllCounts}
+              disabled={applying || assigned === 0}
+            >
+              <RotateCcw aria-hidden="true" />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="room-pane-composer-toggle"
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? "Expand Add panes" : "Collapse Add panes"}
+            title={collapsed ? "Expand Add panes" : "Collapse Add panes"}
+            onClick={() => setCollapsed((current) => !current)}
+          >
+            <ChevronRight aria-hidden="true" />
+          </button>
+        </div>
       </div>
 
       {!collapsed ? <div className="room-pane-mix" aria-label="Pane mix">
@@ -236,24 +273,48 @@ export function RoomPaneComposer({
                 <span>{label}</span>
                 {!available ? <small id={reasonId}>{reason}</small> : null}
               </div>
-              <div className="room-pane-counter" aria-describedby={!available ? reasonId : undefined}>
-                <button
-                  type="button"
-                  aria-label={`Decrease ${label} panes`}
-                  onClick={() => adjustCount(id, -1)}
-                  disabled={applying || counts[id] === 0}
-                >
-                  <Minus aria-hidden="true" />
-                </button>
-                <output aria-label={`${label} pane count`}>{counts[id]}</output>
-                <button
-                  type="button"
-                  aria-label={`Increase ${label} panes`}
-                  onClick={() => adjustCount(id, 1)}
-                  disabled={applying || !available || assigned >= availableSlots}
-                >
-                  <Plus aria-hidden="true" />
-                </button>
+              <div className="room-pane-controls" aria-describedby={!available ? reasonId : undefined}>
+                <div className="room-pane-quick-actions">
+                  <button
+                    type="button"
+                    className="room-pane-quick-action"
+                    aria-label={`Fill all with ${label}`}
+                    title={`Fill the room with ${label} panes`}
+                    onClick={() => fillRoomWithType(id)}
+                    disabled={applying || !available || availableSlots === 0}
+                  >
+                    <Grid2X2 aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="room-pane-quick-action"
+                    aria-label={`Clear ${label} count`}
+                    title={`Reset ${label} pane count`}
+                    onClick={() => clearRuntimeCount(id)}
+                    disabled={applying || counts[id] === 0}
+                  >
+                    <RotateCcw aria-hidden="true" />
+                  </button>
+                </div>
+                <div className="room-pane-counter">
+                  <button
+                    type="button"
+                    aria-label={`Decrease ${label} panes`}
+                    onClick={() => adjustCount(id, -1)}
+                    disabled={applying || counts[id] === 0}
+                  >
+                    <Minus aria-hidden="true" />
+                  </button>
+                  <output aria-label={`${label} pane count`}>{counts[id]}</output>
+                  <button
+                    type="button"
+                    aria-label={`Increase ${label} panes`}
+                    onClick={() => adjustCount(id, 1)}
+                    disabled={applying || !available || assigned >= availableSlots}
+                  >
+                    <Plus aria-hidden="true" />
+                  </button>
+                </div>
               </div>
             </div>
           );

@@ -65,6 +65,7 @@ import {
   resolveDirectOperatorParityCwd
 } from "./cli-parity.js";
 import { findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
+import { findCliRunLifecycleAdapter } from "./cli-run-lifecycle-adapters.js";
 import { opencodeNativeSessionIdPattern } from "./opencode-native-session.js";
 import {
   activeCliSessionObserverRuntime,
@@ -1036,17 +1037,26 @@ export class CliTerminalManager {
   private nextSocketConnectionOrder = 0;
 
   constructor(private readonly options: CliTerminalManagerOptions) {
-    this.hostClient = options.hostClient ?? new CliHostClient({ socketPath: options.config.cliHostSocketPath });
+    this.hostClient = options.hostClient ?? new CliHostClient({
+      socketPath: options.config.cliHostSocketPath,
+      onTransportClosed: () => this.handleHostTransportClosed(0)
+    });
     this.hostClients = options.hostClient
       ? [this.hostClient]
       : [
           this.hostClient,
           ...Array.from(
             { length: cliHostMainConnectionCount - 1 },
-            () => new CliHostClient({ socketPath: options.config.cliHostSocketPath })
+            (_, index) => new CliHostClient({
+              socketPath: options.config.cliHostSocketPath,
+              onTransportClosed: () => this.handleHostTransportClosed(index + 1)
+            })
           )
         ];
-    this.adminHostClient = options.adminHostClient ?? new CliHostClient({ socketPath: options.config.cliAdminHostSocketPath });
+    this.adminHostClient = options.adminHostClient ?? new CliHostClient({
+      socketPath: options.config.cliAdminHostSocketPath,
+      onTransportClosed: () => this.handleHostTransportClosed(-1)
+    });
   }
 
   private reportTelemetry(
@@ -1490,6 +1500,21 @@ export class CliTerminalManager {
     return interrupted;
   }
 
+  async detachSession(session: PaneCliSession): Promise<boolean> {
+    const managed = this.sessions.get(session.sessionId);
+    if (managed && !managed.closed) {
+      return this.terminateManagedHostSession(managed);
+    }
+    const host = this.hostForRuntime(session.runtimeId, session.sessionId);
+    const identity = await this.buildHostIdentity(session);
+    try {
+      return await this.terminateHostSession(host, identity);
+    } catch (error) {
+      if (!cliHostSessionUnavailable(error)) throw error;
+      return false;
+    }
+  }
+
   async replaceSessionForPolicyRestart(
     sessionId: string,
     runtime: AgentRuntime,
@@ -1892,6 +1917,27 @@ export class CliTerminalManager {
     await Promise.all(
       [...new Set([...this.hostClients, this.adminHostClient])].map((client) => client.close())
     );
+  }
+
+  private handleHostTransportClosed(hostIndex: number): void {
+    const managedSessions = [...this.sessions.values()];
+    for (const managed of managedSessions) {
+      if (managed.closed) continue;
+      const lane = managed.runtimeId === "cli:root" ? -1 : this.hostClients.length === 1
+        ? 0
+        : cliHostLaneIndex(managed.sessionId, this.hostClients.length);
+      if (lane !== hostIndex) continue;
+      // The host process is gone (e.g. guarded service restart). Do NOT mark
+      // the session EXITED in the store: keeping it RUNNING lets clients
+      // reattach after the host returns and recreate the process with exact
+      // resume settings. Close the browser sockets so they reconnect.
+      this.clearQwenAuthBootstrap(managed);
+      managed.closed = true;
+      if (this.sessions.get(managed.sessionId) === managed) this.sessions.delete(managed.sessionId);
+      for (const socket of managed.sockets) {
+        if (socketIsOpen(socket)) socket.close(1001, "CLI host process restarted; reconnecting");
+      }
+    }
   }
 
   private async openConnection(
@@ -2988,7 +3034,7 @@ export class CliTerminalManager {
           turnId: null,
           expiresAtMs: markerAtMs + cliTurnMarkerTtlMs
         });
-        if (isCodexDirectParityRuntime(managed.runtimeId)) {
+        if (findCliRunLifecycleAdapter(managed.runtimeId)?.tracksRunStarts) {
           await this.options.store.createCodexCliTurnMarker({
             sessionId: managed.sessionId,
             roomId: managed.roomId,

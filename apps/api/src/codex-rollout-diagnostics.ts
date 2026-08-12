@@ -7,6 +7,14 @@ const execFileAsync = promisify(execFile);
 const currentTurnTailBytes = 2 * 1024 * 1024;
 const currentTurnRolloutPathCache = new Map<string, string>();
 const currentTurnRolloutPathCacheMax = 256;
+const codexRolloutGoalStatuses = new Set([
+  "active",
+  "paused",
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete"
+]);
 
 export interface NullAgentMessageDiagnostic {
   rolloutPath: string;
@@ -282,6 +290,10 @@ export function inspectCodexCliTurnActivity(content: string, options: InspectCod
   let turnId = options.turnId ?? null;
   let contextualTurnId = turnId;
   let markerMatched = !options.inputMarker || Boolean(turnId);
+  let goalStatus: string | null = null;
+  let goalTurnId: string | null = null;
+  let terminalStatus: "COMPLETED" | "ABORTED" | null = null;
+  let terminalTurnId: string | null = turnId;
 
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -302,6 +314,11 @@ export function inspectCodexCliTurnActivity(content: string, options: InspectCod
       const candidate = stringField(payload, "turn_id");
       if (candidate) contextualTurnId = candidate;
       if (!options.inputMarker && candidate && (!turnId || candidate === turnId)) turnId = candidate;
+      if (markerMatched && goalStatus && candidate && candidate !== turnId) {
+        goalTurnId = candidate;
+        terminalStatus = null;
+        terminalTurnId = candidate;
+      }
       continue;
     }
     if (type !== "event_msg") continue;
@@ -314,22 +331,57 @@ export function inspectCodexCliTurnActivity(content: string, options: InspectCod
       markerMatched = true;
       continue;
     }
-    if (
-      markerMatched &&
-      (eventType === "task_complete" || eventType === "turn_aborted") &&
-      turnId &&
-      (!eventTurnId || eventTurnId === turnId)
-    ) {
-      return { status: eventType === "turn_aborted" ? "ABORTED" : "COMPLETED", turnId };
+    if (!markerMatched) continue;
+    if (eventType === "thread_goal_updated") {
+      const status = stringField(asRecord(payload?.goal), "status");
+      if (status && codexRolloutGoalStatuses.has(status)) {
+        if (!goalStatus && !goalTurnId) {
+          terminalStatus = null;
+          terminalTurnId = null;
+        }
+        goalStatus = status;
+      }
+      continue;
+    }
+    if (eventType === "task_started" && goalStatus) {
+      const candidate = eventTurnId ?? contextualTurnId;
+      if (candidate && candidate !== turnId) {
+        goalTurnId = candidate;
+        terminalStatus = null;
+        terminalTurnId = candidate;
+      }
+      continue;
+    }
+    if (eventType !== "task_complete" && eventType !== "turn_aborted") continue;
+    const candidate = eventTurnId ?? contextualTurnId ?? turnId;
+    if (goalStatus) {
+      if (candidate && candidate !== turnId) goalTurnId = candidate;
+      if (!goalTurnId || !candidate || candidate === goalTurnId) {
+        terminalStatus = eventType === "turn_aborted" ? "ABORTED" : "COMPLETED";
+        terminalTurnId = goalTurnId ?? candidate ?? turnId;
+      }
+      continue;
+    }
+    if (turnId && (!candidate || candidate === turnId)) {
+      terminalStatus = eventType === "turn_aborted" ? "ABORTED" : "COMPLETED";
+      terminalTurnId = turnId;
     }
   }
 
-  return markerMatched && turnId ? { status: "RUNNING", turnId } : { status: "PENDING", turnId: null };
+  const effectiveTurnId = goalTurnId ?? terminalTurnId ?? turnId;
+  if (goalStatus === "active") {
+    return effectiveTurnId ? { status: "RUNNING", turnId: effectiveTurnId } : { status: "PENDING", turnId: null };
+  }
+  if (terminalStatus) return { status: terminalStatus, turnId: effectiveTurnId };
+  return markerMatched && effectiveTurnId
+    ? { status: "RUNNING", turnId: effectiveTurnId }
+    : { status: "PENDING", turnId: null };
 }
 
 export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTurnActivity {
   let turnId: string | null = null;
   let status: CodexCliTurnActivity["status"] = "PENDING";
+  let goalStatus: string | null = null;
 
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -354,6 +406,11 @@ export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTur
     if (type !== "event_msg") continue;
     const eventType = stringField(payload, "type");
     const eventTurnId = stringField(payload, "turn_id");
+    if (eventType === "thread_goal_updated") {
+      const candidate = stringField(asRecord(payload?.goal), "status");
+      if (candidate && codexRolloutGoalStatuses.has(candidate)) goalStatus = candidate;
+      continue;
+    }
     if (eventType === "task_started" || eventType === "user_message") {
       if (eventTurnId) turnId = eventTurnId;
       if (turnId) status = "RUNNING";
@@ -367,6 +424,7 @@ export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTur
     }
   }
 
+  if (goalStatus === "active" && turnId) status = "RUNNING";
   return { status, turnId };
 }
 

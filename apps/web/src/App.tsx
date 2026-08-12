@@ -30,6 +30,7 @@ import {
   HardDrive,
   History,
   Images,
+  Keyboard,
   Link as LinkIcon,
   ListTodo,
   Loader2,
@@ -37,6 +38,7 @@ import {
   LogOut,
   Maximize2,
   MessageSquare,
+  Mic,
   Minimize2,
   Minus,
   MoreHorizontal,
@@ -51,6 +53,7 @@ import {
   Pencil,
   Plus,
   Printer,
+  Radio,
   RefreshCw,
   Rocket,
   Save,
@@ -73,6 +76,9 @@ import {
   Youtube
 } from "./features/ui-theme/app-icons.js";
 import type { LucideIcon } from "./features/ui-theme/app-icons.js";
+import { SensitiveDataMask } from "./features/sensitive-data/SensitiveDataMask.js";
+import { SpaceToggle } from "./features/ui-controls/SpaceToggle.js";
+import type { AgentPaneIdentity } from "./features/agent-pane/AgentPane.js";
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useAutoDismiss } from "./use-auto-dismiss.js";
@@ -132,12 +138,25 @@ import type {
   Turn,
   UpdateProviderInput,
   UpdateProviderSettingsInput,
-  VoiceTranscriptionSettings,
   WorkerReadiness,
   UserLink,
-  CliRuntimeSettingsResponse
+  CliRuntimeSettingsResponse,
+  AgentSessionHistoryItem
 } from "@space/contracts";
 import { SpaceApiError, api, type McpPayload, type ReadyzPayload } from "./api.js";
+import {
+  acknowledgePaneCompletion,
+  applyPaneCompletionEvents,
+  createPaneCompletionLifecycleState,
+  hydratePaneCompletionRoom,
+  hydratePaneCompletionReplay,
+  pendingPaneCompletionEventId,
+  type PaneCompletionLifecycleState
+} from "./pane-completion-lifecycle.js";
+import {
+  PANE_RUN_LIFECYCLE_EVENT,
+  type PaneRunLifecycleDetail
+} from "./pane-run-lifecycle-events.js";
 import { nextGeneratedRoomName } from "./room-naming.js";
 import {
   cliRuntimeLabel,
@@ -151,7 +170,8 @@ import {
 import {
   CLI_VPN_ROUTING_STATUS_EVENT,
   loadCliVpnRoutingStatus,
-  paneVpnRoutingPresentation
+  paneVpnRoutingPresentation,
+  publishCliVpnRoutingStatus
 } from "./cli-vpn-routing.js";
 import {
   CLI_RECOVERY_OPENED_EVENT,
@@ -186,6 +206,8 @@ import {
   type BrowserPaneAction
 } from "./features/browser-pane/events.js";
 import { ClipboardDock } from "./features/clipboard-dock/ClipboardDock.js";
+import { AppVersionMeta, DemoVersionMeta } from "./features/app-version/AppVersionMeta.js";
+import { useAppVersion } from "./features/app-version/use-app-version.js";
 import { TaskDock } from "./features/task-dock/TaskDock.js";
 import {
   AppDiagnosticsGlobalIndicators,
@@ -199,12 +221,18 @@ import {
 } from "./features/cli-launcher/CliLauncherMenu.js";
 import { CliRuntimeSettingsCard } from "./features/cli-runtime-settings/CliRuntimeSettingsCard.js";
 import { SourceControlPublishingCard } from "./features/source-control-publishing/SourceControlPublishingCard.js";
+import { SettingsActionMenu } from "./features/settings/SettingsActionMenu.js";
 import {
   SPACE_CLIPBOARD_NOTICE_EVENT,
   useSpaceClipboardCapture,
   writeClipboardText
 } from "./features/clipboard-dock/clipboard-events.js";
 import { MediaDock } from "./features/media-dock/MediaDock.js";
+import { StreamingDock } from "./features/streaming/StreamingDock.js";
+import {
+  StreamingOverlay,
+  StreamingOverlayProvider
+} from "./features/streaming/StreamingOverlay.js";
 import { reorderPanesByTarget, setPaneDragData } from "./features/pane-drag/pane-drag.js";
 import { ActivityLogDock } from "./features/activity-log/ActivityLogDock.js";
 import { AgentFilesDock } from "./features/agent-files/AgentFilesDock.js";
@@ -216,6 +244,7 @@ import { EmbeddedDashboardDialog } from "./features/embedded-dashboard/EmbeddedD
 import { LinksPanel, QuickLinksPopover } from "./features/user-links/UserLinks.js";
 import { HelpPage } from "./features/help/HelpPage.js";
 import { RoomAgentDock } from "./features/room-agent/RoomAgentDock.js";
+import { AgentSessionsDock } from "./features/agent-sessions/AgentSessionsDock.js";
 import {
   ROOM_THEME_MENU_ID,
   RoomThemeMenu,
@@ -259,12 +288,15 @@ import {
   type TerminalBootstrapBarrier,
   type TerminalSessionMetadata
 } from "./features/terminal-pane/index.js";
+import { registerCliResumeIntent } from "./features/terminal-pane/cli-resume-intent.js";
 import { VIBE_MUSIC_PANEL_ID, VibeMusicPlayer } from "./features/vibe-music/VibeMusicPlayer.js";
+import { OSK_PANEL_ID, OnScreenKeyboard, type OnScreenKeyboardInput } from "./features/osk-keyboard/OnScreenKeyboard.js";
 import {
   ToolbarMetrics,
   ToolbarMetricsSummary,
   type ToolbarMetricsHandle
 } from "./features/toolbar-metrics/ToolbarMetrics.js";
+import type { SystemAnalyticsTab } from "./features/system-analytics/SystemAnalyticsWorkspace.js";
 import {
   MAX_WORKSPACE_TEXT_SIZE,
   MIN_WORKSPACE_TEXT_SIZE,
@@ -288,10 +320,10 @@ import {
   type LifecycleDebugSnapshot
 } from "./lifecycle-debug.js";
 import {
-  readVoiceComposerSettings,
   writeVoiceComposerSettings,
   type VoiceComposerSettings
 } from "./voice-settings.js";
+import { useVoiceInput } from "./features/voice-input/VoiceInputProvider.js";
 import {
   connectedPaneCount,
   selectHiddenRoomEvictionIds,
@@ -309,11 +341,16 @@ import {
   type WarmRoomHydrationSample
 } from "./warm-room-capacity-controller.js";
 import {
+  classifyRoomWarmPresentation,
   hydrateWarmRoomsWithinWindow,
+  isRoomInEvictionCooldown,
   readRoomMru,
   recordRoomMru,
   runWithConcurrency,
-  selectWarmHydrationRoomIds
+  selectAutomaticWarmFillRoomIds,
+  selectWarmHydrationRoomIds,
+  WARM_ROOM_EVICTION_COOLDOWN_MS,
+  WARM_ROOM_STARTUP_HYDRATION_CONCURRENCY
 } from "./warm-room-startup.js";
 import { reuseVersionedItems, useStableCallback } from "./render-performance.js";
 import {
@@ -357,7 +394,7 @@ function PaneModeIcon({ pane }: { pane: Pick<Pane, "mode" | "terminalRuntimeId">
   return <Icon aria-hidden="true" />;
 }
 
-type SideSurface = "rooms" | "room-agent" | "media" | "agent-files" | "clipboard" | "tasks" | "links" | "settings" | "health" | "logs" | "agent-tools" | "cli";
+type SideSurface = "rooms" | "room-agent" | "media" | "streaming" | "agent-files" | "clipboard" | "tasks" | "links" | "settings" | "health" | "logs" | "agent-tools" | "cli" | "agent-sessions";
 type EventStreamStatus = "idle" | "connecting" | "connected" | "reconnecting" | "unavailable";
 type ActiveRoomEventStreamStatus = "idle" | "connecting" | "connected" | "disconnected" | "unavailable";
 type RoomRefreshCategory = "panes" | "turns" | "swarm" | "events";
@@ -433,10 +470,11 @@ function emitWarmRoomCapacityDiagnostic(
 export function shellVisiblePaneIds(
   panes: ReadonlyArray<Pick<Pane, "id" | "isMaximized" | "isMinimized">>,
   selectedPaneId: string | null,
-  shellMode: ShellMode
+  shellMode: ShellMode,
+  fullscreenLayout = false
 ): string[] {
   const visiblePanes = panes.filter((pane) => !pane.isMinimized);
-  if (shellMode === "mobile") {
+  if (shellMode === "mobile" || fullscreenLayout) {
     const selectedPane = visiblePanes.find((pane) => pane.id === selectedPaneId) ?? visiblePanes[0];
     return selectedPane ? [selectedPane.id] : [];
   }
@@ -526,6 +564,10 @@ type PaneColumnAnchorMap = Map<string, number>;
 const LazyMemoryWorkspace = lazy(() =>
   import("./features/memory-workspace/MemoryWorkspace.js").then((module) => ({ default: module.MemoryWorkspace }))
 );
+const LazySystemAnalyticsWorkspace = lazy(() =>
+  import("./features/system-analytics/SystemAnalyticsWorkspace.js")
+    .then((module) => ({ default: module.SystemAnalyticsWorkspace }))
+);
 const LazyAgentPane = lazy(() =>
   import("./features/agent-pane/AgentPane.js").then((module) => ({ default: module.AgentPane }))
 );
@@ -550,8 +592,10 @@ const TERMINAL_FONT_SIZE_STORAGE_KEY = "space.terminal.fontSize";
 const SESSION_DEBUG_IDS_STORAGE_KEY = "space.showSessionDebugIds";
 const CLI_DEBUG_MODE_STORAGE_KEY = "space.cliDebugMode";
 const CLI_FLOATS_HIDDEN_STORAGE_KEY = "space.cliFloatsHidden";
+const SPACE_SENSITIVE_DATA_MASKED_STORAGE_KEY = "space.sensitiveDataMasked";
 const SIDE_SURFACE_HIDDEN_STORAGE_KEY = "space.roomsRailHidden";
 const ROOM_FOCUS_MODE_STORAGE_KEY = "space.roomFocusMode";
+const ROOM_TOOLBAR_HIDDEN_STORAGE_KEY = "space.roomToolbar.hidden.v1";
 const ROOM_THEME_STORAGE_KEY = "space.room.theme";
 const ROOM_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY = "space.roomToolbar.hiddenActionIds.v3";
 const ROOM_TOOLBAR_ACTION_ORDER_STORAGE_KEY = "space.roomToolbar.actionOrder.v3";
@@ -583,6 +627,7 @@ type TerminalPaneAction =
   | { action: "upload" | "reconnect" | "copy" | "focus" | "cancel_login" }
   | { action: "attach_clip_image"; file: File }
   | { action: "insert_text"; text: string }
+  | { action: "keyboard_input"; text: string }
   | { action: "insert_clipboard_text"; text: string }
   | { action: "start_task_item"; objective: string }
   | { action: "ensure_plan_mode" }
@@ -673,6 +718,7 @@ const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: string; su
   rooms: { icon: PanelRight, label: "rooms", surfaceLabel: "Rooms" },
   "room-agent": { icon: Bot, label: "room agent", surfaceLabel: "Room Agent" },
   media: { icon: Images, label: "media dock", surfaceLabel: "Media dock" },
+  streaming: { icon: Radio, label: "streaming dock", surfaceLabel: "Streaming dock" },
   "agent-files": { icon: FolderOpen, label: "Agent Files", surfaceLabel: "Agent Files" },
   clipboard: { icon: Clipboard, label: "clipboard", surfaceLabel: "Clipboard" },
   tasks: { icon: ListTodo, label: "tasks", surfaceLabel: "Tasks" },
@@ -681,7 +727,8 @@ const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: string; su
   health: { icon: Activity, label: "health dock", surfaceLabel: "Health dock" },
   logs: { icon: History, label: "activity log", surfaceLabel: "Activity log" },
   "agent-tools": { icon: Wrench, label: "agent tools", surfaceLabel: "Agent Tools" },
-  cli: { icon: Terminal, label: "cli dock", surfaceLabel: "CLI dock" }
+  cli: { icon: Terminal, label: "cli dock", surfaceLabel: "CLI dock" },
+  "agent-sessions": { icon: History, label: "agent session history", surfaceLabel: "Agent Session History" }
 };
 
 type BlueprintStatus = "LIVE" | "GATED" | "NEXT";
@@ -722,12 +769,10 @@ export function roomToolbarNeedsSecondRow(input: {
   titleWidth: number;
   lbWidth: number;
   actionsWidth: number;
-  fixedWidth: number;
   columnGap: number;
 }) {
   if (input.availableWidth <= 0) return false;
-  const requiredWidth =
-    input.titleWidth + input.lbWidth + input.actionsWidth + input.fixedWidth + input.columnGap * 3;
+  const requiredWidth = input.titleWidth + input.lbWidth + input.actionsWidth + input.columnGap * 2;
   return requiredWidth > input.availableWidth + 1;
 }
 
@@ -787,6 +832,7 @@ function resolvePaneGridColumnCount(input: {
   forceTabletTwoColumns?: boolean;
 }) {
   if (input.containerWidth > 0 && input.containerWidth <= 768) return 1;
+  if (input.paneLayoutColumns === 0) return 1;
   const automaticColumns = Math.min(4, detectPaneGridColumnCount(input));
   const requestedColumns = input.paneLayoutColumns ?? automaticColumns;
   const responsiveColumns =
@@ -1341,6 +1387,7 @@ function DesktopActionManager({
   onRunCommand,
   onShowAction,
   plainActions = false,
+  preferPaneInside = false,
   primaryActionIds,
   popupId,
   triggerRef
@@ -1356,6 +1403,7 @@ function DesktopActionManager({
   onRunCommand?: (command: PaneOverflowCommand) => void;
   onShowAction: (actionId: string) => void;
   plainActions?: boolean;
+  preferPaneInside?: boolean;
   primaryActionIds?: string[];
   popupId: string;
   triggerRef: RefObject<HTMLButtonElement | null>;
@@ -1364,7 +1412,21 @@ function DesktopActionManager({
   const primarySet = primaryActionIds ? new Set(primaryActionIds) : null;
   const menuRef = useRef<HTMLDivElement>(null);
   const closeIntentRef = useRef<PopupCloseIntent>("auto");
-  const [position, setPosition] = useState({ left: 8, top: 8, ready: false });
+  const [position, setPosition] = useState<{
+    left: number;
+    top: number;
+    ready: boolean;
+    width: number | null;
+    maxHeight: number | null;
+    placement: "pane-inside-above" | "pane-inside-below" | "trigger-above" | "trigger-below";
+  }>({
+    left: 8,
+    top: 8,
+    ready: false,
+    width: null,
+    maxHeight: null,
+    placement: "trigger-below"
+  });
 
   useLayoutEffect(() => {
     function updatePosition() {
@@ -1377,12 +1439,47 @@ function DesktopActionManager({
       const menuRect = menu.getBoundingClientRect();
       const width = menuRect.width || Math.min(320, window.innerWidth - margin * 2);
       const height = menuRect.height || Math.min(448, window.innerHeight * 0.7);
+      const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+      const maxTop = Math.max(margin, window.innerHeight - height - margin);
+      const pane = preferPaneInside ? trigger.closest<HTMLElement>(".pane-card") : null;
+      if (pane) {
+        const paneRect = pane.getBoundingClientRect();
+        const paneLeft = Math.max(margin, paneRect.left);
+        const paneRight = Math.min(window.innerWidth - margin, paneRect.right);
+        const paneTop = Math.max(margin, paneRect.top);
+        const paneBottom = Math.min(window.innerHeight - margin, paneRect.bottom);
+        const insideWidth = Math.max(1, Math.min(width, paneRight - paneLeft - margin * 2));
+        const belowTop = triggerRect.bottom + gap;
+        const belowHeight = Math.max(0, paneBottom - margin - belowTop);
+        const aboveHeight = Math.max(0, triggerRect.top - gap - (paneTop + margin));
+        const placeBelow = belowHeight >= height || belowHeight >= aboveHeight;
+        const availableHeight = placeBelow ? belowHeight : aboveHeight;
+        const insideHeight = Math.max(1, Math.min(height, availableHeight));
+        const insideTop = placeBelow
+          ? belowTop
+          : Math.max(paneTop + margin, triggerRect.top - gap - insideHeight);
+        setPosition({
+          left: Math.max(
+            paneLeft + margin,
+            Math.min(triggerRect.right - insideWidth, paneRight - margin - insideWidth)
+          ),
+          top: insideTop,
+          ready: true,
+          width: insideWidth,
+          maxHeight: insideHeight,
+          placement: placeBelow ? "pane-inside-below" : "pane-inside-above"
+        });
+        return;
+      }
       const fitsBelow = triggerRect.bottom + gap + height <= window.innerHeight - margin;
       const desiredTop = fitsBelow ? triggerRect.bottom + gap : triggerRect.top - gap - height;
       setPosition({
-        left: Math.max(margin, Math.min(triggerRect.right - width, window.innerWidth - width - margin)),
-        top: Math.max(margin, Math.min(desiredTop, window.innerHeight - height - margin)),
-        ready: true
+        left: Math.max(margin, Math.min(triggerRect.right - width, maxLeft)),
+        top: Math.max(margin, Math.min(desiredTop, maxTop)),
+        ready: true,
+        width: null,
+        maxHeight: null,
+        placement: fitsBelow ? "trigger-below" : "trigger-above"
       });
     }
 
@@ -1393,7 +1490,7 @@ function DesktopActionManager({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [triggerRef]);
+  }, [preferPaneInside, triggerRef]);
 
   useEffect(() => {
     const menu = menuRef.current;
@@ -1401,8 +1498,12 @@ function DesktopActionManager({
   }, [triggerRef]);
 
   useEffect(() => {
-    const menu = menuRef.current;
-    if (position.ready && menu) enabledButtons(menu)[0]?.focus();
+    if (!position.ready) return;
+    const frame = window.requestAnimationFrame(() => {
+      const menu = menuRef.current;
+      if (menu) enabledButtons(menu)[0]?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [position.ready]);
 
   function dismiss() {
@@ -1451,9 +1552,12 @@ function DesktopActionManager({
       className="icon-overflow-menu icon-action-manager"
       role="menu"
       aria-label={label}
+      data-placement={position.placement}
       style={{
         left: `${position.left}px`,
         top: `${position.top}px`,
+        width: position.width === null ? undefined : `${position.width}px`,
+        maxHeight: position.maxHeight === null ? undefined : `${position.maxHeight}px`,
         visibility: position.ready ? "visible" : "hidden"
       }}
       onPointerDown={(event) => event.stopPropagation()}
@@ -1755,6 +1859,15 @@ export function formatTerminalSessionDebugInfo(metadata: TerminalSessionMetadata
     label: normalized.slice(0, 8),
     title: `${runtimeLabel} session ${metadata.sessionId}`
   };
+}
+
+export function formatTerminalSessionClipboardText(metadata: TerminalSessionMetadata): string | null {
+  const sessionId = metadata.sessionId?.trim();
+  if (!sessionId) return null;
+  return [
+    `CLI session ID: ${sessionId}`,
+    ...(metadata.codexThreadId ? [`Codex thread ID: ${metadata.codexThreadId}`] : [])
+  ].join("\n");
 }
 
 function dispatchAgentPaneSettingsUpdated(paneId: string | null, session?: AgentPaneSession) {
@@ -2151,6 +2264,7 @@ function buildLaunchBlockers(props: BlueprintProgressProps): LaunchBlocker[] {
 export function App() {
   const runtime = getSpaceRuntime();
   const runtimeKind = getSpaceRuntimeKind();
+  const { ensureServerSettings } = useVoiceInput();
   migrateLegacyCliToolbarPreferences(runtime.platform.localStorage);
   const [uiTheme] = useState<UiTheme>(() => readUiTheme(runtime.platform.localStorage));
   const [roomToolbarStorageKeys] = useState(() => {
@@ -2181,6 +2295,10 @@ export function App() {
   );
   const modernColorMode = resolveModernColorMode(modernAppearance, systemPrefersDark);
   useEffect(() => {
+    const interval = window.setInterval(() => publishCliVpnRoutingStatus(), 20_000);
+    return () => window.clearInterval(interval);
+  }, []);
+  useEffect(() => {
     const body = document.body;
     if (uiTheme !== "modern") {
       body.removeAttribute("data-ui-theme");
@@ -2199,6 +2317,18 @@ export function App() {
   }, [modernColorMode, modernIconPack, uiTheme]);
   const [auth, setAuth] = useState<AuthMe | null>(null);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  const voiceSettingsAuthUserIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const authenticatedUserId = auth?.isAuthenticated ? auth.user?.id ?? "authenticated" : null;
+    if (!authenticatedUserId) {
+      voiceSettingsAuthUserIdRef.current = null;
+      return;
+    }
+    if (voiceSettingsAuthUserIdRef.current === authenticatedUserId) return;
+    voiceSettingsAuthUserIdRef.current = authenticatedUserId;
+    void ensureServerSettings();
+  }, [auth?.isAuthenticated, auth?.user?.id, ensureServerSettings]);
   const [authBootstrapError, setAuthBootstrapError] = useState<string | null>(null);
   const [appView, setAppView] = useState<AppView>(readAppView);
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -2240,6 +2370,7 @@ export function App() {
   const anyCliEnabled = cliRuntimeSettings?.settings.some((setting) => setting.enabled) ?? true;
   const [activeSideSurface, setActiveSideSurface] = useState<SideSurface>("rooms");
   const [isRoomFocusMode, setIsRoomFocusMode] = useState(() => readStoredBoolean(ROOM_FOCUS_MODE_STORAGE_KEY));
+  const [isRoomToolbarHidden, setIsRoomToolbarHidden] = useState(() => readStoredBoolean(ROOM_TOOLBAR_HIDDEN_STORAGE_KEY));
   const [isMobilePaneFocusMode, setIsMobilePaneFocusMode] = useState(false);
   const [isDesktopSideSurfaceOpen, setIsDesktopSideSurfaceOpen] = useState(() => !readStoredBoolean(SIDE_SURFACE_HIDDEN_STORAGE_KEY));
   const [isCompactSideSurfaceOpen, setIsCompactSideSurfaceOpen] = useState(false);
@@ -2269,6 +2400,9 @@ export function App() {
   const [showSessionDebugIds, setShowSessionDebugIds] = useState(() => readStoredBooleanDefaultTrue(SESSION_DEBUG_IDS_STORAGE_KEY));
   const [cliDebugModeEnabled, setCliDebugModeEnabled] = useState(() => readStoredBoolean(CLI_DEBUG_MODE_STORAGE_KEY));
   const [cliFloatsHidden, setCliFloatsHidden] = useState(() => readStoredBoolean(CLI_FLOATS_HIDDEN_STORAGE_KEY));
+  const [maskSensitiveData, setMaskSensitiveData] = useState(() =>
+    readStoredBoolean(SPACE_SENSITIVE_DATA_MASKED_STORAGE_KEY)
+  );
   const [roomTheme, setRoomTheme] = useState<RoomTheme>(readStoredRoomTheme);
   useEffect(() => {
     const body = document.body;
@@ -2294,6 +2428,7 @@ export function App() {
   const [isCliLauncherOpen, setIsCliLauncherOpen] = useState(false);
   const [cliPaneCreationPending, setCliPaneCreationPending] = useState(false);
   const [isVibeMusicOpen, setIsVibeMusicOpen] = useState(false);
+  const [isOskKeyboardOpen, setIsOskKeyboardOpen] = useState(false);
   const [isServerActionsMenuOpen, setIsServerActionsMenuOpen] = useState(false);
   const [isSetupConnectionsOpen, setIsSetupConnectionsOpen] = useState(false);
   const [isServerRestartDialogOpen, setIsServerRestartDialogOpen] = useState(false);
@@ -2313,6 +2448,7 @@ export function App() {
   const [restoreAllPending, setRestoreAllPending] = useState(false);
   const [isRoomRenameOpen, setIsRoomRenameOpen] = useState(false);
   const [isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen] = useState(false);
+  const [systemAnalyticsTab, setSystemAnalyticsTab] = useState<SystemAnalyticsTab | null>(null);
   const [activeUserLink, setActiveUserLink] = useState<UserLink | null>(null);
   const [isQuickLinksOpen, setIsQuickLinksOpen] = useState(false);
   const [roomNameDraft, setRoomNameDraft] = useState("");
@@ -2339,7 +2475,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [roomCreationPending, setRoomCreationPending] = useState(false);
   const [deletePendingRoomId, setDeletePendingRoomId] = useState<string | null>(null);
-  const [acknowledgedCompletionEventIds, setAcknowledgedCompletionEventIds] = useState<Record<string, string>>({});
+  const [paneCompletionLifecycle, setPaneCompletionLifecycle] = useState<PaneCompletionLifecycleState>(
+    createPaneCompletionLifecycleState
+  );
   const [paneGridWidth, setPaneGridWidth] = useState(() => readViewportWidth());
   const [pendingBrowserHandoffPaneId, setPendingBrowserHandoffPaneId] = useState<string | null>(null);
   const [activeRoomEventStreamStatus, setActiveRoomEventStreamStatus] = useState<ActiveRoomEventStreamStatus>("idle");
@@ -2355,6 +2493,7 @@ export function App() {
   const panesRef = useRef(panes);
   const turnsRef = useRef(turns);
   const roomEventsRef = useRef(roomEvents);
+  const paneCompletionLifecycleRef = useRef(paneCompletionLifecycle);
   const swarmStateRef = useRef(swarmState);
   const roomRuntimesRef = useRef(roomRuntimes);
   const activeRuntimeRoomIdRef = useRef(selectedRoomId);
@@ -2374,6 +2513,7 @@ export function App() {
   const roomTerminalBarrierWaitersRef = useRef(new Map<string, Set<() => void>>());
   const roomTerminalPrefillBarrierWaitersRef = useRef(new Map<string, Set<() => void>>());
   const roomRuntimeHydrationIdsRef = useRef(new Set<string>());
+  const paneCompletionInitialReplayRoomIdsRef = useRef(new Set<string>());
   const roomPaneRequestSequenceRef = useRef(new Map<string, number>());
   const roomTurnsRequestSequenceRef = useRef(new Map<string, number>());
   const roomSwarmRequestSequenceRef = useRef(new Map<string, number>());
@@ -2394,6 +2534,7 @@ export function App() {
   const startupWarmFillRoomIdsRef = useRef(new Set<string>());
   const automaticWarmFillSuppressedByOutputPressureRef = useRef(false);
   const lastOutputPressureEvictionAtRef = useRef(0);
+  const outputPressureEvictedAtByRoomIdRef = useRef(new Map<string, number>());
   const warmRoomAdmissionSequenceRef = useRef(0);
   const roomAdmissionFlightsRef = useRef(new Map<string, Promise<void>>());
   const pendingTerminalOutputPressureRef = useRef(new Map<string, TerminalOutputPressureDetail>());
@@ -2741,7 +2882,9 @@ export function App() {
   ): boolean {
     if (!roomRuntimeEligibleForPressureEviction(roomId)) return false;
     setAutomaticWarmFillSuppression(true);
-    lastOutputPressureEvictionAtRef.current = Date.now();
+    const nowMs = Date.now();
+    lastOutputPressureEvictionAtRef.current = nowMs;
+    outputPressureEvictedAtByRoomIdRef.current.set(roomId, nowMs);
     removeRoomRuntime(roomId);
     emitAppDiagnosticsPerformance({
       category: "PERFORMANCE",
@@ -2811,8 +2954,9 @@ export function App() {
   }
 
   function visibleTerminalPaneIds(snapshot: RoomRuntimeSnapshot): string[] {
+    const fullscreenLayout = rooms.find((room) => room.id === snapshot.roomId)?.paneLayoutColumns === 0;
     const shellVisibleIds = new Set(
-      shellVisiblePaneIds(snapshot.panes, snapshot.selectedPaneId, shellMode)
+      shellVisiblePaneIds(snapshot.panes, snapshot.selectedPaneId, shellMode, fullscreenLayout)
     );
     return snapshot.panes
       .filter((pane) => pane.mode === "TERMINAL" && shellVisibleIds.has(pane.id))
@@ -3201,6 +3345,18 @@ export function App() {
     }
   }
 
+  function commitPaneCompletionLifecycle(next: PaneCompletionLifecycleState) {
+    if (next === paneCompletionLifecycleRef.current) return;
+    paneCompletionLifecycleRef.current = next;
+    setPaneCompletionLifecycle(next);
+  }
+
+  function hydratePaneCompletionEvents(roomId: string, events: readonly SpaceEvent[]) {
+    commitPaneCompletionLifecycle(
+      hydratePaneCompletionRoom(paneCompletionLifecycleRef.current, roomId, events)
+    );
+  }
+
   async function loadRoomEvents(roomId: string) {
     const activeRequest = roomEventsLoadPromisesRef.current.get(roomId);
     if (activeRequest) return activeRequest;
@@ -3213,6 +3369,7 @@ export function App() {
       const existing = roomRuntimesRef.current[roomId];
       if (!existing) return;
       const nextEvents = reuseVersionedItems(existing.events, eventPayload.data, (event) => event.createdAt);
+      hydratePaneCompletionEvents(roomId, nextEvents);
       replaceRoomRuntime({
         ...existing,
         panes: selectedRoomIdRef.current === roomId ? panesRef.current : existing.panes,
@@ -3285,7 +3442,17 @@ export function App() {
           durationMs: durationMs()
         });
       }
-      if (options.loadMetadata !== false) await loadRoomMetadata(roomId);
+      // Active/presented rooms become interactive as soon as panes (and cold terminals) are ready.
+      // Metadata (swarm/turns/events) continues in the background so cold switches stay snappy.
+      if (options.loadMetadata !== false) {
+        if (hiddenHydration) {
+          await loadRoomMetadata(roomId);
+        } else {
+          void loadRoomMetadata(roomId).catch(() => {
+            // Metadata is best-effort after interactive readiness.
+          });
+        }
+      }
       emitAppDiagnosticsPerformance({
         category: "PERFORMANCE",
         metric: "ROOM_HYDRATION",
@@ -3522,6 +3689,42 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const handlePaneRunLifecycle = (event: Event) => {
+      if (!(event instanceof CustomEvent)) return;
+      const detail = event.detail as Partial<PaneRunLifecycleDetail> | null;
+      if (
+        !detail ||
+        typeof detail.roomId !== "string" ||
+        typeof detail.paneId !== "string" ||
+        typeof detail.runKey !== "string" ||
+        typeof detail.occurredAt !== "string" ||
+        (detail.status !== "STARTED" && detail.status !== "COMPLETED" && detail.status !== "FAILED")
+      ) return;
+      const lifecycleEvent: SpaceEvent = {
+        id: `pane-run:${detail.paneId}:${detail.runKey}:${detail.status}`,
+        roomId: detail.roomId,
+        paneId: detail.paneId,
+        turnId: null,
+        workflowId: null,
+        traceId: `pane-run:${detail.runKey}`,
+        type: detail.status === "STARTED"
+          ? "TURN_STARTED"
+          : detail.status === "COMPLETED"
+            ? "TURN_COMPLETED"
+            : "TURN_FAILED",
+        message: `Pane run ${detail.status.toLowerCase()}.`,
+        payload: { clientTurnMarker: detail.runKey, sourceType: "PANE_RUNTIME" },
+        createdAt: detail.occurredAt
+      };
+      commitPaneCompletionLifecycle(
+        applyPaneCompletionEvents(paneCompletionLifecycleRef.current, [lifecycleEvent])
+      );
+    };
+    window.addEventListener(PANE_RUN_LIFECYCLE_EVENT, handlePaneRunLifecycle);
+    return () => window.removeEventListener(PANE_RUN_LIFECYCLE_EVENT, handlePaneRunLifecycle);
+  }, []);
+
+  useEffect(() => {
     let performanceObserver: PerformanceObserver | null = null;
     if (typeof PerformanceObserver === "function") {
       try {
@@ -3645,14 +3848,20 @@ export function App() {
 
   async function refreshRoomEvents(roomId: string) {
     const eventPayload = await api.events({ roomId, pageSize: 50, sortOrder: "desc" });
+    hydratePaneCompletionEvents(roomId, eventPayload.data);
     setRoomEvents([...eventPayload.data]);
   }
 
-  const appendRoomEvent = useCallback((event: SpaceEvent) => {
+  const appendRoomEvent = useCallback((event: SpaceEvent, applyCompletion = true) => {
+    if (applyCompletion) {
+      commitPaneCompletionLifecycle(applyPaneCompletionEvents(paneCompletionLifecycleRef.current, [event]));
+    }
     setRoomEvents((current) => mergeSpaceEvents(current, event));
   }, []);
 
   async function refresh() {
+    // Prefetch CLI runtime registry before terminal panes mount so multi-pane rooms share one flight.
+    api.warmCliRuntimes();
     const me = await api.me();
     const nextSetupStatus: SetupStatus =
       me.isAuthenticated && !me.isSetupRequired
@@ -3662,6 +3871,7 @@ export function App() {
     setAuth(me);
     setAuthBootstrapError(null);
     if (!me.isAuthenticated) return;
+    if (me.user?.role === "ADMIN") api.warmCliRuntimeSettings();
 
     let roomPayload = await api.rooms();
     if (me.user?.role === "ADMIN" && me.user?.automationScope !== "APP_DIAGNOSTICS") {
@@ -3707,7 +3917,9 @@ export function App() {
       });
       await hydrateWarmRoomsWithinWindow(
         hydrationRoomIds,
-        (roomId) => loadRoomRuntime(roomId, undefined, { loadMetadata: false })
+        (roomId) => loadRoomRuntime(roomId, undefined, { loadMetadata: false }),
+        undefined,
+        WARM_ROOM_STARTUP_HYDRATION_CONCURRENCY
       );
       if (!appMountedRef.current) return;
     } else {
@@ -3718,25 +3930,12 @@ export function App() {
       setSwarmState(await api.swarm());
     }
 
-    const [
-      readyPayload,
-      providerPayload,
-      providerSettingsPayload,
-      modelPayload,
-      skillPayload,
-      importPayload,
-      admin,
-      mcpPayload,
-      mcpSmokePayload,
-      memoryEmbeddingSmokePayload,
-      memoryVectorReadinessPayload,
-      codexAppServerPayload,
-      codexHandshakePayload,
-      codexTurnSmokePayload,
-      storageReadinessPayload,
-      observabilityPayload,
-      workerReadinessPayload
-    ] = await runWithConcurrency([
+    // Unlock automatic warm-fill before the admin/readiness fan-out so adjacent rooms
+    // start hydrating while smokes and provider catalogs load in the background.
+    startupWarmFillReadyRef.current = true;
+    setError((current) => (isTransientUpstreamErrorMessage(current) ? null : current));
+
+    void runWithConcurrency([
       () => api.readyz(),
       () => api.providers(),
       () => api.providerSettings(),
@@ -3754,26 +3953,49 @@ export function App() {
       () => api.storage(),
       () => api.observability(),
       () => api.worker()
-    ] as const, 4);
-    if (!appMountedRef.current) return;
-    setReadiness(readyPayload);
-    setProviders(providerPayload.data);
-    setProviderSettings(providerSettingsPayload);
-    setModels(modelPayload.data);
-    setSkills(skillPayload.data);
-    setImportCandidates(importPayload.data);
-    setStorageWarning(admin.storageWarning);
-    setMcp(mcpPayload);
-    setLatestMcpSmoke(mcpSmokePayload.data);
-    setLatestMemoryEmbeddingSmoke(memoryEmbeddingSmokePayload.data);
-    setLatestMemoryVectorReadiness(memoryVectorReadinessPayload.data);
-    setCodexAppServer(codexAppServerPayload);
-    setLatestCodexHandshake(codexHandshakePayload.data);
-    setLatestCodexTurnSmoke(codexTurnSmokePayload.data);
-    setStorageReadiness(storageReadinessPayload);
-    setObservability(observabilityPayload);
-    setWorkerReadiness(workerReadinessPayload);
-    startupWarmFillReadyRef.current = true;
+    ] as const, 4).then((
+      [
+        readyPayload,
+        providerPayload,
+        providerSettingsPayload,
+        modelPayload,
+        skillPayload,
+        importPayload,
+        admin,
+        mcpPayload,
+        mcpSmokePayload,
+        memoryEmbeddingSmokePayload,
+        memoryVectorReadinessPayload,
+        codexAppServerPayload,
+        codexHandshakePayload,
+        codexTurnSmokePayload,
+        storageReadinessPayload,
+        observabilityPayload,
+        workerReadinessPayload
+      ]
+    ) => {
+      if (!appMountedRef.current) return;
+      setReadiness(readyPayload);
+      setProviders(providerPayload.data);
+      setProviderSettings(providerSettingsPayload);
+      setModels(modelPayload.data);
+      setSkills(skillPayload.data);
+      setImportCandidates(importPayload.data);
+      setStorageWarning(admin.storageWarning);
+      setMcp(mcpPayload);
+      setLatestMcpSmoke(mcpSmokePayload.data);
+      setLatestMemoryEmbeddingSmoke(memoryEmbeddingSmokePayload.data);
+      setLatestMemoryVectorReadiness(memoryVectorReadinessPayload.data);
+      setCodexAppServer(codexAppServerPayload);
+      setLatestCodexHandshake(codexHandshakePayload.data);
+      setLatestCodexTurnSmoke(codexTurnSmokePayload.data);
+      setStorageReadiness(storageReadinessPayload);
+      setObservability(observabilityPayload);
+      setWorkerReadiness(workerReadinessPayload);
+    }).catch(() => {
+      // Admin/readiness cards are non-blocking after the interactive shell is ready.
+    });
+
     if (me.user?.role === "ADMIN") {
       void api.setupOverview()
         .then((overview) => {
@@ -3783,7 +4005,6 @@ export function App() {
           // Onboarding discovery is best-effort and must not delay or block room hydration.
         });
     }
-    setError((current) => (isTransientUpstreamErrorMessage(current) ? null : current));
   }
 
   useEffect(() => {
@@ -3807,26 +4028,41 @@ export function App() {
     const targetCount =
       warmRoomCapacity.effectiveSafeRoomCapacity +
       (warmRoomCapacity.overcommitInUse ? 1 : 0);
-    if (warmRoomIds.length >= targetCount) return;
+    const hydratingCount = roomRuntimeHydrationIdsRef.current.size;
+    const admittedAndPending = warmRoomIds.length + hydratingCount;
+    if (admittedAndPending >= targetCount) return;
+    const slots = Math.max(0, targetCount - admittedAndPending);
+    if (slots === 0) return;
+    const nowMs = Date.now();
+    // Drop expired cool-downs so the map cannot grow without bound.
+    for (const [roomId, evictedAt] of outputPressureEvictedAtByRoomIdRef.current) {
+      if (nowMs - evictedAt >= WARM_ROOM_EVICTION_COOLDOWN_MS) {
+        outputPressureEvictedAtByRoomIdRef.current.delete(roomId);
+      }
+    }
     const loadedRoomIds = new Set(Object.keys(roomRuntimesRef.current));
-    const selectedIndex = rooms.findIndex((room) => room.id === selectedRoomId);
     const preferredRoomIds = readRoomMru(
       runtime.platform.sessionStorage,
       new Set(rooms.map((room) => room.id))
     );
-    const nextRoomId = [
-      ...preferredRoomIds,
-      selectedIndex >= 0 ? rooms[selectedIndex + 1]?.id : undefined,
-      selectedIndex > 0 ? rooms[selectedIndex - 1]?.id : undefined,
-      ...rooms.map((room) => room.id)
-    ].find((roomId) => (
-      roomId &&
-      startupWarmFillRoomIdsRef.current.has(roomId) &&
-      roomId !== selectedRoomId &&
-      !loadedRoomIds.has(roomId)
-    ));
-    if (!nextRoomId) return;
-    void loadRoomRuntimeRef.current(nextRoomId, undefined, { loadMetadata: false });
+    const blockedRoomIds = new Set(
+      [...outputPressureEvictedAtByRoomIdRef.current.keys()].filter((roomId) =>
+        isRoomInEvictionCooldown(roomId, outputPressureEvictedAtByRoomIdRef.current, nowMs)
+      )
+    );
+    for (const roomId of roomRuntimeHydrationIdsRef.current) blockedRoomIds.add(roomId);
+    const nextRoomIds = selectAutomaticWarmFillRoomIds({
+      roomIds: rooms.map((room) => room.id),
+      activeRoomId: selectedRoomId,
+      preferredRoomIds,
+      loadedRoomIds,
+      eligibleRoomIds: startupWarmFillRoomIdsRef.current,
+      blockedRoomIds,
+      slots: Math.min(slots, WARM_ROOM_STARTUP_HYDRATION_CONCURRENCY)
+    });
+    for (const nextRoomId of nextRoomIds) {
+      void loadRoomRuntimeRef.current(nextRoomId, undefined, { loadMetadata: false });
+    }
   }, [
     automaticWarmFillSuppressed,
     readiness,
@@ -4155,18 +4391,61 @@ export function App() {
 
     cliPaneCreationPendingRef.current = true;
     setCliPaneCreationPending(true);
+    const optimisticId = `pane:optimistic-${Date.now().toString(36)}`;
+    const optimisticTitle =
+      runtime.id === "cli:codex"
+        ? paneTitleForMode("TERMINAL", panesRef.current.length + 1)
+        : runtime.displayName;
+    const nowIso = new Date().toISOString();
+    const optimisticPane: Pane = {
+      id: optimisticId,
+      roomId,
+      title: optimisticTitle,
+      titleSource: "auto",
+      mode: "TERMINAL",
+      status: "IDLE",
+      providerId: null,
+      modelId: null,
+      terminalRuntimeId: runtime.id === "cli:codex" ? null : runtime.id,
+      reasoningEffort: "medium",
+      cwd: runtime.id === "cli:codex" ? null : "/etc",
+      order: panesRef.current.length,
+      columnSpan: 1,
+      isMaximized: false,
+      isMinimized: false,
+      isClosed: false,
+      split: { parentId: null, direction: null, size: null },
+      createdAt: nowIso,
+      updatedAt: nowIso
+    };
+    // Show a skeleton card immediately; replace it with the server pane on success.
+    if (selectedRoomIdRef.current === roomId) {
+      setPanes((current) => [...current, optimisticPane]);
+      setSelectedPaneId(optimisticId);
+    }
     try {
       const created = runtime.id === "cli:codex"
-        ? await api.createPane(roomId, paneTitleForMode("TERMINAL", panesRef.current.length + 1), "TERMINAL")
+        ? await api.createPane(roomId, optimisticTitle, "TERMINAL")
         : await api.createPane(roomId, runtime.displayName, "TERMINAL", {
             cwd: "/etc",
             terminalRuntimeId: runtime.id
           });
       if (selectedRoomIdRef.current === roomId) {
-        setPanes((current) => current.some((pane) => pane.id === created.id) ? current : [...current, created]);
+        setPanes((current) => {
+          const withoutOptimistic = current.filter((pane) => pane.id !== optimisticId);
+          return withoutOptimistic.some((pane) => pane.id === created.id)
+            ? withoutOptimistic
+            : [...withoutOptimistic, created];
+        });
         setSelectedPaneId(created.id);
         void refreshRoomEvents(roomId).catch(() => setError("CLI pane created, but room activity could not be refreshed."));
       }
+    } catch (error) {
+      if (selectedRoomIdRef.current === roomId) {
+        setPanes((current) => current.filter((pane) => pane.id !== optimisticId));
+        setSelectedPaneId((current) => (current === optimisticId ? panesRef.current.find((pane) => pane.id !== optimisticId)?.id ?? null : current));
+      }
+      throw error;
     } finally {
       cliPaneCreationPendingRef.current = false;
       setCliPaneCreationPending(false);
@@ -4333,35 +4612,44 @@ export function App() {
 
   async function deleteRoom(roomId: string) {
     if (deletePendingRoomId) return;
+    const activeCli = roomCliActivityCounts[roomId] ?? 0;
+    if (activeCli > 0) {
+      const confirmed = window.confirm(
+        `Το δωμάτιο έχει ${activeCli} ενεργά CLI ${activeCli === 1 ? "session" : "sessions"} που θα τερματιστούν. Να διαγραφεί το δωμάτιο;`
+      );
+      if (!confirmed) return;
+    }
+    const deletedRoom = rooms.find((room) => room.id === roomId);
     const nextRooms = rooms.filter((room) => room.id !== roomId);
     const nextSelectedRoomId = selectedRoomId === roomId ? nextRooms[0]?.id ?? null : selectedRoomId;
     setDeletePendingRoomId(roomId);
     setError(null);
+    setRooms(nextRooms);
+    setRoomCliActivityCounts((current) => {
+      if (!(roomId in current)) return current;
+      const next = { ...current };
+      delete next[roomId];
+      return next;
+    });
+    if (selectedRoomId === roomId) {
+      activateRoom(nextSelectedRoomId);
+      removeRoomRuntime(roomId);
+      if (nextSelectedRoomId) {
+        await loadRoomRuntime(nextSelectedRoomId);
+      } else {
+        setPanes([]);
+        setSelectedPaneId(null);
+        setTurns([]);
+        setRoomEvents([]);
+        setSwarmState(await api.swarm());
+      }
+    } else {
+      removeRoomRuntime(roomId);
+    }
     try {
       await api.deleteRoom(roomId);
-      setRooms(nextRooms);
-      setRoomCliActivityCounts((current) => {
-        if (!(roomId in current)) return current;
-        const next = { ...current };
-        delete next[roomId];
-        return next;
-      });
-      if (selectedRoomId === roomId) {
-        activateRoom(nextSelectedRoomId);
-        removeRoomRuntime(roomId);
-        if (nextSelectedRoomId) {
-          await loadRoomRuntime(nextSelectedRoomId);
-        } else {
-          setPanes([]);
-          setSelectedPaneId(null);
-          setTurns([]);
-          setRoomEvents([]);
-          setSwarmState(await api.swarm());
-        }
-      } else {
-        removeRoomRuntime(roomId);
-      }
     } catch (err) {
+      if (deletedRoom) setRooms(sortRoomsByOrder([...nextRooms, deletedRoom]));
       setError(err instanceof Error ? err.message : "Room delete failed");
     } finally {
       setDeletePendingRoomId(null);
@@ -4611,6 +4899,19 @@ export function App() {
     }
   }
 
+  function routeOnScreenKeyboardInput(input: OnScreenKeyboardInput): boolean {
+    if (!activePane) return false;
+    if (activePane.mode === "TERMINAL") {
+      dispatchTerminalPaneAction(activePane.id, { action: "keyboard_input", text: input.terminalData });
+      return true;
+    }
+    if (activePane.mode === "CHAT" && input.text !== null) {
+      dispatchAgentPaneAction(activePane.id, { action: "insert_text", text: input.text });
+      return true;
+    }
+    return false;
+  }
+
   useEffect(() => {
     if (
       !auth?.isAuthenticated ||
@@ -4650,6 +4951,8 @@ export function App() {
     });
     const source = eventGateway.open(api.eventStreamUrl({ roomId: activeRoom.id, replayLimit: 50 }), { withCredentials: true });
     let replaying = true;
+    let baselineReplay = !paneCompletionInitialReplayRoomIdsRef.current.has(activeRoom.id);
+    let replayCompletionEvents: SpaceEvent[] = [];
     const replayRefreshCategories = new Set<RoomRefreshCategory>();
     const markConnected = () => {
       setActiveRoomEventStreamStatus("connected");
@@ -4686,7 +4989,8 @@ export function App() {
     const handleSpaceEvent = (message: MessageEvent<string>) => {
       const event = parseStreamEvent(message.data, activeRoom.id);
       if (!event || selectedRoomIdRef.current !== activeRoom.id) return;
-      appendRoomEvent(event);
+      if (replaying && baselineReplay) replayCompletionEvents.push(event);
+      appendRoomEvent(event, !replaying || !baselineReplay);
       for (const category of roomRefreshCategoriesForEvent(event.type)) {
         if (replaying) replayRefreshCategories.add(category);
         else requestRefresh(category, `sse:${event.type}`);
@@ -4694,9 +4998,22 @@ export function App() {
     };
     const handleReplayStart = () => {
       replaying = true;
+      baselineReplay = !paneCompletionInitialReplayRoomIdsRef.current.has(activeRoom.id);
+      replayCompletionEvents = [];
       replayRefreshCategories.clear();
     };
     const handleReplayComplete = () => {
+      if (baselineReplay) {
+        commitPaneCompletionLifecycle(
+          hydratePaneCompletionReplay(
+            paneCompletionLifecycleRef.current,
+            activeRoom.id,
+            replayCompletionEvents
+          )
+        );
+        paneCompletionInitialReplayRoomIdsRef.current.add(activeRoom.id);
+      }
+      replayCompletionEvents = [];
       replaying = false;
       for (const category of replayRefreshCategories) requestRefresh(category, "sse:replay-complete");
       replayRefreshCategories.clear();
@@ -4838,6 +5155,7 @@ export function App() {
     if (!auth?.isAuthenticated) return;
     const handleCliRuntimeVisibility = () => {
       api.invalidateCliRuntimes();
+      api.invalidateCliRuntimeSettings();
       void api.codexEnvironment()
         .then((environment) => {
           if (appMountedRef.current) setCodexEnvironmentSummary(environment);
@@ -4944,6 +5262,7 @@ export function App() {
   const isRoomsSurfaceVisible = Boolean(auth?.isAuthenticated)
     && appView === "workspace"
     && !isMemoryWorkspaceOpen
+    && systemAnalyticsTab === null
     && activeSideSurface === "rooms"
     && isSideSurfaceOpen;
 
@@ -5034,6 +5353,18 @@ export function App() {
     await updatePaneColumnSpan(pane, 1, placement?.columnStart);
   }
 
+  async function togglePaneColumnSpan(pane: Pane) {
+    if (shellMode === "mobile" || pane.isMaximized) return;
+    if ((pane.columnSpan ?? 1) > 1) {
+      const placement = paneGridPlacements.get(pane.id);
+      await updatePaneColumnSpan(pane, 1, placement?.columnStart);
+      return;
+    }
+    const placement = paneGridPlacements.get(pane.id);
+    if (!placement?.canGrow) return;
+    await updatePaneColumnSpan(pane, 2, placement.columnStart);
+  }
+
   function sideSurfaceToggleLabel(surface: SideSurface) {
     const verb = isSideSurfaceOpen && activeSideSurface === surface ? (isCompactShell ? "Close" : "Hide") : isCompactShell ? "Open" : "Show";
     return `${verb} ${sideSurfaceMeta[surface].label}`;
@@ -5094,6 +5425,18 @@ export function App() {
       const next = !current;
       try {
         runtime.platform.localStorage.setItem(CLI_FLOATS_HIDDEN_STORAGE_KEY, String(next));
+      } catch {
+        // Best effort only.
+      }
+      return next;
+    });
+  }
+
+  function toggleMaskSensitiveData() {
+    setMaskSensitiveData((current) => {
+      const next = !current;
+      try {
+        runtime.platform.localStorage.setItem(SPACE_SENSITIVE_DATA_MASKED_STORAGE_KEY, String(next));
       } catch {
         // Best effort only.
       }
@@ -5295,26 +5638,31 @@ export function App() {
   const roomToolbarActions = useMemo<IconToolbarAction[]>(
     () => {
       const actions: IconToolbarAction[] = [
-      ...(Object.entries(sideSurfaceMeta) as Array<[SideSurface, (typeof sideSurfaceMeta)[SideSurface]]>).map(([surface, meta]) => {
-        const label = sideSurfaceToggleLabel(surface);
-        return {
-          id: `surface-${surface}`,
-          label,
-          title: label,
-          ariaLabel: label,
-          icon: meta.icon,
-          onClick: () => toggleSideSurface(surface),
-          ariaPressed: isSideSurfaceOpen && activeSideSurface === surface,
-          className: "toolbar-surface-toggle"
-        };
-      }),
+      ...(Object.entries(sideSurfaceMeta) as Array<[SideSurface, (typeof sideSurfaceMeta)[SideSurface]]>)
+        .filter(([surface]) => surface !== "streaming" || auth?.user?.role === "ADMIN")
+        .map(([surface, meta]) => {
+          const label = sideSurfaceToggleLabel(surface);
+          return {
+            id: `surface-${surface}`,
+            label,
+            title: label,
+            ariaLabel: label,
+            icon: meta.icon,
+            onClick: () => toggleSideSurface(surface),
+            ariaPressed: isSideSurfaceOpen && activeSideSurface === surface,
+            className: "toolbar-surface-toggle"
+          };
+        }),
       {
         id: "memory-workspace",
         label: "Open memory workspace",
         title: "Open memory workspace",
         ariaLabel: "Open memory workspace",
         icon: Network,
-        onClick: () => setIsMemoryWorkspaceOpen(true),
+        onClick: () => {
+          setSystemAnalyticsTab(null);
+          setIsMemoryWorkspaceOpen(true);
+        },
         ariaExpanded: isMemoryWorkspaceOpen
       },
       {
@@ -5381,6 +5729,17 @@ export function App() {
         icon: cliFloatsHidden ? Eye : EyeOff,
         onClick: toggleCliFloats,
         ariaPressed: cliFloatsHidden
+      },
+      {
+        id: "sensitive-data",
+        label: maskSensitiveData ? "Show sensitive data" : "Hide sensitive data",
+        title: maskSensitiveData ? "Show sensitive data" : "Hide sensitive data",
+        ariaLabel: maskSensitiveData ? "Show sensitive data" : "Hide sensitive data",
+        icon: maskSensitiveData ? EyeOff : Eye,
+        onClick: toggleMaskSensitiveData,
+        ariaPressed: maskSensitiveData,
+        hideable: false,
+        dataSensitiveIgnore: true
       },
       {
         id: "font-down",
@@ -5491,6 +5850,18 @@ export function App() {
         icon: Printer,
         onClick: () => runtime.platform.print(),
         disabled: !activeRoom
+      },
+      {
+        id: "osk-keyboard",
+        label: "On-screen keyboard",
+        title: "On-screen keyboard",
+        ariaLabel: "On-screen keyboard",
+        icon: Keyboard,
+        onClick: () => setIsOskKeyboardOpen((current) => !current),
+        ariaPressed: isOskKeyboardOpen,
+        ariaControls: OSK_PANEL_ID,
+        ariaExpanded: isOskKeyboardOpen,
+        ariaHasPopup: "dialog"
       }
       ];
       return actions;
@@ -5507,6 +5878,7 @@ export function App() {
       isCodexEnabled,
       isMemoryWorkspaceOpen,
       isCliLauncherOpen,
+      isOskKeyboardOpen,
       isPaneLayoutMenuOpen,
       isPaneSpanAllMenuOpen,
       isSideSurfaceOpen,
@@ -5597,6 +5969,20 @@ export function App() {
           }
         },
         {
+          id: "cli-session-cleanup",
+          label: "Clean CLI sessions",
+          description: anyCliEnabled
+            ? "Remove empty sessions, orphaned codex pane homes and disposable CLI store files."
+            : "OFF · Enable a CLI in Settings.",
+          icon: Trash2,
+          disabled: !anyCliEnabled,
+          title: !anyCliEnabled ? "Enable a CLI in Settings" : undefined,
+          onSelect: () => {
+            adminCodexToolTriggerRef.current = serverActionsButtonRef.current;
+            setAdminCodexTool("cleanup");
+          }
+        },
+        {
           id: "clean-detached-cli-sessions",
           label: "Clean detached CLI sessions",
           description: "Clean eligible detached Space CLI sessions.",
@@ -5659,6 +6045,7 @@ export function App() {
         aria-expanded={action.ariaExpanded}
         aria-haspopup={action.ariaHasPopup}
         aria-pressed={action.ariaPressed}
+        {...(action.dataSensitiveIgnore ? { "data-sensitive-ignore": "true" } : {})}
         onContextMenu={(event) => {
           event.preventDefault();
           roomToolbar.closeMenus();
@@ -5681,6 +6068,24 @@ export function App() {
       </button>
     );
   };
+  function updateRoomToolbarVisibility(hidden: boolean) {
+    if (hidden) {
+      roomToolbar.closeMenus();
+      setIsQuickLinksOpen(false);
+      setIsThemeMenuOpen(false);
+      setIsPaneLayoutMenuOpen(false);
+      setIsPaneSpanAllMenuOpen(false);
+      setIsWorkspaceTextSizePickerOpen(false);
+      setIsServerActionsMenuOpen(false);
+      setIsCliLauncherOpen(false);
+    }
+    try {
+      runtime.platform.localStorage.setItem(ROOM_TOOLBAR_HIDDEN_STORAGE_KEY, String(hidden));
+    } catch {
+      // Best effort only.
+    }
+    setIsRoomToolbarHidden(hidden);
+  }
   useLayoutEffect(() => {
     const toolbar = boardToolbarRef.current;
     if (!toolbar || shellMode === "mobile" || !shouldMeasureToolbarLayout(uiTheme)) {
@@ -5719,12 +6124,11 @@ export function App() {
       const titleWidth = Math.max(remToPx(10), headingWidth + (titleControlsWidth ? titleGap + titleControlsWidth : 0));
       const lbWidth = measureChildrenWidth(toolbar.querySelector<HTMLElement>(".toolbar-lb-strip"), 2.25, 0.35);
       const actionsWidth = measureChildrenWidth(roomToolbarScrollRef.current, 2.25, 0.25);
-      const fixedWidth = measureChildrenWidth(toolbar.querySelector<HTMLElement>(".toolbar-actions-fixed"), 2.25, 0.25);
       const toolbarStyles = window.getComputedStyle(toolbar);
       const parsedToolbarGap = Number.parseFloat(toolbarStyles.columnGap || toolbarStyles.gap || "");
       const columnGap = Number.isFinite(parsedToolbarGap) ? parsedToolbarGap : remToPx(0.75);
       setIsRoomToolbarStacked(
-        roomToolbarNeedsSecondRow({ availableWidth, titleWidth, lbWidth, actionsWidth, fixedWidth, columnGap })
+        roomToolbarNeedsSecondRow({ availableWidth, titleWidth, lbWidth, actionsWidth, columnGap })
       );
     };
 
@@ -5733,17 +6137,15 @@ export function App() {
     resizeObserver?.observe(toolbar);
     const titleRow = toolbar.querySelector<HTMLElement>(".board-title-row");
     const lbStrip = toolbar.querySelector<HTMLElement>(".toolbar-lb-strip");
-    const fixedActions = toolbar.querySelector<HTMLElement>(".toolbar-actions-fixed");
     if (titleRow) resizeObserver?.observe(titleRow);
     if (lbStrip) resizeObserver?.observe(lbStrip);
     if (roomToolbarScrollRef.current) resizeObserver?.observe(roomToolbarScrollRef.current);
-    if (fixedActions) resizeObserver?.observe(fixedActions);
     window.addEventListener("resize", measureToolbar);
     return () => {
       resizeObserver?.disconnect();
       window.removeEventListener("resize", measureToolbar);
     };
-  }, [activeRoom?.name, isRoomRenameOpen, roomToolbarRenderedActions.length, shellMode, uiTheme]);
+  }, [activeRoom?.name, isRoomRenameOpen, isRoomToolbarHidden, roomToolbarRenderedActions.length, shellMode, uiTheme]);
   function updateMobilePaneFocusMode(nextFocused: boolean) {
     if (shellMode !== "mobile") return;
     setIsCompactSideSurfaceOpen(false);
@@ -5864,7 +6266,7 @@ export function App() {
       try {
         const [environment, runtimeSettings] = await Promise.allSettled([
           api.codexEnvironment(),
-          api.cliRuntimeSettings()
+          api.cliRuntimeSettings({ forceRefresh: true })
         ]);
         if (disposed) return;
         if (environment.status === "fulfilled") setCodexEnvironmentSummary(environment.value);
@@ -5934,15 +6336,6 @@ export function App() {
     previousSelectedPaneIdRef.current = selectedPaneId;
   }, [selectedPaneId, shellMode]);
   const codexTurnsEnabled = readiness?.dependencies.codexTurns === "enabled";
-  const latestCompletionByPane = useMemo(() => {
-    const byPane = new Map<string, SpaceEvent>();
-    for (const event of roomEvents) {
-      if (event.type === "TURN_COMPLETED" && event.paneId && !byPane.has(event.paneId)) {
-        byPane.set(event.paneId, event);
-      }
-    }
-    return byPane;
-  }, [roomEvents]);
   const latestArtifactEventId = useMemo(
     () => roomEvents.find((event) => event.type === "ARTIFACT_CREATED")?.id ?? null,
     [roomEvents]
@@ -5951,19 +6344,11 @@ export function App() {
     (paneId: string) => {
       if (!panes.some((pane) => pane.id === paneId && !pane.isMinimized)) return;
       setSelectedPaneId(paneId);
-      setAcknowledgedCompletionEventIds((current) => {
-        const pane = panes.find((candidate) => candidate.id === paneId);
-        if (pane?.mode !== "TERMINAL") {
-          return current;
-        }
-        const latestCompletion = latestCompletionByPane.get(paneId);
-        if (!latestCompletion || current[paneId] === latestCompletion.id) {
-          return current;
-        }
-        return { ...current, [paneId]: latestCompletion.id };
-      });
+      commitPaneCompletionLifecycle(
+        acknowledgePaneCompletion(paneCompletionLifecycleRef.current, paneId)
+      );
     },
-    [latestCompletionByPane, panes]
+    [panes]
   );
   const paneCardOnTarget = useStableCallback(targetPaneFromUser);
   const paneCardOnMove = useStableCallback(openMovePaneDialog);
@@ -5974,9 +6359,23 @@ export function App() {
   const paneCardOnMobilePaneFocusChange = useStableCallback(updateMobilePaneFocusMode);
   const paneCardOnGrowColumnSpan = useStableCallback(growPaneColumnSpan);
   const paneCardOnResetColumnSpan = useStableCallback(resetPaneColumnSpan);
+  const paneCardOnToggleColumnSpan = useStableCallback(togglePaneColumnSpan);
   const paneCardOnSplit = useStableCallback(splitPane);
   const paneCardOnTerminalBootstrapped = useStableCallback(recordRoomPaneBootstrapped);
   const paneCardOnTerminalPrefillReadyChange = useStableCallback(recordRoomTerminalPrefillReady);
+
+  const navigateFullscreenPane = useCallback(
+    (direction: "previous" | "next") => {
+      const visible = sortPanesForGrid(panes.filter((pane) => !pane.isMinimized));
+      if (visible.length < 2) return;
+      const currentIndex = Math.max(0, visible.findIndex((pane) => pane.id === selectedPaneId));
+      const step = direction === "next" ? 1 : -1;
+      const nextPane = visible[(currentIndex + step + visible.length) % visible.length];
+      if (nextPane) setSelectedPaneId(nextPane.id);
+    },
+    [panes, selectedPaneId]
+  );
+  const paneCardOnFullscreenNavigate = useStableCallback(navigateFullscreenPane);
 
   async function captureRoomScreen() {
     if (!activeRoom) return;
@@ -6211,7 +6610,31 @@ export function App() {
         </button>
       </div>
       <div className="room-list">
-        {rooms.map((room) => (
+        {rooms.map((room) => {
+          const warmPresentation = classifyRoomWarmPresentation({
+            roomId: room.id,
+            activeRoomId: selectedRoomId,
+            warmRoomIds,
+            hydratingRoomIds: new Set(
+              Object.entries(roomPaneLoadStates)
+                .filter(([, state]) => state === "loading")
+                .map(([roomId]) => roomId)
+            ),
+            loadedRoomIds: new Set(
+              Object.entries(roomPaneLoadStates)
+                .filter(([, state]) => state === "loaded")
+                .map(([roomId]) => roomId)
+            )
+          });
+          const warmLabel =
+            warmPresentation === "active"
+              ? "Active"
+              : warmPresentation === "warm"
+                ? "Warm"
+                : warmPresentation === "warming"
+                  ? "Warming"
+                  : "Cold";
+          return (
           <div
             key={room.id}
             className={[
@@ -6220,6 +6643,7 @@ export function App() {
               draggedRoomId === room.id ? "is-dragging" : "",
               dragOverRoomId === room.id && draggedRoomId !== room.id ? "is-drop-target" : ""
             ].filter(Boolean).join(" ")}
+            data-warm-presentation={warmPresentation}
             onDragOver={(event) => handleRoomDragOver(event, room.id)}
             onDrop={(event) => {
               event.preventDefault();
@@ -6252,6 +6676,15 @@ export function App() {
                 <span className="room-cli-badge">
                   CLI {roomCliActivityCounts[room.id] ?? "—"}
                 </span>
+                {warmRoomEnabled ? (
+                  <span
+                    className={`room-warm-badge is-${warmPresentation}`}
+                    data-warm-presentation={warmPresentation}
+                    title={`Warm cache: ${warmLabel}`}
+                  >
+                    {warmLabel}
+                  </span>
+                ) : null}
               </span>
               <span className="room-select-meta">
                 {room.kind === "AGENT_PROOF" ? <span className="room-kind-badge">Agent Proof</span> : null}
@@ -6269,7 +6702,8 @@ export function App() {
               <Trash2 aria-hidden="true" />
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
       <div className="room-pane-composer-slot" inert={preparingRoomId ? true : undefined}>
         <RoomPaneComposer
@@ -6281,6 +6715,55 @@ export function App() {
       </div>
     </div>
   );
+
+  function resumeAgentSessionCodexThread(threadId: string) {
+    if (!activePane || !isCodexEnabled) return;
+    dispatchAgentPaneAction(activePane.id, { action: "open_thread", threadId });
+  }
+
+  async function resumeAgentSession(item: AgentSessionHistoryItem): Promise<string | null> {
+    if (!selectedRoomId) return "Open a room first to resume sessions.";
+    if (panes.length >= 16) return "The room has reached its pane limit.";
+    if (item.kind === "codex") {
+      if (!item.threadId) return "This session cannot be resumed.";
+      if (!isCodexEnabled) return "Codex is not enabled in this workspace.";
+      try {
+        const created = await api.createPane(
+          selectedRoomId,
+          paneTitleForMode("TERMINAL", panes.length + 1),
+          "TERMINAL",
+          { terminalRuntimeId: "cli:codex" }
+        );
+        registerCliResumeIntent(created.id, { threadId: item.threadId });
+        setPanes((current) => [...current.filter((pane) => pane.id !== created.id), created]);
+        setSelectedPaneId(created.id);
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : "Codex CLI resume failed";
+      }
+    }
+    const runtimeId = item.threadSource;
+    if (!runtimeId) return "This session has no runtime to resume into.";
+    if (!item.taskId) return "This session cannot be resumed.";
+    try {
+      const created = await api.createPane(
+        selectedRoomId,
+        paneTitleForMode("TERMINAL", panes.length + 1),
+        "TERMINAL",
+        { terminalRuntimeId: runtimeId }
+      );
+      registerCliResumeIntent(created.id, { taskId: item.taskId });
+      setPanes((current) => [...current.filter((pane) => pane.id !== created.id), created]);
+      setSelectedPaneId(created.id);
+      return null;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "CLI resume failed";
+      if (/take control/i.test(message)) {
+        return "Open this CLI pane once, then press Resume again.";
+      }
+      return message;
+    }
+  }
 
   const sideSurfaceContent =
     activeSideSurface === "rooms" ? (
@@ -6318,6 +6801,8 @@ export function App() {
       />
     ) : activeSideSurface === "media" ? (
       <MediaDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
+    ) : activeSideSurface === "streaming" ? (
+      <StreamingDock />
     ) : activeSideSurface === "agent-tools" ? (
       <AgentToolsDock
         canManage={auth?.user?.role === "ADMIN"}
@@ -6335,6 +6820,13 @@ export function App() {
         }}
         onOpenRestartAll={openCliRuntimeRestartAllDialog}
         restartAllPending={cliRuntimeRestartAllPending}
+      />
+    ) : activeSideSurface === "agent-sessions" ? (
+      <AgentSessionsDock
+        activePaneLabel={activePane ? displayPaneTitle(activePane) : null}
+        canResume={Boolean(selectedRoomId)}
+        codexEnabled={isCodexEnabled}
+        onResume={resumeAgentSession}
       />
     ) : activeSideSurface === "agent-files" ? (
       <AgentFilesDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
@@ -6415,8 +6907,18 @@ export function App() {
     />
   );
 
+  const oskKeyboard = (
+    <OnScreenKeyboard
+      mobile={shellMode === "mobile"}
+      open={isOskKeyboardOpen}
+      onInput={routeOnScreenKeyboardInput}
+      onOpenChange={setIsOskKeyboardOpen}
+      roomTheme={roomTheme}
+    />
+  );
+
   if (auth?.isAuthenticated && appView === "help") {
-    const helpContent = <>{vibeMusicPlayer}<HelpPage onBack={closeHelp} /></>;
+    const helpContent = <>{vibeMusicPlayer}{oskKeyboard}<HelpPage onBack={closeHelp} /></>;
     return (
       <AppIconProvider pack={uiTheme === "modern" ? modernIconPack : "lucide"}>
         {uiTheme === "modern" ? (
@@ -6468,9 +6970,11 @@ export function App() {
     const layerEvents = isActive ? roomEvents : cached?.events ?? [];
     const layerSelectedPaneId = isActive ? selectedPaneId : cached?.selectedPaneId ?? null;
     const layerPaneLoadState = roomPaneLoadStates[roomId] ?? "loading";
+    const layerRoom = rooms.find((room) => room.id === roomId) ?? null;
     const layerVisiblePanes = layerPanes.filter((pane) => !pane.isMinimized);
+    const layerFullscreenLayout = layerRoom?.paneLayoutColumns === 0;
     const layerShellVisiblePaneIds = new Set(
-      shellVisiblePaneIds(layerPanes, layerSelectedPaneId, shellMode)
+      shellVisiblePaneIds(layerPanes, layerSelectedPaneId, shellMode, layerFullscreenLayout)
     );
     const layerShellVisiblePanes = layerVisiblePanes.filter((pane) =>
       layerShellVisiblePaneIds.has(pane.id)
@@ -6479,7 +6983,6 @@ export function App() {
       layerShellVisiblePanes.find((pane) => pane.id === layerSelectedPaneId) ??
       layerShellVisiblePanes[0] ??
       null;
-    const layerRoom = rooms.find((room) => room.id === roomId) ?? null;
     const layerDensity = isActive ? paneDensity : paneDensityFor(shellMode, layerVisiblePanes.length);
     const layerColumnCount = isActive
       ? paneGridColumnCount
@@ -6520,7 +7023,7 @@ export function App() {
           ...unorderedTerminalBootstrapPaneIds.filter((paneId) => paneId !== priorityTerminalPaneId)
         ]
       : unorderedTerminalBootstrapPaneIds;
-    const layerVisiblePaneCount = shellMode === "mobile" && layerActivePane ? 1 : layerVisiblePanes.length;
+    const layerVisiblePaneCount = (shellMode === "mobile" || layerFullscreenLayout) && layerActivePane ? 1 : layerVisiblePanes.length;
     const layerHasMaximizedPane = shellMode !== "mobile" && layerVisiblePanes.some((pane) => pane.isMaximized);
 
     return (
@@ -6575,6 +7078,7 @@ export function App() {
                 data-visible-pane-count={layerVisiblePaneCount}
                 data-column-count={layerColumnCount}
                 data-pane-layout-columns={layerRoom?.paneLayoutColumns ?? "automatic"}
+                data-fullscreen-layout={layerFullscreenLayout ? "true" : undefined}
                 style={{ gridTemplateColumns: `repeat(${layerColumnCount}, minmax(0, 1fr))` }}
               >
                 {layerPanes.map((pane) => {
@@ -6587,13 +7091,13 @@ export function App() {
                       agentNumber={layerAgentNumberByPaneId.get(pane.id) ?? 1}
                       latestTurn={layerLatestTurnByPane.get(pane.id) ?? null}
                       latestCompletion={latestCompletion}
-                      hasPendingCompletion={
-                        pane.mode === "TERMINAL" && Boolean(latestCompletion?.id) &&
-                        acknowledgedCompletionEventIds[pane.id] !== latestCompletion?.id
-                      }
+                      hasPendingCompletion={Boolean(
+                        pendingPaneCompletionEventId(paneCompletionLifecycle, pane.id)
+                      )}
                       isTarget={isPresented && layerActivePane?.id === pane.id}
                       isMoveDialogOpen={isInteractive && paneMoveDialog?.pane.id === pane.id}
                       isVisibleInShell={isPresented && layerShellVisiblePaneIds.has(pane.id)}
+                      maskSensitiveData={maskSensitiveData}
                       isTerminalOutputVisible={
                         acceptsTerminalOutput &&
                         layerShellVisiblePaneIds.has(pane.id)
@@ -6623,7 +7127,12 @@ export function App() {
                       onMobilePaneFocusChange={paneCardOnMobilePaneFocusChange}
                       onGrowColumnSpan={paneCardOnGrowColumnSpan}
                       onResetColumnSpan={paneCardOnResetColumnSpan}
+                      onToggleColumnSpan={paneCardOnToggleColumnSpan}
                       onSplit={paneCardOnSplit}
+                      isFullscreenLayout={layerFullscreenLayout}
+                      fullscreenIndex={layerFullscreenLayout ? Math.max(0, layerVisiblePanes.findIndex((candidate) => candidate.id === pane.id)) : 0}
+                      fullscreenCount={layerVisiblePanes.length}
+                      onFullscreenNavigate={paneCardOnFullscreenNavigate}
                       effectiveColumnSpan={placement?.effectiveSpan ?? 1}
                       columnStart={placement?.columnStart ?? 1}
                       rowIndex={placement?.rowIndex ?? 0}
@@ -6637,7 +7146,10 @@ export function App() {
                       cliMemorySaveModelId={cliMemorySaveModelId}
                       cliImagePreviewLimit={cliImagePreviewLimit}
                       terminalBootstrapBarrier={terminalBootstrapBarriers.get(pane.id)}
-                      shouldBootstrapTerminal={!pane.isMinimized || bootstrappedPaneIds.has(pane.id)}
+                      shouldBootstrapTerminal={
+                        !pane.id.startsWith("pane:optimistic-") &&
+                        (!pane.isMinimized || bootstrappedPaneIds.has(pane.id))
+                      }
                       prefillInitialReplay={presentationState === "hidden" && !pane.isMinimized}
                       revealGeneration={roomPresentationGenerationRef.current}
                       onTerminalBootstrapped={paneCardOnTerminalBootstrapped}
@@ -6656,7 +7168,9 @@ export function App() {
 
   return (
     <AppIconProvider pack={uiTheme === "modern" ? modernIconPack : "lucide"}>
+      <StreamingOverlayProvider active={auth.user?.role === "ADMIN"}>
       {vibeMusicPlayer}
+      {oskKeyboard}
       <SetupConnectionsWizard
         checks={api}
         open={isSetupConnectionsOpen}
@@ -6672,9 +7186,11 @@ export function App() {
         triggerRef={serverActionsButtonRef}
       />
       <AppDiagnosticsGlobalIndicators />
+      <SensitiveDataMask enabled={maskSensitiveData} />
       <main
       className={shellClassName}
       data-room-theme={roomTheme}
+      data-sensitive-mode={maskSensitiveData ? "hidden" : undefined}
       data-ui-theme={uiTheme === "modern" ? "modern" : undefined}
       data-color-mode={uiTheme === "modern" ? modernColorMode : undefined}
       data-icon-pack={uiTheme === "modern" ? modernIconPack : undefined}
@@ -6702,13 +7218,23 @@ export function App() {
       }
       data-warm-room-admission-sequence={warmRoomAdmissionDecision?.sequence}
       data-cli-floats-hidden={cliFloatsHidden ? "true" : "false"}
+      data-room-toolbar-hidden={isRoomToolbarHidden ? "true" : undefined}
       data-mobile-pane-focus={isMobilePaneFocused ? "true" : undefined}
     >
       {!isRoomFocusMode && !isMobilePaneFocused ? <header className="topbar">
         <div className="brand">
           <SpaceBrand />
           <div>
-            <h1>Space</h1>
+            <h1>
+              <a
+                className="brand-site-link"
+                href="https://spaceapp.dev"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                SpaceApp.dev
+              </a>
+            </h1>
             <span>Space agent room control plane</span>
           </div>
         </div>
@@ -6716,6 +7242,7 @@ export function App() {
           <span>{presentationRoom?.name ?? "No room selected"}</span>
           <small>{presentationActivePane ? `Target ${displayPaneTitle(presentationActivePane)}` : "No pane target"}</small>
         </div>
+        {runtimeKind === "demo" ? <DemoVersionMeta /> : <AppVersionMeta />}
       </header> : null}
 
       <input
@@ -6768,7 +7295,16 @@ export function App() {
           />
         </Suspense>
       ) : null}
-      {!isMemoryWorkspaceOpen ? <section className={workspaceClassName}>
+      {systemAnalyticsTab ? (
+        <Suspense fallback={<div className="system-analytics-loading" role="status">Loading system analytics…</div>}>
+          <LazySystemAnalyticsWorkspace
+            shellMode={shellMode}
+            initialTab={systemAnalyticsTab}
+            onClose={() => setSystemAnalyticsTab(null)}
+          />
+        </Suspense>
+      ) : null}
+      {!isMemoryWorkspaceOpen && !systemAnalyticsTab ? <section className={workspaceClassName}>
         {showInlineSideSurface ? (
           <aside className="side-surface side-surface-inline" aria-label={activeSideSurfaceLabel} data-surface={activeSideSurface}>
             {sideSurfaceContent}
@@ -6804,7 +7340,20 @@ export function App() {
         ) : null}
 
         <section className={boardClassName} aria-label="Pane board">
-          {!isMobilePaneFocused ? (
+          {!isMobilePaneFocused && isRoomToolbarHidden ? (
+            <div className="room-toolbar-collapsed room-toolbar-floating-controls" role="region" aria-label="Room toolbar hidden">
+              <button
+                type="button"
+                className="room-toolbar-visibility-button"
+                title="Show room toolbar"
+                aria-label="Show room toolbar"
+                onClick={() => updateRoomToolbarVisibility(false)}
+              >
+                <PanelTopOpen aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
+          {!isMobilePaneFocused && !isRoomToolbarHidden ? (
             <div
               ref={boardToolbarRef}
               className="board-toolbar"
@@ -6907,6 +7456,11 @@ export function App() {
                   canManage={auth?.user?.role === "ADMIN"}
                   environment={codexEnvironmentSummary}
                   roomName={presentationRoom.name}
+                  roomId={presentationRoom.id}
+                  onOpenAnalytics={(tab) => {
+                    setIsMemoryWorkspaceOpen(false);
+                    setSystemAnalyticsTab(tab);
+                  }}
                   onChanged={refreshToolbarSystemState}
                 />
               ) : null}
@@ -6930,7 +7484,7 @@ export function App() {
                   </div>
                 ) : roomToolbarRenderedActions.map(renderRoomToolbarAction)}
               </div>
-              <div className="toolbar-actions-fixed">
+              <div className="toolbar-actions-fixed room-toolbar-floating-controls" role="group" aria-label="Room utility controls">
                 <div className="toolbar-overflow">
                   <button
                     ref={roomOverflowTriggerRef}
@@ -7050,6 +7604,15 @@ export function App() {
                   onClick={() => void signOut()}
                 >
                   <LogOut aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="room-toolbar-visibility-button"
+                  title="Hide room toolbar"
+                  aria-label="Hide room toolbar"
+                  onClick={() => updateRoomToolbarVisibility(true)}
+                >
+                  <Minus aria-hidden="true" />
                 </button>
               </div>
               {isPaneLayoutMenuOpen && activeRoom ? (
@@ -7198,17 +7761,32 @@ export function App() {
                   aria-label={`Action menu ${roomToolbar.actionMenu.actionLabel}`}
                   style={{ left: `${roomToolbar.actionMenu.x}px`, top: `${roomToolbar.actionMenu.y}px` }}
                 >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      if (roomToolbar.actionMenu) {
-                        roomToolbar.hideAction(roomToolbar.actionMenu.actionId);
-                      }
-                    }}
-                  >
-                    Hide
-                  </button>
+                  {roomToolbar.actionMenu.actionId === "sensitive-data" ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        if (roomToolbar.actionMenu) {
+                          roomToolbar.closeMenus();
+                          toggleMaskSensitiveData();
+                        }
+                      }}
+                    >
+                      {maskSensitiveData ? "Show sensitive data" : "Hide sensitive data"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        if (roomToolbar.actionMenu) {
+                          roomToolbar.hideAction(roomToolbar.actionMenu.actionId);
+                        }
+                      }}
+                    >
+                      Hide
+                    </button>
+                  )}
                 </div>
               ) : null}
             </div>
@@ -7317,6 +7895,8 @@ export function App() {
         <EmbeddedDashboardDialog link={activeUserLink} onClose={() => setActiveUserLink(null)} />
       ) : null}
       </main>
+      <StreamingOverlay theme={uiTheme === "modern" ? "modern" : "classic"} />
+      </StreamingOverlayProvider>
     </AppIconProvider>
   );
 }
@@ -7875,31 +8455,14 @@ function ProviderSettingsCard({
 }
 
 function VoiceSettingsCard() {
-  const [settings, setSettings] = useState<VoiceComposerSettings>(() => readVoiceComposerSettings());
-  const [serverSettings, setServerSettings] = useState<VoiceTranscriptionSettings | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function loadServerSettings() {
-    setLoading(true);
-    setError(null);
-    try {
-      setServerSettings(await api.voiceTranscriptionSettings());
-    } catch (err) {
-      setServerSettings(null);
-      setError(err instanceof Error ? err.message : "Voice settings failed to load");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void loadServerSettings();
-  }, []);
+  const voiceInput = useVoiceInput();
+  const settings = voiceInput.settings;
+  const serverSettings = voiceInput.serverSettings;
+  const loading = voiceInput.settingsLoading;
+  const error = voiceInput.settingsError;
 
   function updateVoiceSettings(patch: Partial<VoiceComposerSettings>) {
     const next = { ...settings, ...patch };
-    setSettings(next);
     writeVoiceComposerSettings(next);
   }
 
@@ -7908,24 +8471,26 @@ function VoiceSettingsCard() {
   const statusToneValue = serverSettings?.enabled ? "ok" : "warn";
 
   return (
-    <section className="provider-settings-card voice-settings-card" aria-label="Voice input settings">
-      <div className="mcp-execution-head">
-        <div>
+    <section className="provider-settings-card settings-flat-card voice-settings-card" aria-label="Voice input settings">
+      <div className="agent-settings-section-title settings-flat-heading">
+        <Mic aria-hidden="true" />
+        <span>
           <strong>Voice input</strong>
-          <span>{serverSettings?.statusReason ?? (loading ? "Voice settings loading" : "Voice settings unavailable")}</span>
-        </div>
-        <button className="icon-action" type="button" onClick={() => void loadServerSettings()} disabled={loading} title="Refresh voice settings" aria-label="Refresh voice settings">
-          <RefreshCw aria-hidden="true" />
-        </button>
-      </div>
-      <div className="validation-result" role="status" aria-live="polite">
-        <div>
+          <small>{serverSettings?.statusReason ?? (loading ? "Voice settings loading" : "Voice settings unavailable")}</small>
+        </span>
+        <div className="settings-flat-heading-actions">
           <span className={`status ${statusToneValue}`}>{statusLabel}</span>
-          <strong>{settings.enabled ? "Enabled" : "Off"}</strong>
+          <SettingsActionMenu
+            label="Voice input actions"
+            disabled={loading}
+            actions={[{
+              id: "refresh",
+              label: "Refresh voice status",
+              icon: RefreshCw,
+              onSelect: () => void voiceInput.refreshServerSettings()
+            }]}
+          />
         </div>
-        <small>
-          {(settings.language === "auto" ? "Auto language" : settings.language === "el" ? "Greek" : "English")} / {settings.insertMode}
-        </small>
       </div>
       {error ? (
         <div className="validation-result bad" role="alert">
@@ -7933,12 +8498,16 @@ function VoiceSettingsCard() {
           <small>{error}</small>
         </div>
       ) : null}
-      <label className="voice-toggle">
-        <input name="voice-input-enabled" type="checkbox" checked={settings.enabled} onChange={(event) => updateVoiceSettings({ enabled: event.target.checked })} />
-        <span>Enabled</span>
-      </label>
-      <label className="provider-default-select">
-        <span>Language</span>
+      <SpaceToggle
+        className="settings-flat-row settings-flat-toggle-row voice-toggle"
+        name="voice-input-enabled"
+        label="Voice input"
+        detail={settings.enabled ? "Enabled in Chat and attached CLI panes." : "Microphone controls are hidden."}
+        checked={settings.enabled}
+        onChange={(enabled) => updateVoiceSettings({ enabled })}
+      />
+      <label className="settings-flat-row">
+        <span className="settings-flat-row-copy"><strong>Language</strong><small>Transcription language.</small></span>
         <select name="voice-input-language" value={settings.language} onChange={(event) => updateVoiceSettings({ language: event.target.value as VoiceComposerSettings["language"] })}>
           {languageOptions.map((language) => (
             <option key={language} value={language}>
@@ -7947,13 +8516,49 @@ function VoiceSettingsCard() {
           ))}
         </select>
       </label>
-      <label className="provider-default-select">
-        <span>Insert</span>
+      <label className="settings-flat-row">
+        <span className="settings-flat-row-copy"><strong>Insert mode</strong><small>How finished speech enters the prompt.</small></span>
         <select name="voice-input-insert-mode" value={settings.insertMode} onChange={(event) => updateVoiceSettings({ insertMode: event.target.value as VoiceComposerSettings["insertMode"] })}>
           <option value="append">Append</option>
           <option value="replace">Replace</option>
         </select>
       </label>
+      <SpaceToggle
+        className="settings-flat-row settings-flat-toggle-row voice-toggle"
+        name="voice-input-prewarm"
+        label="Pre-warm connection"
+        detail="Reduce delay before the first words."
+        checked={settings.prewarm}
+        onChange={(prewarm) => updateVoiceSettings({ prewarm })}
+      />
+      <div className="voice-float-settings">
+        <div className="settings-flat-subheading">
+          <strong>Floating controls</strong>
+          <small>Choose which controls appear over CLI panes.</small>
+        </div>
+        <SpaceToggle
+          className="settings-flat-row settings-flat-toggle-row voice-toggle"
+          name="float-voice-button"
+          label="Voice mic"
+          checked={settings.terminalVoiceButton}
+          onChange={(terminalVoiceButton) => updateVoiceSettings({ terminalVoiceButton })}
+        />
+        <SpaceToggle
+          className="settings-flat-row settings-flat-toggle-row voice-toggle"
+          name="float-model-picker"
+          label="Model choice"
+          checked={settings.terminalModelPicker}
+          onChange={(terminalModelPicker) => updateVoiceSettings({ terminalModelPicker })}
+        />
+        <SpaceToggle
+          className="settings-flat-row settings-flat-toggle-row voice-toggle"
+          name="float-turn-control"
+          label="Turn control"
+          checked={settings.terminalTurnControl}
+          onChange={(terminalTurnControl) => updateVoiceSettings({ terminalTurnControl })}
+        />
+      </div>
+      <p className="settings-flat-note voice-settings-help">Uses OpenAI gpt-live-transcribe. Finished speech is submitted immediately.</p>
     </section>
   );
 }
@@ -8064,11 +8669,11 @@ function AgentSettingsDock({
 
   return (
     <div className="dock-panel agent-settings-dock basic-settings-dock">
-      <header className="settings-dock-title">
+      <header className="settings-dock-title settings-flat-dock-title">
         <Settings2 aria-hidden="true" />
         <span>
           <h2>Settings</h2>
-          <small>Basic controls only.</small>
+          <small>Browser and workspace controls.</small>
         </span>
       </header>
 
@@ -8076,13 +8681,13 @@ function AgentSettingsDock({
         currentAppearance={currentAppearance}
         currentIconPack={currentIconPack}
         currentTheme={currentUiTheme}
-        onApply={onUiThemeApply}
+        onChange={onUiThemeApply}
       />
 
       <AppDiagnosticsSettingsCard canManage={canManageDiagnostics} />
 
-      <section className="agent-settings-card settings-provider-card" aria-label="Global provider settings">
-        <div className="agent-settings-section-title codex-gated-settings-title">
+      <section className="agent-settings-card settings-flat-card settings-provider-card" aria-label="Global provider settings">
+        <div className="agent-settings-section-title settings-flat-heading codex-gated-settings-title">
           <ServerCog aria-hidden="true" />
           <span>
             <strong>Default provider</strong>
@@ -8090,8 +8695,11 @@ function AgentSettingsDock({
           </span>
           {!isCodexEnabled ? <span className="status muted">OFF</span> : null}
         </div>
-        <label className="provider-default-select">
-          <span>Provider</span>
+        <label className="provider-default-select settings-flat-row">
+          <span className="settings-flat-row-copy">
+            <strong>Provider</strong>
+            <small>Used by new Chat and agent sessions.</small>
+          </span>
           <select
             aria-label="Default provider"
             name="settings-default-provider"
@@ -8127,43 +8735,42 @@ function AgentSettingsDock({
 
       <VoiceSettingsCard />
 
-      <section className="agent-settings-card suppress-notifications-settings-card" aria-label="Notification settings">
-        <div className="agent-settings-section-title">
+      <section className="agent-settings-card settings-flat-card suppress-notifications-settings-card" aria-label="Notification settings">
+        <div className="agent-settings-section-title settings-flat-heading">
           <Bell aria-hidden="true" />
           <span>
             <strong>Notifications</strong>
-            <small>{suppressNotifications ? "All toast and status notifications are hidden in this browser." : "Toasts and status notices appear normally in this browser."}</small>
+            <small>Browser-local toast and status controls.</small>
           </span>
         </div>
-        <label className="settings-toggle-row suppress-notifications-toggle">
-          <input
-            type="checkbox"
-            name="suppress-notifications-enabled"
-            checked={suppressNotifications}
-            onChange={(event) => onSuppressNotificationsChange(event.target.checked)}
-            aria-label="Suppress all notifications"
-          />
-          <span>Suppress all notifications</span>
-        </label>
+        <SpaceToggle
+          className="settings-flat-row settings-flat-toggle-row suppress-notifications-toggle"
+          name="suppress-notifications-enabled"
+          label="Suppress all notifications"
+          detail={suppressNotifications ? "All notices are hidden in this browser." : "Notices appear normally."}
+          checked={suppressNotifications}
+          onChange={onSuppressNotificationsChange}
+        />
       </section>
 
-      <section className="agent-settings-card basic-agent-card" aria-label={activePane?.mode === "CHAT" ? `Basic settings for ${title}` : `Selected pane ${title}`}>
-        <div className="agent-settings-section-title">
+      <section className="agent-settings-card settings-flat-card basic-agent-card" aria-label={activePane?.mode === "CHAT" ? `Basic settings for ${title}` : `Selected pane ${title}`}>
+        <div className="agent-settings-section-title settings-flat-heading">
           <MessageSquare aria-hidden="true" />
           <span>
             <strong>Agent</strong>
             <small>{activePane?.mode === "CHAT" ? (loading ? "Loading settings" : session?.statusReason ?? "Chat pane controls") : "Tools are available on chat panes."}</small>
           </span>
           {activePane?.mode === "CHAT" ? (
-            <button
-              className="icon-action"
-              onClick={() => void loadSession()}
+            <SettingsActionMenu
+              label="Agent settings actions"
               disabled={!isCodexEnabled || loading || pending}
-              title={isCodexEnabled ? "Refresh agent settings" : "Enable Codex in Settings"}
-              aria-label="Refresh agent settings"
-            >
-              <RefreshCw aria-hidden="true" />
-            </button>
+              actions={[{
+                id: "refresh",
+                label: "Refresh agent settings",
+                icon: RefreshCw,
+                onSelect: () => void loadSession()
+              }]}
+            />
           ) : null}
         </div>
 
@@ -8181,31 +8788,26 @@ function AgentSettingsDock({
           </div>
         ) : (
           <>
-            <div className="agent-settings-section-title compact">
-              <Wrench aria-hidden="true" />
-              <span>
-                <strong>Tools</strong>
-                <small>{selectedToolCount}/{session.toolOptions.length} enabled</small>
-              </span>
+            <div className="settings-flat-subheading">
+              <strong>Tools</strong>
+              <small>{selectedToolCount}/{session.toolOptions.length} enabled</small>
             </div>
-            <div className="agent-tool-list">
+            <div className="agent-tool-list settings-flat-tool-list">
               {session.toolOptions.length ? (
                 session.toolOptions.map((tool) => {
                   const requiresAuth = tool.authType === "oauth2" && !tool.authConnected;
                   const checked = selectedToolIds.has(tool.id) || tool.isForceOn;
                   return (
-                    <label key={tool.id} className={checked ? "selected" : ""} title={requiresAuth ? `${tool.displayName} requires auth` : tool.displayName}>
-                      <input
-                        type="checkbox"
-                        aria-label={tool.displayName}
-                        name={`agent-tool-${tool.id}`}
-                        checked={checked}
-                        onChange={(event) => void toggleTool(tool.id, event.target.checked)}
-                        disabled={!isCodexEnabled || pending || !session.capabilities.canSelectTools || tool.isForceOn || requiresAuth}
-                        title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
-                      />
-                      <span>{tool.displayName}</span>
-                    </label>
+                    <SpaceToggle
+                      key={tool.id}
+                      className={checked ? "selected" : ""}
+                      title={!isCodexEnabled ? "Enable Codex in Settings" : requiresAuth ? `${tool.displayName} requires auth` : tool.displayName}
+                      name={`agent-tool-${tool.id}`}
+                      label={tool.displayName}
+                      checked={checked}
+                      onChange={(nextChecked) => void toggleTool(tool.id, nextChecked)}
+                      disabled={!isCodexEnabled || pending || !session.capabilities.canSelectTools || tool.isForceOn || requiresAuth}
+                    />
                   );
                 })
               ) : (
@@ -8300,6 +8902,7 @@ const PaneCard = memo(function PaneCard({
   terminalObserverOnly,
   uiTheme,
   shellMode,
+  maskSensitiveData,
   codexTurnsEnabled,
   codexEnvironment,
   canMoveToAnotherRoom,
@@ -8320,7 +8923,12 @@ const PaneCard = memo(function PaneCard({
   onMobilePaneFocusChange,
   onGrowColumnSpan,
   onResetColumnSpan,
+  onToggleColumnSpan,
   onSplit,
+  isFullscreenLayout,
+  fullscreenIndex,
+  fullscreenCount,
+  onFullscreenNavigate,
   effectiveColumnSpan,
   columnStart,
   rowIndex,
@@ -8355,6 +8963,7 @@ const PaneCard = memo(function PaneCard({
   terminalObserverOnly: boolean;
   uiTheme: UiTheme;
   shellMode: ShellMode;
+  maskSensitiveData: boolean;
   codexTurnsEnabled: boolean;
   codexEnvironment: CodexEnvironment | null;
   canMoveToAnotherRoom: boolean;
@@ -8375,7 +8984,12 @@ const PaneCard = memo(function PaneCard({
   onMobilePaneFocusChange: (focused: boolean) => void;
   onGrowColumnSpan: (pane: Pane) => Promise<void>;
   onResetColumnSpan: (pane: Pane) => Promise<void>;
+  onToggleColumnSpan: (pane: Pane) => Promise<void>;
   onSplit: (pane: Pane, direction: "horizontal" | "vertical") => void;
+  isFullscreenLayout: boolean;
+  fullscreenIndex: number;
+  fullscreenCount: number;
+  onFullscreenNavigate: (direction: "previous" | "next") => void;
   effectiveColumnSpan: number;
   columnStart: number;
   rowIndex: number;
@@ -8397,15 +9011,14 @@ const PaneCard = memo(function PaneCard({
   onTerminalRevealReady: (roomId: string, paneId: string, generation: number) => void;
 }) {
   const agentResponse = latestCompletion ? extractAgentResponseFromEvent(latestCompletion) : null;
-  const completionState = pane.mode === "TERMINAL"
-    ? hasPendingCompletion
-      ? "pending"
-      : latestCompletion
-        ? "acknowledged"
-        : "idle"
-    : "idle";
+  const completionState = hasPendingCompletion
+    ? "pending"
+    : latestCompletion
+      ? "acknowledged"
+      : "idle";
   const title = displayPaneTitle(pane);
   const isTerminalPane = pane.mode === "TERMINAL";
+  const usesCompactPaneActions = isTerminalPane || pane.mode === "CHAT";
   const isRootPane = pane.terminalRuntimeId === "cli:root";
   const maximizeLabel = shellMode === "mobile"
     ? isMobilePaneFocused
@@ -8428,6 +9041,7 @@ const PaneCard = memo(function PaneCard({
   useAutoDismiss(genericImportNotice, setGenericImportNotice);
   useAutoDismiss(genericImportError, setGenericImportError);
   const [terminalSessionMetadata, setTerminalSessionMetadata] = useState<TerminalSessionMetadata | null>(null);
+  const [agentPaneIdentity, setAgentPaneIdentity] = useState<AgentPaneIdentity | null>(null);
   const [cliVpnRoutingStatus, setCliVpnRoutingStatus] = useState<CliVpnRoutingStatus | null>(null);
   const [titleDraft, setTitleDraft] = useState(pane.title);
   const [titleEditOpen, setTitleEditOpen] = useState(false);
@@ -8457,7 +9071,7 @@ const PaneCard = memo(function PaneCard({
   const paneIdentityBaseTitle = showSessionDebugIds && sessionDebugInfo
     ? `${title} / Agent ${agentNumber} / ${sessionDebugInfo.title}`
     : `${title} / Agent ${agentNumber}`;
-  const paneIdentityTitle = vpnRoutingPresentation
+  const paneIdentityTitle = vpnRoutingPresentation && !maskSensitiveData
     ? `${paneIdentityBaseTitle} / ${vpnRoutingPresentation.label} — ${vpnRoutingPresentation.title}`
     : paneIdentityBaseTitle;
   const terminalRuntimeId = terminalSessionMetadata?.runtimeId ?? pane.terminalRuntimeId ?? "cli:codex";
@@ -8802,7 +9416,22 @@ const PaneCard = memo(function PaneCard({
 
   async function copyPaneIdentityInfo() {
     setBadgeMenuPosition(null);
-    const text = paneIdentityTitle.trim();
+    const text = pane.mode === "CHAT"
+      ? agentPaneIdentity?.sessionId
+        ? [
+            `Space agent session ID: ${agentPaneIdentity.sessionId}`,
+            `Codex thread ID: ${agentPaneIdentity.threadId ?? "Not assigned yet"}`
+          ].join("\n")
+        : ""
+      : pane.mode === "TERMINAL" && terminalSessionMetadata
+        ? formatTerminalSessionClipboardText(terminalSessionMetadata) ?? ""
+        : "";
+    if ((pane.mode === "CHAT" || pane.mode === "TERMINAL") && !text) {
+      window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_NOTICE_EVENT, {
+        detail: { message: `${pane.mode === "CHAT" ? "Chat" : "CLI"} session info is still loading.` }
+      }));
+      return;
+    }
     if (!text) return;
     try {
       await writeClipboardText(text);
@@ -9064,7 +9693,16 @@ const PaneCard = memo(function PaneCard({
       : [])
   ];
   if (pane.mode === "YOUTUBE") {
-    rawPaneActions = [];
+    rawPaneActions = [
+      {
+        id: "reload",
+        label: "Reload YouTube",
+        title: "Reload YouTube",
+        ariaLabel: `Reload YouTube ${title}`,
+        icon: RefreshCw,
+        onClick: () => dispatchBrowserPaneAction(pane.id, "reload")
+      }
+    ];
   }
   const codexMutationActionIds = new Set([
     "import",
@@ -9131,22 +9769,22 @@ const PaneCard = memo(function PaneCard({
     hiddenStorageKey: paneToolbarStorageKeys.hidden,
     orderStorageKey: paneToolbarStorageKeys.order,
     nonPersistentActionIds: pane.mode === "CHAT" ? ["chat-target"] : [],
-    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL",
+    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER",
     closeOverflowOnDragStart: shellMode === "mobile"
   });
   const modernPrimaryActionLimit = modernPanePrimaryActionCount(shellMode);
-  const paneToolbarMenuActions = pane.mode === "TERMINAL" ? paneToolbar.orderedActions : paneToolbar.visibleActions;
+  const paneToolbarMenuActions = usesCompactPaneActions ? paneToolbar.orderedActions : paneToolbar.visibleActions;
   const paneToolbarPrimaryActionCount = uiTheme === "modern"
     ? Math.min(modernPrimaryActionLimit, modernPrimaryActionCapacity ?? modernPrimaryActionLimit)
     : paneToolbarMenuActions.length;
-  const paneToolbarRenderedActions = pane.mode === "TERMINAL"
+  const paneToolbarRenderedActions = usesCompactPaneActions
     ? []
     : (uiTheme === "modern"
         ? paneToolbarMenuActions.slice(0, paneToolbarPrimaryActionCount)
         : paneToolbarMenuActions);
   const paneOverflowCommands: PaneOverflowCommand[] = [
     ...paneTaskCommands,
-    ...(uiTheme === "modern" && shellMode !== "mobile" && pane.mode !== "TERMINAL"
+    ...(uiTheme === "modern" && shellMode !== "mobile" && !usesCompactPaneActions
       ? paneToolbarMenuActions.slice(paneToolbarPrimaryActionCount).map((action) => ({
           id: `toolbar-action:${action.id}`,
           label: action.label,
@@ -9332,7 +9970,8 @@ const PaneCard = memo(function PaneCard({
               draggable={!paneReorderPending}
               onDragStart={(event) => onPaneDragStart(event, pane)}
               onDragEnd={onPaneDragEnd}
-              onContextMenu={isTerminalPane ? (event) => {
+              onDoubleClick={() => void onToggleColumnSpan(pane)}
+              onContextMenu={usesCompactPaneActions ? (event) => {
                 event.preventDefault();
                 paneToolbar.closeMenus();
                 setBadgeMenuPosition({ x: event.clientX, y: event.clientY });
@@ -9424,23 +10063,9 @@ const PaneCard = memo(function PaneCard({
                 </button>
               </form>
             ) : (
-              <>
-                <strong ref={titleTextRef} className="pane-title-text" title={pane.title}>
-                  {pane.title}
-                </strong>
-                {(pane.mode === "CHAT") && !isTerminalLoginSession ? (
-                  <button
-                    type="button"
-                    className="room-title-edit pane-title-edit"
-                    aria-label={`Edit pane title ${title}`}
-                    title={codexMutationBlocked ? codexDisabledReason : "Edit pane title"}
-                    onClick={beginTitleEdit}
-                    disabled={titleSavePending || titleGeneratePending || codexMutationBlocked}
-                  >
-                    <Pencil aria-hidden="true" />
-                  </button>
-                ) : null}
-              </>
+              <strong ref={titleTextRef} className="pane-title-text" title={pane.title}>
+                {pane.title}
+              </strong>
             )}
           </div>
           {titleError ? (
@@ -9450,6 +10075,33 @@ const PaneCard = memo(function PaneCard({
           ) : null}
         </div>
         <div className="pane-actions" ref={paneActionsRef}>
+          {isFullscreenLayout ? (
+            <div className="pane-fullscreen-nav" role="group" aria-label={`Pane navigation, pane ${fullscreenIndex + 1} of ${fullscreenCount}`}>
+              <button
+                type="button"
+                className="pane-fullscreen-nav-button"
+                title="Previous pane"
+                aria-label="Previous pane"
+                disabled={fullscreenCount < 2}
+                onClick={() => onFullscreenNavigate("previous")}
+              >
+                <ChevronLeft aria-hidden="true" />
+              </button>
+              <span className="pane-fullscreen-position" aria-live="polite">
+                {fullscreenIndex + 1} / {fullscreenCount}
+              </span>
+              <button
+                type="button"
+                className="pane-fullscreen-nav-button"
+                title="Next pane"
+                aria-label="Next pane"
+                disabled={fullscreenCount < 2}
+                onClick={() => onFullscreenNavigate("next")}
+              >
+                <ChevronRight aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
           {paneToolbarRenderedActions.map((action) => {
             const ActionIcon = action.icon;
             return (
@@ -9466,7 +10118,7 @@ const PaneCard = memo(function PaneCard({
                 onClick={action.onClick}
                 disabled={action.disabled}
                 onContextMenu={(event) => {
-                  if (pane.mode === "TERMINAL" || action.hideable === false) return;
+                  if (usesCompactPaneActions || action.hideable === false) return;
                   event.preventDefault();
                   paneToolbar.closeMenus();
                   paneToolbar.setActionMenu({
@@ -9536,7 +10188,7 @@ const PaneCard = memo(function PaneCard({
                     paneToolbar.setIsOverflowOpen(false);
                     action.onClick();
                   }}
-                  plainActions={pane.mode === "TERMINAL"}
+                  plainActions={usesCompactPaneActions}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}
                 />
@@ -9564,7 +10216,8 @@ const PaneCard = memo(function PaneCard({
                       paneToolbar.showAction(actionId);
                     }
                   }}
-                  plainActions={pane.mode === "TERMINAL"}
+                  plainActions={usesCompactPaneActions}
+                  preferPaneInside={pane.mode === "CHAT"}
                   primaryActionIds={uiTheme === "modern" ? paneToolbarRenderedActions.map((action) => action.id) : undefined}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}
@@ -9617,7 +10270,13 @@ const PaneCard = memo(function PaneCard({
         ) : null}
         {pane.mode === "CHAT" ? (
           <Suspense fallback={agentPaneLoadingFallback}>
-            <LazyAgentPane pane={pane} codexEnvironment={codexEnvironment} workspaceTextSize={terminalFontSize} />
+            <LazyAgentPane
+              pane={pane}
+              codexEnvironment={codexEnvironment}
+              workspaceTextSize={terminalFontSize}
+              isVisible={isVisibleInShell && !pane.isMinimized}
+              onSessionIdentityChange={setAgentPaneIdentity}
+            />
           </Suspense>
         ) : pane.mode === "TERMINAL" ? (
           <TerminalPane
@@ -10674,10 +11333,13 @@ function SwarmDock({
         {tasks.length ? tasks.map((task) => (
           <article key={task.id} className="swarm-entry">
             <div className="swarm-entry-head">
-              <label className="checkbox-line">
-                <input type="checkbox" checked={selectedTaskIds.includes(task.id)} onChange={() => toggleTaskSelection(task.id)} />
-                <span className={`status ${taskTone(task.status)}`}>{readableCode(task.status)}</span>
-              </label>
+              <SpaceToggle
+                className="checkbox-line"
+                ariaLabel={`Select ${task.title}`}
+                label={<span className={`status ${taskTone(task.status)}`}>{readableCode(task.status)}</span>}
+                checked={selectedTaskIds.includes(task.id)}
+                onChange={() => toggleTaskSelection(task.id)}
+              />
               <strong>{task.title}</strong>
             </div>
             <p>{task.goal}</p>
@@ -10933,6 +11595,13 @@ function HealthDock({
   const storageMeta = storageReadiness
     ? `${formatBytes(storageReadiness.app.availableBytes)} free / root ${storageReadiness.root.usedPercent}% / dedicated ${storageReadiness.dedicatedAppVolume ? "yes" : "no"}`
     : "Checking storage";
+  const appVersion = useAppVersion();
+  const versionDetail = appVersion?.athensTag
+    ? `${appVersion.athensTag}`
+    : appVersion?.shortCommit
+      ? `commit ${appVersion.shortCommit}${appVersion.dirty ? " · dirty" : ""}`
+      : "Version unavailable";
+  const versionValue = appVersion?.appRelease ?? "Loading";
 
   return (
     <div className="dock-panel health-dock">
@@ -10987,6 +11656,20 @@ function HealthDock({
           value={requestValue}
           detail={observability ? `${observability.totals.errorCount} errors` : "Observability snapshot loading"}
           tone={(observability?.totals.errorCount ?? 0) > 0 ? "bad" : observability ? "ok" : "muted"}
+        />
+        <HealthTile
+          icon={GitCompare}
+          label="Version"
+          value={versionValue}
+          detail={versionDetail}
+          meta={
+            appVersion?.updateAvailable && appVersion.githubLatest
+              ? `Update available: ${appVersion.githubLatest}`
+              : appVersion?.checkedAt
+                ? "Up to date"
+                : undefined
+          }
+          tone={appVersion?.updateAvailable ? "bad" : appVersion ? "ok" : "muted"}
         />
       </section>
     </div>

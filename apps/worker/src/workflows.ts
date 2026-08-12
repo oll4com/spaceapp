@@ -57,6 +57,14 @@ const nativeChatTurnActivities = proxyActivities<typeof activities>({
   }
 });
 
+const openCodeAgentTurnActivities = proxyActivities<typeof activities>({
+  startToCloseTimeout: "40 minutes",
+  heartbeatTimeout: ROOM_AGENT_TURN_HEARTBEAT_TIMEOUT,
+  retry: {
+    maximumAttempts: 1
+  }
+});
+
 const { markRoomAgentMissionStarted, markRoomAgentMissionFinished, markRoomAgentMissionContinued } = proxyActivities<typeof activities>({
   startToCloseTimeout: "1 minute",
   retry: {
@@ -75,6 +83,9 @@ export async function dummyTurnWorkflow(input: DummyTurnInput): Promise<DummyTur
 }
 
 export async function codexAppServerTurnWorkflow(input: DummyTurnInput): Promise<TurnWorkflowResult> {
+  if (input.providerId === "opencode") {
+    return openCodeAgentTurnActivities.runOpenCodeAgentTurn(input);
+  }
   return isNativeChatTurn(input)
     ? nativeChatTurnActivities.runCodexAppServerTurn(input)
     : roomAgentTurnActivities.runCodexAppServerTurn(input);

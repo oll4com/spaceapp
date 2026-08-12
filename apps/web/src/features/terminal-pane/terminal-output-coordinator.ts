@@ -3,8 +3,95 @@ import { emitAppDiagnosticsPerformance } from "../../app-diagnostics/app-diagnos
 export const TERMINAL_HIDDEN_PANE_BUFFER_LIMIT_BYTES = 128 * 1024;
 export const TERMINAL_HIDDEN_TOTAL_BUFFER_LIMIT_BYTES = 1024 * 1024;
 const TERMINAL_REVEAL_BATCH_LIMIT_BYTES = 1024 * 1024;
+const ESCAPE = "\u001b";
+const OSC_66_PREFIX = `${ESCAPE}]66;`;
+const OSC_STRING_TERMINATOR = `${ESCAPE}\\`;
+const OSC_BELL_TERMINATOR = "\u0007";
+const OSC_66_MAX_PENDING_CHARS = 16 * 1024;
 
 export type TerminalOutputWriteMode = "VISIBLE" | "PREFILL";
+
+function osc66PrefixSuffixLength(data: string): number {
+  const maximum = Math.min(data.length, OSC_66_PREFIX.length - 1);
+  for (let length = maximum; length > 0; length -= 1) {
+    if (OSC_66_PREFIX.startsWith(data.slice(-length))) return length;
+  }
+  return 0;
+}
+
+function osc66Terminator(data: string, fromIndex: number): { index: number; length: number } | null {
+  const bellIndex = data.indexOf(OSC_BELL_TERMINATOR, fromIndex);
+  const stringTerminatorIndex = data.indexOf(OSC_STRING_TERMINATOR, fromIndex);
+  if (bellIndex < 0 && stringTerminatorIndex < 0) return null;
+  if (bellIndex >= 0 && (stringTerminatorIndex < 0 || bellIndex < stringTerminatorIndex)) {
+    return { index: bellIndex, length: 1 };
+  }
+  return { index: stringTerminatorIndex, length: OSC_STRING_TERMINATOR.length };
+}
+
+function osc66Payload(body: string): string | null {
+  const separator = body.indexOf(";");
+  if (separator <= 0) return null;
+  const parameters = body.slice(0, separator);
+  const payload = body.slice(separator + 1);
+  if (!/^[a-z][a-z0-9_-]*=[1-9]\d{0,2}(?::[a-z][a-z0-9_-]*=[1-9]\d{0,2})*$/i.test(parameters)) {
+    return null;
+  }
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(payload)) return null;
+  return payload;
+}
+
+/**
+ * Newer OpenCode TUIs wrap explicit-width Unicode glyphs in OSC 66. xterm.js
+ * consumes unsupported OSC payloads without drawing them, so unwrap valid text
+ * while preserving every unrelated control sequence byte-for-byte.
+ */
+export function createTerminalOutputCompatibilityParser(
+  options: { maxPendingChars?: number } = {}
+) {
+  const maxPendingChars = Math.max(256, options.maxPendingChars ?? OSC_66_MAX_PENDING_CHARS);
+  let pending = "";
+
+  return {
+    push(data: string): string {
+      const input = pending + data;
+      pending = "";
+      let output = "";
+      let cursor = 0;
+      while (cursor < input.length) {
+        const start = input.indexOf(OSC_66_PREFIX, cursor);
+        if (start < 0) {
+          const remainder = input.slice(cursor);
+          const retainedLength = osc66PrefixSuffixLength(remainder);
+          output += retainedLength > 0 ? remainder.slice(0, -retainedLength) : remainder;
+          if (retainedLength > 0) pending = remainder.slice(-retainedLength);
+          break;
+        }
+        output += input.slice(cursor, start);
+        const bodyStart = start + OSC_66_PREFIX.length;
+        const terminator = osc66Terminator(input, bodyStart);
+        if (!terminator) {
+          pending = input.slice(start);
+          if (pending.length > maxPendingChars) {
+            output += pending;
+            pending = "";
+          }
+          break;
+        }
+        const end = terminator.index + terminator.length;
+        const payload = osc66Payload(input.slice(bodyStart, terminator.index));
+        output += payload ?? input.slice(start, end);
+        cursor = end;
+      }
+      return output;
+    },
+    flush(): string {
+      const remainder = pending;
+      pending = "";
+      return remainder;
+    }
+  };
+}
 
 export interface TerminalOutputPressure {
   roomId: string;
@@ -180,6 +267,7 @@ export function createTerminalOutputCoordinator(options: {
   totalLimitBytes?: number;
 }) {
   const key = `${options.roomId}\u0000${options.paneId}`;
+  const outputCompatibilityParser = createTerminalOutputCompatibilityParser();
   const perPaneLimitBytes = options.perPaneLimitBytes ?? TERMINAL_HIDDEN_PANE_BUFFER_LIMIT_BYTES;
   const totalLimitBytes = options.totalLimitBytes ?? TERMINAL_HIDDEN_TOTAL_BUFFER_LIMIT_BYTES;
   const buffer: BufferedOutput[] = [];
@@ -327,7 +415,9 @@ export function createTerminalOutputCoordinator(options: {
         }
       };
       try {
-        const returned = options.write(next.data, done, mode);
+        const compatibleData = outputCompatibilityParser.push(next.data);
+        const returned = compatibleData ? options.write(compatibleData, done, mode) : undefined;
+        if (!compatibleData) done();
         if (returned && typeof returned.then === "function") {
           void returned.then(() => done(), done);
         }

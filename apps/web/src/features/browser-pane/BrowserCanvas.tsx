@@ -61,6 +61,7 @@ interface BrowserCanvasProps {
   interactive: boolean;
   source?: string | null;
   capturedAt?: string | null;
+  historyLimit?: number;
   onInput(input: BrowserCanvasInput): void;
 }
 
@@ -169,7 +170,7 @@ async function decodeFrame(source: string | Blob): Promise<DecodedFrame> {
 }
 
 export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>(function BrowserCanvas(
-  { ariaLabel, viewportSize, interactive, source, capturedAt, onInput },
+  { ariaLabel, viewportSize, interactive, source, capturedAt, historyLimit = MAX_FRAME_HISTORY, onInput },
   forwardedRef
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -224,7 +225,8 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
           continue;
         }
         historyRef.current.push(decoded);
-        while (historyRef.current.length > MAX_FRAME_HISTORY) historyRef.current.shift()?.dispose();
+        const effectiveLimit = Math.max(1, historyLimit);
+        while (historyRef.current.length > effectiveLimit) historyRef.current.shift()?.dispose();
         if (selectedIndexRef.current === null) draw(decoded);
         if (!hasFrameRef.current) {
           hasFrameRef.current = true;

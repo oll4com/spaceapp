@@ -15,9 +15,11 @@ import {
   type AgentPaneHistoryItem,
   type AgentPaneMessage,
   type AgentPaneModelOption,
+  type AgentPaneModelProvider,
   type AgentPaneSession,
   type AgentPaneToolOption,
   type Artifact,
+  type CodexModelCatalogOption,
   type CollaborationMode,
   type DummyTurnInput,
   imageArtifactMimeTypeSchema,
@@ -27,6 +29,17 @@ import {
   type SpaceAgentSessionRecord
 } from "@space/contracts";
 import { SpaceFeatureDisabledError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
+import {
+  codexChatProviderAdapter,
+  codexChatProviderConfigIdPrefix,
+  codexChatProviderId,
+  opencodeChatProviderAdapter,
+  opencodeChatProviderConfigIdPrefix,
+  providerForConfigId,
+  type ChatProviderAdapter,
+  type ChatProviderCatalogResult,
+  type OpenCodeControlResolver
+} from "./chat-providers.js";
 import type { SpaceApiConfig } from "./config.js";
 import { TurnStarterDisabledError, type TurnStarter } from "./turns.js";
 
@@ -98,13 +111,8 @@ function reasoningLabel(reasoningKey: string | null): string | null {
   return reasoningKey === "none" ? "No extra reasoning" : `${titleCase(reasoningKey)} reasoning`;
 }
 
-const modelConfigIdPrefix = "codex-v1|";
 const modelSelectionUnavailableReason =
-  "The selected model and reasoning configuration is not advertised by the current Codex model catalog.";
-
-function modelConfigId(modelId: string, reasoningKey: string): string {
-  return `${modelConfigIdPrefix}${modelId}|${reasoningKey}`;
-}
+  "The selected model and reasoning configuration is not advertised by the current model catalog.";
 
 function closedRuntimeGate(config: SpaceApiConfig): string | null {
   if (!config.agentPaneEnabled) return "SPACE_AGENT_PANE_ENABLED must be true before native pane agents can run.";
@@ -118,13 +126,13 @@ function closedRuntimeGate(config: SpaceApiConfig): string | null {
   return null;
 }
 
-function modelOptions(catalog: CodexAppServerSocketModelOption[]): AgentPaneModelOption[] {
+function providerModelOptions(provider: ChatProviderAdapter, catalog: CodexModelCatalogOption[]): AgentPaneModelOption[] {
   return catalog.flatMap((model): AgentPaneModelOption[] =>
     model.supportedReasoningEfforts.map((reasoningKey) => ({
-      id: modelConfigId(model.id, reasoningKey),
+      id: `${provider.configIdPrefix}${model.id}|${reasoningKey}`,
       displayName: model.displayName,
-      providerId: null,
-      providerName: null,
+      providerId: provider.providerId === codexChatProviderId ? null : provider.providerId,
+      providerName: provider.providerId === codexChatProviderId ? null : provider.providerName,
       model: model.id,
       reasoningKey,
       reasoningLabel: reasoningLabel(reasoningKey),
@@ -516,7 +524,7 @@ function promptWithAgentContexts(content: string, contexts: Array<string | null>
 
 function selectedModelFromOptions(
   options: AgentPaneModelOption[],
-  catalog: CodexAppServerSocketModelOption[],
+  catalog: CodexModelCatalogOption[],
   selectedModelConfigId: string | null,
   strict: boolean
 ): { selectedModel: AgentPaneModelOption | null; modelSelectionGate: string | null } {
@@ -566,10 +574,10 @@ function selectedSessionFields(select: {
   selectedTools: string[];
 }, fallback?: SpaceAgentSessionRecord) {
   return {
-    selectedProviderId: null,
+    selectedProviderId: select.selectedModel?.providerId ?? fallback?.selectedProviderId ?? null,
     selectedModelId: select.selectedModel?.model ?? fallback?.selectedModelId ?? null,
     selectedModelConfigId: select.selectedModel?.id ?? fallback?.selectedModelConfigId ?? null,
-    selectedProviderName: null,
+    selectedProviderName: fallback?.selectedProviderName ?? null,
     selectedModelName: select.selectedModel
       ? select.selectedModel.model ?? select.selectedModel.displayName
       : fallback?.selectedModelName ?? null,
@@ -724,7 +732,8 @@ interface SpaceAgentRuntimeCapabilitiesResult {
 }
 
 interface SpaceAgentOperationContext {
-  modelCatalogSnapshot: SpaceAgentModelCatalogSnapshot;
+  providers: ChatProviderAdapter[];
+  providerCatalogs: Promise<ChatProviderCatalogResult[]>;
   runtimeCapabilities: Promise<SpaceAgentRuntimeCapabilitiesResult>;
 }
 
@@ -733,11 +742,37 @@ export function createSpaceAgentAdapter(options: {
   config: SpaceApiConfig;
   codexTurnStarter: TurnStarter;
   codexAgentControl?: SpaceAgentControl | null;
+  openCodeControlResolver?: OpenCodeControlResolver | null;
   readGoal?: SpaceAgentGoalReader;
   requirementsCacheTtlMs?: number;
 }): SpaceAgentAdapter {
-  const { store, config, codexTurnStarter, codexAgentControl, readGoal } = options;
+  const { store, config, codexTurnStarter, codexAgentControl, openCodeControlResolver, readGoal } = options;
   let cachedRuntimeCapabilities: { value: SpaceAgentRuntimeCapabilities; expiresAt: number } | null = null;
+
+  function createProviderRegistry(): ChatProviderAdapter[] {
+    const codexSnapshot = createModelCatalogSnapshot();
+    const providers: ChatProviderAdapter[] = [
+      codexChatProviderAdapter(codexAgentControl, () =>
+        codexSnapshot().then((result) => ({
+          models: result.catalog.map((model) => ({
+            id: model.id,
+            displayName: model.displayName,
+            description: model.description,
+            isDefault: model.isDefault,
+            defaultReasoningEffort: model.defaultReasoningEffort,
+            supportedReasoningEfforts: model.supportedReasoningEfforts,
+            reasoningOptions: model.reasoningOptions
+          })),
+          current: null,
+          error: result.error
+        }))
+      )
+    ];
+    if (openCodeControlResolver) {
+      providers.push(opencodeChatProviderAdapter(openCodeControlResolver));
+    }
+    return providers;
+  }
 
   function createModelCatalogSnapshot(): SpaceAgentModelCatalogSnapshot {
     let pending: Promise<SpaceAgentModelCatalogResult> | null = null;
@@ -774,36 +809,52 @@ export function createSpaceAgentAdapter(options: {
     const runtimeCapabilitiesSnapshot = runtimeCapabilities()
       .then((value) => ({ value, error: null }))
       .catch(() => ({ value: null, error: "Codex runtime requirements are unavailable." }));
-    const modelCatalogSnapshot = createModelCatalogSnapshot();
-    void modelCatalogSnapshot();
+    const providers = createProviderRegistry();
     return {
-      modelCatalogSnapshot,
+      providers,
+      providerCatalogs: Promise.all(providers.map((provider) => provider.loadCatalog())),
       runtimeCapabilities: runtimeCapabilitiesSnapshot
     };
   }
 
   async function selection(
     roomId: string,
-    modelCatalogSnapshot: SpaceAgentModelCatalogSnapshot,
+    providers: ChatProviderAdapter[],
+    providerCatalogs: Promise<ChatProviderCatalogResult[]>,
     selectedModelConfigId?: string | null,
     selectedToolIds?: string[] | null,
     strictModelSelection = false
   ) {
-    const [catalogResult, mcpServers, mcpTools, browserSessions] = await Promise.all([
-      modelCatalogSnapshot(),
+    const [providerResults, mcpServers, mcpTools, browserSessions] = await Promise.all([
+      providerCatalogs,
       store.listMcpServers(),
       store.listMcpTools(),
       store.listActivePaneBrowserSessions(roomId)
     ]);
-    const modelList = modelOptions(catalogResult.catalog);
-    const modelSelection = catalogResult.error
+    const currentProvider = providerForConfigId(providers, selectedModelConfigId ?? null) ?? providers[0] ?? null;
+    const currentIndex = currentProvider ? providers.findIndex((provider) => provider === currentProvider) : -1;
+    const currentResult = currentIndex >= 0 ? providerResults[currentIndex] : null;
+    const currentCatalog = currentResult?.models ?? [];
+    const modelList = currentProvider ? providerModelOptions(currentProvider, currentCatalog) : [];
+    const modelSelection = currentResult?.error
       ? { selectedModel: null, modelSelectionGate: null }
       : selectedModelFromOptions(
           modelList,
-          catalogResult.catalog,
+          currentCatalog,
           selectedModelConfigId ?? null,
           strictModelSelection
         );
+    const modelProviders: AgentPaneModelProvider[] = providers.map((provider, index) => {
+      const result = providerResults[index];
+      return {
+        providerId: provider.providerId,
+        providerName: provider.providerName,
+        configIdPrefix: provider.configIdPrefix,
+        isCurrent: provider.providerId === currentProvider?.providerId,
+        statusReason: result?.error ?? null,
+        models: result?.models ?? []
+      };
+    });
     const tools = [
       ...memoryToolOptions,
       ...clipboardToolOptions,
@@ -818,10 +869,14 @@ export function createSpaceAgentAdapter(options: {
     const requestedToolIds = (selectedToolIds == null ? defaultToolIds : selectedToolIds).filter((toolId) => availableToolIds.has(toolId));
     const selectedTools = Array.from(new Set([...requestedToolIds, ...forceToolIds]));
     return {
-      modelCatalog: catalogResult.catalog,
+      modelCatalog: currentCatalog,
       modelList,
       selectedModel: modelSelection.selectedModel,
-      modelCatalogGate: catalogResult.error ?? (modelList.length ? null : "Codex model catalog did not advertise a selectable model."),
+      modelProviders,
+      modelCatalogGate: currentResult?.error
+        ?? (modelList.length
+          ? null
+          : `${currentProvider?.providerName ?? "Provider"} did not advertise a selectable model.`),
       modelSelectionGate: modelSelection.modelSelectionGate,
       tools,
       selectedTools,
@@ -832,11 +887,12 @@ export function createSpaceAgentAdapter(options: {
   async function selectionForExistingSession(
     session: SpaceAgentSessionRecord,
     input: SpaceAgentCreateInput,
-    modelCatalogSnapshot: SpaceAgentModelCatalogSnapshot
+    operation: SpaceAgentOperationContext
   ) {
     return selection(
       input.pane.roomId,
-      modelCatalogSnapshot,
+      operation.providers,
+      operation.providerCatalogs,
       input.selectedModelConfigId === undefined ? session.selectedModelConfigId : input.selectedModelConfigId,
       input.selectedToolIds === undefined ? session.selectedToolIds : input.selectedToolIds,
       input.selectedModelConfigId !== undefined
@@ -845,7 +901,7 @@ export function createSpaceAgentAdapter(options: {
 
   async function ensureSession(
     input: SpaceAgentCreateInput,
-    modelCatalogSnapshot: SpaceAgentModelCatalogSnapshot
+    operation: SpaceAgentOperationContext
   ): Promise<SpaceAgentSessionRecord> {
     const runtimeGate = closedRuntimeGate(config);
     const forceNewSession = input.sessionId === null;
@@ -854,7 +910,7 @@ export function createSpaceAgentAdapter(options: {
       if (!existing || existing.roomId !== input.pane.roomId) {
         throw new SpaceFeatureDisabledError("SPACE_AGENT_SESSION_UNAUTHORIZED", "Space agent session is not available in this room.");
       }
-      const select = await selectionForExistingSession(existing, input, modelCatalogSnapshot);
+      const select = await selectionForExistingSession(existing, input, operation);
       const gate = runtimeGate ?? select.modelCatalogGate ?? select.modelSelectionGate;
       const status = gate ? "BLOCKED" : existing.status === "RUNNING" ? "RUNNING" : "READY";
       return store.updateSpaceAgentSession(existing.sessionId, {
@@ -872,7 +928,7 @@ export function createSpaceAgentAdapter(options: {
 
     const active = forceNewSession ? null : await store.getActiveSpaceAgentSession(input.pane.id);
     if (active) {
-      const select = await selectionForExistingSession(active, input, modelCatalogSnapshot);
+      const select = await selectionForExistingSession(active, input, operation);
       const gate = runtimeGate ?? select.modelCatalogGate ?? select.modelSelectionGate;
       const status = gate ? "BLOCKED" : active.status === "RUNNING" ? "RUNNING" : "READY";
       return store.updateSpaceAgentSession(active.sessionId, {
@@ -887,7 +943,8 @@ export function createSpaceAgentAdapter(options: {
 
     const select = await selection(
       input.pane.roomId,
-      modelCatalogSnapshot,
+      operation.providers,
+      operation.providerCatalogs,
       input.selectedModelConfigId,
       input.selectedToolIds,
       input.selectedModelConfigId !== undefined
@@ -935,14 +992,12 @@ export function createSpaceAgentAdapter(options: {
     session: SpaceAgentSessionRecord,
     operation: SpaceAgentOperationContext
   ): Promise<AgentPaneSession> {
-    const [, runtimeResult] = await Promise.all([
-      operation.modelCatalogSnapshot(),
-      operation.runtimeCapabilities
-    ]);
+    const runtimeResult = await operation.runtimeCapabilities;
     const currentSession = (await store.getSpaceAgentSession(session.sessionId)) ?? session;
     const select = await selection(
       currentSession.roomId,
-      operation.modelCatalogSnapshot,
+      operation.providers,
+      operation.providerCatalogs,
       currentSession.selectedModelConfigId,
       currentSession.selectedToolIds
     );
@@ -987,6 +1042,7 @@ export function createSpaceAgentAdapter(options: {
       statusReason,
       modelOptions: select.modelList,
       modelCatalog: select.modelCatalog,
+      modelProviders: select.modelProviders,
       selectedModelConfigId: projectedSession.selectedModelConfigId,
       toolOptions: select.tools,
       selectedToolIds: select.selectedTools,
@@ -1009,13 +1065,13 @@ export function createSpaceAgentAdapter(options: {
 
   async function loadSession(input: SpaceAgentAdapterInput): Promise<AgentPaneSession> {
     const operation = createOperationContext();
-    const session = await ensureSession({ pane: input.pane }, operation.modelCatalogSnapshot);
+    const session = await ensureSession({ pane: input.pane }, operation);
     return buildSession(session, operation);
   }
 
   async function createOrRestoreSession(input: SpaceAgentCreateInput): Promise<AgentPaneSession> {
     const operation = createOperationContext();
-    const session = await ensureSession(input, operation.modelCatalogSnapshot);
+    const session = await ensureSession(input, operation);
     return buildSession(session, operation);
   }
 
@@ -1025,10 +1081,11 @@ export function createSpaceAgentAdapter(options: {
       pane: input.pane,
       selectedModelConfigId: input.selectedModelConfigId,
       selectedToolIds: input.selectedToolIds
-    }, operation.modelCatalogSnapshot);
+    }, operation);
     const sendSelection = await selection(
       input.pane.roomId,
-      operation.modelCatalogSnapshot,
+      operation.providers,
+      operation.providerCatalogs,
       session.selectedModelConfigId,
       session.selectedToolIds
     );
@@ -1058,6 +1115,17 @@ export function createSpaceAgentAdapter(options: {
         })
       : [];
 
+    let providerSessionId: string | undefined;
+    if (session.selectedProviderId === "opencode") {
+      if (!openCodeControlResolver) {
+        throw new SpaceFeatureDisabledError(
+          "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+          "OpenCode runtime control is unavailable for this Space agent session."
+        );
+      }
+      providerSessionId = (await openCodeControlResolver()).spaceSessionId;
+    }
+
     const turnInput: DummyTurnInput = {
       roomId: input.pane.roomId,
       paneId: input.pane.id,
@@ -1067,7 +1135,8 @@ export function createSpaceAgentAdapter(options: {
         artifactContext(attachedArtifacts)
       ]),
       artifactIds: attachedArtifacts.filter(isImageTurnArtifact).map((artifact) => artifact.id),
-      providerId: null,
+      providerId: session.selectedProviderId ?? null,
+      providerSessionId,
       modelId: session.selectedModelId === "codex-app-server-default" ? null : session.selectedModelId,
       reasoningEffort: toReasoningEffort(session.selectedReasoningKey),
       agentSessionId: session.sessionId,
@@ -1121,7 +1190,7 @@ export function createSpaceAgentAdapter(options: {
 
   async function interrupt(input: SpaceAgentInterruptInput): Promise<SpaceAgentMutationResult> {
     const operation = createOperationContext();
-    const session = await ensureSession({ pane: input.pane }, operation.modelCatalogSnapshot);
+    const session = await ensureSession({ pane: input.pane }, operation);
     const run = await store.getLatestSpaceAgentRun(session.sessionId);
     if (run && (run.status === "QUEUED" || run.status === "RUNNING")) {
       try {
@@ -1190,7 +1259,7 @@ export function createSpaceAgentAdapter(options: {
       title: input.title,
       selectedModelConfigId: input.selectedModelConfigId,
       selectedToolIds: input.selectedToolIds
-    }, operation.modelCatalogSnapshot);
+    }, operation);
     if (input.collaborationMode !== undefined) {
       session = await store.updateSpaceAgentSession(session.sessionId, {
         collaborationMode: input.collaborationMode,
@@ -1207,7 +1276,7 @@ export function createSpaceAgentAdapter(options: {
       throw new SpaceFeatureDisabledError("CODEX_GOAL_CONTROL_UNAVAILABLE", "Codex goal control is unavailable.");
     }
     const operation = createOperationContext();
-    let session = await ensureSession({ pane: input.pane }, operation.modelCatalogSnapshot);
+    let session = await ensureSession({ pane: input.pane }, operation);
     const result = await codexAgentControl.setGoal({ threadId: session.threadId, objective: input.objective });
     if (result.threadId !== session.threadId) {
       session = await store.updateSpaceAgentSession(session.sessionId, {
@@ -1221,7 +1290,7 @@ export function createSpaceAgentAdapter(options: {
 
   async function clearGoal(input: SpaceAgentAdapterInput): Promise<SpaceAgentMutationResult> {
     const operation = createOperationContext();
-    const session = await ensureSession({ pane: input.pane }, operation.modelCatalogSnapshot);
+    const session = await ensureSession({ pane: input.pane }, operation);
     if (session.threadId) {
       if (!codexAgentControl) {
         throw new SpaceFeatureDisabledError("CODEX_GOAL_CONTROL_UNAVAILABLE", "Codex goal control is unavailable.");

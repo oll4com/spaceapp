@@ -169,10 +169,30 @@
 
 .space-shell[data-ui-theme="modern"] .topbar {
   min-height: 3.65rem;
-  grid-template-columns: minmax(12rem, 18rem) minmax(0, 1fr);
+  grid-template-columns: minmax(12rem, 18rem) minmax(0, 1fr) auto;
   padding: 0.55rem 0.75rem;
   border-color: var(--modern-border);
   background: var(--modern-surface);
+}
+
+.space-shell[data-ui-theme="modern"] .topbar-meta a,
+.space-shell[data-ui-theme="modern"] .topbar-meta .topbar-meta-version {
+  border-color: var(--modern-border);
+  color: var(--modern-muted);
+}
+
+.space-shell[data-ui-theme="modern"] .topbar-meta .topbar-meta-version {
+  color: var(--modern-text);
+  border-color: var(--modern-accent);
+}
+
+.space-shell[data-ui-theme="modern"] .brand h1 a:hover {
+  color: var(--modern-accent);
+}
+
+.space-shell[data-ui-theme="modern"] .topbar-meta a:hover {
+  color: var(--modern-text);
+  border-color: var(--modern-accent);
 }
 
 .space-shell[data-ui-theme="modern"] .space-brand-control {
@@ -297,10 +317,10 @@
 
 .space-shell[data-ui-theme="modern"] .board-toolbar,
 .space-shell[data-ui-theme="modern"] .board-toolbar[data-room-actions-stacked="true"] {
-  grid-template-columns: minmax(12rem, 1fr) auto auto;
+  grid-template-columns: minmax(12rem, 1fr) auto;
   grid-template-areas:
-    "title lb fixed"
-    "actions actions actions";
+    "title lb"
+    "actions actions";
   align-items: center;
   gap: 0.5rem 0.7rem;
   padding: 0.65rem;
@@ -724,6 +744,7 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   .side-surface-room-panel,
   .room-pane-composer,
   .agent-settings-dock,
+  .cli-dock,
   .memory-dock,
   .memory-workspace,
   .room-agent-dock,
@@ -748,6 +769,7 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   .side-surface-room-panel,
   .room-pane-composer,
   .agent-settings-dock,
+  .cli-dock,
   .memory-dock,
   .memory-workspace,
   .room-agent-dock,
@@ -774,6 +796,7 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
 .space-shell[data-ui-theme="modern"] :is(
   .room-pane-composer,
   .agent-settings-dock,
+  .cli-dock,
   .memory-dock,
   .memory-workspace,
   .room-agent-dock,
@@ -1013,7 +1036,6 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   .cli-vpn-profile-upload > button,
   .cli-vpn-file-picker,
   .source-control-provider,
-  .codex-cli-defaults-mode,
   .telegram-status-panel,
   .telegram-pairing-panel,
   .telegram-setup-guide,
@@ -1517,7 +1539,7 @@ body[data-ui-theme="modern"] .vibe-music-error {
 
   .space-shell[data-ui-theme="modern"] .topbar {
     min-height: 3.25rem;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
     padding: 0.45rem 0.55rem;
   }
 
@@ -1538,9 +1560,7 @@ body[data-ui-theme="modern"] .vibe-music-error {
   .space-shell[data-ui-theme="modern"] .board-toolbar,
   .space-shell[data-ui-theme="modern"] .board-toolbar[data-room-actions-stacked="true"] {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "title"
-      "fixed";
+    grid-template-areas: "title";
     gap: 0.35rem;
     padding: 0.48rem;
   }
@@ -1555,10 +1575,7 @@ body[data-ui-theme="modern"] .vibe-music-error {
   }
 
   .space-shell[data-ui-theme="modern"] .toolbar-actions-fixed {
-    justify-self: stretch;
     justify-content: flex-end;
-    overflow-x: auto;
-    scrollbar-width: none;
   }
 
   .space-shell[data-ui-theme="modern"] .pane-switcher button {
@@ -1605,18 +1622,6 @@ body[data-ui-theme="modern"] .vibe-music-error {
   .space-shell[data-ui-theme="modern"] .mobile-action-sheet-main,
   .space-shell[data-ui-theme="modern"] .mobile-action-sheet-toggle {
     min-height: 3rem;
-  }
-}
-
-@media (max-width: 380px) {
-  .space-shell[data-ui-theme="modern"] .toolbar-actions-fixed {
-    justify-content: flex-start;
-  }
-
-  .space-shell[data-ui-theme="modern"] .toolbar-actions-fixed > button,
-  .space-shell[data-ui-theme="modern"] .toolbar-overflow > button {
-    width: 2.4rem;
-    min-width: 2.4rem;
   }
 }
 

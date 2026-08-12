@@ -5,6 +5,14 @@ import { promisify } from "node:util";
 import type { SpaceStore } from "@space/runtime";
 
 const execFileAsync = promisify(execFile);
+const codexRolloutGoalStatuses = new Set([
+  "active",
+  "paused",
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete"
+]);
 
 type JsonRecord = Record<string, unknown>;
 
@@ -80,10 +88,26 @@ export function inspectCodexCliCompletion(
 ): CodexCliCompletionInspection {
   let targetTurnId = options.turnId ?? null;
   let contextualTurnId: string | null = null;
-  let finalResponse: string | null = null;
-  let completedAtMs: number | null = null;
-  let completionSeen = false;
-  let aborted = false;
+  let goalStatus: string | null = null;
+  let goalTurnId: string | null = null;
+  const turns = new Map<string, {
+    finalResponse: string | null;
+    completedAtMs: number | null;
+    completionSeen: boolean;
+    aborted: boolean;
+  }>();
+  const turnState = (turnId: string) => {
+    const existing = turns.get(turnId);
+    if (existing) return existing;
+    const created = {
+      finalResponse: null,
+      completedAtMs: null,
+      completionSeen: false,
+      aborted: false
+    };
+    turns.set(turnId, created);
+    return created;
+  };
 
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -104,19 +128,22 @@ export function inspectCodexCliCompletion(
       if (turnId && isEligible(atMs, options.submittedAtMs)) {
         contextualTurnId = turnId;
         targetTurnId ??= turnId;
+        turnState(turnId);
+        if (goalStatus && turnId !== targetTurnId) goalTurnId = turnId;
       }
       continue;
     }
 
     if (type === "response_item" && payload) {
+      const responseTurnId = contextualTurnId;
       if (
-        targetTurnId &&
-        contextualTurnId === targetTurnId &&
+        responseTurnId &&
         isEligible(atMs, options.submittedAtMs) &&
         payload.type === "message" &&
         payload.role === "assistant"
       ) {
-        finalResponse = assistantResponse(payload) ?? finalResponse;
+        const state = turnState(responseTurnId);
+        state.finalResponse = assistantResponse(payload) ?? state.finalResponse;
       }
       continue;
     }
@@ -132,38 +159,62 @@ export function inspectCodexCliCompletion(
       continue;
     }
     if (!isEligible(atMs, options.submittedAtMs)) continue;
+    if (eventType === "thread_goal_updated") {
+      const status = stringValue(record(payload.goal)?.status);
+      if (status && codexRolloutGoalStatuses.has(status)) goalStatus = status;
+      continue;
+    }
+    if (eventType === "task_started") {
+      const startedTurnId = eventTurnId ?? contextualTurnId;
+      if (startedTurnId) {
+        contextualTurnId = startedTurnId;
+        turnState(startedTurnId);
+        targetTurnId ??= startedTurnId;
+        if (goalStatus && startedTurnId !== targetTurnId) goalTurnId = startedTurnId;
+      }
+      continue;
+    }
     if (!targetTurnId && eventTurnId && (eventType === "task_complete" || eventType === "turn_aborted")) {
       targetTurnId = eventTurnId;
     }
-    if (!targetTurnId || (eventTurnId && eventTurnId !== targetTurnId)) continue;
+    const activeTurnId = eventTurnId ?? contextualTurnId ?? targetTurnId;
+    if (!activeTurnId) continue;
+    if (goalStatus && activeTurnId !== targetTurnId) goalTurnId = activeTurnId;
+    const selectedTurnId = goalStatus ? (goalTurnId ?? targetTurnId) : targetTurnId;
+    if (activeTurnId !== selectedTurnId) continue;
+    const state = turnState(activeTurnId);
 
     if (eventType === "agent_message" && (payload.phase === "final" || payload.phase === undefined)) {
-      finalResponse = assistantResponse(payload) ?? finalResponse;
+      state.finalResponse = assistantResponse(payload) ?? state.finalResponse;
       continue;
     }
     if (eventType === "turn_aborted") {
-      aborted = true;
+      state.aborted = true;
       continue;
     }
     if (eventType !== "task_complete") continue;
 
-    completionSeen = true;
-    completedAtMs ??= atMs;
+    state.completionSeen = true;
+    state.completedAtMs ??= atMs;
     const lastAgentMessage = stringValue(payload.last_agent_message)?.trim();
-    if (lastAgentMessage) finalResponse ??= lastAgentMessage;
+    if (lastAgentMessage) state.finalResponse ??= lastAgentMessage;
   }
 
-  if (!targetTurnId) return { status: "PENDING", turnId: null };
-  if (aborted) return { status: "ABORTED", turnId: targetTurnId };
-  if (!completionSeen) return { status: "PENDING", turnId: targetTurnId };
-  if (!finalResponse) {
-    return { status: "PENDING", turnId: targetTurnId, safeErrorCode: "CODEX_CLI_FINAL_RESPONSE_PENDING" };
+  const selectedTurnId = goalStatus ? (goalTurnId ?? targetTurnId) : targetTurnId;
+  if (!selectedTurnId) return { status: "PENDING", turnId: null };
+  if (goalStatus === "active") return { status: "PENDING", turnId: selectedTurnId };
+  if (goalStatus && !goalTurnId) return { status: "PENDING", turnId: selectedTurnId };
+  const selected = turnState(selectedTurnId);
+  if (selected.aborted) return { status: "ABORTED", turnId: selectedTurnId };
+  if (!selected.completionSeen) return { status: "PENDING", turnId: selectedTurnId };
+  if (!selected.finalResponse) {
+    return { status: "PENDING", turnId: selectedTurnId, safeErrorCode: "CODEX_CLI_FINAL_RESPONSE_PENDING" };
   }
   return {
     status: "COMPLETED",
-    turnId: targetTurnId,
-    finalResponse,
-    completedAt: new Date(completedAtMs ?? options.submittedAtMs).toISOString()
+    turnId: selectedTurnId,
+    finalResponse: selected.finalResponse,
+    completedAt: new Date(selected.completedAtMs ?? options.submittedAtMs).toISOString()
   };
 }
 

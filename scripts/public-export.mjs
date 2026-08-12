@@ -115,6 +115,10 @@ const publicPackageTests = new Set([
 
 const publicBinaryFiles = new Map([
   [
+    "apps/web/public/brand/spaceapp-open-source-banner.webp",
+    "ebe97ac74d4f287e5592b104f9ef54de1759716eba287bcbd20d21a293107de2"
+  ],
+  [
     "apps/web/src/assets/autohand-icon.png",
     "79fea595f2d60a7ba1b6a451ce5b2be51c98e1792c453e7e3a23b3b8b0b4ece0"
   ],

@@ -175,6 +175,7 @@ export function useSetupConnectionsWizard({
   const dialogRef = useRef<HTMLElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const closeIntentRef = useRef<"dismissal" | "login">("dismissal");
+  const previouslyOpenRef = useRef(open);
   const latestSequenceRef = useRef(0);
   const checkRunRef = useRef<SetupConnectionCheckRun | null>(null);
   const terminalRunRef = useRef<SetupConnectionCheckRun | null>(null);
@@ -305,7 +306,9 @@ export function useSetupConnectionsWizard({
   }, [pollIntervalMs, pollTimeoutMs, waitingConnectionId]);
 
   useEffect(() => {
-    if (open || closeIntentRef.current !== "dismissal") return;
+    const wasOpen = previouslyOpenRef.current;
+    previouslyOpenRef.current = open;
+    if (open || !wasOpen || closeIntentRef.current !== "dismissal") return;
     const frame = window.requestAnimationFrame(() => triggerRef?.current?.focus());
     return () => window.cancelAnimationFrame(frame);
   }, [open, triggerRef]);

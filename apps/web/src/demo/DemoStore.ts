@@ -1,4 +1,4 @@
-import { canonicalizeUserLinkUrl, cliToggleRuntimeIds } from "@space/contracts";
+import { canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions } from "@space/contracts";
 import type {
   AgentRuntime,
   AgentRuntimeRegistry,
@@ -25,8 +25,13 @@ import type {
   SetupConnectionCheckReplay,
   SetupConnectionCheckRun,
   SetupOverview,
+  StreamingCatalogResponse,
+  StreamingMetricTileSnapshot,
+  StreamingOverlaySettings,
+  StreamingOverlaySnapshot,
   TaskItem,
   UpdateProviderSettingsInput,
+  UpdateStreamingOverlaySettingsInput,
   UpdateTelegramIntegrationInput,
   UpdateUserLinkRequest,
   UserLink
@@ -60,6 +65,21 @@ function requestedPage<T>(data: T[], query: { page?: number; pageSize?: number }
 
 function cloneFixture(): DemoFixture {
   return structuredClone(createDemoFixture());
+}
+
+function initialStreamingSettings(): StreamingOverlaySettings {
+  return {
+    version: 1,
+    tiles: [
+      { metricKey: "space.rooms", accountId: null },
+      { metricKey: "space.active_agents", accountId: null },
+      { metricKey: "space.active_cli_sessions", accountId: null }
+    ],
+    customTextEnabled: false,
+    customText: "",
+    updatedAt: DEMO_FIXED_AT,
+    updatedBy: "user:demo-admin"
+  };
 }
 
 type DemoMemoryGraphQuery = {
@@ -134,13 +154,14 @@ export class DemoStore {
   private setupConnectionResults = initialSetupConnectionResults();
   private setupCheckRuns = new Map<string, DemoSetupCheckRunState>();
   private setupCheckSequence = 0;
+  private streamingSettings = initialStreamingSettings();
   readonly api: SpaceApiClient;
 
   constructor() {
     this.api = new Proxy({} as SpaceApiClient, {
       get: (_target, property) => (...args: unknown[]) => {
         const method = String(property);
-        if (["artifactFileUrl", "agentFilePreviewUrl", "agentFileDownloadUrl", "browserBookmarksExportUrl", "browserFrameWebSocketUrl", "browserStreamWebSocketUrl", "cliRuntimesSnapshot", "cliTerminalWebSocketUrl", "eventStreamUrl", "invalidateCliRuntimes", "openSetupConnectionCheckStream", "setCliTerminalControlLease", "warmCliRuntimes"].includes(method)) {
+        if (["artifactFileUrl", "agentFilePreviewUrl", "agentFileDownloadUrl", "browserBookmarksExportUrl", "browserFrameWebSocketUrl", "browserStreamWebSocketUrl", "cliRuntimesSnapshot", "cliRuntimeSettingsSnapshot", "cliTerminalWebSocketUrl", "eventStreamUrl", "invalidateCliRuntimes", "invalidateCliRuntimeSettings", "openSetupConnectionCheckStream", "resetCliRuntimeSettingsCache", "setCliTerminalControlLease", "warmCliRuntimes", "warmCliRuntimeSettings"].includes(method)) {
           return this.invoke(method, args);
         }
         return Promise.resolve().then(() => this.invoke(method, args));
@@ -158,6 +179,7 @@ export class DemoStore {
     this.setupConnectionResults = initialSetupConnectionResults();
     this.setupCheckRuns.clear();
     this.setupCheckSequence = 0;
+    this.streamingSettings = initialStreamingSettings();
   }
 
   private nextId(prefix: string): string {
@@ -251,6 +273,7 @@ export class DemoStore {
         defaultReasoningEffort: "high",
         supportedReasoningEfforts: ["medium", "high", "xhigh"]
       }],
+      modelProviders: [],
       selectedModelConfigId: "gpt-5.6-sol:high",
       toolOptions: structuredClone(this.fixture.agentToolOptions),
       selectedToolIds: [...selectedToolIds],
@@ -559,6 +582,19 @@ export class DemoStore {
         apiStartedAt: DEMO_FIXED_AT,
         dependencies: { store: "demo-local", runtimeStore: "demo-local", eventBus: "demo-local", temporal: "simulated", worker: "SIMULATED", cliHost: "SIMULATED", cliAdminHost: "SIMULATED", browserHost: "SIMULATED", browserHostBuildCommit: null, browserHostCaptureMetrics: null, codexTurns: "simulated", codexLb: "disconnected" }
       });
+      case "appVersion": return Promise.resolve({
+        appRelease: "v0.1.0",
+        currentCommit: "demo",
+        shortCommit: "demo",
+        currentBranch: "demo",
+        dirty: false,
+        athensTag: null,
+        githubLatest: null,
+        githubTagUrl: null,
+        updateAvailable: false,
+        behindCount: 0,
+        checkedAt: DEMO_FIXED_AT
+      });
       case "rooms": return Promise.resolve(paginated(structuredClone(this.fixture.rooms)));
       case "roomCliActivity": return Promise.resolve({
         data: this.fixture.rooms.map((room) => ({
@@ -692,6 +728,24 @@ export class DemoStore {
         return Promise.resolve(structuredClone(result));
       }
       case "toolbarCliSessions": return Promise.resolve(structuredClone(this.fixture.cliSessionStats));
+      case "toolbarModelStats": return Promise.resolve(structuredClone(this.fixture.modelStats));
+      case "systemAnalyticsOverview": return Promise.resolve(structuredClone({
+        ...this.fixture.systemAnalyticsOverview,
+        range: args[0] ?? "10m"
+      }));
+      case "systemAnalyticsModels": return Promise.resolve(structuredClone({
+        ...this.fixture.systemAnalyticsModels,
+        range: args[0] ?? "10m"
+      }));
+      case "systemAnalyticsResources": return Promise.resolve(structuredClone({
+        ...this.fixture.systemAnalyticsResources,
+        range: args[0] ?? "10m"
+      }));
+      case "systemAnalyticsProcesses": return Promise.resolve(structuredClone(this.fixture.systemAnalyticsProcesses));
+      case "systemAnalyticsCliSessions": return Promise.resolve(structuredClone({
+        ...this.fixture.systemAnalyticsCliSessions,
+        range: args[0] ?? "10m"
+      }));
       case "reapToolbarCliSessions": return Promise.resolve(structuredClone(this.fixture.cliSessionReap));
       case "toolbarHostMemory": return Promise.resolve(structuredClone(this.fixture.hostMemoryDetails));
       case "reclaimToolbarMemory": return Promise.resolve(structuredClone(this.fixture.memoryReclaim));
@@ -702,6 +756,76 @@ export class DemoStore {
       case "previewCodexHistoryPurge": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.historyPurgePreview));
       case "executeCodexHistoryPurge": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.historyPurgeResult));
       case "restartCoreServices": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.serviceRestart));
+      case "streamingCatalog": {
+        const response: StreamingCatalogResponse = {
+          providers: (["YOUTUBE", "TWITCH", "TIKTOK"] as const).map((provider) => ({
+            provider,
+            status: "UNCONFIGURED",
+            clientFilePresent: false,
+            clientFileSecure: false,
+            code: "DEMO_LOCAL_ONLY",
+            message: `${provider} OAuth is intentionally unavailable in the local demo.`,
+            scopes: []
+          })),
+          metrics: streamingMetricDefinitions.map((metric) => ({ ...metric })),
+          authorizations: [],
+          accounts: [],
+          settings: structuredClone(this.streamingSettings)
+        };
+        return Promise.resolve(response);
+      }
+      case "updateStreamingOverlaySettings": {
+        const input = args[0] as UpdateStreamingOverlaySettingsInput;
+        if (input.expectedVersion !== this.streamingSettings.version) {
+          throw new SpaceApiError("The demo overlay settings changed.", {
+            status: 409,
+            code: "STREAMING_SETTINGS_VERSION_CONFLICT"
+          });
+        }
+        this.streamingSettings = {
+          version: this.streamingSettings.version + 1,
+          tiles: structuredClone(input.tiles),
+          customTextEnabled: input.customTextEnabled,
+          customText: input.customText,
+          updatedAt: DEMO_FIXED_AT,
+          updatedBy: "user:demo-admin"
+        };
+        return Promise.resolve(structuredClone(this.streamingSettings));
+      }
+      case "streamingOverlaySnapshot": {
+        const spaceValues = new Map<string, number>([
+          ["space.rooms", this.fixture.rooms.length],
+          ["space.active_agents", this.fixture.panes.filter((pane) => pane.mode === "CHAT" && !pane.isClosed).length],
+          ["space.active_cli_sessions", this.fixture.panes.filter((pane) => pane.mode === "TERMINAL" && !pane.isClosed).length]
+        ]);
+        const definitions = new Map(streamingMetricDefinitions.map((metric) => [metric.key, metric]));
+        const tiles: StreamingMetricTileSnapshot[] = this.streamingSettings.tiles.map((tile) => {
+          const definition = definitions.get(tile.metricKey);
+          return {
+            metricKey: tile.metricKey,
+            accountId: tile.accountId,
+            provider: definition?.provider ?? "SPACE",
+            label: definition?.label ?? tile.metricKey,
+            badge: definition?.provider === "SPACE" ? "Space Demo" : "Demo local",
+            value: spaceValues.get(tile.metricKey) ?? null,
+            state: definition?.provider === "SPACE" ? "FRESH" : "UNAVAILABLE",
+            sampledAt: definition?.provider === "SPACE" ? DEMO_FIXED_AT : null
+          };
+        });
+        const response: StreamingOverlaySnapshot = {
+          generatedAt: DEMO_FIXED_AT,
+          settingsVersion: this.streamingSettings.version,
+          tiles,
+          customTextEnabled: this.streamingSettings.customTextEnabled,
+          customText: this.streamingSettings.customText
+        };
+        return Promise.resolve(response);
+      }
+      case "startStreamingOAuth":
+      case "verifyStreamingAccount":
+      case "removeStreamingAccount":
+      case "disconnectStreamingAuthorization":
+        throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
       case "cliRuntimeRestart": {
         const runtimeId = String(args[0] ?? "cli:opencode");
         return Promise.resolve({
@@ -968,8 +1092,12 @@ export class DemoStore {
       case "cliRuntimes": return Promise.resolve(this.cliRuntimeRegistry());
       case "cliRuntimesSnapshot": return this.cliRuntimeRegistry();
       case "invalidateCliRuntimes":
-      case "warmCliRuntimes": return undefined;
-      case "cliRuntimeSettings": return Promise.resolve({
+      case "warmCliRuntimes":
+      case "invalidateCliRuntimeSettings":
+      case "resetCliRuntimeSettingsCache":
+      case "warmCliRuntimeSettings": return undefined;
+      case "cliRuntimeSettingsSnapshot":
+      case "cliRuntimeSettings": return {
         settings: cliToggleRuntimeIds.map((runtimeId) => ({
           runtimeId,
           enabled: this.cliRuntimeEnabled.get(runtimeId) !== false,
@@ -1000,7 +1128,7 @@ export class DemoStore {
           restartRequiredSessionIds: []
         })),
         checkedAt: DEMO_FIXED_AT
-      });
+      };
       case "cliVpnRoutingStatus": return Promise.resolve({
         vpnSupported: true,
         connectionStatus: "NOT_CONFIGURED",
@@ -1128,6 +1256,7 @@ export class DemoStore {
       case "activeCliSession":
       case "createCliSession":
       case "interruptCliSession": return Promise.resolve(this.cliSession(roomId ?? "pane:demo-codex"));
+      case "abortCliTurn": return Promise.resolve({ ok: true, isTurnActive: false });
       case "reportCliClientEvent": return Promise.resolve({ accepted: true });
       case "setCliTerminalControlLease": return undefined;
       case "cliModelSettingsStatus": return Promise.resolve({ status: "AVAILABLE", settings: { sessionId: `cli_session:${roomId}`, threadId: null, current: { modelId: "gpt-5.6-sol", reasoningEffort: "high" }, models: [{ id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: ["medium", "high", "xhigh"] }], controlMode: "DIRECT", isTurnActive: false } });
@@ -1239,10 +1368,11 @@ export class DemoStore {
       }
       case "deleteLink": return Promise.resolve({ id: roomId!, deleted: true as const });
       case "clipboardItems": {
-        const query = (args[0] ?? {}) as { q?: string; source?: ClipboardItem["source"]; page?: number; pageSize?: number };
+        const query = (args[0] ?? {}) as { q?: string; source?: ClipboardItem["source"]; includeCompleted?: boolean; page?: number; pageSize?: number };
         const needle = query.q?.trim().toLowerCase();
         const items = this.fixture.clipboardItems.filter((item) =>
           (query.source === undefined || item.source === query.source) &&
+          (query.includeCompleted !== false || !item.isCompleted) &&
           (!needle || item.text.toLowerCase().includes(needle))
         );
         return Promise.resolve(structuredClone(requestedPage(items, query)));
@@ -1254,6 +1384,7 @@ export class DemoStore {
           text: input.text,
           source: input.source,
           title: null,
+          isCompleted: false,
           roomId: input.roomId ?? null,
           paneId: input.paneId ?? null,
           paneTitle: input.paneTitle ?? null,
@@ -1263,6 +1394,12 @@ export class DemoStore {
           lastUsedAt: DEMO_FIXED_AT
         };
         this.fixture.clipboardItems.unshift(item);
+        return Promise.resolve(structuredClone(item));
+      }
+      case "setClipboardItemCompleted": {
+        const item = this.fixture.clipboardItems.find((candidate) => candidate.id === roomId);
+        if (!item) throw new SpaceApiError("Clipboard item not found.", { status: 404, code: "NOT_FOUND" });
+        item.isCompleted = args[1] as boolean;
         return Promise.resolve(structuredClone(item));
       }
       case "deleteClipboardItem": return Promise.resolve({ id: roomId!, deleted: true as const });
@@ -1399,7 +1536,7 @@ export class DemoStore {
     const roomPanes = this.fixture.panes.filter((pane) => pane.roomId === roomId && !pane.isClosed);
     if (roomPanes.length >= room.paneCap) throw new SpaceApiError("Room pane cap reached.", { status: 409, code: "PANE_CAP_REACHED" });
     const pane: Pane = {
-      id: this.nextId("pane"), roomId, title, mode, status: "IDLE", providerId: null, modelId: null,
+      id: this.nextId("pane"), roomId, title, titleSource: "auto", mode, status: "IDLE", providerId: null, modelId: null,
       terminalRuntimeId: options.terminalRuntimeId ?? (mode === "TERMINAL" ? "codex" : null), reasoningEffort: "high",
       cwd: options.cwd ?? (mode === "TERMINAL" ? "/workspace/space-demo" : null), order: roomPanes.length,
       columnSpan: 1, isMaximized: false, isMinimized: false, isClosed: false,

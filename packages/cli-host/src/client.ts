@@ -37,7 +37,7 @@ export class CliHostClient {
   private readonly listeners = new Map<string, CliHostEventListener>();
   private readonly earlyEvents = new Map<string, CliHostEvent[]>();
 
-  constructor(private readonly options: { socketPath: string }) {}
+  constructor(private readonly options: { socketPath: string; onTransportClosed?: () => void }) {}
 
   async health(): Promise<CliHostHealth> {
     return this.request("inspect", {}) as Promise<CliHostHealth>;
@@ -155,6 +155,7 @@ export class CliHostClient {
     socket.on("close", () => {
       if (this.socket === socket) this.socket = null;
       this.rejectPending(new CliHostError("CLI_HOST_TRANSPORT_CLOSED", "CLI host transport closed."));
+      this.options.onTransportClosed?.();
     });
   }
 

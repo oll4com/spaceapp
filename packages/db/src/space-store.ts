@@ -488,6 +488,7 @@ type ClipboardItemRow = {
   text: string;
   source: ClipboardItem["source"];
   title: string | null;
+  isCompleted: boolean;
   roomId: string | null;
   paneId: string | null;
   paneTitle: string | null;
@@ -521,6 +522,7 @@ type PaneRow = {
   id: string;
   roomId: string;
   title: string;
+  titleSource: Pane["titleSource"];
   mode: Pane["mode"];
   status: Pane["status"];
   providerId: string | null;
@@ -1390,6 +1392,7 @@ const clipboardItemSelect = `
     text,
     source,
     title,
+    is_completed AS "isCompleted",
     room_id AS "roomId",
     pane_id AS "paneId",
     pane_title AS "paneTitle",
@@ -1436,6 +1439,7 @@ const paneSelect = `
     id,
     room_id AS "roomId",
     title,
+    title_source AS "titleSource",
     mode,
     status,
     provider_id AS "providerId",
@@ -2506,6 +2510,7 @@ function mapPane(row: PaneRow): Pane {
     id: row.id,
     roomId: row.roomId,
     title: row.title,
+    titleSource: row.titleSource ?? "auto",
     mode: row.mode,
     status: row.status,
     providerId: row.providerId,
@@ -4241,10 +4246,10 @@ export class PostgresSpaceStore implements SpaceStore {
       const result = await client.query<ClipboardItemRow>(
         `
           INSERT INTO clipboard_items (
-            id, owner_user_id, content_hash, text, source, title, room_id, pane_id, pane_title,
+            id, owner_user_id, content_hash, text, source, title, is_completed, room_id, pane_id, pane_title,
             occurrence_count, character_count, created_at, last_used_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, char_length($4), clock_timestamp(), clock_timestamp())
+          VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, $8, $9, 1, char_length($4), clock_timestamp(), clock_timestamp())
           ON CONFLICT (owner_user_id, content_hash)
           DO UPDATE SET
             text = EXCLUDED.text,
@@ -4261,6 +4266,7 @@ export class PostgresSpaceStore implements SpaceStore {
             text,
             source,
             title,
+            is_completed AS "isCompleted",
             room_id AS "roomId",
             pane_id AS "paneId",
             pane_title AS "paneTitle",
@@ -4318,6 +4324,9 @@ export class PostgresSpaceStore implements SpaceStore {
       values.push(parsed.source);
       conditions.push(`source = $${values.length}`);
     }
+    if (parsed.includeCompleted === false) {
+      conditions.push("is_completed = false");
+    }
     if (parsed.q) {
       const escapedSearch = parsed.q.replace(/[\\%_]/g, "\\$&");
       values.push(`%${escapedSearch}%`);
@@ -4339,6 +4348,37 @@ export class PostgresSpaceStore implements SpaceStore {
     };
   }
 
+  async setClipboardItemCompleted(
+    ownerUserId: string,
+    clipboardItemId: string,
+    completed: boolean
+  ): Promise<ClipboardItem> {
+    const result = await this.pool.query<ClipboardItemRow>(
+      `
+        UPDATE clipboard_items
+        SET is_completed = $3
+        WHERE owner_user_id = $1 AND id = $2
+        RETURNING
+          id,
+          text,
+          source,
+          title,
+          is_completed AS "isCompleted",
+          room_id AS "roomId",
+          pane_id AS "paneId",
+          pane_title AS "paneTitle",
+          occurrence_count AS "occurrenceCount",
+          character_count AS "characterCount",
+          created_at AS "createdAt",
+          last_used_at AS "lastUsedAt"
+      `,
+      [ownerUserId, clipboardItemId, completed]
+    );
+    return mapClipboardItem(
+      firstOrNotFound(result.rows, `Clipboard item ${clipboardItemId} was not found.`)
+    );
+  }
+
   async deleteClipboardItem(ownerUserId: string, clipboardItemId: string): Promise<ClipboardItem> {
     const result = await this.pool.query<ClipboardItemRow>(
       `
@@ -4348,6 +4388,8 @@ export class PostgresSpaceStore implements SpaceStore {
           id,
           text,
           source,
+          title,
+          is_completed AS "isCompleted",
           room_id AS "roomId",
           pane_id AS "paneId",
           pane_title AS "paneTitle",
@@ -6525,25 +6567,27 @@ export class PostgresSpaceStore implements SpaceStore {
         `
           UPDATE panes
           SET title = $2,
-              mode = $3,
-              status = $4,
-              provider_id = $5,
-              model_id = $6,
-              terminal_runtime_id = $7,
-              reasoning_effort = $8,
-              cwd = $9,
-              pane_order = $10,
-              column_span = $11,
-              is_maximized = $12,
-              is_minimized = $13,
-              is_closed = $14,
-              split = $15,
-              updated_at = $16
+              title_source = $3,
+              mode = $4,
+              status = $5,
+              provider_id = $6,
+              model_id = $7,
+              terminal_runtime_id = $8,
+              reasoning_effort = $9,
+              cwd = $10,
+              pane_order = $11,
+              column_span = $12,
+              is_maximized = $13,
+              is_minimized = $14,
+              is_closed = $15,
+              split = $16,
+              updated_at = $17
           WHERE id = $1
           RETURNING
             id,
             room_id AS "roomId",
             title,
+            title_source AS "titleSource",
             mode,
             status,
             provider_id AS "providerId",
@@ -6563,6 +6607,7 @@ export class PostgresSpaceStore implements SpaceStore {
         [
           paneId,
           updated.title,
+          updated.titleSource,
           updated.mode,
           updated.status,
           updated.providerId,
@@ -7443,11 +7488,12 @@ export class PostgresSpaceStore implements SpaceStore {
     return mapSpaceAgentMessage(firstOrNotFound(result.rows, `Space agent message ${messageId} was not updated.`));
   }
 
-  async createSpaceAgentRun(input: CreateSpaceAgentRunInput, _traceId = makeSpaceId("trace")): Promise<SpaceAgentRunRecord> {
+  async createSpaceAgentRun(input: CreateSpaceAgentRunInput, traceId = makeSpaceId("trace")): Promise<SpaceAgentRunRecord> {
     const parsed = createSpaceAgentRunInputSchema.parse(input);
     const timestamp = nowIso();
     const runId = parsed.runId ?? makeSpaceId("agent_run");
-    const result = await this.pool.query<SpaceAgentRunRow>(
+    return this.withTransaction(async (client) => {
+      const result = await client.query<SpaceAgentRunRow>(
       `
         INSERT INTO space_agent_runs (
           run_id,
@@ -7503,18 +7549,52 @@ export class PostgresSpaceStore implements SpaceStore {
         timestamp,
         parsed.completedAt ?? null
       ]
-    );
-    await this.updateSpaceAgentMessage(parsed.promptMessageId, { runId });
-    await this.updateSpaceAgentMessage(parsed.responseMessageId, { runId });
-    return mapSpaceAgentRun(firstOrNotFound(result.rows, `Space agent run ${runId} was not stored.`));
+      );
+      const run = mapSpaceAgentRun(firstOrNotFound(result.rows, `Space agent run ${runId} was not stored.`));
+      for (const messageId of [parsed.promptMessageId, parsed.responseMessageId]) {
+        const message = await client.query(
+          `
+            UPDATE space_agent_messages
+            SET run_id = $2, updated_at = $3
+            WHERE message_id = $1
+          `,
+          [messageId, runId, timestamp]
+        );
+        if (message.rowCount !== 1) {
+          throw new SpaceNotFoundError(`Space agent message ${messageId} was not found.`);
+        }
+      }
+      if (run.status === "QUEUED" || run.status === "RUNNING") {
+        await this.appendEvent(client, {
+          roomId: run.roomId,
+          paneId: run.paneId,
+          turnId: null,
+          // The Temporal workflow row is created by recordTurnQueued after the
+          // starter accepts this run. Referencing it here races that insert and
+          // violates events_workflow_id_fkey on a fresh Space-agent message.
+          workflowId: null,
+          traceId,
+          type: "TURN_STARTED",
+          message: "Pane agent run started.",
+          payload: {
+            status: run.status,
+            sourceType: "CHAT",
+            runId: run.runId,
+            sessionId: run.sessionId
+          }
+        });
+      }
+      return run;
+    });
   }
 
-  async updateSpaceAgentRun(runId: string, input: UpdateSpaceAgentRunInput, _traceId = makeSpaceId("trace")): Promise<SpaceAgentRunRecord> {
+  async updateSpaceAgentRun(runId: string, input: UpdateSpaceAgentRunInput, traceId = makeSpaceId("trace")): Promise<SpaceAgentRunRecord> {
     const parsed = updateSpaceAgentRunInputSchema.parse(input);
-    const currentResult = await this.pool.query<SpaceAgentRunRow>(`${spaceAgentRunSelect} WHERE run_id = $1`, [runId]);
-    const current = mapSpaceAgentRun(firstOrNotFound(currentResult.rows, `Space agent run ${runId} was not found.`));
-    const terminal = parsed.status === "COMPLETED" || parsed.status === "FAILED" || parsed.status === "INTERRUPTED";
-    const result = await this.pool.query<SpaceAgentRunRow>(
+    return this.withTransaction(async (client) => {
+      const currentResult = await client.query<SpaceAgentRunRow>(`${spaceAgentRunSelect} WHERE run_id = $1 FOR UPDATE`, [runId]);
+      const current = mapSpaceAgentRun(firstOrNotFound(currentResult.rows, `Space agent run ${runId} was not found.`));
+      const terminal = parsed.status === "COMPLETED" || parsed.status === "FAILED" || parsed.status === "INTERRUPTED";
+      const result = await client.query<SpaceAgentRunRow>(
       `
         UPDATE space_agent_runs
         SET temporal_run_id = $2,
@@ -7555,8 +7635,31 @@ export class PostgresSpaceStore implements SpaceStore {
         nowIso(),
         parsed.completedAt === undefined ? (terminal ? nowIso() : current.completedAt) : parsed.completedAt
       ]
-    );
-    return mapSpaceAgentRun(firstOrNotFound(result.rows, `Space agent run ${runId} was not updated.`));
+      );
+      const updated = mapSpaceAgentRun(firstOrNotFound(result.rows, `Space agent run ${runId} was not updated.`));
+      if (
+        (updated.status === "FAILED" || updated.status === "INTERRUPTED") &&
+        current.status !== updated.status
+      ) {
+        await this.appendEvent(client, {
+          roomId: updated.roomId,
+          paneId: updated.paneId,
+          turnId: null,
+          workflowId: updated.workflowId,
+          traceId,
+          type: "TURN_FAILED",
+          message: updated.status === "INTERRUPTED" ? "Pane agent run interrupted." : "Pane agent run failed.",
+          payload: {
+            status: updated.status,
+            sourceType: "CHAT",
+            runId: updated.runId,
+            sessionId: updated.sessionId,
+            reasonCode: updated.errorCode
+          }
+        });
+      }
+      return updated;
+    });
   }
 
   async updateSpaceAgentRunByWorkflowId(
@@ -8228,6 +8331,21 @@ export class PostgresSpaceStore implements SpaceStore {
       [uniqueThreadIds]
     );
     return new Map(result.rows.map((row) => [row.codexThreadId, row.title]));
+  }
+
+  async listResumablePaneCliCodexThreadIds(codexThreadIds: string[]): Promise<Set<string>> {
+    const uniqueThreadIds = [...new Set(codexThreadIds.filter(Boolean))];
+    if (!uniqueThreadIds.length) return new Set();
+    const result = await this.pool.query<{ codexThreadId: string }>(
+      `
+        SELECT DISTINCT s.codex_thread_id AS "codexThreadId"
+        FROM pane_cli_sessions s
+        WHERE s.codex_thread_id = ANY($1::text[])
+          AND s.purpose = 'NORMAL'
+      `,
+      [uniqueThreadIds]
+    );
+    return new Set(result.rows.map((row) => row.codexThreadId));
   }
 
   async getPaneCliSession(sessionId: string): Promise<PaneCliSession | null> {
@@ -8959,7 +9077,7 @@ export class PostgresSpaceStore implements SpaceStore {
         [parsed.sessionId, PANE_CLI_TRANSCRIPT_CHUNK_CAP]
       );
       return mapPaneCliTranscriptChunk(firstOrNotFound(result.rows, `CLI transcript chunk ${chunkId} was not stored.`));
-    });
+    }, { deadlockRetries: 1 });
   }
 
   async appendPaneCliHostOutputChunk(
@@ -9038,7 +9156,7 @@ export class PostgresSpaceStore implements SpaceStore {
         [parsed.sessionId, PANE_CLI_TRANSCRIPT_CHUNK_CAP]
       );
       return mapPaneCliTranscriptChunk(firstOrNotFound(result.rows, `CLI transcript chunk ${chunkId} was not stored.`));
-    });
+    }, { deadlockRetries: 1 });
   }
 
   async getPaneCliHostOutputCursor(sessionId: string, generationId: string): Promise<number> {
@@ -9104,36 +9222,61 @@ export class PostgresSpaceStore implements SpaceStore {
   }
 
   async createCodexCliTurnMarker(input: CreateCodexCliTurnMarkerInput): Promise<CodexCliTurnMarkerRecord> {
-    const markerId = makeSpaceId("codex_cli_turn");
-    const inserted = await this.pool.query<CodexCliTurnMarkerRow>(
-      `
-        INSERT INTO codex_cli_turn_markers (
-          marker_id, session_id, room_id, pane_id, client_turn_marker,
-          status, codex_thread_id, submitted_at, next_check_at, updated_at
-        )
-        SELECT $1, s.session_id, s.room_id, s.pane_id, $2,
-               'PENDING', s.codex_thread_id, $3, $3, $3
-        FROM pane_cli_sessions s
-        WHERE s.session_id = $4 AND s.room_id = $5 AND s.pane_id = $6
-        ON CONFLICT (session_id, client_turn_marker) DO NOTHING
-        RETURNING
-          marker_id AS "markerId", session_id AS "sessionId", room_id AS "roomId", pane_id AS "paneId",
-          client_turn_marker AS "clientTurnMarker", status, codex_thread_id AS "codexThreadId",
-          rollout_path AS "rolloutPath", completion_event_id AS "completionEventId",
-          submitted_at AS "submittedAt", completed_at AS "completedAt", next_check_at AS "nextCheckAt",
-          check_attempt_count AS "checkAttemptCount", locked_at AS "lockedAt", locked_by AS "lockedBy",
-          safe_error_code AS "safeErrorCode", updated_at AS "updatedAt"
-      `,
-      [markerId, input.clientTurnMarker, input.submittedAt, input.sessionId, input.roomId, input.paneId]
-    );
-    if (inserted.rows[0]) return mapCodexCliTurnMarker(inserted.rows[0]);
-    const existing = await this.pool.query<CodexCliTurnMarkerRow>(
-      `${codexCliTurnMarkerSelect} WHERE session_id = $1 AND client_turn_marker = $2`,
-      [input.sessionId, input.clientTurnMarker]
-    );
-    return mapCodexCliTurnMarker(
-      firstOrNotFound(existing.rows, `Codex CLI turn marker ${input.clientTurnMarker} was not stored.`)
-    );
+    return this.withTransaction(async (client) => {
+      const markerId = makeSpaceId("codex_cli_turn");
+      const inserted = await client.query<CodexCliTurnMarkerRow>(
+        `
+          INSERT INTO codex_cli_turn_markers (
+            marker_id, session_id, room_id, pane_id, client_turn_marker,
+            status, codex_thread_id, submitted_at, next_check_at, updated_at
+          )
+          SELECT $1, s.session_id, s.room_id, s.pane_id, $2,
+                 'PENDING', s.codex_thread_id, $3, $3, $3
+          FROM pane_cli_sessions s
+          WHERE s.session_id = $4 AND s.room_id = $5 AND s.pane_id = $6
+          ON CONFLICT (session_id, client_turn_marker) DO NOTHING
+          RETURNING
+            marker_id AS "markerId", session_id AS "sessionId", room_id AS "roomId", pane_id AS "paneId",
+            client_turn_marker AS "clientTurnMarker", status, codex_thread_id AS "codexThreadId",
+            rollout_path AS "rolloutPath", completion_event_id AS "completionEventId",
+            submitted_at AS "submittedAt", completed_at AS "completedAt", next_check_at AS "nextCheckAt",
+            check_attempt_count AS "checkAttemptCount", locked_at AS "lockedAt", locked_by AS "lockedBy",
+            safe_error_code AS "safeErrorCode", updated_at AS "updatedAt"
+        `,
+        [markerId, input.clientTurnMarker, input.submittedAt, input.sessionId, input.roomId, input.paneId]
+      );
+      if (inserted.rows[0]) {
+        const marker = mapCodexCliTurnMarker(inserted.rows[0]);
+        const session = await client.query<{ runtimeId: string }>(
+          `SELECT runtime_id AS "runtimeId" FROM pane_cli_sessions WHERE session_id = $1`,
+          [marker.sessionId]
+        );
+        await this.appendEvent(client, {
+          roomId: marker.roomId,
+          paneId: marker.paneId,
+          turnId: null,
+          workflowId: null,
+          traceId: `cli-turn:${marker.markerId}`,
+          type: "TURN_STARTED",
+          message: "Terminal turn started.",
+          payload: {
+            status: "RUNNING",
+            sourceType: "TERMINAL",
+            markerId: marker.markerId,
+            clientTurnMarker: marker.clientTurnMarker,
+            runtimeId: firstOrNotFound(session.rows, `CLI session ${marker.sessionId} was not found.`).runtimeId
+          }
+        });
+        return marker;
+      }
+      const existing = await client.query<CodexCliTurnMarkerRow>(
+        `${codexCliTurnMarkerSelect} WHERE session_id = $1 AND client_turn_marker = $2`,
+        [input.sessionId, input.clientTurnMarker]
+      );
+      return mapCodexCliTurnMarker(
+        firstOrNotFound(existing.rows, `Codex CLI turn marker ${input.clientTurnMarker} was not stored.`)
+      );
+    });
   }
 
   async claimCodexCliTurnMarkers(input: {
@@ -9236,6 +9379,7 @@ export class PostgresSpaceStore implements SpaceStore {
           status: "COMPLETED",
           sourceType: "TERMINAL",
           markerId: current.markerId,
+          clientTurnMarker: current.clientTurnMarker,
           codexThreadId: input.codexThreadId,
           codexTurnId: input.codexTurnId
         }

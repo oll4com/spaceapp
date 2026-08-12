@@ -29,3 +29,25 @@ export {
   type ListActivityLogEventsResult,
   type SetActivityLogEnabledInput
 } from "./activity-log-repository.js";
+export {
+  InMemorySystemAnalyticsRepository,
+  PostgresSystemAnalyticsRepository,
+  type SystemAnalyticsModelEventRecord,
+  type SystemAnalyticsModelEventStatus,
+  type SystemAnalyticsRepository,
+  type SystemAnalyticsResourceBucket,
+  type SystemAnalyticsResourceEntityType,
+  type SystemAnalyticsResourceSample
+} from "./system-analytics-repository.js";
+export {
+  InMemoryStreamingRepository,
+  PostgresStreamingRepository,
+  StreamingSettingsVersionConflictError,
+  type CreateStreamingOAuthAttemptInput,
+  type StreamingAuthorizationRecord,
+  type StreamingOAuthAttemptRecord,
+  type StreamingPlatformAccountRecord,
+  type StreamingRepository,
+  type UpsertStreamingAuthorizationInput,
+  type UpsertStreamingPlatformAccountInput
+} from "./streaming-repository.js";

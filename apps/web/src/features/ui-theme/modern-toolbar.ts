@@ -24,6 +24,7 @@ const viewActionIds = new Set([
   "pane-span-all",
   "theme",
   "cli-floats",
+  "sensitive-data",
   "font-down"
 ]);
 

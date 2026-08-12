@@ -9,10 +9,7 @@ import { voiceRealtimeSessionResponseSchema } from "@space/contracts";
 import type { SpaceApiConfig } from "./config.js";
 
 export const voiceTranscriptionModelOptions: VoiceTranscriptionModel[] = [
-  "gpt-realtime-whisper",
-  "gpt-4o-transcribe",
-  "gpt-4o-mini-transcribe",
-  "whisper-1"
+  "gpt-live-transcribe"
 ];
 export const voiceTranscriptionLanguageOptions: VoiceTranscriptionLanguage[] = ["auto", "el", "en"];
 export const voiceTranscriptionDelayOptions: VoiceTranscriptionDelay[] = ["minimal", "low", "medium", "high", "xhigh"];
@@ -23,6 +20,10 @@ export interface VoiceRealtimeCallInput {
   language: VoiceTranscriptionLanguage;
   delay?: VoiceTranscriptionDelay;
   safetyIdentifier?: string | null;
+}
+
+export function normalizeVoiceTranscriptionModel(_model: VoiceTranscriptionModel): "gpt-live-transcribe" {
+  return "gpt-live-transcribe";
 }
 
 function normalizedBaseUrl(rawBaseUrl: string): string {
@@ -41,14 +42,14 @@ function buildRealtimeSessionConfig(
   input: Pick<VoiceRealtimeCallInput, "model" | "language" | "delay">
 ) {
   const transcription: {
-    model: VoiceTranscriptionModel;
-    language?: Exclude<VoiceTranscriptionLanguage, "auto">;
+    model: "gpt-live-transcribe";
+    languages?: Array<Exclude<VoiceTranscriptionLanguage, "auto">>;
     delay?: VoiceTranscriptionDelay;
   } = {
-    model: input.model
+    model: normalizeVoiceTranscriptionModel(input.model)
   };
   if (input.language !== "auto") {
-    transcription.language = input.language;
+    transcription.languages = [input.language];
   }
   transcription.delay = input.delay ?? config.voiceTranscriptionDelay;
   return {
@@ -104,8 +105,8 @@ export async function createVoiceRealtimeCall(
       }
       throw new Error(message);
     }
-    const answerSdp = rawBody.trim();
-    if (!answerSdp) {
+    const answerSdp = rawBody;
+    if (!answerSdp.trim()) {
       throw new Error("OpenAI Realtime call returned empty SDP.");
     }
     return voiceRealtimeSessionResponseSchema.parse({ answerSdp });

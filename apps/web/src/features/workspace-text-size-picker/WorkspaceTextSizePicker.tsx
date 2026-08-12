@@ -194,7 +194,7 @@ export function WorkspaceTextSizePicker({
           tabIndex={-1}
           onClick={() => select(option)}
         >
-          <span>{option}</span>
+          <span data-sensitive-ignore>{option}</span>
           <small>px</small>
         </button>
       ))}

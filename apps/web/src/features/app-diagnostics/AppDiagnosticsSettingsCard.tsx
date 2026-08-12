@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import type { AppDiagnosticsStatus } from "@space/contracts";
-import { Activity, Camera, CircleStop, Loader2, ShieldCheck } from "../ui-theme/app-icons.js";
+import { Activity, Camera, CircleStop, RefreshCw, ShieldCheck } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
 import {
   APP_DIAGNOSTICS_STATE_EVENT,
   applyAppDiagnosticsStatus,
   getAppDiagnosticsClientState,
+  refreshAppDiagnosticsStatus,
   type AppDiagnosticsClientState
 } from "../../app-diagnostics/app-diagnostics-bootstrap.js";
 import {
@@ -15,6 +16,8 @@ import {
   stopAppDiagnosticsVideoRecording,
   type AppDiagnosticsRecorderState
 } from "../../app-diagnostics/app-diagnostics-video-recorder.js";
+import { SettingsActionMenu } from "../settings/SettingsActionMenu.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import "./app-diagnostics-settings.css";
 
 interface AppDiagnosticsSettingsClient {
@@ -120,35 +123,59 @@ export function AppDiagnosticsSettingsCard({
 
   return (
     <section
-      className={`agent-settings-card app-diagnostics-card${isEnabled ? " is-enabled" : ""}`}
+      className={`agent-settings-card settings-flat-card app-diagnostics-card${isEnabled ? " is-enabled" : ""}`}
       aria-label="App diagnostics settings"
       data-diagnostics-surface="SETTINGS"
     >
-      <div className="agent-settings-section-title app-diagnostics-title">
+      <div className="agent-settings-section-title settings-flat-heading app-diagnostics-title">
         <Activity aria-hidden="true" />
         <span>
           <strong>App diagnostics</strong>
           <small>Global rolling technical capture for connected Space clients.</small>
         </span>
-        <span className={`status ${isEnabled ? "bad" : "muted"}`}>{isEnabled ? "DEBUG ON" : "OFF"}</span>
+        <div className="settings-flat-heading-actions">
+          <span className={`status ${isEnabled ? "bad" : "muted"}`}>{isEnabled ? "DEBUG ON" : "OFF"}</span>
+          <SettingsActionMenu
+            label="App diagnostics actions"
+            disabled={pending || recorderBusy}
+            actions={[
+              {
+                id: "refresh",
+                label: "Refresh status",
+                icon: RefreshCw,
+                onSelect: () => void refreshAppDiagnosticsStatus()
+              },
+              ...(canManage && isEnabled ? [{
+                id: recorder.status === "RECORDING" ? "stop-recording" : "start-recording",
+                label: recorder.status === "RECORDING" ? "Stop recording" : "Start tab recording",
+                icon: recorder.status === "RECORDING" ? CircleStop : Camera,
+                danger: recorder.status === "RECORDING",
+                disabled: recordingElsewhere,
+                onSelect: () => {
+                  if (recorder.status === "RECORDING") void onStopRecording();
+                  else setConsentOpen(true);
+                }
+              }] : [])
+            ]}
+          />
+        </div>
       </div>
 
-      <label className="settings-toggle-row app-diagnostics-toggle">
-        <input
-          type="checkbox"
-          name="app-diagnostics-enabled"
-          aria-label="Enable global app diagnostics"
-          checked={isEnabled}
-          disabled={!canManage || pending || !status}
-          onChange={(event) => void toggle(event.currentTarget.checked)}
-        />
-        <span>{pending ? "Updating global state…" : "Debug ON"}</span>
-      </label>
+      <SpaceToggle
+        className="settings-flat-row settings-flat-toggle-row app-diagnostics-toggle"
+        name="app-diagnostics-enabled"
+        ariaLabel="Enable global app diagnostics"
+        label="Debug capture"
+        detail={pending ? "Updating global state…" : "Keep a rolling 24-hour technical trace."}
+        checked={isEnabled}
+        disabled={!canManage || pending || !status}
+        onChange={(nextEnabled) => void toggle(nextEnabled)}
+      />
 
-      <p className="settings-card-note">
-        Rolling 24 hours · 8 GiB total · 512 MiB reserved for technical events · one visual recorder.
+      <p className="settings-flat-note">
+        8 GiB total · 512 MiB technical reserve · one visual recorder.
       </p>
-      <dl className="app-diagnostics-metrics">
+      <dl className="app-diagnostics-metrics settings-flat-metrics" data-sensitive-ignore>
         <div><dt>Enabled</dt><dd>{formatEnabledAt(status?.enabledAt ?? null)}</dd></div>
         <div><dt>Storage</dt><dd>{formatBytes(status?.usage.totalBytes ?? 0)} / 8 GiB</dd></div>
         <div><dt>Segments</dt><dd>{status?.usage.segmentCount ?? 0}</dd></div>
@@ -158,30 +185,9 @@ export function AppDiagnosticsSettingsCard({
       </dl>
 
       {!canManage ? (
-        <p className="settings-card-note" role="status">
+        <p className="settings-flat-note" role="status">
           Operators can inspect this global state. Only admins can change it or record a tab.
         </p>
-      ) : null}
-
-      {canManage && isEnabled ? (
-        <div className="app-diagnostics-actions">
-          {recorder.status === "RECORDING" ? (
-            <button type="button" className="compact-action danger" onClick={() => void onStopRecording()}>
-              <CircleStop aria-hidden="true" />
-              Stop recording
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="compact-action"
-              disabled={recorderBusy || recordingElsewhere}
-              onClick={() => setConsentOpen(true)}
-            >
-              {recorderBusy ? <Loader2 className="spin" aria-hidden="true" /> : <Camera aria-hidden="true" />}
-              Start tab recording
-            </button>
-          )}
-        </div>
       ) : null}
 
       {consentOpen ? (

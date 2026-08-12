@@ -1,0 +1,164 @@
+.osk-panel {
+  z-index: 1600;
+  width: min(38rem, calc(100vw - 1rem));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid #394144;
+  border-radius: 10px;
+  background: #151819;
+  color: #f1ece2;
+  box-shadow: 0 0.8rem 2rem rgba(0, 0, 0, 0.42);
+}
+
+.osk-popover {
+  position: fixed;
+}
+
+.osk-header {
+  min-height: 2.6rem;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #2a3032;
+  padding: 0.4rem;
+}
+
+.osk-drag-handle {
+  min-width: 0;
+  align-self: stretch;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.1rem;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  color: #a7a59e;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.osk-drag-handle:active {
+  cursor: grabbing;
+}
+
+.osk-drag-handle > svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  color: var(--room-accent, #6db7aa);
+}
+
+.osk-drag-handle > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.osk-close {
+  width: 2rem;
+  min-height: 2rem;
+  margin-left: 0.4rem;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-color: #354044;
+  background: #101415;
+}
+
+.osk-close svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.osk-keys {
+  min-height: 0;
+  display: grid;
+  gap: 0.4rem;
+  overflow-y: auto;
+  padding: 0.55rem;
+}
+
+.osk-row {
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 0.35rem;
+}
+
+.osk-key {
+  min-width: 0;
+  flex: 1 1 0;
+  min-height: 2.6rem;
+  display: grid;
+  place-items: center;
+  padding: 0 0.3rem;
+  border-color: #354044;
+  border-radius: 6px;
+  background: #1d2122;
+  color: #e8e4d9;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.osk-key:hover:not(:disabled),
+.osk-key:focus-visible {
+  border-color: var(--room-accent, #6db7aa);
+  background: #26302e;
+}
+
+.osk-key.is-wide {
+  flex: 1.6 1 0;
+}
+
+.osk-key.is-active {
+  border-color: var(--room-accent, #6db7aa);
+  background: color-mix(in srgb, var(--room-accent, #6db7aa) 22%, #1d2122);
+  color: var(--room-accent, #6db7aa);
+}
+
+.osk-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1600;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0.75rem;
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  background: rgba(4, 6, 7, 0.58);
+}
+
+.osk-sheet {
+  width: min(100%, 34rem);
+  border-radius: 10px 10px 0 0;
+  box-shadow: 0 -1rem 2.8rem rgba(0, 0, 0, 0.42);
+}
+
+@media (max-width: 480px) {
+  .osk-key {
+    min-height: 2.45rem;
+    font-size: 0.8rem;
+  }
+
+  .osk-keys {
+    gap: 0.3rem;
+    padding: 0.45rem;
+  }
+
+  .osk-row {
+    gap: 0.25rem;
+  }
+}

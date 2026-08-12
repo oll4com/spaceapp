@@ -1,4 +1,4 @@
-import { Globe2, Loader2, Maximize2, Minimize2, MousePointer2, RefreshCw, X, Youtube } from "../ui-theme/app-icons.js";
+import { Loader2, MousePointer2, RefreshCw, X } from "../ui-theme/app-icons.js";
 import { useEffect, useRef, useState } from "react";
 import {
   browserStreamWebSocketServerMessageSchema,
@@ -16,6 +16,11 @@ import {
 import { browserGateway } from "../../runtime/SpaceRuntime.js";
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
 import { BrowserCanvas, type BrowserCanvasHandle, type BrowserCanvasInput } from "./BrowserCanvas.js";
+import {
+  BROWSER_PANE_ACTION_EVENT,
+  parseBrowserPaneActionDetail,
+  registerBrowserPaneEventTarget
+} from "./events.js";
 import type { UiTheme } from "../../ui-theme.js";
 
 interface YouTubePaneProps {
@@ -28,8 +33,13 @@ interface YouTubePaneProps {
 type BrowserSessionV2 = PaneBrowserSessionResponse["session"];
 
 const YOUTUBE_URL = "https://www.youtube.com/";
-const YOUTUBE_VIEWPORT: BrowserSessionViewport = "tablet";
-const YOUTUBE_VIEWPORT_SIZE = { width: 834, height: 1112 };
+const YOUTUBE_VIEWPORT: BrowserSessionViewport = "wide";
+const YOUTUBE_VIEWPORT_SIZE = { width: 1280, height: 720 };
+const DEFAULT_AUDIO_SAMPLE_RATE = 48000;
+const DEFAULT_AUDIO_CHANNELS = 2;
+const AUDIO_BUFFER_MIN_MS = 60;
+const AUDIO_BUFFER_MAX_MS = 160;
+const AUDIO_CHUNK_MS = 40;
 const browserInputAckTimeoutMs = 2_000;
 const browserStreamReconnectMessage = "Live stream disconnected; reconnecting.";
 
@@ -68,7 +78,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
   const [streamFps, setStreamFps] = useState<number | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [focusMode, setFocusMode] = useState(false);
+  const [transportPaused, setTransportPaused] = useState(false);
   const canvasRef = useRef<BrowserCanvasHandle | null>(null);
   const paneRef = useRef<HTMLElement | null>(null);
   const controlLeaseRef = useRef<BrowserControlLeasePayload | null>(null);
@@ -85,11 +95,13 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioNextTimeRef = useRef<number | null>(null);
   const audioQueueRef = useRef<Int16Array[]>([]);
+  const audioSampleRateRef = useRef(DEFAULT_AUDIO_SAMPLE_RATE);
+  const audioChannelsRef = useRef(DEFAULT_AUDIO_CHANNELS);
+  const transportPausedRef = useRef(false);
+  const reloadRef = useRef<() => void>(() => undefined);
 
   const session = (response?.session as BrowserSessionV2 | undefined) ?? null;
   const activeFrame = frame ?? response?.frame ?? null;
-  const canUseSession = Boolean(session && status?.enabled);
-  const live = streamState === "ready" || streamState === "open";
 
   function appendFrame(nextFrame: BrowserFrame | null) {
     if (!nextFrame) return;
@@ -191,13 +203,6 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
     appendFrame(next.frame);
   }
 
-  async function ensureRealtimeStream(nextResponse: PaneBrowserSessionResponse) {
-    const nextSession = nextResponse.session as BrowserSessionV2;
-    if (nextSession.streamMode !== "REALTIME") {
-      void api.updateBrowserSession(pane.id, { streamMode: "REALTIME" }).then(applyResponse).catch(() => undefined);
-    }
-  }
-
   async function loadOrStart() {
     setPending(true);
     setError(null);
@@ -211,17 +216,34 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
         return;
       }
       try {
-        const nextResponse = await api.browserSession(pane.id);
+        if (observerOnly) {
+          const nextResponse = await api.browserSession(pane.id);
+          applyResponse(nextResponse);
+          recordLifecycleDebugEvent({
+            type: "session_sync",
+            scope: "YouTubePane",
+            detail: `observer status=${nextResponse.session.status} viewport=${nextResponse.session.viewport}`,
+            paneId: pane.id,
+            paneMode: pane.mode
+          });
+          return;
+        }
+        const nextResponse = await api.startBrowserSession(pane.id, {
+          viewport: YOUTUBE_VIEWPORT,
+          targetUrl: YOUTUBE_URL,
+          ownerAgentId: `agent:${agentNumber}`,
+          streamMode: "REALTIME",
+          includeInitialFrame: false
+        });
         applyResponse(nextResponse);
-        void ensureRealtimeStream(nextResponse);
         recordLifecycleDebugEvent({
           type: "session_sync",
           scope: "YouTubePane",
-          detail: `status=${nextResponse.session.status} viewport=${nextResponse.session.viewport}`,
+          detail: `started viewport=${nextResponse.session.viewport} status=${nextResponse.session.status} mode=${nextResponse.session.streamMode}`,
           paneId: pane.id,
           paneMode: pane.mode
         });
-      } catch {
+      } catch (err) {
         if (observerOnly) {
           setResponse(null);
           setFrame(null);
@@ -234,20 +256,8 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
           });
           return;
         }
-        const nextResponse = await api.startBrowserSession(pane.id, {
-          viewport: YOUTUBE_VIEWPORT,
-          targetUrl: YOUTUBE_URL,
-          ownerAgentId: `agent:${agentNumber}`
-        });
-        applyResponse(nextResponse);
-        void ensureRealtimeStream(nextResponse);
-        recordLifecycleDebugEvent({
-          type: "session_sync",
-          scope: "YouTubePane",
-          detail: `started viewport=${nextResponse.session.viewport} status=${nextResponse.session.status}`,
-          paneId: pane.id,
-          paneMode: pane.mode
-        });
+        setError(err instanceof Error ? err.message : "YouTube session failed to load");
+        updateBrowserStreamTelemetry("error");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "YouTube session failed to load");
@@ -261,6 +271,33 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
     void loadOrStart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id]);
+
+  useEffect(() => {
+    const unregister = registerBrowserPaneEventTarget(pane.id);
+    const handleBrowserPaneAction = (event: Event) => {
+      const detail = parseBrowserPaneActionDetail((event as CustomEvent<unknown>).detail);
+      if (!detail || detail.paneId !== pane.id) return;
+      if (detail.action === "reload") reloadRef.current();
+    };
+    window.addEventListener(BROWSER_PANE_ACTION_EVENT, handleBrowserPaneAction);
+    return () => {
+      window.removeEventListener(BROWSER_PANE_ACTION_EVENT, handleBrowserPaneAction);
+      unregister();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.id]);
+
+  useEffect(() => {
+    const updatePaused = () => {
+      const paused = pane.isMinimized || document.hidden;
+      transportPausedRef.current = paused;
+      setTransportPaused(paused);
+    };
+    updatePaused();
+    document.addEventListener("visibilitychange", updatePaused);
+    return () => document.removeEventListener("visibilitychange", updatePaused);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.id, pane.isMinimized]);
 
   useEffect(() => {
     recordLifecycleDebugEvent({
@@ -297,7 +334,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
     browserStreamAttemptedSessionsRef.current.add(sessionId);
 
     const scheduleReconnect = () => {
-      if (disposed || reconnectTimer !== null) return;
+      if (disposed || reconnectTimer !== null || transportPausedRef.current) return;
       const delayMs = Math.min(2_000, 250 * (2 ** Math.min(reconnectAttempt, 3)));
       reconnectAttempt += 1;
       updateBrowserStreamTelemetry("reconnecting");
@@ -309,6 +346,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
     };
 
     const connect = async () => {
+      if (disposed || transportPausedRef.current) return;
       const isInitialAttempt = connectionAttempt === 0;
       connectionAttempt += 1;
       updateBrowserStreamTelemetry("connecting");
@@ -405,7 +443,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
         if (browserStreamSocketRef.current === socket) browserStreamSocketRef.current = null;
         discardCoalescedBrowserInput();
         if (pendingBrowserInputAcksRef.current.size > 0) clearPendingBrowserInputAcks("timeout");
-        if (!disposed) scheduleReconnect();
+        if (!disposed && !transportPausedRef.current) scheduleReconnect();
       });
     };
 
@@ -420,7 +458,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
       updateBrowserStreamTelemetry("closed");
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id, response?.websocket?.token, session?.sessionId]);
+  }, [pane.id, response?.websocket?.token, session?.sessionId, transportPaused]);
 
   useEffect(() => {
     controlLeaseRef.current = controlLease?.status === "ACTIVE" ? controlLease : null;
@@ -429,6 +467,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
   useEffect(() => {
     if (!session) return;
     const interval = window.setInterval(() => {
+      if (transportPausedRef.current) return;
       if (browserStreamSocketRef.current?.readyState === WebSocket.OPEN) return;
       api.browserFrame(pane.id, session.sessionId).then(appendFrame).catch(() => undefined);
     }, 5_000);
@@ -542,6 +581,8 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
     void loadOrStart();
   }
 
+  reloadRef.current = () => { void reload(); };
+
   async function reload() {
     if (!session) return;
     const lease = await acquireControlForInput();
@@ -562,22 +603,6 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
     }
     if (!legacyControlRef.current) return;
     appendFrame((await api.browserAction(pane.id, { type: "navigate", url: YOUTUBE_URL, sessionId: session.sessionId })).frame);
-  }
-
-  async function toggleFocusMode() {
-    if (focusMode) {
-      if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen();
-      setFocusMode(false);
-      return;
-    }
-    setFocusMode(true);
-    if (paneRef.current?.requestFullscreen) {
-      try {
-        await paneRef.current.requestFullscreen();
-      } catch {
-        // CSS focus mode remains available when the browser blocks fullscreen.
-      }
-    }
   }
 
   function stopAudioStream() {
@@ -601,8 +626,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
   function scheduleAudioChunk(int16: Int16Array, sampleRate: number, channels: number) {
     const audioContext = audioContextRef.current;
     if (!audioContext) return;
-    const chunkFrames = Math.round(sampleRate * 0.04);
-    const framesPerChunk = Math.max(1, Math.floor(chunkFrames / channels));
+    const framesPerChunk = Math.max(1, Math.round((sampleRate * AUDIO_CHUNK_MS) / 1000));
     const totalFrames = Math.floor(int16.length / channels);
     for (let offset = 0; offset < totalFrames; offset += framesPerChunk) {
       const frameCount = Math.min(framesPerChunk, totalFrames - offset);
@@ -614,12 +638,11 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
         }
       }
       let startTime = audioNextTimeRef.current;
-      const lookahead = 0.035;
       const now = audioContext.currentTime;
-      if (startTime === null || startTime < now + lookahead) {
-        startTime = now + lookahead;
-      } else if (startTime > now + 0.3) {
-        startTime = now + lookahead;
+      const bufferMin = AUDIO_BUFFER_MIN_MS / 1000;
+      const bufferMax = AUDIO_BUFFER_MAX_MS / 1000;
+      if (startTime === null || startTime < now + bufferMin || startTime > now + bufferMax) {
+        startTime = now + bufferMin;
       }
       audioNextTimeRef.current = startTime + buffer.duration;
       const source = audioContext.createBufferSource();
@@ -639,7 +662,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
     let reconnectAttempt = 0;
 
     const connectAudio = async () => {
-      if (disposed) return;
+      if (disposed || transportPausedRef.current) return;
       try {
         const ticket = await api.browserAudioStreamTicket(pane.id);
         if (disposed || ticket.websocket.sessionId !== session.sessionId) return;
@@ -650,6 +673,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
         audioSocketRef.current = socket;
         socket.addEventListener("open", () => {
           reconnectAttempt = 0;
+          audioNextTimeRef.current = null;
         });
         socket.addEventListener("message", (event) => {
           if (typeof event.data === "string") {
@@ -659,6 +683,9 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
               if (!parsed.success) return;
               const message = parsed.data;
               if (message.type === "audioReady") {
+                audioSampleRateRef.current = message.sampleRate;
+                audioChannelsRef.current = message.channels;
+                audioNextTimeRef.current = null;
                 if (!audioContextRef.current) {
                   const AudioContextCtor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
                   audioContextRef.current = new AudioContextCtor({ sampleRate: message.sampleRate });
@@ -676,12 +703,12 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
           const int16 = new Int16Array(raw);
           if (!audioContextRef.current) {
             const AudioContextCtor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-            audioContextRef.current = new AudioContextCtor({ sampleRate: 44100 });
+            audioContextRef.current = new AudioContextCtor({ sampleRate: audioSampleRateRef.current });
             if (audioContextRef.current.state === "suspended") {
               void audioContextRef.current.resume().catch(() => undefined);
             }
           }
-          scheduleAudioChunk(int16, 44100, 2);
+          scheduleAudioChunk(int16, audioSampleRateRef.current, audioChannelsRef.current);
         });
         socket.addEventListener("error", () => {
           if (disposed) return;
@@ -689,7 +716,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
         });
         socket.addEventListener("close", () => {
           if (audioSocketRef.current === socket) audioSocketRef.current = null;
-          if (disposed) return;
+          if (disposed || transportPausedRef.current) return;
           if (reconnectTimer !== null) return;
           const delayMs = Math.min(4_000, 500 * (2 ** Math.min(reconnectAttempt, 3)));
           reconnectAttempt += 1;
@@ -699,7 +726,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
           }, delayMs);
         });
       } catch {
-        if (disposed || reconnectTimer !== null) return;
+        if (disposed || reconnectTimer !== null || transportPausedRef.current) return;
         reconnectTimer = window.setTimeout(() => {
           reconnectTimer = null;
           void connectAudio();
@@ -714,56 +741,15 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
       stopAudioStream();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id, session?.sessionId]);
-
-  const streamLabel = live ? `Live ${streamFps !== null ? `· ${streamFps} fps` : ""}` : "Offline";
-  const statusText = session?.statusReason ?? status?.statusReason ?? "YouTube session";
+  }, [pane.id, session?.sessionId, transportPaused]);
 
   return (
     <section
       ref={paneRef}
-      className={`youtube-pane${focusMode ? " youtube-pane-focus" : ""}`}
+      className="youtube-pane"
       aria-label={`${pane.title} YouTube session`}
       data-browser-agent={agentNumber}
     >
-      <div className="youtube-pane-header">
-        <span className="youtube-pane-brand" title="YouTube">
-          <Youtube aria-hidden="true" />
-          <span>YouTube</span>
-        </span>
-        <span className="youtube-url-pill" title={YOUTUBE_URL}>
-          <Globe2 aria-hidden="true" />
-          <span>{YOUTUBE_URL}</span>
-        </span>
-        <span
-          className={`youtube-live-badge ${live ? "live" : streamState === "reconnecting" || streamState === "connecting" ? "connecting" : "offline"}`}
-          role="status"
-          aria-label={live ? "YouTube live" : statusText}
-          title={statusText}
-        >
-          <span className="youtube-live-dot" aria-hidden="true" />
-          {live ? "LIVE" : streamState === "reconnecting" || streamState === "connecting" ? "CONNECTING" : "OFFLINE"}
-        </span>
-        <button
-          type="button"
-          className="youtube-pane-reload"
-          aria-label={`Reload YouTube ${pane.title}`}
-          title="Reload YouTube"
-          onClick={() => void reload()}
-        >
-          <RefreshCw aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className={`youtube-focus-toggle${focusMode ? " selected" : ""}`}
-          aria-label={focusMode ? `Exit YouTube focus mode ${pane.title}` : `Expand YouTube view ${pane.title}`}
-          aria-pressed={focusMode}
-          title={focusMode ? "Exit fullscreen view" : "Expand to fullscreen view"}
-          onClick={() => void toggleFocusMode()}
-        >
-          {focusMode ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-        </button>
-      </div>
       <div className="youtube-frame-shell">
         <BrowserCanvas
           ref={canvasRef}
@@ -772,6 +758,7 @@ export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTube
           interactive={Boolean(session)}
           source={activeFrame?.screenshotDataUrl}
           capturedAt={activeFrame?.capturedAt}
+          historyLimit={1}
           onInput={(input) => void sendCanvasInput(input)}
         />
         {!activeFrame?.screenshotDataUrl ? (

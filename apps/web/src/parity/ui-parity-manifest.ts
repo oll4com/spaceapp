@@ -23,7 +23,7 @@ export const UI_PARITY_REACHABLE_STATES = [
 
 export type UiParitySurface =
   | "auth" | "rooms" | "toolbar" | "pane" | "chat" | "cli" | "browser" | "youtube"
-  | "review" | "code" | "swarm" | "design" | "media" | "clipboard" | "tasks" | "links"
+  | "review" | "code" | "swarm" | "design" | "media" | "streaming" | "clipboard" | "tasks" | "links"
   | "settings" | "health" | "memory" | "quick-links" | "help" | "music"
   | "admin" | "responsive";
 
@@ -49,6 +49,7 @@ export const UI_PARITY_SURFACE_EVIDENCE = {
   swarm: ["tests/smoke.test.tsx", "tests/demo-app.test.tsx"],
   design: ["tests/smoke.test.tsx", "tests/demo-app.test.tsx"],
   media: ["tests/media-dock.test.tsx", "tests/demo-app.test.tsx"],
+  streaming: ["tests/streaming-dock.test.tsx", "tests/streaming-overlay.test.tsx", "tests/streaming-demo.test.tsx"],
   clipboard: ["tests/clipboard-dock.test.tsx", "tests/clipboard-capture.test.tsx", "tests/demo-app.test.tsx"],
   tasks: ["tests/task-dock.test.tsx", "tests/demo-store.test.ts"],
   links: ["tests/user-links.test.tsx", "tests/responsive-shell.test.tsx", "tests/demo-app.test.tsx"],
@@ -128,6 +129,11 @@ export const UI_PARITY_ACTIONS = [
   ]),
   ...actions("media", [
     "load", "upload", "preview", "open", "retention", "delete-confirm", "delete-cancel", "empty", "error"
+  ]),
+  ...actions("streaming", [
+    "provider-readiness", "connect-another", "verify-account", "remove-account", "disconnect-authorization",
+    "toggle-metrics", "tile-limit-12", "drag-order", "keyboard-order", "analytics-period",
+    "draft-preview", "save-overlay", "session-activation", "stale", "offline", "classic", "modern"
   ]),
   ...actions("clipboard", [
     "load", "search", "filter", "create", "copy", "delete", "clear-confirm", "clear-cancel", "pause", "empty", "error"

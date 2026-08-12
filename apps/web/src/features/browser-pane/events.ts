@@ -1,6 +1,6 @@
 export const BROWSER_PANE_ACTION_EVENT = "space:browser-pane-action";
 
-export type BrowserPaneAction = "bookmarks" | "import" | "handoff";
+export type BrowserPaneAction = "bookmarks" | "import" | "handoff" | "reload";
 
 export interface BrowserPaneActionDetail {
   paneId: string;
@@ -41,7 +41,7 @@ export function parseBrowserPaneActionDetail(detail: unknown): BrowserPaneAction
   const maybeDetail = detail as { paneId?: unknown; action?: unknown; roomId?: unknown };
   if (
     typeof maybeDetail.paneId !== "string" ||
-    (maybeDetail.action !== "bookmarks" && maybeDetail.action !== "import" && maybeDetail.action !== "handoff")
+    (maybeDetail.action !== "bookmarks" && maybeDetail.action !== "import" && maybeDetail.action !== "handoff" && maybeDetail.action !== "reload")
   ) return null;
   if (maybeDetail.roomId !== undefined && typeof maybeDetail.roomId !== "string") return null;
   return {

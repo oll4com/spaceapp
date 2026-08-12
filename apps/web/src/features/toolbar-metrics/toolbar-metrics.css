@@ -164,6 +164,27 @@
   font-size: 0.7rem;
 }
 
+.toolbar-metric-open-analysis {
+  width: 100%;
+  min-height: 2.15rem;
+  border: 1px solid #4f746e;
+  border-radius: 6px;
+  background: #17211f;
+  color: #d9eee9;
+  padding: 0.4rem 0.65rem;
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.toolbar-metric-open-analysis:hover,
+.toolbar-metric-open-analysis:focus-visible {
+  border-color: #79cbbb;
+  background: #1b2927;
+  outline: 2px solid rgba(121, 203, 187, 0.35);
+  outline-offset: 1px;
+}
+
 .toolbar-provider-menu {
   display: grid;
   gap: 0.25rem;

@@ -5,6 +5,7 @@ import { api } from "../../api.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 
 export const SPACE_CLIPBOARD_ITEM_MIME = "application/x-space-clipboard-item-id";
+export const SPACE_CLIPBOARD_ITEM_TITLE_MIME = "application/x-space-clipboard-item-title";
 export const SPACE_CLIPBOARD_UPDATED_EVENT = "space:clipboard-updated";
 export const SPACE_CLIPBOARD_NOTICE_EVENT = "space:clipboard-notice";
 export const SPACE_CLIPBOARD_PAUSE_EVENT = "space:clipboard-pause";

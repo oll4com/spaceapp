@@ -21,6 +21,17 @@ import {
   turnWorkflowResultSchema
 } from "@space/contracts";
 import { PostgresSpaceStore } from "@space/db";
+import {
+  fetchOpenCodeCurrentModel,
+  fetchOpenCodeSessionIsTurnActive,
+  fetchOpenCodeSessionModels,
+  openCodeServerBaseUrl,
+  openCodeServerIsHealthy,
+  parseOpenCodeCompositeModelId,
+  readOpenCodeServerControl,
+  switchOpenCodeSessionModel,
+  type OpenCodeServerControl
+} from "@space/opencode-control";
 import { Context } from "@temporalio/activity";
 import {
   createCanonicalGeminiMemoryBridge,
@@ -1788,4 +1799,260 @@ async function runCodexAppServerTurnImplementation(
       options.completionStore
     );
   }
+}
+
+export interface OpenCodeAgentTurnActivityConfig {
+  enabled: boolean;
+  stateRoot: string;
+  messageTimeoutMs: number;
+}
+
+export function getOpenCodeAgentTurnActivityConfig(env: NodeJS.ProcessEnv = process.env): OpenCodeAgentTurnActivityConfig {
+  return {
+    enabled: env.SPACE_ENABLE_OPENCODE_TURNS === "true",
+    stateRoot: env.SPACE_OPENCODE_STATE_ROOT || "/var/lib/spaceapp-user/.codex/space-opencode/state",
+    messageTimeoutMs: positiveIntegerEnvMs(env.SPACE_OPENCODE_MESSAGE_TIMEOUT_MS, 290_000)
+  };
+}
+
+export interface RunOpenCodeAgentTurnOptions {
+  env?: NodeJS.ProcessEnv;
+  completionStore?: SpaceStore;
+  fetchImpl?: typeof fetch;
+  abortSignal?: AbortSignal;
+  heartbeat?: (details?: unknown) => void;
+  heartbeatIntervalMs?: number;
+}
+
+export async function runOpenCodeAgentTurn(
+  input: DummyTurnInput,
+  options: RunOpenCodeAgentTurnOptions = {}
+): Promise<TurnWorkflowResult> {
+  const stopHeartbeat = startActivityHeartbeat(
+    options.heartbeat ?? currentActivityHeartbeat(),
+    Math.max(1, options.heartbeatIntervalMs ?? ROOM_AGENT_TURN_HEARTBEAT_INTERVAL_MS)
+  );
+  try {
+    return await runOpenCodeAgentTurnImplementation(input, options);
+  } finally {
+    stopHeartbeat();
+  }
+}
+
+async function runOpenCodeAgentTurnImplementation(
+  input: DummyTurnInput,
+  options: RunOpenCodeAgentTurnOptions = {}
+): Promise<TurnWorkflowResult> {
+  const parsed = dummyTurnInputSchema.parse(input);
+  const abortSignal = options.abortSignal ?? currentActivityCancellationSignal();
+  const config = getOpenCodeAgentTurnActivityConfig(options.env);
+  if (!config.enabled) {
+    return recordOpenCodeAgentTurnFailure(
+      parsed,
+      "OPENCODE_TURNS_DISABLED",
+      "OpenCode chat turn execution is disabled. Set SPACE_ENABLE_OPENCODE_TURNS=true before running this workflow.",
+      {},
+      options.completionStore
+    );
+  }
+  if (!parsed.providerSessionId) {
+    return recordOpenCodeAgentTurnFailure(
+      parsed,
+      "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+      "OpenCode chat turns require a provider session id.",
+      {},
+      options.completionStore
+    );
+  }
+
+  try {
+    await markSpaceAgentRunStarted(parsed, options.completionStore);
+    const control = await readOpenCodeServerControl(parsed.providerSessionId, config.stateRoot);
+    if (!control) {
+      return recordOpenCodeAgentTurnFailure(
+        parsed,
+        "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+        `Live OpenCode control for session ${parsed.providerSessionId} is unavailable.`,
+        {},
+        options.completionStore
+      );
+    }
+    if (!(await openCodeServerIsHealthy(control))) {
+      return recordOpenCodeAgentTurnFailure(
+        parsed,
+        "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+        "The OpenCode server is not healthy.",
+        {},
+        options.completionStore
+      );
+    }
+    const busy = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId);
+    if (busy) {
+      return recordOpenCodeAgentTurnFailure(
+        parsed,
+        "OPENCODE_SESSION_BUSY",
+        "The OpenCode session is already busy with another turn.",
+        {},
+        options.completionStore
+      );
+    }
+
+    await ensureOpenCodeTurnModel(control, parsed);
+    const text = await executeOpenCodeTurnPrompt(control, parsed, config, abortSignal, options.fetchImpl ?? fetch);
+    if (abortSignal?.aborted) throw abortSignal.reason;
+    const metadata = { codexAppServer: { agentMessageText: text ?? null, turnStatus: "COMPLETED" } };
+    if (!text) {
+      return recordOpenCodeAgentTurnFailure(
+        parsed,
+        "OPENCODE_TURN_INCOMPLETE",
+        "OpenCode did not produce assistant text for this turn.",
+        metadata,
+        options.completionStore
+      );
+    }
+    const roomAgentOutcome = await recordSpaceAgentRunCompleted(
+      parsed,
+      metadata,
+      getCodexAppServerTurnActivityConfig(options.env),
+      options.completionStore,
+      {
+        fetchImpl: fetchWithCancellation(options.fetchImpl ?? fetch, abortSignal)
+      }
+    );
+    const verified = !roomAgentOutcome || roomAgentOutcome.status === "VERIFIED";
+    return turnWorkflowResultSchema.parse({
+      workflowId: buildCodexAppServerTurnWorkflowId(parsed),
+      roomId: parsed.roomId,
+      paneId: parsed.paneId,
+      traceId: parsed.traceId,
+      status: verified ? "COMPLETED" : "FAILED",
+      message: roomAgentOutcome && !verified
+        ? roomAgentOutcome.statusReason
+        : text.slice(0, 1000),
+      ...(roomAgentOutcome ? { roomAgentOutcome } : {})
+    });
+  } catch (error) {
+    if (abortSignal?.aborted) {
+      await recordSpaceAgentRunInterrupted(parsed, "Room Agent turn was stopped by the operator.", options.completionStore);
+      throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
+    }
+    const failure = classifyCodexExecutorFailure(error);
+    return recordOpenCodeAgentTurnFailure(
+      parsed,
+      failure.reasonCode,
+      failure.message,
+      failure.metadata,
+      options.completionStore
+    );
+  }
+}
+
+async function recordOpenCodeAgentTurnFailure(
+  input: DummyTurnInput,
+  reasonCode: string,
+  message: string,
+  metadata: Record<string, unknown> = {},
+  storeOverride?: SpaceStore
+): Promise<TurnWorkflowResult> {
+  const parsed = dummyTurnInputSchema.parse(input);
+  const result = turnWorkflowResultSchema.parse({
+    workflowId: buildCodexAppServerTurnWorkflowId(parsed),
+    roomId: parsed.roomId,
+    paneId: parsed.paneId,
+    traceId: parsed.traceId,
+    status: "FAILED",
+    message
+  });
+  const store = getCompletionStore(storeOverride);
+  if (store && !isSpaceAgentTurn(parsed)) {
+    await store.recordTurnFailed({
+      workflowId: result.workflowId,
+      traceId: result.traceId,
+      message: result.message,
+      reasonCode,
+      metadata
+    });
+  }
+  await recordSpaceAgentRunFailed(parsed, reasonCode, message, storeOverride);
+  return result;
+}
+
+async function ensureOpenCodeTurnModel(control: OpenCodeServerControl, input: DummyTurnInput): Promise<void> {
+  if (!input.modelId) return;
+  const composite = parseOpenCodeCompositeModelId(input.modelId);
+  if (!composite) return;
+  const [currentModel, descriptors] = await Promise.all([
+    fetchOpenCodeCurrentModel(control, control.nativeSessionId).catch(() => null),
+    fetchOpenCodeSessionModels(control).catch(() => [] as Awaited<ReturnType<typeof fetchOpenCodeSessionModels>>)
+  ]);
+  const advertised = descriptors.find(
+    (descriptor) => descriptor.providerId === composite.providerId && descriptor.modelId === composite.modelId
+  ) ?? null;
+  const variants = advertised?.variants ?? [];
+  const desiredVariant = input.reasoningEffort && variants.includes(input.reasoningEffort)
+    ? input.reasoningEffort
+    : null;
+  const modelMatches = Boolean(
+    currentModel && currentModel.id === composite.modelId && currentModel.providerID === composite.providerId
+  );
+  const variantMatches = !desiredVariant || currentModel?.variant === desiredVariant;
+  if (!modelMatches || !variantMatches) {
+    await switchOpenCodeSessionModel(
+      control,
+      control.nativeSessionId,
+      composite.providerId,
+      composite.modelId,
+      desiredVariant,
+      variants
+    );
+  }
+}
+
+function extractOpenCodeAssistantText(parts: unknown): string {
+  if (!Array.isArray(parts)) return "";
+  const texts: string[] = [];
+  for (const part of parts) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as { type?: unknown; text?: unknown; ignored?: unknown; synthetic?: unknown };
+    if (record.type !== "text" || typeof record.text !== "string") continue;
+    if (record.ignored === true || record.synthetic === true) continue;
+    const text = record.text.trim();
+    if (text) texts.push(text);
+  }
+  return texts[texts.length - 1] ?? "";
+}
+
+async function executeOpenCodeTurnPrompt(
+  control: OpenCodeServerControl,
+  input: DummyTurnInput,
+  config: OpenCodeAgentTurnActivityConfig,
+  abortSignal: AbortSignal | undefined,
+  fetchImpl: typeof fetch
+): Promise<string | null> {
+  const baseUrl = openCodeServerBaseUrl(control.serverPort, control.serverHost);
+  const authorization = `Basic ${Buffer.from(`${control.serverUsername}:${control.serverPassword}`).toString("base64")}`;
+  const composite = input.modelId ? parseOpenCodeCompositeModelId(input.modelId) : null;
+  const body: Record<string, unknown> = {
+    parts: [{ type: "text", text: input.prompt }],
+    ...(composite ? { model: { providerID: composite.providerId, modelID: composite.modelId } } : {}),
+    tools: {}
+  };
+  const timeoutSignal = AbortSignal.timeout(config.messageTimeoutMs);
+  const signal = abortSignal
+    ? AbortSignal.any([timeoutSignal, abortSignal])
+    : timeoutSignal;
+  const response = await fetchImpl(`${baseUrl}/session/${encodeURIComponent(control.nativeSessionId)}/message`, {
+    method: "POST",
+    headers: {
+      authorization,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!response.ok) {
+    throw new Error(`OpenCode message failed with HTTP ${response.status}.`);
+  }
+  const payload = (await response.json()) as { parts?: unknown };
+  return extractOpenCodeAssistantText(payload.parts);
 }

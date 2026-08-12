@@ -1,9 +1,13 @@
 import { basename } from "node:path";
 import type { Model, Pane, PaneCliTranscriptChunk, Provider, ProviderSettings } from "@space/contracts";
 import type { SpaceApiConfig } from "./config.js";
+import { openCodeServerBaseUrl, type OpenCodeServerControl } from "@space/opencode-control";
 
 type FetchLike = typeof fetch;
 type ReadFileLike = (path: string) => Promise<string>;
+
+export const openCodeTitleProviderId = "opencode";
+export const openCodeTitleModelId = "deepseek-v4-flash-free";
 
 export interface TerminalPaneTitleGenerationSelection {
   provider: Provider;
@@ -18,8 +22,19 @@ export interface GenerateTerminalPaneTitleInput {
   currentTitle: string;
   cwd: string | null;
   primaryTaskRequest?: string | null;
+  trustPrimaryTaskRequest?: boolean;
   reasoningEffort: Pane["reasoningEffort"];
   transcript: Array<Pick<PaneCliTranscriptChunk, "stream" | "content">>;
+}
+
+export interface GenerateOpenCodePaneTitleInput {
+  control: OpenCodeServerControl;
+  currentTitle: string;
+  cwd: string | null;
+  primaryTaskRequest?: string | null;
+  transcript: Array<Pick<PaneCliTranscriptChunk, "stream" | "content">>;
+  modelId?: string;
+  providerId?: string;
 }
 
 export interface GenerateTerminalPaneTitleResult {
@@ -248,8 +263,13 @@ function selectMeaningfulTaskRequest(value: string): string {
 
 function findPrimaryTaskRequest(
   transcript: Array<Pick<PaneCliTranscriptChunk, "stream" | "content">>,
-  preferredRequest?: string | null
+  preferredRequest?: string | null,
+  trustPreferredRequest = false
 ): string {
+  if (trustPreferredRequest) {
+    const trustedPreferred = boundedText(preferredRequest ?? "", 500);
+    if (trustedPreferred) return trustedPreferred;
+  }
   const preferred = selectMeaningfulTaskRequest(preferredRequest ?? "");
   if (preferred) return preferred;
   for (let index = transcript.length - 1; index >= 0; index -= 1) {
@@ -273,8 +293,20 @@ function buildRecentCliActivity(transcript: Array<Pick<PaneCliTranscriptChunk, "
   return joined.length <= maxLength ? joined : joined.slice(joined.length - maxLength);
 }
 
-function buildMessages(input: GenerateTerminalPaneTitleInput) {
-  const primaryTaskRequest = findPrimaryTaskRequest(input.transcript, input.primaryTaskRequest);
+interface PaneTitleMessageSource {
+  currentTitle: string;
+  cwd: string | null;
+  primaryTaskRequest?: string | null;
+  trustPrimaryTaskRequest?: boolean;
+  transcript: Array<Pick<PaneCliTranscriptChunk, "stream" | "content">>;
+}
+
+function buildMessages(input: PaneTitleMessageSource) {
+  const primaryTaskRequest = findPrimaryTaskRequest(
+    input.transcript,
+    input.primaryTaskRequest,
+    input.trustPrimaryTaskRequest === true
+  );
   const recentActivity = buildRecentCliActivity(input.transcript);
   if (!primaryTaskRequest && !recentActivity) {
     throw new Error("No recent CLI transcript is available for title generation.");
@@ -422,4 +454,92 @@ export async function generateTerminalPaneTitle(
     providerId: input.provider.id,
     modelId: input.model.id
   };
+}
+
+function openCodeAuthorization(control: OpenCodeServerControl): string {
+  return `Basic ${Buffer.from(`${control.serverUsername}:${control.serverPassword}`).toString("base64")}`;
+}
+
+function extractOpenCodeAssistantText(parts: unknown): string {
+  if (!Array.isArray(parts)) return "";
+  const texts: string[] = [];
+  for (const part of parts) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as { type?: unknown; text?: unknown; ignored?: unknown; synthetic?: unknown };
+    if (record.type !== "text" || typeof record.text !== "string") continue;
+    if (record.ignored === true || record.synthetic === true) continue;
+    const text = record.text.trim();
+    if (text) texts.push(text);
+  }
+  return texts[texts.length - 1] ?? "";
+}
+
+export async function generateOpenCodePaneTitle(
+  input: GenerateOpenCodePaneTitleInput,
+  options: TerminalPaneTitleGenerationOptions = {}
+): Promise<GenerateTerminalPaneTitleResult> {
+  const fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init));
+  const baseUrl = openCodeServerBaseUrl(input.control.serverPort, input.control.serverHost);
+  const authorization = openCodeAuthorization(input.control);
+  const providerId = input.providerId ?? openCodeTitleProviderId;
+  const modelId = input.modelId ?? openCodeTitleModelId;
+  const directory = input.cwd?.trim() || "/etc";
+  const messages = buildMessages(input);
+
+  const createResponse = await fetchImpl(
+    `${baseUrl}/session?directory=${encodeURIComponent(directory)}`,
+    {
+      method: "POST",
+      headers: {
+        authorization,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ title: "Space pane title generation" }),
+      signal: AbortSignal.timeout(15_000)
+    }
+  );
+  if (!createResponse.ok) {
+    throw new Error(`OpenCode title session create failed with HTTP ${createResponse.status}.`);
+  }
+  const created = (await createResponse.json()) as { id?: unknown };
+  const sessionId = typeof created.id === "string" && created.id.length > 0 ? created.id : null;
+  if (!sessionId) {
+    throw new Error("OpenCode title session create returned no session id.");
+  }
+  try {
+    const promptResponse = await fetchImpl(`${baseUrl}/session/${encodeURIComponent(sessionId)}/message`, {
+      method: "POST",
+      headers: {
+        authorization,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        parts: [{ type: "text", text: messages[1]?.content ?? "" }],
+        model: { providerID: providerId, modelID: modelId },
+        system: messages[0]?.content,
+        tools: {}
+      }),
+      signal: AbortSignal.timeout(120_000)
+    });
+    if (!promptResponse.ok) {
+      throw new Error(`OpenCode title prompt failed with HTTP ${promptResponse.status}.`);
+    }
+    const payload = (await promptResponse.json()) as { parts?: unknown };
+    const rawTitle = extractOpenCodeAssistantText(payload.parts);
+    return {
+      title: sanitizeGeneratedPaneTitle(rawTitle, input.currentTitle || "CLI"),
+      providerId,
+      modelId
+    };
+  } finally {
+    try {
+      await fetchImpl(`${baseUrl}/session/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        headers: { authorization },
+        signal: AbortSignal.timeout(10_000)
+      });
+    } catch {
+      // Best-effort cleanup; the temp session may remain as an orphan on failure.
+    }
+  }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ActivityLogEvent, ActivityLogSettings } from "@space/contracts";
 import { History, RefreshCw, ShieldCheck } from "../ui-theme/app-icons.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { api } from "../../api.js";
 
 interface ActivityLogDockProps {
@@ -111,14 +112,12 @@ export function ActivityLogDock({ canManage }: ActivityLogDockProps) {
       ) : null}
 
       <section className="activity-log-filter" aria-label="Activity log filters">
-        <label>
-          <input
-            type="checkbox"
-            checked={onlyWithReason}
-            onChange={(event) => setOnlyWithReason(event.target.checked)}
-          />
-          <span>Only events with a reason</span>
-        </label>
+        <SpaceToggle
+          className="activity-log-reason-toggle"
+          label="Only events with a reason"
+          checked={onlyWithReason}
+          onChange={setOnlyWithReason}
+        />
         <label>
           <span>Actor</span>
           <input

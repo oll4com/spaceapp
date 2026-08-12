@@ -326,6 +326,9 @@ export interface CodexAppServerSocketControlServiceOptions {
 }
 
 export const codexAppServerSocketMaxPayloadBytes = 16 * 1_024 * 1_024;
+export const CODEX_IMAGE_ATTACHMENT_SEED_PROMPT =
+  "Ingest the attached images as context for the next Goal. Do not analyze them, take actions, or begin the user's task in this turn. Reply only that the attachments are ready.";
+export const CODEX_IMAGE_ATTACHMENT_SEED_ACKNOWLEDGEMENT = "The attachments are ready.";
 
 export type CodexReasoningEffort = string;
 
@@ -1123,15 +1126,61 @@ export async function runCodexAppServerStdioTurnSession(
   let checkpointTail = Promise.resolve();
   let checkpointFailure: Error | null = null;
   const checkpointedGoalTurnIds = new Set<string>();
+  const nonGoalTurnIds = new Set<string>();
   let goalProgressObservedAt = Date.now();
+  let goalGeneration: {
+    objective: string;
+    turnIds: Set<string>;
+    completedTurnIds: Set<string>;
+    terminalStatus: CodexThreadGoalStatus | null;
+    terminalTurnId: string | null;
+    durableTerminalEvidence: boolean;
+  } | null = null;
+
+  const createGoalGeneration = () => {
+    if (!goalObjective) return null;
+    return {
+      objective: goalObjective,
+      turnIds: new Set<string>(),
+      completedTurnIds: new Set<string>(),
+      terminalStatus: null,
+      terminalTurnId: null,
+      durableTerminalEvidence: false
+    };
+  };
+
+  const registerGoalTurn = (turnId: string | null) => {
+    if (!goalGeneration || !turnId || nonGoalTurnIds.has(turnId)) return false;
+    goalGeneration.turnIds.add(turnId);
+    if (goalGeneration.completedTurnIds.has(turnId)) {
+      session = {
+        ...session,
+        turnId,
+        turnStatus: "completed",
+        completedNotificationSeen: true
+      };
+    }
+    return true;
+  };
+
+  const armGoalCompletion = () => new Promise<void>((resolveGoal, rejectGoal) => {
+    resolveGoalCompletion = resolveGoal;
+    rejectGoalCompletion = rejectGoal;
+  });
 
   const maybeCompleteGoalSession = () => {
     if (
       resolveGoalCompletion &&
-      session.completedNotificationSeen &&
-      session.goalStatus &&
-      terminalThreadGoalStatuses.has(session.goalStatus)
+      goalGeneration?.terminalStatus &&
+      terminalThreadGoalStatuses.has(goalGeneration.terminalStatus) &&
+      (
+        goalGeneration.durableTerminalEvidence ||
+        (goalGeneration.terminalTurnId
+          ? goalGeneration.completedTurnIds.has(goalGeneration.terminalTurnId)
+          : [...goalGeneration.completedTurnIds].some((turnId) => goalGeneration?.turnIds.has(turnId)))
+      )
     ) {
+      session = { ...session, goalStatus: goalGeneration.terminalStatus };
       const resolve = resolveGoalCompletion;
       resolveGoalCompletion = null;
       rejectGoalCompletion = null;
@@ -1222,14 +1271,12 @@ export async function runCodexAppServerStdioTurnSession(
         if (!recoveryTurnId && Object.keys(goalThreadSettings).length > 0) {
           await client.request("thread/settings/update", { threadId, ...goalThreadSettings });
         }
-        const goalCompletion = new Promise<void>((resolveGoal, rejectGoal) => {
-          resolveGoalCompletion = resolveGoal;
-          rejectGoalCompletion = rejectGoal;
-        });
+        let goalCompletion: Promise<void>;
         let goal: CodexThreadGoal | null = null;
         let awaitingInitialGoalTurn = false;
         const notificationCountBeforeGoalRead = session.notificationCount;
         if (options.threadId) {
+          goalGeneration = createGoalGeneration();
           const result = asRecord(await client.request("thread/goal/get", { threadId }));
           goal = parseThreadGoal(result?.goal);
         }
@@ -1259,6 +1306,10 @@ export async function runCodexAppServerStdioTurnSession(
           goal &&
           terminalThreadGoalStatuses.has(goal.status)
         );
+        if (recoverTerminalGoal && goalGeneration && goal) {
+          goalGeneration.terminalStatus = goal.status;
+          goalGeneration.durableTerminalEvidence = true;
+        }
         if (reattachActiveGoal && !goalProgressObservedDuringRead) {
           session = {
             ...session,
@@ -1268,11 +1319,12 @@ export async function runCodexAppServerStdioTurnSession(
           };
         }
         if (!reattachActiveGoal && !recoverTerminalGoal) {
+          goalGeneration = null;
           if ((options.imageAttachments?.length ?? 0) > 0 && !recoveryTurnId) {
             const seedTurnOptions = {
               ...options,
               prompt: promptWithRecoveryMarker(
-                "Ingest the attached images as context for the next Goal. Do not analyze them, take actions, or begin the user's task in this turn. Reply only that the attachments are ready.",
+                CODEX_IMAGE_ATTACHMENT_SEED_PROMPT,
                 options.recoveryMarker
               )
             };
@@ -1285,6 +1337,7 @@ export async function runCodexAppServerStdioTurnSession(
                 if (!responseState.turnId) {
                   throw new Error("Codex App Server turn/start response did not include a turn id.");
                 }
+                nonGoalTurnIds.add(responseState.turnId);
                 if (!checkpointedGoalTurnIds.has(responseState.turnId)) {
                   checkpointedGoalTurnIds.add(responseState.turnId);
                   await options.onCheckpoint?.({ threadId, turnId: responseState.turnId });
@@ -1308,6 +1361,8 @@ export async function runCodexAppServerStdioTurnSession(
             completedNotificationSeen: false,
             agentMessageText: ""
           };
+          goalGeneration = createGoalGeneration();
+          goalCompletion = armGoalCompletion();
           awaitingInitialGoalTurn = true;
           const result = asRecord(await client.request("thread/goal/set", {
             threadId,
@@ -1316,6 +1371,11 @@ export async function runCodexAppServerStdioTurnSession(
             tokenBudget: null
           }));
           goal = parseThreadGoal(result?.goal);
+          if (goalGeneration && goal?.objective === goalGeneration.objective && terminalThreadGoalStatuses.has(goal.status)) {
+            goalGeneration.terminalStatus = goal.status;
+          }
+        } else {
+          goalCompletion = armGoalCompletion();
         }
         session = {
           ...session,
@@ -1360,6 +1420,7 @@ export async function runCodexAppServerStdioTurnSession(
                 agentMessageText: recoveredAgentMessageText(durableActiveTurn)
               };
               const durableTurnId = stringField(durableActiveTurn, "id");
+              registerGoalTurn(durableTurnId);
               if (durableTurnId && !checkpointedGoalTurnIds.has(durableTurnId)) {
                 checkpointedGoalTurnIds.add(durableTurnId);
                 await options.onCheckpoint?.({ threadId, turnId: durableTurnId });
@@ -1383,6 +1444,10 @@ export async function runCodexAppServerStdioTurnSession(
                 goalStatus: session.goalStatus,
                 notificationCount: session.notificationCount
               };
+              if (durableCurrentStatus === "completed" && goalGeneration?.turnIds.has(session.turnId ?? "")) {
+                goalGeneration.completedTurnIds.add(session.turnId!);
+                maybeCompleteGoalSession();
+              }
             }
             if (Date.now() - goalProgressObservedAt < graceMs) continue;
             await waitForGoalCompletionOrDelay(confirmationMs);
@@ -1419,6 +1484,8 @@ export async function runCodexAppServerStdioTurnSession(
             if (!responseState.turnId) {
               throw new Error("Codex App Server Goal fallback turn/start response did not include a turn id.");
             }
+            registerGoalTurn(responseState.turnId);
+            maybeCompleteGoalSession();
             awaitingInitialGoalTurn = false;
             session = {
               ...responseState,
@@ -1472,11 +1539,72 @@ export async function runCodexAppServerStdioTurnSession(
       return session;
     },
     (message) => {
+      const previousSession = session;
+      const params = asRecord(message.params);
+      const notificationTurnId = stringField(asRecord(params?.turn), "id") ?? stringField(params, "turnId");
+      const notificationGoal = asRecord(params?.goal);
+      let relevantGoalProgress = false;
       session = reduceCodexAppServerTurnSessionState(session, message, {
         threadStartRequestId: -1,
         turnStartRequestId: -1
       });
-      if (goalObjective && message.method) {
+
+      if (goalGeneration && message.method === "turn/started") {
+        relevantGoalProgress = registerGoalTurn(notificationTurnId);
+        if (!relevantGoalProgress && notificationTurnId) {
+          session = {
+            ...session,
+            turnId: previousSession.turnId,
+            turnStatus: previousSession.turnStatus,
+            completedNotificationSeen: previousSession.completedNotificationSeen,
+            agentMessageText: previousSession.agentMessageText
+          };
+        }
+      }
+      if (goalGeneration && message.method === "turn/completed") {
+        if (notificationTurnId && !nonGoalTurnIds.has(notificationTurnId)) {
+          goalGeneration.completedTurnIds.add(notificationTurnId);
+        }
+        if (notificationTurnId && goalGeneration.turnIds.has(notificationTurnId)) {
+          relevantGoalProgress = true;
+        } else {
+          session = {
+            ...session,
+            turnId: previousSession.turnId,
+            turnStatus: previousSession.turnStatus,
+            completedNotificationSeen: previousSession.completedNotificationSeen,
+            agentMessageText: previousSession.agentMessageText
+          };
+        }
+      }
+      if (goalGeneration && message.method === "thread/goal/updated") {
+        const status = stringField(notificationGoal, "status") as CodexThreadGoalStatus | null;
+        if (
+          stringField(notificationGoal, "objective") === goalGeneration.objective &&
+          status &&
+          threadGoalStatuses.has(status)
+        ) {
+          const isTerminal = terminalThreadGoalStatuses.has(status);
+          goalGeneration.terminalStatus = isTerminal ? status : null;
+          goalGeneration.terminalTurnId = isTerminal ? notificationTurnId : null;
+          if (isTerminal) registerGoalTurn(notificationTurnId);
+          session = { ...session, goalStatus: status };
+          relevantGoalProgress = true;
+        } else {
+          session = { ...session, goalStatus: previousSession.goalStatus };
+        }
+      }
+      if (
+        goalGeneration &&
+        (message.method === "item/agentMessage/delta" || message.method === "item/completed")
+      ) {
+        if (notificationTurnId && goalGeneration.turnIds.has(notificationTurnId)) {
+          relevantGoalProgress = true;
+        } else if (notificationTurnId) {
+          session = { ...session, agentMessageText: previousSession.agentMessageText };
+        }
+      }
+      if (relevantGoalProgress) {
         goalProgressObservedAt = Date.now();
       }
       if (goalObjective && message.method === "turn/started" && session.threadId && session.turnId) {

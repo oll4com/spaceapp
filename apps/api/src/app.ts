@@ -92,6 +92,7 @@ import {
   type CliToggleRuntimeId,
   cliVpnConnectionSchema,
   clipboardItemListResponseSchema,
+  setClipboardItemCompletedRequestSchema,
   taskItemListResponseSchema,
   codexEnvironmentSchema,
   codexLbSpeedDefaultUpdateRequestSchema,
@@ -102,11 +103,17 @@ import {
   type CodexHistoryPurgePreviewResponse,
   codexHistoryPurgeResponseSchema,
   type CodexHistoryPurgeResponse,
+  cliSessionCleanupExecuteRequestSchema,
+  cliSessionCleanupPreviewRequestSchema,
   codexResetCreditAvailabilitySchema,
   codexResetCreditRedemptionInputSchema,
   codexResetCreditRedemptionResponseSchema,
   codexUsageAccountListSchema,
   codexHistoryResponseSchema,
+  codexHistoryItemSchema,
+  agentSessionHistoryQuerySchema,
+  agentSessionHistoryResponseSchema,
+  systemServicesResponseSchema,
   codexAppServerTurnSmokeInputSchema,
   codexThreadIdSchema,
   codexThreadQuerySchema,
@@ -163,6 +170,20 @@ import {
   importCandidateDecisionInputSchema,
   importCandidateDecisionResultSchema,
   hostMemoryDetailsSchema,
+  systemAnalyticsCliSessionsResponseSchema,
+  systemAnalyticsModelsResponseSchema,
+  systemAnalyticsOverviewResponseSchema,
+  systemAnalyticsProcessesResponseSchema,
+  systemAnalyticsRangeSchema,
+  systemAnalyticsResourcesResponseSchema,
+  streamingOAuthProviderSchema,
+  streamingCatalogResponseSchema,
+  streamingOAuthStartResponseSchema,
+  streamingOverlaySnapshotSchema,
+  streamingVerifyAccountResponseSchema,
+  streamingDisconnectAuthorizationResponseSchema,
+  updateStreamingOverlaySettingsInputSchema,
+  toolbarModelStatsSchema,
   launchReadinessSchema,
   listImportCandidatesQuerySchema,
   listMemoryQuerySchema,
@@ -304,8 +325,12 @@ import {
 import {
   InMemoryActivityLogRepository,
   InMemoryAppDiagnosticsRepository,
+  InMemorySystemAnalyticsRepository,
+  InMemoryStreamingRepository,
   PostgresActivityLogRepository,
   PostgresAppDiagnosticsRepository,
+  PostgresSystemAnalyticsRepository,
+  PostgresStreamingRepository,
   PostgresSpaceStore
 } from "@space/db";
 import {
@@ -410,6 +435,7 @@ import {
   type CodexParityService
 } from "./codex-parity.js";
 import { UnifiedCliTaskRegistry, type ResolvedSpaceCliTask } from "./unified-cli-task-registry.js";
+import { AgentSessionHistoryService } from "./agent-session-history.js";
 import {
   CliRuntimeDisableConfirmationStaleError,
   CliRuntimeVisibilityPolicy
@@ -430,6 +456,7 @@ import {
   readOpenCodeNativeSessionIdFromProcessTree
 } from "./opencode-native-session.js";
 import {
+  abortOpenCodeSession,
   fetchOpenCodeCurrentModel,
   fetchOpenCodeSessionIsTurnActive,
   fetchOpenCodeSessionModels,
@@ -438,10 +465,11 @@ import {
   openCodeServerIsHealthy,
   parseOpenCodeCompositeModelId,
   readOpenCodeServerControl,
+  listOpenCodeServerControls,
   switchOpenCodeSessionModel,
   updateOpenCodeSessionTitle,
   type OpenCodeServerControl
-} from "./opencode-server-control.js";
+} from "@space/opencode-control";
 import { createCodexLbSpeedDefaultsService, type CodexLbSpeedModelId } from "./codex-lb-speed-defaults.js";
 import {
   createCodexCliModeDefaultsService,
@@ -453,6 +481,10 @@ import {
   type CodexHistoryAccessCoordinator,
   type CodexHistoryPurgeService
 } from "./codex-history-purge.js";
+import {
+  createCliSessionCleanupService,
+  type CliSessionCleanupService
+} from "./cli-session-cleanup.js";
 import {
   CliTerminalManager,
   codexPrivateAppServerSocketPath,
@@ -500,6 +532,11 @@ import {
 } from "./setup-connection-check-runs.js";
 import { createHostStatsProvider, type HostStatsProvider } from "./host-stats.js";
 import {
+  createSystemServicesProvider,
+  runSystemServicesCollector,
+  type SystemServicesRunner
+} from "./service-services.js";
+import {
   collectCliSessionStats,
   createCliSessionStatsProvider,
   createCodexUsageAccountProvider,
@@ -509,6 +546,20 @@ import {
   type InvalidatableProvider,
   type KernelCacheReclaimResult
 } from "./toolbar-system-services.js";
+import {
+  createToolbarModelStatsCollector,
+  type ToolbarModelStatsCollector
+} from "./toolbar-model-stats.js";
+import {
+  SystemAnalyticsService,
+  type SystemAnalyticsLiveSession
+} from "./system-analytics-service.js";
+import { StreamingCredentialStore } from "./streaming-credential-store.js";
+import {
+  StreamingService,
+  StreamingServiceError,
+  StreamingSettingsVersionConflictError
+} from "./streaming-service.js";
 import {
   CORE_RESTART_SERVICES,
   CORE_SERVICE_RESTART_COMMAND,
@@ -529,6 +580,7 @@ import {
   ReleasePublishingError,
   ReleasePublishingManager
 } from "./release-publishing.js";
+import { createAppVersionReader } from "./app-version.js";
 import { discoverMcpCatalog, executeMcpTool, runMcpDiscoverySmoke, type McpDiscoveryCatalog } from "./mcp.js";
 import { createMemoryEmbedding, runMemoryEmbeddingSmoke } from "./memory-embedding-smoke.js";
 import { registerMemoryGraphRoutes } from "./memory-graph-routes.js";
@@ -543,7 +595,13 @@ import {
 } from "./memory-mutation-coordinator.js";
 import { createHttpObservability } from "./observability.js";
 import { validateProviderCredential } from "./providers.js";
-import { generateTerminalPaneTitle, selectTerminalPaneTitleGeneration } from "./pane-title-generator.js";
+import {
+  generateOpenCodePaneTitle,
+  generateTerminalPaneTitle,
+  selectTerminalPaneTitleGeneration,
+  type GenerateTerminalPaneTitleResult,
+  type TerminalPaneTitleGenerationSelection
+} from "./pane-title-generator.js";
 import { createSpaceAgentAdapter, type SpaceAgentAdapter, type SpaceAgentControl } from "./space-agent.js";
 import {
   createRoomAgentService,
@@ -566,7 +624,8 @@ import {
   createVoiceRealtimeCall,
   voiceTranscriptionDelayOptions,
   voiceTranscriptionLanguageOptions,
-  voiceTranscriptionModelOptions
+  voiceTranscriptionModelOptions,
+  normalizeVoiceTranscriptionModel
 } from "./voice-transcription.js";
 import { createWorkerReadinessChecker, type WorkerReadinessChecker } from "./worker-readiness.js";
 
@@ -652,13 +711,18 @@ export interface CreateAppOptions {
   toolbarUsageProvider?: () => Promise<CodexUsageAccountList>;
   codexResetCreditsService?: CodexResetCreditsService;
   toolbarCliSessionStatsProvider?: InvalidatableProvider<CliSessionStats> | (() => Promise<CliSessionStats>);
+  systemServicesProvider?: SystemServicesRunner;
   toolbarHostMemoryProvider?: InvalidatableProvider<HostMemoryDetails> | (() => Promise<HostMemoryDetails>);
+  toolbarModelStatsCollector?: ToolbarModelStatsCollector;
+  systemAnalyticsService?: SystemAnalyticsService;
+  streamingService?: StreamingService;
   toolbarCliSessionReaper?: () => Promise<CliHostReapAggregate>;
   toolbarKernelCacheReclaimer?: () => Promise<KernelCacheReclaimResult>;
   toolbarProviderRouteApplier?: (provider: Provider) => Promise<void>;
   codexLbSpeedDefaultsProvider?: () => Promise<CodexLbSpeedDefaultsResponse>;
   codexLbSpeedDefaultUpdater?: (modelId: CodexLbSpeedModelId, tier: CodexLbSpeedTier) => Promise<CodexLbSpeedDefaultsResponse>;
   codexHistoryPurgeService?: CodexHistoryPurgeService;
+  cliSessionCleanupService?: CliSessionCleanupService;
   codexHistoryAccessCoordinator?: CodexHistoryAccessCoordinator;
   serviceRestarter?: CoreServiceRestarter;
   serviceRestartCooldownPath?: string;
@@ -707,9 +771,11 @@ const sensitiveRequestQueryNames = new Set([
   "authorization",
   "credential",
   "csrf",
+  "code",
   "key",
   "password",
   "secret",
+  "state",
   "ticket",
   "token"
 ]);
@@ -886,6 +952,8 @@ function canonicalCodexAdvertisedModelId(
 
 const codexGoalThreadParamSchema = z.object({ threadId: z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/) });
 const codexThreadParamSchema = z.object({ id: z.string().min(1).max(200).regex(/^[a-zA-Z0-9._:-]+$/) });
+const agentSessionThreadParamSchema = z.object({ id: z.string().min(1).max(200).regex(/^[a-zA-Z0-9._:-]+$/) });
+const agentSessionRenameRequestSchema = z.object({ title: z.string().trim().min(1).max(300) });
 const codexHistoryQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).optional(),
@@ -945,6 +1013,10 @@ const cliSessionQuerySchema = z.object({
   includeTranscript: z
     .union([z.boolean(), z.enum(["true", "false"])])
     .default(true)
+    .transform((value) => value === true || value === "true"),
+  compactTranscript: z
+    .union([z.boolean(), z.enum(["true", "false"])])
+    .optional()
     .transform((value) => value === true || value === "true")
 });
 const cliTurnActivityQuerySchema = z.object({
@@ -1200,6 +1272,13 @@ function sendApiError(reply: FastifyReply, statusCode: number, code: string, mes
       requestId: reply.request.requestIdForSpace
     }
   });
+}
+
+function streamingOAuthPopupHtml(provider: z.infer<typeof streamingOAuthProviderSchema>, ok: boolean): string {
+  const payload = JSON.stringify({ type: "space.streaming.oauth", provider, ok }).replaceAll("<", "\\u003c");
+  const heading = ok ? "Connection complete" : "Connection failed";
+  const detail = ok ? "You can close this window and return to Space." : "Return to Space for safe provider details.";
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${heading}</title></head><body><main><h1>${heading}</h1><p>${detail}</p></main><script>window.opener?.postMessage(${payload}, window.location.origin);window.close();</script></body></html>`;
 }
 
 function isAllowedImageMime(mimeType: string): mimeType is ImageArtifactMimeType {
@@ -1754,12 +1833,17 @@ async function getActiveBrowserSessionForPane(store: SpaceStore, pane: Pane): Pr
   return session;
 }
 
+/** Compact cold-restore: recent tail only (host circular buffer still supplies live attach). */
+const COMPACT_CLI_TRANSCRIPT_CHUNK_LIMIT = 96;
+
 async function buildPaneCliSessionResponse(input: {
   store: SpaceStore;
   runtime: AgentRuntime;
   sessionId: string;
   includeWebsocket: boolean;
   includeTranscript?: boolean;
+  /** When true with includeTranscript, return only the newest compact tail. */
+  compactTranscript?: boolean;
   proofScope?: "READ_ONLY";
   tokenTtlMs: number;
   issueTicket: (paneId: string, sessionId: string, ttlMs: number) => PaneCliWebSocketToken;
@@ -1770,7 +1854,9 @@ async function buildPaneCliSessionResponse(input: {
   }
   const transcript = input.includeTranscript === false
     ? []
-    : await input.store.listPaneCliTranscriptChunks(session.sessionId);
+    : input.compactTranscript
+      ? await input.store.listPaneCliTranscriptChunks(session.sessionId, COMPACT_CLI_TRANSCRIPT_CHUNK_LIMIT)
+      : await input.store.listPaneCliTranscriptChunks(session.sessionId);
   return paneCliSessionResponseSchema.parse({
     session,
     runtime: input.runtime,
@@ -1785,6 +1871,15 @@ async function buildPaneCliSessionResponse(input: {
 }
 
 async function loadCodexPrimaryTaskRequest(codexParity: CodexParityService, threadId: string): Promise<string | null> {
+  try {
+    const conversation = await codexParity.getThread(threadId, { presentation: "chat" });
+    const visibleUserRequest = conversation.items.find(
+      (item) => item.kind === "message" && item.role === "user" && item.content.trim()
+    )?.content.trim();
+    if (visibleUserRequest) return visibleUserRequest;
+  } catch {
+    // Some older history entries no longer have a readable rollout; keep their indexed prompt as a fallback.
+  }
   const thread = await codexParity.getHistoryThread(threadId);
   return thread.firstUserMessage?.trim() || null;
 }
@@ -2315,6 +2410,24 @@ async function runOpenCodePaneTitleSync(input: {
     const pane = await getPaneById(input.store, session.paneId).catch(() => null);
     if (!pane || pane.title === nativeTitle) continue;
     const traceId = `${input.traceIdPrefix ?? "req:opencode-title-sync"}:${session.sessionId}`;
+    if (pane.titleSource === "manual") {
+      try {
+        await updateOpenCodeSessionTitle(control, control.nativeSessionId, pane.title);
+      } catch {
+        // Native session may be unreachable; keep the pane title as-is.
+      }
+      if (session.cliTaskRevisionId) {
+        await input.store.updateCliTaskRevision(
+          session.cliTaskRevisionId,
+          { displayTitle: pane.title },
+          traceId
+        );
+      }
+      updatedCount += 1;
+      const latestEvent = await getLatestRoomEvent(input.store, pane.roomId);
+      if (latestEvent) input.eventBus.publish(latestEvent);
+      continue;
+    }
     const updatedPane = await input.store.updatePane(pane.id, { title: nativeTitle }, traceId);
     if (session.cliTaskRevisionId) {
       await input.store.updateCliTaskRevision(
@@ -2345,6 +2458,74 @@ function closeCliSocketWithSetupError(
     )
   );
   socket.close(1008, "CLI terminal unavailable");
+}
+
+export async function runCodexPaneTitleSync(input: {
+  store: SpaceStore;
+  codexParity: CodexParityService;
+  findThreadId?: CodexThreadFinder;
+  eventBus: SpaceEventBus;
+  traceIdPrefix?: string;
+}): Promise<number> {
+  const sessions = await input.store.listActivePaneCliSessions("cli:codex");
+  let updatedCount = 0;
+  for (const session of sessions) {
+    if (session.purpose !== "NORMAL") continue;
+    let threadId: string | null;
+    try {
+      threadId = await resolvePaneCodexThreadId({
+        store: input.store,
+        session,
+        traceId: `${input.traceIdPrefix ?? "req:codex-title-sync"}:${session.sessionId}`,
+        findThreadId: input.findThreadId
+      });
+    } catch {
+      continue;
+    }
+    if (!threadId) continue;
+    let nativeTitle: string | null;
+    try {
+      const thread = await input.codexParity.getHistoryThread(threadId);
+      nativeTitle = thread.title?.trim() ?? null;
+    } catch {
+      continue;
+    }
+    if (!nativeTitle || nativeTitle === "Untitled") continue;
+    nativeTitle = nativeTitle.slice(0, opencodeTitleSyncMaxTitleLength);
+    const pane = await getPaneById(input.store, session.paneId).catch(() => null);
+    if (!pane || pane.title === nativeTitle) continue;
+    const traceId = `${input.traceIdPrefix ?? "req:codex-title-sync"}:${session.sessionId}`;
+    if (pane.titleSource === "manual") {
+      try {
+        await input.codexParity.renameThread(threadId, pane.title);
+      } catch {
+        // Native thread may be unavailable; keep the pane title as-is.
+      }
+      if (session.cliTaskRevisionId) {
+        await input.store.updateCliTaskRevision(
+          session.cliTaskRevisionId,
+          { displayTitle: pane.title },
+          traceId
+        );
+      }
+      updatedCount += 1;
+      const latestEvent = await getLatestRoomEvent(input.store, pane.roomId);
+      if (latestEvent) input.eventBus.publish(latestEvent);
+      continue;
+    }
+    const updatedPane = await input.store.updatePane(pane.id, { title: nativeTitle }, traceId);
+    if (session.cliTaskRevisionId) {
+      await input.store.updateCliTaskRevision(
+        session.cliTaskRevisionId,
+        { displayTitle: nativeTitle },
+        traceId
+      );
+    }
+    updatedCount += 1;
+    const latestEvent = await getLatestRoomEvent(input.store, updatedPane.roomId);
+    if (latestEvent) input.eventBus.publish(latestEvent);
+  }
+  return updatedCount;
 }
 
 function closeBrowserSocketWithSetupError(
@@ -3323,6 +3504,9 @@ function reviewGateStatus(checks: Array<{ status: string }>): { gateStatus: "EMP
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
   const apiStartedAt = new Date().toISOString();
   const config = options.config ?? getApiConfig(process.env);
+  const appVersionReader = createAppVersionReader({
+    appVersionEnv: process.env.SPACE_APP_VERSION
+  });
   const auth = options.auth ?? getAuthConfig(process.env);
   const store = options.store ?? createDefaultStore(config);
   const appDiagnosticsService =
@@ -3440,6 +3624,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       config,
       codexTurnStarter,
       codexAgentControl,
+      openCodeControlResolver: async () => resolveChatPaneOpenCodeControl(),
       readGoal: async (threadId) => {
         const goal = (await codexGoals.list()).find((candidate) => candidate.threadId === threadId);
         return goal
@@ -3517,6 +3702,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
 
   const unifiedCliTaskRegistry = new UnifiedCliTaskRegistry(store);
+  const agentSessionHistoryService = new AgentSessionHistoryService({ codexParity, unifiedCliTaskRegistry });
   let cliRuntimeRegistryCache!: ReturnType<typeof createAgentRuntimeRegistryCache>;
   let setupConnections!: SetupConnectionsService;
 
@@ -3820,6 +4006,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         });
       }
     });
+  const systemServicesProvider =
+    options.systemServicesProvider ??
+    createSystemServicesProvider({ collect: runSystemServicesCollector });
   const toolbarHostMemoryProvider =
     options.toolbarHostMemoryProvider ??
     createHostMemoryDetailsProvider({
@@ -3834,6 +4023,72 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     });
   const toolbarCliSessionReaper = options.toolbarCliSessionReaper ?? (() => cliTerminalManager.reapDetachedSessions());
+  const toolbarModelStatsCollector = options.toolbarModelStatsCollector
+    ?? createToolbarModelStatsCollector({ store });
+  const systemAnalyticsService = options.systemAnalyticsService ?? new SystemAnalyticsService({
+    repository: store instanceof PostgresSpaceStore
+      ? PostgresSystemAnalyticsRepository.fromConnectionString(
+          config.databaseUrl ?? (() => {
+            throw new Error("SPACE_DATABASE_URL is required when SPACE_RUNTIME_STORE=postgres.");
+          })(),
+          {
+            max: 2,
+            idleTimeoutMillis: config.databasePoolIdleTimeoutMs,
+            connectionTimeoutMillis: config.databasePoolConnectionTimeoutMs
+          }
+        )
+      : new InMemorySystemAnalyticsRepository(),
+    store,
+    stateRoot: options.opencodeStateRoot,
+    codexHome: config.codexAppServerHome ?? "/var/lib/spaceapp-user/.codex",
+    liveSessions: async () => {
+      const health = await Promise.all([
+        cliTerminalManager.hostHealth("cli:codex").catch(() => null),
+        config.cliRootEnabled ? cliTerminalManager.hostHealth("cli:root").catch(() => null) : Promise.resolve(null)
+      ]);
+      const unique = new Map<string, SystemAnalyticsLiveSession>();
+      for (const session of health.flatMap((entry) => entry?.sessions ?? [])) {
+        unique.set(session.cliSessionId, {
+          cliSessionId: session.cliSessionId,
+          paneId: session.paneId,
+          roomId: session.roomId,
+          runtimeId: session.runtimeId,
+          codexThreadId: session.codexThreadId,
+          modelId: session.modelId,
+          reasoningEffort: session.reasoningEffort,
+          pid: session.pid,
+          status: session.status,
+          attachmentCount: session.attachmentCount,
+          startedAt: session.startedAt,
+          detachedAt: session.detachedAt,
+          endedAt: session.endedAt
+        });
+      }
+      return [...unique.values()];
+    }
+  });
+  const streamingService = options.streamingService ?? new StreamingService({
+    repository: store instanceof PostgresSpaceStore
+      ? PostgresStreamingRepository.fromConnectionString(
+          config.databaseUrl ?? (() => {
+            throw new Error("SPACE_DATABASE_URL is required when SPACE_RUNTIME_STORE=postgres.");
+          })(),
+          {
+            max: 2,
+            idleTimeoutMillis: config.databasePoolIdleTimeoutMs,
+            connectionTimeoutMillis: config.databasePoolConnectionTimeoutMs
+          }
+        )
+      : new InMemoryStreamingRepository(),
+    credentialStore: new StreamingCredentialStore(
+      store instanceof PostgresSpaceStore
+        ? config.streamingSecretRoot
+        : join(tmpdir(), `space-streaming-secrets-${process.pid}-${nanoid(8)}`)
+    ),
+    store,
+    youtubeDailyQuotaBudget: config.streamingYoutubeDailyQuotaBudget,
+    cleanupCredentialRootOnDispose: !(store instanceof PostgresSpaceStore)
+  });
   const toolbarKernelCacheReclaimer = options.toolbarKernelCacheReclaimer ?? runKernelCacheReclaim;
   const toolbarProviderRouteApplier =
     options.toolbarProviderRouteApplier ??
@@ -3847,6 +4102,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const codexLbSpeedDefaultsProvider = options.codexLbSpeedDefaultsProvider ?? codexLbSpeedDefaultsService.read;
   const codexLbSpeedDefaultUpdater = options.codexLbSpeedDefaultUpdater ?? codexLbSpeedDefaultsService.update;
   const codexHistoryPurgeService = options.codexHistoryPurgeService ?? createCodexHistoryPurgeService();
+  const cliSessionCleanupService = options.cliSessionCleanupService ?? createCliSessionCleanupService({
+    codexPurge: codexHistoryPurgeService
+  });
   const codexHistoryAccessCoordinator = options.codexHistoryAccessCoordinator ?? createCodexHistoryAccessCoordinator();
   const sharedCliTaskPurgePreviews = new Map<string, {
     actorId: string;
@@ -3989,6 +4247,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       );
     }
     return control;
+  };
+  const resolveChatPaneOpenCodeControl = async (): Promise<OpenCodeServerControl> => {
+    const controls = await listOpenCodeServerControls(options.opencodeStateRoot);
+    for (const control of controls) {
+      if (await openCodeServerIsHealthy(control)) return control;
+    }
+    throw new SpaceFeatureDisabledError(
+      "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+      "Live OpenCode model control is unavailable; the chat provider catalog could not be loaded."
+    );
   };
   const readPaneOpenCodeModelSettings = async (pane: Pane, session: PaneCliSession, traceId: string) => {
     const control = await resolveOpenCodeServerControl(session);
@@ -4299,6 +4567,31 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   let durableEventPollTimer: ReturnType<typeof setInterval> | null = null;
   let opencodeTitleSyncTimer: ReturnType<typeof setInterval> | null = null;
   let opencodeTitleSyncRunning = false;
+  let codexTitleSyncTimer: ReturnType<typeof setInterval> | null = null;
+  let codexTitleSyncRunning = false;
+  let systemAnalyticsSampleTimer: ReturnType<typeof setInterval> | null = null;
+  let systemAnalyticsRollupTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function runCodexPaneTitleSyncSweep() {
+    if (codexTitleSyncRunning) return;
+    codexTitleSyncRunning = true;
+    try {
+      const updated = await runCodexPaneTitleSync({
+        store,
+        codexParity,
+        findThreadId: options.findCodexThreadId,
+        eventBus,
+        traceIdPrefix: "req:codex-title-sync"
+      });
+      if (updated > 0) {
+        app.log.info({ updated }, "Codex pane title sync updated panes from native threads.");
+      }
+    } catch (error) {
+      app.log.error({ err: error }, "Codex pane title sync sweep failed.");
+    } finally {
+      codexTitleSyncRunning = false;
+    }
+  }
 
   async function runOpenCodePaneTitleSyncSweep() {
     if (opencodeTitleSyncRunning) return;
@@ -4442,14 +4735,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (appDiagnosticsRetentionTimer) clearInterval(appDiagnosticsRetentionTimer);
     if (durableEventPollTimer) clearInterval(durableEventPollTimer);
     if (opencodeTitleSyncTimer) clearInterval(opencodeTitleSyncTimer);
+    if (codexTitleSyncTimer) clearInterval(codexTitleSyncTimer);
+    if (systemAnalyticsSampleTimer) clearInterval(systemAnalyticsSampleTimer);
+    if (systemAnalyticsRollupTimer) clearInterval(systemAnalyticsRollupTimer);
     stopTrackingPublishedEvents();
     await cliTerminalManager.closeAll();
     await browserSessionManager.closeAll();
     await appDiagnosticsService.dispose();
+    await systemAnalyticsService.dispose();
+    await streamingService.dispose();
   });
 
   app.addHook("onReady", async () => {
     await appDiagnosticsService.initialize();
+    await streamingService.initialize();
     appDiagnosticsRetentionTimer = setInterval(
       () => void runAppDiagnosticsRetentionSweep(),
       5 * 60 * 1000
@@ -4482,6 +4781,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     durableEventPollTimer.unref();
     opencodeTitleSyncTimer = setInterval(() => void runOpenCodePaneTitleSyncSweep(), opencodeTitleSyncPollIntervalMs);
     opencodeTitleSyncTimer.unref();
+    codexTitleSyncTimer = setInterval(() => void runCodexPaneTitleSyncSweep(), opencodeTitleSyncPollIntervalMs);
+    codexTitleSyncTimer.unref();
+    try {
+      await systemAnalyticsService.sample();
+    } catch (error) {
+      app.log.error({ err: error }, "Initial system analytics sample failed.");
+    }
+    systemAnalyticsSampleTimer = setInterval(
+      () => void systemAnalyticsService.sample().catch((error) => app.log.error({ err: error }, "System analytics sample failed.")),
+      10_000
+    );
+    systemAnalyticsSampleTimer.unref();
+    systemAnalyticsRollupTimer = setInterval(
+      () => void systemAnalyticsService.rollupAndSweep().catch((error) => app.log.error({ err: error }, "System analytics rollup failed.")),
+      60_000
+    );
+    systemAnalyticsRollupTimer.unref();
+    void systemAnalyticsService.backfill().catch((error) => {
+      app.log.error({ err: error }, "System analytics backfill failed.");
+    });
   });
 
   app.addHook("preHandler", async (request, reply) => {
@@ -4527,6 +4846,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof StreamingSettingsVersionConflictError) {
+      request.log.info({ requestId: request.requestIdForSpace, currentVersion: error.currentVersion }, "streaming overlay settings conflicted");
+      return sendApiError(reply, 409, "STREAMING_SETTINGS_CONFLICT", error.message, { currentVersion: error.currentVersion });
+    }
+    if (error instanceof StreamingServiceError) {
+      request.log.info({ errorCode: error.code, requestId: request.requestIdForSpace }, "streaming request rejected");
+      return sendApiError(reply, error.statusCode, error.code, error.message);
+    }
     if (error instanceof ZodError) {
       request.log.info({ err: error, requestId: request.requestIdForSpace }, "request rejected");
       return sendApiError(reply, 422, "VALIDATION_ERROR", "Invalid request data.", error.flatten());
@@ -4697,6 +5024,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     node: process.version,
     git: await readGitVersionMetadata()
   }));
+  app.get("/api/app/version", defaultRouteRateLimitOptions, async () => appVersionReader.status());
   app.get("/metrics", defaultRouteRateLimitOptions, async (_request, reply) => {
     reply.header("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
     return observability.renderPrometheus();
@@ -5283,6 +5611,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { id: deleted.id, deleted: true };
   });
 
+  app.patch("/api/clipboard-items/:id", defaultRouteRateLimitOptions, async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const input = parseBody(setClipboardItemCompletedRequestSchema, request.body);
+    const owner = await store.upsertUser(request.user!);
+    return store.setClipboardItemCompleted(owner.id, params.id, input.completed);
+  });
+
   app.delete("/api/clipboard-items", defaultRouteRateLimitOptions, async (request) => {
     const owner = await store.upsertUser(request.user!);
     return { deletedCount: await store.clearClipboardItems(owner.id) };
@@ -5434,6 +5769,45 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       pageSize: result.pageSize
     });
   });
+
+  // Agent session history endpoint (merged Codex threads + active CLI tasks)
+  app.get("/api/agent/sessions", async (request) => {
+    const query = parseQuery(agentSessionHistoryQuerySchema, request.query);
+    const requestedId = await visibleCliRuntimeIds();
+    if (!requestedId.includes("cli:codex")) requestedId.push("cli:codex");
+    return agentSessionHistoryResponseSchema.parse(
+      await agentSessionHistoryService.list({
+        page: query.page,
+        pageSize: query.pageSize,
+        includeArchived: query.includeArchived,
+        q: query.q,
+        runtimeIds: requestedId
+      })
+    );
+  });
+
+  app.get("/api/system/services", async () => {
+    return systemServicesResponseSchema.parse(await systemServicesProvider());
+  });
+
+  app.post(
+    "/api/agent/sessions/codex/:id/rename",
+    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+    async (request) => {
+      const params = parseQuery(agentSessionThreadParamSchema, request.params);
+      const input = parseBody(agentSessionRenameRequestSchema, request.body ?? {});
+      return codexHistoryItemSchema.parse(await codexParity.renameThread(params.id, input.title));
+    }
+  );
+
+  app.post(
+    "/api/agent/sessions/codex/:id/archive",
+    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+    async (request) => {
+      const params = parseQuery(agentSessionThreadParamSchema, request.params);
+      return codexHistoryItemSchema.parse(await codexParity.archiveThread(params.id));
+    }
+  );
 
   app.get("/api/panes/:id/cli/recovery-task", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
@@ -5882,34 +6256,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.delete("/api/rooms/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const panes = await store.listPanes(params.id, true);
-    let interruptedCliSessions = 0;
-    let closedBrowserSessions = 0;
+    const cliSessions: PaneCliSession[] = [];
+    const browserSessions: PaneBrowserSession[] = [];
     for (const pane of panes) {
       if (pane.mode === "TERMINAL") {
         const active = await store.getActivePaneCliSession(pane.id);
-        if (!active) continue;
-        await cliTerminalManager.interrupt(active.sessionId);
-        await store.updatePaneCliSession(
-          active.sessionId,
-          {
-            status: "EXITED",
-            statusReason: "Room closed by operator.",
-            isActive: false,
-            endedAt: nowIso()
-          },
-          request.requestIdForSpace
-        );
-        interruptedCliSessions += 1;
+        if (active) cliSessions.push(active);
       }
       if (pane.mode === "BROWSER" || pane.mode === "YOUTUBE") {
         const active = await store.getActivePaneBrowserSession(pane.id);
-        if (!active) continue;
-        try {
-          await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
-          closedBrowserSessions += 1;
-        } catch (error) {
-          request.log.warn({ err: error, paneId: pane.id }, "browser session stop failed during room delete; deleting room anyway");
-        }
+        if (active) browserSessions.push(active);
       }
     }
     const room = await store.deleteRoom(params.id);
@@ -5917,8 +6273,38 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       action: "room.delete",
       targetType: "room",
       targetId: room.id,
-      metadata: { name: room.name, paneCap: room.paneCap, interruptedCliSessions, closedBrowserSessions }
+      metadata: {
+        name: room.name,
+        paneCap: room.paneCap,
+        interruptedCliSessions: cliSessions.length,
+        closedBrowserSessions: browserSessions.length,
+        deferredTeardown: cliSessions.length + browserSessions.length
+      }
     });
+    void (async () => {
+      try {
+        const browserTeardowns = browserSessions.flatMap((session) => {
+          const stopDetached = browserSessionManager.stopDetached;
+          return stopDetached ? [stopDetached(session)] : [];
+        });
+        const settled = await Promise.allSettled([
+          ...cliSessions.map((session) => cliTerminalManager.detachSession(session)),
+          ...browserTeardowns
+        ]);
+        const failed = settled.filter((entry) => entry.status === "rejected").length;
+        request.log.info(
+          {
+            roomId: room.id,
+            cliSessions: cliSessions.length,
+            browserSessions: browserSessions.length,
+            failedTeardown: failed
+          },
+          "room delete background teardown completed"
+        );
+      } catch (error) {
+        request.log.error({ err: error, roomId: room.id }, "room delete background teardown failed");
+      }
+    })();
     return { ok: true, roomId: room.id };
   });
 
@@ -7116,6 +7502,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         request.user?.automationScope === "APP_DIAGNOSTICS"
           ? false
           : query.includeTranscript,
+      compactTranscript:
+        request.user?.automationScope === "APP_DIAGNOSTICS"
+          ? false
+          : Boolean(query.compactTranscript),
       proofScope: request.user?.proofScope,
       tokenTtlMs: config.cliTokenTtlMs,
       issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
@@ -7801,7 +8191,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     let pane: Pane;
     try {
-      pane = await store.updatePane(params.id, input, request.requestIdForSpace);
+      pane = await store.updatePane(
+        params.id,
+        typeof input.title === "string" && input.title !== existingPane.title
+          ? { ...input, titleSource: "manual" }
+          : input,
+        request.requestIdForSpace
+      );
     } catch (error) {
       await rollbackOpenCodeTitle?.();
       await rollbackCliTaskTitle?.();
@@ -7909,28 +8305,55 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (pane.mode === "CHAT" && !primaryTaskRequest) {
       throw new SpaceConflictError("Start a Chat task with a user request before generating a title.");
     }
-    let selection;
-    try {
-      selection = selectTerminalPaneTitleGeneration(providers, models, providerSettings);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "CLI title generation is unavailable.";
-      throw new SpaceFeatureDisabledError("PANE_TITLE_GENERATION_UNAVAILABLE", message);
+    let selection: TerminalPaneTitleGenerationSelection | undefined;
+    let opencodeResult: GenerateTerminalPaneTitleResult | null = null;
+    if (pane.mode === "TERMINAL" && "runtimeId" in session && session.runtimeId === "cli:opencode") {
+      const opencodeControl = await readOpenCodeServerControl(session.sessionId, options.opencodeStateRoot);
+      if (opencodeControl) {
+        try {
+          opencodeResult = await generateOpenCodePaneTitle({
+            control: opencodeControl,
+            currentTitle: pane.title,
+            cwd: pane.cwd ?? ("cwd" in session ? session.cwd : null),
+            primaryTaskRequest,
+            transcript
+          });
+        } catch (error) {
+          request.log.info(
+            { err: error, requestId: request.requestIdForSpace, paneId: pane.id },
+            "opencode title generation failed; falling back to codex"
+          );
+        }
+      }
     }
-    let generated;
-    try {
-      generated = await generateTerminalPaneTitle({
-        config,
-        provider: selection.provider,
-        model: selection.model,
-        currentTitle: pane.title,
-        cwd: pane.cwd ?? ("cwd" in session ? session.cwd : null),
-        primaryTaskRequest,
-        reasoningEffort: selection.reasoningEffort,
-        transcript
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "CLI title generation failed.";
-      throw new SpaceFeatureDisabledError("PANE_TITLE_GENERATION_FAILED", message);
+    if (!opencodeResult) {
+      try {
+        selection = selectTerminalPaneTitleGeneration(providers, models, providerSettings);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "CLI title generation is unavailable.";
+        throw new SpaceFeatureDisabledError("PANE_TITLE_GENERATION_UNAVAILABLE", message);
+      }
+    }
+    let generated: GenerateTerminalPaneTitleResult;
+    if (opencodeResult) {
+      generated = opencodeResult;
+    } else {
+      try {
+        generated = await generateTerminalPaneTitle({
+          config,
+          provider: selection!.provider,
+          model: selection!.model,
+          currentTitle: pane.title,
+          cwd: pane.cwd ?? ("cwd" in session ? session.cwd : null),
+          primaryTaskRequest,
+          trustPrimaryTaskRequest: pane.mode === "CHAT",
+          reasoningEffort: selection!.reasoningEffort,
+          transcript
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "CLI title generation failed.";
+        throw new SpaceFeatureDisabledError("PANE_TITLE_GENERATION_FAILED", message);
+      }
     }
     const rollbackCodexTitle = codexThreadId
       ? await syncPaneTitleToCodexHistory({
@@ -7958,10 +8381,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       await rollbackCodexTitle?.();
       throw error;
     }
+    let rollbackOpenCodeTitle: (() => Promise<void>) | null = null;
+    if (opencodeResult) {
+      try {
+        rollbackOpenCodeTitle = await syncPaneTitleToOpenCodeSession({
+          store,
+          pane,
+          title: generated.title,
+          traceId: request.requestIdForSpace,
+          request,
+          stateRoot: options.opencodeStateRoot
+        });
+      } catch (error) {
+        await rollbackCliTaskTitle?.();
+        await rollbackCodexTitle?.();
+        throw error;
+      }
+    }
     let updated: Pane;
     try {
-      updated = await store.updatePane(pane.id, { title: generated.title }, request.requestIdForSpace);
+      updated = await store.updatePane(
+        pane.id,
+        { title: generated.title, titleSource: "ai" },
+        request.requestIdForSpace
+      );
     } catch (error) {
+      await rollbackOpenCodeTitle?.();
       await rollbackCliTaskTitle?.();
       await rollbackCodexTitle?.();
       throw error;
@@ -8469,6 +8914,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       viewport: input.viewport,
       targetUrl: input.targetUrl,
       streamMode: input.streamMode,
+      includeInitialFrame: input.includeInitialFrame,
       ownerAgentId: input.ownerAgentId ?? null,
       traceId: request.requestIdForSpace
     }, operatorBrowserActor(request));
@@ -9171,7 +9617,30 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true, paneId: pane.id };
   });
 
-  app.post("/api/panes/:id/cli/session", defaultRouteRateLimitOptions, async (request) => {
+  const paneCliSessionStartTails = new Map<string, Promise<void>>();
+  function serializePaneCliSessionStart<T>(
+    operation: (request: FastifyRequest) => Promise<T>
+  ): (request: FastifyRequest) => Promise<T> {
+    return async (request) => {
+      const paneId = parseQuery(idParamSchema, request.params).id;
+      const previous = paneCliSessionStartTails.get(paneId) ?? Promise.resolve();
+      let release!: () => void;
+      const current = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const tail = previous.then(() => current);
+      paneCliSessionStartTails.set(paneId, tail);
+      await previous;
+      try {
+        return await operation(request);
+      } finally {
+        release();
+        if (paneCliSessionStartTails.get(paneId) === tail) paneCliSessionStartTails.delete(paneId);
+      }
+    };
+  }
+
+  app.post("/api/panes/:id/cli/session", defaultRouteRateLimitOptions, serializePaneCliSessionStart(async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createPaneCliSessionRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -9207,6 +9676,39 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const active = await store.getActivePaneCliSession(pane.id);
     if (active?.purpose === "LOGIN") {
       throw new SpaceConflictError("Cancel or complete CLI login before starting a normal CLI session in this pane.");
+    }
+    const rejoinableSession =
+      active &&
+      !input.forceRestart &&
+      !input.resume &&
+      active.runtimeId === runtime.id &&
+      active.status !== "EXITED" &&
+      active.status !== "ERROR"
+        ? active
+        : null;
+    if (rejoinableSession) {
+      await recordAudit(store, request, {
+        action: "pane.cli.session",
+        targetType: "pane",
+        targetId: pane.id,
+        metadata: {
+          roomId: pane.roomId,
+          runtimeId: runtime.id,
+          providerId: runtime.providerId,
+          agentId: runtime.agentId,
+          resume: false,
+          reused: true
+        }
+      });
+      return buildPaneCliSessionResponse({
+        store,
+        runtime,
+        sessionId: rejoinableSession.sessionId,
+        includeWebsocket: true,
+        includeTranscript: input.includeTranscript,
+        tokenTtlMs: config.cliTokenTtlMs,
+        issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
+      });
     }
     if (active) await assertCliHttpMutationControl(request, active);
     const requestedCwd = input.cwd ?? pane.cwd ?? null;
@@ -9441,7 +9943,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       tokenTtlMs: config.cliTokenTtlMs,
       issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
     });
-  });
+  }));
 
   app.post("/api/panes/:id/cli/resume", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
@@ -9887,6 +10389,39 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
+  app.post("/api/panes/:id/cli/turn-abort", defaultRouteRateLimitOptions, async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const pane = await getPaneById(store, params.id);
+    assertCliPaneCompatible(pane);
+    await assertPaneCliRuntimeEnabled(pane);
+    const active = await store.getActivePaneCliSession(pane.id);
+    if (!active || !active.isActive || active.status === "EXITED" || active.status === "ERROR") {
+      throw new SpaceConflictError("Attach a CLI session before interrupting its turn.");
+    }
+    assertNormalCliSession(active);
+    assertRootAdmin(request, active.runtimeId);
+    await assertCliHttpMutationControl(request, active);
+    let isTurnActive = false;
+    if (isOpenCodeDirectParityRuntime(active.runtimeId)) {
+      const control = await resolveOpenCodeServerControl(active);
+      try {
+        await abortOpenCodeSession(control, control.nativeSessionId);
+      } catch (error) {
+        throw new SpaceConflictError("OpenCode rejected the turn abort; the running turn was left unchanged.");
+      }
+      isTurnActive = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId).catch(() => false);
+    } else {
+      throw new SpaceConflictError("Turn abort is only available for OpenCode CLI sessions.");
+    }
+    await recordAudit(store, request, {
+      action: "pane.cli.turn-abort",
+      targetType: "pane",
+      targetId: pane.id,
+      metadata: { roomId: pane.roomId, runtimeId: active.runtimeId, sessionId: active.sessionId }
+    });
+    return { ok: true as const, isTurnActive };
+  });
+
   app.get("/api/panes/:id/agent-session", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
@@ -10086,10 +10621,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       throw new SpaceFeatureDisabledError("VOICE_TRANSCRIPTION_DISABLED", settings.statusReason);
     }
     const input = parseBody(voiceRealtimeSessionRequestSchema, request.body);
+    const model = normalizeVoiceTranscriptionModel(input.model ?? config.voiceTranscriptionModel);
     try {
       const result = await createVoiceRealtimeCall(config, {
         offerSdp: input.offerSdp,
-        model: input.model ?? config.voiceTranscriptionModel,
+        model,
         language: input.language,
         delay: input.delay ?? config.voiceTranscriptionDelay,
         safetyIdentifier: request.user ? createHash("sha256").update(`space:${request.user.id}`).digest("hex") : null
@@ -10099,7 +10635,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         targetType: "voice_realtime_session",
         targetId: request.requestIdForSpace,
         metadata: {
-          model: input.model ?? config.voiceTranscriptionModel,
+          model,
           language: input.language,
           delay: input.delay ?? config.voiceTranscriptionDelay
         }
@@ -10452,6 +10988,241 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return hostMemoryDetailsSchema.parse(await toolbarHostMemoryProvider());
     }
   );
+  app.get(
+    "/api/admin/streaming/catalog",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
+      }
+      return streamingCatalogResponseSchema.parse(await streamingService.catalog());
+    }
+  );
+  app.post(
+    "/api/admin/streaming/providers/:provider/oauth/start",
+    { config: { rateLimit: { max: 10, timeWindow: "10 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
+      }
+      const { provider } = z.object({ provider: streamingOAuthProviderSchema }).strict().parse(request.params);
+      parseBody(z.object({}).strict(), request.body ?? {});
+      const sessionToken = request.cookies[cookieName] ?? "";
+      const result = streamingOAuthStartResponseSchema.parse(await streamingService.startOAuth(provider, sessionToken));
+      await recordAudit(store, request, {
+        action: "admin.streaming.oauth_started",
+        targetType: "streaming_provider",
+        targetId: provider,
+        metadata: { provider, expiresAt: result.expiresAt }
+      });
+      return result;
+    }
+  );
+  app.get(
+    "/api/admin/streaming/providers/:provider/oauth/callback",
+    { config: { rateLimit: { max: 30, timeWindow: "10 minutes" } } },
+    async (request, reply) => {
+      const params = z.object({ provider: streamingOAuthProviderSchema }).strict().safeParse(request.params);
+      const provider = params.success ? params.data.provider : "YOUTUBE";
+      if (!params.success || request.user?.role !== "ADMIN") {
+        return reply.type("text/html; charset=utf-8").send(streamingOAuthPopupHtml(provider, false));
+      }
+      const query = z.object({
+        code: z.string().min(1).max(4096).optional(),
+        state: z.string().min(1).max(1024).optional(),
+        error: z.string().max(200).optional()
+      }).passthrough().safeParse(request.query);
+      if (!query.success || query.data.error || !query.data.code || !query.data.state) {
+        return reply.type("text/html; charset=utf-8").send(streamingOAuthPopupHtml(provider, false));
+      }
+      try {
+        const result = await streamingService.completeOAuth({
+          provider,
+          code: query.data.code,
+          state: query.data.state,
+          sessionToken: request.cookies[cookieName] ?? ""
+        });
+        await recordAudit(store, request, {
+          action: "admin.streaming.oauth_completed",
+          targetType: "streaming_authorization",
+          targetId: result.authorization.id,
+          metadata: { provider, accountCount: result.accounts.length }
+        });
+        return reply.type("text/html; charset=utf-8").send(streamingOAuthPopupHtml(provider, true));
+      } catch (error) {
+        request.log.info(
+          {
+            errorCode: error instanceof StreamingServiceError
+              ? error.code
+              : error instanceof Error && "code" in error && typeof error.code === "string"
+                ? error.code.slice(0, 100)
+                : "OAUTH_CALLBACK_FAILED",
+            requestId: request.requestIdForSpace,
+            provider
+          },
+          "streaming OAuth callback failed"
+        );
+        return reply.type("text/html; charset=utf-8").send(streamingOAuthPopupHtml(provider, false));
+      }
+    }
+  );
+  app.post(
+    "/api/admin/streaming/accounts/:accountId/verify",
+    { config: { rateLimit: { max: 30, timeWindow: "5 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
+      }
+      const { accountId } = z.object({ accountId: z.string().min(1).max(200) }).strict().parse(request.params);
+      parseBody(z.object({}).strict(), request.body ?? {});
+      return streamingVerifyAccountResponseSchema.parse(await streamingService.verifyAccount(accountId));
+    }
+  );
+  app.delete(
+    "/api/admin/streaming/accounts/:accountId",
+    { config: { rateLimit: { max: 30, timeWindow: "5 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
+      }
+      const { accountId } = z.object({ accountId: z.string().min(1).max(200) }).strict().parse(request.params);
+      const account = await streamingService.removeAccount(accountId);
+      await recordAudit(store, request, {
+        action: "admin.streaming.account_removed",
+        targetType: "streaming_account",
+        targetId: accountId,
+        metadata: { provider: account.provider }
+      });
+      return { account };
+    }
+  );
+  app.delete(
+    "/api/admin/streaming/authorizations/:authorizationId",
+    { config: { rateLimit: { max: 10, timeWindow: "10 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
+      }
+      const { authorizationId } = z.object({ authorizationId: z.string().min(1).max(200) }).strict().parse(request.params);
+      const result = streamingDisconnectAuthorizationResponseSchema.parse(
+        await streamingService.disconnectAuthorization(authorizationId)
+      );
+      await recordAudit(store, request, {
+        action: "admin.streaming.authorization_disconnected",
+        targetType: "streaming_authorization",
+        targetId: authorizationId,
+        metadata: { status: result.status, disconnected: result.disconnected }
+      });
+      return result;
+    }
+  );
+  app.patch(
+    "/api/admin/streaming/overlay-settings",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
+      }
+      const input = parseBody(updateStreamingOverlaySettingsInputSchema, request.body);
+      const settings = await streamingService.updateOverlaySettings(input, request.user.id);
+      await recordAudit(store, request, {
+        action: "admin.streaming.overlay_saved",
+        targetType: "streaming_overlay",
+        targetId: "global",
+        metadata: { version: settings.version, tileCount: settings.tiles.length, customTextEnabled: settings.customTextEnabled }
+      });
+      return settings;
+    }
+  );
+  app.get(
+    "/api/admin/streaming/overlay-snapshot",
+    { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
+      }
+      return streamingOverlaySnapshotSchema.parse(await streamingService.overlaySnapshot());
+    }
+  );
+  app.get(
+    "/api/admin/system-analytics/overview",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "System analytics require the ADMIN role.");
+      }
+      const { range } = z.object({ range: systemAnalyticsRangeSchema.default("10m") }).strict().parse(request.query);
+      return systemAnalyticsOverviewResponseSchema.parse(await systemAnalyticsService.overview(range));
+    }
+  );
+  app.get(
+    "/api/admin/system-analytics/models",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "System analytics require the ADMIN role.");
+      }
+      const { range } = z.object({ range: systemAnalyticsRangeSchema.default("10m") }).strict().parse(request.query);
+      return systemAnalyticsModelsResponseSchema.parse(await systemAnalyticsService.models(range));
+    }
+  );
+  app.get(
+    "/api/admin/system-analytics/resources",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "System analytics require the ADMIN role.");
+      }
+      const { range } = z.object({ range: systemAnalyticsRangeSchema.default("10m") }).strict().parse(request.query);
+      return systemAnalyticsResourcesResponseSchema.parse(await systemAnalyticsService.resources(range));
+    }
+  );
+  app.get(
+    "/api/admin/system-analytics/processes",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "System analytics require the ADMIN role.");
+      }
+      const input = z.object({
+        page: z.coerce.number().int().min(1).default(1),
+        pageSize: z.coerce.number().int().min(10).max(200).default(100),
+        sort: z.enum(["rss", "cpu", "pid", "uptime", "name"]).default("rss"),
+        direction: z.enum(["asc", "desc"]).default("desc"),
+        query: z.string().trim().max(160).optional(),
+        ownership: z.enum(["ALL", "SPACE_CLI", "SPACE_SHARED", "OTHER"]).default("ALL")
+      }).strict().parse(request.query);
+      return systemAnalyticsProcessesResponseSchema.parse(await systemAnalyticsService.processes(input));
+    }
+  );
+  app.get(
+    "/api/admin/system-analytics/cli-sessions",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "System analytics require the ADMIN role.");
+      }
+      const { range } = z.object({ range: systemAnalyticsRangeSchema.default("10m") }).strict().parse(request.query);
+      return systemAnalyticsCliSessionsResponseSchema.parse(await systemAnalyticsService.cliSessions(range));
+    }
+  );
+  app.get(
+    "/api/admin/toolbar-model-stats",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Toolbar model telemetry requires the ADMIN role.");
+      }
+      const input = z.object({
+        roomId: z.string().min(1).max(200).optional(),
+        windowMinutes: z.coerce.number().int().min(1).max(1440).default(10)
+      }).strict().parse(request.query);
+      return toolbarModelStatsSchema.parse(await toolbarModelStatsCollector({
+        roomId: input.roomId ?? "global",
+        windowMinutes: input.windowMinutes
+      }));
+    }
+  );
   app.post(
     "/api/admin/memory-reclaims",
     { config: { rateLimit: { max: 3, timeWindow: "10 minutes" } } },
@@ -10752,6 +11523,72 @@ app.post(
           throw new SpaceConflictError(nativeRollbackCompleted && sharedRollbackCompleted
             ? "History purge audit failed; the purge was rolled back."
             : "History purge audit failed; recovery is required.");
+        }
+        return result;
+      });
+    }
+  );
+  app.post(
+    "/api/admin/cli-session-cleanup-previews",
+    { config: { rateLimit: { max: 6, timeWindow: "5 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI session cleanup previews require the ADMIN role.");
+      }
+      await cliRuntimeVisibility.assertAnyCliRuntimeEnabled();
+      parseBody(cliSessionCleanupPreviewRequestSchema, request.body ?? {});
+      return codexHistoryAccessCoordinator.withExclusivePurge(async () => {
+        const [protectedThreadIds, codexEnabled] = await Promise.all([
+          store.listActiveManagedCodexThreadIds(),
+          cliRuntimeVisibility.isEnabled("cli:codex")
+        ]);
+        return cliSessionCleanupService.preview({
+          actorId: request.user!.id,
+          protectedThreadIds,
+          codexEnabled
+        });
+      });
+    }
+  );
+  app.post(
+    "/api/admin/cli-session-cleanups",
+    { config: { rateLimit: { max: 2, timeWindow: "10 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI session cleanup requires the ADMIN role.");
+      }
+      await cliRuntimeVisibility.assertAnyCliRuntimeEnabled();
+      const input = parseBody(cliSessionCleanupExecuteRequestSchema, request.body ?? {});
+      return codexHistoryAccessCoordinator.withExclusivePurge(async () => {
+        const actorId = request.user!.id;
+        const [protectedThreadIds, codexEnabled] = await Promise.all([
+          store.listActiveManagedCodexThreadIds(),
+          cliRuntimeVisibility.isEnabled("cli:codex")
+        ]);
+        const result = await cliSessionCleanupService.execute({
+          actorId,
+          previewId: input.previewId,
+          protectedThreadIds,
+          codexEnabled
+        });
+        try {
+          await recordAudit(store, request, {
+            action: "admin.cli_sessions.cleaned",
+            targetType: "cli_sessions",
+            targetId: result.previewId,
+            metadata: {
+              status: result.status,
+              cleaned: result.cleaned,
+              totalBytes: result.totalBytes,
+              failures: result.failures
+            }
+          });
+        } catch (auditError) {
+          request.log.error(
+            { auditError, requestId: request.requestIdForSpace },
+            "CLI session cleanup audit failed"
+          );
+          throw new SpaceConflictError("CLI session cleanup audit failed; the cleanup completed but was not recorded.");
         }
         return result;
       });

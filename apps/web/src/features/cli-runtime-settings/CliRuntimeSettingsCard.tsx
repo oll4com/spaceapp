@@ -1,8 +1,7 @@
 import {
   cliRuntimeDisablePreviewSchema,
-  cliToggleRuntimeIds,
-  type AgentRuntime,
   type CliRuntimeDisablePreview,
+  type CliRuntimeRestartSessionsResult,
   type CliRuntimeSettingsResponse,
   type CliToggleRuntimeId,
   type CliVpnConnection,
@@ -15,10 +14,11 @@ import {
   type UpdateCliRuntimeVpnInput,
   type UpdateCliRuntimeVpnResult
 } from "@space/contracts";
-import { AlertTriangle, Loader2, RefreshCw, Shield, Terminal, Trash2, Upload, X } from "../ui-theme/app-icons.js";
+import { AlertTriangle, Loader2, Recycle, RefreshCw, Shield, Terminal, Trash2, Upload, X } from "../ui-theme/app-icons.js";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, SpaceApiError } from "../../api.js";
+import { SettingsActionMenu, type SettingsActionMenuItem } from "../settings/SettingsActionMenu.js";
 import { useAutoDismiss, DEFAULT_NOTICE_DISMISS_MS } from "../../use-auto-dismiss.js";
 import { CLI_RUNTIME_PRESENTATIONS, cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import {
@@ -60,8 +60,10 @@ function writeManagedVpnProfileId(profileId: CliVpnProfileId): void {
 }
 
 export interface CliRuntimeSettingsClient {
-  cliRuntimeSettings: () => Promise<CliRuntimeSettingsResponse>;
+  cliRuntimeSettings: (options?: { forceRefresh?: boolean }) => Promise<CliRuntimeSettingsResponse>;
+  cliRuntimeSettingsSnapshot?: () => CliRuntimeSettingsResponse | null;
   cliRuntimeDisablePreview: (runtimeId: string) => Promise<CliRuntimeDisablePreview>;
+  cliRuntimeRestart?: (runtimeId: string) => Promise<CliRuntimeRestartSessionsResult>;
   updateCliRuntimeSetting: (
     runtimeId: string,
     input: UpdateCliRuntimeSettingInput
@@ -77,6 +79,7 @@ export interface CliRuntimeSettingsClient {
   updateCliRuntimeVpn?: (runtimeId: string, input: UpdateCliRuntimeVpnInput) => Promise<UpdateCliRuntimeVpnResult>;
   restartCliRuntimeVpnSessions?: (runtimeId: string) => Promise<RestartCliRuntimeVpnSessionsResult>;
   invalidateCliRuntimes: () => void;
+  invalidateCliRuntimeSettings?: () => void;
 }
 
 interface DisableDialogState {
@@ -84,6 +87,11 @@ interface DisableDialogState {
   runtimeName: string;
   notice: string | null;
   error: string | null;
+}
+
+interface RestartDialogState {
+  runtimeId: CliToggleRuntimeId;
+  runtimeName: string;
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -103,25 +111,6 @@ function cliEgressRouteLabel(routeId: CliEgressRouteId): string {
 
 function cliVpnProfileLabel(profileId: CliVpnProfileId): string {
   return profileId === "greece" ? "Greece WireGuard" : profileId === "thailand" ? "Thailand WireGuard" : "Mullvad WireGuard";
-}
-
-function runtimeStatus(runtime: AgentRuntime | undefined): { installation: string; authentication: string; reason: string } {
-  if (!runtime) {
-    return { installation: "Not detected", authentication: "Auth unavailable", reason: "Runtime inventory is unavailable." };
-  }
-  const installation = runtime.adapterStatus === "ENABLED"
-    ? "Installed"
-    : runtime.adapterStatus === "ERROR"
-      ? "Install error"
-      : "Unavailable";
-  const authentication = runtime.authState === "READY"
-    ? "Authenticated"
-    : runtime.authState === "SETUP_REQUIRED"
-      ? "Setup required"
-      : runtime.authState === "LOGIN_REQUIRED"
-        ? "Login required"
-        : "Auth unavailable";
-  return { installation, authentication, reason: runtime.statusReason };
 }
 
 function DisableRuntimeDialog({
@@ -230,30 +219,121 @@ function DisableRuntimeDialog({
   );
 }
 
+function RestartRuntimeDialog({
+  dialog,
+  pending,
+  onCancel,
+  onConfirm
+}: {
+  dialog: RestartDialogState;
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => cancelRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape" && !pending) {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const buttons = Array.from(bodyRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+    const first = buttons[0];
+    const last = buttons.at(-1);
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  return createPortal(
+    <div className="cli-runtime-disable-backdrop" onClick={() => { if (!pending) onCancel(); }}>
+      <div
+        ref={bodyRef}
+        className="cli-runtime-disable-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cli-runtime-restart-title"
+        aria-describedby="cli-runtime-restart-impact"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={handleKeyDown}
+      >
+        <div className="cli-runtime-disable-heading">
+          <AlertTriangle aria-hidden="true" />
+          <span>
+            <strong id="cli-runtime-restart-title">Restart {dialog.runtimeName}?</strong>
+            <small>Other CLI runtimes are not affected.</small>
+          </span>
+        </div>
+        <p id="cli-runtime-restart-impact" className="cli-runtime-disable-impact">
+          All active {dialog.runtimeName} sessions will stop and start again.
+        </p>
+        <div className="cli-runtime-disable-actions">
+          <button ref={cancelRef} type="button" onClick={onCancel} disabled={pending}>Cancel</button>
+          <button className="is-danger" type="button" onClick={onConfirm} disabled={pending}>
+            {pending ? <Loader2 className="spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+            {pending ? "Restarting…" : `Restart ${dialog.runtimeName}`}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 export function CliRuntimeSettingsCard({
   canManage,
-  client = api
+  client = api,
+  onOpenRestartAll,
+  restartAllPending = false
 }: {
   canManage: boolean;
   client?: CliRuntimeSettingsClient;
+  onOpenRestartAll?: () => void;
+  restartAllPending?: boolean;
 }) {
-  const [response, setResponse] = useState<CliRuntimeSettingsResponse | null>(null);
+  const [response, setResponse] = useState<CliRuntimeSettingsResponse | null>(
+    () => client.cliRuntimeSettingsSnapshot?.() ?? null
+  );
   const [loading, setLoading] = useState(false);
   const [pendingRuntimeId, setPendingRuntimeId] = useState<CliToggleRuntimeId | null>(null);
+  const [pendingRestartRuntimeId, setPendingRestartRuntimeId] = useState<CliToggleRuntimeId | null>(null);
   const [pendingVpnRuntimeId, setPendingVpnRuntimeId] = useState<CliToggleRuntimeId | null>(null);
   const [pendingEgressRoute, setPendingEgressRoute] = useState<CliEgressRouteId | null>(null);
   const [vpnProfilePending, setVpnProfilePending] = useState(false);
   const [vpnProfileId, setVpnProfileId] = useState<CliVpnProfileId>(readManagedVpnProfileId);
-  const [vpnProfileConfig, setVpnProfileConfig] = useState("");
-  const [vpnProfileFilename, setVpnProfileFilename] = useState("");
+  const [removeConfirmationProfileId, setRemoveConfirmationProfileId] = useState<CliVpnProfileId | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedbackSensitive, setFeedbackSensitive] = useState(false);
   const [dialog, setDialog] = useState<DisableDialogState | null>(null);
+  const [restartDialog, setRestartDialog] = useState<RestartDialogState | null>(null);
   const toggleRefs = useRef(new Map<CliToggleRuntimeId, HTMLInputElement>());
+  const restartRefs = useRef(new Map<CliToggleRuntimeId, HTMLButtonElement>());
+  const vpnProfileFileInputRef = useRef<HTMLInputElement | null>(null);
   const mountedRef = useRef(true);
 
   useAutoDismiss(error, setError);
   useAutoDismiss(feedback, setFeedback);
+
+  useEffect(() => {
+    if (!feedback) setFeedbackSensitive(false);
+  }, [feedback]);
 
   useEffect(() => {
     if (!dialog?.notice) return;
@@ -272,13 +352,13 @@ export function CliRuntimeSettingsCard({
   }, [dialog?.error]);
   const loadRequestIdRef = useRef(0);
 
-  const loadSettings = useCallback(async () => {
+  const loadSettings = useCallback(async (options: { forceRefresh?: boolean } = {}) => {
     const requestId = ++loadRequestIdRef.current;
     if (!canManage) return;
     setLoading(true);
     setError(null);
     try {
-      const next = await client.cliRuntimeSettings();
+      const next = await client.cliRuntimeSettings(options);
       if (mountedRef.current && requestId === loadRequestIdRef.current) {
         setResponse(next);
         publishCliVpnRoutingStatus();
@@ -305,11 +385,12 @@ export function CliRuntimeSettingsCard({
     const handleVisibilityChange = (event: Event) => {
       const change = readCliRuntimeVisibilityChange(event);
       if (!change || change.source === "settings-card") return;
+      client.invalidateCliRuntimeSettings?.();
       void loadSettings();
     };
     window.addEventListener(CLI_RUNTIME_VISIBILITY_EVENT, handleVisibilityChange);
     return () => window.removeEventListener(CLI_RUNTIME_VISIBILITY_EVENT, handleVisibilityChange);
-  }, [canManage, loadSettings]);
+  }, [canManage, client, loadSettings]);
 
   useEffect(() => {
     const removed = response?.egress?.removedProfiles ?? [];
@@ -317,25 +398,51 @@ export function CliRuntimeSettingsCard({
     const fallback = (["greece", "thailand", "mullvad"] as const).find((profileId) => !removed.includes(profileId)) ?? "greece";
     setVpnProfileId(fallback);
     writeManagedVpnProfileId(fallback);
-    setVpnProfileConfig("");
-    setVpnProfileFilename("");
+    setRemoveConfirmationProfileId(null);
   }, [response, vpnProfileId]);
 
   const settingById = useMemo(
     () => new Map(response?.settings.map((setting) => [setting.runtimeId, setting]) ?? []),
     [response]
   );
-  const runtimeById = useMemo(
-    () => new Map(response?.runtimes.map((runtime) => [runtime.id, runtime]) ?? []),
-    [response]
-  );
-  const vpnApplicationById = useMemo(
-    () => new Map(response?.vpnApplications.map((application) => [application.runtimeId, application]) ?? []),
-    [response]
-  );
-
   function restoreToggleFocus(runtimeId: CliToggleRuntimeId) {
     window.requestAnimationFrame(() => toggleRefs.current.get(runtimeId)?.focus());
+  }
+
+  function restoreRestartFocus(runtimeId: CliToggleRuntimeId) {
+    window.requestAnimationFrame(() => restartRefs.current.get(runtimeId)?.focus());
+  }
+
+  function closeRestartDialog() {
+    if (!restartDialog || pendingRestartRuntimeId) return;
+    const runtimeId = restartDialog.runtimeId;
+    setRestartDialog(null);
+    restoreRestartFocus(runtimeId);
+  }
+
+  async function confirmRuntimeRestart() {
+    if (!restartDialog || pendingRestartRuntimeId) return;
+    const { runtimeId, runtimeName } = restartDialog;
+    setPendingRestartRuntimeId(runtimeId);
+    setError(null);
+    setFeedback(null);
+    try {
+      if (!client.cliRuntimeRestart) throw new Error("Per-CLI restart controls are unavailable.");
+      const result = await client.cliRuntimeRestart(runtimeId);
+      client.invalidateCliRuntimeSettings?.();
+      const restarted = result.restartedSessionIds.length;
+      const failed = result.failedSessionIds.length;
+      setFeedback(failed > 0
+        ? `${runtimeName}: ${restarted} restarted, ${failed} failed.`
+        : `${runtimeName}: ${restarted} session${restarted === 1 ? "" : "s"} restarted.`);
+      void loadSettings({ forceRefresh: true });
+    } catch (restartError) {
+      setError(errorMessage(restartError, "CLI runtime restart failed."));
+    } finally {
+      setPendingRestartRuntimeId(null);
+      setRestartDialog(null);
+      restoreRestartFocus(runtimeId);
+    }
   }
 
   function closeDialog() {
@@ -351,6 +458,7 @@ export function CliRuntimeSettingsCard({
       settings: current.settings.map((setting) => setting.runtimeId === runtimeId ? result.setting : setting)
     } : current);
     client.invalidateCliRuntimes();
+    client.invalidateCliRuntimeSettings?.();
     dispatchCliRuntimeVisibilityChange({ runtimeId, enabled: result.setting.enabled, source: "settings-card" });
     const unresolvedSessions = result.cleanup?.unresolvedSessionIds.length ?? 0;
     const unresolvedPanes = result.cleanup?.unresolvedPaneIds.length ?? 0;
@@ -442,8 +550,6 @@ export function CliRuntimeSettingsCard({
     setError(null);
     setFeedback(null);
     setVpnProfileId(profileId);
-    setVpnProfileConfig("");
-    setVpnProfileFilename("");
     if (!file) return;
     if (file.size < 64 || file.size > 65_536) {
       setError("WireGuard configuration must be between 64 bytes and 64 KiB.");
@@ -451,10 +557,15 @@ export function CliRuntimeSettingsCard({
     }
     try {
       const config = await file.text();
-      setVpnProfileConfig(config);
-      setVpnProfileFilename(file.name);
-    } catch {
-      setError("WireGuard configuration could not be read.");
+      if (!client.replaceCliEgressProfile) throw new Error("Global CLI egress profile controls are unavailable.");
+      setVpnProfilePending(true);
+      await client.replaceCliEgressProfile(profileId, config);
+      await loadSettings();
+      setFeedback(`${cliVpnProfileLabel(profileId)} profile imported and verified.`);
+    } catch (profileError) {
+      setError(errorMessage(profileError, "WireGuard profile could not be read, saved and verified."));
+    } finally {
+      setVpnProfilePending(false);
     }
   }
 
@@ -462,29 +573,9 @@ export function CliRuntimeSettingsCard({
     if (vpnControlsPending || profileId === vpnProfileId) return;
     setVpnProfileId(profileId);
     writeManagedVpnProfileId(profileId);
-    setVpnProfileConfig("");
-    setVpnProfileFilename("");
+    setRemoveConfirmationProfileId(null);
     setError(null);
     setFeedback(null);
-  }
-
-  async function saveVpnProfile(profileId: CliVpnProfileId) {
-    if (!vpnProfileConfig || vpnProfilePending) return;
-    setVpnProfilePending(true);
-    setError(null);
-    setFeedback(null);
-    try {
-      if (!client.replaceCliEgressProfile) throw new Error("Global CLI egress profile controls are unavailable.");
-      await client.replaceCliEgressProfile(profileId, vpnProfileConfig);
-      setVpnProfileConfig("");
-      setVpnProfileFilename("");
-      await loadSettings();
-      setFeedback(`${cliVpnProfileLabel(profileId)} profile saved and verified.`);
-    } catch (profileError) {
-      setError(errorMessage(profileError, "WireGuard profile could not be saved and verified."));
-    } finally {
-      setVpnProfilePending(false);
-    }
   }
 
   async function verifyVpnProfile(profileId: CliVpnProfileId) {
@@ -513,6 +604,7 @@ export function CliRuntimeSettingsCard({
       if (!client.removeCliEgressProfile) throw new Error("Global CLI egress profile controls are unavailable.");
       await client.removeCliEgressProfile(profileId);
       await loadSettings();
+      setRemoveConfirmationProfileId(null);
       setFeedback(`${cliVpnProfileLabel(profileId)} profile removed.`);
     } catch (removeError) {
       setError(errorMessage(removeError, "WireGuard profile could not be removed."));
@@ -534,6 +626,7 @@ export function CliRuntimeSettingsCard({
       setFeedback(connection.relay
         ? `Mullvad changed to ${connection.relay.cityName}, ${connection.relay.countryName} (${connection.egressIpv4 ?? "public IP verifying"}).`
         : "Mullvad city changed and the new egress was verified.");
+      setFeedbackSensitive(Boolean(connection.relay));
     } catch (rotateError) {
       setError(errorMessage(rotateError, "Mullvad city could not be changed."));
     } finally {
@@ -602,34 +695,79 @@ export function CliRuntimeSettingsCard({
   const managedProfile = response?.egress?.profiles[vpnProfileId];
   const managedProfileLabel = cliVpnProfileLabel(vpnProfileId);
   const managedProfileIsActive = selectedRoute === vpnProfileId;
-  const managedProfileHasDraft = Boolean(vpnProfileConfig);
+  const runtimeActionsPending = Boolean(
+    pendingRuntimeId
+    || pendingRestartRuntimeId
+    || pendingVpnRuntimeId
+    || pendingEgressRoute
+    || vpnProfilePending
+  );
+  const runtimeMenuActions: SettingsActionMenuItem[] = [{
+    id: "refresh",
+    label: "Refresh CLI runtimes",
+    icon: RefreshCw,
+    onSelect: () => void loadSettings({ forceRefresh: true })
+  }];
+  if (onOpenRestartAll) {
+    runtimeMenuActions.push({
+      id: "restart-all",
+      label: "Restart all CLI runtimes",
+      icon: Recycle,
+      onSelect: onOpenRestartAll
+    });
+  }
+  const profileMenuActions: SettingsActionMenuItem[] = [
+    {
+      id: "verify",
+      label: "Verify profile",
+      icon: RefreshCw,
+      disabled: !managedProfile?.profileConfigured,
+      onSelect: () => void verifyVpnProfile(vpnProfileId)
+    },
+    ...(vpnProfileId === "mullvad" ? [{
+      id: "change-city",
+      label: "Change Mullvad city",
+      icon: RefreshCw,
+      disabled: !managedProfile?.profileConfigured,
+      onSelect: () => void rotateMullvadCity()
+    }] : []),
+    {
+      id: "replace-profile",
+      label: managedProfile?.profileConfigured ? "Replace WireGuard profile" : "Import WireGuard profile",
+      icon: Upload,
+      onSelect: () => vpnProfileFileInputRef.current?.click()
+    },
+    {
+      id: "remove-profile",
+      label: "Remove profile",
+      icon: Trash2,
+      danger: true,
+      disabled: !managedProfile?.profileConfigured || managedProfileIsActive,
+      onSelect: () => setRemoveConfirmationProfileId(vpnProfileId)
+    }
+  ];
 
   return (
-    <section className="agent-settings-card cli-runtime-settings-card" aria-label="CLI runtime visibility settings" aria-busy={loading}>
-      <div className="agent-settings-section-title cli-runtime-settings-title">
+    <section className="agent-settings-card settings-flat-card cli-runtime-settings-card" aria-label="CLI runtime visibility settings" aria-busy={loading}>
+      <div className="agent-settings-section-title settings-flat-heading cli-runtime-settings-title">
         <Terminal aria-hidden="true" />
         <span>
           <strong>CLI runtimes</strong>
-          <small>Global launcher, pane and history visibility. Administrator only.</small>
+          <small>Runtime visibility, restart and VPN routing.</small>
         </span>
-        <button
-          className="icon-action"
-          type="button"
-          aria-label="Refresh CLI runtime settings"
-          title="Refresh CLI runtime settings"
-          disabled={loading || Boolean(pendingRuntimeId)}
-          onClick={() => void loadSettings()}
-        >
-          <RefreshCw aria-hidden="true" />
-        </button>
+        <SettingsActionMenu
+          label="CLI runtime actions"
+          actions={runtimeMenuActions}
+          disabled={loading || runtimeActionsPending || restartAllPending}
+        />
       </div>
 
-      <div className={`cli-vpn-profile${selectedRouteStatus === "DIRECT" || selectedRouteStatus === "CONNECTED" ? " is-connected" : ""}`} aria-label="Global CLI network route">
+      <div className={`cli-vpn-profile settings-flat-vpn${selectedRouteStatus === "DIRECT" || selectedRouteStatus === "CONNECTED" ? " is-connected" : ""}`} aria-label="Global CLI network route">
         <div className="cli-vpn-profile-heading">
           <Shield aria-hidden="true" />
           <span>
-            <strong>VPN route for enabled CLIs</strong>
-            <small>Choose the VPN provider below; each CLI can then use it or stay Direct. Native Chat, Room Agent, root shell and Space services stay direct.</small>
+            <strong>CLI VPN route</strong>
+            <small>One route with independent per-runtime switches.</small>
           </span>
           <span className={`cli-vpn-health is-${selectedRouteStatus === "DIRECT" ? "connected" : selectedRouteStatus.toLowerCase()}`}>
             {selectedRouteStatus}
@@ -637,13 +775,16 @@ export function CliRuntimeSettingsCard({
         </div>
         {response?.vpnSupported ? (
           <>
-            <div className="cli-vpn-profile-details">
-              <span>Selected <strong>{cliEgressRouteLabel(selectedRoute)}</strong></span>
-              {selectedEgressIp ? <span>Public IPv4 <strong>{selectedEgressIp}</strong></span> : null}
-              <span>VPN leak protection <strong>Blocks VPN-enabled CLI traffic if the tunnel fails</strong></span>
-            </div>
-            <div className="cli-egress-route-select">
-              <label htmlFor="cli-egress-route">VPN route for enabled CLIs</label>
+            <dl className="cli-vpn-profile-details settings-flat-metrics">
+              <div><dt>Route</dt><dd>{cliEgressRouteLabel(selectedRoute)}</dd></div>
+              {selectedEgressIp ? <div><dt>IPv4</dt><dd data-sensitive-masked="manual">{selectedEgressIp}</dd></div> : null}
+              <div><dt>Leak guard</dt><dd>Protected</dd></div>
+            </dl>
+            <label className="settings-flat-row cli-egress-route-select">
+              <span className="settings-flat-row-copy">
+                <strong>Route</strong>
+                <small>{pendingEgressRoute ? `Applying ${cliEgressRouteLabel(pendingEgressRoute)}…` : "Applied to VPN-enabled CLI runtimes."}</small>
+              </span>
               <select
                 id="cli-egress-route"
                 name="cli-egress-route"
@@ -657,19 +798,17 @@ export function CliRuntimeSettingsCard({
                   return <option key={id} value={id} disabled={id !== "direct" && connection?.status !== "CONNECTED"}>{label}</option>;
                 })}
               </select>
-              <small>{pendingEgressRoute
-                ? <><Loader2 className="spin" aria-hidden="true" />Applying {cliEgressRouteLabel(pendingEgressRoute)}…</>
-                : selectedRoute === "direct"
-                  ? "Direct selected; all CLI VPN toggles are off."
-                  : selectedEgressIp ?? response.egress?.profiles[selectedRoute].status ?? "Profile setup required"}</small>
-            </div>
+            </label>
             <div className="cli-egress-profile-manager" aria-label="VPN profile manager">
               {availableProfileIds.length === 0 ? (
                 <small className="cli-egress-profile-helper">All VPN profiles were removed. No profile can be configured.</small>
               ) : (
                 <>
-                  <div className="cli-egress-route-select">
-                    <label htmlFor="cli-egress-profile">VPN profile to manage</label>
+                  <label className="settings-flat-row cli-egress-route-select">
+                    <span className="settings-flat-row-copy">
+                      <strong>Profile</strong>
+                      <small>Select the WireGuard profile to inspect or manage.</small>
+                    </span>
                     <select
                       id="cli-egress-profile"
                       name="cli-egress-profile"
@@ -682,125 +821,129 @@ export function CliRuntimeSettingsCard({
                         <option key={profileId} value={profileId}>{cliVpnProfileLabel(profileId)}</option>
                       ))}
                     </select>
-                    <small>Managing a profile does not change the route used by CLI sessions.</small>
-                  </div>
+                  </label>
                   <div className={`cli-egress-profile${managedProfile?.status === "CONNECTED" ? " is-connected" : ""}`}>
                     <div className="cli-egress-profile-title">
-                      <strong>{managedProfileLabel}</strong>
-                      <span>{managedProfile?.status ?? "NOT_CONFIGURED"}</span>
+                      <span className="settings-flat-row-copy">
+                        <strong>{managedProfileLabel}</strong>
+                        <small>Root-managed WireGuard configuration.</small>
+                      </span>
+                      <div className="settings-flat-heading-actions">
+                        <span data-sensitive-masked={vpnProfileId === "mullvad" ? "manual" : undefined}>{managedProfile?.status ?? "NOT_CONFIGURED"}</span>
+                        <SettingsActionMenu
+                          label={`${managedProfileLabel} actions`}
+                          actions={profileMenuActions}
+                          disabled={vpnControlsPending}
+                        />
+                      </div>
                     </div>
-                    <div className="cli-vpn-profile-details">
-                      <span>Public IPv4 <strong>{managedProfile?.egressIpv4 ?? "Not verified"}</strong></span>
-                      {vpnProfileId === "mullvad" && managedProfile?.relay ? (
-                        <>
-                          <span>City <strong>{managedProfile.relay.cityName}</strong></span>
-                          <span>Country <strong>{managedProfile.relay.countryName}</strong></span>
-                          <span>Relay <strong>{managedProfile.relay.hostname}</strong></span>
-                        </>
-                      ) : null}
-                    </div>
-                    <div className="cli-vpn-profile-actions">
-                      <button type="button" disabled={!managedProfile?.profileConfigured || vpnControlsPending} onClick={() => void verifyVpnProfile(vpnProfileId)}>Verify</button>
-                      {vpnProfileId === "mullvad" ? (
-                        <button type="button" disabled={!managedProfile?.profileConfigured || vpnControlsPending} onClick={() => void rotateMullvadCity()}>
-                          {vpnProfilePending ? <Loader2 className="spin" aria-hidden="true" /> : null}
-                          Change city
-                        </button>
-                      ) : null}
-                      <button className="is-danger" type="button" disabled={!managedProfile?.profileConfigured || managedProfileIsActive || vpnControlsPending} onClick={() => void removeVpnProfile(vpnProfileId)}>
-                        <Trash2 aria-hidden="true" />Remove
-                      </button>
+                    <input
+                      ref={vpnProfileFileInputRef}
+                      type="file"
+                      hidden
+                      name={`cli-vpn-profile-${vpnProfileId}`}
+                      accept=".conf,text/plain"
+                      aria-label={`Choose ${managedProfileLabel} configuration`}
+                      disabled={vpnControlsPending}
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0] ?? null;
+                        event.currentTarget.value = "";
+                        void selectVpnProfile(vpnProfileId, file);
+                      }}
+                    />
+                    <div data-sensitive-masked={vpnProfileId === "mullvad" ? "block" : undefined}>
+                      <dl className="cli-vpn-profile-details settings-flat-metrics">
+                        <div><dt>Public IPv4</dt><dd data-sensitive-masked="manual">{managedProfile?.egressIpv4 ?? "Not verified"}</dd></div>
+                        {vpnProfileId === "mullvad" && managedProfile?.relay ? (
+                          <>
+                            <div><dt>City</dt><dd>{managedProfile.relay.cityName}</dd></div>
+                            <div><dt>Country</dt><dd>{managedProfile.relay.countryName}</dd></div>
+                            <div><dt>Relay</dt><dd>{managedProfile.relay.hostname}</dd></div>
+                          </>
+                        ) : null}
+                      </dl>
                     </div>
                     {managedProfileIsActive ? <small className="cli-egress-profile-helper">Select Direct before removing the currently active profile.</small> : null}
-                    <div className="cli-vpn-profile-upload">
-                      <label className="cli-vpn-file-picker">
-                        <Upload aria-hidden="true" />
-                        <span>{vpnProfileFilename || "Choose WireGuard .conf"}</span>
-                        <input
-                          type="file"
-                          name={`cli-vpn-profile-${vpnProfileId}`}
-                          accept=".conf,text/plain"
-                          aria-label={`Choose ${managedProfileLabel} configuration`}
-                          disabled={vpnControlsPending}
-                          onChange={(event) => void selectVpnProfile(vpnProfileId, event.target.files?.[0] ?? null)}
-                        />
-                      </label>
-                      <button type="button" disabled={!managedProfileHasDraft || vpnControlsPending} onClick={() => void saveVpnProfile(vpnProfileId)}>
-                        {vpnProfilePending ? <Loader2 className="spin" aria-hidden="true" /> : null}
-                        Save &amp; verify
-                      </button>
-                    </div>
+                    {removeConfirmationProfileId === vpnProfileId ? (
+                      <div className="cli-vpn-remove-confirmation" role="alertdialog" aria-label={`Confirm ${managedProfileLabel} removal`}>
+                        <p>Remove this stored WireGuard profile?</p>
+                        <div>
+                          <button type="button" disabled={vpnProfilePending} onClick={() => setRemoveConfirmationProfileId(null)}>Cancel</button>
+                          <button type="button" className="is-danger" disabled={vpnProfilePending} onClick={() => void removeVpnProfile(vpnProfileId)}>Remove</button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 </>
               )}
             </div>
-            <small className="cli-vpn-profile-note">Private keys stay root-only and are never returned to the browser or audit log.</small>
           </>
         ) : (
           <small className="cli-vpn-profile-note">CLI VPN support is disabled on this Space installation.</small>
         )}
       </div>
 
-      {!response && loading ? <p className="cli-runtime-settings-state" role="status"><Loader2 className="spin" aria-hidden="true" />Loading CLI runtime settings…</p> : null}
       <div className="cli-runtime-settings-list">
         {CLI_RUNTIME_PRESENTATIONS.map((presentation) => {
           const runtimeId = presentation.id as CliToggleRuntimeId;
           const setting = settingById.get(runtimeId);
           const enabled = setting?.enabled ?? true;
           const vpnEnabled = setting?.vpnEnabled ?? false;
-          const vpnApplication = vpnApplicationById.get(runtimeId);
-          const status = runtimeStatus(runtimeById.get(runtimeId));
           return (
             <div className={`cli-runtime-settings-row${enabled ? "" : " is-disabled"}`} key={runtimeId} data-runtime-id={runtimeId}>
               <img src={presentation.iconSrc} alt="" aria-hidden="true" data-terminal-runtime-brand={presentation.brand} draggable={false} />
-              <div className="cli-runtime-settings-copy">
-                <div className="cli-runtime-settings-name">
-                  <strong>{presentation.displayName}</strong>
-                  {runtimeId === "cli:codex" ? <span>Master</span> : null}
-                </div>
-                <div className="cli-runtime-settings-badges" aria-label={`${presentation.displayName} status`}>
-                  <span>{status.installation}</span>
-                  <span>{status.authentication}</span>
-                  <span>{runtimeId === "cli:codex" ? `Master ${enabled ? "On" : "Off"}` : enabled ? "Visible" : "Hidden"}</span>
-                  <span className={`is-vpn-mode is-${vpnApplication?.effectiveMode === "VPN" ? "vpn" : vpnApplication?.effectiveMode === "BLOCKED" ? "blocked" : "direct"}`}>
-                    {vpnApplication?.effectiveMode === "VPN" ? cliEgressRouteLabel(selectedRoute) : "Direct"}
-                  </span>
-                  {(vpnApplication?.restartRequiredSessionIds.length ?? 0) > 0
-                    ? <span className="is-restart-required">Restart failed ({vpnApplication!.restartRequiredSessionIds.length})</span>
-                    : null}
-                </div>
-                <small>{runtimeId === "cli:codex"
-                  ? "Controls Codex CLI, Chat, Room Agent, and Codex tools globally."
-                  : status.reason}</small>
+              <div className="cli-runtime-settings-name">
+                <strong>{presentation.displayName}</strong>
               </div>
-              <label className="cli-runtime-vpn-toggle" title={selectedRoute === "direct" && !vpnEnabled ? "Choose a VPN route before enabling this CLI." : undefined}>
-                <input
-                  type="checkbox"
-                  role="switch"
-                  name={`cli-runtime-vpn-${presentation.brand}`}
-                  aria-label={`Use VPN for ${presentation.displayName}`}
-                  checked={vpnEnabled}
-                  disabled={!response || !enabled || Boolean(pendingVpnRuntimeId) || (selectedRoute === "direct" && !vpnEnabled)}
-                  onChange={(event) => void updateRuntimeVpn(runtimeId, event.target.checked)}
-                />
-                <span>VPN {vpnEnabled ? "On" : "Off"}</span>
-              </label>
-              <label className="cli-runtime-visibility-toggle">
-                <input
+              <div className="cli-runtime-settings-actions">
+                <button
                   ref={(element) => {
-                    if (element) toggleRefs.current.set(runtimeId, element);
-                    else toggleRefs.current.delete(runtimeId);
+                    if (element) restartRefs.current.set(runtimeId, element);
+                    else restartRefs.current.delete(runtimeId);
                   }}
-                  type="checkbox"
-                  role="switch"
-                  name={`cli-runtime-enabled-${presentation.brand}`}
-                  aria-label={`Enable ${presentation.displayName}`}
-                  checked={enabled}
-                  disabled={!response || Boolean(pendingRuntimeId)}
-                  onChange={(event) => void requestToggle(runtimeId, event.target.checked)}
-                />
-                <span>{enabled ? "On" : "Off"}</span>
-              </label>
+                  className="cli-runtime-restart-button"
+                  type="button"
+                  aria-label={`Restart ${presentation.displayName}`}
+                  title={`Restart ${presentation.displayName}`}
+                  disabled={!response || !enabled || runtimeActionsPending || restartAllPending}
+                  onClick={() => setRestartDialog({ runtimeId, runtimeName: presentation.displayName })}
+                >
+                  {pendingRestartRuntimeId === runtimeId ? <Loader2 className="spin" aria-hidden="true" /> : <Recycle aria-hidden="true" />}
+                </button>
+                <label
+                  className="cli-runtime-vpn-toggle"
+                  title={selectedRoute === "direct" && !vpnEnabled
+                    ? "Choose a VPN route before enabling this CLI."
+                    : `VPN ${vpnEnabled ? "on" : "off"} for ${presentation.displayName}`}
+                >
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    name={`cli-runtime-vpn-${presentation.brand}`}
+                    aria-label={`Use VPN for ${presentation.displayName}`}
+                    checked={vpnEnabled}
+                    disabled={!response || !enabled || runtimeActionsPending || restartAllPending || (selectedRoute === "direct" && !vpnEnabled)}
+                    onChange={(event) => void updateRuntimeVpn(runtimeId, event.target.checked)}
+                  />
+                  <span className="sr-only">VPN {vpnEnabled ? "on" : "off"}</span>
+                </label>
+                <label className="cli-runtime-visibility-toggle" title={`${presentation.displayName} ${enabled ? "on" : "off"}`}>
+                  <input
+                    ref={(element) => {
+                      if (element) toggleRefs.current.set(runtimeId, element);
+                      else toggleRefs.current.delete(runtimeId);
+                    }}
+                    type="checkbox"
+                    role="switch"
+                    name={`cli-runtime-enabled-${presentation.brand}`}
+                    aria-label={`Enable ${presentation.displayName}`}
+                    checked={enabled}
+                    disabled={!response || runtimeActionsPending || restartAllPending}
+                    onChange={(event) => void requestToggle(runtimeId, event.target.checked)}
+                  />
+                  <span className="sr-only">{enabled ? "On" : "Off"}</span>
+                </label>
+              </div>
             </div>
           );
         })}
@@ -809,7 +952,11 @@ export function CliRuntimeSettingsCard({
         <p className="cli-runtime-settings-error" role="alert">{error}<button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setError(null)}><X aria-hidden="true" /></button></p>
       ) : null}
       {feedback ? (
-        <p className="cli-runtime-settings-feedback" role="status">{feedback}<button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setFeedback(null)}><X aria-hidden="true" /></button></p>
+        <p
+          className="cli-runtime-settings-feedback"
+          role="status"
+          data-sensitive-masked={feedbackSensitive ? "manual" : undefined}
+        >{feedback}<button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setFeedback(null)}><X aria-hidden="true" /></button></p>
       ) : null}
       {dialog ? (
         <DisableRuntimeDialog
@@ -819,6 +966,14 @@ export function CliRuntimeSettingsCard({
           onConfirm={() => void confirmDisable()}
           onDismissNotice={() => setDialog((current) => current ? { ...current, notice: null } : current)}
           onDismissError={() => setDialog((current) => current ? { ...current, error: null } : current)}
+        />
+      ) : null}
+      {restartDialog ? (
+        <RestartRuntimeDialog
+          dialog={restartDialog}
+          pending={pendingRestartRuntimeId === restartDialog.runtimeId}
+          onCancel={closeRestartDialog}
+          onConfirm={() => void confirmRuntimeRestart()}
         />
       ) : null}
     </section>

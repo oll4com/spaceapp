@@ -815,6 +815,11 @@ export interface SpaceStore {
   upsertClipboardItem(input: UpsertClipboardItemInput): MaybePromise<ClipboardItem>;
   getClipboardItem(ownerUserId: string, clipboardItemId: string): MaybePromise<ClipboardItem | null>;
   listClipboardItems(ownerUserId: string, query?: ListClipboardItemsQuery): MaybePromise<ClipboardItemListResult>;
+  setClipboardItemCompleted(
+    ownerUserId: string,
+    clipboardItemId: string,
+    completed: boolean
+  ): MaybePromise<ClipboardItem>;
   deleteClipboardItem(ownerUserId: string, clipboardItemId: string): MaybePromise<ClipboardItem>;
   clearClipboardItems(ownerUserId: string): MaybePromise<number>;
   upsertTaskItem(input: UpsertTaskItemInput): MaybePromise<TaskItem>;
@@ -966,6 +971,7 @@ export interface SpaceStore {
   hideInactivePaneCliTasks(taskIds: string[]): MaybePromise<string[]>;
   restorePaneCliTasks(taskIds: string[]): MaybePromise<void>;
   getPaneTitlesByCodexThreadIds(codexThreadIds: string[]): MaybePromise<Map<string, string>>;
+  listResumablePaneCliCodexThreadIds(codexThreadIds: string[]): MaybePromise<Set<string>>;
   getPaneCliSession(sessionId: string): MaybePromise<PaneCliSession | null>;
   getActivePaneCliTerminalControlLease(sessionId: string): MaybePromise<PaneCliTerminalControlLease | null>;
   getPaneCliTerminalControlLease(leaseId: string): MaybePromise<PaneCliTerminalControlLease | null>;
@@ -2622,6 +2628,7 @@ export class InMemorySpaceStore implements SpaceStore {
       text: parsed.text,
       source: parsed.source,
       title: parsed.title ?? null,
+      isCompleted: existing?.item.isCompleted ?? false,
       roomId: parsed.roomId ?? null,
       paneId: parsed.paneId ?? null,
       paneTitle: parsed.paneTitle ?? null,
@@ -2660,6 +2667,7 @@ export class InMemorySpaceStore implements SpaceStore {
     const matching = [...this.clipboardItems.values()]
       .filter((record) => record.ownerUserId === ownerUserId)
       .filter((record) => !parsed.source || record.item.source === parsed.source)
+      .filter((record) => parsed.includeCompleted !== false || !record.item.isCompleted)
       .filter((record) => !search || record.item.text.toLocaleLowerCase().includes(search))
       .sort((left, right) => right.sequence - left.sequence);
     const offset = (parsed.page - 1) * parsed.pageSize;
@@ -2667,6 +2675,19 @@ export class InMemorySpaceStore implements SpaceStore {
       items: matching.slice(offset, offset + parsed.pageSize).map((record) => record.item),
       total: matching.length
     };
+  }
+
+  setClipboardItemCompleted(
+    ownerUserId: string,
+    clipboardItemId: string,
+    completed: boolean
+  ): ClipboardItem {
+    const record = this.clipboardItems.get(clipboardItemId);
+    if (!record || record.ownerUserId !== ownerUserId) {
+      throw new SpaceNotFoundError(`Clipboard item ${clipboardItemId} was not found.`);
+    }
+    record.item = { ...record.item, isCompleted: completed };
+    return record.item;
   }
 
   deleteClipboardItem(ownerUserId: string, clipboardItemId: string): ClipboardItem {
@@ -3449,6 +3470,7 @@ export class InMemorySpaceStore implements SpaceStore {
       id: makeSpaceId("pane"),
       roomId: input.roomId,
       title: input.title,
+      titleSource: "auto",
       mode: input.mode,
       status: "IDLE",
       providerId: input.providerId ?? null,
@@ -3498,6 +3520,7 @@ export class InMemorySpaceStore implements SpaceStore {
       id: makeSpaceId("pane"),
       roomId,
       title: `${input.title} ${firstOrder + index + 1}`,
+      titleSource: "auto",
       mode: input.mode,
       status: "IDLE",
       providerId: input.providerId ?? null,
@@ -4421,7 +4444,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return updated;
   }
 
-  createSpaceAgentRun(input: CreateSpaceAgentRunInput, _traceId = makeSpaceId("trace")): SpaceAgentRunRecord {
+  createSpaceAgentRun(input: CreateSpaceAgentRunInput, traceId = makeSpaceId("trace")): SpaceAgentRunRecord {
     const parsed = createSpaceAgentRunInputSchema.parse(input);
     const session = this.spaceAgentSessions.get(parsed.sessionId);
     if (!session || session.paneId !== parsed.paneId || session.roomId !== parsed.roomId) {
@@ -4446,10 +4469,27 @@ export class InMemorySpaceStore implements SpaceStore {
     this.spaceAgentRuns.set(run.runId, run);
     this.updateSpaceAgentMessage(run.promptMessageId, { runId: run.runId });
     this.updateSpaceAgentMessage(run.responseMessageId, { runId: run.runId });
+    if (run.status === "QUEUED" || run.status === "RUNNING") {
+      this.appendEvent({
+        roomId: run.roomId,
+        paneId: run.paneId,
+        turnId: null,
+        workflowId: run.workflowId,
+        traceId,
+        type: "TURN_STARTED",
+        message: "Pane agent run started.",
+        payload: {
+          status: run.status,
+          sourceType: "CHAT",
+          runId: run.runId,
+          sessionId: run.sessionId
+        }
+      });
+    }
     return run;
   }
 
-  updateSpaceAgentRun(runId: string, input: UpdateSpaceAgentRunInput, _traceId = makeSpaceId("trace")): SpaceAgentRunRecord {
+  updateSpaceAgentRun(runId: string, input: UpdateSpaceAgentRunInput, traceId = makeSpaceId("trace")): SpaceAgentRunRecord {
     const current = this.spaceAgentRuns.get(runId);
     if (!current) {
       throw new SpaceNotFoundError(`Space agent run ${runId} was not found.`);
@@ -4468,6 +4508,27 @@ export class InMemorySpaceStore implements SpaceStore {
       completedAt: parsed.completedAt === undefined ? (terminal ? nowIso() : current.completedAt) : parsed.completedAt
     });
     this.spaceAgentRuns.set(runId, updated);
+    if (
+      (updated.status === "FAILED" || updated.status === "INTERRUPTED") &&
+      current.status !== updated.status
+    ) {
+      this.appendEvent({
+        roomId: updated.roomId,
+        paneId: updated.paneId,
+        turnId: null,
+        workflowId: updated.workflowId,
+        traceId,
+        type: "TURN_FAILED",
+        message: updated.status === "INTERRUPTED" ? "Pane agent run interrupted." : "Pane agent run failed.",
+        payload: {
+          status: updated.status,
+          sourceType: "CHAT",
+          runId: updated.runId,
+          sessionId: updated.sessionId,
+          reasonCode: updated.errorCode
+        }
+      });
+    }
     return updated;
   }
 
@@ -4801,6 +4862,18 @@ export class InMemorySpaceStore implements SpaceStore {
 
   getPaneCliSession(sessionId: string): PaneCliSession | null {
     return this.paneCliSessions.get(sessionId) ?? null;
+  }
+
+  listResumablePaneCliCodexThreadIds(codexThreadIds: string[]): Set<string> {
+    const requested = new Set(codexThreadIds.filter(Boolean));
+    if (requested.size === 0) return new Set();
+    const resumable = new Set<string>();
+    for (const session of this.paneCliSessions.values()) {
+      if (!session.codexThreadId || !requested.has(session.codexThreadId)) continue;
+      if (session.purpose !== "NORMAL") continue;
+      resumable.add(session.codexThreadId);
+    }
+    return resumable;
   }
 
   getActivePaneCliTerminalControlLease(sessionId: string): PaneCliTerminalControlLease | null {
@@ -5244,6 +5317,22 @@ export class InMemorySpaceStore implements SpaceStore {
       updatedAt: input.submittedAt
     };
     this.codexCliTurnMarkers.set(marker.markerId, marker);
+    this.appendEvent({
+      roomId: marker.roomId,
+      paneId: marker.paneId,
+      turnId: null,
+      workflowId: null,
+      traceId: `cli-turn:${marker.markerId}`,
+      type: "TURN_STARTED",
+      message: "Terminal turn started.",
+      payload: {
+        status: "RUNNING",
+        sourceType: "TERMINAL",
+        markerId: marker.markerId,
+        clientTurnMarker: marker.clientTurnMarker,
+        runtimeId: session.runtimeId
+      }
+    });
     return marker;
   }
 
@@ -5324,6 +5413,7 @@ export class InMemorySpaceStore implements SpaceStore {
         status: "COMPLETED",
         sourceType: "TERMINAL",
         markerId: marker.markerId,
+        clientTurnMarker: marker.clientTurnMarker,
         codexThreadId: input.codexThreadId,
         codexTurnId: input.codexTurnId
       }

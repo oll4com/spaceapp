@@ -42,8 +42,12 @@ async function shutdown(signal: string) {
   shuttingDown = true;
   clearInterval(inactiveSweep);
   process.stderr.write(`codex-pane-host shutting down after ${signal}\n`);
-  registry.terminateAll();
+  // Close the server first so no exit events reach the API: pane sessions stay
+  // RUNNING in the store and are recreated with exact resume when clients
+  // reattach after the host restarts. Killing the sessions first would mark
+  // them EXITED and prevent the frontend from ever reconnecting.
   await server.close();
+  registry.terminateAll();
 }
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) {

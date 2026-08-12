@@ -19,7 +19,13 @@ import type {
   MemoryReclaimResponse,
   ProviderSwitchResponse,
   ProviderSwitchTargets,
+  SystemAnalyticsCliSessionsResponse,
+  SystemAnalyticsModelsResponse,
+  SystemAnalyticsResourcesResponse,
+  ToolbarModelStats,
+  ToolbarModelStatsModel,
 } from "@space/contracts";
+import type { SystemAnalyticsTab } from "../system-analytics/SystemAnalyticsWorkspace.js";
 import { api, SpaceApiError } from "../../api.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
@@ -27,8 +33,38 @@ import { X } from "../ui-theme/app-icons.js";
 import { ConfirmationDialog, MetricPopover } from "./MetricLayers.js";
 import "./toolbar-metrics.css";
 
-type PanelKey = "accounts" | "cli" | "memory" | "cpu" | "provider";
+type PanelKey = "accounts" | "cli" | "memory" | "cpu" | "rtt" | "provider" | "models";
 type ConfirmationKind = "cli" | "memory";
+
+export const TOOLBAR_MODEL_WINDOW_MINUTES = 10;
+
+export function modelShortCode(modelId: string): string {
+  const prefix = modelId.split("/").pop() ?? modelId;
+  const lower = prefix.toLowerCase();
+  const known: Array<[string, string]> = [
+    ["deepseek-v4-flash-free", "DS4F"],
+    ["deepseek-v4-flash", "DS4F"],
+    ["deepseek", "DS"],
+    ["gpt-5", "G5"],
+    ["gpt-4", "G4"],
+    ["kimi", "K"],
+    ["gemini", "GM"],
+    ["claude", "CL"],
+    ["qwen", "QW"],
+    ["grok", "GR"],
+    ["glm", "GLM"],
+    ["laguna", "LG"],
+    ["ling", "LG"],
+    ["mimo", "MM"],
+    ["nemotron", "NM"],
+    ["north", "NR"],
+    ["big-pickle", "BP"]
+  ];
+  for (const [needle, code] of known) {
+    if (lower.includes(needle)) return code;
+  }
+  return prefix.slice(0, 6).toUpperCase();
+}
 
 export interface ToolbarMetricsHandle {
   openCliCleanup(trigger?: HTMLButtonElement | null): void;
@@ -41,11 +77,15 @@ export interface ToolbarMetricsClient {
   resetCredits(): Promise<CodexResetCreditAvailability>;
   redeemResetCredit(accountId: string, idempotencyKey: string): Promise<CodexResetCreditRedemptionResponse>;
   cliSessions(): Promise<CliSessionStats>;
+  modelStats(roomId: string, windowMinutes: number): Promise<ToolbarModelStats>;
   reapCliSessions(): Promise<CliSessionReapResponse>;
   hostMemory(): Promise<HostMemoryDetails>;
   reclaimMemory(): Promise<MemoryReclaimResponse>;
   providerTargets(): Promise<ProviderSwitchTargets>;
   switchProvider(providerId: string): Promise<ProviderSwitchResponse>;
+  analyticsResources?(): Promise<SystemAnalyticsResourcesResponse>;
+  analyticsCliSessions?(): Promise<SystemAnalyticsCliSessionsResponse>;
+  analyticsModels?(): Promise<SystemAnalyticsModelsResponse>;
 }
 
 const defaultClient: ToolbarMetricsClient = {
@@ -59,11 +99,15 @@ const defaultClient: ToolbarMetricsClient = {
   resetCredits: () => api.toolbarResetCredits(),
   redeemResetCredit: (accountId, idempotencyKey) => api.redeemToolbarResetCredit(accountId, idempotencyKey),
   cliSessions: () => api.toolbarCliSessions(),
+  modelStats: (roomId, windowMinutes) => api.toolbarModelStats(roomId, windowMinutes),
   reapCliSessions: () => api.reapToolbarCliSessions(),
   hostMemory: () => api.toolbarHostMemory(),
   reclaimMemory: () => api.reclaimToolbarMemory(),
   providerTargets: () => api.toolbarProviderTargets(),
   switchProvider: (providerId) => api.switchToolbarProvider(providerId),
+  analyticsResources: () => api.systemAnalyticsResources("10m"),
+  analyticsCliSessions: () => api.systemAnalyticsCliSessions("10m"),
+  analyticsModels: () => api.systemAnalyticsModels("10m"),
 };
 
 function useLazyResource<T>(loader: () => Promise<T>, ttlMs: number) {
@@ -227,12 +271,16 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   environment: CodexEnvironment | null;
   onChanged?: () => void | Promise<void>;
   roomName?: string;
+  roomId?: string | null;
+  onOpenAnalytics?: (tab: SystemAnalyticsTab) => void;
 }>(function ToolbarMetrics({
   canManage = true,
   client = defaultClient,
   environment,
   onChanged,
   roomName,
+  roomId,
+  onOpenAnalytics,
 }, ref) {
   const isCodexEnabled = environment?.isCodexEnabled ?? true;
   const accounts = useLazyResource(() => client.usageAccounts(), 60_000);
@@ -240,7 +288,23 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const cli = useLazyResource(() => client.cliSessions(), 5_000);
   const memory = useLazyResource(() => client.hostMemory(), 10_000);
   const providers = useLazyResource(() => client.providerTargets(), 10_000);
-  const anchorsRef = useRef<Record<PanelKey, HTMLButtonElement | null>>({ accounts: null, cli: null, memory: null, cpu: null, provider: null });
+  const modelStats = useLazyResource(
+    () => client.modelStats(roomId ?? "global", TOOLBAR_MODEL_WINDOW_MINUTES),
+    30_000
+  );
+  const analyticsResources = useLazyResource(
+    () => client.analyticsResources ? client.analyticsResources() : Promise.reject(new Error("Detailed resource analytics are unavailable.")),
+    10_000
+  );
+  const analyticsSessions = useLazyResource(
+    () => client.analyticsCliSessions ? client.analyticsCliSessions() : Promise.reject(new Error("Detailed CLI analytics are unavailable.")),
+    10_000
+  );
+  const analyticsModels = useLazyResource(
+    () => client.analyticsModels ? client.analyticsModels() : Promise.reject(new Error("Detailed model analytics are unavailable.")),
+    30_000
+  );
+  const anchorsRef = useRef<Record<PanelKey, HTMLButtonElement | null>>({ accounts: null, cli: null, memory: null, cpu: null, rtt: null, provider: null, models: null });
   const closeTimerRef = useRef<number | null>(null);
   const resetInFlightRef = useRef(new Set<string>());
   const actionTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -264,8 +328,34 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const providerCode = isCodexEnabled ? switchedProviderCode ?? snapshot.provider : "OFF";
   const visibleProviderTargets = providers.data?.data.filter((provider) => provider.isCurrent || provider.canSwitch) ?? [];
   const rtt = getToolbarRttPresentation(rttMs, rttFailed);
+  const detailedModels = analyticsModels.data?.models ?? null;
+  const badgeModels = detailedModels ?? modelStats.data?.models ?? null;
+  const modelBadge = modelStats.error && analyticsModels.error
+    ? "--"
+    : badgeModels
+      ? badgeModels.length === 0
+        ? "0"
+        : badgeModels.length === 1
+          ? modelShortCode(badgeModels[0]!.modelId)
+          : String(badgeModels.length)
+      : modelStats.loading || analyticsModels.loading ? "…" : "--";
 
   useEffect(() => setSwitchedProviderCode(null), [environment]);
+  useEffect(() => {
+    if (!canManage) return;
+    let disposed = false;
+    const load = () => {
+      if (disposed || document.visibilityState !== "visible") return;
+      void modelStats.load(true);
+      if (client.analyticsModels) void analyticsModels.load(true);
+    };
+    load();
+    const timer = window.setInterval(load, 30_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [analyticsModels.load, canManage, client, modelStats.load]);
   useEffect(() => {
     if (isCodexEnabled) return;
     setActivePanel((current) => current === "accounts" || current === "provider" ? null : current);
@@ -344,9 +434,14 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       case "accounts":
         void resetCredits.load();
         return accounts.load();
-      case "cli": return cli.load();
-      case "memory": return memory.load();
-      case "cpu": return memory.load();
+      case "cli": return Promise.all([cli.load(), analyticsSessions.load()]);
+      case "memory": return Promise.all([memory.load(), analyticsResources.load()]);
+      case "cpu": return Promise.all([memory.load(), analyticsResources.load()]);
+      case "rtt": return Promise.resolve();
+      case "models": return Promise.all([
+        modelStats.load(),
+        client.analyticsModels ? analyticsModels.load() : Promise.resolve(null)
+      ]);
       case "provider": return providers.load();
     }
   }
@@ -526,6 +621,33 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   }
 
   function panelContent() {
+    const analysisButton = (target: SystemAnalyticsTab, label: string) => onOpenAnalytics ? (
+      <button
+        type="button"
+        className="toolbar-metric-open-analysis"
+        onClick={() => {
+          closePanel();
+          onOpenAnalytics(target);
+        }}
+      >{label}</button>
+    ) : null;
+    if (activePanel === "rtt") return (
+      <>
+        <header><strong>Round-trip latency</strong><small>Live</small></header>
+        <div className="toolbar-metric-grid">
+          <MetricRow
+            label="Current"
+            value={rttFailed ? "Unavailable" : rttMs === null ? "Measuring…" : `${rtt.value} ms`}
+          />
+          <MetricRow label="Status" value={`${rtt.status[0]?.toUpperCase()}${rtt.status.slice(1)}`} />
+          <MetricRow label="Warning at" value="300 ms" />
+          <MetricRow label="Critical at" value="425 ms" />
+          <MetricRow label="Probe" value="Browser → API" />
+          <MetricRow label="Refresh" value="Every 10 sec" />
+        </div>
+        <p className="toolbar-metric-note">Measured while this browser tab is visible.</p>
+      </>
+    );
     if (!canManage) return <p className="toolbar-metric-note">ADMIN access is required for detailed system telemetry and actions.</p>;
     if (activePanel === "accounts") return (
       <>
@@ -571,11 +693,16 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
             <MetricRow label="Cleanup eligible" value={String(cli.data.summary.cleanupEligible)} />
           </div>
           <ul className="toolbar-metric-list">
-            {cli.data.sessions.map((session) => <li key={`${session.hostId}:${session.sessionId}`}>
+            {(analyticsSessions.data?.sessions ?? []).slice(0, 8).map((session) => <li key={session.sessionId}>
+              <strong>{session.paneTitle} · {formatBytes(session.rssBytes)}</strong>
+              <span>{session.roomName} · {session.runtimeName} · {session.attachmentCount} attachments</span>
+            </li>)}
+            {!analyticsSessions.data && cli.data.sessions.map((session) => <li key={`${session.hostId}:${session.sessionId}`}>
               <strong>{session.hostId.toUpperCase()} · {formatBytes(session.rssBytes)}</strong>
               <span>{session.attachmentCount} attachments · {session.cleanupEligible ? "eligible" : "protected"}</span>
             </li>)}
           </ul>
+          {analysisButton("sessions", "Open full CLI session analysis")}
         </> : null}
       </>
     );
@@ -594,7 +721,11 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           </div>
           <strong className="toolbar-metric-subtitle">Top processes</strong>
           <ul className="toolbar-metric-list">
-            {(() => {
+            {analyticsResources.data?.entities.slice(0, 8).map((entity) => <li key={`${entity.entityType}:${entity.entityId}`}>
+              <strong>{entity.paneTitle ?? entity.runtimeName ?? entity.entityId} · {formatBytes(entity.rssBytes)}</strong>
+              <span>{entity.roomName ?? "Shared runtime"} · {entity.runtimeName ?? entity.runtimeId ?? "unknown"} · {entity.processCount} processes</span>
+            </li>)}
+            {!analyticsResources.data ? (() => {
               const memoryData = memory.data;
               if (!memoryData) return null;
               return memoryData.topProcesses.map((process) => {
@@ -606,10 +737,11 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
                   <span>{formatBytes(process.rssBytes)} · {sharePercent}% of used · {process.state}</span>
                 </li>;
               });
-            })()}
-            {!memory.data?.topProcesses.length ? <li><span>No process sample available.</span></li> : null}
+            })() : null}
+            {!analyticsResources.data?.entities.length && !memory.data?.topProcesses.length ? <li><span>No process sample available.</span></li> : null}
           </ul>
           <p className="toolbar-metric-note">Top processes are the largest contributors to the used total above.</p>
+          {analysisButton("resources", "Open full RAM analysis")}
         </> : null}
       </>
     );
@@ -626,7 +758,11 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           </div>
           <strong className="toolbar-metric-subtitle">Top processes by CPU</strong>
           <ul className="toolbar-metric-list">
-            {(() => {
+            {analyticsResources.data?.entities.slice().sort((left, right) => right.cpuOneCorePercent - left.cpuOneCorePercent).slice(0, 8).map((entity) => <li key={`cpu:${entity.entityType}:${entity.entityId}`}>
+              <strong>{entity.paneTitle ?? entity.runtimeName ?? entity.entityId}</strong>
+              <span>{entity.roomName ?? "Shared runtime"} · CPU {entity.cpuOneCorePercent.toFixed(1)}% · {formatBytes(entity.rssBytes)}</span>
+            </li>)}
+            {!analyticsResources.data ? (() => {
               const memoryData = memory.data;
               if (!memoryData) return null;
               return memoryData.topCpuProcesses.map((process) => (
@@ -635,11 +771,67 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
                   <span>CPU {formatPercent(process.cpuPercent)} · {formatBytes(process.rssBytes)} · {process.state}</span>
                 </li>
               ));
-            })()}
-            {!memory.data?.topCpuProcesses.length ? <li><span>No process sample available.</span></li> : null}
+            })() : null}
+            {!analyticsResources.data?.entities.length && !memory.data?.topCpuProcesses.length ? <li><span>No process sample available.</span></li> : null}
           </ul>
           <p className="toolbar-metric-note">Top processes are the highest CPU consumers at sample time.</p>
+          {analysisButton("resources", "Open full CPU analysis")}
         </> : null}
+      </>
+    );
+    if (activePanel === "models") return (
+      <>
+        <header><strong>Active models</strong><small>Last {TOOLBAR_MODEL_WINDOW_MINUTES} min</small></header>
+        {modelStats.loading || analyticsModels.loading ? <p className="toolbar-metric-note">Loading model activity…</p> : null}
+        {analyticsModels.data ? <>
+          <div className="toolbar-metric-grid">
+            <MetricRow label="Models" value={String(analyticsModels.data.models.length)} />
+            <MetricRow label="Providers" value={String(analyticsModels.data.providers.length)} />
+            <MetricRow label="Active sessions" value={String(analyticsModels.data.models.reduce((sum, model) => sum + model.activeSessions, 0))} />
+          </div>
+          {analyticsModels.data.models.length ? <ul className="toolbar-metric-list">
+            {analyticsModels.data.models.slice(0, 10).map((model) => (
+              <li key={`${model.providerId}:${model.modelId}`}>
+                <strong>{model.modelId}</strong>
+                <span>
+                  {model.providerId} · {model.coverage.replace("_", " ")} · {model.activeSessions} session{model.activeSessions === 1 ? "" : "s"}
+                  {" "}· {model.completedTurns} completed / {model.activeTurns} active
+                  {" "}· TTFT {model.avgTtftMs === null ? "—" : `${Math.round(model.avgTtftMs)} ms`}
+                  {" "}· {model.avgTokPerSec === null ? "—" : `${Math.round(model.avgTokPerSec * 10) / 10} tok/s`}
+                </span>
+              </li>
+            ))}
+          </ul> : <p className="toolbar-metric-note">No model activity in the last {TOOLBAR_MODEL_WINDOW_MINUTES} minutes.</p>}
+          {analyticsModels.data.backfill.errors.length ? <p className="toolbar-metric-error">
+            {analyticsModels.data.backfill.errors.join(" · ")}
+          </p> : null}
+          <p className="toolbar-metric-note">All running CLI models are included. Native tokens and timing are shown only where the CLI exposes them.</p>
+          {analysisButton("models", "Open full model analysis")}
+        </> : modelStats.data ? <>
+          <div className="toolbar-metric-grid">
+            <MetricRow label="Models" value={String(modelStats.data.models.length)} />
+            <MetricRow label="Sources" value={modelStats.data.sources.length > 0 ? modelStats.data.sources.join(", ") : "—"} />
+            <MetricRow label="Window" value={`${modelStats.data.windowMinutes} min`} />
+          </div>
+          {modelStats.data.models.length ? <ul className="toolbar-metric-list">
+            {modelStats.data.models.map((model: ToolbarModelStatsModel) => (
+              <li key={`${model.source}:${model.modelId}`}>
+                <strong>{model.modelId}</strong>
+                <span>
+                  {model.turns} turn{model.turns === 1 ? "" : "s"} · TTFT {model.avgTtftMs === null ? "—" : `${Math.round(model.avgTtftMs)} ms`}
+                  {" "}· {model.avgTokPerSec === null ? "—" : `${Math.round(model.avgTokPerSec * 10) / 10} tok/s`}
+                  {" "}· {model.tokensIn.toLocaleString()} in / {model.tokensOut.toLocaleString()} out
+                </span>
+              </li>
+            ))}
+          </ul> : <p className="toolbar-metric-note">No model activity in the last {TOOLBAR_MODEL_WINDOW_MINUTES} minutes.</p>}
+          {modelStats.data.errors.length ? <p className="toolbar-metric-error">
+            {modelStats.data.errors.join(" · ")}
+          </p> : null}
+          <p className="toolbar-metric-note">Average per model from recorded CLI data. OpenCode sessions do not record TTFT.</p>
+          {analysisButton("models", "Open full model analysis")}
+        </> : null}
+        {!analyticsModels.data && modelStats.error ? <p className="toolbar-metric-error" role="alert">{modelStats.error}</p> : null}
       </>
     );
     return (
@@ -672,7 +864,9 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     cli: "CLI session details",
     memory: "Memory details",
     cpu: "CPU details",
+    rtt: "RTT details",
     provider: "Provider details",
+    models: "Active model details",
   };
 
   return <>
@@ -719,19 +913,36 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         onClick={() => openPanel("cpu")}
         {...anchorEvents("cpu")}
       ><small>CPU</small><strong>{cpuValue}</strong></button>
-      <article
-        className={`toolbar-lb-badge tone-${rtt.tone}`}
+      <button
+        ref={(node) => { anchorsRef.current.rtt = node; }}
+        type="button"
+        className={`toolbar-lb-badge toolbar-metric-trigger tone-${rtt.tone}`}
         aria-label={rttFailed
           ? "RTT unavailable, critical"
           : rttMs === null
             ? "RTT measuring"
             : `RTT ${rtt.value} milliseconds, ${rtt.status}`}
+        aria-expanded={activePanel === "rtt"}
+        aria-controls="toolbar-metric-panel-rtt"
         title={rttFailed
           ? "RTT: unavailable · Critical"
           : rttMs === null
             ? "RTT: measuring"
             : `RTT: ${rtt.value} ms · ${rtt.status[0]?.toUpperCase()}${rtt.status.slice(1)}`}
-      ><small>RTT</small><strong>{rtt.value}</strong></article>
+        onClick={() => openPanel("rtt")}
+        {...anchorEvents("rtt")}
+      ><small>RTT</small><strong data-sensitive-ignore>{rtt.value}</strong></button>
+      <button
+        ref={(node) => { anchorsRef.current.models = node; }}
+        type="button"
+        className="toolbar-lb-badge toolbar-metric-trigger"
+        aria-label={`Global active models ${badgeModels?.length ?? 0}`}
+        aria-expanded={activePanel === "models"}
+        aria-controls="toolbar-metric-panel-models"
+        title="Global active models (last 10 min)"
+        onClick={() => openPanel("models")}
+        {...anchorEvents("models")}
+      ><small>MDL</small><strong data-sensitive-ignore>{modelBadge}</strong></button>
       <button
         ref={(node) => { anchorsRef.current.provider = node; }}
         type="button"

@@ -98,6 +98,7 @@ export const paginated = <T extends z.ZodType>(item: T) =>
 export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"]);
 export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
+export const paneTitleSourceSchema = z.enum(["auto", "manual", "ai"]);
 export const paneColumnSpanSchema = z.number().int().min(1).max(4);
 export const paneSplitSchema = z.object({
   parentId: idSchema.nullable(),
@@ -160,7 +161,7 @@ export const roomSchema = z.object({
   description: z.string().max(1000).nullable(),
   kind: roomKindSchema.default("WORKSPACE"),
   order: z.number().int().min(0).default(0),
-  paneLayoutColumns: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).nullable().default(null),
+  paneLayoutColumns: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).nullable().default(null),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
   archivedAt: isoDateTimeSchema.nullable(),
@@ -302,7 +303,7 @@ export const updateRoomInputSchema = z.object({
 
 export const updatePaneLayoutInputSchema = z
   .object({
-    paneLayoutColumns: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).nullable()
+    paneLayoutColumns: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).nullable()
   })
   .strict();
 
@@ -326,6 +327,7 @@ export const paneSchema = z.object({
   id: idSchema,
   roomId: idSchema,
   title: z.string().min(1).max(120),
+  titleSource: paneTitleSourceSchema.default("auto"),
   mode: paneModeSchema,
   status: paneStatusSchema,
   providerId: z.string().max(120).nullable(),
@@ -470,6 +472,7 @@ export const listPanesQuerySchema = z.object({
 export const updatePaneInputSchema = z
   .object({
     title: z.string().trim().min(1).max(120).optional(),
+    titleSource: paneTitleSourceSchema.optional(),
     mode: paneModeSchema.optional(),
     status: paneStatusSchema.optional(),
     providerId: z.string().trim().max(120).nullable().optional(),
@@ -1064,6 +1067,15 @@ export const codexModelCatalogOptionSchema = z.object({
   })).max(20).optional()
 });
 
+export const agentPaneModelProviderSchema = z.object({
+  providerId: z.string().min(1).max(120),
+  providerName: z.string().min(1).max(160),
+  configIdPrefix: z.string().min(1).max(160),
+  isCurrent: z.boolean().default(false),
+  statusReason: z.string().trim().max(500).nullable().default(null),
+  models: z.array(codexModelCatalogOptionSchema).max(400)
+});
+
 export const agentPaneToolOptionSchema = z.object({
   id: z.string().min(1).max(160),
   displayName: z.string().min(1).max(160),
@@ -1141,6 +1153,7 @@ export const agentPaneSessionSchema = z.object({
   statusReason: z.string().min(1).max(1000),
   modelOptions: z.array(agentPaneModelOptionSchema).max(4000),
   modelCatalog: z.array(codexModelCatalogOptionSchema).max(200).default([]),
+  modelProviders: z.array(agentPaneModelProviderSchema).max(8).default([]),
   selectedModelConfigId: agentModelConfigIdSchema.nullable(),
   toolOptions: z.array(agentPaneToolOptionSchema).max(100).default([]),
   selectedToolIds: z.array(z.string().min(1).max(160)).max(50).default([]),
@@ -1230,7 +1243,7 @@ export const paneCliTerminalControlRevocationReasonSchema = z.enum([
 ]);
 export const paneCliProofScopeSchema = z.literal("READ_ONLY");
 export const appDiagnosticsAutomationScopeSchema = z.literal("APP_DIAGNOSTICS");
-export const browserSessionViewportSchema = z.enum(["mobile", "tablet", "desktop"]);
+export const browserSessionViewportSchema = z.enum(["mobile", "tablet", "desktop", "wide"]);
 export const browserSessionStatusSchema = z.enum(["STARTING", "READY", "NAVIGATING", "ERROR", "CLOSED"]);
 export const browserStreamModeSchema = z.enum(["AUTO", "SILENT", "PREVIEW", "INTERACTIVE", "REALTIME"]);
 export const browserResolvedStreamModeSchema = z.enum(["SILENT", "PREVIEW", "INTERACTIVE", "REALTIME"]);
@@ -2352,7 +2365,8 @@ export const createPaneBrowserSessionRequestSchema = z.object({
   viewport: browserSessionViewportSchema.default("desktop"),
   targetUrl: z.string().trim().url().optional(),
   ownerAgentId: z.string().trim().min(1).max(120).nullable().optional(),
-  streamMode: browserStreamModeSchema.default("AUTO")
+  streamMode: browserStreamModeSchema.default("AUTO"),
+  includeInitialFrame: z.boolean().default(true)
 });
 
 export const updatePaneBrowserSessionRequestSchema = z
@@ -3302,7 +3316,16 @@ export const updateProviderSettingsInputSchema = z
   .refine((input) => Object.keys(input).length > 0, "Provider settings update must include at least one field.");
 
 export const voiceTranscriptionMaxBytes = 25 * 1024 * 1024;
-export const voiceTranscriptionModelSchema = z.enum(["gpt-realtime-whisper", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"]);
+// Legacy ids remain accepted for a short compatibility window so an already-open
+// browser tab can finish negotiating after the server upgrade. Settings only
+// advertise gpt-live-transcribe and the API normalizes every request to it.
+export const voiceTranscriptionModelSchema = z.enum([
+  "gpt-live-transcribe",
+  "gpt-realtime-whisper",
+  "gpt-4o-transcribe",
+  "gpt-4o-mini-transcribe",
+  "whisper-1"
+]);
 export const voiceTranscriptionLanguageSchema = z.enum(["auto", "el", "en"]);
 export const voiceTranscriptionDelaySchema = z.enum(["minimal", "low", "medium", "high", "xhigh"]);
 
@@ -3334,15 +3357,20 @@ export const voiceTranscriptionResponseSchema = z.object({
   mimeType: z.string().min(1).max(120)
 });
 
+const voiceSessionDescriptionSchema = z.string()
+  .min(32)
+  .max(100000)
+  .refine((value) => value.trim().length >= 32, "Session description is invalid.");
+
 export const voiceRealtimeSessionRequestSchema = z.object({
-  offerSdp: z.string().trim().min(32).max(100000),
+  offerSdp: voiceSessionDescriptionSchema,
   model: voiceTranscriptionModelSchema.optional(),
   language: voiceTranscriptionLanguageSchema.default("auto"),
   delay: voiceTranscriptionDelaySchema.optional()
 });
 
 export const voiceRealtimeSessionResponseSchema = z.object({
-  answerSdp: z.string().trim().min(32).max(100000)
+  answerSdp: voiceSessionDescriptionSchema
 });
 
 export const createProviderInputSchema = z.object({
@@ -3560,6 +3588,50 @@ export const cliTaskHistoryResponseSchema = z.object({
   page: z.number().int().min(1),
   pageSize: z.number().int().min(1).max(100)
 });
+
+export const agentSessionHistoryItemSchema = z.object({
+  id: z.string().min(1).max(200),
+  kind: z.enum(["codex", "cli"]),
+  threadId: z.string().min(1).max(200).nullable().default(null),
+  taskId: z.string().min(1).max(200).nullable().default(null),
+  title: z.string().min(1).max(300),
+  preview: z.string().max(2000),
+  providerLabel: z.string().min(1).max(160),
+  model: z.string().min(1).max(160).nullable(),
+  modelProvider: z.string().min(1).max(120).nullable(),
+  cwd: z.string().min(1).max(1000).nullable(),
+  source: z.string().min(1).max(120).nullable(),
+  threadSource: z.string().min(1).max(160).nullable(),
+  firstUserMessage: z.string().max(2000),
+  archived: z.boolean(),
+  updatedAt: isoDateTimeSchema.nullable(),
+  recencyAt: isoDateTimeSchema.nullable()
+});
+
+export const agentSessionHistoryResponseSchema = z.object({
+  data: z.array(agentSessionHistoryItemSchema).max(100),
+  totalItems: z.number().int().min(0),
+  visibleItems: z.number().int().min(0),
+  checkedAt: isoDateTimeSchema
+});
+
+export const agentSessionHistoryQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).optional(),
+    pageSize: z.coerce.number().int().min(1).max(100).optional(),
+    includeArchived: z
+      .union([z.boolean(), z.enum(["true", "false"])])
+      .default(false)
+      .transform((value) => value === true || value === "true"),
+    q: z.string().max(300).optional()
+  })
+  .strict()
+  .transform((input) => ({
+    page: input.page ?? 1,
+    pageSize: input.pageSize ?? 50,
+    includeArchived: input.includeArchived,
+    q: input.q?.trim() || undefined
+  }));
 
 export const codexThreadPresentationSchema = z.enum(["raw", "chat"]);
 export const codexThreadQuerySchema = z.object({
@@ -3816,6 +3888,245 @@ export const hostMemoryDetailsSchema = z
   })
   .strict();
 
+export const toolbarModelStatsModelSchema = z
+  .object({
+    modelId: z.string().min(1),
+    providerId: z.string().min(1),
+    source: z.enum(["opencode", "codex"]),
+    turns: z.number().int().min(0),
+    avgTtftMs: z.number().nullable(),
+    avgTokPerSec: z.number().nullable(),
+    avgDurationMs: z.number().nullable(),
+    tokensIn: z.number().int().min(0),
+    tokensOut: z.number().int().min(0),
+    tokensReasoning: z.number().int().min(0)
+  })
+  .strict();
+
+export const toolbarModelStatsSchema = z
+  .object({
+    windowMinutes: z.number().int().min(1).max(1440),
+    sampledAt: isoDateTimeSchema,
+    models: z.array(toolbarModelStatsModelSchema).max(50),
+    sources: z.array(z.enum(["opencode", "codex"])),
+    errors: z.array(z.string()).max(20)
+  })
+  .strict();
+
+export const systemAnalyticsRangeSchema = z.enum(["10m", "1h", "7d", "30d"]);
+
+export const systemAnalyticsCoverageSchema = z.enum(["NATIVE", "SESSION_ONLY", "UNAVAILABLE"]);
+
+export const systemAnalyticsBackfillSchema = z
+  .object({
+    status: z.enum(["PENDING", "RUNNING", "COMPLETE", "PARTIAL", "FAILED"]),
+    earliestAt: isoDateTimeSchema.nullable(),
+    latestAt: isoDateTimeSchema.nullable(),
+    errors: z.array(z.string().min(1).max(500)).max(20)
+  })
+  .strict();
+
+export const systemAnalyticsModelSchema = z
+  .object({
+    providerId: z.string().min(1).max(120),
+    modelId: z.string().min(1).max(160),
+    runtimeIds: z.array(z.string().min(1).max(160)).max(cliToggleRuntimeIds.length),
+    coverage: systemAnalyticsCoverageSchema,
+    activeSessions: z.number().int().min(0),
+    activeTurns: z.number().int().min(0),
+    completedTurns: z.number().int().min(0),
+    abortedTurns: z.number().int().min(0),
+    tokensIn: toolbarByteCountSchema.nullable(),
+    tokensOut: toolbarByteCountSchema.nullable(),
+    tokensReasoning: toolbarByteCountSchema.nullable(),
+    avgTtftMs: z.number().min(0).nullable(),
+    avgDurationMs: z.number().min(0).nullable(),
+    avgTokPerSec: z.number().min(0).nullable(),
+    firstActivityAt: isoDateTimeSchema.nullable(),
+    lastActivityAt: isoDateTimeSchema.nullable()
+  })
+  .strict();
+
+export const systemAnalyticsProviderSchema = z
+  .object({
+    providerId: z.string().min(1).max(120),
+    modelCount: z.number().int().min(0),
+    activeSessions: z.number().int().min(0),
+    completedTurns: z.number().int().min(0),
+    tokensIn: toolbarByteCountSchema.nullable(),
+    tokensOut: toolbarByteCountSchema.nullable(),
+    lastActivityAt: isoDateTimeSchema.nullable()
+  })
+  .strict();
+
+export const systemAnalyticsModelsResponseSchema = z
+  .object({
+    range: systemAnalyticsRangeSchema,
+    sampledAt: isoDateTimeSchema,
+    providers: z.array(systemAnalyticsProviderSchema).max(100),
+    models: z.array(systemAnalyticsModelSchema).max(500),
+    backfill: systemAnalyticsBackfillSchema
+  })
+  .strict();
+
+export const systemAnalyticsSeriesPointSchema = z
+  .object({
+    at: isoDateTimeSchema,
+    min: z.number().min(0),
+    avg: z.number().min(0),
+    max: z.number().min(0)
+  })
+  .strict();
+
+export const systemAnalyticsSeriesSchema = z
+  .object({
+    id: z.string().min(1).max(160),
+    label: z.string().min(1).max(160),
+    unit: z.enum(["PERCENT", "BYTES", "COUNT"]),
+    points: z.array(systemAnalyticsSeriesPointSchema).max(720)
+  })
+  .strict();
+
+export const systemAnalyticsResourceEntitySchema = z
+  .object({
+    entityType: z.enum(["CLI_SESSION", "SHARED_RUNTIME"]),
+    entityId: z.string().min(1).max(200),
+    roomId: idSchema.nullable(),
+    roomName: z.string().min(1).max(120).nullable(),
+    paneId: idSchema.nullable(),
+    paneTitle: z.string().min(1).max(120).nullable(),
+    sessionId: idSchema.nullable(),
+    runtimeId: z.string().min(1).max(160).nullable(),
+    runtimeName: z.string().min(1).max(160).nullable(),
+    providerId: z.string().min(1).max(120).nullable(),
+    modelId: z.string().min(1).max(160).nullable(),
+    processCount: z.number().int().min(0),
+    cpuOneCorePercent: z.number().min(0),
+    cpuHostPercent: z.number().min(0).max(100),
+    rssBytes: toolbarByteCountSchema,
+    avgCpuOneCorePercent: z.number().min(0),
+    maxCpuOneCorePercent: z.number().min(0),
+    avgRssBytes: toolbarByteCountSchema,
+    maxRssBytes: toolbarByteCountSchema
+  })
+  .strict();
+
+export const systemAnalyticsResourcesResponseSchema = z
+  .object({
+    range: systemAnalyticsRangeSchema,
+    sampledAt: isoDateTimeSchema,
+    current: z
+      .object({
+        cpuUsagePercent: z.number().min(0).max(100),
+        coreCount: z.number().int().positive(),
+        memoryTotalBytes: toolbarByteCountSchema,
+        memoryUsedBytes: toolbarByteCountSchema,
+        memoryAvailableBytes: toolbarByteCountSchema,
+        memoryUsagePercent: z.number().min(0).max(100),
+        swapTotalBytes: toolbarByteCountSchema,
+        swapUsedBytes: toolbarByteCountSchema,
+        swapUsagePercent: z.number().min(0).max(100),
+        pageCacheBytes: toolbarByteCountSchema,
+        pressure: z.boolean()
+      })
+      .strict(),
+    series: z.array(systemAnalyticsSeriesSchema).max(12),
+    entities: z.array(systemAnalyticsResourceEntitySchema).max(500),
+    backfill: systemAnalyticsBackfillSchema
+  })
+  .strict();
+
+export const systemAnalyticsProcessSchema = z
+  .object({
+    pid: z.number().int().positive(),
+    parentPid: z.number().int().min(0),
+    name: z.string().min(1).max(120),
+    state: z.string().min(1).max(16),
+    threadCount: z.number().int().min(0),
+    uptimeSeconds: z.number().int().min(0),
+    rssBytes: toolbarByteCountSchema,
+    virtualBytes: toolbarByteCountSchema,
+    swapBytes: toolbarByteCountSchema,
+    cpuOneCorePercent: z.number().min(0),
+    cpuHostPercent: z.number().min(0).max(100),
+    ownership: z.enum(["SPACE_CLI", "SPACE_SHARED", "OTHER"]),
+    roomName: z.string().min(1).max(120).nullable(),
+    paneTitle: z.string().min(1).max(120).nullable(),
+    runtimeId: z.string().min(1).max(160).nullable(),
+    sessionId: idSchema.nullable()
+  })
+  .strict();
+
+export const systemAnalyticsProcessesResponseSchema = z
+  .object({
+    data: z.array(systemAnalyticsProcessSchema).max(200),
+    pagination: paginationSchema,
+    sampledAt: isoDateTimeSchema
+  })
+  .strict();
+
+export const systemAnalyticsCliSessionSchema = z
+  .object({
+    sessionId: idSchema,
+    roomId: idSchema,
+    roomName: z.string().min(1).max(120),
+    paneId: idSchema,
+    paneTitle: z.string().min(1).max(120),
+    runtimeId: z.string().min(1).max(160),
+    runtimeName: z.string().min(1).max(160),
+    providerId: z.string().min(1).max(120),
+    modelId: z.string().min(1).max(160).nullable(),
+    reasoningEffort: cliReasoningEffortSchema,
+    status: paneCliSessionStatusSchema,
+    attachmentCount: z.number().int().min(0),
+    cleanupEligible: z.boolean(),
+    processCount: z.number().int().min(0),
+    pid: z.number().int().positive().nullable(),
+    rssBytes: toolbarByteCountSchema,
+    cpuOneCorePercent: z.number().min(0),
+    startedAt: isoDateTimeSchema,
+    detachedAt: isoDateTimeSchema.nullable(),
+    endedAt: isoDateTimeSchema.nullable(),
+    durationSeconds: z.number().int().min(0),
+    avgRssBytes: toolbarByteCountSchema,
+    maxRssBytes: toolbarByteCountSchema,
+    avgCpuOneCorePercent: z.number().min(0),
+    maxCpuOneCorePercent: z.number().min(0)
+  })
+  .strict();
+
+export const systemAnalyticsCliSessionsResponseSchema = z
+  .object({
+    range: systemAnalyticsRangeSchema,
+    sampledAt: isoDateTimeSchema,
+    summary: z
+      .object({
+        running: z.number().int().min(0),
+        attached: z.number().int().min(0),
+        detached: z.number().int().min(0),
+        cleanupEligible: z.number().int().min(0)
+      })
+      .strict(),
+    sessions: z.array(systemAnalyticsCliSessionSchema).max(1000),
+    backfill: systemAnalyticsBackfillSchema
+  })
+  .strict();
+
+export const systemAnalyticsOverviewResponseSchema = z
+  .object({
+    range: systemAnalyticsRangeSchema,
+    sampledAt: isoDateTimeSchema,
+    modelCount: z.number().int().min(0),
+    providerCount: z.number().int().min(0),
+    runningCliSessions: z.number().int().min(0),
+    cpuUsagePercent: z.number().min(0).max(100),
+    memoryUsagePercent: z.number().min(0).max(100),
+    swapUsagePercent: z.number().min(0).max(100),
+    topEntities: z.array(systemAnalyticsResourceEntitySchema).max(10),
+    backfill: systemAnalyticsBackfillSchema
+  })
+  .strict();
+
 export const memoryReclaimResponseSchema = z
   .object({
     status: z.enum(["COMPLETED", "PARTIAL", "NOOP"]),
@@ -3963,6 +4274,184 @@ export const codexHistoryPurgeResponseSchema = z
       });
     }
   });
+
+const cliSessionCleanupBytesSchema = z.number().int().min(0).max(1_000_000_000_000);
+const cliSessionCleanupCountSchema = codexHistoryPurgeCountSchema;
+
+export const cliSessionCleanupCliIdSchema = z.enum([
+  "autohand",
+  "kimi",
+  "grok",
+  "claude-legacy",
+  "claude",
+  "copilot",
+  "cursor",
+  "qwen",
+  "gemini",
+  "deepseek"
+]);
+
+export const cliSessionCleanupStoreSchema = z.object({
+  cli: cliSessionCleanupCliIdSchema,
+  entries: cliSessionCleanupCountSchema,
+  bytes: cliSessionCleanupBytesSchema
+}).strict();
+
+export const cliSessionCleanupCodexPreviewSchema = z.object({
+  status: z.enum(["READY", "NOOP", "UNAVAILABLE"]),
+  previewId: z.string().uuid().nullable(),
+  threads: cliSessionCleanupCountSchema,
+  indexEntries: cliSessionCleanupCountSchema,
+  rolloutFiles: cliSessionCleanupCountSchema,
+  shellSnapshots: cliSessionCleanupCountSchema
+}).strict();
+
+export const cliSessionCleanupCodexCleanedSchema = z.object({
+  status: z.enum(["COMPLETED", "NOOP", "SKIPPED"]),
+  threads: cliSessionCleanupCountSchema,
+  indexEntries: cliSessionCleanupCountSchema,
+  rolloutFiles: cliSessionCleanupCountSchema,
+  shellSnapshots: cliSessionCleanupCountSchema
+}).strict();
+
+const cliSessionCleanupCountsSchema = z.object({
+  opencode: z.object({
+    sessions: cliSessionCleanupCountSchema,
+    newSessionSessions: cliSessionCleanupCountSchema,
+    emptySessions: cliSessionCleanupCountSchema,
+    mappingFiles: cliSessionCleanupCountSchema
+  }).strict(),
+  opencodeTmp: z.object({
+    entries: cliSessionCleanupCountSchema,
+    bytes: cliSessionCleanupBytesSchema
+  }).strict(),
+  codex: cliSessionCleanupCodexPreviewSchema,
+  codexOrphans: z.object({
+    rolloutFiles: cliSessionCleanupCountSchema,
+    bytes: cliSessionCleanupBytesSchema
+  }).strict(),
+  codexPaneHomes: z.object({
+    dirs: cliSessionCleanupCountSchema,
+    bytes: cliSessionCleanupBytesSchema
+  }).strict(),
+  cliStores: z.array(cliSessionCleanupStoreSchema),
+  totalBytes: cliSessionCleanupBytesSchema
+}).strict();
+
+const hasCliSessionCleanupTargets = (counts: z.infer<typeof cliSessionCleanupCountsSchema>): boolean =>
+  counts.opencode.sessions > 0 ||
+  counts.opencode.mappingFiles > 0 ||
+  counts.opencodeTmp.entries > 0 ||
+  counts.codex.threads > 0 ||
+  counts.codexOrphans.rolloutFiles > 0 ||
+  counts.codexPaneHomes.dirs > 0 ||
+  counts.cliStores.some((store) => store.entries > 0);
+
+export const cliSessionCleanupPreviewRequestSchema = z.object({}).strict();
+
+export const cliSessionCleanupPreviewResponseSchema = z
+  .object({
+    status: z.enum(["READY", "NOOP"]),
+    previewId: z.string().uuid(),
+    counts: cliSessionCleanupCountsSchema,
+    checkedAt: isoDateTimeSchema
+  })
+  .strict()
+  .superRefine((response, context) => {
+    const hasTargets = hasCliSessionCleanupTargets(response.counts);
+    if ((response.status === "READY") !== hasTargets) {
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "READY previews require targets and NOOP previews require zero targets."
+      });
+    }
+  });
+
+export const cliSessionCleanupExecuteRequestSchema = z.object({
+  previewId: z.string().uuid(),
+  confirmation: z.literal("CLEAN CLI SESSIONS")
+}).strict();
+
+export const cliSessionCleanupResponseSchema = z
+  .object({
+    status: z.enum(["COMPLETED", "NOOP", "PARTIAL"]),
+    previewId: z.string().uuid(),
+    cleaned: z.object({
+      opencode: z.object({
+        sessions: cliSessionCleanupCountSchema,
+        newSessionSessions: cliSessionCleanupCountSchema,
+        emptySessions: cliSessionCleanupCountSchema,
+        mappingFiles: cliSessionCleanupCountSchema
+      }).strict(),
+      opencodeTmp: z.object({
+        entries: cliSessionCleanupCountSchema,
+        bytes: cliSessionCleanupBytesSchema
+      }).strict(),
+      codex: cliSessionCleanupCodexCleanedSchema,
+      codexOrphans: z.object({
+        rolloutFiles: cliSessionCleanupCountSchema,
+        bytes: cliSessionCleanupBytesSchema
+      }).strict(),
+      codexPaneHomes: z.object({
+        dirs: cliSessionCleanupCountSchema,
+        bytes: cliSessionCleanupBytesSchema
+      }).strict(),
+      cliStores: z.array(cliSessionCleanupStoreSchema)
+    }).strict(),
+    totalBytes: cliSessionCleanupBytesSchema,
+    failures: z.array(z.string().min(1).max(500)).max(20),
+    completedAt: isoDateTimeSchema
+  })
+  .strict()
+  .superRefine((response, context) => {
+    const hasCleanedTargets =
+      response.cleaned.opencode.sessions > 0 ||
+      response.cleaned.opencode.mappingFiles > 0 ||
+      response.cleaned.opencodeTmp.entries > 0 ||
+      response.cleaned.codex.threads > 0 ||
+      response.cleaned.codexOrphans.rolloutFiles > 0 ||
+      response.cleaned.codexPaneHomes.dirs > 0 ||
+      response.cleaned.cliStores.some((store) => store.entries > 0);
+    if ((response.status === "NOOP") === hasCleanedTargets) {
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "NOOP cleanups require zero removals and non-NOOP cleanups require removals."
+      });
+    }
+  });
+
+export const systemServiceUnitSchema = z.object({
+  unit: z.string().min(1).max(300),
+  description: z.string().max(400).nullable(),
+  type: z.enum(["service", "timer"]),
+  loadState: z.string().min(1).max(80),
+  activeState: z.string().min(1).max(80),
+  subState: z.string().min(1).max(80),
+  unitFileState: z.string().max(80).nullable(),
+  timerActivates: z.string().min(1).max(300).nullable(),
+  timerNextElapse: z.string().datetime().nullable(),
+  timerLastTrigger: z.string().datetime().nullable()
+}).strict();
+
+export const systemServicesResponseSchema = z.object({
+  units: z.array(systemServiceUnitSchema).max(1000),
+  summary: z.object({
+    total: z.number().int().min(0),
+    active: z.number().int().min(0),
+    inactive: z.number().int().min(0),
+    failed: z.number().int().min(0),
+    services: z.number().int().min(0),
+    timers: z.number().int().min(0),
+    enabled: z.number().int().min(0),
+    disabled: z.number().int().min(0)
+  }).strict(),
+  sampledAt: isoDateTimeSchema
+}).strict();
+
+export type SystemServiceUnit = z.infer<typeof systemServiceUnitSchema>;
+export type SystemServicesResponse = z.infer<typeof systemServicesResponseSchema>;
 
 export const serviceRestartScopeSchema = z.literal("CORE");
 export const serviceRestartRequestSchema = z.object({
@@ -4915,6 +5404,7 @@ export const dummyTurnInputSchema = z.object({
   prompt: z.string().trim().min(1).max(8000),
   artifactIds: z.array(idSchema).max(turnArtifactMaxCount).default([]),
   providerId: z.string().trim().max(120).nullable().optional(),
+  providerSessionId: z.string().trim().min(1).max(200).optional(),
   modelId: z.string().trim().min(1).max(160).nullable().optional(),
   reasoningEffort: cliReasoningEffortSchema.nullable().optional(),
   agentSessionId: idSchema.optional(),
@@ -6950,6 +7440,7 @@ export const clipboardItemSchema = z
     text: nonBlankExactText(clipboardTextMaxCharacters),
     source: clipboardSourceSchema,
     title: z.string().trim().min(1).max(clipboardPlanTitleMaxCharacters).nullable().default(null),
+    isCompleted: z.boolean().default(false),
     roomId: idSchema.nullable().default(null),
     paneId: idSchema.nullable().default(null),
     paneTitle: z.string().min(1).max(160).nullable().default(null),
@@ -7024,8 +7515,17 @@ export const listClipboardItemsQuerySchema = z
   .object({
     q: z.string().trim().min(1).max(500).optional(),
     source: clipboardSourceSchema.optional(),
+    includeCompleted: z.union([z.boolean(), z.enum(["true", "false"])]).optional().transform((value) =>
+      value === undefined ? undefined : value === true || value === "true"
+    ).optional(),
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(1).max(100).default(25)
+  })
+  .strict();
+
+export const setClipboardItemCompletedRequestSchema = z
+  .object({
+    completed: z.boolean()
   })
   .strict();
 
@@ -7039,6 +7539,7 @@ export type SaveAgentClipboardItemInput = z.infer<typeof saveAgentClipboardItemI
 export type SaveAgentClipboardPlanInput = z.infer<typeof saveAgentClipboardPlanInputSchema>;
 export type UpsertClipboardItemInput = z.infer<typeof upsertClipboardItemInputSchema>;
 export type ListClipboardItemsQuery = z.infer<typeof listClipboardItemsQuerySchema>;
+export type SetClipboardItemCompletedRequest = z.infer<typeof setClipboardItemCompletedRequestSchema>;
 export type ClipboardItemListResponse = z.infer<typeof clipboardItemListResponseSchema>;
 
 export const taskItemSchema = z
@@ -7213,6 +7714,7 @@ export type SpaceAgentRoomActionBridgeResult = z.infer<typeof spaceAgentRoomActi
 export type SpaceAgentRoomActionBridgeResponse = z.infer<typeof spaceAgentRoomActionBridgeResponseSchema>;
 export type AgentPaneModelOption = z.infer<typeof agentPaneModelOptionSchema>;
 export type CodexModelCatalogOption = z.infer<typeof codexModelCatalogOptionSchema>;
+export type AgentPaneModelProvider = z.infer<typeof agentPaneModelProviderSchema>;
 export type AgentPaneToolOption = z.infer<typeof agentPaneToolOptionSchema>;
 export type AgentPaneCapabilities = z.infer<typeof agentPaneCapabilitiesSchema>;
 export type AgentPaneHistoryItem = z.infer<typeof agentPaneHistoryItemSchema>;
@@ -7489,6 +7991,8 @@ export type CodexAppServerTurnSmokeCheck = z.infer<typeof codexAppServerTurnSmok
 export type CodexHistoryItem = z.infer<typeof codexHistoryItemSchema>;
 export type CliTaskHistoryItem = z.infer<typeof cliTaskHistoryItemSchema>;
 export type CliTaskHistoryResponse = z.infer<typeof cliTaskHistoryResponseSchema>;
+export type AgentSessionHistoryItem = z.infer<typeof agentSessionHistoryItemSchema>;
+export type AgentSessionHistoryResponse = z.infer<typeof agentSessionHistoryResponseSchema>;
 export type CodexHistoryResponse = z.infer<typeof codexHistoryResponseSchema>;
 export type CodexThreadPresentation = z.infer<typeof codexThreadPresentationSchema>;
 export type CodexThreadItem = z.infer<typeof codexThreadItemSchema>;
@@ -7506,6 +8010,23 @@ export type CliSessionStats = z.infer<typeof cliSessionStatsSchema>;
 export type CliSessionReapResponse = z.infer<typeof cliSessionReapResponseSchema>;
 export type HostMemorySummary = z.infer<typeof hostMemorySummarySchema>;
 export type HostMemoryDetails = z.infer<typeof hostMemoryDetailsSchema>;
+export type ToolbarModelStatsModel = z.infer<typeof toolbarModelStatsModelSchema>;
+export type ToolbarModelStats = z.infer<typeof toolbarModelStatsSchema>;
+export type SystemAnalyticsRange = z.infer<typeof systemAnalyticsRangeSchema>;
+export type SystemAnalyticsCoverage = z.infer<typeof systemAnalyticsCoverageSchema>;
+export type SystemAnalyticsBackfill = z.infer<typeof systemAnalyticsBackfillSchema>;
+export type SystemAnalyticsModel = z.infer<typeof systemAnalyticsModelSchema>;
+export type SystemAnalyticsProvider = z.infer<typeof systemAnalyticsProviderSchema>;
+export type SystemAnalyticsModelsResponse = z.infer<typeof systemAnalyticsModelsResponseSchema>;
+export type SystemAnalyticsSeriesPoint = z.infer<typeof systemAnalyticsSeriesPointSchema>;
+export type SystemAnalyticsSeries = z.infer<typeof systemAnalyticsSeriesSchema>;
+export type SystemAnalyticsResourceEntity = z.infer<typeof systemAnalyticsResourceEntitySchema>;
+export type SystemAnalyticsResourcesResponse = z.infer<typeof systemAnalyticsResourcesResponseSchema>;
+export type SystemAnalyticsProcess = z.infer<typeof systemAnalyticsProcessSchema>;
+export type SystemAnalyticsProcessesResponse = z.infer<typeof systemAnalyticsProcessesResponseSchema>;
+export type SystemAnalyticsCliSession = z.infer<typeof systemAnalyticsCliSessionSchema>;
+export type SystemAnalyticsCliSessionsResponse = z.infer<typeof systemAnalyticsCliSessionsResponseSchema>;
+export type SystemAnalyticsOverviewResponse = z.infer<typeof systemAnalyticsOverviewResponseSchema>;
 export type MemoryReclaimResponse = z.infer<typeof memoryReclaimResponseSchema>;
 export type ProviderSwitchTarget = z.infer<typeof providerSwitchTargetSchema>;
 export type ProviderSwitchTargets = z.infer<typeof providerSwitchTargetsSchema>;
@@ -7518,6 +8039,15 @@ export type CodexHistoryPurgePreviewRequest = z.infer<typeof codexHistoryPurgePr
 export type CodexHistoryPurgePreviewResponse = z.infer<typeof codexHistoryPurgePreviewResponseSchema>;
 export type CodexHistoryPurgeExecuteRequest = z.infer<typeof codexHistoryPurgeExecuteRequestSchema>;
 export type CodexHistoryPurgeResponse = z.infer<typeof codexHistoryPurgeResponseSchema>;
+export type CliSessionCleanupCliId = z.infer<typeof cliSessionCleanupCliIdSchema>;
+export type CliSessionCleanupStore = z.infer<typeof cliSessionCleanupStoreSchema>;
+export type CliSessionCleanupCodexPreview = z.infer<typeof cliSessionCleanupCodexPreviewSchema>;
+export type CliSessionCleanupCodexCleaned = z.infer<typeof cliSessionCleanupCodexCleanedSchema>;
+export type CliSessionCleanupCounts = z.infer<typeof cliSessionCleanupPreviewResponseSchema>["counts"];
+export type CliSessionCleanupPreviewRequest = z.infer<typeof cliSessionCleanupPreviewRequestSchema>;
+export type CliSessionCleanupPreviewResponse = z.infer<typeof cliSessionCleanupPreviewResponseSchema>;
+export type CliSessionCleanupExecuteRequest = z.infer<typeof cliSessionCleanupExecuteRequestSchema>;
+export type CliSessionCleanupResponse = z.infer<typeof cliSessionCleanupResponseSchema>;
 export type Model = z.infer<typeof modelSchema>;
 export type Event = z.infer<typeof eventSchema>;
 export type AuditEvent = z.infer<typeof auditEventSchema>;

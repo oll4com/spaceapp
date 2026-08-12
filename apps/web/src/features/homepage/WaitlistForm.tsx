@@ -1,5 +1,6 @@
 import { useRef, useState, type FormEvent } from "react";
 import { ArrowRight, Check } from "lucide-react";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 
 type SubmissionState = "idle" | "submitting" | "success" | "error";
 
@@ -55,21 +56,19 @@ export function WaitlistForm() {
           <span>{state === "submitting" ? "Joining…" : state === "success" ? "Joined" : "Join the waitlist"}</span>
         </button>
       </div>
-      <label className="homepage-consent" htmlFor="homepage-waitlist-consent">
-        <input
-          id="homepage-waitlist-consent"
-          name="consent"
-          type="checkbox"
-          required
-          checked={consent}
-          disabled={state === "success"}
-          onChange={(event) => {
-            setConsent(event.currentTarget.checked);
-            if (state === "error") setState("idle");
-          }}
-        />
-        <span>Email me about Space preview access and launch updates.</span>
-      </label>
+      <SpaceToggle
+        className="homepage-consent"
+        id="homepage-waitlist-consent"
+        name="consent"
+        label="Email me about Space preview access and launch updates."
+        required
+        checked={consent}
+        disabled={state === "success"}
+        onChange={(nextConsent) => {
+          setConsent(nextConsent);
+          if (state === "error") setState("idle");
+        }}
+      />
       <div className="homepage-honeypot" aria-hidden="true">
         <label htmlFor="homepage-waitlist-website">Website</label>
         <input

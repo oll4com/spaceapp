@@ -1,8 +1,9 @@
-import { ArrowUp, Bot, CircleStop, File, FileVideo, Mic, Trash2, X } from "../ui-theme/app-icons.js";
+import { ArrowUp, Bot, File, FileVideo, Square, Trash2, X } from "../ui-theme/app-icons.js";
 import { useEffect, useMemo, useRef, type FormEvent, type KeyboardEvent } from "react";
-import type { PaneCliModelSettings } from "@space/contracts";
+import type { AgentPaneModelProvider, PaneCliModelSettings } from "@space/contracts";
 import { CodexModelPicker } from "../codex-model-picker/CodexModelPicker.js";
 import { api } from "../../api.js";
+import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
 import {
   codexModelName,
   type CodexComposerAttachment,
@@ -20,6 +21,7 @@ export interface CodexComposerProps {
   onRemoveAttachment: (artifactId: string) => void;
   onClearAttachments: () => void;
   onVoice: () => void;
+  onVoicePrewarm?: () => void;
   voiceActive: boolean;
   voiceDisabled: boolean;
   isRunning: boolean;
@@ -31,6 +33,7 @@ export interface CodexComposerProps {
   onStop: () => void;
   modelCatalog: CodexModelCatalog;
   modelOptions: CodexModelOption[];
+  modelProviders: AgentPaneModelProvider[];
   selectedModelConfigId: string | null;
   onModelConfigChange: (modelConfigId: string) => Promise<string | null>;
 }
@@ -64,6 +67,7 @@ export function CodexComposer({
   onRemoveAttachment,
   onClearAttachments,
   onVoice,
+  onVoicePrewarm,
   voiceActive,
   voiceDisabled,
   isRunning,
@@ -75,6 +79,7 @@ export function CodexComposer({
   onStop,
   modelCatalog,
   modelOptions,
+  modelProviders,
   selectedModelConfigId,
   onModelConfigChange
 }: CodexComposerProps) {
@@ -121,21 +126,48 @@ export function CodexComposer({
     submit();
   }
 
-  async function switchModel(modelId: string, reasoningEffort: string) {
+  async function switchModel(modelId: string, reasoningEffort: string, providerId: string | null) {
     if (isDisabled) {
       throw new Error(disabledReason ?? "Codex is disabled.");
     }
-    const option = modelOptions.find(
-      (candidate) => codexModelName(candidate) === modelId && candidate.reasoningKey === reasoningEffort
-    );
-    if (!option) {
-      throw new Error("The selected Codex model configuration is unavailable.");
+    const targetProvider = providerId === null
+      ? null
+      : modelProviders.find((provider) => provider.providerId === providerId) ?? null;
+    if (providerId !== null && !targetProvider) {
+      throw new Error("The selected model provider is unavailable.");
     }
-    const normalizedModelConfigId = await onModelConfigChange(option.id);
+    let optionId: string;
+    if (targetProvider) {
+      const model = targetProvider.models.find((candidate) => candidate.id === modelId);
+      if (!model) {
+        throw new Error("The selected model configuration is unavailable for this provider.");
+      }
+      optionId = `${targetProvider.configIdPrefix}${model.id}|${reasoningEffort}`;
+    } else {
+      const option = modelOptions.find(
+        (candidate) => codexModelName(candidate) === modelId && candidate.reasoningKey === reasoningEffort
+      );
+      if (!option) {
+        throw new Error("The selected Codex model configuration is unavailable.");
+      }
+      optionId = option.id;
+    }
+    const normalizedModelConfigId = await onModelConfigChange(optionId);
     const normalizedOption = modelOptions.find((candidate) => candidate.id === normalizedModelConfigId);
     const normalizedModelId = normalizedOption ? codexModelName(normalizedOption).trim() : "";
     const normalizedReasoningEffort = normalizedOption?.reasoningKey?.trim() ?? "";
     if (!normalizedModelId || !normalizedReasoningEffort) {
+      if (targetProvider && normalizedModelConfigId?.startsWith(targetProvider.configIdPrefix)) {
+        const rest = normalizedModelConfigId.slice(targetProvider.configIdPrefix.length);
+        const pipe = rest.lastIndexOf("|");
+        return {
+          current: {
+            modelId: pipe > 0 ? rest.slice(0, pipe) : rest,
+            reasoningEffort: pipe > 0 ? rest.slice(pipe + 1) : reasoningEffort
+          },
+          message: null
+        };
+      }
       throw new Error("The server returned an unavailable Codex model configuration.");
     }
     return {
@@ -201,21 +233,12 @@ export function CodexComposer({
       />
       <div className="codex-composer-toolbar" aria-label={"Agent composer controls " + paneTitle}>
         <div className="codex-composer-spacer" />
-        <button
-          type="button"
-          className={voiceActive ? "codex-voice recording" : "codex-voice"}
-          onClick={onVoice}
-          disabled={voiceDisabled || isDisabled}
-          aria-label={(voiceActive ? "Stop" : "Start") + " voice input " + paneTitle}
-          aria-pressed={voiceActive}
-          title={disabledTitle}
-        >
-          <Mic aria-hidden="true" />
-        </button>
+        <VoiceInputButton label={paneTitle} active={voiceActive} disabled={voiceDisabled || isDisabled} onClick={onVoice} onPrewarm={onVoicePrewarm} />
         {modelSettings ? (
           <span title={disabledTitle}>
             <CodexModelPicker
               settings={modelSettings}
+              providers={modelProviders}
               disabled={isDisabled || pending || isRunning || !canSelectModel}
               allowSelectionWithoutCurrent
               onSwitch={switchModel}
@@ -229,7 +252,7 @@ export function CodexComposer({
           disabled={isDisabled || (isRunning ? !canInterrupt || pending : !canSend || pending)}
           title={disabledTitle}
           aria-label={(isRunning ? "Stop" : "Send") + " " + paneTitle}
-        >{isRunning ? <CircleStop aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}</button>
+        >{isRunning ? <Square aria-hidden="true" fill="currentColor" /> : <ArrowUp aria-hidden="true" />}</button>
       </div>
     </form>
   );

@@ -32,6 +32,7 @@ export type IconToolbarAction = {
   hideable?: boolean;
   draggable?: boolean;
   className?: string;
+  dataSensitiveIgnore?: boolean;
 };
 
 const FINE_POINTER_QUERY = "(any-pointer: fine)";

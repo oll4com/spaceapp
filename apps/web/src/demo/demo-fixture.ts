@@ -6,6 +6,7 @@ import type {
   TaskItem,
   CliSessionReapResponse,
   CliSessionStats,
+  ToolbarModelStats,
   CodexCliModeDefaultsResponse,
   CodexAppServerHandshakeCheck,
   CodexAppServerStatus,
@@ -42,6 +43,11 @@ import type {
   Skill,
   StorageReadiness,
   SwarmState,
+  SystemAnalyticsCliSessionsResponse,
+  SystemAnalyticsModelsResponse,
+  SystemAnalyticsOverviewResponse,
+  SystemAnalyticsProcessesResponse,
+  SystemAnalyticsResourcesResponse,
   TelegramIntegrationStatus,
   Turn,
   UserLink,
@@ -76,6 +82,12 @@ export type DemoFixture = {
   codexUsageAccounts: CodexUsageAccountList;
   codexResetCredits: CodexResetCreditAvailability;
   cliSessionStats: CliSessionStats;
+  modelStats: ToolbarModelStats;
+  systemAnalyticsOverview: SystemAnalyticsOverviewResponse;
+  systemAnalyticsModels: SystemAnalyticsModelsResponse;
+  systemAnalyticsResources: SystemAnalyticsResourcesResponse;
+  systemAnalyticsProcesses: SystemAnalyticsProcessesResponse;
+  systemAnalyticsCliSessions: SystemAnalyticsCliSessionsResponse;
   cliSessionReap: CliSessionReapResponse;
   hostMemoryDetails: HostMemoryDetails;
   memoryReclaim: MemoryReclaimResponse;
@@ -113,6 +125,7 @@ export type DemoFixture = {
 function pane(input: Pick<Pane, "id" | "roomId" | "title" | "mode" | "order"> & Partial<Pane>): Pane {
   return {
     status: "IDLE",
+    titleSource: "auto",
     providerId: input.mode === "CHAT" ? "demo-codex" : null,
     modelId: input.mode === "CHAT" ? "gpt-5.6-sol" : null,
     terminalRuntimeId: input.mode === "TERMINAL" ? "codex" : null,
@@ -126,6 +139,157 @@ function pane(input: Pick<Pane, "id" | "roomId" | "title" | "mode" | "order"> & 
     createdAt: DEMO_FIXED_AT,
     updatedAt: DEMO_FIXED_AT,
     ...input
+  };
+}
+
+function createDemoSystemAnalytics(): Pick<DemoFixture,
+  "systemAnalyticsOverview" |
+  "systemAnalyticsModels" |
+  "systemAnalyticsResources" |
+  "systemAnalyticsProcesses" |
+  "systemAnalyticsCliSessions"
+> {
+  const backfill = {
+    status: "COMPLETE" as const,
+    earliestAt: "2026-06-18T12:00:00.000Z",
+    latestAt: DEMO_FIXED_AT,
+    errors: []
+  };
+  const points = Array.from({ length: 24 }, (_, index) => ({
+    at: new Date(Date.parse(DEMO_FIXED_AT) - (23 - index) * 25_000).toISOString(),
+    cpu: 12 + ((index * 7) % 31),
+    used: 10_737_418_240 + ((index * 173_015_040) % 3_221_225_472)
+  }));
+  const entities = [
+    {
+      entityType: "CLI_SESSION" as const,
+      entityId: "cli_session:demo-codex",
+      roomId: "room:demo-launch",
+      roomName: "Launch Control",
+      paneId: "pane:demo-codex",
+      paneTitle: "Codex CLI",
+      sessionId: "cli_session:demo-codex",
+      runtimeId: "cli:codex",
+      runtimeName: "Codex CLI",
+      providerId: "codex-lb",
+      modelId: "gpt-5.6-sol",
+      processCount: 5,
+      cpuOneCorePercent: 42.7,
+      cpuHostPercent: 2.7,
+      rssBytes: 805_306_368,
+      avgCpuOneCorePercent: 31.4,
+      maxCpuOneCorePercent: 88.2,
+      avgRssBytes: 721_420_288,
+      maxRssBytes: 922_746_880
+    },
+    {
+      entityType: "CLI_SESSION" as const,
+      entityId: "cli_session:demo-opencode",
+      roomId: "room:demo-ops",
+      roomName: "Operations",
+      paneId: "pane:demo-ops-cli",
+      paneTitle: "OpenCode Diagnostics",
+      sessionId: "cli_session:demo-opencode",
+      runtimeId: "cli:opencode",
+      runtimeName: "OpenCode CLI",
+      providerId: "opencode",
+      modelId: "deepseek-v4-flash-free",
+      processCount: 4,
+      cpuOneCorePercent: 18.3,
+      cpuHostPercent: 1.1,
+      rssBytes: 536_870_912,
+      avgCpuOneCorePercent: 15.2,
+      maxCpuOneCorePercent: 63.7,
+      avgRssBytes: 498_073_600,
+      maxRssBytes: 603_979_776
+    },
+    {
+      entityType: "SHARED_RUNTIME" as const,
+      entityId: "shared:cli:opencode",
+      roomId: null,
+      roomName: null,
+      paneId: null,
+      paneTitle: null,
+      sessionId: null,
+      runtimeId: "cli:opencode",
+      runtimeName: "OpenCode shared service",
+      providerId: "opencode",
+      modelId: null,
+      processCount: 2,
+      cpuOneCorePercent: 4.2,
+      cpuHostPercent: 0.3,
+      rssBytes: 201_326_592,
+      avgCpuOneCorePercent: 3.1,
+      maxCpuOneCorePercent: 12.8,
+      avgRssBytes: 188_743_680,
+      maxRssBytes: 218_103_808
+    }
+  ];
+  const resources: SystemAnalyticsResourcesResponse = {
+    range: "10m",
+    sampledAt: DEMO_FIXED_AT,
+    current: {
+      cpuUsagePercent: 18,
+      coreCount: 16,
+      memoryTotalBytes: 34_359_738_368,
+      memoryUsedBytes: 12_884_901_888,
+      memoryAvailableBytes: 21_474_836_480,
+      memoryUsagePercent: 37.5,
+      swapTotalBytes: 8_589_934_592,
+      swapUsedBytes: 268_435_456,
+      swapUsagePercent: 3.1,
+      pageCacheBytes: 4_294_967_296,
+      pressure: false
+    },
+    series: [
+      { id: "host-cpu", label: "Host CPU", unit: "PERCENT", points: points.map((point) => ({ at: point.at, min: Math.max(point.cpu - 3, 0), avg: point.cpu, max: point.cpu + 5 })) },
+      { id: "host-memory-used", label: "RAM used", unit: "BYTES", points: points.map((point) => ({ at: point.at, min: point.used - 134_217_728, avg: point.used, max: point.used + 134_217_728 })) },
+      { id: "host-memory-available", label: "RAM available", unit: "BYTES", points: points.map((point) => ({ at: point.at, min: 34_359_738_368 - point.used, avg: 34_359_738_368 - point.used, max: 34_359_738_368 - point.used })) },
+      { id: "host-swap-used", label: "Swap used", unit: "BYTES", points: points.map((point) => ({ at: point.at, min: 268_435_456, avg: 268_435_456, max: 268_435_456 })) },
+      { id: "host-page-cache", label: "Page cache", unit: "BYTES", points: points.map((point) => ({ at: point.at, min: 4_026_531_840, avg: 4_294_967_296, max: 4_563_402_752 })) }
+    ],
+    entities,
+    backfill
+  };
+  const models: SystemAnalyticsModelsResponse = {
+    range: "10m",
+    sampledAt: DEMO_FIXED_AT,
+    providers: [
+      { providerId: "codex-lb", modelCount: 1, activeSessions: 1, completedTurns: 8, tokensIn: 87_400, tokensOut: 14_200, lastActivityAt: DEMO_FIXED_AT },
+      { providerId: "opencode", modelCount: 1, activeSessions: 1, completedTurns: 12, tokensIn: 64_110, tokensOut: 10_240, lastActivityAt: DEMO_FIXED_AT }
+    ],
+    models: [
+      { providerId: "codex-lb", modelId: "gpt-5.6-sol", runtimeIds: ["cli:codex"], coverage: "NATIVE", activeSessions: 1, activeTurns: 1, completedTurns: 8, abortedTurns: 1, tokensIn: 87_400, tokensOut: 14_200, tokensReasoning: 3_140, avgTtftMs: 1_420, avgDurationMs: 24_500, avgTokPerSec: 72.4, firstActivityAt: "2026-07-18T11:00:00.000Z", lastActivityAt: DEMO_FIXED_AT },
+      { providerId: "opencode", modelId: "deepseek-v4-flash-free", runtimeIds: ["cli:opencode"], coverage: "NATIVE", activeSessions: 1, activeTurns: 1, completedTurns: 12, abortedTurns: 0, tokensIn: 64_110, tokensOut: 10_240, tokensReasoning: 1_050, avgTtftMs: null, avgDurationMs: 12_400, avgTokPerSec: 38.2, firstActivityAt: "2026-07-18T10:40:00.000Z", lastActivityAt: DEMO_FIXED_AT }
+    ],
+    backfill
+  };
+  const processes: SystemAnalyticsProcessesResponse = {
+    data: [
+      { pid: 4101, parentPid: 2070, name: "codex", state: "Sl+", threadCount: 18, uptimeSeconds: 5400, rssBytes: 536_870_912, virtualBytes: 2_147_483_648, swapBytes: 0, cpuOneCorePercent: 38.5, cpuHostPercent: 2.4, ownership: "SPACE_CLI", roomName: "Launch Control", paneTitle: "Codex CLI", runtimeId: "cli:codex", sessionId: "cli_session:demo-codex" },
+      { pid: 4103, parentPid: 2070, name: "opencode", state: "Sl+", threadCount: 14, uptimeSeconds: 3200, rssBytes: 402_653_184, virtualBytes: 1_610_612_736, swapBytes: 8_388_608, cpuOneCorePercent: 17.1, cpuHostPercent: 1.1, ownership: "SPACE_CLI", roomName: "Operations", paneTitle: "OpenCode Diagnostics", runtimeId: "cli:opencode", sessionId: "cli_session:demo-opencode" },
+      { pid: 4120, parentPid: 4103, name: "opencode-server", state: "S", threadCount: 9, uptimeSeconds: 3190, rssBytes: 201_326_592, virtualBytes: 805_306_368, swapBytes: 0, cpuOneCorePercent: 4.2, cpuHostPercent: 0.3, ownership: "SPACE_SHARED", roomName: null, paneTitle: null, runtimeId: "cli:opencode", sessionId: null },
+      { pid: 920, parentPid: 1, name: "postgres", state: "Ss", threadCount: 1, uptimeSeconds: 86_400, rssBytes: 167_772_160, virtualBytes: 536_870_912, swapBytes: 0, cpuOneCorePercent: 1.2, cpuHostPercent: 0.1, ownership: "OTHER", roomName: null, paneTitle: null, runtimeId: null, sessionId: null }
+    ],
+    pagination: { page: 1, pageSize: 100, totalItems: 4, totalPages: 1 },
+    sampledAt: DEMO_FIXED_AT
+  };
+  const cliSessions: SystemAnalyticsCliSessionsResponse = {
+    range: "10m",
+    sampledAt: DEMO_FIXED_AT,
+    summary: { running: 2, attached: 2, detached: 0, cleanupEligible: 0 },
+    sessions: [
+      { sessionId: "cli_session:demo-codex", roomId: "room:demo-launch", roomName: "Launch Control", paneId: "pane:demo-codex", paneTitle: "Codex CLI", runtimeId: "cli:codex", runtimeName: "Codex CLI", providerId: "codex-lb", modelId: "gpt-5.6-sol", reasoningEffort: "high", status: "RUNNING", attachmentCount: 1, cleanupEligible: false, processCount: 5, pid: 4101, rssBytes: 805_306_368, cpuOneCorePercent: 42.7, startedAt: "2026-07-18T10:30:00.000Z", detachedAt: null, endedAt: null, durationSeconds: 5400, avgRssBytes: 721_420_288, maxRssBytes: 922_746_880, avgCpuOneCorePercent: 31.4, maxCpuOneCorePercent: 88.2 },
+      { sessionId: "cli_session:demo-opencode", roomId: "room:demo-ops", roomName: "Operations", paneId: "pane:demo-ops-cli", paneTitle: "OpenCode Diagnostics", runtimeId: "cli:opencode", runtimeName: "OpenCode CLI", providerId: "opencode", modelId: "deepseek-v4-flash-free", reasoningEffort: "medium", status: "RUNNING", attachmentCount: 1, cleanupEligible: false, processCount: 4, pid: 4103, rssBytes: 536_870_912, cpuOneCorePercent: 18.3, startedAt: "2026-07-18T11:06:40.000Z", detachedAt: null, endedAt: null, durationSeconds: 3200, avgRssBytes: 498_073_600, maxRssBytes: 603_979_776, avgCpuOneCorePercent: 15.2, maxCpuOneCorePercent: 63.7 }
+    ],
+    backfill
+  };
+  return {
+    systemAnalyticsOverview: { range: "10m", sampledAt: DEMO_FIXED_AT, modelCount: 2, providerCount: 2, runningCliSessions: 2, cpuUsagePercent: 18, memoryUsagePercent: 37.5, swapUsagePercent: 3.1, topEntities: entities, backfill },
+    systemAnalyticsModels: models,
+    systemAnalyticsResources: resources,
+    systemAnalyticsProcesses: processes,
+    systemAnalyticsCliSessions: cliSessions
   };
 }
 
@@ -444,7 +608,9 @@ export function createDemoFixture(): DemoFixture {
     statusReason: "Demo swarm state is simulated locally."
   });
   const clipboardSafetyText = "No production credential or customer data is included in this public demo.";
+  const systemAnalytics = createDemoSystemAnalytics();
   return {
+    ...systemAnalytics,
     agentToolOptions: [
       {
         id: "space-readonly:space_status",
@@ -521,6 +687,7 @@ export function createDemoFixture(): DemoFixture {
       text: clipboardSafetyText,
       source: "AGENT_NOTE",
       title: null,
+      isCompleted: false,
       roomId: rooms[0]!.id,
       paneId: "pane:demo-chat",
       paneTitle: "Product Copilot",
@@ -533,6 +700,7 @@ export function createDemoFixture(): DemoFixture {
       text: "# Demo rollout plan\n\n1. Enable the feature flag.\n2. Run scoped tests.\n3. Deploy and verify.",
       source: "PLAN",
       title: "Demo rollout plan",
+      isCompleted: false,
       roomId: rooms[0]!.id,
       paneId: "pane:demo-chat",
       paneTitle: "Product Copilot",
@@ -676,8 +844,8 @@ export function createDemoFixture(): DemoFixture {
     voiceTranscriptionSettings: {
       enabled: false,
       statusReason: "Microphone capture stays disabled in the public demo.",
-      defaultModel: "gpt-realtime-whisper",
-      modelOptions: ["gpt-realtime-whisper", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"],
+      defaultModel: "gpt-live-transcribe",
+      modelOptions: ["gpt-live-transcribe"],
       defaultLanguage: "auto",
       languageOptions: ["auto", "el", "en"],
       defaultDelay: "low",
@@ -832,6 +1000,38 @@ export function createDemoFixture(): DemoFixture {
       skippedCount: 1,
       estimatedReclaimedBytes: 0,
       completedAt: DEMO_FIXED_AT
+    },
+    modelStats: {
+      windowMinutes: 10,
+      sampledAt: DEMO_FIXED_AT,
+      sources: ["opencode", "codex"],
+      errors: [],
+      models: [
+        {
+          modelId: "opencode/deepseek-v4-flash-free",
+          providerId: "opencode",
+          source: "opencode",
+          turns: 3,
+          avgTtftMs: null,
+          avgTokPerSec: 38.2,
+          avgDurationMs: 12_400,
+          tokensIn: 42_110,
+          tokensOut: 8_240,
+          tokensReasoning: 0
+        },
+        {
+          modelId: "gpt-5.4-mini",
+          providerId: "openai",
+          source: "codex",
+          turns: 1,
+          avgTtftMs: 1_850,
+          avgTokPerSec: 112.4,
+          avgDurationMs: 9_600,
+          tokensIn: 18_500,
+          tokensOut: 2_130,
+          tokensReasoning: 0
+        }
+      ]
     },
     hostMemoryDetails: {
       memory: {

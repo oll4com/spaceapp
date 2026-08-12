@@ -1,20 +1,16 @@
-import { Crosshair, X } from "../ui-theme/app-icons.js";
+import { Crosshair, PanelRight, X } from "../ui-theme/app-icons.js";
 import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type UIEvent } from "react";
-import type { AgentPaneGoal, AgentPaneSession, Artifact, CodexEnvironment, CodexThreadResponse, CollaborationMode, Pane, PaneCliModelSettings, VoiceTranscriptionSettings } from "@space/contracts";
+import type { AgentPaneGoal, AgentPaneSession, Artifact, CodexEnvironment, CodexThreadResponse, CollaborationMode, Pane, PaneCliModelSettings } from "@space/contracts";
 import { api } from "../../api.js";
 import { dispatchArtifactsUpdated } from "../../artifact-events.js";
-import { SPACE_CLIPBOARD_ITEM_MIME, captureClipboardText, writeClipboardText } from "../clipboard-dock/clipboard-events.js";
+import { SPACE_CLIPBOARD_ITEM_MIME, SPACE_CLIPBOARD_ITEM_TITLE_MIME, captureClipboardText, writeClipboardText } from "../clipboard-dock/clipboard-events.js";
 import { SPACE_TASK_ITEM_MIME } from "../task-dock/task-events.js";
 import { readArtifactDragPayload, resolveArtifactDragFile, type ArtifactDragPayload } from "../artifacts/artifact-drag.js";
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
 import { clearAgentPaneDraft, readAgentPaneDraft, writeAgentPaneDraft } from "./agent-pane-draft.js";
-import { openVoiceRealtimeSession, type VoiceRealtimeSessionHandle } from "../../voice-realtime.js";
 import { DEMO_LOCAL_REPLY } from "../../runtime/SpaceRuntime.js";
-import {
-  VOICE_SETTINGS_UPDATED_EVENT,
-  readVoiceComposerSettings,
-  type VoiceComposerSettings
-} from "../../voice-settings.js";
+import type { VoiceComposerSettings } from "../../voice-settings.js";
+import { useVoiceInput } from "../voice-input/VoiceInputProvider.js";
 import { CodexComposer } from "./CodexComposer.js";
 import { CodexNotification, CodexTranscript, copyableCodexTranscript } from "./CodexTranscript.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
@@ -23,13 +19,21 @@ import {
   AGENT_PANE_ATTACHMENTS_EVENT,
   registerAgentPaneEventTarget
 } from "./events.js";
+import { takePendingThreadOpen } from "../terminal-pane/cli-resume-intent.js";
 
 export { AGENT_PANE_ACTION_EVENT, AGENT_PANE_ATTACHMENTS_EVENT } from "./events.js";
+
+export interface AgentPaneIdentity {
+  sessionId: string | null;
+  threadId: string | null;
+}
 
 interface AgentPaneProps {
   pane: Pane;
   codexEnvironment: CodexEnvironment | null;
   workspaceTextSize: number;
+  isVisible?: boolean;
+  onSessionIdentityChange?: (identity: AgentPaneIdentity | null) => void;
 }
 
 const runningStatuses: AgentPaneSession["runStatus"][] = ["QUEUED", "RUNNING", "INTERRUPTING"];
@@ -196,7 +200,13 @@ function CodexGoalDialog({
   );
 }
 
-export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPaneProps) {
+export function AgentPane({
+  pane,
+  codexEnvironment,
+  workspaceTextSize,
+  isVisible = true,
+  onSessionIdentityChange
+}: AgentPaneProps) {
   const isCodexEnabled = codexEnvironment?.isCodexEnabled ?? true;
   const codexDisabledReason = "Enable Codex in Settings";
   const initialDraft = readAgentPaneDraft(pane.id);
@@ -213,11 +223,8 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   const [error, setError] = useState<string | null>(null);
   const [codexError, setCodexError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [voiceSettings, setVoiceSettings] = useState<VoiceComposerSettings>(() => readVoiceComposerSettings());
-  const [voiceServerSettings, setVoiceServerSettings] = useState<VoiceTranscriptionSettings | null>(null);
-  const [voiceStatus, setVoiceStatus] = useState<"idle" | "connecting" | "recording" | "transcribing">("idle");
-  const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [voicePreview, setVoicePreview] = useState("");
+  const voiceInput = useVoiceInput();
+  const voiceOwnerId = `chat:${pane.id}`;
   const [homePinned, setHomePinned] = useState(false);
   const [goalDialogOpen, setGoalDialogOpen] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -225,9 +232,6 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
-  const voiceRealtimeSessionRef = useRef<VoiceRealtimeSessionHandle | null>(null);
-  const voiceStopTimerRef = useRef<number | null>(null);
-  const voiceBasePromptRef = useRef("");
   const lastSessionThreadIdRef = useRef<string | null>(null);
   const followTranscriptRef = useRef(true);
   const trimmedPrompt = prompt.trim();
@@ -238,11 +242,13 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
     !pending &&
     (trimmedPrompt.length > 0 || hasAttachments);
   const isRunning = Boolean(session && runningStatuses.includes(session.runStatus));
+  const runError = session?.runStatus === "ERROR"
+    ? session.statusReason || "The Chat run failed."
+    : null;
 
   useAutoDismiss(notice, setNotice);
   useAutoDismiss(error, setError);
   useAutoDismiss(codexError, setCodexError);
-  useAutoDismiss(voiceError, setVoiceError);
 
   async function loadSession(showLoading = true) {
     if (showLoading) setLoading(true);
@@ -362,50 +368,44 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
   }, [pane.id]);
 
   useEffect(() => {
-    let disposed = false;
-    if (!isCodexEnabled) {
-      setVoiceServerSettings(null);
-      return;
-    }
-    api
-      .voiceTranscriptionSettings()
-      .then((settings) => {
-        if (!disposed) setVoiceServerSettings(settings);
-      })
-      .catch((err: unknown) => {
-        if (!disposed) {
-          setVoiceServerSettings(null);
-          setVoiceError(err instanceof Error ? err.message : "Voice transcription settings failed to load");
-        }
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [isCodexEnabled]);
+    onSessionIdentityChange?.(session ? {
+      sessionId: session.binding.sessionId ?? null,
+      threadId: session.threadId ?? null
+    } : null);
+  }, [onSessionIdentityChange, session?.binding.sessionId, session?.threadId]);
+
+  useEffect(() => () => onSessionIdentityChange?.(null), [onSessionIdentityChange, pane.id]);
+
+  useEffect(() => {
+    const pendingThreadId = takePendingThreadOpen(pane.id);
+    if (!pendingThreadId) return;
+    recordLifecycleDebugEvent({
+      type: "agent_pane_thread_intent_consumed",
+      scope: "AgentPane",
+      detail: `pending thread open ${pendingThreadId}`,
+      paneId: pane.id,
+      paneMode: pane.mode
+    });
+    void openThread(pendingThreadId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.id]);
 
   useEffect(() => {
     if (isCodexEnabled) return;
     setGoalDialogOpen(false);
     setDragActive(false);
-    closeVoiceRealtimeSession();
-    setVoiceStatus("idle");
-  }, [isCodexEnabled]);
+    voiceInput.cancel(voiceOwnerId);
+  }, [isCodexEnabled, voiceInput.cancel, voiceOwnerId]);
 
   useEffect(() => {
-    const handleVoiceSettingsUpdate = () => setVoiceSettings(readVoiceComposerSettings());
-    window.addEventListener(VOICE_SETTINGS_UPDATED_EVENT, handleVoiceSettingsUpdate);
-    return () => window.removeEventListener(VOICE_SETTINGS_UPDATED_EVENT, handleVoiceSettingsUpdate);
-  }, []);
+    if (session?.capabilities.canSend === false) voiceInput.cancel(voiceOwnerId);
+  }, [session?.capabilities.canSend, voiceInput.cancel, voiceOwnerId]);
 
   useEffect(() => {
-    return () => {
-      if (voiceStopTimerRef.current) {
-        window.clearTimeout(voiceStopTimerRef.current);
-      }
-      voiceRealtimeSessionRef.current?.close();
-      voiceRealtimeSessionRef.current = null;
-    };
-  }, []);
+    if (!isVisible || pane.isMinimized) voiceInput.cancel(voiceOwnerId);
+  }, [isVisible, pane.isMinimized, voiceInput.cancel, voiceOwnerId]);
+
+  useEffect(() => () => voiceInput.cancel(voiceOwnerId), [voiceInput.cancel, voiceOwnerId]);
 
   useEffect(() => {
     const handleSettingsUpdate = (event: Event) => {
@@ -545,15 +545,14 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
     }
   }
 
-  async function submitMessage(content: string) {
-    const promptToRestore = prompt;
+  async function submitMessage(content: string, promptToRestore = prompt): Promise<boolean> {
     const attachmentsToSend = attachments.slice();
     if (
       !isCodexEnabled ||
       (!content && attachmentsToSend.length === 0) ||
       pending ||
       session?.capabilities.canSend === false
-    ) return;
+    ) return false;
     followTranscriptRef.current = true;
     setPending(true);
     setHomePinned(false);
@@ -577,11 +576,13 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
       } else if (activeThreadId) {
         await openThread(activeThreadId, false);
       }
+      return true;
     } catch (err) {
       setPrompt(promptToRestore);
       if (attachmentsToSend.length) setAttachments(attachmentsToSend);
       writeAgentPaneDraft(pane.id, { prompt: promptToRestore, attachments: attachmentsToSend });
       setError(err instanceof Error ? err.message : "Agent message failed");
+      return false;
     } finally {
       setPending(false);
     }
@@ -706,8 +707,9 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
       return;
     }
     const clipboardItemId = event.dataTransfer?.getData(SPACE_CLIPBOARD_ITEM_MIME) ?? "";
+    const clipboardTitle = event.dataTransfer?.getData(SPACE_CLIPBOARD_ITEM_TITLE_MIME) ?? "";
     const text = event.dataTransfer?.getData("text/plain") ?? "";
-    if (clipboardItemId && text) setPrompt((current) => appendClipboardText(current, text));
+    if (clipboardItemId && text) setPrompt((current) => appendClipboardText(current, clipboardTitle ? `# ${clipboardTitle}\n\n${text}` : text));
     const taskItemId = event.dataTransfer?.getData(SPACE_TASK_ITEM_MIME) ?? "";
     if (taskItemId && text) setPrompt((current) => appendClipboardText(current, text));
     setDragActive(false);
@@ -780,90 +782,26 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
     };
   }, [activeThreadId, isCodexEnabled, isRunning, pane.id, pane.title, pending, session, thread]);
 
-  function clearVoiceStopTimer() {
-    if (!voiceStopTimerRef.current) return;
-    window.clearTimeout(voiceStopTimerRef.current);
-    voiceStopTimerRef.current = null;
-  }
-
-  function closeVoiceRealtimeSession() {
-    clearVoiceStopTimer();
-    voiceRealtimeSessionRef.current?.close();
-    voiceRealtimeSessionRef.current = null;
-  }
-
-  async function startVoiceCapture() {
-    if (!isCodexEnabled || !voiceSettings.enabled) return;
-    if (!voiceServerSettings?.enabled) {
-      setVoiceError(voiceServerSettings?.statusReason ?? "Voice transcription is not configured.");
-      return;
-    }
-    closeVoiceRealtimeSession();
-    setVoiceStatus("connecting");
-    setVoiceError(null);
-    setVoicePreview("");
-    voiceBasePromptRef.current = prompt;
-    try {
-      const sessionHandle = await openVoiceRealtimeSession(
-        {
-          model: voiceSettings.model,
-          language: voiceSettings.language,
-          delay: voiceSettings.delay
-        },
-        {
-          onTranscriptDelta: (text) => {
-            setVoicePreview(text);
-            setPrompt(nextPromptWithTranscript(voiceBasePromptRef.current, text, voiceSettings));
-          },
-          onTranscriptComplete: async (text) => {
-            const nextPrompt = nextPromptWithTranscript(voiceBasePromptRef.current, text, voiceSettings);
-            setVoicePreview(text);
-            setPrompt(nextPrompt);
-            setVoiceStatus("idle");
-            closeVoiceRealtimeSession();
-            if (voiceSettings.autoSend && nextPrompt.trim()) {
-              await submitMessage(nextPrompt.trim());
-            }
-          },
-          onError: (message) => {
-            setVoiceStatus("idle");
-            setVoiceError(message);
-            closeVoiceRealtimeSession();
-          }
-        }
-      );
-      voiceRealtimeSessionRef.current = sessionHandle;
-      setVoiceStatus("recording");
-      voiceStopTimerRef.current = window.setTimeout(() => {
-        stopVoiceCapture();
-      }, voiceServerSettings.maxDurationMs);
-    } catch (err) {
-      setVoiceStatus("idle");
-      setVoiceError(err instanceof Error ? err.message : "Microphone permission was not granted.");
-      closeVoiceRealtimeSession();
-    }
-  }
-
-  function stopVoiceCapture() {
-    if (!voiceRealtimeSessionRef.current) {
-      closeVoiceRealtimeSession();
-      setVoiceStatus("idle");
-      return;
-    }
-    clearVoiceStopTimer();
-    setVoiceStatus("transcribing");
-    voiceRealtimeSessionRef.current.commit();
-  }
-
   function toggleVoiceCapture() {
     if (!isCodexEnabled) return;
-    if (voiceStatus === "recording") {
-      stopVoiceCapture();
+    if (voiceInput.ownerId === voiceOwnerId && voiceInput.status === "recording") {
+      voiceInput.stop(voiceOwnerId);
       return;
     }
-    if (voiceStatus === "idle") {
-      void startVoiceCapture();
-    }
+    const basePrompt = prompt;
+    const settings = voiceInput.settings;
+    void voiceInput.start({
+      id: voiceOwnerId,
+      onTranscriptDelta: (text) => setPrompt(nextPromptWithTranscript(basePrompt, text, settings)),
+      onTranscriptComplete: async (text) => {
+        const nextPrompt = nextPromptWithTranscript(basePrompt, text, settings);
+        setPrompt(nextPrompt);
+        if (!nextPrompt.trim()) return;
+        if (!(await submitMessage(nextPrompt.trim(), nextPrompt))) {
+          throw new Error("Voice transcript could not be submitted.");
+        }
+      }
+    });
   }
 
   async function interrupt() {
@@ -879,22 +817,26 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
     }
   }
 
+  const voiceOwned = voiceInput.ownerId === voiceOwnerId;
   const voiceDisabled =
     !isCodexEnabled ||
-    !voiceSettings.enabled ||
-    !voiceServerSettings?.enabled ||
-    voiceStatus === "connecting" ||
-    voiceStatus === "transcribing" ||
+    !voiceInput.settings.enabled ||
+    !voiceInput.serverSettings?.enabled ||
+    voiceInput.settingsLoading ||
+    Boolean(voiceInput.ownerId && !voiceOwned) ||
+    (voiceOwned && (voiceInput.status === "connecting" || voiceInput.status === "transcribing")) ||
     pending ||
     session?.capabilities.canSend === false;
   const voiceStatusText =
-    voiceStatus === "connecting"
+    !voiceOwned
+      ? null
+      : voiceInput.status === "connecting"
       ? "Connecting"
-      : voiceStatus === "recording"
-        ? voicePreview || "Listening"
-        : voiceStatus === "transcribing"
-          ? voicePreview || "Transcribing"
-          : voiceError;
+      : voiceInput.status === "recording"
+        ? voiceInput.preview || "Listening"
+        : voiceInput.status === "transcribing"
+          ? voiceInput.preview || "Transcribing"
+          : voiceInput.error;
 
   function retryLatestError() {
     setError(null);
@@ -948,7 +890,25 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
         }}
       />
       <div className="codex-chat-shell">
-        <div ref={transcriptRef} className="codex-transcript-scroll" onScroll={handleTranscriptScroll}>
+        {session?.collaborationMode === "plan" ? (
+          <button
+            type="button"
+            className="codex-plan-mode-indicator"
+            aria-label={`Disable Plan mode ${pane.title}`}
+            aria-pressed="true"
+            title="Plan mode is active. Click to return to Default mode."
+            disabled={pending || !isCodexEnabled}
+            onClick={() => void updateCollaborationMode("default")}
+          >
+            <PanelRight aria-hidden="true" />
+            <span>Plan mode on</span>
+          </button>
+        ) : null}
+        <div
+          ref={transcriptRef}
+          className={`codex-transcript-scroll${session?.collaborationMode === "plan" ? " has-plan-mode" : ""}`}
+          onScroll={handleTranscriptScroll}
+        >
           <CodexTranscript items={thread?.items ?? []} isRunning={isRunning} loading={threadLoading || loading} elapsedSeconds={elapsedSeconds} />
         </div>
         <div className="codex-notification-stack">
@@ -956,15 +916,17 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
             <CodexNotification tone="warning" message={session.statusReason} />
           ) : null}
           {notice ? <CodexNotification tone="info" message={notice} onDismiss={() => setNotice(null)} /> : null}
-          {error || codexError ? (
+          {error || codexError || runError ? (
             <CodexNotification
               tone="error"
-              message={error ?? codexError ?? "Codex error"}
+              message={error ?? codexError ?? runError ?? "Codex error"}
               onRetry={retryLatestError}
-              onDismiss={() => {
-                setError(null);
-                setCodexError(null);
-              }}
+              onDismiss={error || codexError
+                ? () => {
+                  setError(null);
+                  setCodexError(null);
+                }
+                : undefined}
             />
           ) : null}
           {uploading || dragActive ? (
@@ -974,7 +936,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
             />
           ) : null}
           {voiceStatusText ? (
-            <CodexNotification tone={voiceError ? "error" : "info"} message={voiceStatusText} onDismiss={voiceError ? () => setVoiceError(null) : undefined} />
+            <CodexNotification tone={voiceInput.error ? "error" : "info"} message={voiceStatusText} onDismiss={voiceInput.error ? () => voiceInput.clearError(voiceOwnerId) : undefined} />
           ) : null}
         </div>
         <CodexComposer
@@ -986,7 +948,8 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
           onRemoveAttachment={(artifactId) => setAttachments((current) => current.filter((artifact) => artifact.id !== artifactId))}
           onClearAttachments={clearAttachments}
           onVoice={toggleVoiceCapture}
-          voiceActive={voiceStatus === "recording"}
+          onVoicePrewarm={voiceInput.prewarm}
+          voiceActive={voiceOwned && voiceInput.status === "recording"}
           voiceDisabled={voiceDisabled}
           isRunning={isRunning}
           canSend={canSend}
@@ -996,6 +959,7 @@ export function AgentPane({ pane, codexEnvironment, workspaceTextSize }: AgentPa
           onStop={() => void interrupt()}
           modelCatalog={(session as AgentPaneSessionWithModelCatalog | null)?.modelCatalog ?? []}
           modelOptions={session?.modelOptions ?? []}
+          modelProviders={session?.modelProviders ?? []}
           selectedModelConfigId={session?.selectedModelConfigId ?? null}
           canSelectModel={Boolean(session?.capabilities.canSelectModel)}
           onModelConfigChange={updateModelConfig}

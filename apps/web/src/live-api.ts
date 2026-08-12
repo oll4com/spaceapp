@@ -45,6 +45,9 @@ import type {
   CreateRoomPanesRequest,
   DeleteRoomAgentFilesResponse,
   DeleteRoomMediaResponse,
+  CliSessionCleanupExecuteRequest,
+  CliSessionCleanupPreviewResponse,
+  CliSessionCleanupResponse,
   CliSessionReapResponse,
   CliLoginResponse,
   CliMaintenanceAuthHandoff,
@@ -70,8 +73,18 @@ import type {
   CliRuntimeRestartSessionsResult,
   CliRuntimeRestartAllResult,
   CliSessionStats,
+  ToolbarModelStats,
   CliTaskHistoryResponse,
   CodexEnvironment,
+  AgentSessionHistoryItem,
+  AgentSessionHistoryResponse,
+  SystemServicesResponse,
+  SystemAnalyticsCliSessionsResponse,
+  SystemAnalyticsModelsResponse,
+  SystemAnalyticsOverviewResponse,
+  SystemAnalyticsProcessesResponse,
+  SystemAnalyticsRange,
+  SystemAnalyticsResourcesResponse,
   CodexCliModeDefaultsResponse,
   CodexHistoryPurgeExecuteRequest,
   CodexHistoryPurgePreviewResponse,
@@ -85,6 +98,7 @@ import type {
   CodexAppServerStatus,
   CodexAppServerTurnSmokeCheck,
   CodexHistoryResponse,
+  CodexHistoryItem,
   CodexThreadResponse,
   CreateMemoryConsolidationInput,
   CreateReleasePreviewInput,
@@ -177,6 +191,14 @@ import type {
   SetupStarterRoomResponse,
   SetupStatus,
   StorageReadiness,
+  StreamingCatalogResponse,
+  StreamingDisconnectAuthorizationResponse,
+  StreamingOAuthProvider,
+  StreamingOAuthStartResponse,
+  StreamingOverlaySettings,
+  StreamingOverlaySnapshot,
+  StreamingPlatformAccount,
+  StreamingVerifyAccountResponse,
   SourceControlConnection,
   SourceControlProvider,
   SwarmLock,
@@ -202,6 +224,7 @@ import type {
   UpdateUserLinkRequest,
   UpdateProviderInput,
   UpdateProviderSettingsInput,
+  UpdateStreamingOverlaySettingsInput,
   VoiceRealtimeSessionResponse,
   VoiceTranscriptionDelay,
   VoiceTranscriptionLanguage,
@@ -322,6 +345,20 @@ export interface ReadyzPayload {
     codexTurns: string;
     codexLb: string;
   };
+}
+
+export interface AppVersionStatus {
+  appRelease: string;
+  currentCommit: string | null;
+  shortCommit: string | null;
+  currentBranch: string | null;
+  dirty: boolean;
+  athensTag: string | null;
+  githubLatest: string | null;
+  githubTagUrl: string | null;
+  updateAvailable: boolean;
+  behindCount: number;
+  checkedAt: string | null;
 }
 
 export interface ServiceRestartResponse {
@@ -588,6 +625,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   reportCoreApiResponse(response, payload, requestStartedAt);
   if (response.status === 401 || response.status === 403) {
     csrfToken = null;
+    resetCliRuntimeSettingsCache();
   }
   if (!response.ok) {
     if (isApiErrorPayload(payload)) {
@@ -672,8 +710,104 @@ function invalidateCliRuntimes(): void {
   if (cliRuntimeRegistryCache) cliRuntimeRegistryCache.expiresAt = 0;
 }
 
+const cliRuntimeSettingsCacheTtlMs = 10_000;
+const cliRuntimeSettingsRequestTimeoutMs = 8_000;
+let cliRuntimeSettingsCache: { value: CliRuntimeSettingsResponse; expiresAt: number } | null = null;
+let cliRuntimeSettingsFlight: Promise<CliRuntimeSettingsResponse> | null = null;
+let cliRuntimeSettingsCacheGeneration = 0;
+
+function startCliRuntimeSettingsFlight(): Promise<CliRuntimeSettingsResponse> {
+  if (cliRuntimeSettingsFlight) return cliRuntimeSettingsFlight;
+  const generation = cliRuntimeSettingsCacheGeneration;
+  const flight = requestWithTimeout<CliRuntimeSettingsResponse>(
+    "/api/cli/runtime-settings",
+    cliRuntimeSettingsRequestTimeoutMs,
+    "CLI runtime settings request timed out. Please retry."
+  )
+    .then((value) => {
+      if (generation === cliRuntimeSettingsCacheGeneration) {
+        cliRuntimeSettingsCache = {
+          value,
+          expiresAt: Date.now() + cliRuntimeSettingsCacheTtlMs
+        };
+      }
+      return value;
+    })
+    .finally(() => {
+      if (cliRuntimeSettingsFlight === flight) cliRuntimeSettingsFlight = null;
+    });
+  cliRuntimeSettingsFlight = flight;
+  return flight;
+}
+
+function loadCliRuntimeSettings(options: { forceRefresh?: boolean } = {}): Promise<CliRuntimeSettingsResponse> {
+  if (
+    !options.forceRefresh
+    && cliRuntimeSettingsCache
+    && Date.now() < cliRuntimeSettingsCache.expiresAt
+  ) {
+    return Promise.resolve(cliRuntimeSettingsCache.value);
+  }
+  return startCliRuntimeSettingsFlight();
+}
+
+function warmCliRuntimeSettings(): void {
+  if (
+    cliRuntimeSettingsFlight
+    || (cliRuntimeSettingsCache && Date.now() < cliRuntimeSettingsCache.expiresAt)
+  ) return;
+  void startCliRuntimeSettingsFlight().catch(() => undefined);
+}
+
+function cliRuntimeSettingsSnapshot(): CliRuntimeSettingsResponse | null {
+  return cliRuntimeSettingsCache?.value ?? null;
+}
+
+function invalidateCliRuntimeSettings(): void {
+  if (cliRuntimeSettingsCache) cliRuntimeSettingsCache.expiresAt = 0;
+}
+
+function resetCliRuntimeSettingsCache(): void {
+  cliRuntimeSettingsCacheGeneration += 1;
+  cliRuntimeSettingsCache = null;
+  cliRuntimeSettingsFlight = null;
+}
+
+const activeCliSessionFlights = new Map<string, Promise<PaneCliSessionResponse | null>>();
+
+function activeCliSessionFlightKey(
+  paneId: string,
+  includeTranscript: boolean,
+  compactTranscript: boolean
+): string {
+  return `${paneId}\u0000${includeTranscript ? "1" : "0"}\u0000${compactTranscript ? "c" : "f"}`;
+}
+
+function loadActiveCliSession(
+  paneId: string,
+  options: { includeTranscript?: boolean; compactTranscript?: boolean } = {}
+): Promise<PaneCliSessionResponse | null> {
+  const includeTranscript = options.includeTranscript !== false;
+  const compactTranscript = options.compactTranscript === true;
+  const key = activeCliSessionFlightKey(paneId, includeTranscript, compactTranscript);
+  const existing = activeCliSessionFlights.get(key);
+  if (existing) return existing;
+  const params = new URLSearchParams();
+  if (!includeTranscript) params.set("includeTranscript", "false");
+  if (compactTranscript) params.set("compactTranscript", "true");
+  const query = params.toString();
+  const flight = request<PaneCliSessionResponse | null>(
+    `/api/panes/${encodeURIComponent(paneId)}/cli/session${query ? `?${query}` : ""}`
+  ).finally(() => {
+    if (activeCliSessionFlights.get(key) === flight) activeCliSessionFlights.delete(key);
+  });
+  activeCliSessionFlights.set(key, flight);
+  return flight;
+}
+
 export const api = {
   readyz: () => request<ReadyzPayload>("/readyz"),
+  appVersion: () => request<AppVersionStatus>("/api/app/version"),
   eventStreamUrl,
   me: () => request<AuthMe>("/api/auth/me"),
   setupStatus: () => request<SetupStatus>("/api/setup/status"),
@@ -711,20 +845,24 @@ export const api = {
   verifyAllSetupConnections: () =>
     request<SetupOverview>("/api/setup/connections/verify-all", { method: "POST" }),
   finishSetup: () => request<SetupOverview>("/api/setup/finish", { method: "POST" }),
-  login: (email: string, password: string) =>
-    request<AuthMe>("/api/auth/login", {
+  login: (email: string, password: string) => {
+    resetCliRuntimeSettingsCache();
+    return request<AuthMe>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password })
-    }),
+    });
+  },
   logout: async () => {
     const result = await request<{ ok: true }>("/api/auth/logout", { method: "POST" });
     csrfToken = null;
+    resetCliRuntimeSettingsCache();
     return result;
   },
-  clipboardItems: (query: { q?: string; source?: ClipboardSource; page?: number; pageSize?: number } = {}) => {
+  clipboardItems: (query: { q?: string; source?: ClipboardSource; includeCompleted?: boolean; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
     if (query.source) params.set("source", query.source);
+    if (query.includeCompleted !== undefined) params.set("includeCompleted", String(query.includeCompleted));
     if (query.page !== undefined) params.set("page", String(query.page));
     if (query.pageSize !== undefined) params.set("pageSize", String(query.pageSize));
     const suffix = params.toString();
@@ -734,6 +872,11 @@ export const api = {
     request<ClipboardItem>("/api/clipboard-items", {
       method: "POST",
       body: JSON.stringify(input)
+    }),
+  setClipboardItemCompleted: (clipboardItemId: string, completed: boolean) =>
+    request<ClipboardItem>(`/api/clipboard-items/${encodeURIComponent(clipboardItemId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ completed })
     }),
   deleteClipboardItem: (clipboardItemId: string) =>
     request<{ id: string; deleted: true }>(`/api/clipboard-items/${encodeURIComponent(clipboardItemId)}`, {
@@ -900,6 +1043,26 @@ export const api = {
     }
     return request<CliTaskHistoryResponse>(`/api/cli/tasks?${params.toString()}`);
   },
+  agentSessions: (input?: { page?: number; pageSize?: number; includeArchived?: boolean; q?: string }) => {
+    const params = new URLSearchParams();
+    if (input) {
+      if (input.page !== undefined) params.set("page", String(input.page));
+      if (input.pageSize !== undefined) params.set("pageSize", String(input.pageSize));
+      if (input.includeArchived) params.set("includeArchived", "true");
+      if (input.q) params.set("q", input.q);
+    }
+    return request<AgentSessionHistoryResponse>(`/api/agent/sessions?${params.toString()}`);
+  },
+  agentSessionRename: (threadId: string, title: string) =>
+    request<CodexHistoryItem>(`/api/agent/sessions/codex/${encodeURIComponent(threadId)}/rename`, {
+      method: "POST",
+      body: JSON.stringify({ title })
+    }),
+  agentSessionArchive: (threadId: string) =>
+    request<CodexHistoryItem>(`/api/agent/sessions/codex/${encodeURIComponent(threadId)}/archive`, {
+      method: "POST"
+    }),
+  listSystemServices: () => request<SystemServicesResponse>(`/api/system/services`),
   recoveryCliTask: (paneId: string) =>
     request<CliTaskHistoryResponse>(`/api/panes/${encodeURIComponent(paneId)}/cli/recovery-task`),
   codexThread: (threadId: string, presentation?: CodexThreadPresentation) =>
@@ -918,6 +1081,35 @@ export const api = {
       }
     ),
   toolbarCliSessions: () => request<CliSessionStats>("/api/admin/cli-sessions"),
+  toolbarModelStats: (_roomId: string, windowMinutes: number) =>
+    request<ToolbarModelStats>(
+      `/api/admin/toolbar-model-stats?windowMinutes=${encodeURIComponent(String(windowMinutes))}`
+    ),
+  systemAnalyticsOverview: (range: SystemAnalyticsRange) =>
+    request<SystemAnalyticsOverviewResponse>(`/api/admin/system-analytics/overview?range=${encodeURIComponent(range)}`),
+  systemAnalyticsModels: (range: SystemAnalyticsRange) =>
+    request<SystemAnalyticsModelsResponse>(`/api/admin/system-analytics/models?range=${encodeURIComponent(range)}`),
+  systemAnalyticsResources: (range: SystemAnalyticsRange) =>
+    request<SystemAnalyticsResourcesResponse>(`/api/admin/system-analytics/resources?range=${encodeURIComponent(range)}`),
+  systemAnalyticsProcesses: (input: {
+    page?: number;
+    pageSize?: number;
+    sort?: "rss" | "cpu" | "pid" | "uptime" | "name";
+    direction?: "asc" | "desc";
+    query?: string;
+    ownership?: "ALL" | "SPACE_CLI" | "SPACE_SHARED" | "OTHER";
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (input.page !== undefined) params.set("page", String(input.page));
+    if (input.pageSize !== undefined) params.set("pageSize", String(input.pageSize));
+    if (input.sort) params.set("sort", input.sort);
+    if (input.direction) params.set("direction", input.direction);
+    if (input.query) params.set("query", input.query);
+    if (input.ownership) params.set("ownership", input.ownership);
+    return request<SystemAnalyticsProcessesResponse>(`/api/admin/system-analytics/processes?${params.toString()}`);
+  },
+  systemAnalyticsCliSessions: (range: SystemAnalyticsRange) =>
+    request<SystemAnalyticsCliSessionsResponse>(`/api/admin/system-analytics/cli-sessions?range=${encodeURIComponent(range)}`),
   reapToolbarCliSessions: () => request<CliSessionReapResponse>("/api/admin/cli-session-reaps", {
     method: "POST",
     body: JSON.stringify({})
@@ -946,6 +1138,17 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ previewId, confirmation })
   }),
+  previewCliSessionCleanup: () => request<CliSessionCleanupPreviewResponse>("/api/admin/cli-session-cleanup-previews", {
+    method: "POST",
+    body: JSON.stringify({})
+  }),
+  executeCliSessionCleanup: (
+    previewId: string,
+    confirmation: CliSessionCleanupExecuteRequest["confirmation"]
+  ) => request<CliSessionCleanupResponse>("/api/admin/cli-session-cleanups", {
+    method: "POST",
+    body: JSON.stringify({ previewId, confirmation })
+  }),
   toolbarProviderTargets: () => request<ProviderSwitchTargets>("/api/admin/provider-switch-targets"),
   switchToolbarProvider: (providerId: string) => request<ProviderSwitchResponse>("/api/admin/provider-switches", {
     method: "POST",
@@ -956,6 +1159,35 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ scope: "CORE" })
     }),
+  streamingCatalog: () =>
+    request<StreamingCatalogResponse>("/api/admin/streaming/catalog"),
+  startStreamingOAuth: (provider: StreamingOAuthProvider) =>
+    request<StreamingOAuthStartResponse>(
+      `/api/admin/streaming/providers/${encodeURIComponent(provider)}/oauth/start`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
+  verifyStreamingAccount: (accountId: string) =>
+    request<StreamingVerifyAccountResponse>(
+      `/api/admin/streaming/accounts/${encodeURIComponent(accountId)}/verify`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
+  removeStreamingAccount: (accountId: string) =>
+    request<{ account: StreamingPlatformAccount }>(
+      `/api/admin/streaming/accounts/${encodeURIComponent(accountId)}`,
+      { method: "DELETE" }
+    ),
+  disconnectStreamingAuthorization: (authorizationId: string) =>
+    request<StreamingDisconnectAuthorizationResponse>(
+      `/api/admin/streaming/authorizations/${encodeURIComponent(authorizationId)}`,
+      { method: "DELETE" }
+    ),
+  updateStreamingOverlaySettings: (input: UpdateStreamingOverlaySettingsInput) =>
+    request<StreamingOverlaySettings>("/api/admin/streaming/overlay-settings", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  streamingOverlaySnapshot: () =>
+    request<StreamingOverlaySnapshot>("/api/admin/streaming/overlay-snapshot"),
   listCliMaintenanceRuns: () =>
     request<{ data: AdminOperationRun[] }>("/api/admin/cli-maintenance/runs"),
   getCliMaintenanceReplay: (runId: string, afterSequence = 0) =>
@@ -1113,15 +1345,25 @@ export const api = {
   cliRuntimesSnapshot,
   warmCliRuntimes,
   invalidateCliRuntimes,
-  cliRuntimeSettings: () => request<CliRuntimeSettingsResponse>("/api/cli/runtime-settings"),
-  cliRuntimeRestart: (runtimeId: string) =>
-    request<CliRuntimeRestartSessionsResult>(`/api/admin/cli/runtime/${encodeURIComponent(runtimeId)}/restart`, {
+  cliRuntimeSettings: (options?: { forceRefresh?: boolean }) => loadCliRuntimeSettings(options),
+  cliRuntimeSettingsSnapshot,
+  warmCliRuntimeSettings,
+  invalidateCliRuntimeSettings,
+  resetCliRuntimeSettingsCache,
+  cliRuntimeRestart: async (runtimeId: string) => {
+    const result = await request<CliRuntimeRestartSessionsResult>(`/api/admin/cli/runtime/${encodeURIComponent(runtimeId)}/restart`, {
       method: "POST"
-    }),
-  cliRuntimeRestartAll: () =>
-    request<CliRuntimeRestartAllResult>("/api/admin/cli/runtime/restart-all", {
+    });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  cliRuntimeRestartAll: async () => {
+    const result = await request<CliRuntimeRestartAllResult>("/api/admin/cli/runtime/restart-all", {
       method: "POST"
-    }),
+    });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
   agentToolsCatalog: () => request<AgentToolsCatalogResponse>("/api/agent-tools/catalog"),
   updateAgentToolAssignment: (toolId: string, input: UpdateAgentToolAssignmentInput) =>
     request<AgentToolAssignment>(`/api/agent-tools/assignments/${encodeURIComponent(toolId)}`, {
@@ -1143,39 +1385,63 @@ export const api = {
       body: JSON.stringify(input)
     }),
   cliGlobalEgress: () => request<CliGlobalEgressStatus>("/api/cli/egress"),
-  updateCliGlobalEgress: (routeId: CliEgressRouteId) =>
-    request<UpdateCliGlobalEgressResult>("/api/cli/egress/route", {
+  updateCliGlobalEgress: async (routeId: CliEgressRouteId) => {
+    const result = await request<UpdateCliGlobalEgressResult>("/api/cli/egress/route", {
       method: "PUT",
       body: JSON.stringify({ routeId })
-    }),
-  replaceCliEgressProfile: (profileId: CliVpnProfileId, config: string) =>
-    request<CliVpnConnection>(`/api/cli/egress/profiles/${encodeURIComponent(profileId)}`, {
+    });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  replaceCliEgressProfile: async (profileId: CliVpnProfileId, config: string) => {
+    const result = await request<CliVpnConnection>(`/api/cli/egress/profiles/${encodeURIComponent(profileId)}`, {
       method: "PUT",
       body: JSON.stringify({ config })
-    }),
-  verifyCliEgressProfile: (profileId: CliVpnProfileId) =>
-    request<CliVpnConnection>(`/api/cli/egress/profiles/${encodeURIComponent(profileId)}/verify`, {
+    });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  verifyCliEgressProfile: async (profileId: CliVpnProfileId) => {
+    const result = await request<CliVpnConnection>(`/api/cli/egress/profiles/${encodeURIComponent(profileId)}/verify`, {
       method: "POST",
       body: JSON.stringify({})
-    }),
-  removeCliEgressProfile: (profileId: CliVpnProfileId) =>
-    request<CliVpnConnection>(`/api/cli/egress/profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" }),
-  rotateCliMullvadCity: () =>
-    request<CliVpnConnection>("/api/cli/egress/profiles/mullvad/random-city", { method: "POST", body: JSON.stringify({}) }),
+    });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  removeCliEgressProfile: async (profileId: CliVpnProfileId) => {
+    const result = await request<CliVpnConnection>(`/api/cli/egress/profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  rotateCliMullvadCity: async () => {
+    const result = await request<CliVpnConnection>("/api/cli/egress/profiles/mullvad/random-city", { method: "POST", body: JSON.stringify({}) });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
   cliVpnRoutingStatus: () => request<CliVpnRoutingStatus>("/api/cli/vpn/routing-status"),
   cliVpnStatus: () => request<CliVpnConnection>("/api/cli/vpn"),
-  replaceCliVpnProfile: (config: string) =>
-    request<CliVpnConnection>("/api/cli/vpn/profile", {
+  replaceCliVpnProfile: async (config: string) => {
+    const result = await request<CliVpnConnection>("/api/cli/vpn/profile", {
       method: "PUT",
       body: JSON.stringify({ config })
-    }),
-  verifyCliVpnProfile: () =>
-    request<CliVpnConnection>("/api/cli/vpn/verify", {
+    });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  verifyCliVpnProfile: async () => {
+    const result = await request<CliVpnConnection>("/api/cli/vpn/verify", {
       method: "POST",
       body: JSON.stringify({})
-    }),
-  removeCliVpnProfile: () =>
-    request<CliVpnConnection>("/api/cli/vpn/profile", { method: "DELETE" }),
+    });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  removeCliVpnProfile: async () => {
+    const result = await request<CliVpnConnection>("/api/cli/vpn/profile", { method: "DELETE" });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
   appDiagnosticsStatus: () => request<AppDiagnosticsStatus>("/api/app-diagnostics"),
   updateAppDiagnosticsStatus: (isEnabled: boolean) =>
     request<AppDiagnosticsStatus>("/api/admin/app-diagnostics", {
@@ -1276,24 +1542,32 @@ export const api = {
       { method: "PATCH", body: JSON.stringify(input) }
     );
     invalidateCliRuntimes();
+    invalidateCliRuntimeSettings();
     return result;
   },
-  updateCliRuntimeVpn: (runtimeId: string, input: UpdateCliRuntimeVpnInput) =>
-    request<UpdateCliRuntimeVpnResult>(
+  updateCliRuntimeVpn: async (runtimeId: string, input: UpdateCliRuntimeVpnInput) => {
+    const result = await request<UpdateCliRuntimeVpnResult>(
       `/api/cli/runtime-settings/${encodeURIComponent(runtimeId)}/vpn`,
       { method: "PATCH", body: JSON.stringify(input) }
-    ),
-  restartCliRuntimeVpnSessions: (runtimeId: string) =>
-    request<RestartCliRuntimeVpnSessionsResult>(
+    );
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  restartCliRuntimeVpnSessions: async (runtimeId: string) => {
+    const result = await request<RestartCliRuntimeVpnSessionsResult>(
       `/api/cli/runtime-settings/${encodeURIComponent(runtimeId)}/vpn/restart-required`,
       { method: "POST", body: JSON.stringify({}) }
-    ),
+    );
+    invalidateCliRuntimeSettings();
+    return result;
+  },
   cliLogin: async (roomId: string, runtimeId: string) => {
     const result = await request<CliLoginResponse>(`/api/rooms/${encodeURIComponent(roomId)}/cli-login`, {
       method: "POST",
       body: JSON.stringify({ runtimeId })
     });
     invalidateCliRuntimes();
+    invalidateCliRuntimeSettings();
     return result;
   },
   codexCliModeDefaults: () => request<CodexCliModeDefaultsResponse>("/api/cli/codex-defaults"),
@@ -1307,10 +1581,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  activeCliSession: (paneId: string, options: { includeTranscript?: boolean } = {}) =>
-    request<PaneCliSessionResponse | null>(
-      `/api/panes/${encodeURIComponent(paneId)}/cli/session${options.includeTranscript === false ? "?includeTranscript=false" : ""}`
-    ),
+  activeCliSession: (
+    paneId: string,
+    options: { includeTranscript?: boolean; compactTranscript?: boolean } = {}
+  ) => loadActiveCliSession(paneId, options),
   cliModelSettings: (paneId: string) =>
     request<PaneCliModelSettings>(`/api/panes/${encodeURIComponent(paneId)}/cli/model-settings`),
   cliModelSettingsStatus: (paneId: string) =>
@@ -1354,7 +1628,7 @@ export const api = {
       headers: cliTerminalControlHeaders(paneId),
       body: JSON.stringify(input)
     }),
-  resumeCliSession: (paneId: string, input: { taskId: string }) =>
+  resumeCliSession: (paneId: string, input: { taskId: string } | { threadId: string }) =>
     request<ResumePaneCliSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/cli/resume`, {
       method: "POST",
       headers: cliTerminalControlHeaders(paneId),
@@ -1365,6 +1639,11 @@ export const api = {
       method: "POST",
       headers: cliTerminalControlHeaders(paneId),
       body: JSON.stringify(reason ? { reason } : {})
+    }),
+  abortCliTurn: (paneId: string) =>
+    request<{ ok: true; isTurnActive: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/cli/turn-abort`, {
+      method: "POST",
+      headers: cliTerminalControlHeaders(paneId)
     }),
   uploadCliFiles: (input: { paneId: string; source: PaneCliUploadSource; files: File[] }) => {
     const params = new URLSearchParams({ source: input.source });
@@ -1429,7 +1708,7 @@ export const api = {
   browserSession: (paneId: string) => request<PaneBrowserSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/browser/session`),
   startBrowserSession: (
     paneId: string,
-    input: { viewport?: BrowserSessionViewport; targetUrl?: string | null; ownerAgentId?: string | null } = {}
+    input: { viewport?: BrowserSessionViewport; targetUrl?: string | null; ownerAgentId?: string | null; streamMode?: BrowserStreamMode; includeInitialFrame?: boolean } = {}
   ) =>
     request<PaneBrowserSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/browser/session`, {
       method: "POST",

@@ -3,6 +3,7 @@ import {
   cliRuntimeDescriptors,
   findCliRuntimeDescriptor
 } from "../src/cli-runtime-descriptors.js";
+import { cliRunLifecycleAdapters } from "../src/cli-run-lifecycle-adapters.js";
 
 describe("CLI runtime descriptors", () => {
   it("requires verified credential observation and smoke support for all setup connections", () => {
@@ -45,6 +46,18 @@ describe("CLI runtime descriptors", () => {
       { id: "cli:cursor", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:copilot", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" }
     ]);
+  });
+
+  it("requires an explicit fail-closed run lifecycle adapter for every CLI descriptor", () => {
+    expect(cliRunLifecycleAdapters.map((adapter) => adapter.runtimeId)).toEqual(
+      cliRuntimeDescriptors.map((descriptor) => descriptor.id)
+    );
+    expect(cliRunLifecycleAdapters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ runtimeId: "cli:codex", completionStrategy: "CODEX_ROLLOUT" }),
+      expect.objectContaining({ runtimeId: "cli:opencode", completionStrategy: "OPENCODE_NATIVE_STATUS" }),
+      expect.objectContaining({ runtimeId: "cli:claude", completionStrategy: "UNAVAILABLE_FAIL_CLOSED" })
+    ]));
+    expect(cliRunLifecycleAdapters.every((adapter) => adapter.tracksRunStarts)).toBe(true);
   });
 
   it("defines OpenCode as the first setup connection with the free DeepSeek V4 Flash default model", () => {

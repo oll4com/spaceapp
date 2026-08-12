@@ -1,0 +1,451 @@
+.settings-action-menu {
+  position: fixed;
+  z-index: 260;
+  width: min(14rem, calc(100vw - 1rem));
+  min-width: 10rem;
+  display: grid;
+  gap: 0.15rem;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 8px;
+  background: var(--room-surface, #141617);
+  padding: 0.3rem;
+  box-shadow: 0 0.8rem 2.4rem rgba(0, 0, 0, 0.38);
+}
+
+.settings-action-menu[data-ui-theme="modern"] {
+  --room-surface: var(--modern-surface);
+  --room-surface-soft: var(--modern-accent-soft);
+  --room-border: var(--modern-border-strong);
+  --room-text: var(--modern-text);
+  --room-muted: var(--modern-muted);
+  --room-danger: var(--modern-danger);
+  --room-accent: var(--modern-accent);
+  color-scheme: inherit;
+}
+
+.settings-action-menu button {
+  min-width: 0;
+  min-height: 2.25rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--room-text, #f4efe5);
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+}
+
+.settings-action-menu button:hover:not(:disabled),
+.settings-action-menu button:focus-visible {
+  outline: 0;
+  background: var(--room-surface-soft, #202425);
+}
+
+.settings-action-menu button.is-danger {
+  color: var(--room-danger, #f0abb4);
+}
+
+.settings-action-menu button:disabled {
+  opacity: 0.42;
+}
+
+.settings-action-menu button svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.settings-action-menu-trigger {
+  flex: 0 0 auto;
+}
+
+.settings-flat-card,
+.provider-settings-card.settings-flat-card {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 0.55rem 0.65rem;
+}
+
+.settings-flat-card .settings-flat-heading,
+.settings-flat-heading {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  padding: 0.1rem 0 0.5rem;
+}
+
+.settings-flat-card .settings-flat-heading strong,
+.settings-flat-card .settings-flat-heading small {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.settings-flat-heading-actions {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
+.settings-flat-row,
+.settings-flat-card .settings-flat-row {
+  min-width: 0;
+  min-height: 2.7rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(7rem, 44%);
+  align-items: center;
+  gap: 0.65rem;
+  border-top: 1px solid var(--room-border, #303437);
+  border-radius: 0;
+  background: transparent;
+  padding: 0.45rem 0;
+}
+
+.settings-flat-row-copy {
+  min-width: 0;
+  display: grid;
+  gap: 0.12rem;
+}
+
+.settings-flat-row-copy > strong {
+  color: var(--room-text, #f4efe5);
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.settings-flat-row-copy > small {
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.settings-flat-card .settings-flat-row > select,
+.settings-flat-card .settings-flat-row > input:not([type="checkbox"]),
+.settings-flat-card .settings-flat-control {
+  min-width: 0;
+  width: 100%;
+  min-height: 2rem;
+}
+
+.settings-flat-toggle-row,
+.settings-flat-card .settings-flat-toggle-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.settings-flat-row.space-toggle .space-toggle-label {
+  color: var(--room-text, #f4efe5);
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.settings-flat-row.space-toggle .space-toggle-copy small {
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.settings-flat-subheading {
+  min-width: 0;
+  display: grid;
+  gap: 0.12rem;
+  border-top: 1px solid var(--room-border, #303437);
+  padding: 0.55rem 0 0.25rem;
+}
+
+.settings-flat-subheading strong {
+  color: var(--room-text, #f4efe5);
+  font-size: 0.74rem;
+}
+
+.settings-flat-subheading small,
+.settings-flat-note {
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.settings-flat-note {
+  margin: 0;
+  border-top: 1px solid var(--room-border, #303437);
+  padding-top: 0.5rem;
+}
+
+.settings-flat-card .empty-mini {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-flat-metrics {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--room-border, #303437);
+}
+
+.settings-flat-metrics > div {
+  min-width: 0;
+  display: grid;
+  gap: 0.12rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--room-border, #303437) 70%, transparent);
+  background: transparent;
+  padding: 0.45rem 0.2rem;
+}
+
+.settings-flat-metrics > div:nth-child(odd) {
+  padding-right: 0.55rem;
+}
+
+.settings-flat-metrics > div:nth-child(even) {
+  border-left: 1px solid color-mix(in srgb, var(--room-border, #303437) 70%, transparent);
+  padding-left: 0.55rem;
+}
+
+.settings-flat-metrics dt {
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.65rem;
+}
+
+.settings-flat-metrics dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--room-text, #f4efe5);
+  font-size: 0.74rem;
+  line-height: 1.3;
+}
+
+.settings-flat-card .validation-result,
+.settings-flat-card .source-control-feedback,
+.settings-flat-card .telegram-feedback,
+.settings-flat-card .cli-runtime-settings-error,
+.settings-flat-card .cli-runtime-settings-feedback {
+  margin-top: 0.45rem;
+}
+
+.telegram-integration-card.settings-flat-card {
+  gap: 0;
+}
+
+.telegram-status-panel.settings-flat-row {
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0.45rem 0;
+}
+
+.telegram-status-value {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.telegram-setup-guide,
+.telegram-pairing-panel {
+  border: 0;
+  border-top: 1px solid var(--room-border, #303437);
+  border-radius: 0;
+  background: transparent;
+  padding: 0.55rem 0;
+}
+
+.telegram-token-form {
+  border-top: 1px solid color-mix(in srgb, var(--room-border, #303437) 70%, transparent);
+  padding-top: 0.5rem;
+}
+
+.telegram-token-input-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2.2rem;
+  align-items: end;
+  gap: 0.4rem;
+}
+
+.telegram-token-submit {
+  width: 2.2rem;
+  min-height: 2.2rem;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+
+.telegram-token-submit svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.telegram-disconnect-confirmation {
+  margin-top: 0.45rem;
+}
+
+.cli-runtime-settings-card.settings-flat-card {
+  gap: 0;
+  padding: 0.55rem 0.65rem;
+}
+
+.cli-runtime-settings-card .cli-runtime-settings-title > span > strong {
+  font-size: 0.82rem;
+}
+
+.cli-vpn-profile.settings-flat-vpn {
+  gap: 0;
+  border: 0;
+  border-top: 1px solid var(--room-border, #303437);
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.settings-flat-vpn .cli-vpn-profile-heading {
+  padding: 0.5rem 0;
+}
+
+.settings-flat-vpn .cli-vpn-profile-details.settings-flat-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-flat-vpn .cli-egress-route-select.settings-flat-row {
+  gap: 0.65rem;
+}
+
+.settings-flat-vpn .cli-egress-profile-manager {
+  gap: 0;
+}
+
+.settings-flat-vpn .cli-egress-profile {
+  gap: 0;
+  border: 0;
+  border-top: 1px solid var(--room-border, #303437);
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.settings-flat-vpn .cli-egress-profile-title {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+}
+
+.settings-flat-vpn .cli-egress-profile-title > span:first-child {
+  color: inherit;
+}
+
+.settings-flat-vpn .cli-egress-profile-title .settings-flat-heading-actions > span {
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.64rem;
+}
+
+.settings-flat-vpn .cli-egress-profile-helper {
+  display: block;
+  border-top: 1px solid color-mix(in srgb, var(--room-border, #303437) 70%, transparent);
+  padding: 0.45rem 0;
+}
+
+.cli-vpn-remove-confirmation {
+  display: grid;
+  gap: 0.45rem;
+  border-top: 1px solid #714047;
+  padding: 0.5rem 0;
+  color: #f0abb4;
+  font-size: 0.7rem;
+}
+
+.cli-vpn-remove-confirmation p {
+  margin: 0;
+}
+
+.cli-vpn-remove-confirmation > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.cli-vpn-remove-confirmation .is-danger {
+  border-color: #714047;
+  color: #f0abb4;
+}
+
+.settings-flat-card .cli-runtime-settings-list {
+  gap: 0;
+  border-top: 1px solid var(--room-border, #303437);
+}
+
+.settings-flat-card .cli-runtime-settings-row {
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--room-border, #303437) 70%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 0.38rem 0;
+}
+
+.settings-flat-card .cli-runtime-settings-row.is-disabled {
+  background: color-mix(in srgb, var(--room-danger, #df6d68) 5%, transparent);
+}
+
+.settings-dock-title.settings-flat-dock-title {
+  gap: 0.5rem;
+  padding-bottom: 0.55rem;
+}
+
+.settings-dock-title.settings-flat-dock-title > svg {
+  width: 1.65rem;
+  height: 1.65rem;
+  border: 0;
+  background: transparent;
+  padding: 0.28rem;
+}
+
+.settings-dock-title.settings-flat-dock-title small {
+  white-space: normal;
+}
+
+.settings-flat-tool-list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  border-top: 1px solid var(--room-border, #303437);
+}
+
+.settings-flat-tool-list label,
+.settings-flat-tool-list label.selected {
+  min-height: 2.7rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--room-border, #303437) 70%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 0.45rem 0;
+}
+
+.settings-flat-tool-list label.selected > .space-toggle-copy {
+  color: var(--room-text, #f4efe5);
+  font-weight: 650;
+}
+
+@media (max-width: 420px) {
+  .settings-flat-row,
+  .settings-flat-card .settings-flat-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.35rem;
+  }
+
+  .settings-flat-toggle-row,
+  .settings-flat-card .settings-flat-toggle-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .settings-flat-card .settings-flat-row > select,
+  .settings-flat-card .settings-flat-row > input:not([type="checkbox"]),
+  .settings-flat-card .settings-flat-control {
+    width: 100%;
+  }
+}

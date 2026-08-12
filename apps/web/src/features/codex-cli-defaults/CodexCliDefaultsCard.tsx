@@ -134,11 +134,11 @@ export function CodexCliDefaultsCard({
 
   return (
     <section
-      className="agent-settings-card codex-cli-defaults-card"
+      className="agent-settings-card settings-flat-card codex-cli-defaults-card"
       aria-busy={isCodexEnabled && (loading || Boolean(savingMode))}
       aria-label="Codex CLI defaults"
     >
-      <div className="agent-settings-section-title">
+      <div className="agent-settings-section-title settings-flat-heading">
         <SlidersHorizontal aria-hidden="true" />
         <span>
           <strong>Codex CLI defaults</strong>
@@ -166,8 +166,8 @@ export function CodexCliDefaultsCard({
                 title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
               >
                 <legend>{modeLabel(mode)}</legend>
-                <label>
-                  <span>Model</span>
+                <label className="settings-flat-row">
+                  <span className="settings-flat-row-copy"><strong>Model</strong><small>{modeLabel(mode)} mode model.</small></span>
                   <select
                     aria-label={`${modeLabel(mode)} model`}
                     name={`codex-cli-${mode}-model`}
@@ -183,8 +183,8 @@ export function CodexCliDefaultsCard({
                     )}
                   </select>
                 </label>
-                <label>
-                  <span>Reasoning</span>
+                <label className="settings-flat-row">
+                  <span className="settings-flat-row-copy"><strong>Reasoning</strong><small>{modeLabel(mode)} mode effort.</small></span>
                   <select
                     aria-label={`${modeLabel(mode)} reasoning`}
                     name={`codex-cli-${mode}-reasoning`}
@@ -217,14 +217,14 @@ export function CodexCliDefaultsCard({
               title="Enable Codex in Settings"
             >
               <legend>{modeLabel(mode)}</legend>
-              <label>
-                <span>Model</span>
+              <label className="settings-flat-row">
+                <span className="settings-flat-row-copy"><strong>Model</strong><small>{modeLabel(mode)} mode model.</small></span>
                 <select aria-label={`${modeLabel(mode)} model`} value="" disabled>
                   <option value="">OFF</option>
                 </select>
               </label>
-              <label>
-                <span>Reasoning</span>
+              <label className="settings-flat-row">
+                <span className="settings-flat-row-copy"><strong>Reasoning</strong><small>{modeLabel(mode)} mode effort.</small></span>
                 <select aria-label={`${modeLabel(mode)} reasoning`} value="" disabled>
                   <option value="">OFF</option>
                 </select>

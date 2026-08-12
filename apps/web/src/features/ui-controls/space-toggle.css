@@ -1,0 +1,123 @@
+.space-toggle {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem;
+  color: var(--room-text, #e8e3da);
+  cursor: pointer;
+  font-size: 0.74rem;
+  font-weight: 650;
+}
+
+.space-toggle[data-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.space-toggle > input[type="checkbox"][role="switch"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.space-toggle-copy {
+  min-width: 0;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.space-toggle-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.space-toggle-copy small {
+  color: var(--room-muted, #77827f);
+  font-size: 0.66rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.space-toggle-control {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+
+.space-toggle-track {
+  width: 2.55rem;
+  height: 1.42rem;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 0.16rem;
+  border: 1px solid #46504d;
+  border-radius: 999px;
+  background: #252b29;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.16);
+  transition: border-color 150ms ease, background-color 150ms ease, box-shadow 150ms ease;
+}
+
+.space-toggle-thumb {
+  width: 0.98rem;
+  height: 0.98rem;
+  box-sizing: border-box;
+  display: block;
+  border-radius: 50%;
+  background: #a6afac;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  transition: transform 150ms ease, background-color 150ms ease;
+}
+
+.space-toggle-state {
+  min-width: 3.25rem;
+  color: #8f9996;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.055em;
+  line-height: 1;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.space-toggle:hover:not([data-disabled="true"]) .space-toggle-track {
+  border-color: #65716d;
+  background: #2d3532;
+}
+
+.space-toggle > input:checked ~ .space-toggle-control .space-toggle-track {
+  border-color: #55cbb4;
+  background: #236c5f;
+  box-shadow: 0 0 0 1px rgba(104, 215, 193, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.space-toggle > input:checked ~ .space-toggle-control .space-toggle-thumb {
+  transform: translateX(1.12rem);
+  background: #e1fff8;
+}
+
+.space-toggle > input:checked ~ .space-toggle-control .space-toggle-state {
+  color: #83e2cf;
+}
+
+.space-toggle > input:focus-visible ~ .space-toggle-control .space-toggle-track {
+  outline: 2px solid #9ce9da;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .space-toggle-track,
+  .space-toggle-thumb {
+    transition: none;
+  }
+}

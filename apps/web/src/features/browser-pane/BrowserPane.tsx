@@ -139,13 +139,15 @@ function isUnavailableV2Feature(error: unknown): boolean {
 const viewportOptions: Array<{ id: BrowserSessionViewport; label: string; title: string; Icon: typeof Monitor }> = [
   { id: "desktop", label: "PC", title: "PC view", Icon: Monitor },
   { id: "tablet", label: "Tablet", title: "Tablet view", Icon: Tablet },
-  { id: "mobile", label: "Mobile", title: "Mobile view", Icon: Smartphone }
+  { id: "mobile", label: "Mobile", title: "Mobile view", Icon: Smartphone },
+  { id: "wide", label: "Wide", title: "Widescreen view", Icon: Monitor }
 ];
 
 const viewportSizes: Record<BrowserSessionViewport, { width: number; height: number }> = {
   desktop: { width: 1440, height: 900 },
   tablet: { width: 834, height: 1112 },
-  mobile: { width: 390, height: 844 }
+  mobile: { width: 390, height: 844 },
+  wide: { width: 1280, height: 720 }
 };
 
 const browserInputAckTimeoutMs = 2_000;
@@ -1481,7 +1483,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const browserToolbar = usePersistentIconToolbar({
     actions: browserToolbarActions,
     hiddenStorageKey: browserToolbarStorageKeys.hidden,
-    orderStorageKey: browserToolbarStorageKeys.order
+    orderStorageKey: browserToolbarStorageKeys.order,
+    preserveUnknownActionIds: uiTheme === "modern"
   });
   useDismissibleToolbarLayer({
     containerRef: browserToolbarRef,

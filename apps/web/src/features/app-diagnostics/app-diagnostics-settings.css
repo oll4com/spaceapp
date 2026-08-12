@@ -4,6 +4,10 @@
   gap: 0.55rem;
 }
 
+.app-diagnostics-card.settings-flat-card {
+  gap: 0;
+}
+
 .app-diagnostics-card.is-enabled {
   border-color: color-mix(in srgb, var(--room-danger, #df6d68) 68%, var(--room-border, #343638));
 }
@@ -20,6 +24,10 @@
   margin: 0;
 }
 
+.app-diagnostics-metrics.settings-flat-metrics {
+  gap: 0;
+}
+
 .app-diagnostics-metrics > div {
   min-width: 0;
   display: grid;
@@ -28,6 +36,11 @@
   border-radius: 5px;
   background: var(--room-surface-soft, #151718);
   padding: 0.4rem 0.45rem;
+}
+
+.app-diagnostics-metrics.settings-flat-metrics > div {
+  border-radius: 0;
+  background: transparent;
 }
 
 .app-diagnostics-metrics dt {
@@ -63,6 +76,7 @@
   border-radius: 6px;
   background: var(--room-terminal-bg, #101112);
   padding: 0.65rem;
+  margin-top: 0.5rem;
 }
 
 .app-diagnostics-consent-heading {

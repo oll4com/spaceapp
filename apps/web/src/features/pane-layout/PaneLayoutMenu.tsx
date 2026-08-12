@@ -20,6 +20,7 @@ interface PaneLayoutMenuProps {
 
 const paneLayoutOptions: Array<{ label: string; value: PaneLayoutColumns }> = [
   { label: "Automatic", value: null },
+  { label: "Fullscreen", value: 0 },
   { label: "1 column", value: 1 },
   { label: "2 columns", value: 2 },
   { label: "3 columns", value: 3 },
@@ -32,6 +33,9 @@ function previewMetrics(
   maximumColumns: number,
   visiblePaneCount: number
 ) {
+  if (value === 0) {
+    return { columns: 1, rows: 1 };
+  }
   const requestedColumns = value ?? automaticColumns;
   const columns = Math.max(1, Math.min(requestedColumns, maximumColumns, Math.max(visiblePaneCount, 1)));
   return {
@@ -50,7 +54,8 @@ function visiblePaneLayoutOptions(
     ...option,
     metrics: previewMetrics(option.value, automaticColumns, maximumColumns, visiblePaneCount)
   }));
-  const signature = (option: (typeof options)[number]) => `${option.metrics.columns}x${option.metrics.rows}`;
+  const signature = (option: (typeof options)[number]) =>
+    option.value === 0 ? `fullscreen-${option.metrics.rows}` : `${option.metrics.columns}x${option.metrics.rows}`;
   const currentSignature = signature(options.find((option) => option.value === currentColumns) ?? options[0]!);
 
   return options.filter((option, index) => {
@@ -61,7 +66,9 @@ function visiblePaneLayoutOptions(
 }
 
 function optionAccessibleName(label: string, visiblePaneCount: number, rows: number) {
-  return `${label}, ${visiblePaneCount} visible pane${visiblePaneCount === 1 ? "" : "s"}, ${rows} row${rows === 1 ? "" : "s"}`;
+  return label === "Fullscreen"
+    ? `${label}, ${visiblePaneCount} visible pane${visiblePaneCount === 1 ? "" : "s"}, one at a time`
+    : `${label}, ${visiblePaneCount} visible pane${visiblePaneCount === 1 ? "" : "s"}, ${rows} row${rows === 1 ? "" : "s"}`;
 }
 
 export function PaneLayoutMenu({
@@ -151,8 +158,12 @@ export function PaneLayoutMenu({
               disabled={pending}
               onClick={() => onSelect(option.value)}
             >
-              <span className="pane-layout-preview" style={previewStyle} aria-hidden="true">
-                {Array.from({ length: visiblePaneCount }, (_, index) => (
+              <span
+                className={option.value === 0 ? "pane-layout-preview is-fullscreen" : "pane-layout-preview"}
+                style={previewStyle}
+                aria-hidden="true"
+              >
+                {Array.from({ length: option.value === 0 ? 1 : visiblePaneCount }, (_, index) => (
                   <span key={index} data-testid="pane-layout-preview-pane" />
                 ))}
               </span>

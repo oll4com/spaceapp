@@ -1,6 +1,6 @@
 import { BrainCircuit, Check, ChevronLeft } from "../ui-theme/app-icons.js";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { PaneCliModelSettings } from "@space/contracts";
+import type { AgentPaneModelProvider, PaneCliModelSettings } from "@space/contracts";
 
 const MODEL_POPOVER_MAX_HEIGHT_PX = 31 * 16;
 const MODEL_POPOVER_GAP_PX = 11;
@@ -22,9 +22,14 @@ function reasoningEffortLabel(value: string): string {
 
 export interface CodexModelPickerProps {
   settings: PaneCliModelSettings;
+  providers?: AgentPaneModelProvider[];
   disabled?: boolean;
   allowSelectionWithoutCurrent?: boolean;
-  onSwitch: (modelId: string, reasoningEffort: string) => Promise<{
+  onSwitch: (
+    modelId: string,
+    reasoningEffort: string,
+    providerId: string | null
+  ) => Promise<{
     current: NonNullable<PaneCliModelSettings["current"]>;
     message: string | null;
   }>;
@@ -32,6 +37,7 @@ export interface CodexModelPickerProps {
 
 export function CodexModelPicker({
   settings,
+  providers = [],
   disabled = false,
   allowSelectionWithoutCurrent = false,
   onSwitch
@@ -39,9 +45,14 @@ export function CodexModelPicker({
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [switching, setSwitching] = useState(false);
-  const [step, setStep] = useState<"models" | "reasoning">("models");
+  const [step, setStep] = useState<"providers" | "models" | "reasoning">("models");
   const [feedback, setFeedback] = useState<{ message: string; tone: "good" | "bad" } | null>(null);
-  const [draft, setDraft] = useState<{ modelId: string; reasoningEffort: string } | null>(null);
+  const [draft, setDraft] = useState<{
+    modelId: string;
+    reasoningEffort: string;
+    providerId: string | null;
+  } | null>(null);
+  const [activeProviderId, setActiveProviderId] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(settings.current);
   const [popoverMaxHeight, setPopoverMaxHeight] = useState<number | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -50,7 +61,13 @@ export function CodexModelPicker({
   const collapseTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const switchGenerationRef = useRef(0);
+  const hasProviders = providers.length > 1;
   const currentSettings = settings.current;
+  const currentProviderId = providers.find((provider) => provider.isCurrent)?.providerId ?? null;
+  const activeProvider = hasProviders
+    ? providers.find((provider) => provider.providerId === activeProviderId) ?? null
+    : null;
+  const pickerModels = activeProvider?.models ?? settings.models;
   const effectiveCurrent = confirmed ?? currentSettings;
   const effectiveCurrentRef = useRef(effectiveCurrent);
   effectiveCurrentRef.current = effectiveCurrent;
@@ -64,6 +81,10 @@ export function CodexModelPicker({
     collapseTimerRef.current = null;
   }
 
+  function resetSteps() {
+    setStep(hasProviders && activeProviderId === null ? "providers" : "models");
+  }
+
   function closeAndCollapse(restoreFocus: boolean) {
     switchGenerationRef.current += 1;
     clearCollapseTimer();
@@ -71,7 +92,7 @@ export function CodexModelPicker({
     setExpanded(false);
     setDraft(null);
     setFeedback(null);
-    setStep("models");
+    resetSteps();
     if (restoreFocus) triggerRef.current?.focus();
   }
 
@@ -82,7 +103,7 @@ export function CodexModelPicker({
     setExpanded(true);
     setDraft(null);
     setFeedback(null);
-    setStep("models");
+    resetSteps();
     triggerRef.current?.focus();
     collapseTimerRef.current = window.setTimeout(() => {
       collapseTimerRef.current = null;
@@ -106,8 +127,13 @@ export function CodexModelPicker({
   useEffect(() => {
     if (!open) return;
     const activeSettings = effectiveCurrentRef.current;
-    setDraft({ modelId: activeSettings?.modelId ?? "", reasoningEffort: activeSettings?.reasoningEffort ?? "" });
+    setDraft({
+      modelId: activeSettings?.modelId ?? "",
+      reasoningEffort: activeSettings?.reasoningEffort ?? "",
+      providerId: null
+    });
     setFeedback(null);
+    resetSteps();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -184,9 +210,9 @@ export function CodexModelPicker({
   }
 
   const current = effectiveCurrent ?? currentSettings;
-  const drafted = draft?.modelId ? draft : current;
+  const drafted = draft?.modelId ? draft : null;
   const draftedModel = drafted
-    ? settings.models.find((model) => model.id === drafted.modelId) ?? selectedModel
+    ? pickerModels.find((model) => model.id === drafted.modelId) ?? selectedModel
     : selectedModel;
   const reasoningOptions: Array<{ reasoningEffort: string; description?: string }> =
     draftedModel?.reasoningOptions ?? draftedModel?.supportedReasoningEfforts.map((reasoningEffort) => ({ reasoningEffort })) ?? [];
@@ -208,14 +234,24 @@ export function CodexModelPicker({
     return model.reasoningOptions ?? model.supportedReasoningEfforts.map((reasoningEffort) => ({ reasoningEffort })) ?? [];
   }
 
+  function selectProvider(providerId: string) {
+    setActiveProviderId(providerId);
+    setDraft(null);
+    setFeedback(null);
+    setStep("models");
+  }
+
   function selectModel(modelId: string, reasoningEffort: string) {
-    const target = settings.models.find((model) => model.id === modelId);
+    const providerId = hasProviders
+      ? (activeProvider?.providerId ?? currentProviderId)
+      : null;
+    const target = pickerModels.find((model) => model.id === modelId);
     if (target && modelReasoningOptions(target).length > 0) {
-      setDraft({ modelId, reasoningEffort });
+      setDraft({ modelId, reasoningEffort, providerId });
       setStep("reasoning");
       return;
     }
-    void apply(modelId, reasoningEffort);
+    void apply(modelId, reasoningEffort, providerId);
   }
 
   function backToModels() {
@@ -224,10 +260,17 @@ export function CodexModelPicker({
     setFeedback(null);
   }
 
-  async function apply(modelId: string, effort: string) {
+  function backToProviders() {
+    setDraft(null);
+    setStep("providers");
+    setFeedback(null);
+  }
+
+  async function apply(modelId: string, effort: string, providerId: string | null) {
     if (disabled || switching) return;
-    const selection = { modelId, reasoningEffort: effort };
-    if (current && modelId === current.modelId && effort === current.reasoningEffort) {
+    const selection = { modelId, reasoningEffort: effort, providerId };
+    const sameProvider = providerId === null || providerId === currentProviderId;
+    if (sameProvider && current && modelId === current.modelId && effort === current.reasoningEffort) {
       completeSelection(selection);
       return;
     }
@@ -236,7 +279,7 @@ export function CodexModelPicker({
     setSwitching(true);
     setFeedback(null);
     try {
-      const outcome = await onSwitch(modelId, effort);
+      const outcome = await onSwitch(modelId, effort, providerId);
       if (!mountedRef.current || switchGenerationRef.current !== generation) return;
       completeSelection(outcome.current);
     } catch (error) {
@@ -281,11 +324,51 @@ export function CodexModelPicker({
           aria-label="Codex model and reasoning"
           style={popoverMaxHeight === null ? undefined : { maxHeight: `${popoverMaxHeight}px` }}
         >
-          {step === "models" ? (
+          {step === "providers" ? (
             <>
               <div className="terminal-model-popover-head">
                 <div>
-                  <strong>Model</strong>
+                  <strong>Provider</strong>
+                  <small>Pick the model provider for this session</small>
+                </div>
+                <span className="terminal-model-transport">Live</span>
+              </div>
+              <div className="terminal-model-options" role="radiogroup" aria-label="Model provider">
+                {providers.map((provider) => {
+                  const selected = provider.providerId === (activeProvider?.providerId ?? currentProviderId);
+                  return (
+                    <button
+                      key={provider.providerId}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      className={selected ? "is-selected" : ""}
+                      disabled={disabled || switching || provider.models.length === 0}
+                      title={provider.statusReason ?? undefined}
+                      onClick={() => selectProvider(provider.providerId)}
+                    >
+                      <span>{provider.providerName}</span>
+                      {selected ? <Check className="terminal-model-selection-check" size={16} strokeWidth={2.5} aria-hidden="true" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          ) : step === "models" ? (
+            <>
+              <div className="terminal-model-popover-head">
+                {hasProviders ? (
+                  <button
+                    type="button"
+                    className="terminal-model-back"
+                    aria-label="Back to providers"
+                    onClick={backToProviders}
+                  >
+                    <ChevronLeft size={16} strokeWidth={2.5} aria-hidden="true" />
+                  </button>
+                ) : null}
+                <div>
+                  <strong>{activeProvider?.providerName ?? "Model"}</strong>
                   <small>
                     {settings.controlMode === "OPENCODE"
                       ? "Applies to subsequent turns in this session"
@@ -297,7 +380,7 @@ export function CodexModelPicker({
                 <span className="terminal-model-transport">Live</span>
               </div>
               <div className="terminal-model-options" role="radiogroup" aria-label="Model">
-                {settings.models.map((model) => {
+                {pickerModels.map((model) => {
                   const selected = model.id === drafted?.modelId;
                   const modelEffort =
                     model.id === current?.modelId && current
@@ -352,7 +435,11 @@ export function CodexModelPicker({
                           aria-checked={selected}
                           className={selected ? "is-selected" : ""}
                           disabled={disabled || switching}
-                          onClick={() => void apply(draftedModel?.id ?? drafted?.modelId ?? "", option.reasoningEffort)}
+                          onClick={() => void apply(
+                            draftedModel?.id ?? drafted?.modelId ?? "",
+                            option.reasoningEffort,
+                            drafted?.providerId ?? null
+                          )}
                         >
                           <span>{reasoningEffortLabel(option.reasoningEffort)}</span>
                           {option.description ? <small>{option.description}</small> : null}

@@ -1,4 +1,5 @@
 import {
+  CheckCircle2,
   Clipboard,
   Copy,
   GripVertical,
@@ -15,6 +16,7 @@ import { api } from "../../api.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import {
   SPACE_CLIPBOARD_ITEM_MIME,
+  SPACE_CLIPBOARD_ITEM_TITLE_MIME,
   SPACE_CLIPBOARD_UPDATED_EVENT,
   captureClipboardText,
   clipboardCharacterCount,
@@ -55,6 +57,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
   const [totalItems, setTotalItems] = useState(0);
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("ALL");
+  const [showCompleted, setShowCompleted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -73,6 +76,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
         ...(sourceFilter === "COPY" || sourceFilter === "PASTE" || sourceFilter === "PLANS"
           ? { source: sourceFilter === "PLANS" ? "PLAN" : sourceFilter }
           : {}),
+        includeCompleted: showCompleted,
         page: 1,
         pageSize: 100
       });
@@ -86,7 +90,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
     } finally {
       setLoading(false);
     }
-  }, [search, sourceFilter]);
+  }, [search, sourceFilter, showCompleted]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadItems(), 150);
@@ -156,6 +160,15 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
     }
   }
 
+  async function toggleCompleted(item: ClipboardItem) {
+    try {
+      await api.setClipboardItemCompleted(item.id, !item.isCompleted);
+      notifyClipboardUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The plan could not be updated.");
+    }
+  }
+
   async function clearAll() {
     if (!window.confirm("Clear all clipboard history for your account?")) return;
     try {
@@ -199,6 +212,10 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
                 {filter.label}
               </button>
             ))}
+            <button className={showCompleted ? "active" : ""} aria-pressed={showCompleted}
+              onClick={() => setShowCompleted((value) => !value)} aria-label="Show completed plans">
+              Completed
+            </button>
           </div>
         </div>
 
@@ -223,9 +240,10 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
             const expanded = expandedIds.has(item.id);
             const isLong = item.characterCount > 360;
             return (
-              <article className={`clipboard-card${item.source === "PLAN" ? " is-plan" : ""}`} role="listitem" key={item.id}>
+              <article className={`clipboard-card${item.source === "PLAN" ? " is-plan" : ""}${item.isCompleted ? " is-completed" : ""}`} role="listitem" key={item.id}>
                 <div className="clipboard-card-meta">
                   <strong className={item.source === "PLAN" ? "clipboard-source-plan" : undefined}>{sourceLabel(item.source)}</strong>
+                  {item.isCompleted ? <small className="clipboard-status-completed">Completed</small> : null}
                   <span>{item.paneTitle ?? "Space"} · {timeLabel(item.lastUsedAt)}</span>
                   {item.occurrenceCount > 1 ? <small>Used {item.occurrenceCount} times</small> : null}
                 </div>
@@ -245,9 +263,17 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
                     event.dataTransfer.effectAllowed = "copy";
                     event.dataTransfer.setData("text/plain", item.text);
                     event.dataTransfer.setData(SPACE_CLIPBOARD_ITEM_MIME, item.id);
+                    if (item.title) event.dataTransfer.setData(SPACE_CLIPBOARD_ITEM_TITLE_MIME, item.title);
                   }} aria-label="Drag clip"><GripVertical aria-hidden="true" /> Drag</button>
+                  {item.source === "PLAN" ? (
+                    <button className={item.isCompleted ? "is-completed" : ""} onClick={() => void toggleCompleted(item)}
+                      aria-label={item.isCompleted ? "Mark plan not completed" : "Mark plan completed"}>
+                      <CheckCircle2 aria-hidden="true" /> {item.isCompleted ? "Completed" : "Complete"}
+                    </button>
+                  ) : null}
                   <button disabled={!canInsert} onClick={() => onInsert(item)}
                     aria-label={`Insert into ${activePaneLabel ?? "active pane"}`}><Copy aria-hidden="true" /> Insert</button>
+                  <button onClick={() => void copyItem(item)} aria-label="Copy clip"><Copy aria-hidden="true" /></button>
                   <button onClick={() => void deleteItem(item)} aria-label="Delete clip"><Trash2 aria-hidden="true" /></button>
                 </div>
               </article>

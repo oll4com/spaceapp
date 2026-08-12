@@ -5,6 +5,7 @@ import type {
 import { CheckCircle2, GitBranch, Loader2, RefreshCw, Unplug } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api.js";
+import { SettingsActionMenu } from "../settings/SettingsActionMenu.js";
 import "./source-control-publishing.css";
 
 export interface SourceControlPublishingClient {
@@ -130,23 +131,23 @@ export function SourceControlPublishingCard({
   }
 
   return (
-    <section className="agent-settings-card source-control-publishing-card" aria-label="Source control publishing">
-      <div className="agent-settings-section-title source-control-publishing-title">
+    <section className="agent-settings-card settings-flat-card source-control-publishing-card" aria-label="Source control publishing">
+      <div className="agent-settings-section-title settings-flat-heading source-control-publishing-title">
         <GitBranch aria-hidden="true" />
         <span>
           <strong>Source control publishing</strong>
           <small>Protected credentials for fixed Gitea and GitHub repositories.</small>
         </span>
-        <button
-          type="button"
-          className="icon-action"
-          aria-label="Refresh source control publishing"
-          title="Refresh source control publishing"
+        <SettingsActionMenu
+          label="Source control publishing actions"
           disabled={loading || Boolean(pendingProvider)}
-          onClick={() => void load()}
-        >
-          {loading ? <Loader2 className="spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
-        </button>
+          actions={[{
+            id: "refresh",
+            label: "Refresh connections",
+            icon: RefreshCw,
+            onSelect: () => void load()
+          }]}
+        />
       </div>
 
       <div className="source-control-provider-list">
@@ -156,16 +157,39 @@ export function SourceControlPublishingCard({
           const connected = connection?.status === "CONNECTED";
           const pending = pendingProvider === provider;
           return (
-            <section className="source-control-provider" key={provider} aria-label={`${label} publishing connection`}>
+            <section className="source-control-provider settings-flat-provider" key={provider} aria-label={`${label} publishing connection`}>
               <div className="source-control-provider-heading">
                 <span>
                   <strong>{label}</strong>
                   <small>{connection ? `${connection.repositoryOwner}/${connection.repositoryName}` : "spaceapp-owner/spaceapp"}</small>
                 </span>
-                <span className={`source-control-status ${connection?.status.toLowerCase() ?? "disconnected"}`}>
-                  {connected ? <CheckCircle2 aria-hidden="true" /> : <Unplug aria-hidden="true" />}
-                  {connection?.status === "ERROR" ? "Error" : connected ? "Connected" : "Disconnected"}
-                </span>
+                <div className="settings-flat-heading-actions">
+                  <span className={`source-control-status ${connection?.status.toLowerCase() ?? "disconnected"}`}>
+                    {connected ? <CheckCircle2 aria-hidden="true" /> : <Unplug aria-hidden="true" />}
+                    {connection?.status === "ERROR" ? "Error" : connected ? "Connected" : "Disconnected"}
+                  </span>
+                  {connection?.secretConfigured ? (
+                    <SettingsActionMenu
+                      label={`${label} publishing actions`}
+                      disabled={Boolean(pendingProvider)}
+                      actions={[
+                        {
+                          id: "verify",
+                          label: `Verify ${label}`,
+                          icon: RefreshCw,
+                          onSelect: () => void verify(provider)
+                        },
+                        {
+                          id: "disconnect",
+                          label: `Disconnect ${label}`,
+                          icon: Unplug,
+                          danger: true,
+                          onSelect: () => setConfirmDisconnect(provider)
+                        }
+                      ]}
+                    />
+                  ) : null}
+                </div>
               </div>
 
               {connection?.secretConfigured ? (
@@ -191,48 +215,33 @@ export function SourceControlPublishingCard({
                     }}
                   />
                 </label>
-                <button type="submit" disabled={Boolean(pendingProvider) || tokens[provider].trim().length < 20}>
-                  {pending ? <Loader2 className="spin" aria-hidden="true" /> : null}
-                  {connected ? "Replace & verify" : "Save & verify"}
+                <button
+                  type="submit"
+                  aria-label={`${connected ? "Replace and verify" : "Save and verify"} ${label} credential`}
+                  title={connected ? "Replace and verify credential" : "Save and verify credential"}
+                  disabled={Boolean(pendingProvider) || tokens[provider].trim().length < 20}
+                >
+                  {pending ? <Loader2 className="spin" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
                 </button>
               </form>
 
-              {connection?.secretConfigured ? (
-                <div className="source-control-actions">
-                  <button
-                    type="button"
-                    aria-label={`Verify ${label} publishing`}
-                    disabled={Boolean(pendingProvider)}
-                    onClick={() => void verify(provider)}
-                  >
-                    Verify
-                  </button>
-                  {confirmDisconnect === provider ? (
-                    <>
-                      <button type="button" disabled={Boolean(pendingProvider)} onClick={() => setConfirmDisconnect(null)}>
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        className="is-danger"
-                        aria-label={`Confirm ${label} disconnect`}
-                        disabled={Boolean(pendingProvider)}
-                        onClick={() => void disconnect(provider)}
-                      >
-                        Confirm disconnect
-                      </button>
-                    </>
-                  ) : (
+              {confirmDisconnect === provider ? (
+                <div className="source-control-disconnect-confirmation" role="alertdialog" aria-label={`Confirm ${label} disconnect`}>
+                  <p>Remove the stored {label} publishing credential?</p>
+                  <div>
+                    <button type="button" disabled={Boolean(pendingProvider)} onClick={() => setConfirmDisconnect(null)}>
+                      Cancel
+                    </button>
                     <button
                       type="button"
                       className="is-danger"
-                      aria-label={`Disconnect ${label} publishing`}
+                      aria-label={`Confirm ${label} disconnect`}
                       disabled={Boolean(pendingProvider)}
-                      onClick={() => setConfirmDisconnect(provider)}
+                      onClick={() => void disconnect(provider)}
                     >
                       Disconnect
                     </button>
-                  )}
+                  </div>
                 </div>
               ) : null}
             </section>
@@ -242,7 +251,7 @@ export function SourceControlPublishingCard({
 
       {error ? <p className="source-control-feedback error" role="alert">{error}</p> : null}
       {feedback ? <p className="source-control-feedback success" role="status" aria-live="polite">{feedback}</p> : null}
-      <p className="settings-card-note">
+      <p className="settings-flat-note">
         Tokens are write-only: Space verifies them before storage and never returns them to the browser.
       </p>
     </section>

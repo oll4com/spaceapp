@@ -198,6 +198,7 @@ export interface StartBrowserSessionInput {
   targetUrl?: string | null;
   streamMode?: BrowserStreamMode;
   ownerAgentId?: string | null;
+  includeInitialFrame?: boolean;
   traceId: string;
 }
 
@@ -210,6 +211,7 @@ export interface BrowserSessionManager {
   action(pane: Pane, input: BrowserToolActionInput, traceId: string, context?: BrowserHostActorContext): Promise<BrowserToolActionResult>;
   captureFrame(sessionId: string): Promise<BrowserFrame>;
   stopPane(paneId: string, traceId?: string, context?: BrowserHostActorContext): Promise<void>;
+  stopDetached?(session: PaneBrowserSession): Promise<void>;
   stopRoom(roomId: string, traceId?: string, context?: BrowserHostActorContext): Promise<void>;
   closeAll(): Promise<void>;
   issueFrameTicket(paneId: string, sessionId: string, ttlMs: number): BrowserFrameToken;
@@ -249,7 +251,8 @@ export interface BrowserSessionManager {
 const viewportSizes: Record<BrowserSessionViewport, ViewportSize> = {
   mobile: { width: 390, height: 844, deviceScaleFactor: 2, mobile: true },
   tablet: { width: 834, height: 1112, deviceScaleFactor: 2, mobile: true },
-  desktop: { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }
+  desktop: { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false },
+  wide: { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false }
 };
 
 const displayBase = 100;
@@ -1728,7 +1731,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       if (!runtime.screencastActive) {
         await runtime.client.send(
           "Page.startScreencast",
-          { format: "jpeg", quality: 80, maxWidth: 1440, maxHeight: 1112, everyNthFrame: 1 },
+          { format: "jpeg", quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
           runtime.cdpSessionId
         );
         runtime.screencastActive = true;
@@ -1903,7 +1906,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     if (wasStreaming && runtime.streamSubscribers.size) {
       await runtime.client.send(
         "Page.startScreencast",
-        { format: "jpeg", quality: 80, maxWidth: 1440, maxHeight: 1112, everyNthFrame: 1 },
+        { format: "jpeg", quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
         runtime.cdpSessionId
       );
     }
@@ -2551,7 +2554,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       if (!session) {
         const prior = await store.getLatestPaneBrowserSession(input.pane.id);
         const restoreUrl =
-          prior && (prior.status === "CLOSED" || prior.status === "ERROR")
+          prior && (prior.status === "CLOSED" || prior.status === "ERROR") && input.pane.mode !== "YOUTUBE"
             ? (prior.currentUrl ?? prior.targetUrl)
             : null;
         const targetUrl = await assertSafeBrowserTargetUrl(
@@ -2594,7 +2597,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
           workerHeartbeatAt: nowIso()
         });
       }
-      return responseFor(session, true);
+      return responseFor(session, input.includeInitialFrame !== false);
     },
     async getActive(pane) {
       const session = await store.getActivePaneBrowserSession(pane.id);
@@ -2734,6 +2737,21 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     capacity: () => capacity.snapshot(),
     captureMetrics,
     stopPane: stopPaneById,
+    async stopDetached(session) {
+      const runtime = runtimes.get(session.sessionId);
+      runtimes.delete(session.sessionId);
+      capacity.releaseSession(session.sessionId);
+      capacity.releaseLive(`stream:${session.sessionId}`);
+      try {
+        runtime?.detachDiagnostics();
+        runtime?.client.close();
+      } catch {
+        // Best effort: process termination below is the authoritative cleanup.
+      }
+      if (runtime) await stopChromeBestEffort(runtime.process);
+      if (runtime?.xvfb) stopXvfbBestEffort(runtime.xvfb);
+      if (runtime?.display !== undefined) releaseDisplay(runtime.display);
+    },
     async stopRoom(roomId, traceId, context) {
       const sessions = await store.listActivePaneBrowserSessions(roomId);
       await Promise.all(sessions.map((session) => stopPaneById(session.paneId, traceId, context)));

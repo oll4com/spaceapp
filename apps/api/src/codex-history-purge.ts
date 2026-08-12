@@ -95,7 +95,11 @@ function runFixedCommand(
     child.on("error", (error) => finish(() => reject(error)));
     child.on("close", (code) => finish(() => {
       if (code === 0 && !stdoutExceeded && !stderrExceeded) resolve(stdout);
-      else reject(new Error("Codex history purge command failed."));
+      else {
+        const stderrDetail = stderr.trim().slice(0, 2_000);
+        const detail = `exit code ${code ?? "unknown"}${stderrDetail ? `: ${stderrDetail}` : ""}`;
+        reject(new Error(`Codex history purge command failed (${detail}).`));
+      }
     }));
     child.stdin.on("error", (error) => finish(() => reject(error)));
     child.stdin.end(input);
@@ -118,8 +122,9 @@ export function createCodexHistoryPurgeService(options: {
     try {
       const output = await runCommand(command, [action], JSON.stringify(input), { timeoutMs: options.timeoutMs });
       return parse(JSON.parse(output));
-    } catch {
-      throw new SpaceConflictError(options.failureMessage ?? unavailableMessage);
+    } catch (error) {
+      const detail = error instanceof Error ? ` ${error.message}` : "";
+      throw new SpaceConflictError(`${options.failureMessage ?? unavailableMessage}${detail}`);
     }
   }
 

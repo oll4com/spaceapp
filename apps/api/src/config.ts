@@ -80,7 +80,7 @@ export interface SpaceApiConfig {
   voiceTranscriptionEnabled: boolean;
   voiceTranscriptionBaseUrl: string;
   voiceTranscriptionKeyFile: string | null;
-  voiceTranscriptionModel: "gpt-realtime-whisper" | "gpt-4o-transcribe" | "gpt-4o-mini-transcribe" | "whisper-1";
+  voiceTranscriptionModel: "gpt-live-transcribe";
   voiceTranscriptionDelay: "minimal" | "low" | "medium" | "high" | "xhigh";
   voiceTranscriptionTimeoutMs: number;
   voiceTranscriptionMaxDurationMs: number;
@@ -111,6 +111,8 @@ export interface SpaceApiConfig {
   internalApiToken: string | null;
   apiRateLimitMax: number;
   telegramSecretRoot: string;
+  streamingSecretRoot: string;
+  streamingYoutubeDailyQuotaBudget: number;
   agentToolsWriterCommand: string | null;
 }
 
@@ -144,8 +146,9 @@ function parseMcpServerConfigs(raw: string | undefined): { configs: McpServerCon
 }
 
 function parseVoiceTranscriptionModel(raw: string | undefined): SpaceApiConfig["voiceTranscriptionModel"] {
-  if (raw === "gpt-4o-transcribe" || raw === "gpt-4o-mini-transcribe" || raw === "whisper-1") return raw;
-  return "gpt-realtime-whisper";
+  // All historical values intentionally migrate to the official live model.
+  void raw;
+  return "gpt-live-transcribe";
 }
 
 export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
@@ -259,6 +262,8 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     internalApiToken: env.SPACE_INTERNAL_API_TOKEN || null,
     apiRateLimitMax: Math.min(parsePositiveInt(env.SPACE_API_RATE_LIMIT_MAX, 3000), 20000),
     telegramSecretRoot: env.SPACE_TELEGRAM_SECRET_ROOT || "/opt/spaceapp/secrets/telegram",
+    streamingSecretRoot: env.SPACE_STREAMING_SECRET_ROOT || "/opt/spaceapp/var/streaming-secrets",
+    streamingYoutubeDailyQuotaBudget: Math.min(parsePositiveInt(env.SPACE_STREAMING_YOUTUBE_DAILY_QUOTA_BUDGET, 8000), 10000),
     agentToolsWriterCommand: env.SPACE_AGENT_TOOLS_WRITER || "/opt/spaceapp/bin/space-agent-tools-writer"
   };
 }
