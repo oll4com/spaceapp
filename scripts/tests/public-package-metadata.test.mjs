@@ -79,6 +79,7 @@ test("public test command uses a portable one-file suite that imports every publ
     .sort();
   const publicBuildOrder = [
     "@space/contracts",
+    "@space/opencode-control",
     "@space/memory-graph",
     "@space/browser-host",
     "@space/cli-host",
@@ -144,7 +145,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
 
   assert.deepEqual(publishable, [{
     name: "run-spaceapp",
-    version: "0.1.17",
+    version: "0.1.18",
     bin: {
       spaceapp: "bin/spaceapp.mjs",
       "run-spaceapp": "bin/spaceapp.mjs"
@@ -153,7 +154,7 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
   const launcherPackage = JSON.parse(
     await readFile(join(root, "packages", "run-spaceapp", "package.json"), "utf8")
   );
-  assert.equal(launcherPackage.spaceappRuntimeVersion, "0.1.17");
+  assert.equal(launcherPackage.spaceappRuntimeVersion, "0.1.18");
   assert.equal(launcherPackage.spaceappHostRootRuntimeCompatible, true);
   assert.deepEqual(launcherPackage.cpu, ["x64", "arm64"]);
   assert.equal(launcherPackage.publishConfig.tag, undefined);
