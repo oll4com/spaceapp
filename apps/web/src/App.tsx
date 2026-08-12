@@ -144,6 +144,12 @@ import type {
   AgentSessionHistoryItem
 } from "@space/contracts";
 import { paneCategoryColors, type PaneCategoryColor } from "@space/contracts";
+import {
+  nextCategoryColor,
+  readStoredCategoryFilter,
+  roomCategoryColors,
+  writeStoredCategoryFilter
+} from "./features/pane-category-color/room-filter.js";
 import { SpaceApiError, api, type McpPayload, type ReadyzPayload } from "./api.js";
 import {
   acknowledgePaneCompletion,
@@ -2340,6 +2346,7 @@ export function App() {
   const [displayedRoomId, setDisplayedRoomId] = useState<string | null>(selectedRoomId);
   const [preparingRoomId, setPreparingRoomId] = useState<string | null>(null);
   const [panes, setPanes] = useState<Pane[]>([]);
+  const [activeCategoryColorByRoom, setActiveCategoryColorByRoom] = useState<Record<string, PaneCategoryColor>>({});
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(() => readStoredSessionString(SELECTED_PANE_ID_STORAGE_KEY));
   const [shellMode, setShellMode] = useState<ShellMode>(() => detectUiThemeShellMode(readViewportWidth(), uiTheme));
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -4175,6 +4182,14 @@ export function App() {
   }, [selectedRoomId]);
 
   useEffect(() => {
+    if (!selectedRoomId) return;
+    const stored = readStoredCategoryFilter(selectedRoomId);
+    setActiveCategoryColorByRoom((current) =>
+      (current[selectedRoomId] ?? null) === stored ? current : { ...current, [selectedRoomId]: stored }
+    );
+  }, [selectedRoomId]);
+
+  useEffect(() => {
     try {
       if (selectedPaneId) runtime.platform.sessionStorage.setItem(SELECTED_PANE_ID_STORAGE_KEY, selectedPaneId);
       else runtime.platform.sessionStorage.removeItem(SELECTED_PANE_ID_STORAGE_KEY);
@@ -4748,6 +4763,26 @@ export function App() {
     await refreshRoomEvents(pane.roomId);
   }
 
+  const cycleRoomCategoryColor = useStableCallback((roomId: string, deltaY: number) => {
+    const colors = roomCategoryColors(panes.filter((pane) => pane.roomId === roomId));
+    const current = activeCategoryColorByRoom[roomId] ?? null;
+    const next = nextCategoryColor(current, colors, deltaY);
+    setActiveCategoryColorByRoom((currentMap) => {
+      if ((currentMap[roomId] ?? null) === next) return currentMap;
+      return { ...currentMap, [roomId]: next };
+    });
+    writeStoredCategoryFilter(roomId, next);
+    if (selectedRoomIdRef.current === roomId && next !== null) {
+      const filteredVisiblePanes = panes.filter(
+        (pane) => pane.roomId === roomId && !pane.isMinimized && pane.categoryColor === next
+      );
+      const currentSelectedPaneId = selectedPaneIdRef.current;
+      if (currentSelectedPaneId && !filteredVisiblePanes.some((pane) => pane.id === currentSelectedPaneId)) {
+        setSelectedPaneId(filteredVisiblePanes[0]?.id ?? null);
+      }
+    }
+  });
+
   async function minimizePane(pane: Pane) {
     setError(null);
     try {
@@ -4849,7 +4884,20 @@ export function App() {
   }
 
   const activeRoom = useMemo(() => rooms.find((room) => room.id === selectedRoomId) ?? null, [rooms, selectedRoomId]);
-  const visiblePanes = useMemo(() => panes.filter((pane) => !pane.isMinimized), [panes]);
+  const activeRoomCategoryFilter = useMemo(
+    () => (selectedRoomId ? (activeCategoryColorByRoom[selectedRoomId] ?? null) : null),
+    [selectedRoomId, activeCategoryColorByRoom]
+  );
+  const activeRoomCategoryColors = useMemo(
+    () => (activeRoom ? roomCategoryColors(panes.filter((pane) => pane.roomId === activeRoom.id)) : []),
+    [activeRoom, panes]
+  );
+  const visiblePanes = useMemo(() => {
+    const unfiltered = panes.filter((pane) => !pane.isMinimized);
+    return activeRoomCategoryFilter
+      ? unfiltered.filter((pane) => pane.categoryColor === activeRoomCategoryFilter)
+      : unfiltered;
+  }, [panes, activeRoomCategoryFilter]);
   const minimizedPanes = useMemo(() => panes.filter((pane) => pane.isMinimized), [panes]);
   const activePane = useMemo(
     () => visiblePanes.find((pane) => pane.id === selectedPaneId) ?? visiblePanes[0] ?? null,
@@ -5724,6 +5772,29 @@ export function App() {
         disabled: !activeRoom
       },
       {
+        id: "category-color-filter",
+        label: activeRoomCategoryFilter
+          ? `Filter panes by color: ${activeRoomCategoryFilter}`
+          : "Filter panes by color",
+        title: activeRoomCategoryFilter
+          ? `Filter panes by color: ${activeRoomCategoryFilter}. Scroll over the icon to cycle colors.`
+          : "Filter panes by color. Scroll over the icon to cycle colors.",
+        ariaLabel: activeRoomCategoryFilter
+          ? `Color filter: ${activeRoomCategoryFilter}`
+          : "Color filter: off",
+        icon: Palette,
+        onClick: () => {
+          if (activeRoom) cycleRoomCategoryColor(activeRoom.id, 1);
+        },
+        onWheel: (event) => {
+          event.preventDefault();
+          if (activeRoom) cycleRoomCategoryColor(activeRoom.id, event.deltaY);
+        },
+        ariaPressed: activeRoomCategoryFilter !== null,
+        hideable: true,
+        disabled: !activeRoom || activeRoomCategoryColors.length === 0
+      },
+      {
         id: "cli-floats",
         label: cliFloatsHidden ? "Show CLI floats" : "Hide CLI floats",
         title: cliFloatsHidden ? "Show CLI floats" : "Hide CLI floats",
@@ -5871,11 +5942,13 @@ export function App() {
     [
       activeRoom,
       isQuickLinksOpen,
-      activeSideSurface,
+      activeRoomCategoryColors,
+      activeRoomCategoryFilter,
       auth?.user?.role,
       captureRoomScreen,
       cliPaneCreationPending,
       cliFloatsHidden,
+      cycleRoomCategoryColor,
       isCompactShell,
       isCodexEnabled,
       isMemoryWorkspaceOpen,
@@ -6029,7 +6102,9 @@ export function App() {
                   : undefined
         }
         type="button"
-        className={action.className}
+        className={action.id === "category-color-filter"
+          ? `category-color-filter${activeRoomCategoryFilter ? " is-active" : ""}`
+          : action.className}
         onClick={() => {
           roomToolbar.closeMenus();
           if (action.id !== "theme") setIsThemeMenuOpen(false);
@@ -6047,6 +6122,8 @@ export function App() {
         aria-expanded={action.ariaExpanded}
         aria-haspopup={action.ariaHasPopup}
         aria-pressed={action.ariaPressed}
+        onWheel={action.onWheel}
+        data-category-color={action.id === "category-color-filter" ? (activeRoomCategoryFilter ?? undefined) : undefined}
         {...(action.dataSensitiveIgnore ? { "data-sensitive-ignore": "true" } : {})}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -6067,6 +6144,16 @@ export function App() {
         {...roomToolbar.getDragHandleProps(action)}
       >
         <Icon aria-hidden="true" />
+        {action.id === "category-color-filter" ? (
+          <span className="category-filter-dots" aria-hidden="true">
+            {activeRoomCategoryColors.map((color) => (
+              <i
+                key={color}
+                className={`category-swatch-dot ${color}${activeRoomCategoryFilter === color ? " active" : ""}`}
+              />
+            ))}
+          </span>
+        ) : null}
       </button>
     );
   };
@@ -6973,7 +7060,11 @@ export function App() {
     const layerSelectedPaneId = isActive ? selectedPaneId : cached?.selectedPaneId ?? null;
     const layerPaneLoadState = roomPaneLoadStates[roomId] ?? "loading";
     const layerRoom = rooms.find((room) => room.id === roomId) ?? null;
-    const layerVisiblePanes = layerPanes.filter((pane) => !pane.isMinimized);
+    const roomCategoryFilter = activeCategoryColorByRoom[roomId] ?? null;
+    const layerRenderPanes = roomCategoryFilter
+      ? layerPanes.filter((pane) => pane.categoryColor === roomCategoryFilter)
+      : layerPanes;
+    const layerVisiblePanes = layerRenderPanes.filter((pane) => !pane.isMinimized);
     const layerFullscreenLayout = layerRoom?.paneLayoutColumns === 0;
     const layerShellVisiblePaneIds = new Set(
       shellVisiblePaneIds(layerPanes, layerSelectedPaneId, shellMode, layerFullscreenLayout)
@@ -7012,10 +7103,10 @@ export function App() {
     const layerAgentNumberByPaneId = new Map(layerPanes.map((pane, index) => [pane.id, index + 1]));
     const bootstrappedPaneIds = new Set(cached?.bootstrappedPaneIds ?? []);
     const prefillReadyPaneIds = new Set(cached?.prefillReadyPaneIds ?? []);
-    const layerTerminalPrefillReady = layerPanes
+    const layerTerminalPrefillReady = layerRenderPanes
       .filter((pane) => pane.mode === "TERMINAL" && !pane.isMinimized)
       .every((pane) => prefillReadyPaneIds.has(pane.id));
-    const unorderedTerminalBootstrapPaneIds = layerPanes
+    const unorderedTerminalBootstrapPaneIds = layerRenderPanes
       .filter((pane) => pane.mode === "TERMINAL" && !pane.isMinimized)
       .map((pane) => pane.id);
     const priorityTerminalPaneId = layerActivePane?.mode === "TERMINAL" ? layerActivePane.id : null;
@@ -7068,6 +7159,11 @@ export function App() {
               Open CLI
             </button>
           </div>
+        ) : layerRenderPanes.length === 0 ? (
+          <div className="empty-state" role={isInteractive ? "status" : undefined}>
+            <Palette aria-hidden="true" />
+            <h3>No panes match this color</h3>
+          </div>
         ) : (
           <TerminalBootstrapBoundary paneIds={terminalBootstrapPaneIds}>
             {(terminalBootstrapBarriers) => (
@@ -7076,14 +7172,14 @@ export function App() {
                 className={layerHasMaximizedPane ? "pane-grid maximized" : "pane-grid"}
                 data-density={layerDensity}
                 data-shell-mode={shellMode}
-                data-pane-count={layerPanes.length}
+                data-pane-count={layerRenderPanes.length}
                 data-visible-pane-count={layerVisiblePaneCount}
                 data-column-count={layerColumnCount}
                 data-pane-layout-columns={layerRoom?.paneLayoutColumns ?? "automatic"}
                 data-fullscreen-layout={layerFullscreenLayout ? "true" : undefined}
                 style={{ gridTemplateColumns: `repeat(${layerColumnCount}, minmax(0, 1fr))` }}
               >
-                {layerPanes.map((pane) => {
+                {layerRenderPanes.map((pane) => {
                   const latestCompletion = layerLatestCompletionByPane.get(pane.id) ?? null;
                   const placement = layerPlacements.get(pane.id);
                   return (

@@ -5,6 +5,12 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-08-12
+
+- ship latest Space app source from /srv/space @ bfe12cdca6 (493 files, sanitized);
+- cross-platform installer for Windows, macOS, and Linux (npm run-spaceapp + GHCR images).
+
+
 ## [0.1.22] - 2026-08-12
 
 - ship latest Space app source from /srv/space @ 507bb2c132 (492 files, sanitized);

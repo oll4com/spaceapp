@@ -6,7 +6,8 @@ import {
   useState,
   type AriaAttributes,
   type DragEvent as ReactDragEvent,
-  type RefObject
+  type RefObject,
+  type WheelEvent as ReactWheelEvent
 } from "react";
 import { getSpaceRuntime } from "./runtime/SpaceRuntime.js";
 
@@ -33,6 +34,7 @@ export type IconToolbarAction = {
   draggable?: boolean;
   className?: string;
   dataSensitiveIgnore?: boolean;
+  onWheel?: (event: ReactWheelEvent<HTMLButtonElement>) => void;
 };
 
 const FINE_POINTER_QUERY = "(any-pointer: fine)";

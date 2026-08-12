@@ -23,6 +23,7 @@ const viewActionIds = new Set([
   "pane-layout",
   "pane-span-all",
   "theme",
+  "category-color-filter",
   "cli-floats",
   "sensitive-data",
   "font-down"
