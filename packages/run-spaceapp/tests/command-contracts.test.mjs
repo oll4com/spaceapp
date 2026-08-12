@@ -6,6 +6,12 @@ import { Readable, Writable } from "node:stream";
 import test from "node:test";
 import { run } from "../src/cli.mjs";
 
+const launcherManifest = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8")
+);
+const CURRENT_VERSION = launcherManifest.version;
+const RUNTIME_VERSION = launcherManifest.spaceappRuntimeVersion;
+
 function capture() {
   let value = "";
   const stream = new Writable({
@@ -55,19 +61,19 @@ test("init and the default update target the pinned runtime image version", asyn
   });
 
   let config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(config.version, "0.1.17");
+  assert.equal(config.version, CURRENT_VERSION);
   assert.match(
     await readFile(join(root, "runtime.env"), "utf8"),
-    /^SPACEAPP_IMAGE_TAG=0\.1\.17$/m
+    new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
   );
 
   assert.equal(await run(["update"], options), 0);
   config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(config.version, "0.1.17");
+  assert.equal(config.version, CURRENT_VERSION);
   assert.equal(config.previousVersion, null);
   assert.match(
     await readFile(join(root, "runtime.env"), "utf8"),
-    /^SPACEAPP_IMAGE_TAG=0\.1\.17$/m
+    new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
     "pull",
@@ -233,14 +239,14 @@ test("update and rollback persist version state only after both Docker operation
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.6", previousVersion: "0.1.17" }
+    { version: "0.1.6", previousVersion: CURRENT_VERSION }
   );
   assert.equal(await run(["rollback"], options), 0);
   assert.deepEqual(
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.17", previousVersion: "0.1.6" }
+    { version: CURRENT_VERSION, previousVersion: "0.1.6" }
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
     "pull",
@@ -249,7 +255,7 @@ test("update and rollback persist version state only after both Docker operation
     "--remove-orphans"
   ]);
   assert.match(stdout.value(), /Updated to SpaceApp 0\.1\.6/);
-  assert.match(stdout.value(), /Rolled back to SpaceApp 0\.1\.17/);
+  assert.match(stdout.value(), new RegExp(`Rolled back to SpaceApp ${CURRENT_VERSION}`));
 });
 
 test("doctor is read-only for installation configuration and generated runtime files", async () => {
