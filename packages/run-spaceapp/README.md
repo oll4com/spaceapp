@@ -35,7 +35,10 @@ open. SpaceApp waits for up to ten minutes and continues automatically when
 Docker is ready. If WSL2 requires one restart, SpaceApp registers a one-time
 resume and asks before scheduling it. Sign back in after Windows restarts; the
 same install continues automatically in Command Prompt without entering a
-second command.
+second command. Headless Windows sessions (SSH, CI services, session 0) also
+work: during image pulls the launcher switches Docker to a temporary
+credential-free config so Docker Desktop's graphical credential helper is never
+invoked outside an interactive logon.
 
 The launcher defaults to the `light` profile on every system. Run
 `npx --yes run-spaceapp@latest install --profile standard` explicitly when

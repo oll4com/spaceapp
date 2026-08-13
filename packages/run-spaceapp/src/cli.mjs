@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -67,6 +67,26 @@ const trustedEnvironmentNames = new Set([
   "SPACEAPP_OPEN_URL",
   "SPACEAPP_RESUME_SCRIPT_PATH"
 ]);
+
+export async function withHeadlessDockerConfig(platform, spec, run) {
+  if (platform !== "win32") {
+    return run(spec);
+  }
+  const configDir = await mkdtemp(join(tmpdir(), "spaceapp-docker-config-"));
+  await writeFile(
+    join(configDir, "config.json"),
+    JSON.stringify({ auths: {} }),
+    { mode: 0o600 }
+  );
+  try {
+    return await run({
+      ...spec,
+      args: ["--config", configDir, ...spec.args]
+    });
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+}
 
 export async function run(argv, {
   env = process.env,
@@ -180,6 +200,7 @@ export async function run(argv, {
       root,
       config,
       version: runtimeVersion,
+      platform,
       stdin,
       stdout,
       stderr,
@@ -197,7 +218,11 @@ export async function run(argv, {
       previousVersion: config.version
     };
     await writeRuntimeFiles(root, rollback);
-    const pullCode = await runtimeExecute(composeCommand("pull", root, { profile: rollback.profile, companionsEnabled: rollback.companionsEnabled }), { stdin, stdout, stderr });
+    const pullCode = await withHeadlessDockerConfig(
+      platform,
+      composeCommand("pull", root, { profile: rollback.profile, companionsEnabled: rollback.companionsEnabled }),
+      (pullSpec) => runtimeExecute(pullSpec, { stdin, stdout, stderr })
+    );
     if (pullCode !== 0) {
       await writeRuntimeFiles(root, config);
       return pullCode;
@@ -442,11 +467,15 @@ async function installCommand(args, {
         companionsEnabled,
         ...options
       });
-    const pullCode = await executeWithDockerDiagnostics(
-      execute,
+    const pullCode = await withHeadlessDockerConfig(
+      platform,
       stagedComposeCommand("pull"),
-      { stdin, stdout, stderr },
-      { platform, stderr }
+      (pullSpec) => executeWithDockerDiagnostics(
+        execute,
+        pullSpec,
+        { stdin, stdout, stderr },
+        { platform, stderr }
+      )
     );
     if (pullCode !== 0) return pullCode;
     runtimeMutationAttempted = true;
@@ -905,7 +934,7 @@ async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute
   });
 }
 
-async function updateCommand(args, { root, config, version, stdin, stdout, stderr, execute }) {
+async function updateCommand(args, { root, config, version, platform, stdin, stdout, stderr, execute }) {
   if (args.length > 1) {
     throw new Error(`Usage: ${UNIVERSAL_COMMAND} update [version]`);
   }
@@ -918,7 +947,11 @@ async function updateCommand(args, { root, config, version, stdin, stdout, stder
       previousVersion: config.version
     };
   await writeRuntimeFiles(root, updated);
-  const pullCode = await execute(composeCommand("pull", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }), { stdin, stdout, stderr });
+  const pullCode = await withHeadlessDockerConfig(
+    platform,
+    composeCommand("pull", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }),
+    (pullSpec) => execute(pullSpec, { stdin, stdout, stderr })
+  );
   if (pullCode !== 0) {
     await writeRuntimeFiles(root, config);
     return pullCode;
