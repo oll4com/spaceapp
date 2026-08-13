@@ -1,4 +1,4 @@
-import { ExternalLink, Pause, Play, Radio, RefreshCw, Volume2, X } from "../ui-theme/app-icons.js";
+import { ExternalLink, Pause, Play, Radio, RefreshCw, SkipBack, SkipForward, Square, Volume2, X, Youtube } from "../ui-theme/app-icons.js";
 import { createPortal } from "react-dom";
 import {
   useCallback,
@@ -9,7 +9,11 @@ import {
   type CSSProperties,
   type RefObject
 } from "react";
+import type { UserLink } from "@space/contracts";
+import { api } from "../../api.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
+import { USER_LINKS_UPDATED_EVENT } from "../user-links/UserLinks.js";
+import { createYouTubePlaylistPlayer, parseYouTubeLink, type YouTubePlaylistPlayer } from "./youtubePlaylistPlayer.js";
 import "./vibe-music.css";
 
 export const CODE_RADIO_PRIMARY_STREAM_URL = "https://coderadio-admin-v2.freecodecamp.org/listen/coderadio/radio.mp3";
@@ -17,9 +21,12 @@ export const CODE_RADIO_FALLBACK_STREAM_URL = "https://coderadio-admin-v2.freeco
 export const CODE_RADIO_METADATA_URL = "https://coderadio-admin-v2.freecodecamp.org/api/nowplaying_static/coderadio.json";
 export const CODE_RADIO_ATTRIBUTION_URL = "https://coderadio.freecodecamp.org/";
 export const VIBE_MUSIC_VOLUME_STORAGE_KEY = "space.vibeMusic.volume";
+export const VIBE_MUSIC_PLAYLIST_LINK_STORAGE_KEY = "space.vibeMusic.playlistLinkId";
 export const VIBE_MUSIC_PANEL_ID = "vibe-music-player";
+export const VIBE_MUSIC_YOUTUBE_STAGE_ID = "vibe-music-youtube-stage";
 
 const DEFAULT_VOLUME = 0.35;
+const MUSIC_LIBRARY_LINKS_PAGE_SIZE = 100;
 const METADATA_POLL_INTERVAL_MS = 30_000;
 const METADATA_RESPONSE_LIMIT_BYTES = 64 * 1024;
 const CONNECTION_TIMEOUT_MS = 12_000;
@@ -33,6 +40,10 @@ const MAX_TRACK_CODE_POINTS = 160;
 const STREAM_URLS = [CODE_RADIO_PRIMARY_STREAM_URL, CODE_RADIO_FALLBACK_STREAM_URL] as const;
 
 type PlaybackStatus = "idle" | "connecting" | "playing" | "unavailable";
+
+type PlaylistPlaybackStatus = "idle" | "connecting" | "playing" | "paused" | "unavailable" | "unsupported";
+
+type MusicSource = "radio" | "playlist";
 
 type VibeMusicPlayerProps = {
   mobile: boolean;
@@ -104,6 +115,26 @@ function persistVolume(volume: number, shouldPersist: boolean) {
   }
 }
 
+function readStoredPlaylistLinkId(shouldPersist: boolean): string | null {
+  if (!shouldPersist || typeof window === "undefined") return null;
+  try {
+    const stored = getSpaceRuntime().platform.localStorage.getItem(VIBE_MUSIC_PLAYLIST_LINK_STORAGE_KEY);
+    if (stored === null || stored.trim() === "") return null;
+    return stored.trim();
+  } catch {
+    return null;
+  }
+}
+
+function persistPlaylistLinkId(linkId: string, shouldPersist: boolean) {
+  if (!shouldPersist) return;
+  try {
+    getSpaceRuntime().platform.localStorage.setItem(VIBE_MUSIC_PLAYLIST_LINK_STORAGE_KEY, linkId);
+  } catch {
+    // Playlist selection persistence is best effort only.
+  }
+}
+
 async function readMetadataPayload(response: Response): Promise<unknown> {
   if (!response.ok) throw new Error("Code Radio metadata request failed.");
   const declaredLength = Number.parseInt(response.headers.get("content-length") ?? "", 10);
@@ -172,11 +203,23 @@ function statusLabel(status: PlaybackStatus): string {
   return "Paused";
 }
 
+function playlistStatusLabel(status: PlaylistPlaybackStatus): string {
+  if (status === "connecting") return "Connecting";
+  if (status === "playing") return "Playing";
+  if (status === "paused") return "Paused";
+  if (status === "unavailable") return "Unavailable";
+  if (status === "unsupported") return "Unsupported";
+  return "Stopped";
+}
+
 export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: shouldPersistVolume = true, roomTheme, triggerRef }: VibeMusicPlayerProps) {
   const runtime = getSpaceRuntime();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const primaryControlRef = useRef<HTMLButtonElement | null>(null);
+  const youtubeStageRef = useRef<HTMLDivElement | null>(null);
+  const youtubePlayerRef = useRef<YouTubePlaylistPlayer | null>(null);
+  const youtubeGenerationRef = useRef(0);
   const generationRef = useRef(0);
   const attemptIdRef = useRef(0);
   const activeAttemptCleanupRef = useRef<(() => void) | null>(null);
@@ -187,6 +230,14 @@ export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: sho
   const [track, setTrack] = useState("Track details appear after playback starts");
   const [volume, setVolume] = useState(() => readStoredVolume(shouldPersistVolume));
   const [position, setPosition] = useState<PanelPosition>({ left: VIEWPORT_MARGIN_PX, top: VIEWPORT_MARGIN_PX, ready: false });
+  const [source, setSource] = useState<MusicSource>("radio");
+  const [playlistStatus, setPlaylistStatus] = useState<PlaylistPlaybackStatus>("idle");
+  const [playlistTrack, setPlaylistTrack] = useState("Select a playlist to start listening");
+  const [playlistPosition, setPlaylistPosition] = useState<{ index: number; total: number } | null>(null);
+  const [hasPlaylistSession, setHasPlaylistSession] = useState(false);
+  const [musicLinks, setMusicLinks] = useState<UserLink[]>([]);
+  const [musicLinksLoading, setMusicLinksLoading] = useState(false);
+  const [selectedLinkId, setSelectedLinkId] = useState<string | null>(() => readStoredPlaylistLinkId(shouldPersistVolume));
 
   const disposeActiveAttempt = useCallback(() => {
     const cleanup = activeAttemptCleanupRef.current;
@@ -313,9 +364,136 @@ export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: sho
     connectAttemptRef.current(0, generation);
   }, []);
 
+  const stopPlaylist = useCallback(() => {
+    youtubeGenerationRef.current += 1;
+    youtubePlayerRef.current?.destroy();
+    youtubePlayerRef.current = null;
+    setHasPlaylistSession(false);
+    setPlaylistStatus("idle");
+    setPlaylistTrack("Select a playlist to start listening");
+    setPlaylistPosition(null);
+  }, []);
+
+  const startPlaylist = useCallback((link: UserLink) => {
+    const target = parseYouTubeLink(link.url);
+    setSelectedLinkId(link.id);
+    persistPlaylistLinkId(link.id, shouldPersistVolume);
+    youtubeGenerationRef.current += 1;
+    youtubePlayerRef.current?.destroy();
+    youtubePlayerRef.current = null;
+    setHasPlaylistSession(false);
+    if (!target) {
+      setPlaylistStatus("unsupported");
+      setPlaylistTrack("This link is not a YouTube playlist");
+      setPlaylistPosition(null);
+      return;
+    }
+    const stage = youtubeStageRef.current;
+    if (!stage) return;
+    const generation = youtubeGenerationRef.current;
+    setPlaylistStatus("connecting");
+    setPlaylistTrack("Loading playlist…");
+    setPlaylistPosition(null);
+    void createYouTubePlaylistPlayer(stage, target, {
+      onReady: () => {
+        if (generation !== youtubeGenerationRef.current) return;
+        youtubePlayerRef.current?.setVolume(volume);
+      },
+      onStateChange: (state) => {
+        if (generation !== youtubeGenerationRef.current) return;
+        const current = youtubePlayerRef.current?.getCurrent();
+        if (current?.title) setPlaylistTrack(current.title);
+        if (current) setPlaylistPosition({ index: current.index, total: current.total });
+        if (state === "playing") {
+          setPlaylistStatus("playing");
+        } else if (state === "paused") {
+          setPlaylistStatus("paused");
+        } else if (state === "ended") {
+          setPlaylistStatus("idle");
+          setPlaylistTrack("Playlist finished");
+        } else if (state === "buffering" || state === "unstarted" || state === "cued") {
+          setPlaylistStatus((currentStatus) => (currentStatus === "playing" ? currentStatus : "connecting"));
+        }
+      },
+      onError: () => {
+        if (generation !== youtubeGenerationRef.current) return;
+        const player = youtubePlayerRef.current;
+        if (!player) return;
+        const current = player.getCurrent();
+        if (target.kind === "playlist" || current.total > 1) {
+          player.next();
+          setPlaylistStatus("connecting");
+        } else {
+          setPlaylistStatus("unavailable");
+          setPlaylistTrack("YouTube playback is unavailable");
+        }
+      }
+    }).then((player) => {
+      if (generation !== youtubeGenerationRef.current) {
+        player.destroy();
+        return;
+      }
+      youtubePlayerRef.current = player;
+      setHasPlaylistSession(true);
+      player.setVolume(volume);
+    }).catch(() => {
+      if (generation !== youtubeGenerationRef.current) return;
+      setPlaylistStatus("unavailable");
+      setPlaylistTrack("YouTube playback is unavailable");
+    });
+  }, [shouldPersistVolume, volume]);
+
+  const togglePlaylistPlayback = useCallback(() => {
+    if (playlistStatus === "unavailable") {
+      const link = musicLinks.find((entry) => entry.id === selectedLinkId);
+      if (link) startPlaylist(link);
+      return;
+    }
+    const player = youtubePlayerRef.current;
+    if (!player) return;
+    if (playlistStatus === "playing") {
+      player.pause();
+      setPlaylistStatus("paused");
+    } else {
+      setPlaylistStatus("connecting");
+      player.play();
+    }
+  }, [musicLinks, playlistStatus, selectedLinkId, startPlaylist]);
+
+  const nextSong = useCallback(() => {
+    const player = youtubePlayerRef.current;
+    if (!player) return;
+    const current = player.getCurrent();
+    if (current.total <= 1) return;
+    setPlaylistStatus("connecting");
+    player.next();
+  }, []);
+
+  const previousSong = useCallback(() => {
+    const player = youtubePlayerRef.current;
+    if (!player) return;
+    setPlaylistStatus("connecting");
+    player.previous();
+  }, []);
+
+  const switchSource = useCallback((next: MusicSource) => {
+    if (next === source) return;
+    if (next === "radio") {
+      stopPlaylist();
+    } else {
+      disconnect();
+    }
+    setSource(next);
+  }, [disconnect, source, stopPlaylist]);
+
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;
   }, [volume]);
+
+  useEffect(() => {
+    if (source !== "playlist") return;
+    youtubePlayerRef.current?.setVolume(volume);
+  }, [source, volume]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -323,6 +501,9 @@ export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: sho
       wantsPlaybackRef.current = false;
       generationRef.current += 1;
       disposeActiveAttempt();
+      youtubeGenerationRef.current += 1;
+      youtubePlayerRef.current?.destroy();
+      youtubePlayerRef.current = null;
       if (!audio?.hasAttribute("src")) return;
       audio.pause();
       audio.removeAttribute("src");
@@ -366,6 +547,31 @@ export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: sho
       window.clearInterval(interval);
     };
   }, [runtime, status]);
+
+  useEffect(() => {
+    if (!open || source !== "playlist") return;
+    let disposed = false;
+
+    async function loadMusicLibraryLinks() {
+      setMusicLinksLoading(true);
+      try {
+        const result = await api.links({ page: 1, pageSize: MUSIC_LIBRARY_LINKS_PAGE_SIZE });
+        if (disposed) return;
+        setMusicLinks(result.data.filter((link) => link.category === "MUSIC_LIBRARY"));
+      } catch {
+        if (!disposed) setMusicLinks([]);
+      } finally {
+        if (!disposed) setMusicLinksLoading(false);
+      }
+    }
+
+    void loadMusicLibraryLinks();
+    window.addEventListener(USER_LINKS_UPDATED_EVENT, loadMusicLibraryLinks);
+    return () => {
+      disposed = true;
+      window.removeEventListener(USER_LINKS_UPDATED_EVENT, loadMusicLibraryLinks);
+    };
+  }, [open, source]);
 
   useLayoutEffect(() => {
     if (!open || mobile) return;
@@ -497,6 +703,11 @@ export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: sho
 
   const isActive = status === "connecting" || status === "playing";
   const controlLabel = status === "unavailable" ? "Retry Code Radio" : isActive ? "Pause Code Radio" : "Play Code Radio";
+  const playlistControlLabel = playlistStatus === "playing"
+    ? "Pause playlist"
+    : playlistStatus === "unavailable"
+      ? "Retry playlist"
+      : "Play playlist";
   const panelStyle: CSSProperties | undefined = mobile
     ? undefined
     : { left: `${position.left}px`, top: `${position.top}px`, visibility: position.ready ? "visible" : "hidden" };
@@ -515,30 +726,141 @@ export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: sho
     >
       <header className="vibe-music-header">
         <span className="vibe-music-heading"><Radio aria-hidden="true" /><strong>Vibe Music</strong></span>
+        <div className="vibe-music-source" role="group" aria-label="Music source">
+          <button
+            type="button"
+            className={source === "radio" ? "is-active" : undefined}
+            aria-pressed={source === "radio"}
+            onClick={() => switchSource("radio")}
+          >
+            <Radio aria-hidden="true" />Radio
+          </button>
+          <button
+            type="button"
+            className={source === "playlist" ? "is-active" : undefined}
+            aria-pressed={source === "playlist"}
+            onClick={() => switchSource("playlist")}
+          >
+            <Youtube aria-hidden="true" />Playlist
+          </button>
+        </div>
         <button type="button" className="vibe-music-close" aria-label="Close Vibe Music" onClick={() => onOpenChange(false)}>
           <X aria-hidden="true" />
         </button>
       </header>
       <div className="vibe-music-content">
-        <div className="vibe-music-now-playing">
-          <span>Now playing</span>
-          <strong data-testid="vibe-music-track">{track}</strong>
-        </div>
-        <div className="vibe-music-connection">
-          <span className="vibe-music-status-dot" data-status={status} aria-hidden="true" />
-          <span data-vibe-music-status={statusLabel(status)} role="status" aria-live="polite">{statusLabel(status)}</span>
-        </div>
-        {status === "unavailable" ? <p className="vibe-music-error" role="alert">Code Radio is unavailable</p> : null}
-        <button
-          ref={primaryControlRef}
-          type="button"
-          className="vibe-music-playback"
-          aria-label={controlLabel}
-          onClick={isActive ? disconnect : startPlayback}
-        >
-          {status === "unavailable" ? <RefreshCw aria-hidden="true" /> : isActive ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
-          <span>{status === "unavailable" ? "Retry" : isActive ? "Pause" : "Play"}</span>
-        </button>
+        {source === "radio" ? (
+          <div className="vibe-music-radio">
+            <div className="vibe-music-now-playing">
+              <span>Now playing</span>
+              <strong data-testid="vibe-music-track">{track}</strong>
+            </div>
+            <div className="vibe-music-connection">
+              <span className="vibe-music-status-dot" data-status={status} aria-hidden="true" />
+              <span data-vibe-music-status={statusLabel(status)} role="status" aria-live="polite">{statusLabel(status)}</span>
+            </div>
+            {status === "unavailable" ? <p className="vibe-music-error" role="alert">Code Radio is unavailable</p> : null}
+            <button
+              ref={primaryControlRef}
+              type="button"
+              className="vibe-music-playback"
+              aria-label={controlLabel}
+              onClick={isActive ? disconnect : startPlayback}
+            >
+              {status === "unavailable" ? <RefreshCw aria-hidden="true" /> : isActive ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
+              <span>{status === "unavailable" ? "Retry" : isActive ? "Pause" : "Play"}</span>
+            </button>
+            <a className="vibe-music-attribution" href={runtime.platform.resolveExternalResource(CODE_RADIO_ATTRIBUTION_URL) ?? "#"} target="_blank" rel="noreferrer">
+              freeCodeCamp Code Radio <ExternalLink aria-hidden="true" />
+            </a>
+          </div>
+        ) : (
+          <div className="vibe-music-playlist">
+            {playlistStatus === "unavailable" ? <p className="vibe-music-error" role="alert">YouTube playback is unavailable</p> : null}
+            {playlistStatus === "unsupported" ? <p className="vibe-music-error" role="alert">This link is not a YouTube playlist</p> : null}
+            <div className="vibe-music-now-playing">
+              <span>Now playing</span>
+              <strong data-testid="vibe-music-playlist-track">{playlistTrack}</strong>
+            </div>
+            <div className="vibe-music-connection">
+              <span className="vibe-music-status-dot" data-status={playlistStatus} aria-hidden="true" />
+              <span data-vibe-music-playlist-status={playlistStatusLabel(playlistStatus)} role="status" aria-live="polite">{playlistStatusLabel(playlistStatus)}</span>
+              {playlistPosition ? <span className="vibe-music-position">Track {playlistPosition.index} of {playlistPosition.total}</span> : null}
+            </div>
+            <div className="vibe-music-playlist-controls">
+              <button
+                ref={primaryControlRef}
+                type="button"
+                className="vibe-music-playback"
+                aria-label={playlistControlLabel}
+                disabled={!hasPlaylistSession && playlistStatus !== "unavailable"}
+                onClick={togglePlaylistPlayback}
+              >
+                {playlistStatus === "playing" ? <Pause aria-hidden="true" /> : playlistStatus === "unavailable" ? <RefreshCw aria-hidden="true" /> : <Play aria-hidden="true" />}
+                <span>{playlistStatus === "playing" ? "Pause" : playlistStatus === "unavailable" ? "Retry" : "Play"}</span>
+              </button>
+              <button
+                type="button"
+                className="vibe-music-skip"
+                aria-label="Next song"
+                disabled={!hasPlaylistSession}
+                onClick={nextSong}
+              >
+                <SkipForward aria-hidden="true" /><span>Next</span>
+              </button>
+              <button
+                type="button"
+                className="vibe-music-skip"
+                aria-label="Previous song"
+                disabled={!hasPlaylistSession}
+                onClick={previousSong}
+              >
+                <SkipBack aria-hidden="true" /><span>Previous</span>
+              </button>
+              <button
+                type="button"
+                className="vibe-music-stop"
+                aria-label="Stop playlist"
+                disabled={!hasPlaylistSession}
+                onClick={stopPlaylist}
+              >
+                <Square aria-hidden="true" /><span>Stop</span>
+              </button>
+            </div>
+            <div className="vibe-music-playlist-links">
+              <span className="vibe-music-playlist-links-label">Music library playlists</span>
+              {musicLinksLoading && musicLinks.length === 0 ? (
+                <p className="vibe-music-playlist-empty">Loading playlists…</p>
+              ) : null}
+              {!musicLinksLoading && musicLinks.length === 0 ? (
+                <p className="vibe-music-playlist-empty">No music library links yet. Mark a link as “Music library” in the Links dock to play it here.</p>
+              ) : null}
+              <ul className="vibe-music-playlist-list">
+                {musicLinks.map((link) => {
+                  const supported = parseYouTubeLink(link.url) !== null;
+                  const active = link.id === selectedLinkId;
+                  return (
+                    <li key={link.id} className={active ? "vibe-music-playlist-row is-active" : "vibe-music-playlist-row"}>
+                      <span className="vibe-music-playlist-title">{link.title}</span>
+                      {supported ? (
+                        <button
+                          type="button"
+                          className="vibe-music-playlist-play"
+                          aria-label={`Play ${link.title}`}
+                          onClick={() => startPlaylist(link)}
+                        >
+                          <Play aria-hidden="true" /><span>Play</span>
+                        </button>
+                      ) : (
+                        <span className="vibe-music-playlist-unsupported" title="Only YouTube playlist or video links are supported">Unsupported</span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          </div>
+        )}
         <label className="vibe-music-volume">
           <span><Volume2 aria-hidden="true" />Volume</span>
           <input
@@ -553,9 +875,6 @@ export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: sho
           />
           <output>{Math.round(volume * 100)}%</output>
         </label>
-        <a className="vibe-music-attribution" href={runtime.platform.resolveExternalResource(CODE_RADIO_ATTRIBUTION_URL) ?? "#"} target="_blank" rel="noreferrer">
-          freeCodeCamp Code Radio <ExternalLink aria-hidden="true" />
-        </a>
       </div>
     </section>
   ) : null;
@@ -563,6 +882,13 @@ export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: sho
   return (
     <>
       <audio ref={audioRef} data-vibe-music-audio="" preload="none" aria-hidden="true" />
+      <div
+        ref={youtubeStageRef}
+        id={VIBE_MUSIC_YOUTUBE_STAGE_ID}
+        className="vibe-music-youtube-stage"
+        aria-hidden="true"
+        tabIndex={-1}
+      />
       {panel
         ? createPortal(
             mobile

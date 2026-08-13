@@ -99,6 +99,8 @@ export const appIconMaterialSymbols = {
   "Settings2": "settings",
   "Shield": "shield",
   "ShieldAlert": "gpp_maybe",
+  "SkipBack": "arrow_back",
+  "SkipForward": "chevron_right",
   "ShieldCheck": "verified_user",
   "Shrink": "close_fullscreen",
   "SlidersHorizontal": "tune",

@@ -748,6 +748,17 @@ export function createDemoFixture(): DemoFixture {
       sortOrder: 0,
       createdAt: DEMO_FIXED_AT,
       updatedAt: DEMO_FIXED_AT
+    }, {
+      id: "link:demo-chill-mix",
+      title: "Demo Chill Mix",
+      description: "Sample music library playlist that stays locked in the demo sandbox.",
+      url: "https://www.youtube.com/playlist?list=PLdemo1234567890",
+      openMode: "EMBEDDED",
+      category: "MUSIC_LIBRARY",
+      isQuick: false,
+      sortOrder: 1,
+      createdAt: DEMO_FIXED_AT,
+      updatedAt: DEMO_FIXED_AT
     }],
     rooms,
     panes,

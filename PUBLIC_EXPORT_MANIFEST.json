@@ -1,8 +1,8 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "bfe12cdca617ed0b368a5a0a6b8c5cf9fd9432d2",
-  "fileCount": 493,
+  "sourceCommit": "b24ecc406b635b27e7d90f12f41d41fb43adaeab",
+  "fileCount": 494,
   "transformations": 50,
   "files": [
     {
@@ -667,9 +667,9 @@
     },
     {
       "path": "apps/web/server.mjs",
-      "sourceObjectId": "0ea9c0389d9940bf751a9af6506c442e7579a9d7",
-      "sha256": "6f5bad0268b13a0f8fd800021aeb99a30bf729a8e53853471a206e7020a6746e",
-      "size": 16523
+      "sourceObjectId": "d11b969f0705f3f49a7e6f4ddefdd691b1e590fc",
+      "sha256": "03823d9cf6f75dbe16b0aa51fedf9366a739596a2042cb4bb7f81ae49cbe66a6",
+      "size": 16571
     },
     {
       "path": "apps/web/src/App.tsx",
@@ -853,9 +853,9 @@
     },
     {
       "path": "apps/web/src/demo/demo-fixture.ts",
-      "sourceObjectId": "7b95e88732b61ad93415ca1796dfa0d57aea1f4d",
-      "sha256": "f3aa326747f4d37f9cfcadcd2e85b1ba76e938cbfb3dd1f462df216c35d7d50c",
-      "size": 49895
+      "sourceObjectId": "4519c5aca1c8bbaf2ddd0df77540fea486246be1",
+      "sha256": "1dbd7cf21bf4447dd68c1c0c3cf7bbb97a245660a5c8f935011269dcbd99da8f",
+      "size": 50294
     },
     {
       "path": "apps/web/src/demo/demo-runtime.ts",
@@ -1489,15 +1489,15 @@
     },
     {
       "path": "apps/web/src/features/ui-theme/app-icon-map.ts",
-      "sourceObjectId": "84513d7101e238c063dba145fc9e6f9520cda167",
-      "sha256": "e36f748d903f528d213789254c7003ea492a723fc59131684c189c683503621d",
-      "size": 3434
+      "sourceObjectId": "744889a56506f600eae74592d66aa6cb642f6c0b",
+      "sha256": "bb295c6b0ee6d12ea067d0bbd5e9840fd693d21980486841345d03d1e240e0d6",
+      "size": 3496
     },
     {
       "path": "apps/web/src/features/ui-theme/app-icons.tsx",
-      "sourceObjectId": "c04d6a14ba69358d8f8a6eeceb1c05142876394e",
-      "sha256": "249438092f93fa23764a1d2c1d26960b9e06ffae3dbf30fd56b5c9002960a80a",
-      "size": 11763
+      "sourceObjectId": "871f2b447ac3d326500d36c66e7e8a78876c5163",
+      "sha256": "11a30bb1bafab09c35f60889a3f6515c5f880a59a02f7f76a32db287ce54958b",
+      "size": 11918
     },
     {
       "path": "apps/web/src/features/ui-theme/material-symbol-paths.ts",
@@ -1531,15 +1531,21 @@
     },
     {
       "path": "apps/web/src/features/vibe-music/VibeMusicPlayer.tsx",
-      "sourceObjectId": "53d258c2c6c38fede027767bf41a5ae2bf49ee55",
-      "sha256": "c5431d735442ee148274db8fc4d90788e984578ae86a46c7124deca9f592ebb3",
-      "size": 22266
+      "sourceObjectId": "9edb6e0c9ec3296d13b11eec3d52ece1fea8c8b5",
+      "sha256": "ffde30ed63d84be68baa6d9dd5d8c9a37714e3539d268ae40a2e5847ffd13818",
+      "size": 35931
     },
     {
       "path": "apps/web/src/features/vibe-music/vibe-music.css",
-      "sourceObjectId": "eaf672e9192c6e7799d7cb89257d3f1b363a72f5",
-      "sha256": "f3ec5ac3619a35345e79c0b738a9e5a56cda2833c274c8125af472cd6872f181",
-      "size": 4284
+      "sourceObjectId": "b033fefa15d12a7cd6adfce5002c446b5fafd12d",
+      "sha256": "963d037c27c0da11ebb80d66b8d11e5d19bacff8d00abdf9e4ce77eebaccf907",
+      "size": 7898
+    },
+    {
+      "path": "apps/web/src/features/vibe-music/youtubePlaylistPlayer.ts",
+      "sourceObjectId": "1a2538e1e7cb1d40ea1b3a86ac60a67bb40c1115",
+      "sha256": "9299d13c67c0278d130f4a0aa0f5c093b426c8c2ce073688af76fb5e7bc561f6",
+      "size": 6695
     },
     {
       "path": "apps/web/src/features/voice-input/VoiceInputButton.tsx",
