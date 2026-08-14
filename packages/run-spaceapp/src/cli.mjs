@@ -82,6 +82,17 @@ const trustedEnvironmentNames = new Set([
   "SPACEAPP_RESUME_SCRIPT_PATH"
 ]);
 
+export function writeWindowsCredentialHint(platform, stderr) {
+  if (platform !== "win32") {
+    return;
+  }
+  stderr.write(
+    "If the failure above mentions Docker credentials (\"A specified logon session does not exist\"), " +
+    "Docker Desktop's credential helper requires an interactive Windows session. " +
+    `Run "${UNIVERSAL_COMMAND} install" from your desktop terminal (not SSH/CI), or open Docker Desktop and sign in once, then retry.\n`
+  );
+}
+
 export async function withHeadlessDockerConfig(platform, spec, run) {
   if (platform !== "win32") {
     return run(spec);
@@ -1078,6 +1089,7 @@ async function repairRuntime({ root, config, platform, stdin, stdout, stderr, ex
     (pullSpec) => execute(pullSpec, { stdin, stdout, stderr })
   );
   if (pullCode !== 0) {
+    writeWindowsCredentialHint(platform, stderr);
     return pullCode;
   }
   const upCode = await execute(
@@ -1127,6 +1139,7 @@ async function performUpdate({
       (pullSpec) => execute(pullSpec, { stdin, stdout, stderr })
     );
     if (pullCode !== 0) {
+      writeWindowsCredentialHint(platform, stderr);
       throw new Error(`Image pull failed with Docker exit ${pullCode}.`);
     }
     const upCode = await execute(
@@ -1848,12 +1861,70 @@ async function executeWithDockerDiagnostics(execute, spec, io, { platform, stder
 export async function readSecret(stdin, stdout, prompt, { mask = true } = {}) {
   stdout.write(prompt);
   if (!stdin.isTTY || typeof stdin.setRawMode !== "function") {
-    let value = "";
-    for await (const chunk of stdin) {
-      value += chunk;
-    }
+    // Non-TTY stdin (e.g. piped input on Windows through npx.cmd). Read only
+    // up to the first newline so an interactive console that reports non-TTY
+    // stdin still works: previously this drained the stream to EOF, so typing
+    // "y" + Enter looked frozen and a second keystroke produced "y\ny" and
+    // "Please answer y or n." loops. When the stream ends before a newline
+    // (fully piped answers), everything read is returned as-is so "y\nn\n"
+    // piped input still yields successive valid answers. Event listeners are
+    // used instead of the Readable async iterator because an abandoned
+    // iterator can destroy the stream, breaking the next prompt.
+    const value = await new Promise((resolve) => {
+      let answer = "";
+      const finish = (result) => {
+        cleanup();
+        resolve(result);
+      };
+      // Paused-mode reads: consume exactly one line from the buffer, leaving
+      // the rest (and the stream itself) intact for the next prompt.
+      const onReadable = () => {
+        let chunk;
+        while ((chunk = stdin.read()) !== null) {
+          for (const character of String(chunk)) {
+            if (character === "\r" || character === "\n") {
+              finish(answer);
+              return;
+            }
+            answer += character;
+          }
+        }
+      };
+      const onEnd = () => finish(answer);
+      const onClose = () => finish(answer);
+      const cleanup = () => {
+        stdin.off("readable", onReadable);
+        stdin.off("end", onEnd);
+        stdin.off("close", onClose);
+      };
+      if (typeof stdin.read === "function" && typeof stdin.on === "function") {
+        stdin.on("readable", onReadable);
+        stdin.once("end", onEnd);
+        stdin.once("close", onClose);
+        onReadable();
+      } else {
+        // Fallback for exotic streams without readable-mode support.
+        const iterator = stdin[Symbol.asyncIterator]();
+        (async () => {
+          for (;;) {
+            const step = await iterator.next();
+            if (step.done) {
+              finish(answer);
+              return;
+            }
+            for (const character of String(step.value)) {
+              if (character === "\r" || character === "\n") {
+                finish(answer);
+                return;
+              }
+              answer += character;
+            }
+          }
+        })().catch(() => finish(answer));
+      }
+    });
     stdout.write("\n");
-    return value.replace(/[\r\n]+$/, "");
+    return value;
   }
   stdin.setRawMode(true);
   stdin.resume();

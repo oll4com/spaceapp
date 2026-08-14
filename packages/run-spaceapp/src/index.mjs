@@ -173,11 +173,22 @@ export function upgradePath(sourceVersion, targetVersion) {
 
 export async function inspectSystemResources(root) {
   validateHome(root);
+  // Stat the nearest existing ancestor: on a clean Linux home the install
+  // root's parent (~/.config) may not exist yet, and statfs on a missing
+  // path throws ENOENT. Walking up guarantees a real mount point for the
+  // free-disk measurement.
   let target = root;
-  try {
-    await stat(target);
-  } catch {
-    target = dirname(root);
+  for (;;) {
+    try {
+      await stat(target);
+      break;
+    } catch {
+      const parent = dirname(target);
+      if (parent === target) {
+        break;
+      }
+      target = parent;
+    }
   }
   const fileSystem = await statfs(target);
   return {

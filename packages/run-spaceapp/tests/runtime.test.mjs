@@ -7,8 +7,20 @@ import {
   renderRuntimeEnv,
   renderWorkspaceCompose
 } from "../src/index.mjs";
+import { inspectSystemResources } from "../src/index.mjs";
 
 const home = resolve(tmpdir(), "spaceapp-home");
+test("inspectSystemResources walks up when the install root and its parent do not exist", async () => {
+  // Regression for the Linux clean-room finding: on a fresh Linux home the
+  // install root's parent (~/.config) does not exist yet, and statfs on a
+  // missing path threw ENOENT. The nearest existing ancestor must be used.
+  const missingRoot = resolve(tmpdir(), `spaceapp-missing-${process.pid}-${Date.now()}`, ".config", "spaceapp");
+  const resources = await inspectSystemResources(missingRoot);
+  assert.ok(Number.isFinite(resources.freeDiskBytes));
+  assert.ok(resources.freeDiskBytes > 0);
+  assert.ok(Number.isFinite(resources.cpuCount));
+  assert.ok(Number.isFinite(resources.totalMemoryBytes));
+});
 const config = {
   schemaVersion: 4,
   version: "0.1.0",

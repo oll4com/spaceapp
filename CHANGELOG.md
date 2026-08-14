@@ -5,6 +5,20 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.27] - 2026-08-14
+
+- fix(run-spaceapp): wizard answers on non-TTY stdin (Windows npx/PowerShell) are
+  read up to the first newline instead of draining the stream to EOF, so the
+  "y" confirmation no longer looks frozen and "Please answer y or n." loops are
+  gone;
+- fix(run-spaceapp): free-disk inspection stats the nearest existing ancestor,
+  so a clean Linux install without an existing ~/.config no longer crashes with
+  ENOENT;
+- fix(run-spaceapp): after a failed image pull on Windows, print an actionable
+  hint about Docker Desktop's credential helper requiring an interactive
+  Windows session (SSH/CI installs).
+
+
 ## [0.1.26] - 2026-08-14
 
 - ship latest Space app source from /etc/docs/space-src @ f918c46430 (498 files, sanitized);

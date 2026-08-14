@@ -383,3 +383,47 @@ test("a successful update marks the checkpoint verified and prunes older checkpo
   assert.ok(manifest.files.some((file) => file.path === "config.json"));
   assert.ok(manifest.files.some((file) => file.path.startsWith("secrets/")));
 });
+
+test("readSecret on non-TTY stdin stops at the first newline and keeps the stream alive", async () => {
+  // Regression for the Windows acceptance finding: on Windows the launcher
+  // often sees a non-TTY stdin (npx.cmd pipes it). The old non-TTY branch
+  // drained the stream to EOF, so an interactive "y" + Enter looked frozen
+  // and a second keystroke produced "y\ny" -> "Please answer y or n." loops.
+  const stdout = capture();
+  const queue = ["yes\r\n", "no\n", ""];
+  const stream = new Readable({
+    read() {
+      const answer = queue.shift();
+      if (answer === undefined) {
+        stream.push(null);
+      } else {
+        stream.push(answer);
+      }
+    }
+  });
+  // Non-TTY stream: no isTTY flag.
+
+  const first = await readSecret(stream, stdout.stream, "Q1? ", { mask: false });
+  assert.equal(first, "yes");
+  assert.equal(stream.destroyed, false);
+
+  const second = await readSecret(stream, stdout.stream, "Q2? ", { mask: false });
+  assert.equal(second, "no");
+  assert.equal(stream.destroyed, false);
+
+  const third = await readSecret(stream, stdout.stream, "Q3? ", { mask: false });
+  assert.equal(third, "");
+});
+
+test("readSecret on non-TTY stdin returns piped input without a trailing newline", async () => {
+  // Fully piped input without a newline (e.g. PowerShell: "y" | npx ...).
+  const stdout = capture();
+  const stream = new Readable({
+    read() {
+      stream.push("y");
+      stream.push(null);
+    }
+  });
+  const answer = await readSecret(stream, stdout.stream, "Q? ", { mask: false });
+  assert.equal(answer, "y");
+});
