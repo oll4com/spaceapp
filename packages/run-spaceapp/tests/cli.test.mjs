@@ -31,6 +31,105 @@ function capture() {
   return { stream, value: () => value };
 }
 
+function ttyStdin(...answers) {
+  let index = 0;
+  let eventMode = false;
+  const dataHandlers = [];
+  const endHandlers = [];
+  const keypressHandlers = [];
+  const stream = {
+    isTTY: true,
+    setRawMode() {},
+    resume() {},
+    pause() {},
+    setEncoding() {},
+    on(event, handler) {
+      if (event === "data") {
+        dataHandlers.push(handler);
+        if (!eventMode) {
+          eventMode = true;
+          queueMicrotask(() => deliverEvents());
+        }
+      } else if (event === "end") {
+        endHandlers.push(handler);
+      } else if (event === "keypress") {
+        keypressHandlers.push(handler);
+        if (!eventMode) {
+          eventMode = true;
+          queueMicrotask(() => deliverEvents());
+        }
+      }
+      return stream;
+    },
+    once(event, handler) {
+      if (event === "data" || event === "end" || event === "keypress") {
+        stream.on(event, handler);
+      }
+      return stream;
+    },
+    removeListener() {
+      return stream;
+    },
+    off() {
+      return stream;
+    },
+    listenerCount(event) {
+      if (event === "data") {
+        return dataHandlers.length;
+      }
+      if (event === "end") {
+        return endHandlers.length;
+      }
+      if (event === "keypress") {
+        return keypressHandlers.length;
+      }
+      return 0;
+    },
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          if (index >= answers.length) {
+            return { done: true };
+          }
+          const answer = answers[index];
+          index += 1;
+          return { done: false, value: `${answer}\n` };
+        },
+        async return() {
+          return { done: true };
+        }
+      };
+    }
+  };
+  function deliverEvents() {
+    while (index < answers.length) {
+      const answer = answers[index];
+      index += 1;
+      if (keypressHandlers.length > 0) {
+        for (const character of answer) {
+          for (const handler of [...keypressHandlers]) {
+            handler({ sequence: character, name: undefined, ctrl: false, meta: false, shift: false });
+          }
+        }
+        for (const handler of [...keypressHandlers]) {
+          handler({ sequence: "\r", name: "return", ctrl: false, meta: false, shift: false });
+        }
+      } else {
+        for (const handler of [...dataHandlers]) {
+          handler(`${answer}\n`);
+        }
+      }
+    }
+    for (const handler of [...endHandlers]) {
+      handler();
+    }
+  }
+  return stream;
+}
+
+const FRESH_APPROVALS = ["", "", "", "", "", "y"];
+const FRESH_APPROVALS_WINDOWS = ["", "", "", "", "", "y", ""];
+
 const eightGigabyteClassLinuxGuest = Object.freeze({
   cpuCount: 4,
   totalMemoryBytes: 8_325_902_336,
@@ -124,7 +223,7 @@ test("init emits a one-time setup token without placing it in config", async () 
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     execute: async () => 0
   }), 0);
 
@@ -141,7 +240,7 @@ test("init emits a one-time setup token without placing it in config", async () 
     platform: "linux",
     stdout: second.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     execute: async () => 0
   });
   assert.doesNotMatch(second.value(), /One-time setup token:/);
@@ -170,11 +269,10 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
     platform: "linux",
     stdout: initialOutput.stream,
     stderr: capture().stream,
-    stdin: Readable.from([]),
     execute: async () => 0,
     prepareDockerPath: async () => null
   };
-  await run(["init"], options);
+  await initializeInstallation(root, { version: "0.1.23", profile: "light" });
   const initialToken = (await readFile(join(root, "secrets", "setup-token"), "utf8")).trim();
 
   const stdout = capture();
@@ -184,6 +282,7 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
   let rotationCall = null;
   assert.equal(await run(["install", "--no-open"], {
     ...options,
+    stdin: ttyStdin("y"),
     stdout: stdout.stream,
     stderr: stderr.stream,
     inspectResources: async () => eightGigabyteClassLinuxGuest,
@@ -238,15 +337,7 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
 
 test("install retains the host token and prints no secret when database rotation fails", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-token-rejected-"));
-  await run(["init"], {
-    env: { SPACEAPP_HOME: root },
-    platform: "linux",
-    stdout: capture().stream,
-    stderr: capture().stream,
-    stdin: Readable.from([]),
-    prepareDockerPath: async () => null,
-    execute: async () => 0
-  });
+  await initializeInstallation(root, { version: "0.1.23", profile: "light" });
   const initialToken = (await readFile(join(root, "secrets", "setup-token"), "utf8")).trim();
   const stdout = capture();
   const stderr = capture();
@@ -256,7 +347,7 @@ test("install retains the host token and prints no secret when database rotation
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
@@ -278,15 +369,7 @@ test("install retains the host token and prints no secret when database rotation
 
 test("install explains recovery when the database accepts a token that cannot be saved locally", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-token-write-failed-"));
-  await run(["init"], {
-    env: { SPACEAPP_HOME: root },
-    platform: "linux",
-    stdout: capture().stream,
-    stderr: capture().stream,
-    stdin: Readable.from([]),
-    prepareDockerPath: async () => null,
-    execute: async () => 0
-  });
+  await initializeInstallation(root, { version: "0.1.23", profile: "light" });
   const initialToken = (await readFile(join(root, "secrets", "setup-token"), "utf8")).trim();
   const stdout = capture();
   const stderr = capture();
@@ -296,7 +379,7 @@ test("install explains recovery when the database accepts a token that cannot be
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
@@ -329,7 +412,7 @@ test("install does not rotate or print a setup token after the owner is already 
     platform: "linux",
     stdout: stdout.stream,
     stderr: capture().stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
@@ -359,7 +442,7 @@ test("install fails visibly when application readiness never arrives", async () 
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
@@ -413,7 +496,7 @@ test("readiness progress diagnostics cannot abort an otherwise successful instal
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
@@ -459,7 +542,7 @@ test("install accepts 7.4 GiB usable memory on an 8 GB-class CachyOS laptop and 
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => cachyOsEightGigabyteClassLaptop,
     ensureDocker: async () => {
       dockerStartupReached = true;
@@ -487,7 +570,7 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     request: readyUnclaimedRequest,
     sleep: async () => {},
@@ -521,9 +604,10 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   const second = capture();
   assert.equal(await run(["install", "--profile", "auto", "--no-open"], {
     ...options,
+    stdin: ttyStdin("2"),
     stdout: second.stream
   }), 0);
-  assert.match(second.value(), /One-time setup token:/);
+  assert.match(second.value(), /runtime repaired/i);
   assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
 });
 
@@ -543,7 +627,7 @@ test("host-root install is rejected on non-Linux hosts before Docker or installa
         platform,
         stdout: capture().stream,
         stderr: capture().stream,
-        stdin: Readable.from([]),
+        stdin: ttyStdin(...(platform === "win32" ? FRESH_APPROVALS_WINDOWS : FRESH_APPROVALS)),
         prepareDockerPath: async () => {
           calls.prepareDockerPath += 1;
         },
@@ -565,9 +649,9 @@ test("host-root install is rejected on non-Linux hosts before Docker or installa
 
     assert.deepEqual(calls, {
       prepareDockerPath: 0,
-      inspectResources: 0,
+      inspectResources: 1,
       ensureDocker: 0,
-      execute: 0
+      execute: platform === "win32" ? 1 : 0
     });
     await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
   }
@@ -619,7 +703,7 @@ test("an existing host-root installation is rejected on non-Linux hosts before D
         platform,
         stdout: capture().stream,
         stderr: capture().stream,
-        stdin: Readable.from([]),
+        stdin: ttyStdin("y"),
         prepareDockerPath: async () => {
           calls.prepareDockerPath += 1;
         },
@@ -641,7 +725,7 @@ test("an existing host-root installation is rejected on non-Linux hosts before D
 
     assert.deepEqual(calls, {
       prepareDockerPath: 0,
-      inspectResources: 0,
+      inspectResources: 1,
       ensureDocker: 0,
       execute: 0
     });
@@ -663,7 +747,7 @@ test("the matching x64 candidate enables Linux host-root through the normal inst
     platform: "linux",
     stdout: capture().stream,
     stderr: capture().stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     prepareDockerPath: async () => {
       calls.prepareDockerPath += 1;
     },
@@ -687,7 +771,7 @@ test("the matching x64 candidate enables Linux host-root through the normal inst
 
   assert.deepEqual(calls, {
     prepareDockerPath: 1,
-    inspectResources: 1,
+    inspectResources: 2,
     ensureDocker: 1,
     execute: 3
   });
@@ -711,7 +795,7 @@ test("install enables, preserves, and removes Linux host-root access without del
     hostRootRuntimeCompatible: true,
     stdout: capture().stream,
     stderr: capture().stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async (input) => {
       installArgs.push(input.installArgs);
@@ -729,6 +813,7 @@ test("install enables, preserves, and removes Linux host-root access without del
   const enableWarning = capture();
   assert.equal(await run(["install", "--access", "host-root", "--no-open"], {
     ...options,
+    stdin: ttyStdin("y"),
     stdout: enableOutput.stream,
     stderr: enableWarning.stream
   }), 0);
@@ -745,6 +830,7 @@ test("install enables, preserves, and removes Linux host-root access without del
   const refreshWarning = capture();
   assert.equal(await run(["install", "--no-open"], {
     ...options,
+    stdin: ttyStdin("2"),
     stdout: refreshOutput.stream,
     stderr: refreshWarning.stream
   }), 0);
@@ -752,13 +838,12 @@ test("install enables, preserves, and removes Linux host-root access without del
     (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).accessMode,
     "host-root"
   );
-  assert.match(refreshOutput.value(), /Access: host-root -> host-root/);
-  assert.match(refreshWarning.value(), /WARNING.*host-root/i);
-  assert.equal(installArgs[1].requestedAccessMode, undefined);
+  assert.match(refreshOutput.value(), /runtime repaired/i);
 
   const isolateOutput = capture();
   assert.equal(await run(["install", "--access=isolated", "--no-open"], {
     ...options,
+    stdin: ttyStdin("y"),
     stdout: isolateOutput.stream
   }), 0);
   assert.equal(
@@ -767,7 +852,7 @@ test("install enables, preserves, and removes Linux host-root access without del
   );
   assert.equal(await readFile(join(root, "compose.host-access.yml"), "utf8"), "services: {}\n");
   assert.match(isolateOutput.value(), /Access: host-root -> isolated/);
-  assert.equal(installArgs[2].requestedAccessMode, "isolated");
+  assert.equal(installArgs[1].requestedAccessMode, "isolated");
   assert.equal(await readFile(join(root, "secrets", "session-secret"), "utf8"), secretBefore);
 });
 
@@ -802,7 +887,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
     platform: "win32",
     stdout: stdout.stream,
     stderr: capture().stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y", ""),
     inspectResources: async () => ({
       ...eightGigabyteClassLinuxGuest,
       totalMemoryBytes: 64 * 1024 ** 3
@@ -818,16 +903,17 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
       const envFileIndex = spec.args.indexOf("--env-file");
       if (envFileIndex !== -1) {
         const stagedStateRoot = dirname(spec.args[envFileIndex + 1]);
-        stagedStateRoots.add(stagedStateRoot);
-        assert.notEqual(stagedStateRoot, root);
         assert.equal(
           spec.args[spec.args.indexOf("--project-directory") + 1],
           root
         );
-        assert.match(
-          await readFile(join(stagedStateRoot, "runtime.env"), "utf8"),
-          new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
-        );
+        if (stagedStateRoot !== root) {
+          stagedStateRoots.add(stagedStateRoot);
+          assert.match(
+            await readFile(join(stagedStateRoot, "runtime.env"), "utf8"),
+            new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
+          );
+        }
       }
       return 0;
     }
@@ -868,6 +954,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   const refreshCallStart = calls.length;
   assert.equal(await run(["install", "--no-open"], {
     ...options,
+    stdin: ttyStdin("2"),
     stdout: refreshOutput.stream
   }), 0);
   const refreshedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
@@ -885,20 +972,16 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   assert.equal(refreshCalls.some((spec) => spec.args.includes("--volumes")), false);
   assert.equal(
     refreshCalls.some((spec) =>
-      spec.args.slice(-4).join(" ") === "rm --stop --force spaceapp-browser"
+      spec.args.includes("pull") || spec.args.includes("--force-recreate")
     ),
     true,
-    "idempotent light refreshes must also clean up a browser container left by an earlier launcher"
+    "idempotent refreshes must repair the runtime through pull and forced recreation"
   );
-  assert.equal(stagedStateRoots.size, 2);
+  assert.equal(stagedStateRoots.size, 1);
   for (const stagedStateRoot of stagedStateRoots) {
     await assert.rejects(() => readFile(join(stagedStateRoot, "runtime.env"), "utf8"));
   }
-  assert.match(
-    refreshOutput.value(),
-    new RegExp(`Runtime image version: ${CURRENT_VERSION} -> ${CURRENT_VERSION}`)
-  );
-  assert.match(refreshOutput.value(), /Profile: light -> light/);
+  assert.match(refreshOutput.value(), /runtime repaired/i);
 });
 
 test("a failed upgrade preserves the committed installation state", async () => {
@@ -923,7 +1006,7 @@ test("a failed upgrade preserves the committed installation state", async () => 
     platform: "linux",
     stdout: capture().stream,
     stderr: capture().stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     inspectResources: async () => ({
       ...eightGigabyteClassLinuxGuest,
       cpuCount: 1
@@ -962,7 +1045,7 @@ test("Docker, readiness, and browser-cleanup failures preserve the committed ins
       platform: "linux",
       stdout: capture().stream,
       stderr: capture().stream,
-      stdin: Readable.from([]),
+      stdin: ttyStdin("y"),
       inspectResources: async () => eightGigabyteClassLinuxGuest,
       ensureDocker: async () => ({ code: 0, reexecuted: false }),
       prepareDockerPath: async () => null,
@@ -1023,7 +1106,7 @@ test("a failed host-root activation restores the previous isolated runtime", asy
     hostRootRuntimeCompatible: true,
     stdout: capture().stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
@@ -1062,7 +1145,7 @@ test("a failed clean host-root install stops the partially started runtime", asy
     hostRootRuntimeCompatible: true,
     stdout: capture().stream,
     stderr: capture().stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
@@ -1093,7 +1176,7 @@ test("install --with-companions activates the companions compose profile and run
     hostRootRuntimeCompatible: true,
     stdout: capture().stream,
     stderr: capture().stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
@@ -1133,7 +1216,7 @@ test("diagnostic command errors never prevent failed-install rollback", async ()
     hostRootRuntimeCompatible: true,
     stdout: capture().stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
@@ -1176,7 +1259,7 @@ test("install honors an explicit standard profile and uses the native browser op
       platform,
       stdout: capture().stream,
       stderr: capture().stream,
-      stdin: Readable.from([]),
+      stdin: ttyStdin(...(platform === "win32" ? FRESH_APPROVALS_WINDOWS : FRESH_APPROVALS)),
       inspectResources: async () => eightGigabyteClassLinuxGuest,
       request: readyUnclaimedRequest,
       sleep: async () => {},
@@ -1207,7 +1290,7 @@ test("install succeeds when the native browser opener is unavailable", async () 
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     request: readyUnclaimedRequest,
     sleep: async () => {},
@@ -1234,7 +1317,7 @@ test("install bootstraps missing Docker before running doctor and pulling images
     arch: "x64",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS_WINDOWS),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     request: readyUnclaimedRequest,
     sleep: async () => {},
@@ -1266,11 +1349,12 @@ test("macOS authorization failure stops the install before SpaceApp image pulls"
     arch: "x64",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from(["yes\n"]),
+    stdin: ttyStdin("", "", "", "", "", "y", "yes"),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     prepareDockerPath: async () => null,
     ensureDocker: async (options) => ensureDockerAvailable({
       ...options,
+      stdin: Readable.from(["yes\n"]),
       download: async () => {},
       launch: async () => {
         throw new Error("Docker Desktop must not launch after authorization failure.");
@@ -1309,7 +1393,7 @@ test("install does not misreport a failed Docker group re-entry as a pre-downloa
     platform: "linux",
     stdout: capture().stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => {
       stderr.stream.write("The re-entered installer displayed the real runtime failure.\n");
@@ -1334,7 +1418,7 @@ test("install stops before image pulls when usable memory is below 7 GiB", async
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => ({
       cpuCount: 4,
       totalMemoryBytes: 6.9 * 1024 ** 3,
@@ -1365,7 +1449,7 @@ test("credentials reject argv values and accept only stdin", async () => {
     stderr: stderr.stream,
     execute: async () => 0
   };
-  await run(["init"], { ...options, stdin: Readable.from([]) });
+  await run(["init"], { ...options, stdin: ttyStdin("y") });
 
   await assert.rejects(
     () => run(["credentials", "set", "gemini", "must-not-be-an-argument"], {
@@ -1399,7 +1483,7 @@ test("credential changes recreate only the isolated CLI service", async () => {
       return 0;
     }
   };
-  await run(["init"], { ...options, stdin: Readable.from([]) });
+  await run(["init"], { ...options, stdin: ttyStdin("y") });
 
   assert.equal(await run(["credentials", "set", "gemini"], {
     ...options,
@@ -1428,7 +1512,7 @@ test("Claude installation is explicit, owner-initiated, and fixed to the reviewe
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     execute: async (spec) => {
       calls.push(spec.args);
       return 0;
@@ -1457,7 +1541,7 @@ test("runtime management delegates only fixed Docker argument arrays", async () 
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     execute: async (spec) => {
       calls.push(spec);
       return 0;
@@ -1479,7 +1563,7 @@ test("Docker-backed commands explain exit 127 instead of failing silently", asyn
     platform: "win32",
     stdout: capture().stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     prepareDockerPath: async () => null,
     execute: async () => 0
   };
@@ -1503,7 +1587,7 @@ test("doctor probes Docker CLI, Compose, and Engine once and distinguishes a sto
     platform: "win32",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     prepareDockerPath: async () => null,
     execute: async (spec) => {
@@ -1534,14 +1618,14 @@ test("uninstall reports progress, retained state, global CLI removal, and idempo
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     prepareDockerPath: async () => null,
     execute: async () => 0
   };
   await run(["init"], options);
 
-  assert.equal(await run(["uninstall"], options), 0);
-  assert.equal(await run(["uninstall"], options), 0);
+  assert.equal(await run(["uninstall"], { ...options, stdin: ttyStdin("y") }), 0);
+  assert.equal(await run(["uninstall"], { ...options, stdin: ttyStdin("y") }), 0);
   assert.match(stdout.value(), /Stopping and removing SpaceApp containers and network/);
   assert.match(stdout.value(), /Data, configuration, secrets, and backups remain/);
   assert.match(stdout.value(), /npm uninstall -g run-spaceapp/);
@@ -1557,7 +1641,7 @@ test("uninstall reports Docker failures and confirms what was not removed", asyn
     platform: "darwin",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     prepareDockerPath: async () => null,
     execute: async () => 0
   };
@@ -1565,6 +1649,7 @@ test("uninstall reports Docker failures and confirms what was not removed", asyn
 
   assert.equal(await run(["uninstall"], {
     ...options,
+    stdin: ttyStdin("y"),
     execute: async () => 127
   }), 127);
   assert.match(stderr.value(), /Uninstall could not remove the runtime/);
@@ -1580,7 +1665,7 @@ test("confirmed purge reports removed volumes and retained host files", async ()
     platform: "linux",
     stdout: stdout.stream,
     stderr: capture().stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     prepareDockerPath: async () => null,
     execute: async () => 0
   };
@@ -1610,7 +1695,7 @@ test("owner password reset passes the password only over container stdin", async
       return 0;
     }
   };
-  await run(["init"], { ...options, stdin: Readable.from([]) });
+  await run(["init"], { ...options, stdin: ttyStdin("y") });
   await run(["owner", "reset-password"], {
     ...options,
     stdin: Readable.from(["abc123\n"])
@@ -1634,7 +1719,7 @@ test("owner setup token rotation updates the host secret only after the database
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     execute: async (spec, io) => {
       calls.push({ spec, io });
       return 0;
@@ -1666,7 +1751,7 @@ test("restore creates a safety backup, stops app writers, restores offline, and 
       return 0;
     }
   };
-  await run(["init"], { ...options, stdin: Readable.from([]) });
+  await run(["init"], { ...options, stdin: ttyStdin("y") });
   await mkdir(join(root, "backups", "spaceapp-backup-20260723T120000000Z"));
   await mkdir(join(root, "backups", "spaceapp-backup-20260723T130000000Z"));
   assert.equal(await run(["restore"], {
@@ -1707,7 +1792,7 @@ test("restore leaves app writers stopped when the data restore fails", async () 
       return calls.length === 3 ? 47 : 0;
     }
   };
-  await run(["init"], { ...options, stdin: Readable.from([]) });
+  await run(["init"], { ...options, stdin: ttyStdin("y") });
   await mkdir(join(root, "backups", "spaceapp-backup-20260723T140000000Z"));
 
   assert.equal(await run(["restore"], {

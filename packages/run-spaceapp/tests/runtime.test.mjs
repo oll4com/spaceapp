@@ -10,7 +10,7 @@ import {
 
 const home = resolve(tmpdir(), "spaceapp-home");
 const config = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   version: "0.1.0",
   previousVersion: null,
   bindHost: "127.0.0.1",

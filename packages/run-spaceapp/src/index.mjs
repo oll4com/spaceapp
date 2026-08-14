@@ -19,7 +19,7 @@ import {
 } from "./string-utils.mjs";
 import { UNIVERSAL_COMMAND } from "./package-info.mjs";
 
-const CONFIG_SCHEMA_VERSION = 3;
+const CONFIG_SCHEMA_VERSION = 4;
 const MIN_INSTALL_CPU_COUNT = 4;
 const MIN_INSTALL_MEMORY_BYTES = 7 * 1024 ** 3;
 const MIN_INSTALL_MEMORY_LABEL = "7 GiB usable (8 GB-class system)";
@@ -75,6 +75,13 @@ const CONFIG_KEYS = new Set([
   "companionsEnabled"
 ]);
 
+export const SPACEAPP_UPGRADE_POLICY = Object.freeze({
+  schemaVersion: CONFIG_SCHEMA_VERSION,
+  minSupportedSourceVersion: "0.1.10",
+  preserveRecreateSourceVersions: Object.freeze([]),
+  rollbackCapable: true
+});
+
 export function resolveSpaceAppHome({
   env = process.env,
   platform = process.platform,
@@ -115,10 +122,64 @@ export function resolveInstallAccessMode(requestedMode, existingMode = "isolated
   throw new Error("Install access mode must be isolated or host-root.");
 }
 
+export function versionTuple(version) {
+  if (typeof version !== "string") {
+    return null;
+  }
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(version);
+  if (!match) {
+    return null;
+  }
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+export function compareVersions(a, b) {
+  const aTuple = versionTuple(a);
+  const bTuple = versionTuple(b);
+  if (!aTuple || !bTuple) {
+    return null;
+  }
+  for (let index = 0; index < 3; index += 1) {
+    if (aTuple[index] !== bTuple[index]) {
+      return aTuple[index] < bTuple[index] ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+export function upgradePath(sourceVersion, targetVersion) {
+  if (sourceVersion === null || sourceVersion === undefined) {
+    return "fresh";
+  }
+  if (sourceVersion === targetVersion) {
+    return "same";
+  }
+  const comparison = compareVersions(sourceVersion, targetVersion);
+  if (comparison === null) {
+    return "unknown";
+  }
+  if (comparison > 0) {
+    return "downgrade";
+  }
+  const minimum = compareVersions(sourceVersion, SPACEAPP_UPGRADE_POLICY.minSupportedSourceVersion);
+  if (minimum === null || minimum < 0) {
+    return "unsupported";
+  }
+  if (SPACEAPP_UPGRADE_POLICY.preserveRecreateSourceVersions.includes(sourceVersion)) {
+    return "preserve-recreate";
+  }
+  return "update";
+}
+
 export async function inspectSystemResources(root) {
   validateHome(root);
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  const fileSystem = await statfs(root);
+  let target = root;
+  try {
+    await stat(target);
+  } catch {
+    target = dirname(root);
+  }
+  const fileSystem = await statfs(target);
   return {
     cpuCount: availableParallelism(),
     totalMemoryBytes: totalmem(),
@@ -245,6 +306,13 @@ function migrateConfig(config) {
       companionsEnabled: false
     };
   }
+  if (config?.schemaVersion === 3) {
+    return {
+      ...config,
+      schemaVersion: CONFIG_SCHEMA_VERSION,
+      ...(config.companionsEnabled === undefined ? { companionsEnabled: false } : {})
+    };
+  }
   if (config?.schemaVersion !== 1) {
     return config;
   }
@@ -259,6 +327,60 @@ function migrateConfig(config) {
     accessMode: "isolated",
     companionsEnabled: false
   };
+}
+
+export function planConfigRepairs(rawConfig) {
+  const actions = [];
+  if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) {
+    return { actions };
+  }
+  const schema = rawConfig.schemaVersion;
+  if (schema === 1 || schema === 2) {
+    actions.push({
+      type: "migrate-legacy-schema",
+      from: schema,
+      to: CONFIG_SCHEMA_VERSION,
+      detail: `Config schema ${schema} will be migrated to schema ${CONFIG_SCHEMA_VERSION}.`
+    });
+    return { actions };
+  }
+  if (schema === 3) {
+    if (rawConfig.companionsEnabled === undefined) {
+      actions.push({
+        type: "default-companions",
+        detail: "companionsEnabled is missing and will default to false."
+      });
+    } else if (
+      typeof rawConfig.companionsEnabled === "string" &&
+      (rawConfig.companionsEnabled === "true" || rawConfig.companionsEnabled === "false")
+    ) {
+      actions.push({
+        type: "convert-companions-string",
+        value: rawConfig.companionsEnabled,
+        detail: `companionsEnabled is the string "${rawConfig.companionsEnabled}" and will be converted to the boolean ${rawConfig.companionsEnabled === "true"}.`
+      });
+    } else if (typeof rawConfig.companionsEnabled !== "boolean") {
+      actions.push({
+        type: "reject-companions",
+        detail: "companionsEnabled has an unsupported value and cannot be repaired automatically."
+      });
+    }
+  }
+  return { actions };
+}
+
+export function applyConfigRepairs(rawConfig) {
+  const { actions } = planConfigRepairs(rawConfig);
+  const rejected = actions.find((action) => action.type === "reject-companions");
+  if (rejected) {
+    throw new Error(rejected.detail);
+  }
+  let repaired = migrateConfig(structuredClone(rawConfig));
+  const convert = actions.find((action) => action.type === "convert-companions-string");
+  if (convert) {
+    repaired = { ...repaired, companionsEnabled: convert.value === "true" };
+  }
+  return validateConfig(repaired);
 }
 
 export async function addWorkspace(config, hostPath, { readOnly = false } = {}) {
@@ -484,7 +606,10 @@ export function composeCommand(action, root, options = {}) {
       "--stdin"
     ],
     removeBrowser: ["rm", "--stop", "--force", "spaceapp-browser"],
-    purge: ["down", "--volumes", "--remove-orphans"]
+    purge: ["down", "--volumes", "--remove-orphans"],
+    repair: ["up", "-d", "--remove-orphans", "--force-recreate"],
+    checkpointDump: ["exec", "-T", "postgres", "pg_dump", "-c", "--if-exists", "-U", "spaceapp", "-d", "spaceapp"],
+    checkpointRestore: ["exec", "-T", "postgres", "psql", "-v", "ON_ERROR_STOP=1", "-U", "spaceapp", "-d", "spaceapp"]
   };
   let selected = actions[action];
   if (action === "restore") {

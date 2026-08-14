@@ -32,7 +32,7 @@ test("resolves an explicit home before platform defaults", () => {
 test("default config is versioned, loopback-only, and contains no secret fields", () => {
   const config = createDefaultConfig({ version: "0.1.0" });
   assert.deepEqual(config, {
-    schemaVersion: 3,
+    schemaVersion: 4,
     version: "0.1.0",
     previousVersion: null,
     bindHost: "127.0.0.1",
@@ -80,7 +80,7 @@ test("loads legacy full and core profiles through the stable schema migration", 
     })}\n`);
 
     assert.deepEqual(await loadConfig(root), {
-      schemaVersion: 3,
+      schemaVersion: 4,
       version: "0.1.0",
       previousVersion: null,
       bindHost: "127.0.0.1",
@@ -108,7 +108,7 @@ test("loads schema 2 installations as isolated without changing durable settings
   })}\n`);
 
   assert.deepEqual(await loadConfig(root), {
-    schemaVersion: 3,
+    schemaVersion: 4,
     version: "0.1.14",
     previousVersion: "0.1.10",
     bindHost: "127.0.0.1",

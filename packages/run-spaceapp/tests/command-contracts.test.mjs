@@ -23,6 +23,32 @@ function capture() {
   return { stream, value: () => value };
 }
 
+function ttyStdin(...answers) {
+  let index = 0;
+  return {
+    isTTY: true,
+    setRawMode() {},
+    resume() {},
+    pause() {},
+    setEncoding() {},
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          if (index >= answers.length) {
+            return { done: true };
+          }
+          const answer = answers[index];
+          index += 1;
+          return { done: false, value: `${answer}\n` };
+        },
+        async return() {
+          return { done: true };
+        }
+      };
+    }
+  };
+}
+
 async function installation({ platform = "linux", execute = async () => 0 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-command-contract-"));
   const stdout = capture();
@@ -30,7 +56,7 @@ async function installation({ platform = "linux", execute = async () => 0 } = {}
   const options = {
     env: { SPACEAPP_HOME: root },
     platform,
-    stdin: Readable.from([]),
+    stdin: ttyStdin("y"),
     stdout: stdout.stream,
     stderr: stderr.stream,
     prepareDockerPath: async () => null,
@@ -67,7 +93,7 @@ test("init and the default update target the pinned runtime image version", asyn
     new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
   );
 
-  assert.equal(await run(["update"], options), 0);
+  assert.equal(await run(["update"], { ...options, stdin: ttyStdin("2") }), 0);
   config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
   assert.equal(config.version, CURRENT_VERSION);
   assert.equal(config.previousVersion, null);
@@ -77,7 +103,7 @@ test("init and the default update target the pinned runtime image version", asyn
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
     "pull",
-    "--remove-orphans"
+    "--force-recreate"
   ]);
 });
 
@@ -234,14 +260,14 @@ test("update and rollback persist version state only after both Docker operation
     }
   });
 
-  assert.equal(await run(["update", "0.1.6"], options), 0);
+  assert.equal(await run(["update", "0.1.6"], { ...options, stdin: ttyStdin("DOWNGRADE", "y") }), 0);
   assert.deepEqual(
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
     { version: "0.1.6", previousVersion: CURRENT_VERSION }
   );
-  assert.equal(await run(["rollback"], options), 0);
+  assert.equal(await run(["rollback"], { ...options, stdin: ttyStdin("y") }), 0);
   assert.deepEqual(
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
@@ -249,6 +275,7 @@ test("update and rollback persist version state only after both Docker operation
     { version: CURRENT_VERSION, previousVersion: "0.1.6" }
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
+    "spaceapp",
     "pull",
     "--remove-orphans",
     "pull",

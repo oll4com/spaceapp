@@ -1,11 +1,22 @@
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createHash, randomBytes } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile
+} from "node:fs/promises";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import {
   addWorkspace,
+  applyConfigRepairs,
   commitInstallation,
   composeCommand,
   credentialProviders,
@@ -13,14 +24,17 @@ import {
   inspectSystemResources,
   installResourceChecks,
   loadConfig,
+  planConfigRepairs,
+  prepareInstallation,
   removeCredential,
   removeWorkspace,
-  prepareInstallation,
   resolveInstallAccessMode,
   resolveInstallProfile,
   resolveSpaceAppHome,
   saveConfig,
   selectLatestBackupId,
+  SPACEAPP_UPGRADE_POLICY,
+  upgradePath,
   writeCredential,
   writeRuntimeFiles,
   writeSetupToken
@@ -88,6 +102,139 @@ export async function withHeadlessDockerConfig(platform, spec, run) {
   }
 }
 
+function interactiveAvailable(stdin) {
+  return Boolean(stdin?.isTTY && typeof stdin?.setRawMode === "function");
+}
+
+async function promptYesNo(stdin, stdout, question, { defaultYes = false } = {}) {
+  for (;;) {
+    const answer = (await readSecret(stdin, stdout, `${question} [${defaultYes ? "Y/n" : "y/N"}] `, { mask: false })).trim().toLowerCase();
+    if (answer === "") {
+      return defaultYes;
+    }
+    if (answer === "y" || answer === "yes") {
+      return true;
+    }
+    if (answer === "n" || answer === "no") {
+      return false;
+    }
+    stdout.write("Please answer y or n.\n");
+  }
+}
+
+async function promptChoice(stdin, stdout, question, options, { defaultIndex = 0 } = {}) {
+  stdout.write(`${question}\n`);
+  options.forEach((option, index) => {
+    stdout.write(`  [${index + 1}] ${option.label}\n`);
+  });
+  for (;;) {
+    const answer = (await readSecret(stdin, stdout, `Select 1-${options.length} [${defaultIndex + 1}]: `, { mask: false })).trim();
+    if (answer === "") {
+      return options[defaultIndex].value;
+    }
+    const index = Number.parseInt(answer, 10);
+    if (Number.isInteger(index) && index >= 1 && index <= options.length) {
+      return options[index - 1].value;
+    }
+    stdout.write(`Invalid choice. Enter a number between 1 and ${options.length}.\n`);
+  }
+}
+
+async function finalConfirmation(stdin, stdout, lines) {
+  stdout.write("SpaceApp setup plan:\n");
+  for (const line of lines) {
+    stdout.write(`  - ${line}\n`);
+  }
+  const approved = await promptYesNo(stdin, stdout, "Apply this plan?", { defaultYes: false });
+  if (!approved) {
+    stdout.write("Cancelled. No changes were made.\n");
+  }
+  return approved;
+}
+
+async function readRawConfig(root) {
+  let raw;
+  try {
+    raw = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+    raw = null;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  return raw;
+}
+
+const RUNONCE_CONTINUATION_LIFETIME_MS = 24 * 60 * 60 * 1_000;
+
+function currentOsUsername({ platform, env }) {
+  if (platform === "win32") {
+    return env.USERNAME || env.USER || userInfo().username;
+  }
+  return env.USER || userInfo().username;
+}
+
+function runOnceContinuationPath(root) {
+  return join(root, "var", "runonce-continuation.json");
+}
+
+async function readRunOnceContinuation(root, { platform, runtimeVersion }) {
+  if (platform !== "win32") {
+    return null;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(await readFile(runOnceContinuationPath(root), "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+    return null;
+  }
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    payload.targetVersion !== runtimeVersion ||
+    typeof payload.nonce !== "string" ||
+    payload.nonce.length < 32 ||
+    !payload.actions ||
+    typeof payload.actions !== "object" ||
+    Array.isArray(payload.actions) ||
+    payload.installRoot !== root ||
+    payload.user !== currentOsUsername({ platform, env: process.env }) ||
+    !Number.isFinite(payload.createdAt) ||
+    !Number.isFinite(payload.expiresAt) ||
+    payload.expiresAt - payload.createdAt > RUNONCE_CONTINUATION_LIFETIME_MS ||
+    Date.now() > payload.expiresAt
+  ) {
+    await rm(runOnceContinuationPath(root), { force: true }).catch(() => {});
+    return null;
+  }
+  return payload;
+}
+
+async function consumeRunOnceContinuation(root) {
+  await rm(runOnceContinuationPath(root), { force: true }).catch(() => {});
+}
+
+async function writeRunOnceContinuation(root, { runtimeVersion, actions }) {
+  await mkdir(join(root, "var"), { recursive: true, mode: 0o700 });
+  const createdAt = Date.now();
+  const payload = {
+    user: currentOsUsername({ platform: "win32", env: process.env }),
+    installRoot: root,
+    targetVersion: runtimeVersion,
+    nonce: randomBytes(32).toString("base64url"),
+    createdAt,
+    expiresAt: createdAt + RUNONCE_CONTINUATION_LIFETIME_MS,
+    actions
+  };
+  await writeFile(runOnceContinuationPath(root), `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+}
+
 export async function run(argv, {
   env = process.env,
   platform = process.platform,
@@ -143,6 +290,13 @@ export async function run(argv, {
   }
   if (command === "init") {
     assertNoArgs(args, "init");
+    const approved = await requireChangeApproval(stdin, stdout, stderr, [
+      `Create a new SpaceApp installation at ${root}`,
+      "This writes configuration, secrets, and runtime files."
+    ]);
+    if (!approved) {
+      return 0;
+    }
     const result = await initializeInstallation(root, { version: runtimeVersion });
     stdout.write(`SpaceApp initialized at ${root}\n`);
     if (result.setupToken) {
@@ -212,6 +366,13 @@ export async function run(argv, {
     if (!config.previousVersion) {
       throw new Error("No previous SpaceApp version is recorded.");
     }
+    const approved = await requireChangeApproval(stdin, stdout, stderr, [
+      `Runtime image version: ${config.version} -> ${config.previousVersion}`,
+      "Rollback restores the previously recorded runtime images and configuration."
+    ]);
+    if (!approved) {
+      return 0;
+    }
     const rollback = {
       ...config,
       version: config.previousVersion,
@@ -265,6 +426,14 @@ export async function run(argv, {
   }
   if (command === "uninstall") {
     if (args.length === 0) {
+      const approved = await requireChangeApproval(stdin, stdout, stderr, [
+        "Stop and remove SpaceApp containers and network.",
+        "Data, configuration, secrets, and backups remain at the installation root.",
+        "Docker volumes are retained; the global SpaceApp CLI remains installed."
+      ]);
+      if (!approved) {
+        return 0;
+      }
       stdout.write("Stopping and removing SpaceApp containers and network...\n");
       const code = await runtimeExecute(
         composeCommand("down", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
@@ -328,7 +497,27 @@ async function installCommand(args, {
   sleep,
   persistSetupToken
 }) {
-  const { requestedProfile, requestedAccessMode, noOpen, companionsEnabled } = parseInstallArgs(args);
+  const wizard = await planInteractiveSetup({
+    args,
+    root,
+    runtimeVersion,
+    platform,
+    stdin,
+    stdout,
+    stderr,
+    execute,
+    inspectResources
+  });
+  if (wizard.exit !== undefined) {
+    return wizard.exit;
+  }
+  const {
+    requestedProfile,
+    requestedAccessMode,
+    noOpen,
+    companionsEnabled,
+    telemetryEnabled
+  } = wizard;
   const existingConfig = await loadExistingInstallation(root);
   const accessMode = resolveInstallAccessMode(
     requestedAccessMode,
@@ -356,6 +545,9 @@ async function installCommand(args, {
     accessMode,
     ...(companionsEnabled ? { companionsEnabled } : {})
   });
+  if (telemetryEnabled && !existingConfig) {
+    result.config = { ...result.config, telemetry: true };
+  }
 
   stdout.write(`Launcher version: ${launcherVersion}\n`);
   stdout.write(
@@ -652,6 +844,478 @@ async function installCommand(args, {
   }
 }
 
+async function planInteractiveSetup({
+  args,
+  root,
+  runtimeVersion,
+  platform,
+  stdin,
+  stdout,
+  stderr,
+  execute,
+  inspectResources
+}) {
+  const parsed = parseInstallArgs(args);
+  const rawExisting = await readRawConfig(root);
+  const repairs = planConfigRepairs(rawExisting);
+  const path = upgradePath(rawExisting?.version ?? null, runtimeVersion);
+  const interactive = interactiveAvailable(stdin);
+  const continuation = await readRunOnceContinuation(root, { platform, runtimeVersion });
+
+  if (!interactive && !continuation) {
+    stderr.write(
+      "SpaceApp setup changes require an interactive terminal (TTY). " +
+      "Re-run from a terminal, or continue an approved Windows RunOnce plan.\n"
+    );
+    return { exit: 1 };
+  }
+
+  const resources = await inspectResources(root);
+  const resolveProfileChoice = (choice) => {
+    const resolved = resolveInstallProfile(choice, resources.totalMemoryBytes);
+    return { resolved, display: choice === "auto" ? `auto (${resolved})` : resolved };
+  };
+
+  if (continuation) {
+    await consumeRunOnceContinuation(root);
+    stdout.write("Continuing the approved unattended SpaceApp setup plan.\n");
+    await applyApprovedConfigRepairs(root, rawExisting);
+    const actions = continuation.actions ?? {};
+    return {
+      requestedProfile: actions.profile ?? "auto",
+      requestedAccessMode: actions.accessMode,
+      noOpen: actions.noOpen !== false,
+      companionsEnabled: actions.companionsEnabled ?? false,
+      telemetryEnabled: actions.telemetry ?? false
+    };
+  }
+
+  if (path === "fresh") {
+    const profileChoice = await promptChoice(stdin, stdout, "Which installation profile?", [
+      { label: `auto (light profile on this system; ${formatGibibytes(resources.totalMemoryBytes)} GiB detected)`, value: "auto" },
+      { label: "light (smaller footprint)", value: "light" },
+      { label: "standard (full features, incl. managed browser)", value: "standard" }
+    ], { defaultIndex: ["auto", "light", "standard"].indexOf(parsed.requestedProfile) });
+    const accessChoice = await promptChoice(stdin, stdout, "Which access mode?", [
+      { label: "isolated (recommended; no host access)", value: "isolated" },
+      { label: "host-root (Linux only; CLI sessions can read and modify the whole host)", value: "host-root" }
+    ], { defaultIndex: parsed.requestedAccessMode === "host-root" ? 1 : 0 });
+    const companionsChoice = await promptYesNo(stdin, stdout, "Enable companion integrations (Claude Code, browser companions)?", { defaultYes: parsed.companionsEnabled });
+    const telemetryChoice = await promptYesNo(stdin, stdout, "Enable anonymous usage telemetry?", { defaultYes: false });
+    let dockerChoice = true;
+    if (platform === "win32") {
+      const dockerProbe = await detectDockerAvailable({ execute });
+      if (dockerProbe !== 0) {
+        dockerChoice = await promptYesNo(stdin, stdout, "Docker Engine was not detected. Include automatic Docker installation?", { defaultYes: true });
+      }
+    }
+    const openBrowserChoice = await promptYesNo(stdin, stdout, "Open the web application when installation completes?", { defaultYes: !parsed.noOpen });
+
+    const { resolved } = resolveProfileChoice(profileChoice);
+    const approved = await finalConfirmation(stdin, stdout, [
+      `Installation root: ${root}`,
+      `Runtime image version: not installed -> ${runtimeVersion}`,
+      `Profile: ${profileChoice === "auto" ? `auto (${resolved})` : profileChoice}`,
+      `Access mode: ${accessChoice}`,
+      `Companions: ${companionsChoice ? "enabled" : "disabled"}`,
+      `Telemetry: ${telemetryChoice ? "enabled" : "disabled"}`,
+      `Docker installation: ${dockerChoice ? "automatic if missing" : "not included"}`,
+      `Open browser afterwards: ${openBrowserChoice ? "yes" : "no"}`,
+      "Future refreshes preserve data, workspaces, credentials, secrets, and persistent Docker volumes."
+    ]);
+    if (!approved) {
+      return { exit: 0 };
+    }
+    if (platform === "win32") {
+      await offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, {
+        profile: profileChoice,
+        accessMode: accessChoice,
+        companionsEnabled: companionsChoice,
+        telemetry: telemetryChoice,
+        noOpen: !openBrowserChoice
+      });
+    }
+    return {
+      requestedProfile: profileChoice,
+      requestedAccessMode: accessChoice,
+      noOpen: !openBrowserChoice,
+      companionsEnabled: companionsChoice,
+      telemetryEnabled: telemetryChoice
+    };
+  }
+
+  if (path === "same" && !hasRequestedConfigChange(rawExisting, parsed)) {
+    const choice = await promptChoice(stdin, stdout, `SpaceApp ${rawExisting.version} is already installed. What would you like to do?`, [
+      { label: "Run doctor diagnostics (read-only)", value: "doctor" },
+      { label: "Repair the runtime (recreate containers from the current configuration)", value: "repair" },
+      { label: "Cancel", value: "cancel" }
+    ]);
+    if (choice === "cancel") {
+      stdout.write("Cancelled. No changes were made.\n");
+      return { exit: 0 };
+    }
+    if (choice === "doctor") {
+      return { exit: await doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources, resources }) };
+    }
+    await applyApprovedConfigRepairs(root, rawExisting);
+    const config = await loadExistingInstallation(root);
+    return { exit: await repairRuntime({ root, config, platform, stdin, stdout, stderr, execute }) };
+  }
+
+  if (path === "downgrade") {
+    stderr.write(
+      `WARNING: target ${runtimeVersion} is OLDER than the installed ${rawExisting.version}.\n` +
+      "A downgrade can lose data created by the newer version.\n"
+    );
+    const typed = await readSecret(stdin, stdout, "Type DOWNGRADE to proceed with the controlled rollback: ", { mask: false });
+    if (typed !== "DOWNGRADE") {
+      stdout.write("Cancelled. No changes were made.\n");
+      return { exit: 0 };
+    }
+  } else if (path === "unsupported") {
+    stderr.write(
+      `Installed version ${rawExisting.version} is older than the minimum supported upgrade source ` +
+      `${SPACEAPP_UPGRADE_POLICY.minSupportedSourceVersion}. Make a backup, then reinstall from scratch.\n`
+    );
+    return { exit: 1 };
+  } else if (path === "unknown") {
+    stderr.write(
+      `Installed version ${rawExisting.version} cannot be compared with target ${runtimeVersion}. Installation cancelled.\n`
+    );
+    return { exit: 1 };
+  }
+
+  const repairLines = repairs.actions.map((action) => `Config repair: ${action.detail}`);
+  const approved = await finalConfirmation(stdin, stdout, [
+    `Installation root: ${root}`,
+    `Runtime image version: ${rawExisting?.version ?? "not installed"} -> ${runtimeVersion}`,
+    `Profile: ${rawExisting?.profile ?? "not configured"} -> ${resolveProfileChoice(parsed.requestedProfile).display}`,
+    `Access mode: ${rawExisting?.accessMode ?? "not configured"} -> ${resolveInstallAccessMode(parsed.requestedAccessMode, rawExisting?.accessMode ?? "isolated")}`,
+    ...repairLines,
+    path === "preserve-recreate"
+      ? "Runtime: preserve/recreate (containers are recreated without touching data volumes)."
+      : "Runtime: standard staged upgrade; previous runtime is restored automatically on failure.",
+    "Preserved: data, workspaces, credentials, secrets, and persistent Docker volumes."
+  ]);
+  if (!approved) {
+    return { exit: 0 };
+  }
+  await applyApprovedConfigRepairs(root, rawExisting);
+  if (platform === "win32") {
+    await offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, {
+      profile: parsed.requestedProfile,
+      accessMode: parsed.requestedAccessMode,
+      companionsEnabled: parsed.companionsEnabled,
+      noOpen: parsed.noOpen
+    });
+  }
+  return {
+    requestedProfile: parsed.requestedProfile,
+    requestedAccessMode: parsed.requestedAccessMode,
+    noOpen: parsed.noOpen,
+    companionsEnabled: parsed.companionsEnabled,
+    telemetryEnabled: false
+  };
+}
+
+function hasRequestedConfigChange(rawExisting, parsed) {
+  if (!rawExisting) {
+    return false;
+  }
+  if (
+    parsed.requestedAccessMode !== undefined &&
+    rawExisting.accessMode !== parsed.requestedAccessMode
+  ) {
+    return true;
+  }
+  if (parsed.companionsEnabled && rawExisting.companionsEnabled !== true) {
+    return true;
+  }
+  if (parsed.requestedProfile !== "auto" && rawExisting.profile !== parsed.requestedProfile) {
+    return true;
+  }
+  return false;
+}
+
+async function applyApprovedConfigRepairs(root, rawExisting) {
+  if (!rawExisting) {
+    return null;
+  }
+  const { actions } = planConfigRepairs(rawExisting);
+  if (actions.length === 0) {
+    return null;
+  }
+  const repaired = applyConfigRepairs(rawExisting);
+  await saveConfig(root, repaired);
+  return repaired;
+}
+
+async function detectDockerAvailable({ execute }) {
+  try {
+    return await execute({ command: "docker", args: ["--version"] }, { stdin: null, stdout: null, stderr: null });
+  } catch {
+    return 127;
+  }
+}
+
+async function offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, actions) {
+  const answer = await promptYesNo(
+    stdin,
+    stdout,
+    "Allow an unattended continuation for this same version on the next Windows RunOnce run (expires in 24h)?",
+    { defaultYes: false }
+  );
+  if (answer) {
+    await writeRunOnceContinuation(root, { runtimeVersion, actions });
+    stdout.write("Unattended continuation stored; it is consumed once and expires in 24 hours.\n");
+  }
+}
+
+async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute }) {
+  const pullCode = await withHeadlessDockerConfig(
+    platform,
+    composeCommand("pull", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+    (pullSpec) => execute(pullSpec, { stdin, stdout, stderr })
+  );
+  if (pullCode !== 0) {
+    return pullCode;
+  }
+  const upCode = await execute(
+    composeCommand("repair", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+    { stdin, stdout, stderr }
+  );
+  if (upCode !== 0) {
+    return upCode;
+  }
+  stdout.write(`SpaceApp ${config.version} runtime repaired.\n`);
+  return 0;
+}
+
+async function performUpdate({
+  root,
+  config,
+  targetVersion,
+  platform,
+  stdin,
+  stdout,
+  stderr,
+  execute,
+  preserveRecreate
+}) {
+  const updated = targetVersion === config.version
+    ? config
+    : {
+      ...config,
+      version: targetVersion,
+      previousVersion: config.version
+    };
+  const checkpoint = await createCheckpoint(root, config, { stdin, stdout, stderr, execute, platform });
+  try {
+    await writeRuntimeFiles(root, updated);
+    if (preserveRecreate) {
+      const downCode = await execute(
+        composeCommand("down", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+        { stdin, stdout, stderr }
+      );
+      if (downCode !== 0) {
+        throw new Error(`Preserve/recreate stop failed with Docker exit ${downCode}.`);
+      }
+    }
+    const pullCode = await withHeadlessDockerConfig(
+      platform,
+      composeCommand("pull", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }),
+      (pullSpec) => execute(pullSpec, { stdin, stdout, stderr })
+    );
+    if (pullCode !== 0) {
+      throw new Error(`Image pull failed with Docker exit ${pullCode}.`);
+    }
+    const upCode = await execute(
+      composeCommand("up", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }),
+      { stdin, stdout, stderr }
+    );
+    if (upCode !== 0) {
+      throw new Error(`Runtime start failed with Docker exit ${upCode}.`);
+    }
+    await saveConfig(root, updated);
+    await markCheckpointVerified(checkpoint);
+    stdout.write(`Updated to SpaceApp ${targetVersion}.\n`);
+    return 0;
+  } catch (error) {
+    stderr.write(`SpaceApp update failed: ${error?.message || String(error)}\n`);
+    const restored = await restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, execute, config });
+    if (!restored) {
+      stderr.write(
+        `Automatic restore failed. The checkpoint remains available at ${checkpoint.path} for manual recovery.\n`
+      );
+    }
+    return 1;
+  }
+}
+
+const CHECKPOINT_ID_PATTERN = /^spaceapp-checkpoint-\d{8}T\d{6}Z$/;
+const CHECKPOINT_KEEP_COUNT = 2;
+
+function checkpointId() {
+  return `spaceapp-checkpoint-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
+}
+
+async function manifestEntry(path, logicalPath) {
+  const content = await readFile(path);
+  return {
+    path: logicalPath,
+    bytes: content.length,
+    sha256: createHash("sha256").update(content).digest("hex")
+  };
+}
+
+async function cpDirectory(source, destination) {
+  await mkdir(destination, { recursive: true, mode: 0o700 });
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    const entrySource = join(source, entry.name);
+    const entryDestination = join(destination, entry.name);
+    if (entry.isDirectory()) {
+      await cpDirectory(entrySource, entryDestination);
+    } else {
+      await copyFile(entrySource, entryDestination);
+    }
+  }
+}
+
+async function collectFiles(directory, logicalDirectory) {
+  const files = [];
+  for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isDirectory()) {
+      files.push(...await collectFiles(join(directory, entry.name), `${logicalDirectory}/${entry.name}`));
+    } else {
+      files.push(await manifestEntry(join(directory, entry.name), `${logicalDirectory}/${entry.name}`));
+    }
+  }
+  return files;
+}
+
+async function createCheckpoint(root, config, { stdin, stdout, stderr, execute, platform }) {
+  const id = checkpointId();
+  const path = join(root, "checkpoints", id);
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  const manifest = {
+    id,
+    createdAt: new Date().toISOString(),
+    version: config.version,
+    files: []
+  };
+  const fileNames = [
+    "config.json",
+    "runtime.env",
+    "compose.yml",
+    "compose.workspaces.yml",
+    "compose.host-access.yml"
+  ];
+  for (const fileName of fileNames) {
+    await copyFile(join(root, fileName), join(path, fileName));
+    manifest.files.push(await manifestEntry(join(path, fileName), fileName));
+  }
+  await cpDirectory(join(root, "secrets"), join(path, "secrets"));
+  for (const file of await collectFiles(join(path, "secrets"), "secrets")) {
+    manifest.files.push(file);
+  }
+  stdout.write("Creating checkpoint (configuration, secrets, and database dump)...\n");
+  const dumpPath = join(path, "postgres.dump");
+  const dumpCode = await execute(
+    composeCommand("checkpointDump", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+    { stdin: null, stdout: createWriteStream(dumpPath), stderr }
+  );
+  if (dumpCode !== 0) {
+    await rm(path, { recursive: true, force: true });
+    throw new Error(`Checkpoint database dump failed with Docker exit ${dumpCode}. No changes were made.`);
+  }
+  try {
+    await stat(dumpPath);
+  } catch {
+    await writeFile(dumpPath, "");
+  }
+  manifest.files.push(await manifestEntry(dumpPath, "postgres.dump"));
+  await writeFile(join(path, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+  const verified = await verifyCheckpoint({ path, manifest });
+  if (!verified) {
+    throw new Error(`Checkpoint verification failed. The checkpoint remains at ${path}. No changes were made.`);
+  }
+  return { id, path, manifest };
+}
+
+async function verifyCheckpoint(checkpoint) {
+  for (const file of checkpoint.manifest.files ?? []) {
+    const actual = await manifestEntry(join(checkpoint.path, file.path), file.path).catch(() => null);
+    if (!actual || actual.bytes !== file.bytes || actual.sha256 !== file.sha256) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function markCheckpointVerified(checkpoint) {
+  await writeFile(
+    join(checkpoint.path, "verified.json"),
+    `${JSON.stringify({ verifiedAt: new Date().toISOString() }, null, 2)}\n`,
+    { mode: 0o600 }
+  );
+  await pruneCheckpoints(checkpoint.path);
+}
+
+async function pruneCheckpoints(currentPath) {
+  const parent = join(currentPath, "..");
+  const entries = (await readdir(parent, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && CHECKPOINT_ID_PATTERN.test(entry.name))
+    .map((entry) => join(parent, entry.name))
+    .sort();
+  while (entries.length > CHECKPOINT_KEEP_COUNT) {
+    await rm(entries.shift(), { recursive: true, force: true });
+  }
+}
+
+async function restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, execute, config }) {
+  if (!checkpoint) {
+    stderr.write("No checkpoint was available for restore.\n");
+    return false;
+  }
+  const verified = await verifyCheckpoint(checkpoint);
+  if (!verified) {
+    stderr.write(`Checkpoint ${checkpoint.id} failed verification; it remains at ${checkpoint.path} for manual recovery.\n`);
+    return false;
+  }
+  stdout.write(`Restoring checkpoint ${checkpoint.id}...\n`);
+  await execute(
+    composeCommand("down", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+    { stdin: null, stdout: null, stderr: null }
+  ).catch(() => {});
+  const fileNames = ["config.json", "runtime.env", "compose.yml", "compose.workspaces.yml", "compose.host-access.yml"];
+  for (const fileName of fileNames) {
+    await copyFile(join(checkpoint.path, fileName), join(root, fileName));
+  }
+  const restored = await loadConfig(root);
+  const dumpPath = join(checkpoint.path, "postgres.dump");
+  const dbCode = await execute(
+    composeCommand("checkpointRestore", root, { profile: restored.profile, companionsEnabled: restored.companionsEnabled }),
+    { stdin: createReadStream(dumpPath), stdout, stderr }
+  );
+  if (dbCode !== 0) {
+    stderr.write(`Checkpoint database restore failed with Docker exit ${dbCode}. Checkpoint remains at ${checkpoint.path}.\n`);
+    return false;
+  }
+  const upCode = await execute(
+    composeCommand("up", root, { profile: restored.profile, companionsEnabled: restored.companionsEnabled }),
+    { stdin, stdout, stderr }
+  );
+  return upCode === 0;
+}
+
+async function requireChangeApproval(stdin, stdout, stderr, lines) {
+  if (!interactiveAvailable(stdin)) {
+    stderr.write("This change requires an interactive terminal (TTY). No changes were made.\n");
+    return false;
+  }
+  return finalConfirmation(stdin, stdout, lines);
+}
+
 async function reportInstallDiagnostics({
   root,
   stateRoot,
@@ -939,31 +1603,85 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
     throw new Error(`Usage: ${UNIVERSAL_COMMAND} update [version]`);
   }
   const targetVersion = args[0] || version;
-  const updated = targetVersion === config.version
-    ? config
-    : {
-      ...config,
-      version: targetVersion,
-      previousVersion: config.version
-    };
-  await writeRuntimeFiles(root, updated);
-  const pullCode = await withHeadlessDockerConfig(
+  const path = upgradePath(config.version, targetVersion);
+  const interactive = interactiveAvailable(stdin);
+  const continuation = await readRunOnceContinuation(root, { platform, runtimeVersion: targetVersion });
+  if (!interactive && !continuation) {
+    stderr.write(
+      "SpaceApp update changes require an interactive terminal (TTY). " +
+      "Re-run from a terminal, or continue an approved Windows RunOnce plan.\n"
+    );
+    return 1;
+  }
+  if (continuation) {
+    await consumeRunOnceContinuation(root);
+    stdout.write("Continuing the approved unattended SpaceApp update plan.\n");
+  }
+  if (path === "same") {
+    if (!continuation) {
+      const choice = await promptChoice(stdin, stdout, `SpaceApp ${config.version} is already installed. What would you like to do?`, [
+        { label: "Run doctor diagnostics (read-only)", value: "doctor" },
+        { label: "Repair the runtime (recreate containers from the current configuration)", value: "repair" },
+        { label: "Cancel", value: "cancel" }
+      ]);
+      if (choice === "cancel") {
+        stdout.write("Cancelled. No changes were made.\n");
+        return 0;
+      }
+      if (choice === "doctor") {
+        return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources: inspectSystemResources });
+      }
+    }
+    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute });
+  }
+  if (path === "downgrade") {
+    if (!continuation) {
+      stderr.write(
+        `WARNING: target ${targetVersion} is OLDER than the installed ${config.version}.\n` +
+        "A downgrade can lose data created by the newer version.\n"
+      );
+      const typed = await readSecret(stdin, stdout, "Type DOWNGRADE to proceed with the controlled rollback: ", { mask: false });
+      if (typed !== "DOWNGRADE") {
+        stdout.write("Cancelled. No changes were made.\n");
+        return 0;
+      }
+    }
+  } else if (path === "unsupported") {
+    stderr.write(
+      `Installed version ${config.version} is older than the minimum supported upgrade source ` +
+      `${SPACEAPP_UPGRADE_POLICY.minSupportedSourceVersion}. Make a backup, then reinstall from scratch.\n`
+    );
+    return 1;
+  } else if (path === "unknown") {
+    stderr.write(
+      `Installed version ${config.version} cannot be compared with target ${targetVersion}. Update cancelled.\n`
+    );
+    return 1;
+  }
+  if (!continuation) {
+    const approved = await finalConfirmation(stdin, stdout, [
+      `Runtime image version: ${config.version} -> ${targetVersion}`,
+      "Checkpoint: configuration, secrets, and a database dump are saved before the change and restored automatically on failure.",
+      "Downtime: containers restart during the cutover.",
+      SPACEAPP_UPGRADE_POLICY.rollbackCapable
+        ? "Rollback: the previous runtime is restored automatically on failure; the previous version stays recorded for manual rollback."
+        : "Rollback: not supported for this target version."
+    ]);
+    if (!approved) {
+      return 0;
+    }
+  }
+  return performUpdate({
+    root,
+    config,
+    targetVersion,
     platform,
-    composeCommand("pull", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }),
-    (pullSpec) => execute(pullSpec, { stdin, stdout, stderr })
-  );
-  if (pullCode !== 0) {
-    await writeRuntimeFiles(root, config);
-    return pullCode;
-  }
-  const upCode = await execute(composeCommand("up", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }), { stdin, stdout, stderr });
-  if (upCode !== 0) {
-    await writeRuntimeFiles(root, config);
-    return upCode;
-  }
-  await saveConfig(root, updated);
-  stdout.write(`Updated to SpaceApp ${targetVersion}.\n`);
-  return 0;
+    stdin,
+    stdout,
+    stderr,
+    execute,
+    preserveRecreate: path === "preserve-recreate"
+  });
 }
 
 async function doctor({
@@ -1340,5 +2058,11 @@ Usage: ${UNIVERSAL_COMMAND} <command>
   owner reset-password              Read the new password from masked stdin
   owner rotate-setup-token          Replace an expired unclaimed setup token
   uninstall [--purge-data]          Remove containers; keep data by default
+
+Interactive setup wizard: install, update, init, rollback, and uninstall ask
+questions and require a final confirmation before any change. Command flags
+pre-select answers but never skip the confirmation. Without a TTY, changes
+are refused; the only exception is an approved Windows RunOnce continuation
+(bound to the user, installation root, and target version; expires in 24h).
 `;
 }
