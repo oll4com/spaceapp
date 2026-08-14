@@ -1860,8 +1860,17 @@ export async function readSecret(stdin, stdout, prompt, { mask = true } = {}) {
   stdin.setEncoding("utf8");
   let value = "";
   try {
-    for await (const chunk of stdin) {
-      for (const character of chunk) {
+    // Drive the iterator manually instead of breaking a for-await loop:
+    // breaking a for-await early calls the Readable async iterator's return(),
+    // which DESTROYS the stream, so any later prompt would abort. Stopping
+    // without calling return() leaves the stream paused and intact.
+    const iterator = stdin[Symbol.asyncIterator]();
+    for (;;) {
+      const step = await iterator.next();
+      if (step.done) {
+        break;
+      }
+      for (const character of step.value) {
         if (character === "\u0003") {
           throw new Error("Input cancelled.");
         }

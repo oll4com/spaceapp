@@ -4,7 +4,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import test from "node:test";
-import { run } from "../src/cli.mjs";
+import { run, readSecret } from "../src/cli.mjs";
 import {
   applyConfigRepairs,
   initializeInstallation,
@@ -323,6 +323,39 @@ test("update creates a verified checkpoint before cutover and restores it when t
   const checkpoints = (await readdir(join(failingRoot, "checkpoints"))).filter((name) => name.includes("spaceapp-checkpoint-"));
   assert.equal(checkpoints.length, 1);
   await assert.rejects(() => readFile(join(failingRoot, "checkpoints", checkpoints[0], "verified.json"), "utf8"));
+});
+
+test("readSecret does not destroy a real TTY stream between sequential wizard prompts", async () => {
+  // Regression for the VM acceptance finding: the old for-await early return
+  // called the Readable async iterator's return(), which destroyed the stream
+  // and aborted every wizard after the second prompt ("The operation was
+  // aborted"). The stream must stay intact for the next prompt.
+  const stdout = capture();
+  const stream = new Readable({
+    read() {
+      const answer = queue.shift();
+      if (answer === undefined) {
+        stream.push(null);
+      } else {
+        stream.push(`${answer}\n`);
+      }
+    }
+  });
+  const queue = ["yes", "no", ""];
+  stream.isTTY = true;
+  stream.setRawMode = () => {};
+
+  const first = await readSecret(stream, stdout.stream, "Q1? ", { mask: false });
+  assert.equal(first, "yes");
+  assert.equal(stream.destroyed, false);
+
+  const second = await readSecret(stream, stdout.stream, "Q2? ", { mask: false });
+  assert.equal(second, "no");
+  assert.equal(stream.destroyed, false);
+
+  const third = await readSecret(stream, stdout.stream, "Q3? ", { mask: false });
+  assert.equal(third, "");
+  assert.equal(stream.destroyed, false);
 });
 
 test("a successful update marks the checkpoint verified and prunes older checkpoints", async () => {
