@@ -50,6 +50,7 @@ import { DEFAULT_CLI_IMAGE_PREVIEW_LIMIT, normalizeCliImagePreviewLimit } from "
 import { isCliRuntimeTerminalLaunchable } from "../../cli-runtime-presentation.js";
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
 import { emitAppDiagnosticsPerformance } from "../../app-diagnostics/app-diagnostics-performance.js";
+import { readFullscreenGeometry, recordFullscreenGeometry } from "./fullscreen-geometry.js";
 import { reportCliClientEventBounded } from "../../cli-client-event-reporter.js";
 import { CLI_ACCOUNT_PROFILES_EVENT } from "../../cli-account-profile-events.js";
 import { CodexModelPicker } from "../codex-model-picker/CodexModelPicker.js";
@@ -77,6 +78,14 @@ import type { VoiceInsertMode } from "../../voice-settings.js";
 
 export { CodexModelPicker, isNonMutatingTerminalProtocolResponse };
 
+const TERMINAL_PAINT_PHASES = {
+  initial: "PAINT_INITIAL",
+  reveal: "PAINT_REVEAL",
+  refit: "PAINT_REFIT",
+  delayed: "PAINT_DELAYED",
+  force: "PAINT_FORCE"
+} as const;
+
 export function buildTerminalVoiceSubmit(
   transcript: string,
   draft: string,
@@ -100,6 +109,7 @@ interface TerminalPaneProps {
   prefillInitialReplay?: boolean;
   isTarget?: boolean;
   isVisible?: boolean;
+  fullscreenLayout?: boolean;
   observerOnly?: boolean;
   hideFloatingControls?: boolean;
   cliDebugModeEnabled?: boolean;
@@ -251,6 +261,7 @@ const CLIPBOARD_FAILURE_SUPPRESS_AFTER_UPLOAD_MS = 10_000;
 const CLIPBOARD_STALL_TIMEOUT_MS = 3_500;
 const TERMINAL_PASTE_RECENT_INTENT_MS = 15_000;
 const TERMINAL_OUTPUT_REFIT_INTERVAL_MS = 500;
+const TERMINAL_SOCKET_WATCHDOG_INTERVAL_MS = 15_000;
 const TERMINAL_INPUT_TOKENIZER_FLUSH_MS = 12;
 const INITIAL_CLI_TERMINAL_COLS = 100;
 const INITIAL_CLI_TERMINAL_ROWS = 30;
@@ -340,7 +351,7 @@ type TerminalPaneActionDetail =
   | { paneId: string; action: "start_task_item"; objective: string }
   | { paneId: string; action: "ensure_plan_mode" }
   | { paneId: string; action: "enter_native_plan_mode"; runtimeId: NativePlanRuntimeId }
-  | { paneId: string; action: "control_key"; key: "shift_tab" | "escape" }
+  | { paneId: string; action: "control_key"; key: "ctrl_c" | "shift_tab" | "escape" }
   | { paneId: string; action: "replace_session"; session: PaneCliSessionResponse }
   | {
       paneId: string;
@@ -776,7 +787,9 @@ function isTerminalPaneAction(detail: unknown): detail is TerminalPaneActionDeta
   if (maybeDetail.action === "start_task_item") {
     return typeof maybeDetail.objective === "string";
   }
-  if (maybeDetail.action === "control_key") return maybeDetail.key === "shift_tab" || maybeDetail.key === "escape";
+  if (maybeDetail.action === "control_key") {
+    return maybeDetail.key === "ctrl_c" || maybeDetail.key === "shift_tab" || maybeDetail.key === "escape";
+  }
   if (maybeDetail.action === "enter_native_plan_mode") {
     return maybeDetail.runtimeId === "cli:gemini" || maybeDetail.runtimeId === "cli:qwen";
   }
@@ -974,6 +987,29 @@ function isCopyShortcutEvent(event: Pick<KeyboardEvent, "altKey" | "code" | "ctr
   if (event.defaultPrevented || event.altKey || event.shiftKey || (!event.ctrlKey && !event.metaKey)) return false;
   if (event.code === "KeyC") return true;
   return event.key.toLowerCase() === "c";
+}
+
+export function terminalControlKeySequence(key: "ctrl_c" | "shift_tab" | "escape"): string {
+  if (key === "ctrl_c") return "\u0003";
+  return key === "shift_tab" ? "\u001b[Z" : "\u001b";
+}
+
+export function reasonixShortcutSequence(
+  event: Pick<KeyboardEvent, "altKey" | "code" | "ctrlKey" | "defaultPrevented" | "key" | "metaKey" | "shiftKey">
+): string | null {
+  if (event.altKey || event.metaKey) return null;
+  if (
+    !event.ctrlKey &&
+    event.shiftKey &&
+    (event.code === "Tab" || event.key === "Tab" || event.key === "ISO_Left_Tab")
+  ) {
+    return terminalControlKeySequence("shift_tab");
+  }
+  if (event.defaultPrevented) return null;
+  if (event.ctrlKey && !event.shiftKey && (event.code === "KeyY" || event.key.toLowerCase() === "y")) {
+    return "\u0019";
+  }
+  return null;
 }
 
 function fileFromDataUrl(src: string, index: number): File | null {
@@ -1311,6 +1347,7 @@ export function TerminalPane({
   bootstrapBarrier,
   shouldBootstrap = true,
   prefillInitialReplay = false,
+  fullscreenLayout = false,
   isTarget = true,
   isVisible = true,
   observerOnly = false,
@@ -1408,10 +1445,13 @@ export function TerminalPane({
   const lastTerminalIntentAtRef = useRef(0);
   const isVisibleRef = useRef(isVisible);
   isVisibleRef.current = isVisible;
+  const terminalInstanceIdRef = useRef(`term-instance:${crypto.randomUUID()}`);
   const terminalGeometryCoordinatorRef = useRef<ReturnType<typeof createTerminalGeometryCoordinator> | null>(null);
   const terminalOutputCoordinatorRef = useRef<ReturnType<typeof createTerminalOutputCoordinator> | null>(null);
   const prefillInitialReplayRef = useRef(prefillInitialReplay);
   prefillInitialReplayRef.current = prefillInitialReplay;
+  const fullscreenLayoutRef = useRef(fullscreenLayout);
+  fullscreenLayoutRef.current = fullscreenLayout;
   const syncTerminalOutputVisibilityRef = useRef<() => void>(() => undefined);
   const scheduledTerminalRepaintFrameRef = useRef<number | null>(null);
   const lastTerminalOutputRefitAtRef = useRef(0);
@@ -2133,27 +2173,15 @@ export function TerminalPane({
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
-    const WATCHDOG_INTERVAL_MS = 15_000;
-    const checkSocketHealth = () => {
-      if (reconnectInProgressRef.current) return;
-      if (reconnectTimerRef.current !== null) return;
-      if (intentionalSocketParkRef.current) return;
-      const status = terminalStatusRef.current;
-      if (status !== "attached" && status !== "connecting" && status !== "reconnecting") return;
-      const session = sessionResponseRef.current;
-      if (!session?.websocket || !isRecoverableCliSession(session.session)) return;
-      const socket = socketRef.current;
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
-        triggerTerminalSocketRecovery("watchdog");
-      }
-    };
-    const intervalId = window.setInterval(checkSocketHealth, WATCHDOG_INTERVAL_MS);
-    window.addEventListener("focus", checkSocketHealth);
-    document.addEventListener("visibilitychange", checkSocketHealth);
+    const intervalId = window.setInterval(() => checkTerminalSocketHealth("watchdog"), TERMINAL_SOCKET_WATCHDOG_INTERVAL_MS);
+    const onWindowFocus = () => checkTerminalSocketHealth("focus");
+    const onVisibilityChange = () => checkTerminalSocketHealth("visibilitychange");
+    window.addEventListener("focus", onWindowFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.clearInterval(intervalId);
-      window.removeEventListener("focus", checkSocketHealth);
-      document.removeEventListener("visibilitychange", checkSocketHealth);
+      window.removeEventListener("focus", onWindowFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
     // Refs keep session and socket authority current; triggerTerminalSocketRecovery only touches refs and stable setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2745,7 +2773,32 @@ export function TerminalPane({
         terminal?.scrollToBottom();
         syncTerminalViewportEvidence(terminalHost, terminal);
       },
+      onRepaint: (info) => {
+        emitAppDiagnosticsPerformance({
+          category: "PERFORMANCE",
+          metric: "TERMINAL_PAINT",
+          phase: TERMINAL_PAINT_PHASES[info.phase],
+          roomId: pane.roomId,
+          paneId: pane.id,
+          instanceId: terminalInstanceIdRef.current,
+          cols: info.cols,
+          rows: info.rows,
+          width: info.width,
+          height: info.height,
+          repaired: info.suspect,
+          canvasWidth: info.canvasWidth,
+          canvasHeight: info.canvasHeight,
+          canvasBlank: info.canvasBlank,
+          darkPixelRatio: info.darkPixelRatio,
+          rowCount: info.rowCount,
+          populatedRowCount: info.populatedRowCount,
+          blankRowRatio: info.blankRowRatio
+        });
+      },
       onReady: ({ width, height, cols, rows, repaired }) => {
+        if (fullscreenLayoutRef.current && isVisibleRef.current) {
+          recordFullscreenGeometry(cols, rows);
+        }
         emitAppDiagnosticsPerformance({
           category: "PERFORMANCE",
           metric: "TERMINAL_GEOMETRY",
@@ -2805,6 +2858,7 @@ export function TerminalPane({
         outputReadyForGeometry = true;
         settleTerminalPrefill();
         geometryCoordinator.syncVisibility();
+        geometryCoordinator.forceRepaint();
       }).catch(handleTerminalReplayFailure);
     };
     syncTerminalOutputVisibilityRef.current = syncOutputVisibility;
@@ -3004,6 +3058,42 @@ export function TerminalPane({
       void handleTerminalCopyShortcut(selection);
     };
 
+    const nativeReasonixShortcutListener: EventListener = (event) => {
+      if (!(event instanceof KeyboardEvent)) return;
+      const session = sessionResponseRef.current?.session;
+      if (session?.purpose !== "NORMAL" || session.runtimeId !== "cli:deepseek" || !isTargetRef.current) return;
+      const shortcut = reasonixShortcutSequence(event);
+      if (!shortcut) return;
+      const activeElement = typeof document !== "undefined" ? document.activeElement : null;
+      const paneRoot = terminalHost.closest(".terminal-pane");
+      const targetInsideTerminal = event.target instanceof Node && terminalHost.contains(event.target);
+      const activeInsideTerminal = activeElement instanceof Node && terminalHost.contains(activeElement);
+      const targetInsidePane = Boolean(paneRoot && event.target instanceof Node && paneRoot.contains(event.target));
+      const activeInsidePane = Boolean(paneRoot && activeElement instanceof Node && paneRoot.contains(activeElement));
+      const bodyHasRecentTerminalIntent =
+        hasRecentTerminalIntent() &&
+        (activeElement === document.body || activeElement === document.documentElement);
+      if (
+        !targetInsideTerminal &&
+        !activeInsideTerminal &&
+        !targetInsidePane &&
+        !activeInsidePane &&
+        !bodyHasRecentTerminalIntent
+      ) return;
+      if (
+        !targetInsideTerminal &&
+        !activeInsideTerminal &&
+        (isEditablePasteTarget(event.target) || isEditablePasteTarget(activeElement))
+      ) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      markTerminalIntent();
+      if (sendTerminalInput(shortcut, "Reasonix keyboard shortcut", "visible", true, { trackDraft: false })) {
+        focusTerminal();
+      }
+    };
+
     async function attachTerminal() {
       setTerminalStatus("connecting");
       const { Terminal, FitAddon } = await loadTerminalModules();
@@ -3116,6 +3206,7 @@ export function TerminalPane({
         addNativeCopyTarget(terminalDom.textarea);
         addNativePasteTarget(document);
         addNativeCopyTarget(document);
+        window.addEventListener("keydown", nativeReasonixShortcutListener, { capture: true });
         addTerminalIntentTarget(terminalHost, "pointerdown");
         addTerminalIntentTarget(terminalHost, "focusin");
         addTerminalIntentTarget(terminalDom.textarea, "focus");
@@ -3180,7 +3271,29 @@ export function TerminalPane({
             ownerDocument: terminalHost.ownerDocument,
             host: terminalHost,
             terminal,
-            fitAddon
+            fitAddon,
+            onRepaint: (info) => {
+              emitAppDiagnosticsPerformance({
+                category: "PERFORMANCE",
+                metric: "TERMINAL_PAINT",
+                phase: TERMINAL_PAINT_PHASES[info.phase],
+                roomId: pane.roomId,
+                paneId: pane.id,
+                instanceId: terminalInstanceIdRef.current,
+                cols: info.cols,
+                rows: info.rows,
+                width: info.width,
+                height: info.height,
+                repaired: info.suspect,
+                canvasWidth: info.canvasWidth,
+                canvasHeight: info.canvasHeight,
+                canvasBlank: info.canvasBlank,
+                darkPixelRatio: info.darkPixelRatio,
+                rowCount: info.rowCount,
+                populatedRowCount: info.populatedRowCount,
+                blankRowRatio: info.blankRowRatio
+              });
+            }
           });
           delete terminalHost.dataset.terminalInitialGeometry;
         }
@@ -3789,6 +3902,7 @@ export function TerminalPane({
       for (const target of nativeCopyTargets) {
         target.removeEventListener("keydown", nativeCopyShortcutListener, { capture: true });
       }
+      window.removeEventListener("keydown", nativeReasonixShortcutListener, { capture: true });
       for (const { target, type, listener } of terminalIntentTargets) {
         target.removeEventListener(type, listener, { capture: true });
       }
@@ -3969,6 +4083,20 @@ export function TerminalPane({
       paneMode: pane.mode
     });
     void startOrReconnect({ automaticReconnect: true, expectedSocketGeneration: generation });
+  }
+
+  function checkTerminalSocketHealth(source = "watchdog"): void {
+    if (reconnectInProgressRef.current) return;
+    if (reconnectTimerRef.current !== null) return;
+    if (intentionalSocketParkRef.current) return;
+    const status = terminalStatusRef.current;
+    if (status !== "attached" && status !== "connecting" && status !== "reconnecting") return;
+    const session = sessionResponseRef.current;
+    if (!session?.websocket || !isRecoverableCliSession(session.session)) return;
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      triggerTerminalSocketRecovery(source);
+    }
   }
 
   async function autoAttachRunningSession() {
@@ -4190,7 +4318,30 @@ export function TerminalPane({
 
   useEffect(() => {
     syncTerminalOutputVisibilityRef.current();
+    if (isVisible) checkTerminalSocketHealth("reveal");
   }, [isVisible, pane.id, pane.isMinimized]);
+
+  useEffect(() => {
+    if (!fullscreenLayout || isVisible) return;
+    const applyBackgroundGeometry = (event: Event) => {
+      const detail = (event as CustomEvent<{ cols: number; rows: number }>).detail;
+      if (
+        !detail ||
+        !Number.isInteger(detail.cols) ||
+        detail.cols <= 0 ||
+        !Number.isInteger(detail.rows) ||
+        detail.rows <= 0
+      ) return;
+      if (!fullscreenLayoutRef.current || isVisibleRef.current) return;
+      terminalGeometryCoordinatorRef.current?.backgroundResize(detail.cols, detail.rows);
+    };
+    window.addEventListener("space:fullscreen-geometry", applyBackgroundGeometry);
+    const current = readFullscreenGeometry();
+    if (current) {
+      applyBackgroundGeometry(new CustomEvent("space:fullscreen-geometry", { detail: current }));
+    }
+    return () => window.removeEventListener("space:fullscreen-geometry", applyBackgroundGeometry);
+  }, [fullscreenLayout, isVisible, pane.id]);
 
   useEffect(() => {
     if (!voiceAttachmentEligible || !voiceInput.settings.enabled || !voiceInput.serverSettings?.enabled) {
@@ -4285,10 +4436,6 @@ export function TerminalPane({
       document.removeEventListener("visibilitychange", repairTerminalAfterBrowserResume);
     };
   }, [pane.id, sessionResponse?.websocket]);
-
-  function controlKeySequence(key: "shift_tab" | "escape"): string {
-    return key === "shift_tab" ? "\u001b[Z" : "\u001b";
-  }
 
   async function waitForTerminalSocketOpen(sessionId: string, timeoutMs = 2_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
@@ -5410,7 +5557,7 @@ export function TerminalPane({
         try {
           for (let attempt = 0; attempt < 4; attempt += 1) {
             if (!claudePlanModeActionIdentityMatches(actionIdentity)) return;
-            if (!sendTerminalInput(controlKeySequence("shift_tab"), "terminal action ensure Claude Plan mode", "visible", false, { trackDraft: false })) {
+            if (!sendTerminalInput(terminalControlKeySequence("shift_tab"), "terminal action ensure Claude Plan mode", "visible", false, { trackDraft: false })) {
               return;
             }
             const modeChange = await waitForClaudePermissionModeChange(currentMode, actionIdentity);
@@ -5431,7 +5578,7 @@ export function TerminalPane({
         return;
       }
       if (event.detail.action === "control_key") {
-        sendTerminalInput(controlKeySequence(event.detail.key), `terminal action ${event.detail.key}`);
+        sendTerminalInput(terminalControlKeySequence(event.detail.key), `terminal action ${event.detail.key}`);
         return;
       }
       if (event.detail.action === "save_to_memory") {

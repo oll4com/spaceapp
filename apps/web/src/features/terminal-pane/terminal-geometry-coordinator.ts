@@ -3,6 +3,7 @@ export interface TerminalGeometryTerminal {
   rows: number;
   clearTextureAtlas?: () => void;
   refresh: (start: number, end: number) => void;
+  resize?: (cols: number, rows: number) => void;
 }
 
 export interface TerminalGeometryFitAddon {
@@ -22,6 +23,24 @@ export interface TerminalResizeFrame {
   leaseId: string | null;
 }
 
+export type TerminalRepaintPhase = "initial" | "reveal" | "refit" | "delayed" | "force";
+
+export interface TerminalRepaintInfo {
+  phase: TerminalRepaintPhase;
+  cols: number;
+  rows: number;
+  width: number;
+  height: number;
+  suspect: boolean;
+  canvasWidth: number;
+  canvasHeight: number;
+  canvasBlank: boolean;
+  darkPixelRatio?: number;
+  rowCount: number;
+  populatedRowCount: number;
+  blankRowRatio?: number;
+}
+
 export interface TerminalGeometryCoordinatorOptions {
   ownerDocument: Document;
   host: HTMLElement;
@@ -36,6 +55,7 @@ export interface TerminalGeometryCoordinatorOptions {
   isScrolledToBottom?: () => boolean;
   scrollToBottom?: () => void;
   onReady?: (frame: TerminalResizeFrame & { width: number; height: number; repaired: boolean }) => void;
+  onRepaint?: (info: TerminalRepaintInfo) => void;
 }
 
 export interface TerminalRefitOptions {
@@ -70,6 +90,7 @@ export interface InitialTerminalFitOptions {
   terminal: TerminalGeometryTerminal;
   fitAddon: TerminalGeometryFitAddon;
   maxFrameSamples?: number;
+  onRepaint?: (info: TerminalRepaintInfo) => void;
 }
 
 function positiveDimension(value: number): number {
@@ -81,6 +102,75 @@ function hostLayoutSample(host: HTMLElement): LayoutSample | null {
   const width = positiveDimension(host.clientWidth || bounds.width);
   const height = positiveDimension(host.clientHeight || bounds.height);
   return width > 0 && height > 0 ? { width, height } : null;
+}
+
+function screenRectSample(host: HTMLElement): LayoutSample | null {
+  const screen = host.querySelector<HTMLElement>(".xterm-screen");
+  if (!screen) return null;
+  const bounds = screen.getBoundingClientRect();
+  const width = positiveDimension(bounds.width);
+  const height = positiveDimension(bounds.height);
+  return width > 0 && height > 0 ? { width, height } : null;
+}
+
+function suspectBlankPaint(host: HTMLElement, sample: LayoutSample): boolean {
+  const screen = screenRectSample(host);
+  return !screen || screen.width < sample.width * GEOMETRY_COLLAPSE_RATIO;
+}
+
+function canvasBackingSample(host: HTMLElement): { width: number; height: number; present: boolean } {
+  const canvas = host.querySelector<HTMLCanvasElement>(".xterm-screen canvas");
+  if (!canvas) return { width: 0, height: 0, present: false };
+  return {
+    width: positiveDimension(canvas.width),
+    height: positiveDimension(canvas.height),
+    present: true
+  };
+}
+
+function domRowSample(host: HTMLElement): { rowCount: number; populatedRowCount: number; blankRowRatio: number | undefined } {
+  const rows = host.querySelector<HTMLElement>(".xterm-rows");
+  if (!rows || rows.children.length === 0) {
+    return { rowCount: 0, populatedRowCount: 0, blankRowRatio: undefined };
+  }
+  const rowCount = rows.children.length;
+  let populatedRowCount = 0;
+  for (const child of Array.from(rows.children)) {
+    const el = child as HTMLElement;
+    if (el.children.length > 0 || (el.textContent ?? "").length > 0) populatedRowCount += 1;
+  }
+  return {
+    rowCount,
+    populatedRowCount,
+    blankRowRatio: rowCount > 0 ? (rowCount - populatedRowCount) / rowCount : undefined
+  };
+}
+
+function sampleCanvasDarkness(host: HTMLElement): number | undefined {
+  const canvas = host.querySelector<HTMLCanvasElement>(".xterm-screen canvas");
+  if (!canvas || canvas.width <= 0 || canvas.height <= 0) return undefined;
+  const ownerDocument = host.ownerDocument;
+  try {
+    const target = ownerDocument.createElement("canvas");
+    target.width = 64;
+    target.height = 64;
+    const ctx = target.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return undefined;
+    ctx.drawImage(canvas, 0, 0, 64, 64);
+    const data = ctx.getImageData(0, 0, 64, 64).data;
+    let dark = 0;
+    let total = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      total += 1;
+      const r = data[i] ?? 0;
+      const g = data[i + 1] ?? 0;
+      const b = data[i + 2] ?? 0;
+      if (r < 40 && g < 40 && b < 40) dark += 1;
+    }
+    return total > 0 ? dark / total : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function stableSamples(left: LayoutSample, right: LayoutSample): boolean {
@@ -124,6 +214,24 @@ export async function fitTerminalForInitialAttach(
       return null;
     }
     options.terminal.refresh(0, rows - 1);
+    const paintScreen = screenRectSample(options.host);
+    const backing = canvasBackingSample(options.host);
+    const rowSample = domRowSample(options.host);
+    options.onRepaint?.({
+      phase: "initial",
+      cols,
+      rows,
+      width: paintScreen?.width ?? sample.width,
+      height: paintScreen?.height ?? sample.height,
+      suspect: !paintScreen || paintScreen.width < sample.width * GEOMETRY_COLLAPSE_RATIO,
+      canvasWidth: backing.width,
+      canvasHeight: backing.height,
+      canvasBlank: backing.present && (backing.width <= 0 || backing.height <= 0),
+      darkPixelRatio: sampleCanvasDarkness(options.host),
+      rowCount: rowSample.rowCount,
+      populatedRowCount: rowSample.populatedRowCount,
+      blankRowRatio: rowSample.blankRowRatio
+    });
     await nextAnimationFrame(ownerWindow);
     return { cols, rows };
   }
@@ -205,6 +313,29 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     options.host.dataset.terminalGeometryRepaired = String(repaired);
   };
 
+  const sendResizeBackground = (cols: number, rows: number) => {
+    if (!Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) return;
+    const identity = options.getResizeIdentity();
+    if (
+      !identity ||
+      !Number.isInteger(identity.socketGeneration) ||
+      identity.socketGeneration <= 0 ||
+      !identity.sessionId
+    ) {
+      return;
+    }
+    const key = JSON.stringify([
+      identity.socketGeneration,
+      identity.sessionId,
+      identity.leaseId,
+      cols,
+      rows
+    ]);
+    if (key === lastResizeKey) return;
+    lastResizeKey = key;
+    options.sendResize({ cols, rows, leaseId: identity.leaseId });
+  };
+
   const sendResizeOnce = (cols: number, rows: number) => {
     if (!isEligible() || !Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) return;
     const identity = options.getResizeIdentity();
@@ -253,6 +384,24 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       return;
     }
     terminal.refresh(0, terminal.rows - 1);
+    const paintScreen = screenRectSample(options.host);
+    const backing = canvasBackingSample(options.host);
+    const rowSample = domRowSample(options.host);
+    options.onRepaint?.({
+      phase: "refit",
+      cols: terminal.cols,
+      rows: terminal.rows,
+      width: paintScreen?.width ?? sample.width,
+      height: paintScreen?.height ?? sample.height,
+      suspect: broken || suspectBlankPaint(options.host, sample),
+      canvasWidth: backing.width,
+      canvasHeight: backing.height,
+      canvasBlank: backing.present && (backing.width <= 0 || backing.height <= 0),
+      darkPixelRatio: sampleCanvasDarkness(options.host),
+      rowCount: rowSample.rowCount,
+      populatedRowCount: rowSample.populatedRowCount,
+      blankRowRatio: rowSample.blankRowRatio
+    });
     if (keepAtBottom) options.scrollToBottom?.();
     updateGeometryDataset(terminal, sample, broken);
     sendResizeOnce(terminal.cols, terminal.rows);
@@ -290,6 +439,25 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     }
     updateGeometryDataset(terminal, sample, false);
     sendResizeOnce(terminal.cols, terminal.rows);
+    terminal.refresh(0, terminal.rows - 1);
+    const paintScreen = screenRectSample(options.host);
+    const backing = canvasBackingSample(options.host);
+    const rowSample = domRowSample(options.host);
+    options.onRepaint?.({
+      phase: "reveal",
+      cols: terminal.cols,
+      rows: terminal.rows,
+      width: paintScreen?.width ?? sample.width,
+      height: paintScreen?.height ?? sample.height,
+      suspect: suspectBlankPaint(options.host, sample),
+      canvasWidth: backing.width,
+      canvasHeight: backing.height,
+      canvasBlank: backing.present && (backing.width <= 0 || backing.height <= 0),
+      darkPixelRatio: sampleCanvasDarkness(options.host),
+      rowCount: rowSample.rowCount,
+      populatedRowCount: rowSample.populatedRowCount,
+      blankRowRatio: rowSample.blankRowRatio
+    });
     pendingRefit = false;
     options.onReady?.({
       cols: terminal.cols,
@@ -361,6 +529,35 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     }
   };
 
+  const repaintNow = (phase: TerminalRepaintPhase): boolean => {
+    if (!isEligible()) return false;
+    const terminal = options.getTerminal();
+    if (!terminal || !Number.isInteger(terminal.rows) || terminal.rows <= 0) return false;
+    terminal.refresh(0, terminal.rows - 1);
+    const sample = hostLayoutSample(options.host);
+    if (sample) {
+      const paintScreen = screenRectSample(options.host);
+      const backing = canvasBackingSample(options.host);
+      const rowSample = domRowSample(options.host);
+      options.onRepaint?.({
+        phase,
+        cols: terminal.cols,
+        rows: terminal.rows,
+        width: paintScreen?.width ?? sample.width,
+        height: paintScreen?.height ?? sample.height,
+        suspect: suspectBlankPaint(options.host, sample),
+        canvasWidth: backing.width,
+        canvasHeight: backing.height,
+        canvasBlank: backing.present && (backing.width <= 0 || backing.height <= 0),
+        darkPixelRatio: sampleCanvasDarkness(options.host),
+        rowCount: rowSample.rowCount,
+        populatedRowCount: rowSample.populatedRowCount,
+        blankRowRatio: rowSample.blankRowRatio
+      });
+    }
+    return true;
+  };
+
   const syncVisibility = () => {
     const eligible = isEligible();
     if (!eligible) {
@@ -376,6 +573,11 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       stabilizingRestore = true;
       restoreSample = null;
       requestRefit({ delayedPass: false });
+      if (timer !== null) ownerWindow.clearTimeout(timer);
+      timer = ownerWindow.setTimeout(() => {
+        timer = null;
+        repaintNow("delayed");
+      }, REFIT_STABILIZE_DELAY_MS);
       return;
     }
     if (pendingRefit) requestRefit({ delayedPass: false });
@@ -424,6 +626,16 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       return true;
     },
     requestRefit,
-    syncVisibility
+    syncVisibility,
+    forceRepaint: () => repaintNow("force"),
+    backgroundResize(cols: number, rows: number): boolean {
+      if (!Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) return false;
+      const terminal = options.getTerminal();
+      if (!terminal) return false;
+      terminal.resize?.(cols, rows);
+      terminal.refresh(0, rows - 1);
+      sendResizeBackground(cols, rows);
+      return true;
+    }
   };
 }

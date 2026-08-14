@@ -1,8 +1,8 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "f918c464304892b258d15cc89af98d6f82eb871a",
-  "fileCount": 498,
+  "sourceCommit": "e3a625f8542425f6715bf5c88b6f4c7662622086",
+  "fileCount": 499,
   "transformations": 50,
   "files": [
     {
@@ -673,9 +673,9 @@
     },
     {
       "path": "apps/web/src/App.tsx",
-      "sourceObjectId": "19dfadca19ce94970d627c46c296ccdcaeb3e5d1",
-      "sha256": "8b70b52b3a4c477c794d6023856bdfeccf2b1bfe98623c44a71fa344e0bc2c06",
-      "size": 527475
+      "sourceObjectId": "53eb37493737c87a5add2e7c4ecc9199232d9874",
+      "sha256": "7f7d2e2fe860ff978f938e40221f7607aa6a2d0baddbf2df5dce163453e83288",
+      "size": 528097
     },
     {
       "path": "apps/web/src/SpaceBrand.tsx",
@@ -1411,15 +1411,21 @@
     },
     {
       "path": "apps/web/src/features/terminal-pane/TerminalPane.tsx",
-      "sourceObjectId": "b91d1b2b12d00acc975dd7133d1f04ccddcde436",
-      "sha256": "38ea5453e106e03a850d1b6054c2614aae40dd29275b8365e22bd9557fb1fb60",
-      "size": 237689
+      "sourceObjectId": "8c7c01195d9bed5c611d67630bfdb8d8d38b18e6",
+      "sha256": "187489ce818f09fc328d540f333ded8bdaadcf532a92afbbf5d1ada7b47d2893",
+      "size": 243997
     },
     {
       "path": "apps/web/src/features/terminal-pane/cli-resume-intent.ts",
       "sourceObjectId": "dedc7650d77bbed62995bb608e4ba90243093179",
       "sha256": "7c5eeae2e3cef8e123b487f82fa37f5cf6ad9714751a719e9b3fc1d5dbc136d4",
       "size": 1183
+    },
+    {
+      "path": "apps/web/src/features/terminal-pane/fullscreen-geometry.ts",
+      "sourceObjectId": "dc0786c601b39eddd592806d8708748219e89110",
+      "sha256": "cd330ea3f4fc642a1356d26278dbe2de09cabd896a489ca02312acb5783a85b2",
+      "size": 776
     },
     {
       "path": "apps/web/src/features/terminal-pane/hidden-warm-socket.ts",
@@ -1435,9 +1441,9 @@
     },
     {
       "path": "apps/web/src/features/terminal-pane/terminal-geometry-coordinator.ts",
-      "sourceObjectId": "343d4cdbcbb4b3fbc11f3e1616c679920165c831",
-      "sha256": "af265f6dc2cbb49c458eb2a77466f1b6b13426fe8fda14da16d09cc9b752a55f",
-      "size": 13211
+      "sourceObjectId": "a375128ca248d9d95d666df0b019ad3efbf07a3d",
+      "sha256": "39ac98c0fdb2ae75abc533a4ccc2464cd36db4f43b3f14a08f5362acb085d77d",
+      "size": 21227
     },
     {
       "path": "apps/web/src/features/terminal-pane/terminal-input-tokenizer.ts",
@@ -2089,9 +2095,9 @@
     },
     {
       "path": "packages/contracts/src/app-diagnostics.ts",
-      "sourceObjectId": "28bd5ebc30514ba84de3b2631e17af74de7414e5",
-      "sha256": "8a81882338b146ebd8674653562813578c337af02d5916c1781cb60862d3bd14",
-      "size": 15704
+      "sourceObjectId": "78ea576c4f4118178992397841ac5af354345a3a",
+      "sha256": "61d192723e199e0f4418dab7e68e51fe926688e93adb4013cac1b574cfd671b3",
+      "size": 16298
     },
     {
       "path": "packages/contracts/src/heavy-mcp.ts",

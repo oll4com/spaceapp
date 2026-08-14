@@ -582,7 +582,7 @@ type TerminalPaneAction =
   | { action: "start_task_item"; objective: string }
   | { action: "ensure_plan_mode" }
   | { action: "enter_native_plan_mode"; runtimeId: "cli:gemini" | "cli:qwen" }
-  | { action: "control_key"; key: "shift_tab" | "escape" }
+  | { action: "control_key"; key: "ctrl_c" | "shift_tab" | "escape" }
   | { action: "replace_session"; session: PaneCliSessionResponse }
   | {
       action: "save_to_memory";
@@ -5123,6 +5123,12 @@ export function App() {
     if (!activeRoom || paneLayoutPending) return;
     setPaneLayoutPending(true);
     setPaneLayoutError(null);
+    const previousRoom = activeRoom;
+    // Optimistic: apply the layout locally before the server round-trip so pane
+    // hosts resize immediately and visible terminals refit without waiting.
+    setRooms((current) =>
+      sortRoomsByOrder(current.map((room) => (room.id === activeRoom.id ? { ...room, paneLayoutColumns } : room)))
+    );
     try {
       const result = await api.updateRoomPaneLayout(activeRoom.id, { paneLayoutColumns });
       paneColumnAnchorStartsRef.current = new Map();
@@ -5143,6 +5149,9 @@ export function App() {
         setError("Pane layout applied, but room activity could not be refreshed.");
       }
     } catch (layoutError) {
+      setRooms((current) =>
+        sortRoomsByOrder(current.map((room) => (room.id === previousRoom.id ? previousRoom : room)))
+      );
       setPaneLayoutError(layoutError instanceof Error ? layoutError.message : "Pane layout update failed");
       setPaneLayoutPending(false);
     }
@@ -9234,7 +9243,10 @@ const PaneCard = memo(function PaneCard({
               title: "Stop CLI task",
               ariaLabel: `Stop ${title}`,
               icon: CircleStop,
-              onClick: () => dispatchTerminalPaneAction(pane.id, { action: "control_key", key: "escape" })
+              onClick: () => dispatchTerminalPaneAction(
+                pane.id,
+                { action: "control_key", key: isDeepSeekTerminal ? "ctrl_c" : "escape" }
+              )
             },
             {
               id: "memory",
@@ -9980,6 +9992,7 @@ const PaneCard = memo(function PaneCard({
             hideFloatingControls={hideCliFloats}
             isTarget={isTarget}
             isVisible={isTerminalOutputVisible}
+            fullscreenLayout={isFullscreenLayout}
             cliDebugModeEnabled={cliDebugModeEnabled}
             observerOnly={terminalObserverOnly}
             maxImagePreviews={cliImagePreviewLimit}
