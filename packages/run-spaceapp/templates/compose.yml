@@ -10,6 +10,7 @@ services:
     environment:
       SPACE_PUBLIC_DISTRIBUTION: "true"
       SPACE_DEV_LOGIN: "false"
+      SPACE_APP_VERSION: "${SPACEAPP_IMAGE_TAG}"
       SPACE_TELEMETRY_ENABLED: "${SPACEAPP_TELEMETRY}"
       SPACE_RUNTIME_STORE: postgres
       SPACE_DATABASE_URL_SOURCE_FILE: /run/secrets/database-url
