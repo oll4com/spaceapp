@@ -1,5 +1,7 @@
 import {
   cliRuntimeDisablePreviewSchema,
+  type CliAccountProfile,
+  type CliAccountProfileDetailsResponse,
   type CliRuntimeDisablePreview,
   type CliRuntimeRestartSessionsResult,
   type CliRuntimeSettingsResponse,
@@ -7,6 +9,12 @@ import {
   type CliVpnConnection,
   type CliEgressRouteId,
   type CliVpnProfileId,
+  type CreateCliAccountProfileInput,
+  type CreateCliAccountProfileResponse,
+  type ListCliAccountProfilesResponse,
+  type RemoveCliAccountProfileResponse,
+  type UpdateCliAccountProfileInput,
+  type UpdateCliAccountProfileResponse,
   type UpdateCliGlobalEgressResult,
   type RestartCliRuntimeVpnSessionsResult,
   type UpdateCliRuntimeSettingInput,
@@ -14,9 +22,9 @@ import {
   type UpdateCliRuntimeVpnInput,
   type UpdateCliRuntimeVpnResult
 } from "@space/contracts";
-import { AlertTriangle, Loader2, Recycle, RefreshCw, Shield, Terminal, Trash2, Upload, X } from "../ui-theme/app-icons.js";
+import { AlertTriangle, Check, CircleHelp, Loader2, Pencil, Plus, Recycle, RefreshCw, Shield, Terminal, Trash2, Upload, Users, X } from "../ui-theme/app-icons.js";
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { api, SpaceApiError } from "../../api.js";
 import { SettingsActionMenu, type SettingsActionMenuItem } from "../settings/SettingsActionMenu.js";
 import { useAutoDismiss, DEFAULT_NOTICE_DISMISS_MS } from "../../use-auto-dismiss.js";
@@ -27,6 +35,7 @@ import {
   readCliRuntimeVisibilityChange
 } from "../../cli-runtime-visibility-events.js";
 import { publishCliVpnRoutingStatus } from "../../cli-vpn-routing.js";
+import { dispatchCliAccountProfilesChange } from "../../cli-account-profile-events.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 
 const VPN_PROFILE_MANAGER_STORAGE_KEY = "space.cliVpnProfileManager.profileId";
@@ -78,6 +87,11 @@ export interface CliRuntimeSettingsClient {
   removeCliVpnProfile?: () => Promise<CliVpnConnection>;
   updateCliRuntimeVpn?: (runtimeId: string, input: UpdateCliRuntimeVpnInput) => Promise<UpdateCliRuntimeVpnResult>;
   restartCliRuntimeVpnSessions?: (runtimeId: string) => Promise<RestartCliRuntimeVpnSessionsResult>;
+  listCliAccountProfiles?: (runtimeId: string) => Promise<ListCliAccountProfilesResponse>;
+  createCliAccountProfile?: (input: CreateCliAccountProfileInput) => Promise<CreateCliAccountProfileResponse>;
+  updateCliAccountProfile?: (runtimeId: string, profileId: string, input: UpdateCliAccountProfileInput) => Promise<UpdateCliAccountProfileResponse>;
+  getCliAccountProfileDetails?: (runtimeId: string, profileId: string) => Promise<CliAccountProfileDetailsResponse>;
+  removeCliAccountProfile?: (runtimeId: string, profileId: string) => Promise<RemoveCliAccountProfileResponse>;
   invalidateCliRuntimes: () => void;
   invalidateCliRuntimeSettings?: () => void;
 }
@@ -318,6 +332,17 @@ export function CliRuntimeSettingsCard({
   const [vpnProfilePending, setVpnProfilePending] = useState(false);
   const [vpnProfileId, setVpnProfileId] = useState<CliVpnProfileId>(readManagedVpnProfileId);
   const [removeConfirmationProfileId, setRemoveConfirmationProfileId] = useState<CliVpnProfileId | null>(null);
+  const [accountProfiles, setAccountProfiles] = useState<CliAccountProfile[] | null>(null);
+  const [accountProfilePending, setAccountProfilePending] = useState(false);
+  const [addAccountOpen, setAddAccountOpen] = useState(false);
+  const [newAccountDisplayName, setNewAccountDisplayName] = useState("");
+  const [removeAccountConfirmation, setRemoveAccountConfirmation] = useState<string | null>(null);
+  const [editingAccountProfileId, setEditingAccountProfileId] = useState<string | null>(null);
+  const [editingAccountDisplayName, setEditingAccountDisplayName] = useState("");
+  const [accountDetailsProfileId, setAccountDetailsProfileId] = useState<string | null>(null);
+  const [accountDetails, setAccountDetails] = useState<CliAccountProfileDetailsResponse["details"] | null>(null);
+  const [accountDetailsLoading, setAccountDetailsLoading] = useState(false);
+  const [accountDetailsError, setAccountDetailsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [feedbackSensitive, setFeedbackSensitive] = useState(false);
@@ -352,6 +377,17 @@ export function CliRuntimeSettingsCard({
   }, [dialog?.error]);
   const loadRequestIdRef = useRef(0);
 
+  const loadAccountProfiles = useCallback(async () => {
+    if (!canManage) return;
+    if (!client.listCliAccountProfiles) return;
+    try {
+      const result = await client.listCliAccountProfiles("cli:gemini");
+      if (mountedRef.current) setAccountProfiles(result.profiles);
+    } catch {
+      setAccountProfiles(null);
+    }
+  }, [canManage, client]);
+
   const loadSettings = useCallback(async (options: { forceRefresh?: boolean } = {}) => {
     const requestId = ++loadRequestIdRef.current;
     if (!canManage) return;
@@ -375,10 +411,11 @@ export function CliRuntimeSettingsCard({
   useEffect(() => {
     mountedRef.current = true;
     void loadSettings();
+    void loadAccountProfiles();
     return () => {
       mountedRef.current = false;
     };
-  }, [loadSettings]);
+  }, [loadSettings, loadAccountProfiles]);
 
   useEffect(() => {
     if (!canManage) return;
@@ -610,6 +647,149 @@ export function CliRuntimeSettingsCard({
       setError(errorMessage(removeError, "WireGuard profile could not be removed."));
     } finally {
       setVpnProfilePending(false);
+    }
+  }
+
+  function slugifyProfileId(displayName: string): string {
+    return displayName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+  }
+
+  function openAddAccount() {
+    setAddAccountOpen(true);
+    setNewAccountDisplayName("");
+    setError(null);
+    setFeedback(null);
+  }
+
+  function closeAddAccount() {
+    if (accountProfilePending) return;
+    setAddAccountOpen(false);
+  }
+
+  async function createAccountProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (accountProfilePending) return;
+    const displayName = newAccountDisplayName.trim();
+    if (!displayName) {
+      setError("Account name is required.");
+      return;
+    }
+    const baseProfileId = slugifyProfileId(displayName) || "account";
+    const existingIds = new Set(accountProfiles?.map((profile) => profile.profileId) ?? []);
+    let profileId = baseProfileId;
+    for (let suffix = 2; existingIds.has(profileId); suffix += 1) {
+      profileId = `${baseProfileId.slice(0, Math.max(1, 63 - String(suffix).length))}-${suffix}`;
+    }
+    if (!client.createCliAccountProfile) {
+      setError("Account profile controls are unavailable.");
+      return;
+    }
+    setAccountProfilePending(true);
+    setError(null);
+    setFeedback(null);
+    try {
+      const result = await client.createCliAccountProfile({ runtimeId: "cli:gemini", profileId, displayName });
+      setAccountProfiles((current) => current
+        ? [...current.filter((profile) => profile.profileId !== profileId), result.profile]
+        : [result.profile]);
+      setAddAccountOpen(false);
+      setNewAccountDisplayName("");
+      dispatchCliAccountProfilesChange();
+      setFeedback(`${displayName} added. Select it in a Gemini pane to complete native Google sign-in.`);
+    } catch (createError) {
+      setError(errorMessage(createError, "Account profile could not be added."));
+    } finally {
+      setAccountProfilePending(false);
+    }
+  }
+
+  async function removeAccountProfile(profile: CliAccountProfile) {
+    if (accountProfilePending) return;
+    if (!client.removeCliAccountProfile) {
+      setError("Account profile controls are unavailable.");
+      return;
+    }
+    setAccountProfilePending(true);
+    setError(null);
+    setFeedback(null);
+    try {
+      const result = await client.removeCliAccountProfile("cli:gemini", profile.profileId);
+      setRemoveAccountConfirmation(null);
+      if (result.removed) {
+        setAccountProfiles((current) => current?.filter((candidate) => candidate.profileId !== profile.profileId) ?? null);
+        dispatchCliAccountProfilesChange();
+        setFeedback(`${profile.displayName} removed.`);
+      } else {
+        setFeedback(`${profile.displayName} was not found.`);
+      }
+    } catch (removeError) {
+      setError(errorMessage(removeError, "Account profile could not be removed."));
+    } finally {
+      setAccountProfilePending(false);
+    }
+  }
+
+  function startRenameAccountProfile(profile: CliAccountProfile) {
+    if (accountProfilePending) return;
+    setEditingAccountProfileId(profile.profileId);
+    setEditingAccountDisplayName(profile.displayName);
+    setRemoveAccountConfirmation(null);
+  }
+
+  async function renameAccountProfile(event: FormEvent<HTMLFormElement>, profile: CliAccountProfile) {
+    event.preventDefault();
+    if (accountProfilePending) return;
+    const displayName = editingAccountDisplayName.trim();
+    if (!displayName) {
+      setError("Account name is required.");
+      return;
+    }
+    if (!client.updateCliAccountProfile) {
+      setError("Account rename is unavailable.");
+      return;
+    }
+    setAccountProfilePending(true);
+    setError(null);
+    setFeedback(null);
+    try {
+      const result = await client.updateCliAccountProfile("cli:gemini", profile.profileId, { displayName });
+      setAccountProfiles((current) => current?.map((candidate) => candidate.profileId === profile.profileId ? result.profile : candidate) ?? null);
+      setEditingAccountProfileId(null);
+      dispatchCliAccountProfilesChange();
+      setFeedback(`${displayName} saved.`);
+    } catch (renameError) {
+      setError(errorMessage(renameError, "Account name could not be changed."));
+    } finally {
+      setAccountProfilePending(false);
+    }
+  }
+
+  async function toggleAccountDetails(profile: CliAccountProfile) {
+    if (accountDetailsProfileId === profile.profileId) {
+      setAccountDetailsProfileId(null);
+      setAccountDetails(null);
+      setAccountDetailsError(null);
+      return;
+    }
+    setAccountDetailsProfileId(profile.profileId);
+    setAccountDetails({
+      runtimeId: "cli:gemini",
+      profileId: profile.profileId,
+      displayName: profile.displayName,
+      email: null,
+      authStatus: "UNAVAILABLE"
+    });
+    setAccountDetailsError(null);
+    setAccountDetailsLoading(true);
+    setError(null);
+    try {
+      const detailsReader = client.getCliAccountProfileDetails ?? api.getCliAccountProfileDetails;
+      const result = await detailsReader("cli:gemini", profile.profileId);
+      setAccountDetails(result.details);
+    } catch (detailsError) {
+      setAccountDetailsError(errorMessage(detailsError, "Account details could not be loaded."));
+    } finally {
+      setAccountDetailsLoading(false);
     }
   }
 
@@ -883,6 +1063,125 @@ export function CliRuntimeSettingsCard({
         )}
       </div>
 
+      <div className="cli-account-profiles settings-flat-vpn" aria-label="Gemini account profiles">
+        <div className="cli-vpn-profile-heading">
+          <Users aria-hidden="true" />
+          <span>
+            <strong>Gemini accounts</strong>
+            <small>Add as many isolated Google account profiles as you need, then choose one inside each Gemini pane.</small>
+          </span>
+        </div>
+        {accountProfiles === null ? (
+          <small className="cli-account-profiles-note">Account profiles could not be loaded.</small>
+        ) : accountProfiles.length === 0 ? (
+          <small className="cli-account-profiles-note">No Gemini account profiles yet.</small>
+        ) : (
+          <ul className="cli-account-profiles-list">
+            {accountProfiles.map((profile) => (
+              <li className="cli-account-profile-row" key={profile.profileId}>
+                {editingAccountProfileId === profile.profileId ? (
+                  <form className="cli-account-profile-rename" onSubmit={(event) => void renameAccountProfile(event, profile)}>
+                    <input
+                      autoFocus
+                      aria-label={`New name for ${profile.displayName}`}
+                      value={editingAccountDisplayName}
+                      maxLength={80}
+                      disabled={accountProfilePending}
+                      onChange={(event) => setEditingAccountDisplayName(event.currentTarget.value)}
+                    />
+                    <button type="submit" aria-label="Save account name" title="Save name" disabled={accountProfilePending}>
+                      {accountProfilePending ? <Loader2 className="spin" aria-hidden="true" /> : <Check aria-hidden="true" />}
+                    </button>
+                    <button type="button" aria-label="Cancel account rename" title="Cancel" disabled={accountProfilePending} onClick={() => setEditingAccountProfileId(null)}>
+                      <X aria-hidden="true" />
+                    </button>
+                  </form>
+                ) : (
+                  <div className="cli-account-profile-name">
+                    <strong>{profile.displayName}</strong>
+                  </div>
+                )}
+                <div className="cli-account-profile-actions">
+                  <button
+                    type="button"
+                    className="cli-account-profile-icon"
+                    aria-label={`Rename ${profile.displayName}`}
+                    title="Rename account"
+                    disabled={accountProfilePending || editingAccountProfileId === profile.profileId}
+                    onClick={() => startRenameAccountProfile(profile)}
+                  >
+                    <Pencil aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="cli-account-profile-icon"
+                    aria-label={`Show details for ${profile.displayName}`}
+                    title="Account details"
+                    aria-expanded={accountDetailsProfileId === profile.profileId}
+                    disabled={accountDetailsLoading && accountDetailsProfileId === profile.profileId}
+                    onClick={() => void toggleAccountDetails(profile)}
+                  >
+                    {accountDetailsLoading && accountDetailsProfileId === profile.profileId ? <Loader2 className="spin" aria-hidden="true" /> : <CircleHelp aria-hidden="true" />}
+                  </button>
+                  {profile.profileId !== "main" ? (
+                    removeAccountConfirmation === profile.profileId ? (
+                      <span className="cli-account-profile-remove-confirm">
+                        <button type="button" disabled={accountProfilePending} onClick={() => setRemoveAccountConfirmation(null)}>Cancel</button>
+                        <button type="button" className="is-danger" disabled={accountProfilePending} onClick={() => void removeAccountProfile(profile)}>Remove</button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="cli-account-profile-remove"
+                        aria-label={`Remove ${profile.displayName}`}
+                        title="Remove account"
+                        disabled={accountProfilePending}
+                        onClick={() => setRemoveAccountConfirmation(profile.profileId)}
+                      >
+                        <Trash2 aria-hidden="true" />
+                      </button>
+                    )
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {addAccountOpen ? (
+          <form className="cli-account-profile-add" onSubmit={(event) => void createAccountProfile(event)}>
+            <label className="settings-flat-row">
+              <span className="settings-flat-row-copy">
+                <strong>Account name</strong>
+                <small>Shown in this list, e.g. Work account.</small>
+              </span>
+              <input
+                autoFocus
+                name="cli-account-display-name"
+                value={newAccountDisplayName}
+                maxLength={80}
+                disabled={accountProfilePending}
+                onChange={(event) => setNewAccountDisplayName(event.currentTarget.value)}
+              />
+            </label>
+            <div className="cli-account-profile-add-actions">
+              <button type="button" disabled={accountProfilePending} onClick={closeAddAccount}>Cancel</button>
+              <button type="submit" disabled={accountProfilePending}>
+                {accountProfilePending ? <Loader2 className="spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
+                Add account
+              </button>
+            </div>
+          </form>
+        ) : (
+          <button type="button" className="cli-account-profile-add-button" disabled={accountProfilePending} onClick={openAddAccount}>
+            <Plus aria-hidden="true" />
+            Add account
+          </button>
+        )}
+        <small className="cli-account-profiles-note">
+          The main profile keeps the clean Antigravity account you already connected. Other profiles use separate native OAuth storage.
+        </small>
+      </div>
+
       <div className="cli-runtime-settings-list">
         {CLI_RUNTIME_PRESENTATIONS.map((presentation) => {
           const runtimeId = presentation.id as CliToggleRuntimeId;
@@ -975,6 +1274,52 @@ export function CliRuntimeSettingsCard({
           onCancel={closeRestartDialog}
           onConfirm={() => void confirmRuntimeRestart()}
         />
+      ) : null}
+      {accountDetailsProfileId && accountDetails && typeof document !== "undefined" ? createPortal(
+        <div
+          className="cli-account-details-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Account details for ${accountDetails.displayName}`}
+          onClick={() => {
+            setAccountDetailsProfileId(null);
+            setAccountDetails(null);
+            setAccountDetailsError(null);
+          }}
+        >
+          <div className="cli-account-details-modal-body" onClick={(event) => event.stopPropagation()}>
+            <div className="cli-account-details-modal-head">
+              <strong>Google account details</strong>
+              <button
+                type="button"
+                aria-label="Close account details"
+                onClick={() => {
+                  setAccountDetailsProfileId(null);
+                  setAccountDetails(null);
+                  setAccountDetailsError(null);
+                }}
+              >
+                <X aria-hidden="true" />
+              </button>
+            </div>
+            <div className="cli-account-profile-details" role="status">
+              <span><strong>Name</strong> {accountDetails.displayName}</span>
+              <span><strong>Email</strong> {accountDetailsLoading ? "Loading…" : accountDetails.email ?? "Not available"}</span>
+              <span>
+                <strong>Status</strong>{" "}
+                {accountDetailsLoading
+                  ? "Checking…"
+                  : accountDetails.authStatus === "CONNECTED"
+                    ? "Connected"
+                    : accountDetails.authStatus === "NOT_CONNECTED"
+                      ? "Not connected"
+                      : "Unavailable"}
+              </span>
+              {accountDetailsError ? <span className="cli-account-details-error" role="alert">{accountDetailsError}</span> : null}
+            </div>
+          </div>
+        </div>,
+        document.body
       ) : null}
     </section>
   );

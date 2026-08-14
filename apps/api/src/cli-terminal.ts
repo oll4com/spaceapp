@@ -91,6 +91,7 @@ const cliLoginObservationIntervalMs = 1_000;
 const cliCredentialObservationTimeoutMs = 5_000;
 const cliCredentialSmokeTimeoutMs = 190_000;
 const cliCredentialNotReadyObservation = "NOT_READY";
+const cliCredentialMissingObservation = "OBSERVATION:MISSING";
 const cliHostMainConnectionCount = 32;
 const codexInputReadySettleMs = 100;
 const codexModelSelectionTimeoutMs = 8_000;
@@ -479,6 +480,7 @@ export interface CliEnvironmentContext {
   purpose?: PaneCliSession["purpose"] | null;
   cwd?: string | null;
   sessionAllocatedMonotonicNs?: string | null;
+  accountProfileId?: string | null;
 }
 
 interface CliTerminalConnection {
@@ -779,6 +781,13 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
   if (home) {
     if (runtimeDescriptor) Object.assign(env, runtimeDescriptor.environment);
     else env.CODEX_HOME = home;
+  }
+  if (
+    context.runtimeId === "cli:gemini" &&
+    context.accountProfileId &&
+    context.accountProfileId !== "main"
+  ) {
+    env.SPACE_GEMINI_ACCOUNT_PROFILE = context.accountProfileId;
   }
   if (runtimeDescriptor?.loginBootstrapRuntimeEnv && config.cliLoginBootstrap[runtimeDescriptor.key]) {
     env[runtimeDescriptor.loginBootstrapRuntimeEnv] = "1";
@@ -1256,6 +1265,7 @@ export class CliTerminalManager {
     const observation = await this.readCredentialObservation(runtime);
     if (
       !observation ||
+      observation === cliCredentialMissingObservation ||
       observation === managed.credentialSmokeRetryObservation
     ) {
       this.scheduleLoginObservation(managed, runtime);
@@ -2251,7 +2261,8 @@ export class CliTerminalManager {
       runtimeId: session.runtimeId,
       purpose: session.purpose,
       cwd: session.cwd ?? this.options.config.cliWorkspaceRoot,
-      sessionAllocatedMonotonicNs: inspected ? undefined : this.sessionAllocationMonotonicNs(session.sessionId)
+      sessionAllocatedMonotonicNs: inspected ? undefined : this.sessionAllocationMonotonicNs(session.sessionId),
+      accountProfileId: session.accountProfileId
     });
     if (env.TMPDIR && !isDirectOperatorParityRuntime(session.runtimeId)) {
       await mkdir(env.TMPDIR, { recursive: true });

@@ -73,7 +73,8 @@ const performanceEventSchema = z.object({
     "ROOM_PRESENTATION",
     "TERMINAL_GEOMETRY",
     "TERMINAL_OUTPUT_PRESSURE",
-    "WARM_ROOM_CAPACITY"
+    "WARM_ROOM_CAPACITY",
+    "ROOM_REVEAL_PROGRESS"
   ]),
   roomId: diagnosticsIdSchema.optional(),
   paneId: diagnosticsIdSchema.optional(),
@@ -92,7 +93,10 @@ const performanceEventSchema = z.object({
     "EVICT",
     "OVERCOMMIT",
     "REVOKE",
-    "PRESSURE"
+    "PRESSURE",
+    "WAITING",
+    "PANE_READY",
+    "TIMEOUT"
   ]).optional(),
   durationMs: z.number().finite().min(0).max(120_000).optional(),
   value: z.number().finite().min(0).max(1_000_000).optional(),
@@ -116,7 +120,10 @@ const performanceEventSchema = z.object({
   estimatedRoomBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   usedBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   longTaskCount: z.number().int().min(0).max(100_000).optional(),
-  driftCount: z.number().int().min(0).max(100_000).optional()
+  driftCount: z.number().int().min(0).max(100_000).optional(),
+  readyCount: z.number().int().min(0).max(100_000).optional(),
+  totalCount: z.number().int().min(0).max(100_000).optional(),
+  missingPaneIds: z.string().min(0).max(4_000).optional()
 }).strict();
 
 const visualEventSchema = z.object({

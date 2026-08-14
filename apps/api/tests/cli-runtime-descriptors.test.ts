@@ -6,9 +6,14 @@ import {
 import { cliRunLifecycleAdapters } from "../src/cli-run-lifecycle-adapters.js";
 
 describe("CLI runtime descriptors", () => {
-  it("requires verified credential observation and smoke support for all setup connections", () => {
+  it("requires verified credential observation and smoke support for Space-managed setup connections", () => {
     expect(cliRuntimeDescriptors).toHaveLength(11);
     for (const descriptor of cliRuntimeDescriptors) {
+      if (descriptor.id === "cli:gemini") {
+        expect(descriptor.credentialObservationAction).toBeNull();
+        expect(descriptor.credentialSmokeMarker).toBeNull();
+        continue;
+      }
       expect(descriptor.credentialObservationAction, descriptor.id).toBe("credential-observation");
       expect(descriptor.credentialSmokeMarker, descriptor.id).toBe(`SPACE_${descriptor.key.toUpperCase()}_OK`);
     }
@@ -37,7 +42,7 @@ describe("CLI runtime descriptors", () => {
       { id: "cli:opencode", authMode: "MANAGED", missingAuthState: "UNAVAILABLE", loginAction: null },
       { id: "cli:codex", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:claude", authMode: "MANAGED", missingAuthState: "UNAVAILABLE", loginAction: null },
-      { id: "cli:gemini", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
+      { id: "cli:gemini", authMode: "NONE", missingAuthState: "UNAVAILABLE", loginAction: null },
       { id: "cli:autohand", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
       { id: "cli:qwen", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
       { id: "cli:kimi", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
@@ -113,7 +118,7 @@ describe("CLI runtime descriptors", () => {
     });
   });
 
-  it("routes the stable Gemini runtime id through supported Antigravity browser authentication", () => {
+  it("routes the stable Gemini runtime id directly to official Antigravity native authentication", () => {
     expect(findCliRuntimeDescriptor("cli:gemini")).toMatchObject({
       key: "gemini",
       id: "cli:gemini",
@@ -122,18 +127,16 @@ describe("CLI runtime descriptors", () => {
       commandName: "gemini-vscode-parity",
       commandEnv: "SPACE_CLI_GEMINI_COMMAND",
       credentialSmokeEnv: "SPACE_CLI_GEMINI_CREDENTIAL_SMOKE",
-      authMode: "BROWSER_OAUTH",
-      missingAuthState: "LOGIN_REQUIRED",
-      loginAction: "login",
-      credentialObservationAction: "credential-observation",
-      credentialSmokeMarker: "SPACE_GEMINI_OK",
+      authMode: "NONE",
+      missingAuthState: "UNAVAILABLE",
+      loginAction: null,
+      credentialObservationAction: null,
+      credentialSmokeMarker: null,
       loginBootstrapEnv: null,
       loginBootstrapRuntimeEnv: null,
       stateRoot: "/var/lib/spaceapp-user/.codex/space-gemini",
       tempDir: "/var/lib/spaceapp-user/.codex/space-gemini/tmp",
-      environment: {
-        ANTIGRAVITY_HOME: "/var/lib/spaceapp-user/.codex/space-gemini/home"
-      },
+      environment: {},
       nativeResumeArgs: ["--continue"]
     });
   });

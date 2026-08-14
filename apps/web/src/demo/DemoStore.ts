@@ -634,6 +634,17 @@ export class DemoStore {
       }
       case "clearStreamingBotMemory":
         return Promise.resolve({ removed: 3 });
+      case "createCliAccountProfile": return Promise.resolve({
+        profile: {
+          runtimeId: String((args[0] as { runtimeId?: string } | undefined)?.runtimeId ?? "cli:gemini"),
+          profileId: String((args[0] as { profileId?: string } | undefined)?.profileId ?? "work"),
+          displayName: String((args[0] as { displayName?: string } | undefined)?.displayName ?? "Work account"),
+          createdAt: DEMO_FIXED_AT,
+          updatedAt: DEMO_FIXED_AT,
+          updatedBy: "user:demo-admin"
+        }
+      });
+      case "removeCliAccountProfile": return Promise.resolve({ removed: true });
       case "searchStreamingBotMemory": {
         const query = String(args[0] ?? "");
         return Promise.resolve({
@@ -733,12 +744,16 @@ export class DemoStore {
       });
       case "rooms": return Promise.resolve(paginated(structuredClone(this.fixture.rooms)));
       case "roomCliActivity": return Promise.resolve({
-        data: this.fixture.rooms.map((room) => ({
-          roomId: room.id,
-          runningCliCount: this.fixture.panes.filter((pane) =>
+        data: this.fixture.rooms.map((room) => {
+          const runningPanes = this.fixture.panes.filter((pane) =>
             pane.roomId === room.id && pane.mode === "TERMINAL" && !pane.isClosed
-          ).length
-        })),
+          );
+          return {
+            roomId: room.id,
+            runningCliCount: runningPanes.length,
+            runtimeIds: [...new Set(runningPanes.map((pane) => pane.terminalRuntimeId ?? "cli:codex"))]
+          };
+        }),
         sampledAt: DEMO_FIXED_AT
       });
       case "panes": return Promise.resolve(paginated(structuredClone(this.fixture.panes.filter((pane) => pane.roomId === roomId && !pane.isClosed))));
@@ -1675,6 +1690,16 @@ export class DemoStore {
       case "agentFilePreviewUrl": return "data:text/plain,Agent%20Files%20preview";
       case "agentFileDownloadUrl": return "data:text/plain,Agent%20Files%20download";
       case "eventStreamUrl": return "demo://events";
+      case "listCliAccountProfiles": return Promise.resolve({
+        profiles: [{
+          runtimeId: String(args[0] ?? "cli:gemini"),
+          profileId: "main",
+          displayName: "Main account",
+          createdAt: DEMO_FIXED_AT,
+          updatedAt: DEMO_FIXED_AT,
+          updatedBy: null
+        }]
+      });
       default: return Promise.resolve(this.fallback(method));
     }
   }

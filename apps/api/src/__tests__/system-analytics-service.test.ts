@@ -62,6 +62,7 @@ function fixture() {
     codexThreadId: null,
     cliTaskId: null,
     cliTaskRevisionId: null,
+    accountProfileId: null,
     status: "RUNNING",
     statusReason: null,
     exitCode: null,

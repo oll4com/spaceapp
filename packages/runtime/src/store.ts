@@ -20,6 +20,9 @@ import {
   cliMaintenanceEventSchema,
   cliRuntimeSettingSchema,
   cliToggleRuntimeIdSchema,
+  cliAccountProfileSchema,
+  cliAccountProfileIdSchema,
+  createCliAccountProfileInputSchema,
   cliToggleRuntimeIds,
   codexCliModeDefaultsSchema,
   codexCliModeDefaultPairsSchema,
@@ -147,6 +150,8 @@ import type {
   CliMaintenanceEvent,
   CliRuntimeSetting,
   CliToggleRuntimeId,
+  CliAccountProfile,
+  CreateCliAccountProfileInput,
   CreateUserLinkRequest,
   CodexAppServerHandshakeCheck,
   CodexAppServerTurnSmokeCheck,
@@ -960,6 +965,15 @@ export interface SpaceStore {
   getLatestPaneCliSessionByCodexThreadId(codexThreadId: string): MaybePromise<PaneCliSession | null>;
   listPaneCliSessions(paneId: string, limit?: number): MaybePromise<PaneCliSession[]>;
   listActivePaneCliSessions(runtimeId: string): MaybePromise<PaneCliSession[]>;
+  isCliAccountProfileInUse(runtimeId: CliToggleRuntimeId, profileId: string): MaybePromise<boolean>;
+  listCliAccountProfiles(runtimeId: CliToggleRuntimeId): MaybePromise<CliAccountProfile[]>;
+  getCliAccountProfile(runtimeId: CliToggleRuntimeId, profileId: string): MaybePromise<CliAccountProfile | null>;
+  createCliAccountProfile(
+    runtimeId: CliToggleRuntimeId,
+    input: CreateCliAccountProfileInput,
+    updatedBy: string
+  ): MaybePromise<CliAccountProfile>;
+  removeCliAccountProfile(runtimeId: CliToggleRuntimeId, profileId: string): MaybePromise<boolean>;
   getCliTask(taskId: string): MaybePromise<CliTaskRecord | null>;
   getCliTaskRevision(revisionId: string): MaybePromise<CliTaskRevisionRecord | null>;
   getCliTaskRevisionByNativeRef(runtimeId: string, nativeTaskRef: string): MaybePromise<CliTaskRevisionRecord | null>;
@@ -2237,6 +2251,7 @@ export class InMemorySpaceStore implements SpaceStore {
   private providerSettings: ProviderSettings;
   private codexCliModeDefaults: CodexCliModeDefaults | null = null;
   private cliRuntimeSettings = new Map<CliToggleRuntimeId, CliRuntimeSetting>();
+  private cliAccountProfiles = new Map<CliToggleRuntimeId, Map<string, CliAccountProfile>>();
   private agentToolAssignments = new Map<string, AgentToolAssignment>();
   private adminOperationRuns = new Map<string, AdminOperationRun>();
   private cliMaintenanceEvents = new Map<string, CliMaintenanceEvent>();
@@ -2874,14 +2889,19 @@ export class InMemorySpaceStore implements SpaceStore {
   listRunningCliSessionCountsByRoom(runtimeIds?: string[]): RoomCliActivity[] {
     const allowedRuntimeIds = runtimeIds ? new Set(runtimeIds) : null;
     const runningCounts = new Map<string, number>();
+    const runningRuntimeIds = new Map<string, Set<string>>();
     for (const session of this.paneCliSessions.values()) {
       if (session.status !== "RUNNING") continue;
       if (allowedRuntimeIds && !allowedRuntimeIds.has(session.runtimeId)) continue;
       runningCounts.set(session.roomId, (runningCounts.get(session.roomId) ?? 0) + 1);
+      const roomRuntimeIds = runningRuntimeIds.get(session.roomId) ?? new Set<string>();
+      roomRuntimeIds.add(session.runtimeId);
+      runningRuntimeIds.set(session.roomId, roomRuntimeIds);
     }
     return this.listRooms().map((room) => ({
       roomId: room.id,
-      runningCliCount: runningCounts.get(room.id) ?? 0
+      runningCliCount: runningCounts.get(room.id) ?? 0,
+      runtimeIds: [...(runningRuntimeIds.get(room.id) ?? [])].sort()
     }));
   }
 
@@ -4791,6 +4811,63 @@ export class InMemorySpaceStore implements SpaceStore {
     return [...this.paneCliSessions.values()]
       .filter((session) => session.runtimeId === runtimeId && session.isActive && session.status === "RUNNING")
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  }
+
+  isCliAccountProfileInUse(runtimeId: CliToggleRuntimeId, profileId: string): boolean {
+    const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
+    const parsedProfileId = cliAccountProfileIdSchema.parse(profileId);
+    return [...this.paneCliSessions.values()].some((session) =>
+      session.runtimeId === parsedRuntimeId &&
+      session.accountProfileId === parsedProfileId &&
+      session.isActive &&
+      session.status !== "EXITED" &&
+      session.status !== "ERROR"
+    );
+  }
+
+  private cliAccountProfilesFor(runtimeId: CliToggleRuntimeId): Map<string, CliAccountProfile> {
+    const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
+    let profiles = this.cliAccountProfiles.get(parsedRuntimeId);
+    if (!profiles) {
+      profiles = new Map<string, CliAccountProfile>();
+      this.cliAccountProfiles.set(parsedRuntimeId, profiles);
+    }
+    return profiles;
+  }
+
+  listCliAccountProfiles(runtimeId: CliToggleRuntimeId): CliAccountProfile[] {
+    return [...this.cliAccountProfilesFor(runtimeId).values()]
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.profileId.localeCompare(right.profileId));
+  }
+
+  getCliAccountProfile(runtimeId: CliToggleRuntimeId, profileId: string): CliAccountProfile | null {
+    return this.cliAccountProfilesFor(runtimeId).get(cliAccountProfileIdSchema.parse(profileId)) ?? null;
+  }
+
+  createCliAccountProfile(
+    runtimeId: CliToggleRuntimeId,
+    input: CreateCliAccountProfileInput,
+    updatedBy: string
+  ): CliAccountProfile {
+    const parsed = createCliAccountProfileInputSchema.parse(input);
+    const profiles = this.cliAccountProfilesFor(runtimeId);
+    const timestamp = nowIso();
+    const profile = cliAccountProfileSchema.parse({
+      runtimeId: parsed.runtimeId,
+      profileId: parsed.profileId,
+      displayName: parsed.displayName,
+      createdAt: profiles.get(parsed.profileId)?.createdAt ?? timestamp,
+      updatedAt: timestamp,
+      updatedBy
+    });
+    profiles.set(parsed.profileId, profile);
+    return profile;
+  }
+
+  removeCliAccountProfile(runtimeId: CliToggleRuntimeId, profileId: string): boolean {
+    const profiles = this.cliAccountProfilesFor(runtimeId);
+    const parsedProfileId = cliAccountProfileIdSchema.parse(profileId);
+    return profiles.delete(parsedProfileId);
   }
 
   listPaneCliTaskHistory(input: ListPaneCliTaskHistoryInput): StorePageResult<PaneCliTaskHistoryRecord> {

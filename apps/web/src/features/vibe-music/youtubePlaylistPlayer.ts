@@ -13,6 +13,12 @@ export type YouTubePlayerCallbacks = {
   onError?: (code: number) => void;
 };
 
+export type YouTubePlaylistPlayerOptions = {
+  autoplay?: boolean;
+  startIndex?: number;
+  startSeconds?: number;
+};
+
 export type YouTubePlaylistPlayer = {
   play(): void;
   pause(): void;
@@ -20,6 +26,14 @@ export type YouTubePlaylistPlayer = {
   previous(): void;
   setVolume(volume: number): void;
   getCurrent(): { title: string; index: number; total: number };
+  getVideoId(): string | null;
+  getPlaylistIds(): string[];
+  getCurrentTime(): number;
+  getDuration(): number;
+  setLoop(enabled: boolean): void;
+  getLoop(): boolean;
+  seekTo(seconds: number): void;
+  playVideoAt(index: number): void;
   destroy(): void;
 };
 
@@ -29,9 +43,15 @@ type YouTubeIFramePlayerLike = {
   nextVideo(): void;
   previousVideo(): void;
   setVolume(percent: number): void;
-  getVideoData(): { title?: string };
+  getVideoData(): { title?: string; video_id?: string };
   getPlaylist(): string[];
   getPlaylistIndex(): number;
+  getCurrentTime(): number;
+  getDuration(): number;
+  setLoop(loopPlaylists: boolean): void;
+  getLoop(): boolean;
+  seekTo(seconds: number, allowSeekAhead: boolean): void;
+  playVideoAt(index: number): void;
   destroy(): void;
 };
 
@@ -134,7 +154,8 @@ function stateFromCode(code: number): YouTubePlayerState {
 export async function createYouTubePlaylistPlayer(
   container: HTMLElement,
   target: YouTubeLinkTarget,
-  callbacks: YouTubePlayerCallbacks
+  callbacks: YouTubePlayerCallbacks,
+  options: YouTubePlaylistPlayerOptions = {}
 ): Promise<YouTubePlaylistPlayer> {
   const yt = await loadYouTubeIframeApi();
   let player: YouTubeIFramePlayerLike | null = null;
@@ -143,7 +164,7 @@ export async function createYouTubePlaylistPlayer(
   let lastIndex = 1;
 
   const playerVars: Record<string, string | number | boolean> = {
-    autoplay: 1,
+    autoplay: options.autoplay ? 1 : 0,
     controls: 0,
     disablekb: 1,
     fs: 0,
@@ -155,6 +176,12 @@ export async function createYouTubePlaylistPlayer(
   if (target.kind === "playlist") {
     playerVars.listType = "playlist";
     playerVars.list = target.playlistId;
+    if (Number.isInteger(options.startIndex) && (options.startIndex ?? 0) >= 0) {
+      playerVars.index = options.startIndex ?? 0;
+    }
+  }
+  if (Number.isFinite(options.startSeconds) && (options.startSeconds ?? 0) > 0) {
+    playerVars.start = Math.floor(options.startSeconds ?? 0);
   }
 
   const syncNowPlaying = () => {
@@ -206,6 +233,46 @@ export async function createYouTubePlaylistPlayer(
     },
     getCurrent() {
       return { title: lastTitle, index: lastIndex, total: lastTotal };
+    },
+    getVideoId() {
+      return player?.getVideoData().video_id ?? null;
+    },
+    getPlaylistIds() {
+      return player?.getPlaylist() ?? [];
+    },
+    getCurrentTime() {
+      return player?.getCurrentTime() ?? 0;
+    },
+    getDuration() {
+      return player?.getDuration() ?? 0;
+    },
+    setLoop(enabled) {
+      try {
+        player?.setLoop(enabled);
+      } catch {
+        // Loop control is best effort only.
+      }
+    },
+    getLoop() {
+      try {
+        return player?.getLoop() ?? false;
+      } catch {
+        return false;
+      }
+    },
+    seekTo(seconds) {
+      try {
+        player?.seekTo(Math.max(0, seconds), true);
+      } catch {
+        // Seeking is best effort only.
+      }
+    },
+    playVideoAt(index) {
+      try {
+        player?.playVideoAt(index);
+      } catch {
+        // Track jump is best effort only.
+      }
     },
     destroy() {
       try {

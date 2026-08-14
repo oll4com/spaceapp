@@ -1,5 +1,9 @@
 import { MAX_CLI_IMAGE_PREVIEW_LIMIT, MIN_CLI_IMAGE_PREVIEW_LIMIT, normalizeCliImagePreviewLimit } from "../../cli-upload-settings.js";
-import type { WarmRoomCapacitySnapshot } from "../../warm-room-capacity-controller.js";
+import {
+  MAX_WARM_ROOM_CONNECTED_PANE_LIMIT,
+  MIN_WARM_ROOM_CONNECTED_PANE_LIMIT,
+  normalizeWarmRoomConnectedPaneLimit
+} from "../../warm-room-settings.js";
 import { CliRuntimeSettingsCard } from "../cli-runtime-settings/CliRuntimeSettingsCard.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { Gauge, Images } from "../ui-theme/app-icons.js";
@@ -9,9 +13,10 @@ interface CliDockProps {
   canManage: boolean;
   cliImagePreviewLimit: number;
   warmRoomEnabled: boolean;
-  warmRoomCapacity: WarmRoomCapacitySnapshot;
+  warmConnectedPaneLimit: number;
   onCliImagePreviewLimitChange: (limit: number) => void;
   onWarmRoomEnabledChange: (enabled: boolean) => void;
+  onWarmConnectedPaneLimitChange: (limit: number) => void;
   onOpenRestartAll: () => void;
   restartAllPending: boolean;
 }
@@ -20,9 +25,10 @@ export function CliDock({
   canManage,
   cliImagePreviewLimit,
   warmRoomEnabled,
-  warmRoomCapacity,
+  warmConnectedPaneLimit,
   onCliImagePreviewLimitChange,
   onWarmRoomEnabledChange,
+  onWarmConnectedPaneLimitChange,
   onOpenRestartAll,
   restartAllPending
 }: CliDockProps) {
@@ -55,7 +61,7 @@ export function CliDock({
           <Gauge aria-hidden="true" />
           <span>
             <strong>Warm room cache</strong>
-            <small>{warmRoomEnabled ? "Capacity adapts to this browser." : "Disabled in this browser."}</small>
+            <small>{warmRoomEnabled ? `${warmConnectedPaneLimit} connected panes can remain warm in this browser.` : "Disabled in this browser."}</small>
           </span>
         </div>
         <SpaceToggle
@@ -67,30 +73,33 @@ export function CliDock({
           checked={warmRoomEnabled}
           onChange={onWarmRoomEnabledChange}
         />
-        <dl
-          className="warm-room-capacity-status settings-flat-metrics"
-          role="status"
-          aria-label="Warm room capacity status"
-        >
-          <div><dt>Safe capacity</dt><dd>{warmRoomCapacity.effectiveSafeRoomCapacity} rooms</dd></div>
-          <div><dt>Warm rooms</dt><dd>{warmRoomCapacity.warmRoomCount}</dd></div>
-          <div><dt>Connected panes</dt><dd>{warmRoomCapacity.connectedPaneCount}</dd></div>
-          <div><dt>Memory source</dt><dd>{warmRoomCapacity.memorySource}</dd></div>
-          <div>
-            <dt>Pressure</dt>
-            <dd>{warmRoomCapacity.pressureReasons.length
-              ? warmRoomCapacity.pressureReasons.join(", ")
-              : "Healthy"}</dd>
-          </div>
-          <div>
-            <dt>Admission</dt>
-            <dd>{warmRoomEnabled ? "Auto Open safely" : "Disabled"}</dd>
-          </div>
-        </dl>
+        <label className="settings-flat-row">
+          <span className="settings-flat-row-copy">
+            <strong>Warm connected pane limit</strong>
+            <small>Terminal and browser panes that can stay connected in hidden rooms.</small>
+          </span>
+          <input
+            className="settings-flat-control"
+            type="number"
+            min={MIN_WARM_ROOM_CONNECTED_PANE_LIMIT}
+            max={MAX_WARM_ROOM_CONNECTED_PANE_LIMIT}
+            step={1}
+            aria-label="Warm connected pane limit"
+            name="warm-connected-pane-limit"
+            value={warmConnectedPaneLimit}
+            disabled={!warmRoomEnabled}
+            onChange={(event) => onWarmConnectedPaneLimitChange(normalizeWarmRoomConnectedPaneLimit(event.target.value))}
+          />
+        </label>
         <p className="settings-flat-note">
           {warmRoomEnabled
-            ? "One full-room reserve is kept; memory pressure reduces hidden warm rooms before navigation is affected."
-            : "Only the active room is mounted; CLI processes continue on the pane host."}
+            ? "Two rooms of 16 connected panes fit exactly at 32."
+            : "Only the active room is mounted while the cache is off."}
+        </p>
+        <p className="settings-flat-note">
+          {warmRoomEnabled
+            ? "Higher values use more RAM and CPU in this browser."
+            : "CLI processes continue running on the pane host when you leave a room."}
         </p>
       </section>
 

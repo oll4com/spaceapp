@@ -24,21 +24,19 @@ export interface AgentToolsOptions {
   baseRoot?: string;
   configHome?: string;
   skillsRoot?: string;
-  geminiSkillsDir?: string;
   canonicalRoot?: string;
   rootWriterCommand?: string | null;
 }
 
-const defaultOptions: Required<Pick<AgentToolsOptions, "baseRoot" | "configHome" | "skillsRoot" | "geminiSkillsDir" | "canonicalRoot">> = {
+const defaultOptions: Required<Pick<AgentToolsOptions, "baseRoot" | "configHome" | "skillsRoot" | "canonicalRoot">> = {
   baseRoot: "/var/lib/spaceapp-user",
   configHome: "/var/lib/spaceapp-user/.config/opencode",
   skillsRoot: "/var/lib/spaceapp-user/.codex/skills",
-  geminiSkillsDir: "/var/lib/spaceapp-user/.codex/space-gemini/home/.gemini/config/skills",
   canonicalRoot: "/opt/spaceapp/bin"
 };
 
 type EffectiveAgentToolsOptions = Required<
-  Pick<AgentToolsOptions, "baseRoot" | "configHome" | "skillsRoot" | "geminiSkillsDir" | "canonicalRoot">
+  Pick<AgentToolsOptions, "baseRoot" | "configHome" | "skillsRoot" | "canonicalRoot">
 > & { rootWriterCommand: string | null };
 
 function effectiveOptions(options: AgentToolsOptions = {}): EffectiveAgentToolsOptions {
@@ -98,10 +96,6 @@ function resolveRuntimeLayout(runtimeId: string, options: AgentToolsOptions): Re
       break;
     case "cli:claude":
       mcpConfigPath = `${stateRoot}/settings.json`;
-      mcpFormat = "object";
-      break;
-    case "cli:gemini":
-      mcpConfigPath = `${stateRoot}/home/.gemini/config/mcp_config.json`;
       mcpFormat = "object";
       break;
     case "cli:opencode":
@@ -667,8 +661,6 @@ export async function discoverAgentTools(store: SpaceStore, options: AgentToolsO
 
     if (runtime.runtimeId === "cli:codex" || runtime.runtimeId === "cli:grok") {
       skillPaths = await readSkillsFiles(effective.skillsRoot);
-    } else if (runtime.runtimeId === "cli:gemini") {
-      skillPaths = await readSkillsFiles(effective.geminiSkillsDir);
     } else if (runtime.runtimeId === "cli:opencode") {
       skillPaths = await readSkillsFiles(effective.skillsRoot);
     }

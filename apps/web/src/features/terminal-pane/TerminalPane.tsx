@@ -8,6 +8,7 @@ import {
   paneCliSessionResponseSchema,
   paneCliWebSocketServerMessageSchema,
   type AgentRuntimeRegistry,
+  type CliAccountProfile,
   type CliTerminalClientEventInput,
   type Pane,
   type PaneCliModelSettings,
@@ -50,6 +51,7 @@ import { isCliRuntimeTerminalLaunchable } from "../../cli-runtime-presentation.j
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
 import { emitAppDiagnosticsPerformance } from "../../app-diagnostics/app-diagnostics-performance.js";
 import { reportCliClientEventBounded } from "../../cli-client-event-reporter.js";
+import { CLI_ACCOUNT_PROFILES_EVENT } from "../../cli-account-profile-events.js";
 import { CodexModelPicker } from "../codex-model-picker/CodexModelPicker.js";
 import { useAutoDismiss, DEFAULT_NOTICE_DISMISS_MS } from "../../use-auto-dismiss.js";
 import { publishPaneRunLifecycle } from "../../pane-run-lifecycle-events.js";
@@ -239,6 +241,7 @@ const isRunCapableCliSession = (
 type NativePlanRuntimeId = "cli:gemini" | "cli:qwen";
 const TERMINAL_PANE_ACTION_EVENT = "space:terminal-pane-action";
 const CLI_DEBUG_MODE_STORAGE_KEY = "space.cliDebugMode";
+const GEMINI_ACCOUNT_PROFILE_STORAGE_KEY = "space.gemini.lastAccountProfileId";
 const HIDDEN_INPUT_ECHO_TTL_MS = 5_000;
 const PASTE_INPUT_GUARD_MS = 2_500;
 const CLIPBOARD_FAILURE_OUTPUT_PATTERN =
@@ -266,6 +269,22 @@ const CLIPBOARD_TEXT_FILE_NOTICE = "Clip attached as TXT file.";
 const HIDDEN_UPLOAD_NOTICE_DISMISS_MS = 1_600;
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
+
+function readLastGeminiAccountProfileId(): string {
+  try {
+    return getSpaceRuntime().platform.localStorage.getItem(GEMINI_ACCOUNT_PROFILE_STORAGE_KEY) || "main";
+  } catch {
+    return "main";
+  }
+}
+
+function writeLastGeminiAccountProfileId(profileId: string): void {
+  try {
+    getSpaceRuntime().platform.localStorage.setItem(GEMINI_ACCOUNT_PROFILE_STORAGE_KEY, profileId);
+  } catch {
+    void 0;
+  }
+}
 
 type TerminalModules = {
   Terminal: typeof import("@xterm/xterm").Terminal;
@@ -615,7 +634,7 @@ export function isRetryableCliReconnectError(error: unknown): boolean {
 export function buildTerminalCliSessionRequest(
   pane: Pick<Pane, "reasoningEffort" | "cwd">,
   runtimeId: string,
-  input: { modelId?: string | null; forceRestart?: boolean; resume?: boolean } = {},
+  input: { accountProfileId?: string | null; modelId?: string | null; forceRestart?: boolean; resume?: boolean } = {},
   automaticReconnect = false
 ) {
   return {
@@ -624,6 +643,7 @@ export function buildTerminalCliSessionRequest(
       ? {}
       : {
           ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
+          ...(input.accountProfileId !== undefined ? { accountProfileId: input.accountProfileId } : {}),
           reasoningEffort: pane.reasoningEffort,
           cwd: pane.cwd,
           ...(input.forceRestart ? { forceRestart: true } : {}),
@@ -1270,6 +1290,21 @@ function readStoredActiveCliTurn(paneId: string, sessionId: string): ActiveCliTu
   }
 }
 
+export interface PendingTerminalInputQueue {
+  length: number;
+  queuedBytes: number;
+}
+
+export function terminalPendingInputAdmission(
+  queue: PendingTerminalInputQueue,
+  dataLength: number,
+  maxEntries = 32,
+  maxBytes = 16_000
+): boolean {
+  if (dataLength <= 0) return true;
+  return queue.length < maxEntries && queue.queuedBytes + dataLength <= maxBytes;
+}
+
 export function TerminalPane({
   pane,
   terminalFontSize,
@@ -1293,6 +1328,8 @@ export function TerminalPane({
   const voiceOwnerId = `cli:${pane.id}`;
   const [registry, setRegistry] = useState<AgentRuntimeRegistry | null>(null);
   const [selectedRuntimeId, setSelectedRuntimeId] = useState(pane.terminalRuntimeId ?? DEFAULT_CLI_RUNTIME_ID);
+  const [geminiAccountProfiles, setGeminiAccountProfiles] = useState<CliAccountProfile[]>([]);
+  const [selectedGeminiAccountProfileId, setSelectedGeminiAccountProfileId] = useState(readLastGeminiAccountProfileId);
   const [sessionResponse, setSessionResponse] = useState<PaneCliSessionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
@@ -1389,6 +1426,7 @@ export function TerminalPane({
     () => cliRuntimes.find((runtime) => runtime.id === selectedRuntimeId) ?? cliRuntimes[0] ?? null,
     [cliRuntimes, selectedRuntimeId]
   );
+  const isGeminiRuntime = selectedRuntimeId === "cli:gemini";
   const selectedUploadPreviewIndex = useMemo(
     () => uploadPreviews.findIndex((preview) => preview.id === selectedUploadPreviewId),
     [selectedUploadPreviewId, uploadPreviews]
@@ -1397,7 +1435,7 @@ export function TerminalPane({
   const selectedUploadPreviewLabel = selectedUploadPreviewIndex >= 0 ? `Image ${selectedUploadPreviewIndex + 1}` : "Image";
   const isTerminalLoginSession = sessionResponse?.session.purpose === "LOGIN";
   const activeRuntimeId = sessionResponse?.session.runtimeId ?? selectedRuntimeId;
-  const supportsCliFileUploads = activeRuntimeId !== "cli:deepseek";
+  const supportsCliFileUploads = true;
   const canUpload = Boolean(
     supportsCliFileUploads &&
       sessionResponse?.session.purpose === "NORMAL" &&
@@ -1580,7 +1618,6 @@ export function TerminalPane({
   function terminalFileUploadSessionId(): string | null {
     const currentSession = sessionResponseRef.current;
     if (
-      currentSession?.session.runtimeId === "cli:deepseek" ||
       currentSession?.session.purpose !== "NORMAL" ||
       !currentSession.session.isActive ||
       !currentSession.websocket
@@ -1890,16 +1927,21 @@ export function TerminalPane({
   }, [error, loading, observerOnly, pending, sessionResponse, terminalStatus]);
 
   useEffect(() => {
-    if (!isVisible || loading) return;
+    if (loading) return;
     if (
       terminalStatus === "closed" ||
       (sessionResponse !== null && !sessionResponse.websocket) ||
+      (sessionResponse !== null && !sessionResponse.session && !pending) ||
       (observerOnly && sessionResponse === null && !pending) ||
       (!pending && Boolean(error))
     ) {
+      // Session-less/closed panes report reveal-ready even while hidden;
+      // visibility-gating here deadlocked the room reveal when orphan panes
+      // existed (user-reported: Room 6 with 4 session-less panes never
+      // revealed). User-approved 2026-08-14.
       onRevealReady?.(pane.id, revealGenerationRef.current);
     }
-  }, [error, isVisible, loading, observerOnly, onRevealReady, pane.id, pending, sessionResponse, terminalStatus]);
+  }, [error, loading, observerOnly, onRevealReady, pane.id, pending, sessionResponse, terminalStatus]);
 
   useEffect(() => {
     const session = sessionResponse?.session;
@@ -2332,6 +2374,40 @@ export function TerminalPane({
     void loadRuntimes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id, shouldBootstrap]);
+
+  useEffect(() => {
+    if (!isGeminiRuntime || observerOnly) return;
+    let cancelled = false;
+    const loadAccountProfiles = () => {
+      void api.listCliAccountProfiles("cli:gemini").then((result) => {
+        if (cancelled) return;
+        setGeminiAccountProfiles(result.profiles);
+        setSelectedGeminiAccountProfileId((current) => {
+          const profileId = result.profiles.some((profile) => profile.profileId === current)
+            ? current
+            : result.profiles[0]?.profileId ?? "main";
+          writeLastGeminiAccountProfileId(profileId);
+          return profileId;
+        });
+      }).catch(() => {
+        if (!cancelled) setGeminiAccountProfiles([]);
+      });
+    };
+    loadAccountProfiles();
+    window.addEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
+    };
+  }, [isGeminiRuntime, observerOnly]);
+
+  useEffect(() => {
+    const session = sessionResponse?.session;
+    if (session?.runtimeId !== "cli:gemini") return;
+    const profileId = session.accountProfileId ?? "main";
+    setSelectedGeminiAccountProfileId(profileId);
+    writeLastGeminiAccountProfileId(profileId);
+  }, [sessionResponse?.session.accountProfileId, sessionResponse?.session.runtimeId]);
 
   useEffect(
     () => () => {
@@ -3223,6 +3299,24 @@ export function TerminalPane({
               socketGeneration
             });
           }
+          if (
+            terminalSessionResponse.session.purpose === "LOGIN" &&
+            isTargetRef.current &&
+            isVisibleRef.current &&
+            !paneMinimizedRef.current
+          ) {
+            window.requestAnimationFrame(() => {
+              if (
+                sessionResponseRef.current?.session.sessionId === message.sessionId &&
+                sessionResponseRef.current.session.purpose === "LOGIN" &&
+                isTargetRef.current &&
+                isVisibleRef.current &&
+                !paneMinimizedRef.current
+              ) {
+                focusTerminal();
+              }
+            });
+          }
           reportTerminalBootstrapped();
           recordLifecycleDebugEvent({
             type: "terminal_socket_ready",
@@ -3753,7 +3847,7 @@ export function TerminalPane({
   }
 
   async function requestCliSession(
-    input: { modelId?: string | null; forceRestart?: boolean; resume?: boolean } = {},
+    input: { accountProfileId?: string | null; modelId?: string | null; forceRestart?: boolean; resume?: boolean } = {},
     options: { automaticReconnect?: boolean; expectedSocketGeneration?: number } = {}
   ): Promise<PaneCliSessionResponse | null> {
     if (!selectedRuntime && !options.automaticReconnect) return null;
@@ -3780,7 +3874,9 @@ export function TerminalPane({
               buildTerminalCliSessionRequest(
                 pane,
                 selectedRuntimeForRequest!.id,
-                input
+                selectedRuntimeForRequest!.id === "cli:gemini"
+                  ? { ...input, accountProfileId: input.accountProfileId ?? selectedGeminiAccountProfileId }
+                  : input
               )
             );
         if (!nextSession || (
@@ -4290,11 +4386,21 @@ export function TerminalPane({
       readySocketRef.current.sessionId !== sessionId
     ) {
       if (session && isRecoverableCliSession(session)) {
-        setNotice("CLI connection was lost. Reconnecting\u2026");
-        triggerTerminalSocketRecovery("user-input");
-      } else {
-        setError("Attach a running CLI before pasting into it.");
+        const queuedBytes = pendingTerminalInputsRef.current.reduce(
+          (total, pendingInput) => total + pendingInput.data.length,
+          0
+        );
+        if (terminalPendingInputAdmission({ length: pendingTerminalInputsRef.current.length, queuedBytes }, terminalData.length)) {
+          pendingTerminalInputsRef.current.push({ data: terminalData, source, display, preserveNotice, options });
+          setNotice("CLI connection was lost. Reconnecting\u2026");
+          triggerTerminalSocketRecovery("user-input");
+          return true;
+        }
+        setError("CLI connection was lost. Retry this input after the terminal reconnects.");
+        updateClipboardDebug("bad", "send failed", `${source}: CLI WebSocket is not open and the pending input queue is full; inputLength=${terminalData.length}.`);
+        return false;
       }
+      setError("Attach a running CLI before pasting into it.");
       updateClipboardDebug("bad", "send failed", `${source}: CLI WebSocket is not open; inputLength=${terminalData.length}.`);
       return false;
     }
@@ -4308,7 +4414,7 @@ export function TerminalPane({
         (total, pendingInput) => total + pendingInput.data.length,
         0
       );
-      if (pendingTerminalInputsRef.current.length >= 32 || queuedBytes + terminalData.length > 16_000) {
+      if (!terminalPendingInputAdmission({ length: pendingTerminalInputsRef.current.length, queuedBytes }, terminalData.length)) {
         setError("Terminal control is changing. Retry this input after the pane becomes active.");
         return false;
       }
@@ -4640,12 +4746,6 @@ export function TerminalPane({
     attachmentNotice = MANAGED_ATTACHMENT_NOTICE
   ) {
     if (!files.length) return;
-    if (!supportsCliFileUploads) {
-      clearClipboardPasteAttempt();
-      setDragActive(false);
-      setError("DeepSeek CLI is text-only. File and image uploads are unavailable.");
-      return;
-    }
     if (sessionResponseRef.current?.session.purpose === "LOGIN") {
       clearClipboardPasteAttempt();
       setDragActive(false);
@@ -5367,10 +5467,6 @@ export function TerminalPane({
         return;
       }
       if (event.detail.action === "upload") {
-        if (!supportsCliFileUploads) {
-          setError("DeepSeek CLI is text-only. File and image uploads are unavailable.");
-          return;
-        }
         if (requestTerminalFileUploadControl() === "unavailable") {
           return;
         }
@@ -5599,6 +5695,29 @@ export function TerminalPane({
         : null}
 
       <div className="terminal-stage">
+        {isGeminiRuntime && geminiAccountProfiles.length ? (
+          <label className="terminal-gemini-account-picker">
+            <span>Google account</span>
+            <select
+              aria-label={`Google account for ${pane.title}`}
+              value={selectedGeminiAccountProfileId}
+              disabled={pending || observerOnly}
+              onChange={(event) => {
+                const profileId = event.currentTarget.value;
+                const currentProfileId = sessionResponseRef.current?.session.accountProfileId ?? "main";
+                setSelectedGeminiAccountProfileId(profileId);
+                writeLastGeminiAccountProfileId(profileId);
+                if (sessionResponseRef.current && profileId !== currentProfileId) {
+                  void requestCliSession({ accountProfileId: profileId, forceRestart: true });
+                }
+              }}
+            >
+              {geminiAccountProfiles.map((profile) => (
+                <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {notice || uploading || dragActive || uploadPreviews.length ? (
           <div className="terminal-floating-stack" aria-label={`CLI transient uploads ${pane.title}`}>
             {notice ? (

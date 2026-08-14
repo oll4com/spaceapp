@@ -17,6 +17,9 @@ import {
   cliMaintenanceAuthHandoffSchema,
   cliMaintenanceEventSchema,
   cliRuntimeSettingSchema,
+  cliAccountProfileSchema,
+  cliAccountProfileIdSchema,
+  createCliAccountProfileInputSchema,
   agentToolAssignmentSchema,
   cliToggleRuntimeIdSchema,
   cliToggleRuntimeIds,
@@ -156,6 +159,8 @@ import {
   type CliMaintenanceAuthHandoff,
   type CliMaintenanceEvent,
   type CliRuntimeSetting,
+  type CliAccountProfile,
+  type CreateCliAccountProfileInput,
   type AgentToolAssignment,
   type CliToggleRuntimeId,
   type CreateUserLinkRequest,
@@ -683,6 +688,7 @@ type PaneCliSessionRow = {
   codexThreadId: string | null;
   cliTaskId: string | null;
   cliTaskRevisionId: string | null;
+  accountProfileId: string | null;
   status: PaneCliSession["status"];
   statusReason: string | null;
   exitCode: number | null;
@@ -961,6 +967,15 @@ type CliRuntimeSettingRow = {
   runtimeId: string;
   enabled: boolean;
   vpnEnabled: boolean;
+  updatedAt: Date | string;
+  updatedBy: string | null;
+};
+
+type CliAccountProfileRow = {
+  runtimeId: string;
+  profileId: string;
+  displayName: string;
+  createdAt: Date | string;
   updatedAt: Date | string;
   updatedBy: string | null;
 };
@@ -1554,6 +1569,7 @@ const paneCliSessionSelect = `
     codex_thread_id AS "codexThreadId",
     cli_task_id AS "cliTaskId",
     cli_task_revision_id AS "cliTaskRevisionId",
+    account_profile_id AS "accountProfileId",
     status,
     status_reason AS "statusReason",
     exit_code AS "exitCode",
@@ -2725,6 +2741,7 @@ function mapPaneCliSession(row: PaneCliSessionRow): PaneCliSession {
     codexThreadId: row.codexThreadId,
     cliTaskId: row.cliTaskId,
     cliTaskRevisionId: row.cliTaskRevisionId,
+    accountProfileId: row.accountProfileId,
     status: row.status,
     statusReason: row.statusReason,
     exitCode: row.exitCode,
@@ -2981,6 +2998,17 @@ function mapCliRuntimeSetting(row: CliRuntimeSettingRow): CliRuntimeSetting {
     runtimeId: row.runtimeId,
     enabled: row.enabled,
     vpnEnabled: row.vpnEnabled,
+    updatedAt: toIso(row.updatedAt),
+    updatedBy: row.updatedBy
+  });
+}
+
+function mapCliAccountProfile(row: CliAccountProfileRow): CliAccountProfile {
+  return cliAccountProfileSchema.parse({
+    runtimeId: row.runtimeId,
+    profileId: row.profileId,
+    displayName: row.displayName,
+    createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt),
     updatedBy: row.updatedBy
   });
@@ -4689,11 +4717,16 @@ export class PostgresSpaceStore implements SpaceStore {
   }
 
   async listRunningCliSessionCountsByRoom(runtimeIds?: string[]): Promise<RoomCliActivity[]> {
-    const result = await this.pool.query<{ roomId: string; runningCliCount: number | string }>(
+    const result = await this.pool.query<{ roomId: string; runningCliCount: number | string; runtimeIds: string[] }>(
       `
         SELECT
           r.id AS "roomId",
-          COUNT(s.session_id)::integer AS "runningCliCount"
+          COUNT(s.session_id)::integer AS "runningCliCount",
+          COALESCE(
+            ARRAY_AGG(DISTINCT s.runtime_id ORDER BY s.runtime_id)
+              FILTER (WHERE s.session_id IS NOT NULL),
+            ARRAY[]::text[]
+          ) AS "runtimeIds"
         FROM rooms r
         LEFT JOIN pane_cli_sessions s
           ON s.room_id = r.id
@@ -4706,7 +4739,8 @@ export class PostgresSpaceStore implements SpaceStore {
     );
     return result.rows.map((row) => ({
       roomId: row.roomId,
-      runningCliCount: Number(row.runningCliCount)
+      runningCliCount: Number(row.runningCliCount),
+      runtimeIds: row.runtimeIds
     }));
   }
 
@@ -4790,6 +4824,81 @@ export class PostgresSpaceStore implements SpaceStore {
       [parsedRuntimeId, parsed.enabled, updatedAt, actorId]
     );
     return mapCliRuntimeSetting(firstOrNotFound(result.rows, `CLI VPN setting ${parsedRuntimeId} was not updated.`));
+  }
+
+  async listCliAccountProfiles(runtimeId: CliToggleRuntimeId): Promise<CliAccountProfile[]> {
+    const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
+    const result = await this.pool.query<CliAccountProfileRow>(
+      `
+        SELECT
+          runtime_id AS "runtimeId",
+          profile_id AS "profileId",
+          display_name AS "displayName",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          updated_by AS "updatedBy"
+        FROM cli_account_profiles
+        WHERE runtime_id = $1
+        ORDER BY created_at ASC, profile_id ASC
+      `,
+      [parsedRuntimeId]
+    );
+    return result.rows.map(mapCliAccountProfile);
+  }
+
+  async getCliAccountProfile(runtimeId: CliToggleRuntimeId, profileId: string): Promise<CliAccountProfile | null> {
+    const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
+    const parsedProfileId = cliAccountProfileIdSchema.parse(profileId);
+    const result = await this.pool.query<CliAccountProfileRow>(
+      `SELECT runtime_id AS "runtimeId", profile_id AS "profileId", display_name AS "displayName",
+              created_at AS "createdAt", updated_at AS "updatedAt", updated_by AS "updatedBy"
+       FROM cli_account_profiles WHERE runtime_id = $1 AND profile_id = $2 LIMIT 1`,
+      [parsedRuntimeId, parsedProfileId]
+    );
+    return result.rows[0] ? mapCliAccountProfile(result.rows[0]) : null;
+  }
+
+  async createCliAccountProfile(
+    runtimeId: CliToggleRuntimeId,
+    input: CreateCliAccountProfileInput,
+    updatedBy: string
+  ): Promise<CliAccountProfile> {
+    const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
+    const parsed = createCliAccountProfileInputSchema.parse(input);
+    const actorId = idSchema.parse(updatedBy);
+    const updatedAt = nowIso();
+    const result = await this.pool.query<CliAccountProfileRow>(
+      `
+        INSERT INTO cli_account_profiles (runtime_id, profile_id, display_name, updated_at, updated_by)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (runtime_id, profile_id) DO UPDATE SET
+          display_name = EXCLUDED.display_name,
+          updated_at = EXCLUDED.updated_at,
+          updated_by = EXCLUDED.updated_by
+        RETURNING
+          runtime_id AS "runtimeId",
+          profile_id AS "profileId",
+          display_name AS "displayName",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          updated_by AS "updatedBy"
+      `,
+      [parsedRuntimeId, parsed.profileId, parsed.displayName, updatedAt, actorId]
+    );
+    return mapCliAccountProfile(firstOrNotFound(result.rows, `CLI account profile ${parsedRuntimeId}/${parsed.profileId} was not created.`));
+  }
+
+  async removeCliAccountProfile(
+    runtimeId: CliToggleRuntimeId,
+    profileId: string
+  ): Promise<boolean> {
+    const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
+    const parsedProfileId = cliAccountProfileIdSchema.parse(profileId);
+    const result = await this.pool.query(
+      `DELETE FROM cli_account_profiles WHERE runtime_id = $1 AND profile_id = $2`,
+      [parsedRuntimeId, parsedProfileId]
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async listAgentToolAssignments(): Promise<AgentToolAssignment[]> {
@@ -7950,6 +8059,23 @@ export class PostgresSpaceStore implements SpaceStore {
     return result.rows.map(mapPaneCliSession);
   }
 
+  async isCliAccountProfileInUse(runtimeId: CliToggleRuntimeId, profileId: string): Promise<boolean> {
+    const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
+    const parsedProfileId = cliAccountProfileIdSchema.parse(profileId);
+    const result = await this.pool.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM pane_cli_sessions
+         WHERE runtime_id = $1
+           AND account_profile_id = $2
+           AND is_active = true
+           AND status NOT IN ('EXITED', 'ERROR')
+       ) AS exists`,
+      [parsedRuntimeId, parsedProfileId]
+    );
+    return result.rows[0]?.exists ?? false;
+  }
+
   async getCliTask(taskId: string): Promise<CliTaskRecord | null> {
     const result = await this.pool.query<CliTaskRow>(`${cliTaskSelect} WHERE task_id = $1`, [taskId]);
     return result.rows[0] ? mapCliTask(result.rows[0]) : null;
@@ -8805,6 +8931,7 @@ export class PostgresSpaceStore implements SpaceStore {
             codex_thread_id,
             cli_task_id,
             cli_task_revision_id,
+            account_profile_id,
             status,
             status_reason,
             exit_code,
@@ -8813,7 +8940,7 @@ export class PostgresSpaceStore implements SpaceStore {
             updated_at,
             ended_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NULL, $17, $18, $18, NULL)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULL, $18, $19, $19, NULL)
           ON CONFLICT (session_id)
           DO UPDATE SET
             pane_id = EXCLUDED.pane_id,
@@ -8829,6 +8956,7 @@ export class PostgresSpaceStore implements SpaceStore {
             codex_thread_id = COALESCE(EXCLUDED.codex_thread_id, pane_cli_sessions.codex_thread_id),
             cli_task_id = COALESCE(EXCLUDED.cli_task_id, pane_cli_sessions.cli_task_id),
             cli_task_revision_id = COALESCE(EXCLUDED.cli_task_revision_id, pane_cli_sessions.cli_task_revision_id),
+            account_profile_id = COALESCE(EXCLUDED.account_profile_id, pane_cli_sessions.account_profile_id),
             status = EXCLUDED.status,
             status_reason = EXCLUDED.status_reason,
             exit_code = EXCLUDED.exit_code,
@@ -8850,6 +8978,7 @@ export class PostgresSpaceStore implements SpaceStore {
             codex_thread_id AS "codexThreadId",
             cli_task_id AS "cliTaskId",
             cli_task_revision_id AS "cliTaskRevisionId",
+            account_profile_id AS "accountProfileId",
             status,
             status_reason AS "statusReason",
             exit_code AS "exitCode",
@@ -8873,6 +9002,7 @@ export class PostgresSpaceStore implements SpaceStore {
           parsed.codexThreadId ?? null,
           cliTaskId,
           cliTaskRevisionId,
+          parsed.accountProfileId ?? null,
           parsed.status ?? "IDLE",
           parsed.statusReason ?? null,
           isActive,
@@ -8935,7 +9065,8 @@ export class PostgresSpaceStore implements SpaceStore {
               reasoning_effort = $10,
               launch_mode = $11,
               cli_task_id = $12,
-              cli_task_revision_id = $13
+              cli_task_revision_id = $13,
+              account_profile_id = $14
           WHERE session_id = $1
           RETURNING
             session_id AS "sessionId",
@@ -8952,6 +9083,7 @@ export class PostgresSpaceStore implements SpaceStore {
             codex_thread_id AS "codexThreadId",
             cli_task_id AS "cliTaskId",
             cli_task_revision_id AS "cliTaskRevisionId",
+            account_profile_id AS "accountProfileId",
             status,
             status_reason AS "statusReason",
             exit_code AS "exitCode",
@@ -8973,7 +9105,8 @@ export class PostgresSpaceStore implements SpaceStore {
           parsed.reasoningEffort ?? current.reasoningEffort,
           parsed.launchMode ?? current.launchMode,
           parsed.cliTaskId === undefined ? current.cliTaskId : parsed.cliTaskId,
-          parsed.cliTaskRevisionId === undefined ? current.cliTaskRevisionId : parsed.cliTaskRevisionId
+          parsed.cliTaskRevisionId === undefined ? current.cliTaskRevisionId : parsed.cliTaskRevisionId,
+          parsed.accountProfileId === undefined ? current.accountProfileId : parsed.accountProfileId
         ]
       );
       const updated = mapPaneCliSession(firstOrNotFound(result.rows, `CLI session ${sessionId} was not updated.`));

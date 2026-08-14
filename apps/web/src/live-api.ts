@@ -72,6 +72,13 @@ import type {
   RestartCliRuntimeVpnSessionsResult,
   CliRuntimeRestartSessionsResult,
   CliRuntimeRestartAllResult,
+  CreateCliAccountProfileInput,
+  CreateCliAccountProfileResponse,
+  CliAccountProfileDetailsResponse,
+  ListCliAccountProfilesResponse,
+  RemoveCliAccountProfileResponse,
+  UpdateCliAccountProfileInput,
+  UpdateCliAccountProfileResponse,
   CliSessionStats,
   ToolbarModelStats,
   CliTaskHistoryResponse,
@@ -1401,6 +1408,39 @@ export const api = {
     invalidateCliRuntimeSettings();
     return result;
   },
+  listCliAccountProfiles: (runtimeId: string) =>
+    request<ListCliAccountProfilesResponse>(`/api/cli/runtimes/${encodeURIComponent(runtimeId)}/account-profiles`),
+  createCliAccountProfile: async (input: CreateCliAccountProfileInput) => {
+    const result = await request<CreateCliAccountProfileResponse>(
+      `/api/cli/runtimes/${encodeURIComponent(input.runtimeId)}/account-profiles`,
+      {
+        method: "POST",
+        body: JSON.stringify(input)
+      }
+    );
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  updateCliAccountProfile: async (runtimeId: string, profileId: string, input: UpdateCliAccountProfileInput) => {
+    const result = await request<UpdateCliAccountProfileResponse>(
+      `/api/cli/runtimes/${encodeURIComponent(runtimeId)}/account-profiles/${encodeURIComponent(profileId)}`,
+      { method: "PATCH", body: JSON.stringify(input) }
+    );
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  getCliAccountProfileDetails: (runtimeId: string, profileId: string) =>
+    request<CliAccountProfileDetailsResponse>(
+      `/api/cli/runtimes/${encodeURIComponent(runtimeId)}/account-profiles/${encodeURIComponent(profileId)}/details`
+    ),
+  removeCliAccountProfile: async (runtimeId: string, profileId: string) => {
+    const result = await request<RemoveCliAccountProfileResponse>(
+      `/api/cli/runtimes/${encodeURIComponent(runtimeId)}/account-profiles/${encodeURIComponent(profileId)}`,
+      { method: "DELETE" }
+    );
+    invalidateCliRuntimeSettings();
+    return result;
+  },
   agentToolsCatalog: () => request<AgentToolsCatalogResponse>("/api/agent-tools/catalog"),
   updateAgentToolAssignment: (toolId: string, input: UpdateAgentToolAssignmentInput) =>
     request<AgentToolAssignment>(`/api/agent-tools/assignments/${encodeURIComponent(toolId)}`, {
@@ -1652,6 +1692,7 @@ export const api = {
     paneId: string,
     input: {
       runtimeId: string;
+      accountProfileId?: string | null;
       modelId?: string | null;
       reasoningEffort?: Pane["reasoningEffort"];
       cwd?: string | null;

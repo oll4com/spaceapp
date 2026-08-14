@@ -1,9 +1,9 @@
 export const WARM_ROOM_MRU_STORAGE_KEY = "space.warmRoom.mru.v1";
 export const WARM_ROOM_MRU_LIMIT = 6;
-export const WARM_ROOM_HYDRATION_WINDOW_MS = 2_000;
+export const WARM_ROOM_HYDRATION_WINDOW_MS = 15_000;
 export const WARM_ROOM_STARTUP_HYDRATION_CONCURRENCY = 2;
 /** Hard ceiling for rooms hydrated during the shared startup window (active room excluded). */
-export const WARM_ROOM_STARTUP_HYDRATION_MAX = 4;
+export const WARM_ROOM_STARTUP_HYDRATION_MAX = 5;
 export const STARTUP_REQUEST_CONCURRENCY = 4;
 /** Cool-down after output-pressure eviction before the same room may be auto-filled again. */
 export const WARM_ROOM_EVICTION_COOLDOWN_MS = 30_000;

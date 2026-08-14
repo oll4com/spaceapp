@@ -1,3 +1,21 @@
+import {
+  DEFAULT_WARM_ROOM_CONNECTED_PANE_LIMIT,
+  normalizeWarmRoomConnectedPaneLimit
+} from "./warm-room-settings.js";
+
+export interface WarmRoomLimits {
+  maxRooms: number;
+  maxAttachedPanes: number;
+}
+
+/**
+ * User-approved 2026-08-13: the connected-pane budget is DISABLED for warm
+ * admission. Only the fixed six-room budget limits warm selection; stored
+ * pane-limit values no longer keep rooms cold. The budget code is kept intact
+ * and can be re-enabled by flipping this flag back to true.
+ */
+export const WARM_ROOM_PANE_BUDGET_ENFORCEMENT_ENABLED = false;
+
 export const WARM_ROOM_RUNTIME_POLL_INTERVAL_MS = 30_000;
 export const HIDDEN_WARM_ROOM_RUNTIME_POLL_INTERVAL_MS = 30_000;
 
@@ -12,17 +30,9 @@ export interface SelectWarmRoomIdsInput {
   roomIds: string[];
   activeRoomId: string;
   previousRoomId?: string | null;
-  protectedRoomIds?: readonly string[];
   preferredRoomIds?: readonly string[];
-  maxWarmRooms: number;
   maxAttachedPanes: number;
   candidates: WarmRoomCandidate[];
-}
-
-export interface SelectHiddenRoomEvictionIdsInput {
-  candidates: readonly WarmRoomCandidate[];
-  protectedRoomIds: readonly string[];
-  evictionCount: number;
 }
 
 export interface ConnectionBearingPane {
@@ -36,6 +46,16 @@ export interface SelectRoomRuntimePollIdsInput {
   activeRoomId: string | null;
   lastPolledAtByRoomId: ReadonlyMap<string, number>;
   now: number;
+}
+
+export function warmRoomLimits(
+  maxAttachedPanes = DEFAULT_WARM_ROOM_CONNECTED_PANE_LIMIT
+): WarmRoomLimits {
+  // User-approved 2026-08-13: fixed warm budget of six full rooms.
+  return {
+    maxRooms: 6,
+    maxAttachedPanes: normalizeWarmRoomConnectedPaneLimit(maxAttachedPanes)
+  };
 }
 
 export function connectedPaneCount(
@@ -70,45 +90,24 @@ export function selectRoomRuntimePollIds(input: SelectRoomRuntimePollIdsInput): 
   return selected;
 }
 
-export function selectHiddenRoomEvictionIds(
-  input: SelectHiddenRoomEvictionIdsInput
-): string[] {
-  const protectedRoomIds = new Set(input.protectedRoomIds);
-  const evictionCount = Math.max(0, Math.floor(input.evictionCount));
-  return input.candidates
-    .filter((candidate) => !protectedRoomIds.has(candidate.roomId))
-    .sort((left, right) => (
-      left.lastAccessedAt - right.lastAccessedAt ||
-      left.roomId.localeCompare(right.roomId)
-    ))
-    .slice(0, evictionCount)
-    .map((candidate) => candidate.roomId);
-}
-
 export function selectWarmRoomIds(input: SelectWarmRoomIdsInput): string[] {
   if (input.enabled === false) {
     return input.roomIds.includes(input.activeRoomId) ? [input.activeRoomId] : [];
   }
-  const maxRooms = Math.max(1, Math.floor(input.maxWarmRooms));
-  const maxAttachedPanes = Math.max(0, Math.floor(input.maxAttachedPanes));
+  const limits = warmRoomLimits(input.maxAttachedPanes);
   const candidatesById = new Map(input.candidates.map((candidate) => [candidate.roomId, candidate]));
   const activeIndex = input.roomIds.indexOf(input.activeRoomId);
-  const protectedRoomIds = [
-    ...(input.protectedRoomIds ?? [])
-  ];
   const prioritizedRoomIds = [
     input.activeRoomId,
-    ...protectedRoomIds,
-    input.previousRoomId,
     ...(input.preferredRoomIds ?? []),
+    input.previousRoomId,
+    activeIndex >= 0 ? input.roomIds[activeIndex + 1] : undefined,
+    activeIndex > 0 ? input.roomIds[activeIndex - 1] : undefined,
     ...input.candidates
       .filter((candidate) => candidate.roomId !== input.activeRoomId)
       .sort((left, right) => right.lastAccessedAt - left.lastAccessedAt)
-      .map((candidate) => candidate.roomId),
-    activeIndex >= 0 ? input.roomIds[activeIndex + 1] : undefined,
-    activeIndex > 0 ? input.roomIds[activeIndex - 1] : undefined
+      .map((candidate) => candidate.roomId)
   ];
-  const protectedSet = new Set([input.activeRoomId, ...protectedRoomIds]);
 
   const selected: string[] = [];
   const seen = new Set<string>();
@@ -125,15 +124,16 @@ export function selectWarmRoomIds(input: SelectWarmRoomIdsInput): string[] {
     }
     const candidatePaneCount = Math.max(0, candidatesById.get(roomId)?.attachedPaneCount ?? 0);
     if (
-      !protectedSet.has(roomId) &&
-      attachedPaneCount + candidatePaneCount > maxAttachedPanes
+      WARM_ROOM_PANE_BUDGET_ENFORCEMENT_ENABLED &&
+      roomId !== input.activeRoomId &&
+      attachedPaneCount + candidatePaneCount > limits.maxAttachedPanes
     ) {
       continue;
     }
 
     selected.push(roomId);
     attachedPaneCount += candidatePaneCount;
-    if (selected.length >= maxRooms) {
+    if (selected.length >= limits.maxRooms) {
       break;
     }
   }

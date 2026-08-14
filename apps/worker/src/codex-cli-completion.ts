@@ -90,6 +90,10 @@ export function inspectCodexCliCompletion(
   let contextualTurnId: string | null = null;
   let goalStatus: string | null = null;
   let goalTurnId: string | null = null;
+  // Last eligible assistant response seen while no turn id context was active
+  // (marker created mid-turn: its turn_context predates submittedAt and is
+  // filtered out, so the final answer can only be recovered by position).
+  let pendingFinalResponse: string | null = null;
   const turns = new Map<string, {
     finalResponse: string | null;
     completedAtMs: number | null;
@@ -130,6 +134,7 @@ export function inspectCodexCliCompletion(
         targetTurnId ??= turnId;
         turnState(turnId);
         if (goalStatus && turnId !== targetTurnId) goalTurnId = turnId;
+        pendingFinalResponse = null;
       }
       continue;
     }
@@ -144,6 +149,14 @@ export function inspectCodexCliCompletion(
       ) {
         const state = turnState(responseTurnId);
         state.finalResponse = assistantResponse(payload) ?? state.finalResponse;
+      } else if (
+        !responseTurnId &&
+        isEligible(atMs, options.submittedAtMs) &&
+        payload.type === "message" &&
+        payload.role === "assistant"
+      ) {
+        const responseText = assistantResponse(payload);
+        if (responseText) pendingFinalResponse = responseText;
       }
       continue;
     }
@@ -198,6 +211,8 @@ export function inspectCodexCliCompletion(
     state.completedAtMs ??= atMs;
     const lastAgentMessage = stringValue(payload.last_agent_message)?.trim();
     if (lastAgentMessage) state.finalResponse ??= lastAgentMessage;
+    if (!state.finalResponse && pendingFinalResponse) state.finalResponse = pendingFinalResponse;
+    pendingFinalResponse = null;
   }
 
   const selectedTurnId = goalStatus ? (goalTurnId ?? targetTurnId) : targetTurnId;

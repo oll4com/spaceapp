@@ -154,6 +154,14 @@ import {
   claimSwarmLockInputSchema,
   cliLoginRequestSchema,
   cliLoginResponseSchema,
+  cliAccountProfileIdSchema,
+  cliAccountProfileDetailsResponseSchema,
+  createCliAccountProfileInputSchema,
+  createCliAccountProfileResponseSchema,
+  listCliAccountProfilesResponseSchema,
+  removeCliAccountProfileResponseSchema,
+  updateCliAccountProfileInputSchema,
+  updateCliAccountProfileResponseSchema,
   cliMaintenanceRequestSchema,
   cliTerminalClientEventInputSchema,
   cliTerminalClientEventResponseSchema,
@@ -749,6 +757,8 @@ export interface CreateAppOptions {
     runtimeId: string;
     requestId: string;
   }) => Promise<{ paneId: string }>;
+  removeGeminiAccountProfileState?: (profileId: string) => Promise<void>;
+  readGeminiAccountProfileDetails?: (profileId: string) => Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null }>;
   releasePublishingManager?: ReleasePublishingManager;
   auth?: AuthConfig;
   config?: SpaceApiConfig;
@@ -3519,6 +3529,25 @@ function reviewGateStatus(checks: Array<{ status: string }>): { gateStatus: "EMP
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
   const apiStartedAt = new Date().toISOString();
   const config = options.config ?? getApiConfig(process.env);
+  const removeGeminiAccountProfileState = options.removeGeminiAccountProfileState ?? (async (profileId: string) => {
+    const commandRoot = config.cliCommandPath ?? "/opt/spaceapp/bin";
+    await execFileAsync(join(commandRoot, "gemini-vscode-parity"), ["remove-profile", profileId], {
+      timeout: 15_000,
+      maxBuffer: 64 * 1024
+    });
+  });
+  const readGeminiAccountProfileDetails = options.readGeminiAccountProfileDetails ?? (async (profileId: string) => {
+    const commandRoot = config.cliCommandPath ?? "/opt/spaceapp/bin";
+    const { stdout } = await execFileAsync(join(commandRoot, "gemini-vscode-parity"), ["profile-info", profileId], {
+      timeout: 12_000,
+      maxBuffer: 16 * 1024
+    });
+    return z.object({
+      authStatus: z.enum(["CONNECTED", "NOT_CONNECTED", "UNAVAILABLE"]),
+      email: z.string().email().nullable()
+    }).strict().parse(JSON.parse(stdout));
+  });
+  const deletingGeminiAccountProfileIds = new Set<string>();
   const appVersionReader = createAppVersionReader({
     appVersionEnv: process.env.SPACE_APP_VERSION
   });
@@ -5927,12 +5956,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       store.listRooms(),
       store.listRunningCliSessionCountsByRoom(runtimeIds)
     ]);
-    const runningCountByRoomId = new Map(activity.map((item) => [item.roomId, item.runningCliCount]));
+    const activityByRoomId = new Map(activity.map((item) => [
+      item.roomId,
+      item as typeof item & { runtimeIds?: string[] }
+    ]));
     return roomCliActivityResponseSchema.parse({
-      data: rooms.map((room) => ({
-        roomId: room.id,
-        runningCliCount: runningCountByRoomId.get(room.id) ?? 0
-      })),
+      data: rooms.map((room) => {
+        const roomActivity = activityByRoomId.get(room.id);
+        return {
+          roomId: room.id,
+          runningCliCount: roomActivity?.runningCliCount ?? 0,
+          runtimeIds: roomActivity?.runtimeIds ?? []
+        };
+      }),
       sampledAt: nowIso()
     });
   });
@@ -7302,6 +7338,146 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return result;
     } finally {
       cliRuntimeRestartAllInFlight = false;
+    }
+  });
+
+  const cliAccountProfileParamSchema = z.object({
+    runtimeId: cliToggleRuntimeIdSchema,
+    profileId: cliAccountProfileIdSchema.optional()
+  });
+
+  app.get("/api/cli/runtimes/:runtimeId/account-profiles", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI account profiles require the ADMIN role.");
+    }
+    const params = parseQuery(cliRuntimeSettingParamSchema, request.params);
+    if (params.runtimeId !== "cli:gemini") {
+      throw new SpaceConflictError(`CLI runtime ${params.runtimeId} does not support account profiles.`);
+    }
+    await cliRuntimeVisibility.assertEnabled(params.runtimeId);
+    const profiles = await store.listCliAccountProfiles(params.runtimeId);
+    return listCliAccountProfilesResponseSchema.parse({ profiles });
+  });
+
+  app.post("/api/cli/runtimes/:runtimeId/account-profiles", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI account profiles require the ADMIN role.");
+    }
+    const params = parseQuery(cliRuntimeSettingParamSchema, request.params);
+    if (params.runtimeId !== "cli:gemini") {
+      throw new SpaceConflictError(`CLI runtime ${params.runtimeId} does not support account profiles.`);
+    }
+    const input = parseBody(createCliAccountProfileInputSchema, request.body ?? {});
+    if (input.runtimeId !== params.runtimeId) {
+      throw new SpaceConflictError("Account profile runtime must match the route runtime.");
+    }
+    if (deletingGeminiAccountProfileIds.has(input.profileId)) {
+      throw new SpaceConflictError(`Account profile ${input.profileId} is being removed.`);
+    }
+    const profile = await store.createCliAccountProfile(
+      params.runtimeId,
+      input,
+      request.user?.id ?? "operator:unknown"
+    );
+    await recordAudit(store, request, {
+      action: "cli.runtime.account_profile.created",
+      targetType: "cli_runtime",
+      targetId: params.runtimeId,
+      metadata: { profileId: profile.profileId }
+    });
+    return createCliAccountProfileResponseSchema.parse({ profile });
+  });
+
+  app.patch("/api/cli/runtimes/:runtimeId/account-profiles/:profileId", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI account profiles require the ADMIN role.");
+    }
+    const params = parseQuery(cliAccountProfileParamSchema, request.params);
+    if (params.runtimeId !== "cli:gemini" || !params.profileId) {
+      throw new SpaceConflictError("A Gemini account profile is required.");
+    }
+    const existing = await store.getCliAccountProfile(params.runtimeId, params.profileId);
+    if (!existing) {
+      throw new SpaceNotFoundError(`CLI account profile ${params.runtimeId}/${params.profileId} was not found.`);
+    }
+    const input = parseBody(updateCliAccountProfileInputSchema, request.body ?? {});
+    const profile = await store.createCliAccountProfile(
+      params.runtimeId,
+      { runtimeId: params.runtimeId, profileId: params.profileId, displayName: input.displayName },
+      request.user?.id ?? "operator:unknown"
+    );
+    await recordAudit(store, request, {
+      action: "cli.runtime.account_profile.renamed",
+      targetType: "cli_runtime",
+      targetId: params.runtimeId,
+      metadata: { profileId: profile.profileId }
+    });
+    return updateCliAccountProfileResponseSchema.parse({ profile });
+  });
+
+  app.get("/api/cli/runtimes/:runtimeId/account-profiles/:profileId/details", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI account profiles require the ADMIN role.");
+    }
+    const params = parseQuery(cliAccountProfileParamSchema, request.params);
+    if (params.runtimeId !== "cli:gemini" || !params.profileId) {
+      throw new SpaceConflictError("A Gemini account profile is required.");
+    }
+    const profile = await store.getCliAccountProfile(params.runtimeId, params.profileId);
+    if (!profile) {
+      throw new SpaceNotFoundError(`CLI account profile ${params.runtimeId}/${params.profileId} was not found.`);
+    }
+    const nativeDetails = await readGeminiAccountProfileDetails(params.profileId);
+    return cliAccountProfileDetailsResponseSchema.parse({
+      details: {
+        runtimeId: params.runtimeId,
+        profileId: params.profileId,
+        displayName: profile.displayName,
+        ...nativeDetails
+      }
+    });
+  });
+
+  app.delete("/api/cli/runtimes/:runtimeId/account-profiles/:profileId", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI account profiles require the ADMIN role.");
+    }
+    const params = parseQuery(cliAccountProfileParamSchema, request.params);
+    if (params.runtimeId !== "cli:gemini") {
+      throw new SpaceConflictError(`CLI runtime ${params.runtimeId} does not support account profiles.`);
+    }
+    if (!params.profileId) {
+      throw new SpaceConflictError("A profileId is required to remove an account profile.");
+    }
+    if (params.profileId === "main") {
+      throw new SpaceConflictError("The main Gemini account profile cannot be removed.");
+    }
+    if (deletingGeminiAccountProfileIds.has(params.profileId)) {
+      throw new SpaceConflictError(`Account profile ${params.profileId} is already being removed.`);
+    }
+    deletingGeminiAccountProfileIds.add(params.profileId);
+    try {
+      if (await store.isCliAccountProfileInUse(params.runtimeId, params.profileId)) {
+        throw new SpaceConflictError(`Account profile ${params.profileId} is in use by an active Gemini pane.`);
+      }
+      const profile = await store.getCliAccountProfile(params.runtimeId, params.profileId);
+      if (!profile) {
+        throw new SpaceNotFoundError(`CLI account profile ${params.runtimeId}/${params.profileId} was not found.`);
+      }
+      await removeGeminiAccountProfileState(params.profileId);
+      const removed = await store.removeCliAccountProfile(params.runtimeId, params.profileId);
+      if (!removed) {
+        throw new SpaceNotFoundError(`CLI account profile ${params.runtimeId}/${params.profileId} was not found.`);
+      }
+      await recordAudit(store, request, {
+        action: "cli.runtime.account_profile.removed",
+        targetType: "cli_runtime",
+        targetId: params.runtimeId,
+        metadata: { profileId: params.profileId }
+      });
+      return removeCliAccountProfileResponseSchema.parse({ removed });
+    } finally {
+      deletingGeminiAccountProfileIds.delete(params.profileId);
     }
   });
 
@@ -9736,6 +9912,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         status: runtime.status
       });
     }
+    if (runtime.id !== "cli:gemini" && input.accountProfileId !== undefined && input.accountProfileId !== null) {
+      throw new SpaceConflictError(`Runtime ${runtime.id} does not support account profiles.`);
+    }
+    if (runtime.id === "cli:gemini" && input.accountProfileId) {
+      if (deletingGeminiAccountProfileIds.has(input.accountProfileId)) {
+        throw new SpaceConflictError(`Account profile ${input.accountProfileId} is being removed.`);
+      }
+      const profile = await store.getCliAccountProfile("cli:gemini", input.accountProfileId);
+      if (!profile) throw new SpaceNotFoundError(`CLI account profile cli:gemini/${input.accountProfileId} was not found.`);
+    }
+    const requestedAccountProfileId = runtime.id === "cli:gemini" && input.accountProfileId !== "main"
+      ? input.accountProfileId ?? null
+      : null;
     if (input.resume && (!input.forceRestart || !supportsNativeCliResume(runtime.id))) {
       throw new SpaceConflictError(
         input.forceRestart
@@ -9753,6 +9942,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       !input.forceRestart &&
       !input.resume &&
       active.runtimeId === runtime.id &&
+      active.accountProfileId === requestedAccountProfileId &&
       active.status !== "EXITED" &&
       active.status !== "ERROR"
         ? active
@@ -9798,6 +9988,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       active &&
       !input.forceRestart &&
       active.runtimeId === runtime.id &&
+      active.accountProfileId === requestedAccountProfileId &&
       active.status !== "EXITED" &&
       active.status !== "ERROR"
         ? active
@@ -9971,6 +10162,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             launchMode: input.resume ? "RESUME" : "FRESH",
             cwd: sessionCwd,
             codexThreadId: null,
+            accountProfileId: requestedAccountProfileId,
             status: "IDLE",
             statusReason: "CLI session allocated; waiting for terminal transport attach."
           },
@@ -10001,6 +10193,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         runtimeId: runtime.id,
         providerId: runtime.providerId,
         agentId: runtime.agentId,
+        accountProfileId: session.accountProfileId,
         resume: input.resume,
         reused: Boolean(reusableSession)
       }
@@ -10232,9 +10425,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     await assertCliHttpMutationControl(request, active);
     await cliRuntimeVisibility.assertEnabled(active.runtimeId);
-    if (active.runtimeId === "cli:deepseek") {
-      return sendApiError(reply, 409, "CLI_UPLOAD_UNSUPPORTED", "DeepSeek CLI does not support terminal file uploads.");
-    }
 
     const files = [];
     let fileCount = 0;

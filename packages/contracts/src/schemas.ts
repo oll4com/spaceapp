@@ -288,7 +288,8 @@ export const proofRoomCliIdentitySchema = z
 export const roomCliActivitySchema = z
   .object({
     roomId: idSchema,
-    runningCliCount: z.number().int().min(0)
+    runningCliCount: z.number().int().min(0),
+    runtimeIds: z.array(z.string().trim().min(1).max(160)).optional()
   })
   .strict();
 
@@ -1530,6 +1531,73 @@ export const updateCliRuntimeVpnInputSchema = z
   })
   .strict();
 
+export const cliAccountProfileIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/);
+
+export const cliAccountProfileSchema = z
+  .object({
+    runtimeId: z.literal("cli:gemini"),
+    profileId: cliAccountProfileIdSchema,
+    displayName: z.string().trim().min(1).max(80),
+    createdAt: isoDateTimeSchema,
+    updatedAt: isoDateTimeSchema,
+    updatedBy: idSchema.nullable()
+  })
+  .strict();
+
+export const createCliAccountProfileInputSchema = z
+  .object({
+    runtimeId: z.literal("cli:gemini"),
+    profileId: cliAccountProfileIdSchema,
+    displayName: z.string().trim().min(1).max(80)
+  })
+  .strict();
+
+export const createCliAccountProfileResponseSchema = z
+  .object({
+    profile: cliAccountProfileSchema
+  })
+  .strict();
+
+export const updateCliAccountProfileInputSchema = z
+  .object({
+    displayName: z.string().trim().min(1).max(80)
+  })
+  .strict();
+
+export const updateCliAccountProfileResponseSchema = z
+  .object({
+    profile: cliAccountProfileSchema
+  })
+  .strict();
+
+export const cliAccountProfileDetailsSchema = z
+  .object({
+    runtimeId: z.literal("cli:gemini"),
+    profileId: cliAccountProfileIdSchema,
+    displayName: z.string().trim().min(1).max(80),
+    email: z.string().email().nullable(),
+    authStatus: z.enum(["CONNECTED", "NOT_CONNECTED", "UNAVAILABLE"])
+  })
+  .strict();
+
+export const cliAccountProfileDetailsResponseSchema = z
+  .object({
+    details: cliAccountProfileDetailsSchema
+  })
+  .strict();
+
+export const listCliAccountProfilesResponseSchema = z
+  .object({
+    profiles: z.array(cliAccountProfileSchema)
+  })
+  .strict();
+
+export const removeCliAccountProfileResponseSchema = z
+  .object({
+    removed: z.boolean()
+  })
+  .strict();
+
 export const cliRuntimeVpnApplicationSchema = z
   .object({
     effectiveMode: z.enum(["DIRECT", "VPN", "BLOCKED"]),
@@ -1634,6 +1702,7 @@ export const paneCliSessionSchema = z.object({
   codexThreadId: codexThreadIdSchema.nullable().default(null),
   cliTaskId: idSchema.nullable().default(null),
   cliTaskRevisionId: idSchema.nullable().default(null),
+  accountProfileId: cliAccountProfileIdSchema.nullable().default(null),
   status: paneCliSessionStatusSchema,
   statusReason: z.string().min(1).max(500).nullable(),
   exitCode: z.number().int().nullable(),
@@ -1679,7 +1748,8 @@ export const updatePaneCliSessionInputSchema = z
     reasoningEffort: cliReasoningEffortSchema.optional(),
     launchMode: paneCliSessionLaunchModeSchema.optional(),
     cliTaskId: idSchema.nullable().optional(),
-    cliTaskRevisionId: idSchema.nullable().optional()
+    cliTaskRevisionId: idSchema.nullable().optional(),
+    accountProfileId: cliAccountProfileIdSchema.nullable().optional()
   })
   .refine((input) => Object.keys(input).length > 0, "CLI session update must include at least one field.");
 
@@ -1781,6 +1851,7 @@ export const paneCliCodexThreadOwnershipSchema = z.object({
 
 export const createPaneCliSessionRequestSchema = z.object({
   runtimeId: z.string().trim().min(1).max(160),
+  accountProfileId: cliAccountProfileIdSchema.nullable().optional(),
   modelId: cliModelIdentifierSchema.nullable().optional(),
   reasoningEffort: cliReasoningEffortSchema.optional(),
   cwd: z.string().trim().min(1).max(500).nullable().optional(),
@@ -7754,6 +7825,15 @@ export type AgentRuntime = z.infer<typeof agentRuntimeSchema>;
 export type AgentRuntimeRegistry = z.infer<typeof agentRuntimeRegistrySchema>;
 export type CliToggleRuntimeId = z.infer<typeof cliToggleRuntimeIdSchema>;
 export type CliRuntimeSetting = z.infer<typeof cliRuntimeSettingSchema>;
+export type CliAccountProfile = z.infer<typeof cliAccountProfileSchema>;
+export type CreateCliAccountProfileInput = z.infer<typeof createCliAccountProfileInputSchema>;
+export type CreateCliAccountProfileResponse = z.infer<typeof createCliAccountProfileResponseSchema>;
+export type UpdateCliAccountProfileInput = z.infer<typeof updateCliAccountProfileInputSchema>;
+export type UpdateCliAccountProfileResponse = z.infer<typeof updateCliAccountProfileResponseSchema>;
+export type CliAccountProfileDetails = z.infer<typeof cliAccountProfileDetailsSchema>;
+export type CliAccountProfileDetailsResponse = z.infer<typeof cliAccountProfileDetailsResponseSchema>;
+export type ListCliAccountProfilesResponse = z.infer<typeof listCliAccountProfilesResponseSchema>;
+export type RemoveCliAccountProfileResponse = z.infer<typeof removeCliAccountProfileResponseSchema>;
 export type CliRuntimeSettingsResponse = z.infer<typeof cliRuntimeSettingsResponseSchema>;
 export type CliRuntimeDisablePreview = z.infer<typeof cliRuntimeDisablePreviewSchema>;
 export type UpdateCliRuntimeSettingInput = z.infer<typeof updateCliRuntimeSettingInputSchema>;

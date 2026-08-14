@@ -305,13 +305,14 @@ async function cliRuntime(
     : config.cliEnabled && commandRoot && commandNameIsSafe(commandName) && commandIsDirectParity && !detectedCommandPath
       ? "ERROR"
       : "DISABLED";
-  const observedCredentialStatus = adapterEnabled && !staticallyVerified && definition.authMode !== "MANAGED"
+  const credentialsNotManagedBySpace = definition.authMode === "NONE";
+  const observedCredentialStatus = adapterEnabled && !staticallyVerified && definition.authMode !== "MANAGED" && !credentialsNotManagedBySpace
     ? await readCredentialStatus(detectedCommandPath as string)
     : null;
   const dynamicCredentialStatus = observedCredentialStatus === "READY_QUOTA_EXHAUSTED" && definition.key !== "kimi"
     ? null
     : observedCredentialStatus;
-  const credentialVerified = staticallyVerified || dynamicCredentialStatus !== null;
+  const credentialVerified = credentialsNotManagedBySpace || staticallyVerified || dynamicCredentialStatus !== null;
   const adapterReason = !config.cliEnabled
     ? "SPACE_CLI_ENABLED=true is required before CLI runtimes can start."
     : !commandRoot

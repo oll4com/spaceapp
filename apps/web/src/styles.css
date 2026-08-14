@@ -2362,48 +2362,51 @@ button:focus-visible {
 
 .room-item {
   min-width: 0;
-  min-height: 4.5rem;
-  display: grid;
-  grid-template-columns: 2.35rem minmax(0, 1fr) 2.35rem;
-  align-items: stretch;
+  min-height: 4.35rem;
+  position: relative;
   border: 1px solid #3b3d3f;
-  border-radius: 6px;
-  background: #1b1d1e;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #1d2021, #181a1b);
   overflow: hidden;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
 }
 
-.room-drag-handle {
-  min-width: 0;
-  min-height: 100%;
-  display: grid;
-  place-items: center;
-  border-width: 0 1px 0 0;
-  border-radius: 0;
-  background: rgba(12, 13, 14, 0.34);
-  color: #8ca5a0;
-  padding: 0;
-  cursor: grab;
-  touch-action: none;
+.room-item,
+.room-item .room-select {
+  cursor: default;
 }
 
-.room-drag-handle[draggable="true"]:active {
+.room-list.is-room-dragging .room-item,
+.room-list.is-room-dragging .room-item .room-select {
   cursor: grabbing;
+  user-select: none;
 }
 
-.room-drag-handle:hover:not(:disabled),
-.room-drag-handle:focus-visible {
-  color: #c6f1e9;
-  border-color: #3f5f58;
+.room-item[data-warm-presentation="active"] {
+  --room-card-state-color: #64d9c1;
+  border-color: #64d9c1;
+  box-shadow: 0 0 0 1px color-mix(in srgb, #64d9c1 28%, transparent);
 }
 
-.room-drag-handle svg {
-  width: 0.95rem;
-  height: 0.95rem;
+.room-item[data-warm-presentation="warm"] {
+  --room-card-state-color: #62c993;
+  border-color: #62c993;
+  box-shadow: 0 0 0 1px color-mix(in srgb, #62c993 24%, transparent);
+}
+
+.room-item[data-warm-presentation="warming"] {
+  --room-card-state-color: #d6aa4f;
+  border-color: #d6aa4f;
+  box-shadow: 0 0 0 1px color-mix(in srgb, #d6aa4f 24%, transparent);
+}
+
+.room-item[data-warm-presentation="cold"] {
+  --room-card-state-color: #4d5962;
+  border-color: #4d5962;
 }
 
 .room-item.selected {
-  border-color: #6db7aa;
-  background: #202826;
+  background: linear-gradient(135deg, #21302c, #1a2220);
 }
 
 .room-item.is-dragging {
@@ -2416,16 +2419,17 @@ button:focus-visible {
 }
 
 .room-select {
+  width: 100%;
   min-width: 0;
-  min-height: 4.5rem;
+  min-height: 4.35rem;
   display: grid;
   align-content: center;
-  gap: 0.2rem;
+  gap: 0.45rem;
   border: 0;
   border-radius: 0;
   background: transparent;
   text-align: left;
-  padding: 0.65rem;
+  padding: 0.65rem 3.05rem 0.65rem 0.8rem;
 }
 
 .room-select span,
@@ -2433,23 +2437,26 @@ button:focus-visible {
   min-width: 0;
 }
 
-.room-select-heading {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
+.room-name {
+  display: block;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  font-size: 0.92rem;
+  font-weight: 650;
+  line-height: 1.25;
 }
 
-.room-name {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.room-badge-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
 }
 
 .room-warm-badge {
   display: inline-flex;
   align-items: center;
-  margin-left: 0.35rem;
+  margin-left: 0;
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
   font-size: 0.68rem;
@@ -2497,10 +2504,17 @@ button:focus-visible {
   white-space: nowrap;
 }
 
-.room-select-meta {
-  display: flex;
+.room-cli-runtime-icons {
+  display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.22rem;
+}
+
+.room-cli-runtime-icon {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  object-fit: contain;
 }
 
 .room-kind-badge {
@@ -2516,23 +2530,23 @@ button:focus-visible {
   white-space: nowrap;
 }
 
-.room-select small {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .room-delete {
-  min-width: 0;
-  min-height: 100%;
+  position: absolute;
+  top: 50%;
+  right: 0.55rem;
+  width: 2rem;
+  height: 2rem;
+  min-width: 2rem;
+  min-height: 2rem;
   display: grid;
   place-items: center;
-  border-width: 0 0 0 1px;
-  border-radius: 0;
-  background: rgba(12, 13, 14, 0.34);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: rgba(8, 10, 11, 0.28);
   color: #c8c5bc;
   padding: 0;
+  transform: translateY(-50%);
+  cursor: pointer;
 }
 
 .room-delete:hover:not(:disabled),
@@ -7646,6 +7660,295 @@ button:focus-visible {
   line-height: 1.35;
 }
 
+.cli-account-profiles {
+  min-width: 0;
+  display: grid;
+  gap: 0.3rem;
+  border: 1px solid var(--room-border, #303437);
+  border-radius: 6px;
+  background: var(--room-terminal-bg, #101112);
+  padding: 0.4rem;
+  font-size: 0.7rem;
+}
+
+.cli-account-profiles-list {
+  min-width: 0;
+  display: grid;
+  gap: 0.18rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 6.65rem;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.cli-account-profile-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid #394441;
+  border-radius: 5px;
+  background: #151b1a;
+  padding: 0.28rem 0.32rem;
+}
+
+.cli-account-profile-details {
+  min-width: 0;
+  display: grid;
+  gap: 0.12rem;
+  border: 1px solid #394441;
+  border-radius: 5px;
+  background: #151b1a;
+  padding: 0.32rem;
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.64rem;
+  overflow-wrap: anywhere;
+}
+
+.cli-account-profile-details strong {
+  color: var(--room-text, #f4efe5);
+  margin-inline-end: 0.25rem;
+}
+
+.cli-account-details-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.68);
+}
+
+.cli-account-details-modal-body {
+  width: min(24rem, calc(100vw - 2rem));
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid #50615d;
+  border-radius: 8px;
+  background: var(--room-terminal-bg, #101112);
+  padding: 0.65rem;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+}
+
+.cli-account-details-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--room-text, #f4efe5);
+}
+
+.cli-account-details-modal-head button {
+  inline-size: 1.6rem;
+  block-size: 1.6rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #465451;
+  border-radius: 5px;
+  background: var(--room-surface, #141617);
+  color: var(--room-text, #f4efe5);
+  padding: 0;
+}
+
+.cli-account-details-modal-head svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.cli-account-details-error {
+  color: #ffafa8;
+}
+
+.cli-account-profile-rename {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.cli-account-profile-rename input {
+  min-width: 0;
+  border: 1px solid #6f8a84;
+  border-radius: 5px;
+  background: var(--room-surface, #141617);
+  color: var(--room-text, #f4efe5);
+  padding: 0.24rem 0.34rem;
+  font-size: 0.68rem;
+}
+
+.cli-account-profile-rename input:focus-visible {
+  outline: none;
+}
+
+.cli-account-profile-rename button,
+.cli-account-profile-icon {
+  inline-size: 1.4rem;
+  block-size: 1.4rem;
+  min-inline-size: 1.4rem;
+  min-height: 1.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #465451;
+  border-radius: 5px;
+  background: var(--room-surface, #141617);
+  color: var(--room-text, #f4efe5);
+  padding: 0;
+}
+
+.cli-account-profile-rename button svg {
+  width: 0.72rem;
+  height: 0.72rem;
+}
+
+.cli-account-profile-name {
+  min-width: 0;
+  display: grid;
+  gap: 0;
+}
+
+.cli-account-profile-name strong {
+  color: var(--room-text, #f4efe5);
+  font-size: 0.7rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.cli-account-profile-name small {
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.64rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.cli-account-profile-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.cli-account-profile-actions button {
+  min-height: 1.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.22rem;
+  border: 1px solid #465451;
+  border-radius: 5px;
+  background: var(--room-surface, #141617);
+  color: var(--room-text, #f4efe5);
+  padding: 0.2rem 0.36rem;
+  font-size: 0.64rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.cli-account-profile-actions button:hover:not(:disabled),
+.cli-account-profile-actions button:focus-visible {
+  border-color: #6f8a84;
+  background: #18201e;
+}
+
+.cli-account-profile-actions button svg {
+  width: 0.72rem;
+  height: 0.72rem;
+}
+
+.cli-account-profile-remove,
+.cli-account-profile-icon {
+  inline-size: 1.4rem;
+  block-size: 1.4rem;
+  min-inline-size: 1.4rem;
+  min-height: 1.4rem;
+  padding: 0;
+}
+
+.cli-account-profile-remove-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+}
+
+.cli-account-profile-remove-confirm button.is-danger {
+  border-color: #5b4848;
+  background: #27191a;
+  color: #eab5ba;
+}
+
+.cli-account-profile-add {
+  min-width: 0;
+  display: grid;
+  gap: 0.3rem;
+  border: 1px dashed #465451;
+  border-radius: 6px;
+  padding: 0.35rem;
+}
+
+.cli-account-profile-add input {
+  min-width: 0;
+  border: 1px solid #465451;
+  border-radius: 5px;
+  background: var(--room-surface, #141617);
+  color: var(--room-text, #f4efe5);
+  padding: 0.28rem 0.4rem;
+  font-size: 0.68rem;
+}
+
+.cli-account-profile-add input:focus-visible {
+  border-color: #6f8a84;
+  outline: none;
+}
+
+.cli-account-profile-add-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.3rem;
+}
+
+.cli-account-profile-add-actions button,
+.cli-account-profile-add-button {
+  min-height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  border: 1px solid #465451;
+  border-radius: 5px;
+  background: var(--room-surface, #141617);
+  color: var(--room-text, #f4efe5);
+  padding: 0.22rem 0.4rem;
+  font-size: 0.66rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.cli-account-profile-add-actions button:hover:not(:disabled),
+.cli-account-profile-add-actions button:focus-visible,
+.cli-account-profile-add-button:hover:not(:disabled),
+.cli-account-profile-add-button:focus-visible {
+  border-color: #6f8a84;
+  background: #18201e;
+}
+
+.cli-account-profile-add-actions button svg,
+.cli-account-profile-add-button svg {
+  width: 0.72rem;
+  height: 0.72rem;
+}
+
+.cli-account-profiles-note {
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
 .cli-vpn-health {
   border: 1px solid #5b4848;
   border-radius: 5px;
@@ -10204,6 +10507,47 @@ button:focus-visible {
   isolation: isolate;
 }
 
+.terminal-gemini-account-picker {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.55rem;
+  z-index: 14;
+  max-width: min(18rem, calc(100% - 1.1rem));
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid rgba(126, 196, 181, 0.38);
+  border-radius: 7px;
+  background: rgba(12, 17, 17, 0.94);
+  color: #d9e6e2;
+  padding: 0.28rem 0.36rem 0.28rem 0.46rem;
+  box-shadow: 0 0.35rem 1rem rgba(0, 0, 0, 0.3);
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 0.68rem;
+}
+
+.terminal-gemini-account-picker > span {
+  flex: 0 0 auto;
+  color: #9db6b0;
+  font-weight: 700;
+}
+
+.terminal-gemini-account-picker select {
+  min-width: 0;
+  max-width: 11rem;
+  border: 1px solid #40534f;
+  border-radius: 5px;
+  background: #111817;
+  color: #f1ece2;
+  padding: 0.18rem 0.28rem;
+  font: inherit;
+}
+
+.terminal-gemini-account-picker select:focus-visible {
+  outline: 2px solid #78c8b8;
+  outline-offset: 1px;
+}
+
 .terminal-floating-stack {
   position: absolute;
   top: 0.55rem;
@@ -10422,7 +10766,8 @@ button:focus-visible {
   max-height: min(31rem, calc(100vh - 8rem));
   display: grid;
   gap: 0.85rem;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   border: 1px solid #3c4541;
@@ -10442,6 +10787,7 @@ button:focus-visible {
 }
 
 .terminal-model-popover-head > div {
+  min-width: 0;
   display: grid;
   gap: 0.18rem;
 }
@@ -10453,9 +10799,11 @@ button:focus-visible {
 .terminal-model-popover-head small {
   color: #98a39e;
   font-size: 0.66rem;
+  overflow-wrap: anywhere;
 }
 
 .terminal-model-transport {
+  flex: 0 0 auto;
   border: 1px solid #38665b;
   border-radius: 999px;
   background: #162923;
@@ -10561,22 +10909,27 @@ button:focus-visible {
 
 .terminal-reasoning-options {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(8rem, 100%), 1fr));
   gap: 0.35rem;
 }
 
 .terminal-reasoning-options button {
+  position: relative;
   min-width: 0;
   min-height: 38px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "label check"
+    "description check";
+  align-items: start;
   gap: 0.25rem;
   border: 1px solid #343b38;
   border-radius: 8px;
   background: #1b201e;
   color: #cbd3cf;
   padding: 0.35rem 0.45rem;
+  text-align: left;
   font-size: 0.72rem;
   font-weight: 750;
   letter-spacing: 0;
@@ -10585,17 +10938,26 @@ button:focus-visible {
 }
 
 .terminal-reasoning-options button > span {
+  grid-area: label;
   min-width: 0;
-  flex: 1 1 auto;
-  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .terminal-reasoning-options button > small {
-  flex: 0 0 auto;
+  grid-area: description;
+  min-width: 0;
   color: #8b9893;
   font-size: 0.58rem;
   font-weight: 600;
+  line-height: 1.3;
   letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.terminal-reasoning-options button > .terminal-model-selection-check {
+  grid-area: check;
+  align-self: center;
 }
 
 .terminal-reasoning-options button.is-selected {
@@ -11102,6 +11464,10 @@ button:focus-visible {
   border-color: var(--room-border);
   background: var(--room-surface);
   color: var(--room-text);
+}
+
+.space-shell[data-room-theme] .room-item {
+  border-color: var(--room-card-state-color, var(--room-border));
 }
 
 .space-shell[data-room-theme] .pane-switcher button {

@@ -26,7 +26,6 @@ import {
   Gauge,
   GitCompare,
   Grid2X2,
-  GripVertical,
   HardDrive,
   History,
   Images,
@@ -79,7 +78,7 @@ import type { LucideIcon } from "./features/ui-theme/app-icons.js";
 import { SensitiveDataMask } from "./features/sensitive-data/SensitiveDataMask.js";
 import { SpaceToggle } from "./features/ui-controls/SpaceToggle.js";
 import type { AgentPaneIdentity } from "./features/agent-pane/AgentPane.js";
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useAutoDismiss } from "./use-auto-dismiss.js";
 import type {
@@ -333,36 +332,25 @@ import {
 import { useVoiceInput } from "./features/voice-input/VoiceInputProvider.js";
 import {
   connectedPaneCount,
-  selectHiddenRoomEvictionIds,
   selectRoomRuntimePollIds,
   selectWarmRoomIds,
+  warmRoomLimits,
   WARM_ROOM_RUNTIME_POLL_INTERVAL_MS
 } from "./room-runtime-cache.js";
 import {
-  createWarmRoomCapacityController,
-  readBrowserWarmRoomMemoryTelemetry,
-  snapshotWarmRoomCapacity,
-  WARM_ROOM_FULL_PANE_COUNT,
-  WARM_ROOM_PRESSURE_WINDOW_MS,
-  type WarmRoomCapacitySnapshot,
-  type WarmRoomHydrationSample
-} from "./warm-room-capacity-controller.js";
-import {
   classifyRoomWarmPresentation,
   hydrateWarmRoomsWithinWindow,
-  isRoomInEvictionCooldown,
   readRoomMru,
   recordRoomMru,
   runWithConcurrency,
-  selectAutomaticWarmFillRoomIds,
   selectWarmHydrationRoomIds,
-  WARM_ROOM_EVICTION_COOLDOWN_MS,
   WARM_ROOM_STARTUP_HYDRATION_CONCURRENCY
 } from "./warm-room-startup.js";
 import { reuseVersionedItems, useStableCallback } from "./render-performance.js";
 import {
+  readStoredWarmRoomConnectedPaneLimit,
   readStoredWarmRoomEnabled,
-  removeLegacyWarmRoomConnectedPaneLimit,
+  writeStoredWarmRoomConnectedPaneLimit,
   writeStoredWarmRoomEnabled,
 } from "./warm-room-settings.js";
 import {
@@ -381,7 +369,7 @@ const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
   YOUTUBE: Youtube
 };
 
-const ROOM_PRESENTATION_FAILURE_TIMEOUT_MS = 30_000;
+const ROOM_PRESENTATION_FAILURE_TIMEOUT_MS = 8_000;
 
 function PaneModeIcon({ pane }: { pane: Pick<Pane, "mode" | "terminalRuntimeId"> }) {
   const runtimeId = pane.terminalRuntimeId?.replace(/^cli:/, "") ?? "codex";
@@ -428,51 +416,6 @@ type RoomRuntimeSnapshot = {
   lastAccessedAt: number;
 };
 type RoomPaneLoadState = "loading" | "loaded" | "error";
-type TerminalOutputPressureDetail = {
-  roomId: string;
-  paneId: string;
-  bufferedBytes: number;
-  bufferedEvents: number;
-  totalBufferedBytes: number;
-  reason: "PANE_LIMIT" | "TOTAL_LIMIT";
-};
-type WarmRoomAdmissionDecision = {
-  action: "OPEN_SAFELY";
-  automatic: true;
-  targetRoomId: string;
-  evictedRoomId: string | null;
-  usedColdRevealReserve: boolean;
-  sequence: number;
-};
-
-type WarmRoomCapacityDiagnosticPhase =
-  | "SAMPLE"
-  | "ADMIT"
-  | "EVICT"
-  | "OVERCOMMIT"
-  | "REVOKE"
-  | "PRESSURE";
-
-function emitWarmRoomCapacityDiagnostic(
-  snapshot: WarmRoomCapacitySnapshot,
-  phase: WarmRoomCapacityDiagnosticPhase
-) {
-  emitAppDiagnosticsPerformance({
-    category: "PERFORMANCE",
-    metric: "WARM_ROOM_CAPACITY",
-    phase,
-    safeCapacity: snapshot.effectiveSafeRoomCapacity,
-    hardCapacity: snapshot.hardRoomCapacity,
-    warmRoomCount: snapshot.warmRoomCount,
-    connectedPaneCount: snapshot.connectedPaneCount,
-    safePaneCapacity: snapshot.safePaneCapacity,
-    hardPaneCapacity: snapshot.hardPaneCapacity,
-    estimatedRoomBytes: snapshot.estimatedRoomBytes,
-    ...(snapshot.usedBytes === null ? {} : { usedBytes: snapshot.usedBytes }),
-    longTaskCount: snapshot.longTaskCount,
-    driftCount: snapshot.driftCount
-  });
-}
 
 export function shellVisiblePaneIds(
   panes: ReadonlyArray<Pick<Pane, "id" | "isMaximized" | "isMinimized">>,
@@ -2340,6 +2283,7 @@ export function App() {
   const [appView, setAppView] = useState<AppView>(readAppView);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [roomCliActivityCounts, setRoomCliActivityCounts] = useState<Record<string, number>>({});
+  const [roomCliRuntimeIds, setRoomCliRuntimeIds] = useState<Record<string, string[]>>({});
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => readStoredSessionString(SELECTED_ROOM_ID_STORAGE_KEY));
   const [roomRuntimes, setRoomRuntimes] = useState<Record<string, RoomRuntimeSnapshot>>({});
   const [roomPaneLoadStates, setRoomPaneLoadStates] = useState<Record<string, RoomPaneLoadState>>({});
@@ -2387,24 +2331,8 @@ export function App() {
   const [terminalFontSize, setTerminalFontSize] = useState(readStoredTerminalFontSize);
   const [cliImagePreviewLimit, setCliImagePreviewLimit] = useState(readStoredCliImagePreviewLimit);
   const [warmRoomEnabled, setWarmRoomEnabled] = useState(readStoredWarmRoomEnabled);
+  const [warmConnectedPaneLimit, setWarmConnectedPaneLimit] = useState(readStoredWarmRoomConnectedPaneLimit);
   const [suppressNotifications, setSuppressNotifications] = useState(readStoredSuppressNotifications);
-  const [warmRoomCapacity, setWarmRoomCapacity] = useState<WarmRoomCapacitySnapshot>(() =>
-    snapshotWarmRoomCapacity({
-      memory: {
-        source: "fallback",
-        usedBytes: null,
-        heapLimitBytes: null,
-        deviceMemoryBytes: null
-      },
-      hydrationSamples: [],
-      warmRoomCount: 0,
-      connectedPaneCount: 0,
-      hardwareConcurrency: undefined,
-      pressureReasons: [],
-      overcommitInUse: false
-    })
-  );
-  const [automaticWarmFillSuppressed, setAutomaticWarmFillSuppressed] = useState(false);
   const [showSessionDebugIds, setShowSessionDebugIds] = useState(() => readStoredBooleanDefaultTrue(SESSION_DEBUG_IDS_STORAGE_KEY));
   const [cliDebugModeEnabled, setCliDebugModeEnabled] = useState(() => readStoredBoolean(CLI_DEBUG_MODE_STORAGE_KEY));
   const [cliFloatsHidden, setCliFloatsHidden] = useState(() => readStoredBoolean(CLI_FLOATS_HIDDEN_STORAGE_KEY));
@@ -2470,12 +2398,13 @@ export function App() {
     pending: boolean;
     error: string | null;
   } | null>(null);
-  const [warmRoomAdmissionDecision, setWarmRoomAdmissionDecision] =
-    useState<WarmRoomAdmissionDecision | null>(null);
   const [paneMoveNotice, setPaneMoveNotice] = useState<string | null>(null);
   const [roomReorderPending, setRoomReorderPending] = useState(false);
   const [draggedRoomId, setDraggedRoomId] = useState<string | null>(null);
   const [dragOverRoomId, setDragOverRoomId] = useState<string | null>(null);
+  const dragOverRoomIdRef = useRef<string | null>(null);
+  const roomPointerDragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => roomPointerDragCleanupRef.current?.(), []);
   const [paneReorderPending, setPaneReorderPending] = useState(false);
   const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
   const [paneDragOverId, setPaneDragOverId] = useState<string | null>(null);
@@ -2518,6 +2447,7 @@ export function App() {
     readyReported: boolean;
   } | null>(null);
   const roomRevealReadyPaneIdsRef = useRef(new Map<string, Set<string>>());
+  const roomRevealDebugLastMissingRef = useRef(new Map<string, string>());
   const roomTerminalBarrierWaitersRef = useRef(new Map<string, Set<() => void>>());
   const roomTerminalPrefillBarrierWaitersRef = useRef(new Map<string, Set<() => void>>());
   const roomRuntimeHydrationIdsRef = useRef(new Set<string>());
@@ -2535,17 +2465,6 @@ export function App() {
   const roomCatalogRefreshQueueRef = useRef(createCoalescedRefreshQueue());
   const requestRoomCatalogRefreshRef = useRef<() => Promise<void>>(async () => undefined);
   const warmRoomIdsRef = useRef<string[]>([]);
-  const warmRoomCapacityRef = useRef(warmRoomCapacity);
-  const warmRoomCapacityControllerRef = useRef(createWarmRoomCapacityController({ nowMs: Date.now() }));
-  const warmRoomHydrationSamplesRef = useRef<WarmRoomHydrationSample[]>([]);
-  const startupWarmFillReadyRef = useRef(false);
-  const startupWarmFillRoomIdsRef = useRef(new Set<string>());
-  const automaticWarmFillSuppressedByOutputPressureRef = useRef(false);
-  const lastOutputPressureEvictionAtRef = useRef(0);
-  const outputPressureEvictedAtByRoomIdRef = useRef(new Map<string, number>());
-  const warmRoomAdmissionSequenceRef = useRef(0);
-  const roomAdmissionFlightsRef = useRef(new Map<string, Promise<void>>());
-  const pendingTerminalOutputPressureRef = useRef(new Map<string, TerminalOutputPressureDetail>());
   const appMountedRef = useRef(true);
   const roomPaneLoadStatesRef = useRef(roomPaneLoadStates);
   const clipImageInputRef = useRef<HTMLInputElement | null>(null);
@@ -2599,7 +2518,6 @@ export function App() {
   roomPaneLoadStatesRef.current = roomPaneLoadStates;
   displayedRoomIdRef.current = displayedRoomId;
   preparingRoomIdRef.current = preparingRoomId;
-  warmRoomCapacityRef.current = warmRoomCapacity;
   requestRoomCatalogRefreshRef.current = () =>
     roomCatalogRefreshQueueRef.current.request("rooms", async () => {
       const roomCatalog = await loadBoundedRoomCatalog();
@@ -2728,7 +2646,6 @@ export function App() {
   }
 
   function removeRoomRuntime(roomId: string) {
-    pendingTerminalOutputPressureRef.current.delete(roomId);
     roomRuntimeLastPolledAtRef.current.delete(roomId);
     warmRoomIdsRef.current = warmRoomIdsRef.current.filter((candidate) => candidate !== roomId);
     roomRevealReadyPaneIdsRef.current.delete(roomId);
@@ -2760,164 +2677,6 @@ export function App() {
       delete retained[roomId];
       return retained;
     });
-  }
-
-  function currentWarmRoomUsage(): { warmRoomCount: number; connectedPaneCount: number } {
-    const admittedRoomIds = new Set(warmRoomIdsRef.current);
-    if (selectedRoomIdRef.current) admittedRoomIds.add(selectedRoomIdRef.current);
-    let totalConnectedPanes = 0;
-    for (const roomId of admittedRoomIds) {
-      const runtimeSnapshot = roomRuntimesRef.current[roomId];
-      const runtimePanes = roomId === selectedRoomIdRef.current
-        ? panesRef.current
-        : runtimeSnapshot?.panes ?? [];
-      totalConnectedPanes += connectedPaneCount(
-        runtimePanes,
-        runtimeSnapshot?.bootstrappedPaneIds ?? []
-      );
-    }
-    return {
-      warmRoomCount: admittedRoomIds.size,
-      connectedPaneCount: totalConnectedPanes
-    };
-  }
-
-  function setAutomaticWarmFillSuppression(next: boolean) {
-    automaticWarmFillSuppressedByOutputPressureRef.current = next;
-    setAutomaticWarmFillSuppressed(next);
-  }
-
-  function commitWarmRoomCapacity(next: WarmRoomCapacitySnapshot): WarmRoomCapacitySnapshot {
-    const previous = warmRoomCapacityRef.current;
-    warmRoomCapacityRef.current = next;
-    setWarmRoomCapacity(next);
-    if (previous.overcommitInUse && !next.overcommitInUse) {
-      emitWarmRoomCapacityDiagnostic(next, "REVOKE");
-    }
-    if (previous.pressureReasons.length === 0 && next.pressureReasons.length > 0) {
-      emitWarmRoomCapacityDiagnostic(next, "PRESSURE");
-    }
-    const allowedRoomCount = next.effectiveSafeRoomCapacity + (next.overcommitInUse ? 1 : 0);
-    const excessRoomCount = Math.max(0, warmRoomIdsRef.current.length - allowedRoomCount);
-    if (excessRoomCount <= 0) return next;
-    const evictions = selectHiddenRoomEvictionIds({
-      candidates: Object.values(roomRuntimesRef.current).map((runtimeSnapshot) => ({
-        roomId: runtimeSnapshot.roomId,
-        attachedPaneCount: connectedPaneCount(
-          runtimeSnapshot.panes,
-          runtimeSnapshot.bootstrappedPaneIds
-        ),
-        lastAccessedAt: runtimeSnapshot.lastAccessedAt
-      })),
-      protectedRoomIds: [
-        selectedRoomIdRef.current,
-        displayedRoomIdRef.current,
-        preparingRoomIdRef.current
-      ].filter((roomId): roomId is string => Boolean(roomId)),
-      evictionCount: excessRoomCount
-    });
-    for (const roomId of evictions) {
-      removeRoomRuntime(roomId);
-      emitWarmRoomCapacityDiagnostic(next, "EVICT");
-    }
-    return next;
-  }
-
-  async function sampleWarmRoomCapacity(): Promise<WarmRoomCapacitySnapshot> {
-    const memory = await readBrowserWarmRoomMemoryTelemetry();
-    const usage = currentWarmRoomUsage();
-    const base = snapshotWarmRoomCapacity({
-      memory,
-      hydrationSamples: warmRoomHydrationSamplesRef.current,
-      warmRoomCount: usage.warmRoomCount,
-      connectedPaneCount: usage.connectedPaneCount,
-      hardwareConcurrency: navigator.hardwareConcurrency,
-      pressureReasons: [],
-      overcommitInUse: warmRoomCapacityRef.current.overcommitInUse
-    });
-    const next = commitWarmRoomCapacity(
-      warmRoomCapacityControllerRef.current.sample(base, Date.now())
-    );
-    if (
-      automaticWarmFillSuppressedByOutputPressureRef.current &&
-      next.pressureReasons.length === 0 &&
-      Date.now() - lastOutputPressureEvictionAtRef.current >= WARM_ROOM_PRESSURE_WINDOW_MS
-    ) {
-      setAutomaticWarmFillSuppression(false);
-    }
-    emitWarmRoomCapacityDiagnostic(next, "SAMPLE");
-    return next;
-  }
-
-  async function recordWarmRoomHydrationCost(
-    roomId: string,
-    beforeMemory: Promise<Awaited<ReturnType<typeof readBrowserWarmRoomMemoryTelemetry>>>
-  ): Promise<void> {
-    const [before, after] = await Promise.all([
-      beforeMemory,
-      readBrowserWarmRoomMemoryTelemetry()
-    ]);
-    const runtimeSnapshot = roomRuntimesRef.current[roomId];
-    if (
-      before.source !== after.source ||
-      before.usedBytes === null ||
-      after.usedBytes === null ||
-      !runtimeSnapshot
-    ) return;
-    const deltaBytes = after.usedBytes - before.usedBytes;
-    const paneCount = connectedPaneCount(
-      runtimeSnapshot.panes,
-      runtimeSnapshot.bootstrappedPaneIds
-    );
-    if (deltaBytes <= 0 || paneCount <= 0) return;
-    warmRoomHydrationSamplesRef.current = [
-      ...warmRoomHydrationSamplesRef.current,
-      { deltaBytes, paneCount }
-    ].slice(-8);
-    await sampleWarmRoomCapacity();
-  }
-
-  function roomRuntimeEligibleForPressureEviction(roomId: string): boolean {
-    return Boolean(roomRuntimesRef.current[roomId]) &&
-      roomId !== selectedRoomIdRef.current &&
-      roomId !== displayedRoomIdRef.current &&
-      roomId !== preparingRoomIdRef.current;
-  }
-
-  function evictRoomRuntimeForOutputPressure(
-    roomId: string,
-    detail: TerminalOutputPressureDetail
-  ): boolean {
-    if (!roomRuntimeEligibleForPressureEviction(roomId)) return false;
-    setAutomaticWarmFillSuppression(true);
-    const nowMs = Date.now();
-    lastOutputPressureEvictionAtRef.current = nowMs;
-    outputPressureEvictedAtByRoomIdRef.current.set(roomId, nowMs);
-    removeRoomRuntime(roomId);
-    emitAppDiagnosticsPerformance({
-      category: "PERFORMANCE",
-      metric: "TERMINAL_OUTPUT_PRESSURE",
-      roomId,
-      phase: "EVICTED",
-      bufferedBytes: Math.floor(detail.bufferedBytes),
-      bufferedEvents: Math.floor(detail.bufferedEvents),
-      totalBufferedBytes: Math.floor(detail.totalBufferedBytes)
-    });
-    recordLifecycleDebugEvent({
-      type: "terminal_output_pressure_eviction",
-      scope: "App",
-      detail: `room=${roomId}`,
-      notify: false
-    });
-    return true;
-  }
-
-  function commitLocalTerminalOutputPressureResolution(): WarmRoomCapacitySnapshot {
-    return commitWarmRoomCapacity(
-      warmRoomCapacityControllerRef.current.resolveTerminalOutputPressureLocally(
-        currentWarmRoomUsage()
-      )
-    );
   }
 
   function snapshotActiveRoom(roomId: string, lastAccessedAt?: number): RoomRuntimeSnapshot {
@@ -3096,8 +2855,10 @@ export function App() {
     if (preparingRoomIdRef.current !== roomId || selectedRoomIdRef.current !== roomId) return;
     const snapshot = roomRuntimesRef.current[roomId];
     if (!snapshot || roomPaneLoadStatesRef.current[roomId] !== "loaded") return;
-    const readyPaneIds = roomRevealReadyPaneIdsRef.current.get(roomId) ?? new Set<string>();
-    if (!visibleTerminalPaneIds(snapshot).every((paneId) => readyPaneIds.has(paneId))) return;
+    // User-approved 2026-08-14: reveal as soon as pane data is loaded — panes
+    // fill in afterwards. The old per-pane reveal barrier deadlocked when
+    // session-less orphan panes existed (Room 6: 12/16 ready, the 4 orphans
+    // never reported, 8s timeout on every open).
     recordRoomPresentationMetric(roomId, roomPresentationGenerationRef.current, "READY");
     schedulePreparedRoomReveal(roomId, roomPresentationGenerationRef.current);
   }
@@ -3109,8 +2870,18 @@ export function App() {
       selectedRoomIdRef.current !== roomId
     ) return;
     const readyPaneIds = roomRevealReadyPaneIdsRef.current.get(roomId) ?? new Set<string>();
+    if (readyPaneIds.has(paneId)) return;
     readyPaneIds.add(paneId);
     roomRevealReadyPaneIdsRef.current.set(roomId, readyPaneIds);
+    // DEBUG (user-requested 2026-08-14): which panes report ready.
+    emitAppDiagnosticsPerformance({
+      category: "PERFORMANCE",
+      metric: "ROOM_REVEAL_PROGRESS",
+      roomId,
+      paneId,
+      phase: "PANE_READY",
+      durationMs: 0
+    });
     finishPreparingRoomWhenReady(roomId);
   }
 
@@ -3173,12 +2944,27 @@ export function App() {
           selectedRoomIdRef.current !== roomId
         ) return;
         roomPresentationFailureTimeoutRef.current = null;
-        recordRoomPresentationMetric(roomId, generation, "ERROR");
-        if (outgoingDisplayedRoomId && roomRuntimesRef.current[outgoingDisplayedRoomId]) {
-          activateRoom(outgoingDisplayedRoomId);
-          setError("The target room did not become paint-ready. The previous room was preserved; try again.");
-          return;
+        // DEBUG (user-requested 2026-08-14): which panes blocked the reveal.
+        {
+          const snapshot = roomRuntimesRef.current[roomId];
+          const readyPaneIds = roomRevealReadyPaneIdsRef.current.get(roomId) ?? new Set<string>();
+          const visibleIds = snapshot ? visibleTerminalPaneIds(snapshot) : [];
+          const missing = visibleIds.filter((paneId) => !readyPaneIds.has(paneId));
+          emitAppDiagnosticsPerformance({
+            category: "PERFORMANCE",
+            metric: "ROOM_REVEAL_PROGRESS",
+            roomId,
+            phase: "TIMEOUT",
+            readyCount: visibleIds.length - missing.length,
+            totalCount: visibleIds.length,
+            missingPaneIds: missing.join(","),
+            durationMs: ROOM_PRESENTATION_FAILURE_TIMEOUT_MS
+          });
         }
+        // User-approved 2026-08-14: reveal the target room once the grace
+        // window elapses instead of bouncing back to the previous room —
+        // slow panes keep filling in after the reveal.
+        recordRoomPresentationMetric(roomId, generation, "ERROR");
         displayedRoomIdRef.current = roomId;
         preparingRoomIdRef.current = null;
         setDisplayedRoomId(roomId);
@@ -3218,9 +3004,6 @@ export function App() {
       } catch (error) {
         if (!appMountedRef.current) return;
         if (roomPaneRequestSequenceRef.current.get(roomId) !== sequence) return;
-        if (!roomRuntimesRef.current[roomId]) {
-          pendingTerminalOutputPressureRef.current.delete(roomId);
-        }
         if (isFirstPaneLoad) {
           setRoomPaneLoadState(roomId, "error");
           if (preparingRoomIdRef.current === roomId && selectedRoomIdRef.current === roomId) {
@@ -3263,11 +3046,6 @@ export function App() {
         lastAccessedAt: selectedRoomIdRef.current === roomId ? Date.now() : existing?.lastAccessedAt ?? Date.now()
       };
       replaceRoomRuntime(snapshot);
-      const pendingPressure = pendingTerminalOutputPressureRef.current.get(roomId);
-      if (pendingPressure && evictRoomRuntimeForOutputPressure(roomId, pendingPressure)) {
-        commitLocalTerminalOutputPressureResolution();
-        return;
-      }
       setRoomPaneLoadState(roomId, "loaded");
       if (selectedRoomIdRef.current !== roomId) return;
       activeRuntimeRoomIdRef.current = roomId;
@@ -3410,7 +3188,6 @@ export function App() {
     options: { loadMetadata?: boolean } = {}
   ) {
     const startedAt = performance.now();
-    const memoryBeforeHydration = readBrowserWarmRoomMemoryTelemetry();
     const durationMs = () => Math.min(120_000, Math.max(0, performance.now() - startedAt));
     emitAppDiagnosticsPerformance({
       category: "PERFORMANCE",
@@ -3440,6 +3217,19 @@ export function App() {
         roomId !== displayedRoomIdRef.current &&
         roomId !== preparingRoomIdRef.current;
       if (hiddenHydration) {
+        const runtimeSnapshot = roomRuntimesRef.current[roomId];
+        if (!runtimeSnapshot || runtimeSnapshot.panes.length === 0) {
+          // Empty rooms need no prefill or metadata; finish immediately so the
+          // warm pass cannot stall on them (user-reported stall, 2026-08-14).
+          emitAppDiagnosticsPerformance({
+            category: "PERFORMANCE",
+            metric: "ROOM_HYDRATION",
+            roomId,
+            phase: "COMPLETE",
+            durationMs: durationMs()
+          });
+          return;
+        }
         const terminalPrefillReady = await waitForRoomTerminalPrefillBarrier(roomId, 2_000);
         if (!appMountedRef.current) return;
         emitAppDiagnosticsPerformance({
@@ -3468,7 +3258,6 @@ export function App() {
         phase: "COMPLETE",
         durationMs: durationMs()
       });
-      void recordWarmRoomHydrationCost(roomId, memoryBeforeHydration);
     } catch (error) {
       emitAppDiagnosticsPerformance({
         category: "PERFORMANCE",
@@ -3554,57 +3343,30 @@ export function App() {
       enabled: warmRoomEnabled,
       roomIds: rooms.map((room) => room.id),
       activeRoomId: selectedRoomId,
-      protectedRoomIds: [displayedRoomId, preparingRoomId]
-        .filter((roomId): roomId is string => Boolean(roomId)),
       preferredRoomIds,
       previousRoomId: previousWarmRoomIdRef.current,
-      maxWarmRooms:
-        warmRoomCapacity.effectiveSafeRoomCapacity +
-        (warmRoomCapacity.overcommitInUse ? 1 : 0),
-      maxAttachedPanes: warmRoomCapacity.overcommitInUse
-        ? warmRoomCapacity.hardPaneCapacity
-        : warmRoomCapacity.safePaneCapacity,
+      maxAttachedPanes: warmConnectedPaneLimit,
       candidates
     });
-  }, [
-    displayedRoomId,
-    panes,
-    preparingRoomId,
-    roomRuntimes,
-    rooms,
-    selectedRoomId,
-    warmRoomCapacity.effectiveSafeRoomCapacity,
-    warmRoomCapacity.hardPaneCapacity,
-    warmRoomCapacity.overcommitInUse,
-    warmRoomCapacity.safePaneCapacity,
-    warmRoomEnabled
-  ]);
+  }, [panes, roomRuntimes, rooms, selectedRoomId, warmConnectedPaneLimit, warmRoomEnabled]);
   warmRoomIdsRef.current = warmRoomIds;
-  const warmRoomLiveCapacity: WarmRoomCapacitySnapshot = {
-    ...warmRoomCapacity,
-    ...currentWarmRoomUsage()
-  };
 
-  useEffect(() => {
-    const retainedRoomIds = new Set([
-      ...warmRoomIds,
-      ...roomRuntimeHydrationIdsRef.current,
-      selectedRoomId,
-      displayedRoomId,
-      preparingRoomId
-    ].filter((roomId): roomId is string => Boolean(roomId)));
-    for (const roomId of Object.keys(roomRuntimesRef.current)) {
-      if (!retainedRoomIds.has(roomId)) removeRoomRuntime(roomId);
+  const warmRoomLimitsForDevice = useMemo(() => warmRoomLimits(
+    warmConnectedPaneLimit
+  ), [warmConnectedPaneLimit]);
+
+  const warmConnectedPaneTotal = useMemo(() => {
+    let total = 0;
+    for (const roomId of warmRoomIds) {
+      const runtime = roomRuntimes[roomId];
+      const runtimePanes = roomId === selectedRoomId ? panes : runtime?.panes ?? [];
+      total += connectedPaneCount(runtimePanes, runtime?.bootstrappedPaneIds ?? []);
     }
-    // Runtime disposal is driven only by the controller-owned admitted set.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayedRoomId, preparingRoomId, selectedRoomId, warmRoomIds]);
+    return total;
+  }, [panes, roomRuntimes, selectedRoomId, warmRoomIds]);
 
   useEffect(() => {
     if (warmRoomEnabled) return;
-    commitWarmRoomCapacity(
-      warmRoomCapacityControllerRef.current.setOvercommitInUse(false)
-    );
     for (const roomId of Object.keys(roomRuntimesRef.current)) {
       if (roomId !== selectedRoomId && roomId !== displayedRoomId) removeRoomRuntime(roomId);
     }
@@ -3614,87 +3376,8 @@ export function App() {
   }, [displayedRoomId, selectedRoomId, warmRoomEnabled]);
 
   useEffect(() => {
-    const handleTerminalOutputPressure = (event: Event) => {
-      if (!(event instanceof CustomEvent) || typeof event.detail !== "object" || event.detail === null) return;
-      const detail = event.detail as Partial<{
-        roomId: string;
-        paneId: string;
-        bufferedBytes: number;
-        bufferedEvents: number;
-        totalBufferedBytes: number;
-        reason: string;
-      }>;
-      if (
-        typeof detail.roomId !== "string" ||
-        typeof detail.paneId !== "string" ||
-        typeof detail.bufferedBytes !== "number" ||
-        typeof detail.bufferedEvents !== "number" ||
-        typeof detail.totalBufferedBytes !== "number" ||
-        !Number.isFinite(detail.bufferedBytes) ||
-        !Number.isFinite(detail.bufferedEvents) ||
-        !Number.isFinite(detail.totalBufferedBytes) ||
-        (detail.reason !== "PANE_LIMIT" && detail.reason !== "TOTAL_LIMIT")
-      ) return;
-      const pressure: TerminalOutputPressureDetail = {
-        roomId: detail.roomId,
-        paneId: detail.paneId,
-        bufferedBytes: detail.bufferedBytes,
-        bufferedEvents: detail.bufferedEvents,
-        totalBufferedBytes: detail.totalBufferedBytes,
-        reason: detail.reason
-      };
-      if (
-        pressure.roomId === selectedRoomIdRef.current ||
-        pressure.roomId === displayedRoomIdRef.current ||
-        pressure.roomId === preparingRoomIdRef.current
-      ) {
-        pendingTerminalOutputPressureRef.current.set(pressure.roomId, pressure);
-        return;
-      }
-      if (pressure.reason === "PANE_LIMIT") {
-        if (evictRoomRuntimeForOutputPressure(pressure.roomId, pressure)) {
-          commitLocalTerminalOutputPressureResolution();
-          return;
-        }
-        if (
-          roomRuntimesRef.current[pressure.roomId] ||
-          roomPaneLoadPromisesRef.current.has(pressure.roomId)
-        ) {
-          pendingTerminalOutputPressureRef.current.set(pressure.roomId, pressure);
-          return;
-        }
-        commitWarmRoomCapacity(
-          warmRoomCapacityControllerRef.current.recordTerminalOutputPressure(
-            Date.now(),
-            currentWarmRoomUsage()
-          )
-        );
-        return;
-      }
-      const hiddenCandidates = Object.values(roomRuntimesRef.current)
-        .filter((runtime) =>
-          runtime.roomId !== selectedRoomIdRef.current &&
-          runtime.roomId !== displayedRoomIdRef.current &&
-          runtime.roomId !== preparingRoomIdRef.current
-        )
-        .sort((left, right) =>
-          left.lastAccessedAt - right.lastAccessedAt || left.roomId.localeCompare(right.roomId)
-        );
-      const evicted = hiddenCandidates[0];
-      if (evicted && evictRoomRuntimeForOutputPressure(evicted.roomId, pressure)) {
-        commitLocalTerminalOutputPressureResolution();
-        return;
-      }
-      commitWarmRoomCapacity(
-        warmRoomCapacityControllerRef.current.recordTerminalOutputPressure(
-          Date.now(),
-          currentWarmRoomUsage()
-        )
-      );
-    };
-    window.addEventListener("space:terminal-output-pressure", handleTerminalOutputPressure);
-    return () => window.removeEventListener("space:terminal-output-pressure", handleTerminalOutputPressure);
-  }, []);
+    writeStoredWarmRoomConnectedPaneLimit(warmConnectedPaneLimit);
+  }, [warmConnectedPaneLimit]);
 
   useEffect(() => {
     const handlePaneRunLifecycle = (event: Event) => {
@@ -3731,80 +3414,6 @@ export function App() {
     window.addEventListener(PANE_RUN_LIFECYCLE_EVENT, handlePaneRunLifecycle);
     return () => window.removeEventListener(PANE_RUN_LIFECYCLE_EVENT, handlePaneRunLifecycle);
   }, []);
-
-  useEffect(() => {
-    let performanceObserver: PerformanceObserver | null = null;
-    if (typeof PerformanceObserver === "function") {
-      try {
-        performanceObserver = new PerformanceObserver((list) => {
-          for (const entry of list.getEntries()) {
-            if (entry.entryType !== "longtask" || entry.duration < 100) continue;
-            commitWarmRoomCapacity(
-              warmRoomCapacityControllerRef.current.recordLongTask(
-                entry.duration,
-                Date.now(),
-                currentWarmRoomUsage()
-              )
-            );
-          }
-        });
-        performanceObserver.observe({ entryTypes: ["longtask"] });
-      } catch {
-        performanceObserver = null;
-      }
-    }
-
-    let expectedTickAt = performance.now() + 1_000;
-    const driftTimer = window.setInterval(() => {
-      const now = performance.now();
-      const driftMs = Math.max(0, now - expectedTickAt);
-      expectedTickAt = now + 1_000;
-      if (document.visibilityState === "hidden" || driftMs < 250) return;
-      commitWarmRoomCapacity(
-        warmRoomCapacityControllerRef.current.recordEventLoopDrift(
-          driftMs,
-          Date.now(),
-          currentWarmRoomUsage()
-        )
-      );
-    }, 1_000);
-    const sampleTimer = window.setInterval(() => {
-      if (document.visibilityState !== "hidden") void sampleWarmRoomCapacity();
-    }, 10_000);
-    const handleVisibilityChange = () => {
-      const visible = document.visibilityState !== "hidden";
-      commitWarmRoomCapacity(
-        warmRoomCapacityControllerRef.current.setVisibility(visible, Date.now())
-      );
-      expectedTickAt = performance.now() + 1_000;
-      if (visible) void sampleWarmRoomCapacity();
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    void sampleWarmRoomCapacity();
-    return () => {
-      performanceObserver?.disconnect();
-      window.clearInterval(driftTimer);
-      window.clearInterval(sampleTimer);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-    // The controller reads synchronized refs and owns its bounded timers.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    for (const [roomId, detail] of pendingTerminalOutputPressureRef.current) {
-      if (!roomRuntimesRef.current[roomId]) {
-        pendingTerminalOutputPressureRef.current.delete(roomId);
-        continue;
-      }
-      if (evictRoomRuntimeForOutputPressure(roomId, detail)) {
-        commitLocalTerminalOutputPressureResolution();
-      }
-    }
-    // The eviction helpers operate exclusively on synchronized refs; this effect is triggered by
-    // room presentation identity changes, not by function identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayedRoomId, preparingRoomId, selectedRoomId]);
 
   function recordRoomPaneBootstrapped(roomId: string, paneId: string) {
     const runtime = roomRuntimesRef.current[roomId]
@@ -3902,7 +3511,6 @@ export function App() {
       };
     }
     setRooms(sortRoomsByOrder(roomPayload.data));
-    startupWarmFillRoomIdsRef.current = new Set(roomPayload.data.map((room) => room.id));
     const selectedRoomStillExists = selectedRoomId ? roomPayload.data.some((room) => room.id === selectedRoomId) : false;
     const nextRoomId = selectedRoomStillExists ? selectedRoomId : roomPayload.data[0]?.id ?? null;
     activateRoom(nextRoomId, { preserveOutgoing: selectedRoomStillExists });
@@ -3910,25 +3518,54 @@ export function App() {
       setError(`Room ${selectedRoomId} no longer exists; switched to ${roomPayload.data[0]?.name ?? "the next room"}.`);
     }
     if (nextRoomId) {
+      // User-approved 2026-08-14: background warm starts IMMEDIATELY (in
+      // parallel with the active room load, after any service restart the
+      // refresh is the trigger) and never blocks the bootstrap — the shell
+      // becomes interactive without waiting for warm hydration.
+      const startBackgroundWarm = () => {
+        const validRoomIds = new Set(roomPayload.data.map((room) => room.id));
+        const hydrationRoomIds = selectWarmHydrationRoomIds({
+          roomIds: roomPayload.data.map((room) => room.id),
+          activeRoomId: nextRoomId,
+          mruRoomIds: readRoomMru(runtime.platform.sessionStorage, validRoomIds),
+          maxWarmRooms: warmRoomLimits(warmConnectedPaneLimit).maxRooms
+        });
+        const hydrateRoomIfNotEmpty = async (roomId: string) => {
+          try {
+            if (
+              roomPaneLoadStatesRef.current[roomId] === "loaded" ||
+              roomRuntimeHydrationIdsRef.current.has(roomId)
+            ) {
+              return; // already warm or warming — never re-hydrate (log spam: 4-5x per room)
+            }
+            const panePayload = await api.panes(roomId);
+            if (!appMountedRef.current) return;
+            if (panePayload.data.length === 0) return;
+            await loadRoomRuntime(roomId, undefined, { loadMetadata: false });
+          } catch {
+            // Best-effort background hydration.
+          }
+        };
+        void hydrateWarmRoomsWithinWindow(
+          hydrationRoomIds,
+          hydrateRoomIfNotEmpty,
+          undefined,
+          WARM_ROOM_STARTUP_HYDRATION_CONCURRENCY
+        ).catch(() => undefined).finally(() => {
+          if (!appMountedRef.current) return;
+          const otherRoomIds = roomPayload.data
+            .map((room) => room.id)
+            .filter((roomId) => roomId !== nextRoomId);
+          void runWithConcurrency(
+            otherRoomIds.map((roomId) => () => hydrateRoomIfNotEmpty(roomId)),
+            4
+          ).catch(() => undefined);
+        });
+      };
+      startBackgroundWarm();
       await loadRoomRuntime(nextRoomId);
       if (!appMountedRef.current) return;
       await waitForRoomTerminalBarrier(nextRoomId);
-      if (!appMountedRef.current) return;
-      const startupCapacity = await sampleWarmRoomCapacity();
-      if (!appMountedRef.current) return;
-      const validRoomIds = new Set(roomPayload.data.map((room) => room.id));
-      const hydrationRoomIds = selectWarmHydrationRoomIds({
-        roomIds: roomPayload.data.map((room) => room.id),
-        activeRoomId: nextRoomId,
-        mruRoomIds: readRoomMru(runtime.platform.sessionStorage, validRoomIds),
-        maxWarmRooms: startupCapacity.effectiveSafeRoomCapacity
-      });
-      await hydrateWarmRoomsWithinWindow(
-        hydrationRoomIds,
-        (roomId) => loadRoomRuntime(roomId, undefined, { loadMetadata: false }),
-        undefined,
-        WARM_ROOM_STARTUP_HYDRATION_CONCURRENCY
-      );
       if (!appMountedRef.current) return;
     } else {
       setPanes([]);
@@ -3938,9 +3575,8 @@ export function App() {
       setSwarmState(await api.swarm());
     }
 
-    // Unlock automatic warm-fill before the admin/readiness fan-out so adjacent rooms
-    // start hydrating while smokes and provider catalogs load in the background.
-    startupWarmFillReadyRef.current = true;
+    // Unlock admin/readiness fan-out so adjacent rooms hydrate while smokes and
+    // provider catalogs load in the background.
     setError((current) => (isTransientUpstreamErrorMessage(current) ? null : current));
 
     void runWithConcurrency([
@@ -4024,64 +3660,6 @@ export function App() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    if (
-      !startupWarmFillReadyRef.current ||
-      automaticWarmFillSuppressedByOutputPressureRef.current ||
-      !warmRoomEnabled ||
-      !selectedRoomId ||
-      warmRoomCapacity.pressureReasons.length > 0
-    ) return;
-    const targetCount =
-      warmRoomCapacity.effectiveSafeRoomCapacity +
-      (warmRoomCapacity.overcommitInUse ? 1 : 0);
-    const hydratingCount = roomRuntimeHydrationIdsRef.current.size;
-    const admittedAndPending = warmRoomIds.length + hydratingCount;
-    if (admittedAndPending >= targetCount) return;
-    const slots = Math.max(0, targetCount - admittedAndPending);
-    if (slots === 0) return;
-    const nowMs = Date.now();
-    // Drop expired cool-downs so the map cannot grow without bound.
-    for (const [roomId, evictedAt] of outputPressureEvictedAtByRoomIdRef.current) {
-      if (nowMs - evictedAt >= WARM_ROOM_EVICTION_COOLDOWN_MS) {
-        outputPressureEvictedAtByRoomIdRef.current.delete(roomId);
-      }
-    }
-    const loadedRoomIds = new Set(Object.keys(roomRuntimesRef.current));
-    const preferredRoomIds = readRoomMru(
-      runtime.platform.sessionStorage,
-      new Set(rooms.map((room) => room.id))
-    );
-    const blockedRoomIds = new Set(
-      [...outputPressureEvictedAtByRoomIdRef.current.keys()].filter((roomId) =>
-        isRoomInEvictionCooldown(roomId, outputPressureEvictedAtByRoomIdRef.current, nowMs)
-      )
-    );
-    for (const roomId of roomRuntimeHydrationIdsRef.current) blockedRoomIds.add(roomId);
-    const nextRoomIds = selectAutomaticWarmFillRoomIds({
-      roomIds: rooms.map((room) => room.id),
-      activeRoomId: selectedRoomId,
-      preferredRoomIds,
-      loadedRoomIds,
-      eligibleRoomIds: startupWarmFillRoomIdsRef.current,
-      blockedRoomIds,
-      slots: Math.min(slots, WARM_ROOM_STARTUP_HYDRATION_CONCURRENCY)
-    });
-    for (const nextRoomId of nextRoomIds) {
-      void loadRoomRuntimeRef.current(nextRoomId, undefined, { loadMetadata: false });
-    }
-  }, [
-    automaticWarmFillSuppressed,
-    readiness,
-    rooms,
-    selectedRoomId,
-    warmRoomCapacity.effectiveSafeRoomCapacity,
-    warmRoomCapacity.overcommitInUse,
-    warmRoomCapacity.pressureReasons.length,
-    warmRoomEnabled,
-    warmRoomIds
-  ]);
 
   useEffect(() => {
     function syncLifecycleDebugSnapshot() {
@@ -4224,10 +3802,6 @@ export function App() {
   }, [warmRoomEnabled]);
 
   useEffect(() => {
-    removeLegacyWarmRoomConnectedPaneLimit();
-  }, []);
-
-  useEffect(() => {
     runtime.platform.localStorage.setItem(SESSION_DEBUG_IDS_STORAGE_KEY, String(showSessionDebugIds));
   }, [showSessionDebugIds]);
 
@@ -4284,13 +3858,17 @@ export function App() {
       for (const roomId of roomIds) {
         refreshHiddenRoomRuntimeRef.current(roomId).catch((err: unknown) => {
           if (!appMountedRef.current) return;
-          if (roomId !== selectedRoomIdRef.current) return;
           if (isRoomNotFoundError(err, roomId)) {
-            recoverMissingRoom(roomId).catch((recoveryError: unknown) =>
-              setError(recoveryError instanceof Error ? recoveryError.message : "Room recovery failed")
-            );
+            if (roomId === selectedRoomIdRef.current) {
+              recoverMissingRoom(roomId).catch((recoveryError: unknown) =>
+                setError(recoveryError instanceof Error ? recoveryError.message : "Room recovery failed")
+              );
+            } else {
+              removeRoomRuntime(roomId);
+            }
             return;
           }
+          if (roomId !== selectedRoomIdRef.current) return;
           if (!isTransientUpstreamRuntimeError(err)) {
             setError(err instanceof Error ? err.message : "Room refresh failed");
           }
@@ -4353,6 +3931,7 @@ export function App() {
       }
       setRooms((current) => sortRoomsByOrder([...current, room]));
       setRoomCliActivityCounts((current) => ({ ...current, [room.id]: 0 }));
+      setRoomCliRuntimeIds((current) => ({ ...current, [room.id]: [] }));
       activateRoom(room.id);
       setActiveSideSurface("rooms");
       if (shellMode === "desktop") {
@@ -4502,7 +4081,7 @@ export function App() {
     await openCliRuntimeLogin(connectionRuntime);
   }
 
-  async function openRoom(roomId: string, options: { keepCompactSurfaceOpen?: boolean } = {}) {
+  async function selectRoom(roomId: string, options: { keepCompactSurfaceOpen?: boolean } = {}) {
     const warmRuntimeReady = Boolean(
       warmRoomIdsRef.current.includes(roomId) &&
       roomRuntimesRef.current[roomId] &&
@@ -4532,85 +4111,6 @@ export function App() {
     }
   }
 
-  function warmRoomSafeSlotAvailable(
-    snapshot: WarmRoomCapacitySnapshot,
-    targetPaneCount = WARM_ROOM_FULL_PANE_COUNT
-  ): boolean {
-    return snapshot.warmRoomCount < snapshot.effectiveSafeRoomCapacity &&
-      snapshot.connectedPaneCount + targetPaneCount <= snapshot.safePaneCapacity;
-  }
-
-  async function selectRoomOnce(roomId: string, options: { keepCompactSurfaceOpen?: boolean } = {}) {
-    if (
-      roomId === selectedRoomIdRef.current &&
-      roomRuntimesRef.current[roomId] &&
-      roomPaneLoadStatesRef.current[roomId] === "loaded"
-    ) return;
-    if (
-      !warmRoomEnabled ||
-      roomId === selectedRoomIdRef.current ||
-      (
-        warmRoomIdsRef.current.includes(roomId) &&
-        roomRuntimesRef.current[roomId] &&
-        roomPaneLoadStatesRef.current[roomId] === "loaded"
-      )
-    ) {
-      await openRoom(roomId, options);
-      return;
-    }
-    const fresh = await sampleWarmRoomCapacity();
-    const safeSlotAvailable = warmRoomSafeSlotAvailable(fresh);
-    let evictionRoomId: string | null = null;
-    if (!safeSlotAvailable) {
-      evictionRoomId = selectHiddenRoomEvictionIds({
-        candidates: Object.values(roomRuntimesRef.current).map((runtimeSnapshot) => ({
-          roomId: runtimeSnapshot.roomId,
-          attachedPaneCount: connectedPaneCount(
-            runtimeSnapshot.panes,
-            runtimeSnapshot.bootstrappedPaneIds
-          ),
-          lastAccessedAt: runtimeSnapshot.lastAccessedAt
-        })),
-        protectedRoomIds: [
-          selectedRoomIdRef.current,
-          displayedRoomIdRef.current,
-          preparingRoomIdRef.current
-        ].filter((candidate): candidate is string => Boolean(candidate)),
-        evictionCount: 1
-      })[0] ?? null;
-      if (evictionRoomId) {
-        removeRoomRuntime(evictionRoomId);
-        emitWarmRoomCapacityDiagnostic(fresh, "EVICT");
-      }
-    }
-    const decision = {
-      action: "OPEN_SAFELY",
-      automatic: true,
-      targetRoomId: roomId,
-      evictedRoomId: evictionRoomId,
-      usedColdRevealReserve: !safeSlotAvailable && evictionRoomId === null,
-      sequence: warmRoomAdmissionSequenceRef.current + 1
-    } satisfies WarmRoomAdmissionDecision;
-    warmRoomAdmissionSequenceRef.current = decision.sequence;
-    setWarmRoomAdmissionDecision(decision);
-    emitWarmRoomCapacityDiagnostic(fresh, "ADMIT");
-    await openRoom(roomId, options);
-  }
-
-  async function selectRoom(roomId: string, options: { keepCompactSurfaceOpen?: boolean } = {}) {
-    const activeFlight = roomAdmissionFlightsRef.current.get(roomId);
-    if (activeFlight) return activeFlight;
-    const flight = selectRoomOnce(roomId, options);
-    roomAdmissionFlightsRef.current.set(roomId, flight);
-    try {
-      await flight;
-    } finally {
-      if (roomAdmissionFlightsRef.current.get(roomId) === flight) {
-        roomAdmissionFlightsRef.current.delete(roomId);
-      }
-    }
-  }
-
   useEffect(() => {
     const openRecoveryRoom = (event: Event) => {
       if (!(event instanceof CustomEvent)) return;
@@ -4619,7 +4119,7 @@ export function App() {
       void (async () => {
         const roomPayload = await api.rooms();
         setRooms(sortRoomsByOrder(roomPayload.data));
-        await openRoom(detail.roomId);
+        await selectRoom(detail.roomId);
         if (detail.paneId) setSelectedPaneId(detail.paneId);
       })().catch(() => setError("CLI Recovery opened, but the room could not be selected automatically."));
     };
@@ -4643,6 +4143,12 @@ export function App() {
     setError(null);
     setRooms(nextRooms);
     setRoomCliActivityCounts((current) => {
+      if (!(roomId in current)) return current;
+      const next = { ...current };
+      delete next[roomId];
+      return next;
+    });
+    setRoomCliRuntimeIds((current) => {
       if (!(roomId in current)) return current;
       const next = { ...current };
       delete next[roomId];
@@ -5229,6 +4735,12 @@ export function App() {
           setRoomCliActivityCounts(Object.fromEntries(
             payload.data.map((activity) => [activity.roomId, activity.runningCliCount])
           ));
+          setRoomCliRuntimeIds(Object.fromEntries(
+            payload.data.map((activity) => [
+              activity.roomId,
+              (activity as typeof activity & { runtimeIds?: string[] }).runtimeIds ?? []
+            ])
+          ));
         })
         .catch(() => undefined);
     };
@@ -5333,6 +4845,12 @@ export function App() {
         if (disposed) return;
         setRoomCliActivityCounts(Object.fromEntries(
           payload.data.map((activity) => [activity.roomId, activity.runningCliCount])
+        ));
+        setRoomCliRuntimeIds(Object.fromEntries(
+          payload.data.map((activity) => [
+            activity.roomId,
+            (activity as typeof activity & { runtimeIds?: string[] }).runtimeIds ?? []
+          ])
         ));
       } catch {
         // Keep the last successful sample through temporary API failures.
@@ -6590,36 +6108,67 @@ export function App() {
   }
 
   function clearRoomReorderState() {
+    roomPointerDragCleanupRef.current?.();
+    roomPointerDragCleanupRef.current = null;
+    dragOverRoomIdRef.current = null;
     setDraggedRoomId(null);
     setDragOverRoomId(null);
   }
 
-  function handleRoomDragStart(event: ReactDragEvent<HTMLElement>, roomId: string) {
-    if (roomReorderPending) return;
-    if (event.dataTransfer) {
-      event.dataTransfer.effectAllowed = "move";
-      event.dataTransfer.setData("text/plain", roomId);
-    }
-    setDraggedRoomId(roomId);
-    setDragOverRoomId(roomId);
-  }
-
-  function handleRoomDragOver(event: ReactDragEvent<HTMLElement>, roomId: string) {
-    if (!draggedRoomId || draggedRoomId === roomId || roomReorderPending) return;
+  function handleRoomRightPointerDown(event: ReactPointerEvent<HTMLElement>, roomId: string) {
+    if (event.button !== 2 || roomReorderPending) return;
     event.preventDefault();
-    if (event.dataTransfer) {
-      event.dataTransfer.dropEffect = "move";
-    }
+    roomPointerDragCleanupRef.current?.();
+    setDraggedRoomId(roomId);
+    dragOverRoomIdRef.current = roomId;
     setDragOverRoomId(roomId);
+    const pointerId = event.pointerId;
+    const roomAtPoint = (clientX: number, clientY: number) =>
+      document.elementFromPoint?.(clientX, clientY)?.closest<HTMLElement>(".room-item[data-room-id]")?.dataset.roomId ?? null;
+    const roomFromEvent = (pointerEvent: PointerEvent) =>
+      pointerEvent.target instanceof Element
+        ? pointerEvent.target.closest<HTMLElement>(".room-item[data-room-id]")?.dataset.roomId ?? null
+        : null;
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerCancel);
+    };
+    const handlePointerMove = (pointerEvent: PointerEvent) => {
+      if (pointerEvent.pointerId !== pointerId || (pointerEvent.buttons & 2) === 0) return;
+      pointerEvent.preventDefault();
+      const targetRoomId = roomFromEvent(pointerEvent) ?? roomAtPoint(pointerEvent.clientX, pointerEvent.clientY);
+      if (!targetRoomId || targetRoomId === dragOverRoomIdRef.current) return;
+      dragOverRoomIdRef.current = targetRoomId;
+      setDragOverRoomId(targetRoomId);
+    };
+    const handlePointerUp = (pointerEvent: PointerEvent) => {
+      if (pointerEvent.pointerId !== pointerId || pointerEvent.button !== 2) return;
+      pointerEvent.preventDefault();
+      const targetRoomId = roomFromEvent(pointerEvent) ?? roomAtPoint(pointerEvent.clientX, pointerEvent.clientY) ?? dragOverRoomIdRef.current ?? roomId;
+      cleanup();
+      roomPointerDragCleanupRef.current = null;
+      void handleRoomDrop(targetRoomId, roomId);
+    };
+    const handlePointerCancel = (pointerEvent: PointerEvent) => {
+      if (pointerEvent.pointerId !== pointerId) return;
+      cleanup();
+      roomPointerDragCleanupRef.current = null;
+      clearRoomReorderState();
+    };
+    window.addEventListener("pointermove", handlePointerMove, { passive: false });
+    window.addEventListener("pointerup", handlePointerUp, { passive: false });
+    window.addEventListener("pointercancel", handlePointerCancel);
+    roomPointerDragCleanupRef.current = cleanup;
   }
 
-  async function handleRoomDrop(roomId: string) {
-    if (!draggedRoomId || draggedRoomId === roomId || roomReorderPending) {
+  async function handleRoomDrop(roomId: string, sourceRoomId = draggedRoomId) {
+    if (!sourceRoomId || sourceRoomId === roomId || roomReorderPending) {
       clearRoomReorderState();
       return;
     }
     const previousRooms = rooms;
-    const nextRooms = reorderRoomsById(previousRooms, draggedRoomId, roomId);
+    const nextRooms = reorderRoomsById(previousRooms, sourceRoomId, roomId);
     clearRoomReorderState();
     setRooms(nextRooms);
     setRoomReorderPending(true);
@@ -6698,31 +6247,46 @@ export function App() {
           New room
         </button>
       </div>
-      <div className="room-list">
+      <div className={`room-list${draggedRoomId ? " is-room-dragging" : ""}`}>
         {rooms.map((room) => {
+          // "Warm" must mean truly ready: pane data loaded AND every visible
+          // terminal pane bootstrapped (socket attached). Rooms whose data is
+          // loaded but whose terminals are still attaching show "Warming".
+          // User-approved 2026-08-14 (dock showed warm before it was true).
+          const roomTerminalsBootstrapped = (roomId: string): boolean => {
+            const runtime = roomRuntimes[roomId];
+            if (!runtime) return false;
+            const terminals = runtime.panes.filter(
+              (pane) => pane.mode === "TERMINAL" && !pane.isMinimized
+            );
+            if (terminals.length === 0) return true;
+            const bootstrapped = new Set(runtime.bootstrappedPaneIds ?? []);
+            return terminals.every((pane) => bootstrapped.has(pane.id));
+          };
           const warmPresentation = classifyRoomWarmPresentation({
             roomId: room.id,
             activeRoomId: selectedRoomId,
             warmRoomIds,
             hydratingRoomIds: new Set(
               Object.entries(roomPaneLoadStates)
-                .filter(([, state]) => state === "loading")
+                .filter(([roomId, state]) => (
+                  state === "loading" ||
+                  (state === "loaded" && !roomTerminalsBootstrapped(roomId))
+                ))
                 .map(([roomId]) => roomId)
             ),
             loadedRoomIds: new Set(
               Object.entries(roomPaneLoadStates)
-                .filter(([, state]) => state === "loaded")
+                .filter(([roomId, state]) => (
+                  state === "loaded" && roomTerminalsBootstrapped(roomId)
+                ))
                 .map(([roomId]) => roomId)
             )
           });
-          const warmLabel =
-            warmPresentation === "active"
-              ? "Active"
-              : warmPresentation === "warm"
-                ? "Warm"
-                : warmPresentation === "warming"
-                  ? "Warming"
-                  : "Cold";
+          const roomCliPresentations = [...new Set(roomCliRuntimeIds[room.id] ?? [])].flatMap((runtimeId) => {
+            const presentation = cliRuntimePresentation(runtimeId);
+            return presentation ? [presentation] : [];
+          });
           return (
           <div
             key={room.id}
@@ -6732,26 +6296,12 @@ export function App() {
               draggedRoomId === room.id ? "is-dragging" : "",
               dragOverRoomId === room.id && draggedRoomId !== room.id ? "is-drop-target" : ""
             ].filter(Boolean).join(" ")}
-            data-warm-presentation={warmPresentation}
-            onDragOver={(event) => handleRoomDragOver(event, room.id)}
-            onDrop={(event) => {
-              event.preventDefault();
-              void handleRoomDrop(room.id);
-            }}
-            onDragEnd={clearRoomReorderState}
+            data-room-id={room.id}
+            data-warm-presentation={warmRoomEnabled ? warmPresentation : undefined}
+            title={`Hold the right mouse button to reorder ${room.name}`}
+            onPointerDown={(event) => handleRoomRightPointerDown(event, room.id)}
+            onContextMenu={(event) => event.preventDefault()}
           >
-            <button
-              type="button"
-              className="room-drag-handle"
-              aria-label={`Reorder ${room.name}`}
-              title={`Reorder ${room.name}`}
-              disabled={roomReorderPending}
-              draggable={!roomReorderPending}
-              onDragStart={(event) => handleRoomDragStart(event, room.id)}
-              onDragEnd={clearRoomReorderState}
-            >
-              <GripVertical aria-hidden="true" />
-            </button>
             <button
               className="room-select"
               data-room-id={room.id}
@@ -6760,25 +6310,32 @@ export function App() {
               aria-label={`Open ${room.name}`}
               aria-current={room.id === selectedRoomId ? "true" : undefined}
             >
-              <span className="room-select-heading">
-                <span className="room-name">{room.name}</span>
+              <span className="room-name">{room.name}</span>
+              <span className="room-badge-row">
                 <span className="room-cli-badge">
                   CLI {roomCliActivityCounts[room.id] ?? "—"}
                 </span>
-                {warmRoomEnabled ? (
+                {roomCliPresentations.length ? (
                   <span
-                    className={`room-warm-badge is-${warmPresentation}`}
-                    data-warm-presentation={warmPresentation}
-                    title={`Warm cache: ${warmLabel}`}
+                    className="room-cli-runtime-icons"
+                    aria-label={`Active CLI types: ${roomCliPresentations.map((presentation) => presentation.shortLabel).join(", ")}`}
                   >
-                    {warmLabel}
+                    {roomCliPresentations.map((presentation) => (
+                      <img
+                        key={presentation.id}
+                        className="room-cli-runtime-icon"
+                        src={presentation.iconSrc}
+                        alt=""
+                        aria-hidden="true"
+                        title={presentation.shortLabel}
+                        data-terminal-runtime-brand={presentation.brand}
+                        draggable={false}
+                      />
+                    ))}
                   </span>
                 ) : null}
-              </span>
-              <span className="room-select-meta">
                 {room.kind === "AGENT_PROOF" ? <span className="room-kind-badge">Agent Proof</span> : null}
                 {room.kind === "CLI_RECOVERY" ? <span className="room-kind-badge">CLI Recovery</span> : null}
-                <small>{room.id === selectedRoomId ? "Pane target · " : "Select for panes · "}{room.paneCap} cap</small>
               </span>
             </button>
             <button
@@ -6902,10 +6459,13 @@ export function App() {
         canManage={auth?.user?.role === "ADMIN"}
         cliImagePreviewLimit={cliImagePreviewLimit}
         warmRoomEnabled={warmRoomEnabled}
-        warmRoomCapacity={warmRoomLiveCapacity}
+        warmConnectedPaneLimit={warmConnectedPaneLimit}
         onCliImagePreviewLimitChange={setCliImagePreviewLimit}
         onWarmRoomEnabledChange={(enabled) => {
           setWarmRoomEnabled(writeStoredWarmRoomEnabled(enabled));
+        }}
+        onWarmConnectedPaneLimitChange={(limit) => {
+          setWarmConnectedPaneLimit(writeStoredWarmRoomConnectedPaneLimit(limit));
         }}
         onOpenRestartAll={openCliRuntimeRestartAllDialog}
         restartAllPending={cliRuntimeRestartAllPending}
@@ -7296,25 +6856,13 @@ export function App() {
       data-shell-mode={shellMode}
       data-warm-room-cache-enabled={String(warmRoomEnabled)}
       data-suppress-notifications={String(suppressNotifications)}
-      data-warm-room-safe-capacity={warmRoomCapacity.effectiveSafeRoomCapacity}
-      data-warm-room-hard-capacity={warmRoomCapacity.hardRoomCapacity}
-      data-warm-room-count={warmRoomLiveCapacity.warmRoomCount}
-      data-warm-room-connected-panes={warmRoomLiveCapacity.connectedPaneCount}
-      data-warm-room-memory-source={warmRoomCapacity.memorySource}
-      data-warm-room-pressure={warmRoomCapacity.pressureReasons.length > 0 ? "true" : "false"}
-      data-warm-room-overcommit={warmRoomCapacity.overcommitInUse ? "true" : "false"}
-      data-warm-room-admission-decision={warmRoomAdmissionDecision?.action}
-      data-warm-room-admission-automatic={warmRoomAdmissionDecision?.automatic ? "true" : undefined}
-      data-warm-room-admission-target={warmRoomAdmissionDecision?.targetRoomId}
-      data-warm-room-admission-evicted={warmRoomAdmissionDecision?.evictedRoomId ?? undefined}
-      data-warm-room-admission-used-cold-reveal-reserve={
-        warmRoomAdmissionDecision
-          ? warmRoomAdmissionDecision.usedColdRevealReserve
-            ? "true"
-            : "false"
-          : undefined
-      }
-      data-warm-room-admission-sequence={warmRoomAdmissionDecision?.sequence}
+      data-warm-room-safe-capacity={warmRoomLimitsForDevice.maxRooms}
+      data-warm-room-hard-capacity={warmRoomLimitsForDevice.maxRooms}
+      data-warm-room-count={warmRoomIds.length}
+      data-warm-room-connected-panes={warmConnectedPaneTotal}
+      data-warm-room-memory-source="fixed"
+      data-warm-room-pressure="false"
+      data-warm-room-overcommit="false"
       data-cli-floats-hidden={cliFloatsHidden ? "true" : "false"}
       data-room-toolbar-hidden={isRoomToolbarHidden ? "true" : undefined}
       data-mobile-pane-focus={isMobilePaneFocused ? "true" : undefined}
