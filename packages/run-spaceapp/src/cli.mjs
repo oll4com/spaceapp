@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
+import { createInterface } from "node:readline";
 import {
   copyFile,
   mkdir,
@@ -1925,6 +1926,24 @@ export async function readSecret(stdin, stdout, prompt, { mask = true } = {}) {
     });
     stdout.write("\n");
     return value;
+  }
+  if (process.platform === "win32") {
+    // Windows consoles (PowerShell 7 / ConPTY) do not reliably forward
+    // raw-mode keystrokes to native children: a "y" + Enter can be frozen,
+    // split across chunks, or doubled ("yy" -> "Please answer y or n.").
+    // Read cooked console lines without setRawMode instead; the console
+    // itself provides line editing and echo.
+    const rl = createInterface({ input: stdin, terminal: false, crlfDelay: Infinity });
+    const cooked = await new Promise((resolve) => {
+      let got = null;
+      rl.on("line", (line) => {
+        got = line;
+        rl.close();
+      });
+      rl.on("close", () => resolve(got ?? ""));
+    });
+    stdout.write("\n");
+    return cooked;
   }
   stdin.setRawMode(true);
   stdin.resume();
