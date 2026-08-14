@@ -11,8 +11,6 @@ Semantic Versioning.
 - cross-platform installer for Windows, macOS, and Linux (npm run-spaceapp + GHCR images).
 
 
-## [0.1.27] - 2026-08-14
-
 - fix(run-spaceapp): wizard answers on non-TTY stdin (Windows npx/PowerShell) are
   read up to the first newline instead of draining the stream to EOF, so the
   "y" confirmation no longer looks frozen and "Please answer y or n." loops are
