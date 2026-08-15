@@ -3,6 +3,7 @@ import type {
   AppDiagnosticsVideoLease
 } from "@space/contracts";
 import { api } from "../api.js";
+import { emitAppDiagnosticsPerformance } from "./app-diagnostics-performance.js";
 import { getSpaceRuntime } from "../runtime/SpaceRuntime.js";
 import {
   APP_DIAGNOSTICS_STATE_EVENT,
@@ -26,6 +27,7 @@ export interface AppDiagnosticsRecorderState {
   status: AppDiagnosticsRecorderStatus;
   startedAt: string | null;
   errorCode: string | null;
+  paused: boolean;
 }
 
 interface VideoSegmentInput {
@@ -94,6 +96,90 @@ type CaptureHandleTrack = MediaStreamTrack & {
   getCaptureHandle?: () => { handle?: string; origin?: string } | null;
 };
 
+const recorderLeaseStorageKey = "space.appDiagnostics.recorderLease.v1";
+const pendingSegmentStorageKey = "space.appDiagnostics.pendingSegment.v1";
+const maxPendingSegmentChars = 4_000_000;
+
+interface PendingVideoSegment {
+  input: VideoSegmentInput;
+  base64: string;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array | null {
+  try {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingSegment(value: PendingVideoSegment | null): void {
+  try {
+    const storage = getSpaceRuntime().platform.localStorage;
+    if (value) storage.setItem(pendingSegmentStorageKey, JSON.stringify(value));
+    else storage.removeItem(pendingSegmentStorageKey);
+  } catch {
+    // Best effort only.
+  }
+}
+
+function readPendingSegment(): PendingVideoSegment | null {
+  try {
+    const raw = getSpaceRuntime().platform.localStorage.getItem(pendingSegmentStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PendingVideoSegment>;
+    if (!parsed || !parsed.input || typeof parsed.base64 !== "string") return null;
+    return { input: parsed.input as VideoSegmentInput, base64: parsed.base64 };
+  } catch {
+    return null;
+  }
+}
+
+interface PersistedRecorderLease {
+  leaseId: string;
+  captureId: string;
+  startedAt: string | null;
+}
+
+function readPersistedRecorderLease(): PersistedRecorderLease | null {
+  try {
+    const raw = getSpaceRuntime().platform.localStorage.getItem(recorderLeaseStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PersistedRecorderLease>;
+    if (!parsed || typeof parsed.leaseId !== "string" || parsed.leaseId.length < 6 || typeof parsed.captureId !== "string") {
+      return null;
+    }
+    return {
+      leaseId: parsed.leaseId,
+      captureId: parsed.captureId,
+      startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : null
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedRecorderLease(value: PersistedRecorderLease | null): void {
+  try {
+    const storage = getSpaceRuntime().platform.localStorage;
+    if (value) storage.setItem(recorderLeaseStorageKey, JSON.stringify(value));
+    else storage.removeItem(recorderLeaseStorageKey);
+  } catch {
+    // Best effort only.
+  }
+}
+
 const recordingWidth = 1280;
 const recordingHeight = 720;
 const recordingFps = 5;
@@ -140,14 +226,46 @@ export function createAppDiagnosticsVideoRecorder(
   options: CreateAppDiagnosticsVideoRecorderOptions
 ): AppDiagnosticsVideoRecorder {
   const now = options.now ?? (() => new Date());
-  let state: AppDiagnosticsRecorderState = { status: "IDLE", startedAt: null, errorCode: null };
+  const persisted = readPersistedRecorderLease();
+  const restoredLease = persisted && persisted.captureId === options.captureId ? persisted : null;
+  let state: AppDiagnosticsRecorderState = restoredLease
+    ? { status: "RECORDING", startedAt: restoredLease.startedAt, errorCode: null, paused: true }
+    : { status: "IDLE", startedAt: null, errorCode: null, paused: false };
   let lease: AppDiagnosticsVideoLease | null = null;
+  if (restoredLease) {
+    lease = {
+      leaseId: restoredLease.leaseId,
+      captureId: restoredLease.captureId,
+      clientId: options.clientId,
+      pageClientId: options.pageClientId,
+      userId: "app_debug_user:restored",
+      status: "ACTIVE",
+      acquiredAt: restoredLease.startedAt ?? "1970-01-01T00:00:00.000Z",
+      heartbeatAt: "1970-01-01T00:00:00.000Z",
+      expiresAt: "1970-01-01T00:00:00.000Z",
+      releasedAt: null
+    };
+  }
   let sourceStream: MediaStream | null = null;
   let sourceTrack: CaptureHandleTrack | null = null;
   let downsampled: DownsampledStream | null = null;
   let currentRecorder: AppDiagnosticsMediaRecorder | null = null;
   let chunkTimer: number | null = null;
   let heartbeatTimer: number | null = null;
+  if (restoredLease) {
+    heartbeatTimer = window.setInterval(() => {
+      void options.api.heartbeatLease(restoredLease.leaseId, options.captureId).catch(() => undefined);
+    }, leaseHeartbeatMs);
+    const pending = readPendingSegment();
+    if (pending && pending.input.leaseId === restoredLease.leaseId) {
+      const bytes = base64ToBytes(pending.base64);
+      if (bytes) {
+        void options.api.uploadSegment(pending.input, bytes)
+          .then(() => writePendingSegment(null))
+          .catch(() => undefined);
+      }
+    }
+  }
   let chunkStartedAt = "";
   let chunkFirstSequence = 0;
   let segmentSequence = 0;
@@ -178,6 +296,7 @@ export function createAppDiagnosticsVideoRecorder(
   const releaseLease = async () => {
     const current = lease;
     lease = null;
+    writePersistedRecorderLease(null);
     if (!current) return;
     await options.api.releaseLease(current.leaseId).catch(() => undefined);
   };
@@ -210,8 +329,17 @@ export function createAppDiagnosticsVideoRecorder(
       mimeType: blob.type || currentRecorder?.mimeType || "video/webm"
     };
     uploadPending = readBlobBytes(blob)
-      .then((bytes) => options.api.uploadSegment(input, bytes))
-      .then(() => undefined)
+      .then((bytes) => {
+        const base64 = bytesToBase64(bytes);
+        if (base64.length <= maxPendingSegmentChars) {
+          writePendingSegment({ input, base64 });
+        }
+        return options.api.uploadSegment(input, bytes);
+      })
+      .then(() => {
+        writePendingSegment(null);
+        return undefined;
+      })
       .catch(() => {
         if (active) void recorder.stop("UPLOAD_FAILED");
       })
@@ -283,12 +411,19 @@ export function createAppDiagnosticsVideoRecorder(
       if (startPending || active || state.status === "REQUESTING" || state.status === "STOPPING") return;
       startPending = true;
       const generation = ++startGeneration;
-      setState({ status: "REQUESTING", startedAt: null, errorCode: null });
+      setState({ status: "REQUESTING", startedAt: null, errorCode: null, paused: Boolean(lease) });
       try {
-        lease = await options.api.acquireLease({
-          clientId: options.clientId,
-          pageClientId: options.pageClientId
-        });
+        if (!lease) {
+          lease = await options.api.acquireLease({
+            clientId: options.clientId,
+            pageClientId: options.pageClientId
+          });
+          writePersistedRecorderLease({
+            leaseId: lease.leaseId,
+            captureId: options.captureId,
+            startedAt: now().toISOString()
+          });
+        }
         if (await abandonCancelledStart(generation)) return;
         await options.configureCaptureHandle({
           handle: options.captureHandle,
@@ -336,7 +471,7 @@ export function createAppDiagnosticsVideoRecorder(
             .catch(() => recorder.stop("LEASE_STALE"));
         }, leaseHeartbeatMs);
         startChunk();
-        setState({ status: "RECORDING", startedAt, errorCode: null });
+        setState({ status: "RECORDING", startedAt, errorCode: null, paused: false });
       } catch (error) {
         active = false;
         clearTimers();
@@ -350,7 +485,8 @@ export function createAppDiagnosticsVideoRecorder(
         setState({
           status: "ERROR",
           startedAt: null,
-          errorCode: explicitCode ?? permissionErrorCode(error)
+          errorCode: explicitCode ?? permissionErrorCode(error),
+          paused: false
         });
       } finally {
         startPending = false;
@@ -363,23 +499,39 @@ export function createAppDiagnosticsVideoRecorder(
       stopFlight = (async () => {
         active = false;
         clearTimers();
-        setState({ ...state, status: "STOPPING" });
+        setState({ ...state, status: "STOPPING", paused: false });
         if (rotateFlight) await rotateFlight;
-        const uploadFinal = false;
+        const uploadFinal = reason === "PAGE_HIDE";
         await stopCurrentChunk(uploadFinal);
         const pendingUpload = uploadPending;
         if (pendingUpload && (reason === "USER" || reason === "TRACK_ENDED")) {
           await pendingUpload;
         }
         cleanupStreams();
-        await releaseLease();
+        if (reason === "PAGE_HIDE") {
+          emitAppDiagnosticsPerformance({
+            category: "PERFORMANCE",
+            metric: "RECORDER",
+            phase: "PAGE_HIDE",
+            value: 1
+          });
+        } else {
+          await releaseLease();
+          emitAppDiagnosticsPerformance({
+            category: "PERFORMANCE",
+            metric: "RECORDER",
+            phase: reason === "DEBUG_OFF" ? "STOPPED" : "RELEASED",
+            value: 1
+          });
+        }
         const errorCode = ["UPLOAD_BACKPRESSURE", "UPLOAD_FAILED", "LEASE_STALE"].includes(reason)
           ? reason
           : null;
         setState({
           status: errorCode ? "ERROR" : "IDLE",
           startedAt: null,
-          errorCode
+          errorCode,
+          paused: false
         });
       })().finally(() => {
         stopFlight = null;
@@ -435,7 +587,8 @@ let globalRecorder: AppDiagnosticsVideoRecorder | null = null;
 let globalRecorderState: AppDiagnosticsRecorderState = {
   status: "IDLE",
   startedAt: null,
-  errorCode: null
+  errorCode: null,
+  paused: false
 };
 
 function pageClientId(): string {
@@ -450,21 +603,14 @@ function syncGlobalRecorderState() {
   globalRecorderState = globalRecorder?.getState() ?? {
     status: "IDLE",
     startedAt: null,
-    errorCode: null
+    errorCode: null,
+    paused: false
   };
 }
 
-export function getAppDiagnosticsRecorderState(): AppDiagnosticsRecorderState {
-  syncGlobalRecorderState();
-  return { ...globalRecorderState };
-}
-
-export async function startAppDiagnosticsVideoRecording(): Promise<void> {
+function createGlobalRecorder(): AppDiagnosticsVideoRecorder | null {
   const diagnostics = getAppDiagnosticsClientState();
-  if (!diagnostics.status?.isEnabled || !diagnostics.status.captureId) {
-    throw new Error("App diagnostics must be enabled before recording.");
-  }
-  if (globalRecorder && ["REQUESTING", "RECORDING", "STOPPING"].includes(globalRecorder.getState().status)) return;
+  if (!diagnostics.status?.isEnabled || !diagnostics.status.captureId) return null;
   const mediaDevices = navigator.mediaDevices as MediaDevices & {
     setCaptureHandleConfig?: (input: {
       handle: string;
@@ -472,10 +618,8 @@ export async function startAppDiagnosticsVideoRecording(): Promise<void> {
       permittedOrigins: string[];
     }) => void;
   };
-  if (typeof mediaDevices?.setCaptureHandleConfig !== "function") {
-    throw new Error("CAPTURE_HANDLE_UNAVAILABLE");
-  }
-  globalRecorder = createAppDiagnosticsVideoRecorder({
+  if (typeof mediaDevices?.setCaptureHandleConfig !== "function") return null;
+  return createAppDiagnosticsVideoRecorder({
     captureId: diagnostics.status.captureId,
     clientId: getAppDiagnosticsClientId(),
     pageClientId: pageClientId(),
@@ -493,10 +637,56 @@ export async function startAppDiagnosticsVideoRecording(): Promise<void> {
     createMediaRecorder: (stream, recorderOptions) => new MediaRecorder(stream, recorderOptions),
     getLastEventSequence: () => getAppDiagnosticsClientState().collector.lastSequence
   });
+}
+
+// Restores a recorder with a persisted lease on page load so the Stop button
+// survives a hard refresh while Debug stays ON.
+function ensureGlobalRecorder(): void {
+  if (globalRecorder) return;
+  if (!readPersistedRecorderLease()) return;
+  const recorder = createGlobalRecorder();
+  if (!recorder) return;
+  globalRecorder = recorder;
+  window.addEventListener(APP_DIAGNOSTICS_RECORDER_STATE_EVENT, () => syncGlobalRecorderState());
+  syncGlobalRecorderState();
+  emitAppDiagnosticsPerformance({
+    category: "PERFORMANCE",
+    metric: "RECORDER",
+    phase: "RESTORED",
+    value: 1
+  });
+}
+
+export function getAppDiagnosticsRecorderState(): AppDiagnosticsRecorderState {
+  ensureGlobalRecorder();
+  syncGlobalRecorderState();
+  return { ...globalRecorderState };
+}
+
+export async function startAppDiagnosticsVideoRecording(): Promise<void> {
+  const diagnostics = getAppDiagnosticsClientState();
+  if (!diagnostics.status?.isEnabled || !diagnostics.status.captureId) {
+    throw new Error("App diagnostics must be enabled before recording.");
+  }
+  ensureGlobalRecorder();
+  const recorder = globalRecorder ?? createGlobalRecorder();
+  if (!recorder) {
+    throw new Error("CAPTURE_HANDLE_UNAVAILABLE");
+  }
+  globalRecorder = recorder;
+  const current = recorder.getState();
+  if (current.status === "REQUESTING" || current.status === "STOPPING") return;
+  if (current.status === "RECORDING" && !current.paused) return;
   const update = () => syncGlobalRecorderState();
   window.addEventListener(APP_DIAGNOSTICS_RECORDER_STATE_EVENT, update, { once: true });
-  await globalRecorder.start();
+  await recorder.start();
   syncGlobalRecorderState();
+  emitAppDiagnosticsPerformance({
+    category: "PERFORMANCE",
+    metric: "RECORDER",
+    phase: "STARTED",
+    value: 1
+  });
 }
 
 export async function stopAppDiagnosticsVideoRecording(
@@ -512,5 +702,15 @@ window.addEventListener(APP_DIAGNOSTICS_STATE_EVENT, () => {
   }
 });
 window.addEventListener("pagehide", () => {
+  const state = globalRecorder?.getState();
+  if (state && state.status === "RECORDING" && state.paused) {
+    emitAppDiagnosticsPerformance({
+      category: "PERFORMANCE",
+      metric: "RECORDER",
+      phase: "RESTORED_SKIP",
+      value: 1
+    });
+    return;
+  }
   void stopAppDiagnosticsVideoRecording("PAGE_HIDE");
 });

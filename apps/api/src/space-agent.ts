@@ -275,6 +275,51 @@ const clipboardToolOptions: AgentPaneToolOption[] = [
   }
 ];
 
+const chatToolOptions: AgentPaneToolOption[] = [
+  {
+    id: "chat:send",
+    displayName: "Shared chat send",
+    description: "Send one message from this agent to the Space shared chat room where the operator and every agent pane talk together.",
+    category: "chat",
+    slug: "shared-chat.send",
+    availability: "force_on",
+    authType: "space-shared-chat",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "chat:read",
+    displayName: "Shared chat read",
+    description: "Read the latest messages from the Space shared chat room so this agent can follow the operator and other agents.",
+    category: "chat",
+    slug: "shared-chat.read",
+    availability: "force_on",
+    authType: "space-shared-chat",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "chat:react",
+    displayName: "Shared chat react",
+    description: "React to a shared chat message with an emoji.",
+    category: "chat",
+    slug: "shared-chat.react",
+    availability: "force_on",
+    authType: "space-shared-chat",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  }
+];
+
 const taskToolOptions: AgentPaneToolOption[] = [
   {
     id: "tasks:list",
@@ -443,6 +488,22 @@ function clipboardToolContext(selectedToolIds: string[] | null | undefined): str
     '```space-clipboard-actions\n{"version":1,"actions":[{"toolId":"clipboard:list","action":{"type":"list","pageSize":10}}]}\n```',
     "Action bodies: clipboard:list uses type=list with optional q/source/pageSize; clipboard:get uses type=get with clipboardItemId; clipboard:save uses type=save with text; clipboard:save-plan uses type=save-plan with text and an optional title.",
     "V1 allows at most 3 actions per turn. clipboard:save creates an AGENT_NOTE and accepts at most 10,000 characters. clipboard:save-plan stores a PLAN (the full designed plan) and accepts up to 100,000 characters. CLI agents do not have clipboard API access."
+  ].join("\n");
+}
+
+function sharedChatToolContext(selectedToolIds: string[] | null | undefined): string | null {
+  const selected = Array.from(
+    new Set((selectedToolIds ?? []).filter((toolId) => toolId.startsWith("chat:")))
+  );
+  if (!selected.length) return null;
+  return [
+    "Space shared chat tools selected:",
+    `tools=${selected.join(", ")}`,
+    "The Space shared chat is the one room where the operator and every agent pane talk together. Use chat:read first to follow the conversation, then chat:send to reply or report progress. Use chat:react only to react to an existing message.",
+    "To request a shared chat action, include one fenced block named space-chat-actions with JSON only:",
+    '```space-chat-actions\n{"version":1,"actions":[{"toolId":"chat:send","action":{"type":"send","content":"message text"}}]}\n```',
+    "Action bodies: chat:send uses type=send with content and optional roomId/replyToId; chat:read uses type=read with optional limit/before/senderType; chat:react uses type=react with messageId and emoji.",
+    "V1 allows at most 3 actions per turn. chat:send and chat:read messages stay permanently recorded in the operator-visible shared chat with the agent pane as sender."
   ].join("\n");
 }
 
@@ -858,6 +919,7 @@ export function createSpaceAgentAdapter(options: {
     const tools = [
       ...memoryToolOptions,
       ...clipboardToolOptions,
+      ...chatToolOptions,
       ...taskToolOptions,
       ...skillToolOptions,
       ...toolOptionsFromStore(mcpServers, mcpTools),
@@ -1132,6 +1194,7 @@ export function createSpaceAgentAdapter(options: {
       prompt: promptWithAgentContexts(input.content, [
         clipboardToolContext(sendSelection.selectedTools),
         taskToolContext(sendSelection.selectedTools),
+        sharedChatToolContext(sendSelection.selectedTools),
         artifactContext(attachedArtifacts)
       ]),
       artifactIds: attachedArtifacts.filter(isImageTurnArtifact).map((artifact) => artifact.id),

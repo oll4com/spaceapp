@@ -92,6 +92,14 @@ import {
   type CliToggleRuntimeId,
   cliVpnConnectionSchema,
   clipboardItemListResponseSchema,
+  listSharedChatMessagesQuerySchema,
+  sendSharedChatMessageInputSchema,
+  sharedChatMessageListResponseSchema,
+  sharedChatLiveWebSocketMessageSchema,
+  listAuditChainQuerySchema,
+  auditChainListResponseSchema,
+  auditVerifyResponseSchema,
+
   setClipboardItemCompletedRequestSchema,
   taskItemListResponseSchema,
   codexEnvironmentSchema,
@@ -3526,6 +3534,27 @@ function reviewGateStatus(checks: Array<{ status: string }>): { gateStatus: "EMP
   return { gateStatus: "PASS", statusReason: "All recorded review checks are passing." };
 }
 
+interface SharedChatLiveSocket {
+  readyState: number;
+  send(payload: string | Buffer): void;
+  close(code?: number, reason?: string): void;
+  on(event: "close", listener: () => void): unknown;
+  on(event: "message", listener: () => void): unknown;
+}
+
+const sharedChatLiveSockets = new Set<SharedChatLiveSocket>();
+
+function sharedChatBroadcast(message: unknown): void {
+  const payload = JSON.stringify(
+    sharedChatLiveWebSocketMessageSchema.parse({ type: "message", message })
+  );
+  for (const socket of sharedChatLiveSockets) {
+    if (socket.readyState === 1) {
+      socket.send(payload);
+    }
+  }
+}
+
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
   const apiStartedAt = new Date().toISOString();
   const config = options.config ?? getApiConfig(process.env);
@@ -5711,6 +5740,64 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.delete("/api/clipboard-items", defaultRouteRateLimitOptions, async (request) => {
     const owner = await store.upsertUser(request.user!);
     return { deletedCount: await store.clearClipboardItems(owner.id) };
+  });
+
+  app.get("/api/shared-chat/messages", defaultRouteRateLimitOptions, async (request) => {
+    const query = parseQuery(listSharedChatMessagesQuerySchema, request.query);
+    const result = await store.listSharedChatMessages(query);
+    return sharedChatMessageListResponseSchema.parse({
+      data: result.items,
+      nextCursor: result.nextCursor
+    });
+  });
+
+  app.post("/api/shared-chat/messages", defaultRouteRateLimitOptions, async (request, reply) => {
+    const input = parseBody(sendSharedChatMessageInputSchema, request.body);
+    const owner = await store.upsertUser(request.user!);
+    const message = await store.appendSharedChatMessage({
+      ...input,
+      senderType: "user",
+      senderId: owner.id,
+      senderLabel: owner.email ?? owner.id,
+      id: makeSpaceId("shared_chat_msg")
+    });
+    await store.appendAuditChainEntry({
+      action: "shared_chat.message_created",
+      actor: `user:${owner.id}`,
+      targetType: "shared_chat_message",
+      targetId: message.id,
+      metadata: { senderLabel: message.senderLabel, roomId: message.roomId, kind: message.kind }
+    });
+    sharedChatBroadcast(message);
+    return reply.code(201).send(message);
+  });
+
+  app.get("/api/audit/entries", defaultRouteRateLimitOptions, async (request) => {
+    const query = parseQuery(listAuditChainQuerySchema, request.query);
+    const result = await store.listAuditChainEntries(query);
+    return auditChainListResponseSchema.parse({
+      data: result.items,
+      nextCursor: result.nextCursor
+    });
+  });
+
+  app.get("/api/audit/verify", defaultRouteRateLimitOptions, async () => {
+    return auditVerifyResponseSchema.parse(await store.verifyAuditChain());
+  });
+
+  app.get("/api/shared-chat/live", defaultWebsocketRateLimitOptions, (socket, request) => {
+    if (!request.user) {
+      socket.close(4401, "unauthorized");
+      return;
+    }
+    sharedChatLiveSockets.add(socket);
+    const onClose = () => sharedChatLiveSockets.delete(socket);
+    socket.on("close", onClose);
+    socket.on("message", () => {
+      if (socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: "pong" }));
+      }
+    });
   });
 
   app.get("/api/task-items", defaultRouteRateLimitOptions, async (request) => {

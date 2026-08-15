@@ -40,6 +40,12 @@ import type {
   Capability,
   ClipboardItem,
   ClipboardSource,
+  SharedChatMessage,
+  SendSharedChatMessageInput,
+  ListSharedChatMessagesQuery,
+  AuditChainEntry,
+  ListAuditChainQuery,
+  AuditVerifyResponse,
   CreateClipboardItemRequest,
   CreateTaskItemRequest,
   CreateRoomPanesRequest,
@@ -897,6 +903,34 @@ export const api = {
     }),
   clearClipboardItems: () =>
     request<{ deletedCount: number }>("/api/clipboard-items", { method: "DELETE" }),
+  sharedChatMessages: (
+    query: { limit?: number; before?: string; senderType?: "user" | "agent" | "system"; roomId?: string } = {}
+  ) => {
+    const params = new URLSearchParams();
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.before) params.set("before", query.before);
+    if (query.senderType) params.set("senderType", query.senderType);
+    if (query.roomId) params.set("roomId", query.roomId);
+    const suffix = params.toString();
+    return request<{ data: SharedChatMessage[]; nextCursor: string | null }>(
+      `/api/shared-chat/messages${suffix ? `?${suffix}` : ""}`
+    );
+  },
+  sendSharedChatMessage: (input: SendSharedChatMessageInput) =>
+    request<SharedChatMessage>("/api/shared-chat/messages", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  auditChainEntries: (query: { limit?: number; beforeSeq?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.beforeSeq !== undefined) params.set("beforeSeq", String(query.beforeSeq));
+    const suffix = params.toString();
+    return request<{ data: AuditChainEntry[]; nextCursor: string | null }>(
+      `/api/audit/entries${suffix ? `?${suffix}` : ""}`
+    );
+  },
+  auditVerify: () => request<AuditVerifyResponse>("/api/audit/verify"),
   taskItems: (query: { q?: string; status?: TaskStatus; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);

@@ -42,6 +42,7 @@ import {
 } from "@space/runtime";
 import { executeBrowserActionBridge, parseBrowserActionBlock } from "./browser-action-bridge.js";
 import { executeClipboardActionBridge, parseClipboardActionBlock } from "./clipboard-action-bridge.js";
+import { executeChatActionBridge, parseChatActionBlock } from "./chat-action-bridge.js";
 import { executeTaskActionBridge } from "./task-action-bridge.js";
 import { buildCodexAppServerTurnWorkflowId, buildDummyTurnWorkflowId } from "./ids.js";
 import { executeMemoryActionBridge, parseMemoryActionBlock } from "./memory-action-bridge.js";
@@ -640,7 +641,8 @@ function cleanToolObservationFollowUpContent(content: string): {
   const browserParsed = parseBrowserActionBlock(roomParsed.cleanedContent);
   const memoryParsed = parseMemoryActionBlock(browserParsed.cleanedContent);
   const clipboardParsed = parseClipboardActionBlock(memoryParsed.cleanedContent);
-  const skillParsed = parseSkillActionBlock(clipboardParsed.cleanedContent);
+  const chatParsed = parseChatActionBlock(clipboardParsed.cleanedContent);
+  const skillParsed = parseSkillActionBlock(chatParsed.cleanedContent);
   const mcpParsed = parseMcpActionBlock(skillParsed.cleanedContent);
   const cleanedContent = mcpParsed.cleanedContent.trim();
   const foundDeferredAction =
@@ -648,6 +650,7 @@ function cleanToolObservationFollowUpContent(content: string): {
     browserParsed.found ||
     memoryParsed.found ||
     clipboardParsed.found ||
+    chatParsed.found ||
     skillParsed.found ||
     mcpParsed.found;
   return {
@@ -1215,7 +1218,11 @@ async function recordSpaceAgentRunCompleted(
   const clipboardBridge = clipboardContent
     ? await executeClipboardActionBridge({ turnInput: input, assistantContent: clipboardContent, store })
     : null;
-  const taskContent = clipboardBridge?.cleanedContent ?? clipboardContent;
+  const chatContent = clipboardBridge?.cleanedContent ?? clipboardContent;
+  const chatBridge = chatContent
+    ? await executeChatActionBridge({ turnInput: input, assistantContent: chatContent, store })
+    : null;
+  const taskContent = chatBridge?.cleanedContent ?? chatContent;
   const taskBridge = taskContent
     ? await executeTaskActionBridge({ turnInput: input, assistantContent: taskContent, store })
     : null;
@@ -1233,6 +1240,7 @@ async function recordSpaceAgentRunCompleted(
     browserBridge?.cleanedContent ||
     mcpBridge?.cleanedContent ||
     skillBridge?.cleanedContent ||
+    chatBridge?.cleanedContent ||
     clipboardBridge?.cleanedContent ||
     memoryBridge?.cleanedContent ||
     content ||
@@ -1241,6 +1249,7 @@ async function recordSpaceAgentRunCompleted(
     roomBridge?.toolMessageContent,
     memoryBridge?.toolMessageContent,
     clipboardBridge?.toolMessageContent,
+    chatBridge?.toolMessageContent,
     skillBridge?.toolMessageContent,
     mcpBridge?.toolMessageContent,
     browserBridge?.toolMessageContent
@@ -1252,6 +1261,7 @@ async function recordSpaceAgentRunCompleted(
           (roomBridge?.executedActionCount ?? 0) +
           (memoryBridge?.executedActionCount ?? 0) +
           (clipboardBridge?.executedActionCount ?? 0) +
+          (chatBridge?.executedActionCount ?? 0) +
           (skillBridge?.executedActionCount ?? 0) +
           (mcpBridge?.executedActionCount ?? 0) +
           (browserBridge?.executedActionCount ?? 0)

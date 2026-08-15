@@ -250,6 +250,7 @@ import { EmbeddedDashboardDialog } from "./features/embedded-dashboard/EmbeddedD
 import { LinksPanel, QuickLinksPopover } from "./features/user-links/UserLinks.js";
 import { HelpPage } from "./features/help/HelpPage.js";
 import { RoomAgentDock } from "./features/room-agent/RoomAgentDock.js";
+import { SharedChatDock } from "./features/shared-chat/SharedChatDock.js";
 import { AgentSessionsDock } from "./features/agent-sessions/AgentSessionsDock.js";
 import {
   ROOM_THEME_MENU_ID,
@@ -389,7 +390,7 @@ function PaneModeIcon({ pane }: { pane: Pick<Pane, "mode" | "terminalRuntimeId">
   return <Icon aria-hidden="true" />;
 }
 
-type SideSurface = "rooms" | "room-agent" | "media" | "streaming" | "agent-files" | "clipboard" | "tasks" | "links" | "settings" | "health" | "logs" | "agent-tools" | "cli" | "agent-sessions";
+type SideSurface = "rooms" | "room-agent" | "shared-chat" | "media" | "streaming" | "agent-files" | "clipboard" | "tasks" | "links" | "settings" | "health" | "logs" | "agent-tools" | "cli" | "agent-sessions";
 type EventStreamStatus = "idle" | "connecting" | "connected" | "reconnecting" | "unavailable";
 type ActiveRoomEventStreamStatus = "idle" | "connecting" | "connected" | "disconnected" | "unavailable";
 type RoomRefreshCategory = "panes" | "turns" | "swarm" | "events";
@@ -667,6 +668,7 @@ const streamEventTypes: SpaceEvent["type"][] = [
 const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: string; surfaceLabel: string }> = {
   rooms: { icon: PanelRight, label: "rooms", surfaceLabel: "Rooms" },
   "room-agent": { icon: Bot, label: "room agent", surfaceLabel: "Room Agent" },
+  "shared-chat": { icon: MessageSquare, label: "shared chat", surfaceLabel: "Shared Chat" },
   media: { icon: Images, label: "media dock", surfaceLabel: "Media dock" },
   streaming: { icon: Radio, label: "streaming dock", surfaceLabel: "Streaming dock" },
   "agent-files": { icon: FolderOpen, label: "Agent Files", surfaceLabel: "Agent Files" },
@@ -5124,6 +5126,13 @@ export function App() {
     setPaneLayoutPending(true);
     setPaneLayoutError(null);
     const previousRoom = activeRoom;
+    emitAppDiagnosticsPerformance({
+      category: "PERFORMANCE",
+      metric: "PANE_LAYOUT",
+      phase: "LAYOUT_PRESET",
+      roomId: activeRoom.id,
+      value: paneLayoutColumns ?? -1
+    });
     // Optimistic: apply the layout locally before the server round-trip so pane
     // hosts resize immediately and visible terminals refit without waiting.
     setRooms((current) =>
@@ -5143,6 +5152,13 @@ export function App() {
       );
       setPaneLayoutPending(false);
       closePaneLayoutMenu();
+      emitAppDiagnosticsPerformance({
+        category: "PERFORMANCE",
+        metric: "PANE_LAYOUT",
+        phase: "LAYOUT_APPLIED",
+        roomId: activeRoom.id,
+        value: paneLayoutColumns ?? -1
+      });
       try {
         await refreshRoomEvents(activeRoom.id);
       } catch {
@@ -6488,6 +6504,8 @@ export function App() {
       />
     ) : activeSideSurface === "agent-files" ? (
       <AgentFilesDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
+    ) : activeSideSurface === "shared-chat" ? (
+      <SharedChatDock />
     ) : activeSideSurface === "clipboard" ? (
       <ClipboardDock
         canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}

@@ -61,6 +61,14 @@ import {
   memoryChangeSetSummarySchema,
   linkMemoryCacheInputSchema,
   listClipboardItemsQuerySchema,
+  listSharedChatMessagesQuerySchema,
+  listAuditChainQuerySchema,
+  type SendSharedChatMessageInput,
+  type ListSharedChatMessagesQuery,
+  type SharedChatMessage,
+  type ListAuditChainQuery,
+  type AuditChainEntry,
+  type AuditVerifyResponse,
   listTaskItemsQuerySchema,
   taskItemSchema,
   updateTaskItemInputSchema,
@@ -820,6 +828,21 @@ export interface SpaceStore {
   upsertClipboardItem(input: UpsertClipboardItemInput): MaybePromise<ClipboardItem>;
   getClipboardItem(ownerUserId: string, clipboardItemId: string): MaybePromise<ClipboardItem | null>;
   listClipboardItems(ownerUserId: string, query?: ListClipboardItemsQuery): MaybePromise<ClipboardItemListResult>;
+  appendSharedChatMessage(input: SendSharedChatMessageInput & { id: string }): MaybePromise<SharedChatMessage>;
+  listSharedChatMessages(
+    query?: ListSharedChatMessagesQuery
+  ): MaybePromise<{ items: SharedChatMessage[]; nextCursor: string | null }>;
+  appendAuditChainEntry(input: {
+    action: string;
+    actor: string;
+    targetType?: string;
+    targetId?: string | null;
+    metadata?: Record<string, unknown>;
+  }): MaybePromise<AuditChainEntry>;
+  listAuditChainEntries(
+    query?: ListAuditChainQuery
+  ): MaybePromise<{ items: AuditChainEntry[]; nextCursor: string | null }>;
+  verifyAuditChain(): MaybePromise<AuditVerifyResponse>;
   setClipboardItemCompleted(
     ownerUserId: string,
     clipboardItemId: string,
@@ -2191,6 +2214,46 @@ interface InMemoryUserLinkRecord {
 
 export const defaultUserLinks: Array<Omit<UserLink, "id" | "sortOrder" | "createdAt" | "updatedAt">> = [];
 
+const inMemoryAuditChainGenesisHash = "0".repeat(64);
+
+function inMemoryAuditChainCanonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => inMemoryAuditChainCanonicalJson(item)).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  const body = keys
+    .map((key) => `${JSON.stringify(key)}:${inMemoryAuditChainCanonicalJson(record[key])}`)
+    .join(",");
+  return `{${body}}`;
+}
+
+function inMemoryAuditChainHash(input: {
+  seq: number;
+  createdAt: string;
+  action: string;
+  actor: string;
+  targetType: string;
+  targetId: string | null;
+  metadata: Record<string, unknown>;
+  prevHash: string;
+}): string {
+  const serialized = [
+    String(input.seq),
+    input.createdAt,
+    input.action,
+    input.actor,
+    input.targetType,
+    input.targetId ?? "",
+    inMemoryAuditChainCanonicalJson(input.metadata),
+    input.prevHash
+  ].join("\n");
+  return createHash("sha256").update(serialized, "utf8").digest("hex");
+}
+
 export class InMemorySpaceStore implements SpaceStore {
   private rooms = new Map<string, Room>();
   private panes = new Map<string, Pane>();
@@ -2242,6 +2305,8 @@ export class InMemorySpaceStore implements SpaceStore {
   private setupConnectionCheckEvents = new Map<string, SetupConnectionCheckEvent>();
   private publicWaitlistSignups = new Map<string, PublicWaitlistSignupInput>();
   private clipboardItems = new Map<string, InMemoryClipboardRecord>();
+  private sharedChatMessages = new Map<string, SharedChatMessage>();
+  private auditChainEntries = new Map<number, AuditChainEntry>();
   private clipboardSequence = 0;
   private taskItems = new Map<string, InMemoryTaskItemRecord>();
   private taskSequence = 0;
@@ -2443,6 +2508,20 @@ export class InMemorySpaceStore implements SpaceStore {
       description: "SpaceApp setup and connection workspace.",
       initialPaneCount: 0
     });
+    // The starter room opens with the OpenCode CLI pane already in place so the
+    // owner's first visit lands on a working free-model agent immediately.
+    this.createPanes(
+      [
+        {
+          roomId: starterRoom.id,
+          title: "OpenCode CLI",
+          mode: "TERMINAL",
+          terminalRuntimeId: "cli:opencode",
+          cwd: "/etc"
+        }
+      ],
+      makeSpaceId("trace")
+    );
     this.users.set(owner.id, owner);
     this.userPasswordHashes.set(owner.id, input.passwordHash);
     this.ownerSetup = {
@@ -2483,6 +2562,22 @@ export class InMemorySpaceStore implements SpaceStore {
       },
       traceId
     );
+    if (!existing) {
+      // The starter room opens with the OpenCode CLI pane already in place so the
+      // owner's first visit lands on a working free-model agent immediately.
+      this.createPanes(
+        [
+          {
+            roomId: room.id,
+            title: "OpenCode CLI",
+            mode: "TERMINAL",
+            terminalRuntimeId: "cli:opencode",
+            cwd: "/etc"
+          }
+        ],
+        traceId
+      );
+    }
     this.ownerSetup.starterRoomId = room.id;
     return { room, onboarding: this.getOwnerOnboarding() };
   }
@@ -2692,6 +2787,130 @@ export class InMemorySpaceStore implements SpaceStore {
     return {
       items: matching.slice(offset, offset + parsed.pageSize).map((record) => record.item),
       total: matching.length
+    };
+  }
+
+  appendSharedChatMessage(input: SendSharedChatMessageInput & { id: string }): SharedChatMessage {
+    const message: SharedChatMessage = {
+      id: input.id,
+      senderType: input.senderType ?? "system",
+      senderId: input.senderId ?? null,
+      senderLabel: input.senderLabel ?? input.senderType ?? "system",
+      roomId: input.roomId ?? null,
+      kind: input.kind ?? "message",
+      content: input.content,
+      replyToId: input.replyToId ?? null,
+      metadata: input.metadata ?? {},
+      createdAt: nowIso()
+    };
+    this.sharedChatMessages.set(message.id, message);
+    return message;
+  }
+
+  listSharedChatMessages(
+    query: ListSharedChatMessagesQuery = { limit: 100 }
+  ): { items: SharedChatMessage[]; nextCursor: string | null } {
+    const parsed = listSharedChatMessagesQuerySchema.parse(query);
+    const matching = [...this.sharedChatMessages.values()]
+      .filter((message) => !parsed.senderType || message.senderType === parsed.senderType)
+      .filter((message) => !parsed.roomId || message.roomId === parsed.roomId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const limit = parsed.limit ?? 100;
+    const items = matching.slice(0, limit);
+    return { items, nextCursor: matching.length > limit ? items[items.length - 1]?.id ?? null : null };
+  }
+
+  appendAuditChainEntry(input: {
+    action: string;
+    actor: string;
+    targetType?: string;
+    targetId?: string | null;
+    metadata?: Record<string, unknown>;
+  }): AuditChainEntry {
+    const seq = this.auditChainEntries.size + 1;
+    const prevHash =
+      seq === 1
+        ? inMemoryAuditChainGenesisHash
+        : this.auditChainEntries.get(seq - 1)?.chainHash ?? inMemoryAuditChainGenesisHash;
+    const createdAt = new Date().toISOString();
+    const chainHash = inMemoryAuditChainHash({
+      seq,
+      createdAt,
+      action: input.action,
+      actor: input.actor,
+      targetType: input.targetType ?? "",
+      targetId: input.targetId ?? null,
+      metadata: input.metadata ?? {},
+      prevHash
+    });
+    const entry: AuditChainEntry = {
+      seq,
+      action: input.action,
+      actor: input.actor,
+      targetType: input.targetType ?? "",
+      targetId: input.targetId ?? null,
+      metadata: input.metadata ?? {},
+      prevHash,
+      chainHash,
+      createdAt
+    };
+    this.auditChainEntries.set(seq, entry);
+    return entry;
+  }
+
+  listAuditChainEntries(
+    query: ListAuditChainQuery = { limit: 100 }
+  ): { items: AuditChainEntry[]; nextCursor: string | null } {
+    const parsed = listAuditChainQuerySchema.parse(query);
+    const matching = [...this.auditChainEntries.values()]
+      .filter((entry) => parsed.beforeSeq === undefined || entry.seq < parsed.beforeSeq)
+      .sort((left, right) => right.seq - left.seq);
+    const limit = parsed.limit ?? 100;
+    const items = matching.slice(0, limit);
+    return {
+      items,
+      nextCursor: matching.length > limit ? String(items[items.length - 1]?.seq ?? "") || null : null
+    };
+  }
+
+  verifyAuditChain(): AuditVerifyResponse {
+    const entries = [...this.auditChainEntries.values()].sort((left, right) => left.seq - right.seq);
+    let expectedPrev = inMemoryAuditChainGenesisHash;
+    let verifiedThrough = 0;
+    for (const entry of entries) {
+      const expectedHash = inMemoryAuditChainHash({
+        seq: entry.seq,
+        createdAt: entry.createdAt,
+        action: entry.action,
+        actor: entry.actor,
+        targetType: entry.targetType,
+        targetId: entry.targetId,
+        metadata: entry.metadata,
+        prevHash: expectedPrev
+      });
+      if (
+        entry.seq !== verifiedThrough + 1 ||
+        entry.prevHash !== expectedPrev ||
+        entry.chainHash !== expectedHash
+      ) {
+        return {
+          ok: false,
+          entryCount: entries.length,
+          verifiedThroughSeq: verifiedThrough,
+          firstTamperedSeq: entry.seq,
+          message: `Chain verification failed at seq ${entry.seq}.`
+        };
+      }
+      expectedPrev = entry.chainHash;
+      verifiedThrough = entry.seq;
+    }
+    return {
+      ok: true,
+      entryCount: entries.length,
+      verifiedThroughSeq: verifiedThrough,
+      firstTamperedSeq: null,
+      message:
+        entries.length === 0 ? "Audit chain is empty." : `Audit chain verified through seq ${verifiedThrough}.`
     };
   }
 

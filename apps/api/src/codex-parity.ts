@@ -429,6 +429,14 @@ const clipboardContextTail = [
   "Action bodies: clipboard:list uses type=list with optional q/source/pageSize; clipboard:get uses type=get with clipboardItemId; clipboard:save uses type=save with text; clipboard:save-plan uses type=save-plan with text and an optional title.",
   "V1 allows at most 3 actions per turn. clipboard:save creates an AGENT_NOTE and accepts at most 10,000 characters. clipboard:save-plan stores a PLAN (the full designed plan) and accepts up to 100,000 characters. CLI agents do not have clipboard API access."
 ];
+const sharedChatContextOpening = "Space shared chat tools selected:";
+const sharedChatContextTail = [
+  "The Space shared chat is the one room where the operator and every agent pane talk together. Use chat:read first to follow the conversation, then chat:send to reply or report progress. Use chat:react only to react to an existing message.",
+  "To request a shared chat action, include one fenced block named space-chat-actions with JSON only:",
+  '```space-chat-actions\n{"version":1,"actions":[{"toolId":"chat:send","action":{"type":"send","content":"message text"}}]}\n```',
+  "Action bodies: chat:send uses type=send with content and optional roomId/replyToId; chat:read uses type=read with optional limit/before/senderType; chat:react uses type=react with messageId and emoji.",
+  "V1 allows at most 3 actions per turn. chat:send and chat:read messages stay permanently recorded in the operator-visible shared chat with the agent pane as sender."
+];
 const taskContextOpening = "Space private task tools selected:";
 const taskContextTail = [
   "Use these tools only when the operator explicitly asks to list, read, save, or update Space task declarations. Never add task declarations to an ordinary prompt.",
@@ -491,6 +499,14 @@ function isTrustedClipboardContext(value: string): boolean {
   return lines.slice(2).join("\n") === clipboardContextTail.join("\n");
 }
 
+function isTrustedSharedChatContext(value: string): boolean {
+  const lines = value.split("\n");
+  if (lines[0] !== sharedChatContextOpening || !/^tools=chat:(?:send|read|react)(?:, chat:(?:send|read|react))*$/.test(lines[1] ?? "")) {
+    return false;
+  }
+  return lines.slice(2).join("\n") === sharedChatContextTail.join("\n");
+}
+
 function isTrustedTaskContext(value: string): boolean {
   const lines = value.split("\n");
   if (lines[0] !== taskContextOpening || !/^tools=tasks:(?:list|get|save|update)(?:, tasks:(?:list|get|save|update))*$/.test(lines[1] ?? "")) {
@@ -503,7 +519,7 @@ function stripTrustedSpacePromptWrapper(value: string): string {
   const separator = "\n\nUser prompt:\n";
   const separatorIndex = value.indexOf(separator);
   const contexts = value.slice(0, separatorIndex < 0 ? undefined : separatorIndex).split("\n\n");
-  if (!contexts.length || !contexts.every((context) => isTrustedArtifactContext(context) || isTrustedClipboardContext(context) || isTrustedTaskContext(context))) {
+  if (!contexts.length || !contexts.every((context) => isTrustedArtifactContext(context) || isTrustedClipboardContext(context) || isTrustedTaskContext(context) || isTrustedSharedChatContext(context))) {
     return value;
   }
   if (separatorIndex < 0) return "";

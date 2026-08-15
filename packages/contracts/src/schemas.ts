@@ -523,7 +523,7 @@ export const collaborationModeSchema = z.enum(["default", "plan"]);
 export const agentPaneSandboxSchema = z.enum(["workspace-write", "danger-full-access"]);
 export const agentPaneApprovalPolicySchema = z.enum(["on-request", "never"]);
 export const agentPaneReviewerSchema = z.enum(["user", "guardian_subagent"]);
-export const agentPaneToolCategorySchema = z.enum(["memory", "skills", "mcp", "browser", "room"]);
+export const agentPaneToolCategorySchema = z.enum(["memory", "skills", "mcp", "browser", "room", "chat"]);
 export const agentPaneGoalStatusSchema = z.enum(["active", "paused", "blocked", "usage_limited", "budget_limited", "complete"]);
 
 export const agentPanePermissionStateSchema = z.object({
@@ -8393,3 +8393,199 @@ export type TelegramIntegrationStatus = z.infer<typeof telegramIntegrationStatus
 export type CreateTelegramPairingInput = z.infer<typeof createTelegramPairingInputSchema>;
 export type TelegramPairingResponse = z.infer<typeof telegramPairingResponseSchema>;
 export type UpdateTelegramIntegrationInput = z.infer<typeof updateTelegramIntegrationInputSchema>;
+
+// --- Shared Chat (εμπνευσμένο από Buzz #1: χρήστης + όλα τα AI σε ένα δωμάτιο) ---
+export const sharedChatSenderTypeSchema = z.enum(["user", "agent", "system"]);
+export const sharedChatMessageKindSchema = z.enum(["message", "reaction", "system"]);
+export const sharedChatMessageContentMaxCharacters = 20_000;
+export const sharedChatSenderLabelMaxCharacters = 160;
+export const sharedChatListDefaultLimit = 100;
+export const sharedChatListMaxLimit = 200;
+
+const nonBlankChatText = (maxCharacters: number) =>
+  z
+    .string()
+    .min(1)
+    .refine((text) => Array.from(text).length <= maxCharacters, {
+      message: `Shared chat text may contain at most ${maxCharacters} characters.`
+    })
+    .refine((text) => text.trim().length > 0, {
+      message: "Shared chat text must contain a non-whitespace character."
+    });
+
+export const sharedChatMessageSchema = z
+  .object({
+    id: idSchema,
+    senderType: sharedChatSenderTypeSchema,
+    senderId: idSchema.nullable(),
+    senderLabel: z.string().min(1).max(sharedChatSenderLabelMaxCharacters),
+    roomId: idSchema.nullable(),
+    kind: sharedChatMessageKindSchema,
+    content: z.string().min(1).max(sharedChatMessageContentMaxCharacters),
+    replyToId: idSchema.nullable(),
+    metadata: z.record(z.string(), z.unknown()).default({}),
+    createdAt: isoDateTimeSchema
+  })
+  .strict();
+
+export const sendSharedChatMessageInputSchema = z
+  .object({
+    senderType: sharedChatSenderTypeSchema.optional(),
+    senderId: idSchema.nullable().optional(),
+    senderLabel: z.string().trim().min(1).max(sharedChatSenderLabelMaxCharacters).optional(),
+    roomId: idSchema.nullable().optional(),
+    kind: sharedChatMessageKindSchema.default("message"),
+    content: nonBlankChatText(sharedChatMessageContentMaxCharacters),
+    replyToId: idSchema.nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).default({})
+  })
+  .strict();
+
+export const listSharedChatMessagesQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(sharedChatListMaxLimit).default(sharedChatListDefaultLimit),
+    before: idSchema.optional(),
+    senderType: sharedChatSenderTypeSchema.optional(),
+    roomId: idSchema.optional()
+  })
+  .strict();
+
+export const sharedChatMessageListResponseSchema = z
+  .object({
+    data: z.array(sharedChatMessageSchema),
+    nextCursor: idSchema.nullable()
+  })
+  .strict();
+
+export const sharedChatLiveWebSocketMessageSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("message"),
+      message: sharedChatMessageSchema
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("pong")
+    })
+    .strict()
+]);
+
+export const spaceSharedChatToolIdSchema = z.enum(["chat:send", "chat:read", "chat:react"]);
+
+export const spaceAgentChatSendActionSchema = z.object({
+  type: z.literal("send"),
+  content: nonBlankChatText(sharedChatMessageContentMaxCharacters),
+  roomId: idSchema.nullable().optional(),
+  replyToId: idSchema.nullable().optional()
+});
+
+export const spaceAgentChatReadActionSchema = z.object({
+  type: z.literal("read"),
+  limit: z.number().int().min(1).max(sharedChatListMaxLimit).default(20),
+  before: idSchema.optional(),
+  senderType: sharedChatSenderTypeSchema.optional()
+});
+
+export const spaceAgentChatReactActionSchema = z.object({
+  type: z.literal("react"),
+  messageId: idSchema,
+  emoji: z.string().trim().min(1).max(16)
+});
+
+export const spaceAgentChatActionInputSchema = z.discriminatedUnion("type", [
+  spaceAgentChatSendActionSchema,
+  spaceAgentChatReadActionSchema,
+  spaceAgentChatReactActionSchema
+]);
+
+function expectedChatToolIdForAction(
+  type: z.infer<typeof spaceAgentChatActionInputSchema>["type"]
+): z.infer<typeof spaceSharedChatToolIdSchema> {
+  switch (type) {
+    case "send":
+      return "chat:send";
+    case "read":
+      return "chat:read";
+    case "react":
+      return "chat:react";
+  }
+}
+
+export const spaceAgentChatActionRequestSchema = z
+  .object({
+    toolId: spaceSharedChatToolIdSchema,
+    action: spaceAgentChatActionInputSchema
+  })
+  .superRefine((input, context) => {
+    const expected = expectedChatToolIdForAction(input.action.type);
+    if (input.toolId !== expected) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["toolId"],
+        message: `toolId ${input.toolId} does not match shared chat action type ${input.action.type}.`
+      });
+    }
+  });
+
+export const spaceAgentChatActionEnvelopeSchema = z.object({
+  version: z.literal(1),
+  actions: z.array(spaceAgentChatActionRequestSchema).min(1).max(3)
+});
+
+// --- Audit chain (εμπνευσμένο από Buzz #2: αδιάβλητο ημερολόγιο με αλυσίδα hash) ---
+export const auditChainHashLength = 64;
+
+const auditChainHexHashSchema = z
+  .string()
+  .length(auditChainHashLength)
+  .regex(/^[0-9a-f]{64}$/);
+
+export const auditChainEntrySchema = z
+  .object({
+    seq: z.number().int().nonnegative(),
+    action: z.string().min(1).max(128),
+    actor: z.string().min(1).max(128),
+    targetType: z.string().max(128).default(""),
+    targetId: idSchema.nullable(),
+    metadata: z.record(z.string(), z.unknown()).default({}),
+    prevHash: auditChainHexHashSchema,
+    chainHash: auditChainHexHashSchema,
+    createdAt: isoDateTimeSchema
+  })
+  .strict();
+
+export const listAuditChainQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(200).default(100),
+    beforeSeq: z.coerce.number().int().positive().optional()
+  })
+  .strict();
+
+export const auditChainListResponseSchema = z
+  .object({
+    data: z.array(auditChainEntrySchema),
+    nextCursor: idSchema.nullable()
+  })
+  .strict();
+
+export const auditVerifyResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    entryCount: z.number().int().nonnegative(),
+    verifiedThroughSeq: z.number().int().nonnegative(),
+    firstTamperedSeq: z.number().int().positive().nullable(),
+    message: z.string().min(1)
+  })
+  .strict();
+
+export type SharedChatMessage = z.infer<typeof sharedChatMessageSchema>;
+export type SendSharedChatMessageInput = z.infer<typeof sendSharedChatMessageInputSchema>;
+export type ListSharedChatMessagesQuery = z.infer<typeof listSharedChatMessagesQuerySchema>;
+export type SharedChatLiveWebSocketMessage = z.infer<typeof sharedChatLiveWebSocketMessageSchema>;
+export type SpaceSharedChatToolId = z.infer<typeof spaceSharedChatToolIdSchema>;
+export type SpaceAgentChatActionEnvelope = z.infer<typeof spaceAgentChatActionEnvelopeSchema>;
+export type SpaceAgentChatActionRequest = z.infer<typeof spaceAgentChatActionRequestSchema>;
+export type AuditChainEntry = z.infer<typeof auditChainEntrySchema>;
+export type ListAuditChainQuery = z.infer<typeof listAuditChainQuerySchema>;
+export type AuditVerifyResponse = z.infer<typeof auditVerifyResponseSchema>;

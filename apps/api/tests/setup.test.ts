@@ -145,7 +145,16 @@ describe("public single-owner setup API", () => {
         name: "Getting Started"
       })
     ]);
-    expect(store.listPanes(starterRoomId)).toEqual([]);
+    // The starter room ships with the OpenCode CLI pane ready so the first
+    // visit lands on the free-model agent immediately.
+    expect(store.listPanes(starterRoomId)).toEqual([
+      expect.objectContaining({
+        roomId: starterRoomId,
+        mode: "TERMINAL",
+        terminalRuntimeId: "cli:opencode",
+        title: expect.stringMatching(/^OpenCode CLI/)
+      })
+    ]);
 
     const sessionCookie = `${claimed.cookies[0]!.name}=${claimed.cookies[0]!.value}`;
     const csrf = await app.inject({

@@ -83,7 +83,8 @@ const TERMINAL_PAINT_PHASES = {
   reveal: "PAINT_REVEAL",
   refit: "PAINT_REFIT",
   delayed: "PAINT_DELAYED",
-  force: "PAINT_FORCE"
+  force: "PAINT_FORCE",
+  background: "PAINT_BACKGROUND"
 } as const;
 
 export function buildTerminalVoiceSubmit(
@@ -837,6 +838,15 @@ function dedupeClipboardFiles(files: File[]): File[] {
     byKey.set(`${file.name}:${file.size}:${file.type}`, file);
   }
   return Array.from(byKey.values());
+}
+
+function terminalCharacterCellSize(terminal: XtermTerminal | null): { width: number; height: number } {
+  const core = (terminal as (XtermTerminal & { _core?: XtermPrivateCore }) | null)?._core;
+  const size = core?._charSizeService as unknown as { width?: number; height?: number } | undefined;
+  return {
+    width: size?.width ?? 0,
+    height: size?.height ?? 0
+  };
 }
 
 function measureTerminalCharacterSize(terminal: XtermTerminal | null) {
@@ -2629,6 +2639,7 @@ export function TerminalPane({
     let initialReplayWritePending = false;
     let pendingInitialPrefillQueueEvents = 0;
     let initialReplayBuffered = false;
+    let revealGeometryResolve: (() => void) | null = null;
     let initialReplayErrorPending = false;
     let replayFailureReported = false;
     let pendingReplayOutputRefresh: { token: number; revision: number } | null = null;
@@ -2732,8 +2743,32 @@ export function TerminalPane({
       getFitAddon: () => fitAddon,
       isVisible: () => isVisibleRef.current && outputReadyForGeometry,
       isMinimized: () => paneMinimizedRef.current,
-      measureCharacterSize: () => measureTerminalCharacterSize(terminal),
-      invalidateWidthMeasurements: invalidateTerminalWidthMeasurements,
+      measureCharacterSize: () => {
+        measureTerminalCharacterSize(terminal);
+        const cell = terminalCharacterCellSize(terminal as unknown as XtermTerminal);
+        emitAppDiagnosticsPerformance({
+          category: "PERFORMANCE",
+          metric: "TERMINAL_GEOMETRY",
+          phase: "CHAR_MEASURE",
+          roomId: pane.roomId,
+          paneId: pane.id,
+          width: cell.width,
+          height: cell.height
+        });
+      },
+      invalidateWidthMeasurements: (terminal) => {
+        invalidateTerminalWidthMeasurements(terminal);
+        const cell = terminalCharacterCellSize(terminal as unknown as XtermTerminal);
+        emitAppDiagnosticsPerformance({
+          category: "PERFORMANCE",
+          metric: "TERMINAL_GEOMETRY",
+          phase: "CHAR_INVALIDATE",
+          roomId: pane.roomId,
+          paneId: pane.id,
+          width: cell.width,
+          height: cell.height
+        });
+      },
       getResizeIdentity: () => {
         const currentSocket = socket;
         const sessionId = terminalSessionResponse.session.sessionId;
@@ -2790,14 +2825,30 @@ export function TerminalPane({
           canvasHeight: info.canvasHeight,
           canvasBlank: info.canvasBlank,
           darkPixelRatio: info.darkPixelRatio,
+          cellWidth: terminalCharacterCellSize(terminalRef.current).width,
+          cellHeight: terminalCharacterCellSize(terminalRef.current).height,
           rowCount: info.rowCount,
           populatedRowCount: info.populatedRowCount,
           blankRowRatio: info.blankRowRatio
         });
       },
       onReady: ({ width, height, cols, rows, repaired }) => {
+        if (revealGeometryResolve) {
+          const resolve = revealGeometryResolve;
+          revealGeometryResolve = null;
+          resolve();
+        }
         if (fullscreenLayoutRef.current && isVisibleRef.current) {
           recordFullscreenGeometry(cols, rows);
+          emitAppDiagnosticsPerformance({
+            category: "PERFORMANCE",
+            metric: "TERMINAL_FULLSCREEN",
+            phase: "REFERENCE_RECORDED",
+            roomId: pane.roomId,
+            paneId: pane.id,
+            cols,
+            rows
+          });
         }
         emitAppDiagnosticsPerformance({
           category: "PERFORMANCE",
@@ -2848,7 +2899,7 @@ export function TerminalPane({
       }
       openTerminalSurface();
       if (!terminalSurfaceOpened) return;
-      await outputCoordinator.reveal().then(() => {
+      await outputCoordinator.reveal().then(async () => {
         if (
           disposed ||
           !isVisibleRef.current ||
@@ -2857,7 +2908,54 @@ export function TerminalPane({
         ) return;
         outputReadyForGeometry = true;
         settleTerminalPrefill();
+        if (fullscreenLayoutRef.current) {
+          const reference = readFullscreenGeometry();
+          if (reference) {
+            geometryCoordinator.backgroundResize(reference.cols, reference.rows);
+            emitAppDiagnosticsPerformance({
+              category: "PERFORMANCE",
+              metric: "TERMINAL_FULLSCREEN",
+              phase: "REVEAL_PRE_ALIGN",
+              roomId: pane.roomId,
+              paneId: pane.id,
+              value: 1,
+              cols: reference.cols,
+              rows: reference.rows
+            });
+          } else {
+            emitAppDiagnosticsPerformance({
+              category: "PERFORMANCE",
+              metric: "TERMINAL_FULLSCREEN",
+              phase: "REVEAL_PRE_ALIGN",
+              roomId: pane.roomId,
+              paneId: pane.id,
+              value: 0
+            });
+          }
+        }
         geometryCoordinator.syncVisibility();
+        // Wait for the geometry to actually land (onReady) before the first
+        // visible paint — after a refresh the shell layout is still settling,
+        // so a fixed frame count lets the default 100x30 grid flash. Bounded
+        // by a 500ms timeout and a two-frame fallback.
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const fallbackTimer = window.setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            revealGeometryResolve = null;
+            resolve();
+          }, 1200);
+          const done = () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(fallbackTimer);
+            revealGeometryResolve = null;
+            resolve();
+          };
+          revealGeometryResolve = done;
+        });
+        if (disposed) return;
         geometryCoordinator.forceRepaint();
       }).catch(handleTerminalReplayFailure);
     };
@@ -3191,6 +3289,17 @@ export function TerminalPane({
         const activeTerminal = terminal;
         activeTerminal.open(terminalHost);
         terminalSurfaceOpened = true;
+        emitAppDiagnosticsPerformance({
+          category: "PERFORMANCE",
+          metric: "TERMINAL_GEOMETRY",
+          phase: "SURFACE_OPENED",
+          roomId: pane.roomId,
+          paneId: pane.id,
+          width: Math.round((terminalHost.clientWidth || terminalHost.getBoundingClientRect().width || 0) * 10) / 10,
+          height: Math.round((terminalHost.clientHeight || terminalHost.getBoundingClientRect().height || 0) * 10) / 10,
+          cols: activeTerminal.cols,
+          rows: activeTerminal.rows
+        });
         syncTerminalViewportEvidence(terminalHost, activeTerminal);
         memoizeTerminalWidthMeasurements(activeTerminal, terminalHost.ownerDocument);
         const terminalDom = activeTerminal as XtermTerminal & {
@@ -3289,6 +3398,8 @@ export function TerminalPane({
                 canvasHeight: info.canvasHeight,
                 canvasBlank: info.canvasBlank,
                 darkPixelRatio: info.darkPixelRatio,
+                cellWidth: terminalCharacterCellSize(terminalRef.current).width,
+                cellHeight: terminalCharacterCellSize(terminalRef.current).height,
                 rowCount: info.rowCount,
                 populatedRowCount: info.populatedRowCount,
                 blankRowRatio: info.blankRowRatio
@@ -3296,6 +3407,16 @@ export function TerminalPane({
             }
           });
           delete terminalHost.dataset.terminalInitialGeometry;
+          emitAppDiagnosticsPerformance({
+            category: "PERFORMANCE",
+            metric: "TERMINAL_GEOMETRY",
+            phase: "INITIAL_FIT",
+            roomId: pane.roomId,
+            paneId: pane.id,
+            value: initialGeometry ? 1 : 0,
+            cols: initialGeometry?.cols ?? 0,
+            rows: initialGeometry?.rows ?? 0
+          });
         }
         if (disposed) return;
         bufferedSocket = createBufferedTerminalSocket(terminalTicket, {
@@ -3859,7 +3980,25 @@ export function TerminalPane({
       onRevealReady?.(pane.id, revealGenerationRef.current);
     });
 
+    let lastHostResizeDebug = "";
     const resizeObserver = new ResizeObserver(() => {
+      const hostWidth = terminalHost.clientWidth || terminalHost.getBoundingClientRect().width || 0;
+      const hostHeight = terminalHost.clientHeight || terminalHost.getBoundingClientRect().height || 0;
+      const key = JSON.stringify([Math.round(hostWidth), Math.round(hostHeight), terminal?.cols ?? 0, terminal?.rows ?? 0]);
+      if (key !== lastHostResizeDebug) {
+        lastHostResizeDebug = key;
+        emitAppDiagnosticsPerformance({
+          category: "PERFORMANCE",
+          metric: "TERMINAL_GEOMETRY",
+          phase: "HOST_RESIZE",
+          roomId: pane.roomId,
+          paneId: pane.id,
+          width: Math.round(hostWidth * 10) / 10,
+          height: Math.round(hostHeight * 10) / 10,
+          cols: terminal?.cols ?? 0,
+          rows: terminal?.rows ?? 0
+        });
+      }
       geometryCoordinator.requestRefit({ delayedPass: false });
     });
     resizeObserver.observe(terminalHost);
@@ -4323,6 +4462,14 @@ export function TerminalPane({
 
   useEffect(() => {
     if (!fullscreenLayout || isVisible) return;
+    emitAppDiagnosticsPerformance({
+      category: "PERFORMANCE",
+      metric: "TERMINAL_FULLSCREEN",
+      phase: "LAYOUT_CHANGED",
+      roomId: pane.roomId,
+      paneId: pane.id,
+      value: 1
+    });
     const applyBackgroundGeometry = (event: Event) => {
       const detail = (event as CustomEvent<{ cols: number; rows: number }>).detail;
       if (
@@ -4333,12 +4480,41 @@ export function TerminalPane({
         detail.rows <= 0
       ) return;
       if (!fullscreenLayoutRef.current || isVisibleRef.current) return;
-      terminalGeometryCoordinatorRef.current?.backgroundResize(detail.cols, detail.rows);
+      const coordinator = terminalGeometryCoordinatorRef.current;
+      if (!coordinator) {
+        emitAppDiagnosticsPerformance({
+          category: "PERFORMANCE",
+          metric: "TERMINAL_FULLSCREEN",
+          phase: "COORDINATOR_MISSING",
+          roomId: pane.roomId,
+          paneId: pane.id
+        });
+        return;
+      }
+      if (coordinator.backgroundResize(detail.cols, detail.rows)) {
+        emitAppDiagnosticsPerformance({
+          category: "PERFORMANCE",
+          metric: "TERMINAL_FULLSCREEN",
+          phase: "BACKGROUND_APPLIED",
+          roomId: pane.roomId,
+          paneId: pane.id,
+          cols: detail.cols,
+          rows: detail.rows
+        });
+      }
     };
     window.addEventListener("space:fullscreen-geometry", applyBackgroundGeometry);
     const current = readFullscreenGeometry();
     if (current) {
       applyBackgroundGeometry(new CustomEvent("space:fullscreen-geometry", { detail: current }));
+    } else {
+      emitAppDiagnosticsPerformance({
+        category: "PERFORMANCE",
+        metric: "TERMINAL_FULLSCREEN",
+        phase: "REGISTRY_EMPTY",
+        roomId: pane.roomId,
+        paneId: pane.id
+      });
     }
     return () => window.removeEventListener("space:fullscreen-geometry", applyBackgroundGeometry);
   }, [fullscreenLayout, isVisible, pane.id]);

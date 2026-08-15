@@ -58,6 +58,19 @@ import {
   listClipboardItemsQuerySchema,
   listTaskItemsQuerySchema,
   listUserLinksQuerySchema,
+  listSharedChatMessagesQuerySchema,
+  listAuditChainQuerySchema,
+  sendSharedChatMessageInputSchema,
+  sharedChatMessageSchema,
+  sharedChatListDefaultLimit,
+  auditChainEntrySchema,
+  type SendSharedChatMessageInput,
+  type ListSharedChatMessagesQuery,
+  type SharedChatMessage,
+  type ListAuditChainQuery,
+  type AuditChainEntry,
+  type AuditVerifyResponse,
+
   listMemoryCacheLinksQuerySchema,
   taskItemSchema,
   updateTaskItemInputSchema,
@@ -14130,6 +14143,31 @@ export class PostgresSpaceStore implements SpaceStore {
       message: `Room ${room.name} created.`,
       payload: { initialPaneCount: 0 }
     });
+    // The starter room opens with the OpenCode CLI pane already in place so the
+    // owner's first visit lands on a working free-model agent immediately
+    // (default model: opencode/deepseek-v4-flash-free per cli-runtime-descriptors).
+    const starterPane = await this.insertPane(
+      client,
+      {
+        roomId: room.id,
+        title: "OpenCode CLI",
+        mode: "TERMINAL",
+        terminalRuntimeId: "cli:opencode",
+        cwd: "/etc"
+      },
+      0,
+      traceId,
+      timestamp
+    );
+    await this.appendEvent(client, {
+      roomId: room.id,
+      paneId: starterPane.id,
+      turnId: null,
+      traceId,
+      type: "PANE_CREATED",
+      message: "Pane OpenCode CLI created.",
+      payload: { mode: "TERMINAL" }
+    });
     return room;
   }
 
@@ -14240,6 +14278,265 @@ export class PostgresSpaceStore implements SpaceStore {
     return mapEvent(firstOrNotFound(result.rows, `Event ${eventId} was not created.`));
   }
 
+  async appendSharedChatMessage(
+    input: SendSharedChatMessageInput & { id: string }
+  ): Promise<SharedChatMessage> {
+    const messageId = input.id;
+    const createdAt = new Date();
+    const result = await this.pool.query<SharedChatMessageRow>(
+      `
+        INSERT INTO shared_chat_messages (
+          id, sender_type, sender_id, sender_label, room_id, kind, content, reply_to_id, metadata, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+        RETURNING
+          id,
+          sender_type AS "senderType",
+          sender_id AS "senderId",
+          sender_label AS "senderLabel",
+          room_id AS "roomId",
+          kind,
+          content,
+          reply_to_id AS "replyToId",
+          metadata,
+          created_at AS "createdAt"
+      `,
+      [
+        messageId,
+        input.senderType,
+        input.senderId ?? null,
+        input.senderLabel,
+        input.roomId ?? null,
+        input.kind ?? "message",
+        input.content,
+        input.replyToId ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        createdAt
+      ]
+    );
+    return mapSharedChatMessage(
+      firstOrNotFound(result.rows, `Shared chat message ${messageId} was not created.`)
+    );
+  }
+
+  async listSharedChatMessages(
+    query: ListSharedChatMessagesQuery = { limit: sharedChatListDefaultLimit }
+  ): Promise<{ items: SharedChatMessage[]; nextCursor: string | null }> {
+    const parsed = listSharedChatMessagesQuerySchema.parse(query);
+    const conditions: string[] = [];
+    const values: unknown[] = [];
+    if (parsed.senderType) {
+      values.push(parsed.senderType);
+      conditions.push(`sender_type = $${values.length}`);
+    }
+    if (parsed.roomId) {
+      values.push(parsed.roomId);
+      conditions.push(`room_id = $${values.length}`);
+    }
+    if (parsed.before) {
+      values.push(parsed.before);
+      conditions.push(
+        `(created_at, id) < (SELECT created_at, id FROM shared_chat_messages WHERE id = $${values.length})`
+      );
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limit = parsed.limit ?? sharedChatListDefaultLimit;
+    values.push(limit + 1);
+    const result = await this.pool.query<SharedChatMessageRow>(
+      `
+        SELECT
+          id,
+          sender_type AS "senderType",
+          sender_id AS "senderId",
+          sender_label AS "senderLabel",
+          room_id AS "roomId",
+          kind,
+          content,
+          reply_to_id AS "replyToId",
+          metadata,
+          created_at AS "createdAt"
+        FROM shared_chat_messages
+        ${where}
+        ORDER BY created_at DESC, id DESC
+        LIMIT $${values.length}
+      `,
+      values
+    );
+    const rows = result.rows.slice(0, limit);
+    return {
+      items: rows.map(mapSharedChatMessage),
+      nextCursor: result.rows.length > limit ? rows[rows.length - 1]?.id ?? null : null
+    };
+  }
+
+  async appendAuditChainEntry(input: {
+    action: string;
+    actor: string;
+    targetType?: string;
+    targetId?: string | null;
+    metadata?: Record<string, unknown>;
+  }): Promise<AuditChainEntry> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("SELECT pg_advisory_lock($1)", [auditChainAdvisoryLockKey]);
+      const head = await client.query<{ seq: string | number; chainHash: string }>(
+        `SELECT seq, chain_hash AS "chainHash" FROM audit_chain_entries ORDER BY seq DESC LIMIT 1`
+      );
+      const prevHash = head.rows[0]?.chainHash ?? auditChainGenesisHash;
+      const seq = head.rows[0] ? Number(head.rows[0].seq) + 1 : 1;
+      const createdAt = new Date();
+      const chainHash = computeAuditChainHash({
+        seq,
+        createdAt,
+        action: input.action,
+        actor: input.actor,
+        targetType: input.targetType ?? "",
+        targetId: input.targetId ?? null,
+        metadata: input.metadata ?? {},
+        prevHash
+      });
+      const result = await client.query<AuditChainRow>(
+        `
+          INSERT INTO audit_chain_entries (
+            seq, action, actor, target_type, target_id, metadata, prev_hash, chain_hash, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
+          RETURNING
+            seq,
+            action,
+            actor,
+            target_type AS "targetType",
+            target_id AS "targetId",
+            metadata,
+            prev_hash AS "prevHash",
+            chain_hash AS "chainHash",
+            created_at AS "createdAt"
+        `,
+        [
+          seq,
+          input.action,
+          input.actor,
+          input.targetType ?? "",
+          input.targetId ?? null,
+          JSON.stringify(input.metadata ?? {}),
+          prevHash,
+          chainHash,
+          createdAt
+        ]
+      );
+      return mapAuditChainEntry(
+        firstOrNotFound(result.rows, "Audit chain entry was not appended.")
+      );
+    } finally {
+      await client
+        .query("SELECT pg_advisory_unlock($1)", [auditChainAdvisoryLockKey])
+        .catch(() => undefined);
+      client.release?.();
+    }
+  }
+
+  async listAuditChainEntries(
+    query: ListAuditChainQuery = { limit: 100 }
+  ): Promise<{ items: AuditChainEntry[]; nextCursor: string | null }> {
+    const parsed = listAuditChainQuerySchema.parse(query);
+    const limit = parsed.limit ?? 100;
+    const values: unknown[] = [];
+    const conditions: string[] = [];
+    if (parsed.beforeSeq) {
+      values.push(parsed.beforeSeq);
+      conditions.push(`seq < $${values.length}`);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    values.push(limit + 1);
+    const result = await this.pool.query<AuditChainRow>(
+      `
+        SELECT
+          seq,
+          action,
+          actor,
+          target_type AS "targetType",
+          target_id AS "targetId",
+          metadata,
+          prev_hash AS "prevHash",
+          chain_hash AS "chainHash",
+          created_at AS "createdAt"
+        FROM audit_chain_entries
+        ${where}
+        ORDER BY seq DESC
+        LIMIT $${values.length}
+      `,
+      values
+    );
+    const rows = result.rows.slice(0, limit);
+    return {
+      items: rows.map(mapAuditChainEntry),
+      nextCursor:
+        result.rows.length > limit ? String(rows[rows.length - 1]?.seq ?? "") || null : null
+    };
+  }
+
+  async verifyAuditChain(): Promise<AuditVerifyResponse> {
+    const result = await this.pool.query<AuditChainRow>(
+      `
+        SELECT
+          seq,
+          action,
+          actor,
+          target_type AS "targetType",
+          target_id AS "targetId",
+          metadata,
+          prev_hash AS "prevHash",
+          chain_hash AS "chainHash",
+          created_at AS "createdAt"
+        FROM audit_chain_entries
+        ORDER BY seq ASC
+      `
+    );
+    let expectedPrev = auditChainGenesisHash;
+    let verifiedThrough = 0;
+    for (const row of result.rows) {
+      const seq = Number(row.seq);
+      if (seq !== verifiedThrough + 1 || row.prevHash !== expectedPrev) {
+        return {
+          ok: false,
+          entryCount: result.rows.length,
+          verifiedThroughSeq: verifiedThrough,
+          firstTamperedSeq: seq,
+          message: `Chain verification failed at seq ${seq}.`
+        };
+      }
+      const expectedHash = computeAuditChainHash({
+        seq,
+        createdAt: row.createdAt,
+        action: row.action,
+        actor: row.actor,
+        targetType: row.targetType ?? "",
+        targetId: row.targetId ?? null,
+        metadata: row.metadata ?? {},
+        prevHash: expectedPrev
+      });
+      if (row.chainHash !== expectedHash) {
+        return {
+          ok: false,
+          entryCount: result.rows.length,
+          verifiedThroughSeq: verifiedThrough,
+          firstTamperedSeq: seq,
+          message: `Chain hash mismatch at seq ${seq}.`
+        };
+      }
+      expectedPrev = row.chainHash;
+      verifiedThrough = seq;
+    }
+    return {
+      ok: true,
+      entryCount: result.rows.length,
+      verifiedThroughSeq: verifiedThrough,
+      firstTamperedSeq: null,
+      message:
+        result.rows.length === 0
+          ? "Audit chain is empty."
+          : `Audit chain verified through seq ${verifiedThrough}.`
+    };
+  }
+
   private async withTransaction<T>(
     work: (client: PgClientLike) => Promise<T>,
     options: { deadlockRetries?: number } = {}
@@ -14264,6 +14561,100 @@ export class PostgresSpaceStore implements SpaceStore {
       }
     }
   }
+}
+
+interface SharedChatMessageRow {
+  id: string;
+  senderType: string;
+  senderId: string | null;
+  senderLabel: string;
+  roomId: string | null;
+  kind: string;
+  content: string;
+  replyToId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: Date | string;
+}
+
+interface AuditChainRow {
+  seq: string | number;
+  action: string;
+  actor: string;
+  targetType: string | null;
+  targetId: string | null;
+  metadata: Record<string, unknown>;
+  prevHash: string;
+  chainHash: string;
+  createdAt: Date | string;
+}
+
+export const auditChainGenesisHash = "0".repeat(64);
+const auditChainAdvisoryLockKey = 8447001;
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  const body = keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",");
+  return `{${body}}`;
+}
+
+export function computeAuditChainHash(input: {
+  seq: number;
+  createdAt: Date | string;
+  action: string;
+  actor: string;
+  targetType: string;
+  targetId: string | null;
+  metadata: Record<string, unknown>;
+  prevHash: string;
+}): string {
+  const createdAtIso = typeof input.createdAt === "string" ? input.createdAt : input.createdAt.toISOString();
+  const serialized = [
+    String(input.seq),
+    createdAtIso,
+    input.action,
+    input.actor,
+    input.targetType,
+    input.targetId ?? "",
+    canonicalJson(input.metadata),
+    input.prevHash
+  ].join("\n");
+  return createHash("sha256").update(serialized, "utf8").digest("hex");
+}
+
+function mapSharedChatMessage(row: SharedChatMessageRow): SharedChatMessage {
+  return sharedChatMessageSchema.parse({
+    id: row.id,
+    senderType: row.senderType,
+    senderId: row.senderId,
+    senderLabel: row.senderLabel,
+    roomId: row.roomId,
+    kind: row.kind,
+    content: row.content,
+    replyToId: row.replyToId,
+    metadata: row.metadata ?? {},
+    createdAt: toIso(row.createdAt)
+  });
+}
+
+function mapAuditChainEntry(row: AuditChainRow): AuditChainEntry {
+  return auditChainEntrySchema.parse({
+    seq: Number(row.seq),
+    action: row.action,
+    actor: row.actor,
+    targetType: row.targetType ?? "",
+    targetId: row.targetId,
+    metadata: row.metadata ?? {},
+    prevHash: row.prevHash,
+    chainHash: row.chainHash,
+    createdAt: toIso(row.createdAt)
+  });
 }
 
 export function validateArtifactShapeForStore(input: unknown) {

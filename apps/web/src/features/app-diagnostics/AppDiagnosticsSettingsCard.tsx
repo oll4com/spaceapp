@@ -145,6 +145,13 @@ export function AppDiagnosticsSettingsCard({
                 icon: RefreshCw,
                 onSelect: () => void refreshAppDiagnosticsStatus()
               },
+              ...(canManage && isEnabled && recorder.status === "RECORDING" && recorder.paused ? [{
+                id: "continue-recording",
+                label: "Continue tab recording",
+                icon: Camera,
+                disabled: recorderBusy,
+                onSelect: () => void onStartRecording()
+              }] : []),
               ...(canManage && isEnabled ? [{
                 id: recorder.status === "RECORDING" ? "stop-recording" : "start-recording",
                 label: recorder.status === "RECORDING" ? "Stop recording" : "Start tab recording",

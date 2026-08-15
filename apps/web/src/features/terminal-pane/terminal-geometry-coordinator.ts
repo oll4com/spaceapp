@@ -23,7 +23,7 @@ export interface TerminalResizeFrame {
   leaseId: string | null;
 }
 
-export type TerminalRepaintPhase = "initial" | "reveal" | "refit" | "delayed" | "force";
+export type TerminalRepaintPhase = "initial" | "reveal" | "refit" | "delayed" | "force" | "background";
 
 export interface TerminalRepaintInfo {
   phase: TerminalRepaintPhase;
@@ -531,6 +531,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
 
   const repaintNow = (phase: TerminalRepaintPhase): boolean => {
     if (!isEligible()) return false;
+    if (lastStableGeometry === null && phase !== "force") return false;
     const terminal = options.getTerminal();
     if (!terminal || !Number.isInteger(terminal.rows) || terminal.rows <= 0) return false;
     terminal.refresh(0, terminal.rows - 1);
@@ -635,6 +636,21 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       terminal.resize?.(cols, rows);
       terminal.refresh(0, rows - 1);
       sendResizeBackground(cols, rows);
+      const rowSample = domRowSample(options.host);
+      options.onRepaint?.({
+        phase: "background",
+        cols,
+        rows,
+        width: 0,
+        height: 0,
+        suspect: false,
+        canvasWidth: 0,
+        canvasHeight: 0,
+        canvasBlank: false,
+        rowCount: rowSample.rowCount,
+        populatedRowCount: rowSample.populatedRowCount,
+        blankRowRatio: rowSample.blankRowRatio
+      });
       return true;
     }
   };
