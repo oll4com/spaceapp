@@ -10,7 +10,9 @@ test("host launcher metadata pins the matching runtime", async () => {
 
   assert.equal(packageInfo.PACKAGE_VERSION, manifest.version);
   assert.equal(packageInfo.RUNTIME_VERSION, manifest.spaceappRuntimeVersion);
-  assert.equal(manifest.spaceappHostRootRuntimeCompatible, true);
+  // Launcher-only releases may disable host-root compatibility until
+  // matching runtime images are rebuilt; assert consistency, not a constant.
+  assert.equal(manifest.spaceappHostRootRuntimeCompatible, packageInfo.HOST_ROOT_RUNTIME_COMPATIBLE);
   assert.deepEqual(manifest.cpu, ["x64", "arm64"]);
   assert.equal(
     packageInfo.HOST_ROOT_RUNTIME_COMPATIBLE,

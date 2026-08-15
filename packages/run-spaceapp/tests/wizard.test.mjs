@@ -224,7 +224,7 @@ test("an approved Windows RunOnce continuation runs the install unattended and i
 
   assert.equal(
     (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).version,
-    CURRENT_VERSION
+    RUNTIME_VERSION
   );
   await assert.rejects(() => readFile(join(root, "var", "runonce-continuation.json"), "utf8"));
 });
@@ -259,7 +259,7 @@ test("an expired or foreign RunOnce continuation is discarded and the TTY gate a
 
 test("same-version install offers doctor, repair, and cancel without changing state on cancel", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-wizard-same-"));
-  await initializeInstallation(root, { version: CURRENT_VERSION, profile: "light" });
+  await initializeInstallation(root, { version: RUNTIME_VERSION, profile: "light" });
   const before = await readFile(join(root, "config.json"), "utf8");
   const stdout = capture();
   assert.equal(await run(["install", "--no-open"], {
@@ -279,7 +279,7 @@ test("same-version install offers doctor, repair, and cancel without changing st
 
 test("a downgrade update requires the typed DOWNGRADE confirmation", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-wizard-downgrade-"));
-  await initializeInstallation(root, { version: CURRENT_VERSION, profile: "light" });
+  await initializeInstallation(root, { version: RUNTIME_VERSION, profile: "light" });
   const before = await readFile(join(root, "config.json"), "utf8");
   const stdout = capture();
   const stderr = capture();
@@ -372,7 +372,7 @@ test("a successful update marks the checkpoint verified and prunes older checkpo
   }), 0);
   assert.equal(
     (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).version,
-    CURRENT_VERSION
+    RUNTIME_VERSION
   );
   const checkpoints = (await readdir(join(root, "checkpoints"))).filter((name) => name.includes("spaceapp-checkpoint-"));
   assert.equal(checkpoints.length, 1);

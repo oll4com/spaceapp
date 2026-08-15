@@ -748,6 +748,7 @@ test("the matching x64 candidate enables Linux host-root through the normal inst
     stdout: capture().stream,
     stderr: capture().stream,
     stdin: ttyStdin(...FRESH_APPROVALS),
+    hostRootRuntimeCompatible: true,
     prepareDockerPath: async () => {
       calls.prepareDockerPath += 1;
     },
@@ -922,7 +923,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   assert.equal(await run(["install", "--no-open"], options), 0);
 
   const upgradedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(upgradedConfig.version, CURRENT_VERSION);
+  assert.equal(upgradedConfig.version, RUNTIME_VERSION);
   assert.equal(upgradedConfig.previousVersion, "0.1.10");
   assert.equal(upgradedConfig.profile, "light");
   assert.deepEqual(upgradedConfig.workspaces, staleConfig.workspaces);
@@ -946,7 +947,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
     assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
   }
   assert.match(stdout.value(), new RegExp(`Launcher version: ${CURRENT_VERSION}`));
-  assert.match(stdout.value(), new RegExp(`Runtime image version: 0\\.1\\.10 -> ${CURRENT_VERSION}`));
+  assert.match(stdout.value(), new RegExp(`Runtime image version: 0\\.1\\.10 -> ${RUNTIME_VERSION}`));
   assert.match(stdout.value(), /Profile: standard -> light/);
   assert.match(stdout.value(), /data.*workspaces.*credentials.*secrets.*persistent Docker volumes/i);
 
@@ -958,7 +959,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
     stdout: refreshOutput.stream
   }), 0);
   const refreshedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(refreshedConfig.version, CURRENT_VERSION);
+  assert.equal(refreshedConfig.version, RUNTIME_VERSION);
   assert.equal(refreshedConfig.previousVersion, "0.1.10");
   assert.equal(refreshedConfig.profile, "light");
   assert.deepEqual(refreshedConfig.workspaces, staleConfig.workspaces);

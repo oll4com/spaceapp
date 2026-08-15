@@ -87,7 +87,7 @@ test("init and the default update target the pinned runtime image version", asyn
   });
 
   let config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(config.version, CURRENT_VERSION);
+  assert.equal(config.version, RUNTIME_VERSION);
   assert.match(
     await readFile(join(root, "runtime.env"), "utf8"),
     new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
@@ -95,7 +95,7 @@ test("init and the default update target the pinned runtime image version", asyn
 
   assert.equal(await run(["update"], { ...options, stdin: ttyStdin("2") }), 0);
   config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(config.version, CURRENT_VERSION);
+  assert.equal(config.version, RUNTIME_VERSION);
   assert.equal(config.previousVersion, null);
   assert.match(
     await readFile(join(root, "runtime.env"), "utf8"),
@@ -265,14 +265,14 @@ test("update and rollback persist version state only after both Docker operation
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: "0.1.6", previousVersion: CURRENT_VERSION }
+    { version: "0.1.6", previousVersion: RUNTIME_VERSION }
   );
   assert.equal(await run(["rollback"], { ...options, stdin: ttyStdin("y") }), 0);
   assert.deepEqual(
     (({ version, previousVersion }) => ({ version, previousVersion }))(
       JSON.parse(await readFile(join(root, "config.json"), "utf8"))
     ),
-    { version: CURRENT_VERSION, previousVersion: "0.1.6" }
+    { version: RUNTIME_VERSION, previousVersion: "0.1.6" }
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
     "spaceapp",
@@ -282,7 +282,7 @@ test("update and rollback persist version state only after both Docker operation
     "--remove-orphans"
   ]);
   assert.match(stdout.value(), /Updated to SpaceApp 0\.1\.6/);
-  assert.match(stdout.value(), new RegExp(`Rolled back to SpaceApp ${CURRENT_VERSION}`));
+  assert.match(stdout.value(), new RegExp(`Rolled back to SpaceApp ${RUNTIME_VERSION}`));
 });
 
 test("doctor is read-only for installation configuration and generated runtime files", async () => {
