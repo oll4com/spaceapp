@@ -155,8 +155,16 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
       "run-spaceapp": "bin/spaceapp.mjs"
     }
   }]);
-  assert.equal(launcherPackage.spaceappRuntimeVersion, launcherPackage.version);
-  assert.equal(launcherPackage.spaceappHostRootRuntimeCompatible, true);
+  const runtimeVersionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+  assert.match(launcherPackage.spaceappRuntimeVersion, runtimeVersionPattern);
+  if (launcherPackage.spaceappRuntimeVersion === launcherPackage.version) {
+    // Full releases pin the runtime images at the launcher version with host-root enabled.
+    assert.equal(launcherPackage.spaceappHostRootRuntimeCompatible, true);
+  } else {
+    // Launcher-only releases ship the launcher on existing runtime images:
+    // host-root compatibility must be disabled (mirrors the release-readiness contract).
+    assert.equal(launcherPackage.spaceappHostRootRuntimeCompatible, false);
+  }
   assert.deepEqual(launcherPackage.cpu, ["x64", "arm64"]);
   assert.equal(launcherPackage.publishConfig.tag, undefined);
 });
