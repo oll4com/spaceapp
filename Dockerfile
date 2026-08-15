@@ -89,6 +89,8 @@ ENV SPACE_BROWSER_CHROME_PATH=/usr/bin/chromium \
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
 FROM runtime-base AS cli
+COPY --chown=root:root starter-memory/AGENTS.md /etc/AGENTS.md
+RUN chmod 0644 /etc/AGENTS.md
 ARG TARGETARCH
 RUN npm install --global --no-audit --no-fund opencode-ai@1.18.4 \
     && npm install --global --ignore-scripts --no-audit --no-fund \
