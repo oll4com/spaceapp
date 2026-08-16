@@ -32,6 +32,7 @@ const emptyCounts = (): PaneCounts => ({
   "cli:deepseek": 0,
   "cli:cursor": 0,
   "cli:copilot": 0,
+  "cli:github": 0,
   chat: 0
 });
 

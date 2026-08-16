@@ -22,19 +22,25 @@ const paneLayoutOptions: Array<{ label: string; value: PaneLayoutColumns }> = [
   { label: "Automatic", value: null },
   { label: "Fullscreen", value: 0 },
   { label: "1 column", value: 1 },
+  { label: "Double height", value: 5 },
   { label: "2 columns", value: 2 },
   { label: "3 columns", value: 3 },
   { label: "4 columns", value: 4 }
 ];
+
+type PaneLayoutPreviewMetrics = { columns: number; rows: number; rowSpan?: number };
 
 function previewMetrics(
   value: PaneLayoutColumns,
   automaticColumns: number,
   maximumColumns: number,
   visiblePaneCount: number
-) {
+): PaneLayoutPreviewMetrics {
   if (value === 0) {
     return { columns: 1, rows: 1 };
+  }
+  if (value === 5) {
+    return { columns: 1, rows: visiblePaneCount, rowSpan: 2 };
   }
   const requestedColumns = value ?? automaticColumns;
   const columns = Math.max(1, Math.min(requestedColumns, maximumColumns, Math.max(visiblePaneCount, 1)));
@@ -55,7 +61,11 @@ function visiblePaneLayoutOptions(
     metrics: previewMetrics(option.value, automaticColumns, maximumColumns, visiblePaneCount)
   }));
   const signature = (option: (typeof options)[number]) =>
-    option.value === 0 ? `fullscreen-${option.metrics.rows}` : `${option.metrics.columns}x${option.metrics.rows}`;
+    option.value === 0
+      ? `fullscreen-${option.metrics.rows}`
+      : option.metrics.rowSpan
+        ? `${option.metrics.rowSpan}x${option.metrics.rows}`
+        : `${option.metrics.columns}x${option.metrics.rows}`;
   const currentSignature = signature(options.find((option) => option.value === currentColumns) ?? options[0]!);
 
   return options.filter((option, index) => {
@@ -65,10 +75,14 @@ function visiblePaneLayoutOptions(
   });
 }
 
-function optionAccessibleName(label: string, visiblePaneCount: number, rows: number) {
-  return label === "Fullscreen"
-    ? `${label}, ${visiblePaneCount} visible pane${visiblePaneCount === 1 ? "" : "s"}, one at a time`
-    : `${label}, ${visiblePaneCount} visible pane${visiblePaneCount === 1 ? "" : "s"}, ${rows} row${rows === 1 ? "" : "s"}`;
+function optionAccessibleName(label: string, visiblePaneCount: number, metrics: PaneLayoutPreviewMetrics) {
+  if (label === "Fullscreen") {
+    return `${label}, ${visiblePaneCount} visible pane${visiblePaneCount === 1 ? "" : "s"}, one at a time`;
+  }
+  if (metrics.rowSpan) {
+    return `${label}, ${visiblePaneCount} visible pane${visiblePaneCount === 1 ? "" : "s"}, ${metrics.rowSpan} rows per pane`;
+  }
+  return `${label}, ${visiblePaneCount} visible pane${visiblePaneCount === 1 ? "" : "s"}, ${metrics.rows} row${metrics.rows === 1 ? "" : "s"}`;
 }
 
 export function PaneLayoutMenu({
@@ -151,7 +165,7 @@ export function PaneLayoutMenu({
               type="button"
               role="menuitemradio"
               aria-checked={isCurrent}
-              aria-label={optionAccessibleName(option.label, visiblePaneCount, metrics.rows)}
+              aria-label={optionAccessibleName(option.label, visiblePaneCount, metrics)}
               className={isCurrent ? "selected" : undefined}
               data-preview-columns={metrics.columns}
               data-preview-rows={metrics.rows}
@@ -169,7 +183,7 @@ export function PaneLayoutMenu({
               </span>
               <span className="pane-layout-option-copy">
                 <strong>{option.label}</strong>
-                <small>{metrics.columns} × {metrics.rows || 0}</small>
+                <small>{metrics.rowSpan ? `${metrics.rowSpan} × ${metrics.rows || 0}` : `${metrics.columns} × ${metrics.rows || 0}`}</small>
               </span>
               <Check className="pane-layout-check" aria-hidden="true" />
             </button>

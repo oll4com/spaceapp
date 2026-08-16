@@ -8072,6 +8072,18 @@ export class PostgresSpaceStore implements SpaceStore {
     return result.rows.map(mapPaneCliSession);
   }
 
+  async listActivePaneCliSessionsForRuntimes(runtimeIds: readonly string[]): Promise<PaneCliSession[]> {
+    const parsedRuntimeIds = runtimeIds.map((runtimeId) => cliToggleRuntimeIdSchema.parse(runtimeId as CliToggleRuntimeId));
+    if (parsedRuntimeIds.length === 0) return [];
+    const result = await this.pool.query<PaneCliSessionRow>(
+      `${paneCliSessionSelect}
+       WHERE runtime_id = ANY($1::text[]) AND is_active = true AND status = 'RUNNING'
+       ORDER BY started_at ASC`,
+      [parsedRuntimeIds]
+    );
+    return result.rows.map(mapPaneCliSession);
+  }
+
   async isCliAccountProfileInUse(runtimeId: CliToggleRuntimeId, profileId: string): Promise<boolean> {
     const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
     const parsedProfileId = cliAccountProfileIdSchema.parse(profileId);
@@ -14471,6 +14483,14 @@ export class PostgresSpaceStore implements SpaceStore {
       nextCursor:
         result.rows.length > limit ? String(rows[rows.length - 1]?.seq ?? "") || null : null
     };
+  }
+
+  async clearSharedChatMessages(): Promise<{ deletedCount: number }> {
+    const result = await this.pool.query<{ deletedCount: string }>(
+      `WITH deleted AS (DELETE FROM shared_chat_messages RETURNING id)
+       SELECT count(*) AS "deletedCount" FROM deleted`
+    );
+    return { deletedCount: Number.parseInt(String(result.rows[0]?.deletedCount ?? 0), 10) };
   }
 
   async verifyAuditChain(): Promise<AuditVerifyResponse> {

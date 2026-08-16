@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { Model, Pane, PaneCliTranscriptChunk, Provider, ProviderSettings } from "@space/contracts";
 import type { SpaceApiConfig } from "./config.js";
-import { openCodeServerBaseUrl, type OpenCodeServerControl } from "@space/opencode-control";
+import { fetchOpenCodeSessionTitle, openCodeServerBaseUrl, type OpenCodeServerControl } from "@space/opencode-control";
 
 type FetchLike = typeof fetch;
 type ReadFileLike = (path: string) => Promise<string>;
@@ -35,6 +35,14 @@ export interface GenerateOpenCodePaneTitleInput {
   transcript: Array<Pick<PaneCliTranscriptChunk, "stream" | "content">>;
   modelId?: string;
   providerId?: string;
+  /**
+   * When true, the native session referenced by the control is NOT used for
+   * context (first user message / native title fallback). Use for controls
+   * that belong to a different pane or to the shared server fallback.
+   */
+  skipNativeContext?: boolean;
+  /** Timeout for the title prompt request; defaults to 120 seconds. */
+  promptTimeoutMs?: number;
 }
 
 export interface GenerateTerminalPaneTitleResult {
@@ -293,6 +301,23 @@ function buildRecentCliActivity(transcript: Array<Pick<PaneCliTranscriptChunk, "
   return joined.length <= maxLength ? joined : joined.slice(joined.length - maxLength);
 }
 
+/**
+ * Derives a pane-title candidate for CLI runtimes that have no dedicated
+ * native title poller (everything except cli:opencode and cli:codex).
+ * Prefers the captured first user message of the task revision; falls back to
+ * the meaningful stdin request found in the recent pane transcript. Returns
+ * "" when nothing meaningful exists (e.g. raw terminal escape sequences).
+ */
+export function extractGenericPaneTitleCandidate(
+  firstUserMessage: string | null | undefined,
+  transcript: Array<Pick<PaneCliTranscriptChunk, "stream" | "content">> = []
+): string {
+  const fromFirstUserMessage = selectMeaningfulTaskRequest(firstUserMessage ?? "");
+  if (fromFirstUserMessage) return boundedText(fromFirstUserMessage, 120);
+  const fromTranscript = findPrimaryTaskRequest(transcript);
+  return boundedText(fromTranscript, 120);
+}
+
 interface PaneTitleMessageSource {
   currentTitle: string;
   cwd: string | null;
@@ -301,14 +326,14 @@ interface PaneTitleMessageSource {
   transcript: Array<Pick<PaneCliTranscriptChunk, "stream" | "content">>;
 }
 
-function buildMessages(input: PaneTitleMessageSource) {
+function buildMessages(input: PaneTitleMessageSource, options?: { allowEmpty?: boolean }) {
   const primaryTaskRequest = findPrimaryTaskRequest(
     input.transcript,
     input.primaryTaskRequest,
     input.trustPrimaryTaskRequest === true
   );
   const recentActivity = buildRecentCliActivity(input.transcript);
-  if (!primaryTaskRequest && !recentActivity) {
+  if (!primaryTaskRequest && !recentActivity && options?.allowEmpty !== true) {
     throw new Error("No recent CLI transcript is available for title generation.");
   }
   return [
@@ -474,6 +499,43 @@ function extractOpenCodeAssistantText(parts: unknown): string {
   return texts[texts.length - 1] ?? "";
 }
 
+export const openCodePlaceholderTitlePattern =
+  /^(New session|Child session) - \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+async function fetchOpenCodeFirstUserMessage(
+  baseUrl: string,
+  authorization: string,
+  nativeSessionId: string,
+  directory: string,
+  fetchImpl: FetchLike
+): Promise<string> {
+  const response = await fetchImpl(
+    `${baseUrl}/session/${encodeURIComponent(nativeSessionId)}/message?directory=${encodeURIComponent(directory)}&limit=50`,
+    {
+      headers: { authorization },
+      signal: AbortSignal.timeout(10_000)
+    }
+  );
+  if (!response.ok) return "";
+  const messages = (await response.json()) as unknown;
+  if (!Array.isArray(messages)) return "";
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    const info = (message as { info?: unknown }).info as Record<string, unknown> | null | undefined;
+    if (!info || info.role !== "user") continue;
+    const parts = (message as { parts?: unknown }).parts;
+    if (!Array.isArray(parts)) continue;
+    for (const part of parts) {
+      if (!part || typeof part !== "object") continue;
+      const record = part as { type?: unknown; text?: unknown };
+      if (record.type !== "text" || typeof record.text !== "string") continue;
+      const text = record.text.trim();
+      if (text) return text.slice(0, 2_000);
+    }
+  }
+  return "";
+}
+
 export async function generateOpenCodePaneTitle(
   input: GenerateOpenCodePaneTitleInput,
   options: TerminalPaneTitleGenerationOptions = {}
@@ -484,7 +546,47 @@ export async function generateOpenCodePaneTitle(
   const providerId = input.providerId ?? openCodeTitleProviderId;
   const modelId = input.modelId ?? openCodeTitleModelId;
   const directory = input.cwd?.trim() || "/etc";
-  const messages = buildMessages(input);
+
+  let primaryTaskRequest = input.primaryTaskRequest?.trim() ?? "";
+  let trustPrimaryTaskRequest = false;
+  if (!primaryTaskRequest && input.skipNativeContext !== true) {
+    try {
+      const nativeUserMessage = await fetchOpenCodeFirstUserMessage(
+        baseUrl,
+        authorization,
+        input.control.nativeSessionId,
+        directory,
+        fetchImpl
+      );
+      if (nativeUserMessage) {
+        primaryTaskRequest = nativeUserMessage;
+        trustPrimaryTaskRequest = true;
+      }
+    } catch {
+      // The native session may be unreachable; fall back to the remaining context below.
+    }
+  }
+  if (!primaryTaskRequest && input.skipNativeContext !== true) {
+    try {
+      const info = await fetchOpenCodeSessionTitle(input.control, input.control.nativeSessionId);
+      if (info && !openCodePlaceholderTitlePattern.test(info.title.trim())) {
+        primaryTaskRequest = info.title.trim();
+        trustPrimaryTaskRequest = true;
+      }
+    } catch {
+      // Fall back to the pane context below.
+    }
+  }
+  const messages = buildMessages(
+    {
+      currentTitle: input.currentTitle,
+      cwd: input.cwd,
+      primaryTaskRequest: primaryTaskRequest || null,
+      trustPrimaryTaskRequest,
+      transcript: input.transcript
+    },
+    { allowEmpty: true }
+  );
 
   const createResponse = await fetchImpl(
     `${baseUrl}/session?directory=${encodeURIComponent(directory)}`,
@@ -519,7 +621,7 @@ export async function generateOpenCodePaneTitle(
         system: messages[0]?.content,
         tools: {}
       }),
-      signal: AbortSignal.timeout(120_000)
+      signal: AbortSignal.timeout(input.promptTimeoutMs ?? 120_000)
     });
     if (!promptResponse.ok) {
       throw new Error(`OpenCode title prompt failed with HTTP ${promptResponse.status}.`);

@@ -118,6 +118,26 @@ export function verifyCsrfToken(sessionToken: string | undefined, submittedToken
   return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
+export function createAgentPostToken(secret: string, payload: string): string | null {
+  if (secret.length < 16) {
+    return null;
+  }
+  return createHmac("sha256", secret).update(`agent-post:${payload}`).digest("base64url");
+}
+
+export function verifyAgentPostToken(secret: string, submittedToken: unknown, payload: string): boolean {
+  if (typeof submittedToken !== "string") {
+    return false;
+  }
+  const expected = createAgentPostToken(secret, payload);
+  if (!expected) {
+    return false;
+  }
+  const actualBuffer = Buffer.from(submittedToken);
+  const expectedBuffer = Buffer.from(expected);
+  return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
 export function verifySession(token: string | undefined, secret: string): AuthUser | null {
   if (!token || secret.length < 16) {
     return null;

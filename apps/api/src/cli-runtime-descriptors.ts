@@ -11,7 +11,8 @@ export type CliRuntimeKey =
   | "grok"
   | "deepseek"
   | "cursor"
-  | "copilot";
+  | "copilot"
+  | "github";
 
 export interface CliRuntimeDescriptor {
   key: CliRuntimeKey;
@@ -327,6 +328,31 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     nativeResumeArgs: ["--continue"],
     defaultModelId: null,
     credentialVerifiedReason: "GitHub Copilot CLI direct operator parity wrapper, GitHub device login, /etc cwd, MCP access, and credential smoke are verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "github",
+    id: "cli:github",
+    providerId: "github",
+    providerName: "GitHub",
+    agentName: "GitHub CLI",
+    commandName: "gh-vscode-parity",
+    commandEnv: "SPACE_CLI_GITHUB_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_GITHUB_CREDENTIAL_SMOKE",
+    authMode: "DEVICE_CODE",
+    missingAuthState: "LOGIN_REQUIRED",
+    missingAuthReason: "GitHub CLI (gh) login is required. Open its device-code login in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_GITHUB_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-gh`,
+    tempDir: `${codexHome}/space-gh/tmp`,
+    environment: { GITHUB_HOME: `${codexHome}/space-gh` },
+    nativeResumeArgs: ["--continue"],
+    defaultModelId: null,
+    credentialVerifiedReason: "GitHub CLI (gh) with the official Copilot chat engine, gh account auth, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   }
 ];

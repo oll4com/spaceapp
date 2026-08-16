@@ -186,7 +186,7 @@ export const helpSections: HelpSection[] = [
       entry("surface-health", "Health dock", Activity, "Room toolbar", "Shows runtime, worker, provider, storage, MCP, and request health at a glance."),
       entry("memory-workspace", "Open memory workspace", Network, "Room toolbar", "Opens the full memory graph workspace for search, inspection, review, and maintenance visibility."),
       entry("quick-links", "Quick Links", Star, "Room toolbar", "Opens only the links you starred, with pagination and a Manage Links shortcut."),
-      entry("pane-layout", "Pane layout", PanelsTopLeft, "Room toolbar", "Applies Automatic or one-to-four-column room presets to visible panes without creating, closing, or restarting panes."),
+      entry("pane-layout", "Pane layout", PanelsTopLeft, "Room toolbar", "Applies Automatic, Fullscreen, one-to-four-column, or double-height room presets to visible panes without creating, closing, or restarting panes."),
       entry("room-theme", "Room theme", Palette, "Room toolbar", "Opens the saved room-theme choices and applies the selected visual theme."),
       entry("cli-floats", "Hide or show CLI floats", EyeOff, "Room toolbar", "Hides or restores the END, model, and Send or Stop overlays in every CLI pane, and remembers the choice in this browser."),
       entry("sensitive-data", "Hide or show sensitive data", EyeOff, "Room toolbar", "Blurs private IPs, emails, and internal domains (including example.invalid) across the whole Space UI, and remembers the choice in this browser."),

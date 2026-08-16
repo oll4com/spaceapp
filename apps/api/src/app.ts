@@ -99,6 +99,7 @@ import {
   listAuditChainQuerySchema,
   auditChainListResponseSchema,
   auditVerifyResponseSchema,
+  clearSharedChatResponseSchema,
 
   setClipboardItemCompletedRequestSchema,
   taskItemListResponseSchema,
@@ -389,6 +390,7 @@ import {
   signSession,
   verifyPassword,
   verifyCsrfToken,
+  verifyAgentPostToken,
   verifySession,
   type AuthConfig
 } from "./auth.js";
@@ -397,6 +399,7 @@ import {
   AppDiagnosticsServiceError
 } from "./app-diagnostics.js";
 import { ActivityLogService } from "./activity-log.js";
+import { registerBenchmarkRoutes } from "./benchmark-routes.js";
 import { createActiveAgentCountProvider } from "./active-agent-count.js";
 import { buildCliAgentBootstrapMarkdown } from "./agent-bootstrap.js";
 import {
@@ -461,6 +464,7 @@ import {
 } from "./codex-parity.js";
 import { UnifiedCliTaskRegistry, type ResolvedSpaceCliTask } from "./unified-cli-task-registry.js";
 import { AgentSessionHistoryService } from "./agent-session-history.js";
+import { buildSharedChatDispatchPrompt, pickSharedChatDispatchTarget, resolveSharedChatDispatchRuntimeIds } from "./shared-chat-dispatch.js";
 import {
   CliRuntimeDisableConfirmationStaleError,
   CliRuntimeVisibilityPolicy
@@ -491,6 +495,7 @@ import {
   parseOpenCodeCompositeModelId,
   readOpenCodeServerControl,
   listOpenCodeServerControls,
+  resolveOpenCodeTitleFallbackControl,
   switchOpenCodeSessionModel,
   updateOpenCodeSessionTitle,
   type OpenCodeServerControl
@@ -626,6 +631,7 @@ import {
 import { createHttpObservability } from "./observability.js";
 import { validateProviderCredential } from "./providers.js";
 import {
+  extractGenericPaneTitleCandidate,
   generateOpenCodePaneTitle,
   generateTerminalPaneTitle,
   selectTerminalPaneTitleGeneration,
@@ -2561,6 +2567,63 @@ export async function runCodexPaneTitleSync(input: {
   return updatedCount;
 }
 
+const genericTitleSyncRuntimeIds = cliToggleRuntimeIds.filter(
+  (runtimeId) => runtimeId !== "cli:opencode" && runtimeId !== "cli:codex"
+);
+
+/**
+ * Mirrors the OpenCode native-title poller for every CLI runtime that has no
+ * dedicated native title source: the pane title follows the task's first user
+ * message (captured by the unified CLI task registry) as soon as one becomes
+ * meaningful. Pinned (manual) or AI-generated titles are never overwritten.
+ */
+export async function runGenericCliPaneTitleSync(input: {
+  store: SpaceStore;
+  eventBus: SpaceEventBus;
+  traceIdPrefix?: string;
+}): Promise<number> {
+  const sessions = await input.store.listActivePaneCliSessionsForRuntimes(genericTitleSyncRuntimeIds);
+  let updatedCount = 0;
+  for (const session of sessions) {
+    if (session.purpose !== "NORMAL") continue;
+    const pane = await getPaneById(input.store, session.paneId).catch(() => null);
+    if (!pane || pane.titleSource !== "auto") continue;
+    let revision: Awaited<ReturnType<SpaceStore["getCliTaskRevision"]>> = null;
+    if (session.cliTaskRevisionId) {
+      try {
+        revision = await input.store.getCliTaskRevision(session.cliTaskRevisionId);
+      } catch {
+        revision = null;
+      }
+    }
+    let transcript: Parameters<typeof extractGenericPaneTitleCandidate>[1] = [];
+    try {
+      transcript = await input.store.listPaneCliTranscriptChunks(session.sessionId, 48);
+    } catch {
+      transcript = [];
+    }
+    const candidate = extractGenericPaneTitleCandidate(revision?.firstUserMessage, transcript);
+    if (!candidate || candidate === pane.title) continue;
+    const traceId = `${input.traceIdPrefix ?? "req:generic-title-sync"}:${session.sessionId}`;
+    const updatedPane = await input.store.updatePane(
+      pane.id,
+      { title: candidate, titleSource: "auto" },
+      traceId
+    );
+    if (session.cliTaskRevisionId) {
+      await input.store.updateCliTaskRevision(
+        session.cliTaskRevisionId,
+        { displayTitle: candidate },
+        traceId
+      );
+    }
+    updatedCount += 1;
+    const latestEvent = await getLatestRoomEvent(input.store, updatedPane.roomId);
+    if (latestEvent) input.eventBus.publish(latestEvent);
+  }
+  return updatedCount;
+}
+
 function closeBrowserSocketWithSetupError(
   socket: { readyState: number; send(data: string): void; close(code?: number, reason?: string): void },
   message: string
@@ -3547,6 +3610,17 @@ const sharedChatLiveSockets = new Set<SharedChatLiveSocket>();
 function sharedChatBroadcast(message: unknown): void {
   const payload = JSON.stringify(
     sharedChatLiveWebSocketMessageSchema.parse({ type: "message", message })
+  );
+  for (const socket of sharedChatLiveSockets) {
+    if (socket.readyState === 1) {
+      socket.send(payload);
+    }
+  }
+}
+
+function sharedChatBroadcastClear(): void {
+  const payload = JSON.stringify(
+    sharedChatLiveWebSocketMessageSchema.parse({ type: "clear" })
   );
   for (const socket of sharedChatLiveSockets) {
     if (socket.readyState === 1) {
@@ -4686,6 +4760,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   let opencodeTitleSyncRunning = false;
   let codexTitleSyncTimer: ReturnType<typeof setInterval> | null = null;
   let codexTitleSyncRunning = false;
+  let genericTitleSyncTimer: ReturnType<typeof setInterval> | null = null;
+  let genericTitleSyncRunning = false;
   let systemAnalyticsSampleTimer: ReturnType<typeof setInterval> | null = null;
   let systemAnalyticsRollupTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -4727,6 +4803,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       app.log.error({ err: error }, "OpenCode pane title sync sweep failed.");
     } finally {
       opencodeTitleSyncRunning = false;
+    }
+  }
+
+  async function runGenericCliPaneTitleSyncSweep() {
+    if (genericTitleSyncRunning) return;
+    genericTitleSyncRunning = true;
+    try {
+      const updated = await runGenericCliPaneTitleSync({
+        store,
+        eventBus,
+        traceIdPrefix: "req:generic-title-sync"
+      });
+      if (updated > 0) {
+        app.log.info({ updated }, "Generic CLI pane title sync updated panes from task requests.");
+      }
+    } catch (error) {
+      app.log.error({ err: error }, "Generic CLI pane title sync sweep failed.");
+    } finally {
+      genericTitleSyncRunning = false;
     }
   }
 
@@ -4853,6 +4948,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (durableEventPollTimer) clearInterval(durableEventPollTimer);
     if (opencodeTitleSyncTimer) clearInterval(opencodeTitleSyncTimer);
     if (codexTitleSyncTimer) clearInterval(codexTitleSyncTimer);
+    if (genericTitleSyncTimer) clearInterval(genericTitleSyncTimer);
     if (systemAnalyticsSampleTimer) clearInterval(systemAnalyticsSampleTimer);
     if (systemAnalyticsRollupTimer) clearInterval(systemAnalyticsRollupTimer);
     stopTrackingPublishedEvents();
@@ -4900,6 +4996,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     opencodeTitleSyncTimer.unref();
     codexTitleSyncTimer = setInterval(() => void runCodexPaneTitleSyncSweep(), opencodeTitleSyncPollIntervalMs);
     codexTitleSyncTimer.unref();
+    genericTitleSyncTimer = setInterval(() => void runGenericCliPaneTitleSyncSweep(), opencodeTitleSyncPollIntervalMs);
+    genericTitleSyncTimer.unref();
     try {
       await systemAnalyticsService.sample();
     } catch (error) {
@@ -5550,6 +5648,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return settings;
   });
 
+  registerBenchmarkRoutes(app, defaultRouteRateLimitOptions);
+
   app.post(
     "/api/app-diagnostics/event-batches",
     {
@@ -5742,6 +5842,47 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { deletedCount: await store.clearClipboardItems(owner.id) };
   });
 
+  async function dispatchSharedChatToAgentPanes(input: {
+    message: { id: string; senderLabel: string; content: string; metadata?: Record<string, unknown> };
+    requestId: string;
+    store: SpaceStore;
+    cliTerminalManager: CliTerminalManager;
+  }): Promise<{ dispatched: number; skipped: number }> {
+    // Group conversation: every operator message wakes every eligible runtime
+    // (at most one idle pane per runtime). Replies posted by agents
+    // (senderType=agent or messages carrying metadata.runtimeId) never trigger
+    // dispatch at all — their content is never parsed for mentions and never
+    // reaches any pane, so answers only ever land in the dock.
+    const agentPosted =
+      typeof input.message.metadata?.runtimeId === "string" && input.message.metadata.runtimeId.length > 0;
+    if (agentPosted) {
+      return { dispatched: 0, skipped: 0 };
+    }
+    const targetRuntimeIds = resolveSharedChatDispatchRuntimeIds(input.message.content);
+    let dispatched = 0;
+    let skipped = 0;
+    for (const runtimeId of targetRuntimeIds) {
+      const target = await pickSharedChatDispatchTarget(input.store, runtimeId);
+      if (!target) {
+        skipped += 1;
+        continue;
+      }
+      try {
+        await input.cliTerminalManager.sendInput(
+          target.session.sessionId,
+          buildSharedChatDispatchPrompt(input.message.content, target.pane.title ?? target.session.paneId, runtimeId),
+          input.requestId,
+          null,
+          `shared-chat-dispatch:${input.message.id}`
+        );
+        dispatched += 1;
+      } catch {
+        skipped += 1;
+      }
+    }
+    return { dispatched, skipped };
+  }
+
   app.get("/api/shared-chat/messages", defaultRouteRateLimitOptions, async (request) => {
     const query = parseQuery(listSharedChatMessagesQuerySchema, request.query);
     const result = await store.listSharedChatMessages(query);
@@ -5754,22 +5895,68 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.post("/api/shared-chat/messages", defaultRouteRateLimitOptions, async (request, reply) => {
     const input = parseBody(sendSharedChatMessageInputSchema, request.body);
     const owner = await store.upsertUser(request.user!);
+    const asAgent = input.senderType === "agent";
+    if (asAgent) {
+      const runtimeId = typeof input.metadata?.runtimeId === "string" ? input.metadata.runtimeId : "";
+      const payload = `${input.senderLabel ?? ""}\n${runtimeId}\n${input.content}`;
+      const token = request.headers["x-space-agent-post"];
+      if (!verifyAgentPostToken(auth.sessionSecret, token, payload)) {
+        return sendApiError(
+          reply,
+          403,
+          "AGENT_POST_INVALID",
+          "Agent posts require a valid Space agent post token."
+        );
+      }
+    }
     const message = await store.appendSharedChatMessage({
       ...input,
-      senderType: "user",
-      senderId: owner.id,
-      senderLabel: owner.email ?? owner.id,
+      senderType: asAgent ? "agent" : "user",
+      senderId: asAgent ? null : owner.id,
+      senderLabel: asAgent ? (input.senderLabel ?? "agent") : (owner.email ?? owner.id),
       id: makeSpaceId("shared_chat_msg")
     });
     await store.appendAuditChainEntry({
       action: "shared_chat.message_created",
-      actor: `user:${owner.id}`,
+      actor: asAgent ? `agent:${message.senderLabel}` : `user:${owner.id}`,
       targetType: "shared_chat_message",
       targetId: message.id,
-      metadata: { senderLabel: message.senderLabel, roomId: message.roomId, kind: message.kind }
+      metadata: {
+        senderLabel: message.senderLabel,
+        senderType: message.senderType,
+        runtimeId: typeof input.metadata?.runtimeId === "string" ? input.metadata.runtimeId : null,
+        roomId: message.roomId,
+        kind: message.kind
+      }
     });
     sharedChatBroadcast(message);
+    const dispatchResult = asAgent
+      ? { dispatched: 0, skipped: 0 }
+      : await dispatchSharedChatToAgentPanes({
+          message,
+          requestId: request.requestIdForSpace,
+          store,
+          cliTerminalManager
+        });
+    request.log.info(
+      { messageId: message.id, dispatched: dispatchResult.dispatched, skipped: dispatchResult.skipped },
+      "shared-chat dispatch complete"
+    );
     return reply.code(201).send(message);
+  });
+
+  app.delete("/api/shared-chat/messages", defaultRouteRateLimitOptions, async (request) => {
+    const owner = await store.upsertUser(request.user!);
+    const result = await store.clearSharedChatMessages();
+    await store.appendAuditChainEntry({
+      action: "shared_chat.cleared",
+      actor: `user:${owner.id}`,
+      targetType: "shared_chat",
+      targetId: null,
+      metadata: { deletedCount: result.deletedCount }
+    });
+    sharedChatBroadcastClear();
+    return clearSharedChatResponseSchema.parse(result);
   });
 
   app.get("/api/audit/entries", defaultRouteRateLimitOptions, async (request) => {
@@ -8650,34 +8837,79 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
       }
     }
+    let codexGenerationError: unknown = null;
     if (!opencodeResult) {
-      try {
-        selection = selectTerminalPaneTitleGeneration(providers, models, providerSettings);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "CLI title generation is unavailable.";
-        throw new SpaceFeatureDisabledError("PANE_TITLE_GENERATION_UNAVAILABLE", message);
+      // OpenCode first: shared server with deepseek-v4-flash-free (free model),
+      // 45s timeout + one retry. Codex is now the fallback.
+      const sharedControl = await resolveOpenCodeTitleFallbackControl(options.opencodeStateRoot);
+      if (sharedControl) {
+        const sharedInput = {
+          control: sharedControl,
+          currentTitle: pane.title,
+          cwd: pane.cwd ?? ("cwd" in session ? session.cwd : null),
+          primaryTaskRequest,
+          transcript,
+          skipNativeContext: true,
+          promptTimeoutMs: 45_000
+        };
+        try {
+          opencodeResult = await generateOpenCodePaneTitle(sharedInput);
+        } catch (opencodeError) {
+          request.log.info(
+            { err: opencodeError, requestId: request.requestIdForSpace, paneId: pane.id },
+            "opencode title generation attempt failed; retrying once before codex"
+          );
+          try {
+            opencodeResult = await generateOpenCodePaneTitle(sharedInput);
+          } catch (retryError) {
+            request.log.info(
+              { err: retryError, requestId: request.requestIdForSpace, paneId: pane.id },
+              "opencode title generation failed; falling back to codex"
+            );
+          }
+        }
       }
     }
-    let generated: GenerateTerminalPaneTitleResult;
+    let generated: GenerateTerminalPaneTitleResult | null = null;
     if (opencodeResult) {
       generated = opencodeResult;
     } else {
       try {
-        generated = await generateTerminalPaneTitle({
-          config,
-          provider: selection!.provider,
-          model: selection!.model,
-          currentTitle: pane.title,
-          cwd: pane.cwd ?? ("cwd" in session ? session.cwd : null),
-          primaryTaskRequest,
-          trustPrimaryTaskRequest: pane.mode === "CHAT",
-          reasoningEffort: selection!.reasoningEffort,
-          transcript
-        });
+        selection = selectTerminalPaneTitleGeneration(providers, models, providerSettings);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "CLI title generation failed.";
-        throw new SpaceFeatureDisabledError("PANE_TITLE_GENERATION_FAILED", message);
+        codexGenerationError = error;
+        request.log.info(
+          { err: error, requestId: request.requestIdForSpace, paneId: pane.id },
+          "codex title generation selection unavailable"
+        );
       }
+      if (selection) {
+        try {
+          generated = await generateTerminalPaneTitle({
+            config,
+            provider: selection.provider,
+            model: selection.model,
+            currentTitle: pane.title,
+            cwd: pane.cwd ?? ("cwd" in session ? session.cwd : null),
+            primaryTaskRequest,
+            trustPrimaryTaskRequest: pane.mode === "CHAT",
+            reasoningEffort: selection.reasoningEffort,
+            transcript
+          });
+        } catch (error) {
+          codexGenerationError = error;
+          request.log.info(
+            { err: error, requestId: request.requestIdForSpace, paneId: pane.id },
+            "codex title generation failed"
+          );
+        }
+      }
+    }
+    if (!generated) {
+      const message = codexGenerationError instanceof Error
+        ? codexGenerationError.message
+        : "CLI title generation is unavailable.";
+      throw new SpaceFeatureDisabledError("PANE_TITLE_GENERATION_FAILED", message);
     }
     const rollbackCodexTitle = codexThreadId
       ? await syncPaneTitleToCodexHistory({

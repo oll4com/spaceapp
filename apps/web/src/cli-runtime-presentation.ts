@@ -3,6 +3,7 @@ import autohandIconUrl from "./assets/autohand-icon.png";
 import claudeLogoUrl from "./assets/claude-logo.svg";
 import codexLogoUrl from "./assets/codex-logo.svg";
 import copilotLogoUrl from "./assets/copilot-logo.svg";
+import githubLogoUrl from "./assets/github-logo.svg";
 import cursorLogoUrl from "./assets/cursor-logo.svg";
 import deepseekLogoUrl from "./assets/deepseek-logo.svg";
 import geminiLogoUrl from "./assets/gemini-logo.svg";
@@ -30,7 +31,8 @@ export const CLI_RUNTIME_PRESENTATIONS = Object.freeze([
   { id: "cli:grok", brand: "grok", displayName: "Grok Build CLI", shortLabel: "Grok Build", iconSrc: grokLogoUrl },
   { id: "cli:deepseek", brand: "deepseek", displayName: "DeepSeek CLI", shortLabel: "DeepSeek", iconSrc: deepseekLogoUrl },
   { id: "cli:cursor", brand: "cursor", displayName: "Cursor CLI", shortLabel: "Cursor", iconSrc: cursorLogoUrl },
-  { id: "cli:copilot", brand: "copilot", displayName: "GitHub Copilot CLI", shortLabel: "Copilot", iconSrc: copilotLogoUrl }
+  { id: "cli:copilot", brand: "copilot", displayName: "GitHub Copilot CLI", shortLabel: "Copilot", iconSrc: copilotLogoUrl },
+  { id: "cli:github", brand: "github", displayName: "GitHub CLI", shortLabel: "GitHub CLI", iconSrc: githubLogoUrl }
 ] as const satisfies readonly CliRuntimePresentation[]);
 
 const runtimePresentationById = new Map(

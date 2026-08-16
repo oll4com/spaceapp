@@ -931,6 +931,8 @@ export const api = {
     );
   },
   auditVerify: () => request<AuditVerifyResponse>("/api/audit/verify"),
+  clearSharedChat: () =>
+    request<{ deletedCount: number }>("/api/shared-chat/messages", { method: "DELETE" }),
   taskItems: (query: { q?: string; status?: TaskStatus; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);

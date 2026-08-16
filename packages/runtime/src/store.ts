@@ -843,6 +843,7 @@ export interface SpaceStore {
     query?: ListAuditChainQuery
   ): MaybePromise<{ items: AuditChainEntry[]; nextCursor: string | null }>;
   verifyAuditChain(): MaybePromise<AuditVerifyResponse>;
+  clearSharedChatMessages(): MaybePromise<{ deletedCount: number }>;
   setClipboardItemCompleted(
     ownerUserId: string,
     clipboardItemId: string,
@@ -988,6 +989,7 @@ export interface SpaceStore {
   getLatestPaneCliSessionByCodexThreadId(codexThreadId: string): MaybePromise<PaneCliSession | null>;
   listPaneCliSessions(paneId: string, limit?: number): MaybePromise<PaneCliSession[]>;
   listActivePaneCliSessions(runtimeId: string): MaybePromise<PaneCliSession[]>;
+  listActivePaneCliSessionsForRuntimes(runtimeIds: readonly string[]): MaybePromise<PaneCliSession[]>;
   isCliAccountProfileInUse(runtimeId: CliToggleRuntimeId, profileId: string): MaybePromise<boolean>;
   listCliAccountProfiles(runtimeId: CliToggleRuntimeId): MaybePromise<CliAccountProfile[]>;
   getCliAccountProfile(runtimeId: CliToggleRuntimeId, profileId: string): MaybePromise<CliAccountProfile | null>;
@@ -2912,6 +2914,12 @@ export class InMemorySpaceStore implements SpaceStore {
       message:
         entries.length === 0 ? "Audit chain is empty." : `Audit chain verified through seq ${verifiedThrough}.`
     };
+  }
+
+  clearSharedChatMessages(): { deletedCount: number } {
+    const deletedCount = this.sharedChatMessages.size;
+    this.sharedChatMessages.clear();
+    return { deletedCount };
   }
 
   setClipboardItemCompleted(
@@ -5029,6 +5037,13 @@ export class InMemorySpaceStore implements SpaceStore {
   listActivePaneCliSessions(runtimeId: string): PaneCliSession[] {
     return [...this.paneCliSessions.values()]
       .filter((session) => session.runtimeId === runtimeId && session.isActive && session.status === "RUNNING")
+      .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  }
+
+  listActivePaneCliSessionsForRuntimes(runtimeIds: readonly string[]): PaneCliSession[] {
+    const parsedRuntimeIds = new Set<string>(runtimeIds);
+    return [...this.paneCliSessions.values()]
+      .filter((session) => parsedRuntimeIds.has(session.runtimeId) && session.isActive && session.status === "RUNNING")
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
   }
 

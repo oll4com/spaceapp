@@ -7,7 +7,7 @@ import { cliRunLifecycleAdapters } from "../src/cli-run-lifecycle-adapters.js";
 
 describe("CLI runtime descriptors", () => {
   it("requires verified credential observation and smoke support for Space-managed setup connections", () => {
-    expect(cliRuntimeDescriptors).toHaveLength(11);
+    expect(cliRuntimeDescriptors).toHaveLength(12);
     for (const descriptor of cliRuntimeDescriptors) {
       if (descriptor.id === "cli:gemini") {
         expect(descriptor.credentialObservationAction).toBeNull();
@@ -31,7 +31,8 @@ describe("CLI runtime descriptors", () => {
       "cli:grok",
       "cli:deepseek",
       "cli:cursor",
-      "cli:copilot"
+      "cli:copilot",
+      "cli:github"
     ]);
     expect(cliRuntimeDescriptors.map(({ id, authMode, missingAuthState, loginAction }) => ({
       id,
@@ -49,7 +50,8 @@ describe("CLI runtime descriptors", () => {
       { id: "cli:grok", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:deepseek", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
       { id: "cli:cursor", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
-      { id: "cli:copilot", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" }
+      { id: "cli:copilot", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
+      { id: "cli:github", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" }
     ]);
   });
 

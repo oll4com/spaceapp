@@ -78,9 +78,11 @@ function truncatedText(value: string, maximum: number): { text: string; truncate
     : { text: characters.slice(0, maximum).join(""), truncated: true };
 }
 
-async function paneTitleForTurn(store: SpaceStore, input: DummyTurnInput): Promise<string | null> {
+async function paneForTurn(store: SpaceStore, input: DummyTurnInput): Promise<{ title: string; runtimeId: string } | null> {
   const panes = await store.listPanes(input.roomId, true);
-  return panes.find((pane) => pane.id === input.paneId)?.title ?? null;
+  const pane = panes.find((candidate) => candidate.id === input.paneId);
+  if (!pane) return null;
+  return { title: pane.title ?? `agent:${input.paneId}`, runtimeId: pane.terminalRuntimeId ?? "" };
 }
 
 export async function executeChatActionBridge(input: {
@@ -125,8 +127,9 @@ export async function executeChatActionBridge(input: {
 
   const lines = ["Space shared chat action bridge result:"];
   let executedActionCount = 0;
-  const paneTitle = await paneTitleForTurn(input.store, input.turnInput);
-  const senderLabel = paneTitle ?? `agent:${input.turnInput.paneId}`;
+  const paneInfo = await paneForTurn(input.store, input.turnInput);
+  const senderLabel = paneInfo?.title ?? `agent:${input.turnInput.paneId}`;
+  const senderRuntimeId = paneInfo?.runtimeId ?? null;
 
   for (const request of parsed.envelope.actions) {
     if (!selectedToolIds.has(request.toolId)) {
@@ -144,7 +147,7 @@ export async function executeChatActionBridge(input: {
           kind: "message",
           content: request.action.content,
           replyToId: request.action.replyToId ?? null,
-          metadata: {}
+          metadata: { runtimeId: senderRuntimeId }
         });
         await input.store.appendAuditChainEntry({
           action: "shared_chat.message_created",
@@ -186,7 +189,7 @@ export async function executeChatActionBridge(input: {
           kind: "reaction",
           content: request.action.emoji,
           replyToId: request.action.messageId,
-          metadata: {}
+          metadata: { runtimeId: senderRuntimeId }
         });
         await input.store.appendAuditChainEntry({
           action: "shared_chat.reaction_created",

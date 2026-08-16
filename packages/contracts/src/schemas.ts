@@ -164,7 +164,7 @@ export const roomSchema = z.object({
   description: z.string().max(1000).nullable(),
   kind: roomKindSchema.default("WORKSPACE"),
   order: z.number().int().min(0).default(0),
-  paneLayoutColumns: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).nullable().default(null),
+  paneLayoutColumns: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).nullable().default(null),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
   archivedAt: isoDateTimeSchema.nullable(),
@@ -197,7 +197,8 @@ export const cliToggleRuntimeIds = [
   "cli:grok",
   "cli:deepseek",
   "cli:cursor",
-  "cli:copilot"
+  "cli:copilot",
+  "cli:github"
 ] as const;
 
 export const cliToggleRuntimeIdSchema = z.enum(cliToggleRuntimeIds);
@@ -307,7 +308,7 @@ export const updateRoomInputSchema = z.object({
 
 export const updatePaneLayoutInputSchema = z
   .object({
-    paneLayoutColumns: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).nullable()
+    paneLayoutColumns: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).nullable()
   })
   .strict();
 
@@ -7410,10 +7411,10 @@ export const setupConnectionCheckRunScopeSchema = z.enum(["ALL", "SINGLE"]);
 export const setupConnectionCheckRunSchema = z.object({
   id: idSchema,
   scope: setupConnectionCheckRunScopeSchema,
-  connectionIds: z.array(z.string().trim().min(1).max(160)).min(1).max(11),
+  connectionIds: z.array(z.string().trim().min(1).max(160)).min(1).max(cliToggleRuntimeIds.length),
   status: setupConnectionCheckRunStatusSchema,
-  totalCount: z.number().int().min(1).max(11),
-  completedCount: z.number().int().min(0).max(11),
+  totalCount: z.number().int().min(1).max(cliToggleRuntimeIds.length),
+  completedCount: z.number().int().min(0).max(cliToggleRuntimeIds.length),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
   finishedAt: isoDateTimeSchema.nullable()
@@ -8468,6 +8469,11 @@ export const sharedChatLiveWebSocketMessageSchema = z.discriminatedUnion("type",
     .object({
       type: z.literal("pong")
     })
+    .strict(),
+  z
+    .object({
+      type: z.literal("clear")
+    })
     .strict()
 ]);
 
@@ -8569,6 +8575,12 @@ export const auditChainListResponseSchema = z
   })
   .strict();
 
+export const clearSharedChatResponseSchema = z
+  .object({
+    deletedCount: z.number().int().min(0)
+  })
+  .strict();
+
 export const auditVerifyResponseSchema = z
   .object({
     ok: z.boolean(),
@@ -8589,3 +8601,4 @@ export type SpaceAgentChatActionRequest = z.infer<typeof spaceAgentChatActionReq
 export type AuditChainEntry = z.infer<typeof auditChainEntrySchema>;
 export type ListAuditChainQuery = z.infer<typeof listAuditChainQuerySchema>;
 export type AuditVerifyResponse = z.infer<typeof auditVerifyResponseSchema>;
+export type ClearSharedChatResponse = z.infer<typeof clearSharedChatResponseSchema>;

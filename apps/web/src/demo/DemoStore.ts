@@ -1633,7 +1633,8 @@ export class DemoStore {
       case "updateRoomPaneLayout": {
         const room = this.fixture.rooms.find((candidate) => candidate.id === roomId)!;
         room.paneLayoutColumns = (args[1] as { paneLayoutColumns: Room["paneLayoutColumns"] }).paneLayoutColumns;
-        return Promise.resolve({ room: structuredClone(room), paneLayoutColumns: room.paneLayoutColumns });
+        const panes = this.fixture.panes.filter((pane) => pane.roomId === roomId);
+        return Promise.resolve({ room: structuredClone(room), panes: structuredClone(panes) });
       }
       case "deleteRoom": {
         this.fixture.rooms = this.fixture.rooms.filter((room) => room.id !== roomId);

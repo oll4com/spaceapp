@@ -8,6 +8,23 @@ export const opencodeServerControlMaxBytes = 8_192;
 export const opencodeServerControlRequestTimeoutMs = 8_000;
 export const opencodeServerControlHealthTimeoutMs = 1_500;
 
+/**
+ * Static bridge address of the cli:opencode runtime netns, assigned by the
+ * `runtimes` table in `/opt/spaceapp/bin/space-cli-vpn-broker`
+ * (`{ id: "cli:opencode", key: "opencode", address: "10.254.240.13" }`).
+ * The shared OpenCode server binds 0.0.0.0:47047 inside that netns, so the
+ * Space API (root netns) can only reach it via this address — never via the
+ * loopback hosts that fast-path wrapper control files write.
+ */
+export const openCodeSharedServerHost = "10.254.240.13";
+export const openCodeSharedServerPort = 47047;
+
+const openCodeLoopbackHosts = new Set(["127.0.0.1", "localhost", "::1"]);
+
+export function isOpenCodeLoopbackHost(host: string | undefined): boolean {
+  return typeof host === "string" && openCodeLoopbackHosts.has(host.trim().toLowerCase());
+}
+
 export interface OpenCodeServerControl {
   version: number;
   spaceSessionId: string;
@@ -70,9 +87,13 @@ export async function readOpenCodeServerControl(
     const nativeSessionId = typeof control.nativeSessionId === "string" ? control.nativeSessionId : "";
     const serverUsername = typeof control.serverUsername === "string" ? control.serverUsername : "";
     const serverPassword = typeof control.serverPassword === "string" ? control.serverPassword : "";
-    const serverHost = typeof control.serverHost === "string" && control.serverHost.length > 0
+    const rawServerHost = typeof control.serverHost === "string" && control.serverHost.length > 0
       ? control.serverHost
       : "127.0.0.1";
+    // Fast-path wrapper control files write the loopback host, which is only
+    // reachable from inside the runtime netns. The Space API runs in the root
+    // netns and must use the runtime's static bridge address instead.
+    const serverHost = isOpenCodeLoopbackHost(rawServerHost) ? openCodeSharedServerHost : rawServerHost;
     if (
       control.version !== 1 ||
       control.spaceSessionId !== spaceSessionId ||
@@ -644,7 +665,17 @@ export async function listOpenCodeServerControls(stateRoot?: string): Promise<Op
   const controls: OpenCodeServerControl[] = [];
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
-    const control = await readOpenCodeServerControl(entry.slice(0, -".json".length), stateRoot);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readFile(join(directory, entry), "utf8"));
+    } catch {
+      continue;
+    }
+    const spaceSessionId = typeof raw === "object" && raw !== null && typeof (raw as { spaceSessionId?: unknown }).spaceSessionId === "string"
+      ? (raw as { spaceSessionId: string }).spaceSessionId
+      : "";
+    if (!spaceSessionId) continue;
+    const control = await readOpenCodeServerControl(spaceSessionId, stateRoot);
     if (control) controls.push(control);
   }
   return controls.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
@@ -653,4 +684,49 @@ export async function listOpenCodeServerControls(stateRoot?: string): Promise<Op
 export async function resolveLatestOpenCodeControl(stateRoot?: string): Promise<OpenCodeServerControl | null> {
   const controls = await listOpenCodeServerControls(stateRoot);
   return controls[0] ?? null;
+}
+
+/**
+ * Resolves an OpenCode server control usable for pane-title generation from
+ * the Space API (root netns), in priority order:
+ *  1. the most recently updated live control of any OpenCode pane; or
+ *  2. a control built from the shared OpenCode server env file
+ *     (`<stateRoot>/opencode/space-shared-server.env`), which holds the
+ *     server credentials the fast-path wrapper writes into per-pane controls.
+ * The returned control may reference a native session that is not the
+ * caller's — callers must not use its `nativeSessionId` for context.
+ */
+export async function resolveOpenCodeTitleFallbackControl(
+  stateRoot?: string
+): Promise<OpenCodeServerControl | null> {
+  const resolvedStateRoot = stateRoot ?? join(opencodeDirectParityRoot, "state");
+  const controls = await listOpenCodeServerControls(resolvedStateRoot);
+  for (const control of controls) {
+    if (control.serverUsername && control.serverPassword) return control;
+  }
+  const sharedEnvPath = join(resolvedStateRoot, "opencode", "space-shared-server.env");
+  let username = "";
+  let password = "";
+  try {
+    const text = await readFile(sharedEnvPath, "utf8");
+    for (const line of text.split("\n")) {
+      const match = /^(OPENCODE_SERVER_USERNAME|OPENCODE_SERVER_PASSWORD)=(.*)$/.exec(line.trim());
+      if (!match) continue;
+      if (match[1] === "OPENCODE_SERVER_USERNAME") username = match[2]?.trim() ?? "";
+      else password = match[2]?.trim() ?? "";
+    }
+  } catch {
+    return null;
+  }
+  if (!username || !password) return null;
+  return {
+    version: 1,
+    spaceSessionId: "space-shared",
+    nativeSessionId: "",
+    serverPort: openCodeSharedServerPort,
+    serverHost: openCodeSharedServerHost,
+    serverUsername: username,
+    serverPassword: password,
+    updatedAt: new Date(0).toISOString()
+  };
 }

@@ -269,6 +269,7 @@ const INITIAL_CLI_TERMINAL_ROWS = 30;
 const CLI_RECONNECT_DELAYS_MS = [250, 1000, 2000, 5000, 10000] as const;
 const CLI_RECONNECT_JITTER_MS = 100;
 const CLI_TURN_ACTIVITY_POLL_MS = 900;
+const CLI_FALLBACK_RUN_IDLE_MS = 8_000;
 const CLI_MODEL_SETTINGS_REFRESH_DELAY_MS = 400;
 const CLI_MODEL_SETTINGS_STARTUP_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
 const CLI_TURN_ACTIVITY_DISCOVERY_GRACE_MS = 5_000;
@@ -1400,6 +1401,43 @@ export function TerminalPane({
   const [connectionAlert, setConnectionAlert] = useState<TerminalConnectionAlert | null>(null);
   const [terminalPromptDraft, setTerminalPromptDraft] = useState("");
   const [activeCliTurn, setActiveCliTurn] = useState<ActiveCliTurn | null>(null);
+  const fallbackRunRef = useRef<{ runKey: string } | null>(null);
+  const fallbackRunIdleTimerRef = useRef<number | null>(null);
+
+  function finishFallbackRun(runKey: string | null = null) {
+    const run = fallbackRunRef.current;
+    if (!run || (runKey !== null && run.runKey !== runKey)) return;
+    fallbackRunRef.current = null;
+    if (fallbackRunIdleTimerRef.current !== null) {
+      window.clearTimeout(fallbackRunIdleTimerRef.current);
+      fallbackRunIdleTimerRef.current = null;
+    }
+    publishPaneRunLifecycle({
+      roomId: pane.roomId,
+      paneId: pane.id,
+      runKey: run.runKey,
+      status: "COMPLETED"
+    });
+  }
+
+  function resetFallbackRunIdleTimer() {
+    const run = fallbackRunRef.current;
+    if (!run) return;
+    if (fallbackRunIdleTimerRef.current !== null) {
+      window.clearTimeout(fallbackRunIdleTimerRef.current);
+    }
+    fallbackRunIdleTimerRef.current = window.setTimeout(() => {
+      fallbackRunIdleTimerRef.current = null;
+      finishFallbackRun(run.runKey);
+    }, CLI_FALLBACK_RUN_IDLE_MS);
+  }
+
+  function armFallbackRunWatcher(runKey: string) {
+    finishFallbackRun();
+    fallbackRunRef.current = { runKey };
+    resetFallbackRunIdleTimer();
+  }
+
   const openCodeObservedRunningMarkerRef = useRef<string | null>(null);
   const [modelSettings, setModelSettings] = useState<PaneCliModelSettings | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
@@ -3677,6 +3715,7 @@ export function TerminalPane({
         if (message.type === "output") {
           const visibleData = stripHiddenTerminalEcho(message.data);
           if (visibleData) {
+            if (fallbackRunRef.current) resetFallbackRunIdleTimer();
             if (!initialReplayStatusReceived) {
               queueTerminalReplay(visibleData, "PREFILL");
               return;
@@ -3768,6 +3807,7 @@ export function TerminalPane({
               setConnectionAlert(null);
               clearStoredActiveCliTurn(pane.id);
               setActiveCliTurn(null);
+              finishFallbackRun();
               if (message.statusReason) {
                 void outputCoordinator.enqueue(`\r\n${message.statusReason}\n`).catch(handleTerminalReplayFailure);
               }
@@ -3947,6 +3987,7 @@ export function TerminalPane({
         if (!isRecoverableCliSession(sessionResponse?.session)) {
           clearStoredActiveCliTurn(pane.id);
           setActiveCliTurn(null);
+          finishFallbackRun();
           setTerminalStatus("closed");
           resetTerminalControl();
           reconnectInProgressRef.current = false;
@@ -4005,6 +4046,7 @@ export function TerminalPane({
 
     return () => {
       disposed = true;
+      finishFallbackRun();
       if (inputTokenizerFlushTimer !== null) {
         window.clearTimeout(inputTokenizerFlushTimer);
         inputTokenizerFlushTimer = null;
@@ -4790,6 +4832,9 @@ export function TerminalPane({
         runKey: options.turnMarker,
         status: "STARTED"
       });
+      if (session?.purpose === "NORMAL" && !isCliModelSettingsRuntime(session.runtimeId)) {
+        armFallbackRunWatcher(options.turnMarker);
+      }
     }
     if (!preserveNotice) setNotice(null);
     if (shouldRefocusTerminalAfterInput(terminalData)) focusTerminal();

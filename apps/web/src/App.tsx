@@ -249,6 +249,7 @@ import { PANE_SPAN_ALL_MENU_ID, PaneSpanAllMenu } from "./features/pane-layout/P
 import { EmbeddedDashboardDialog } from "./features/embedded-dashboard/EmbeddedDashboardDialog.js";
 import { LinksPanel, QuickLinksPopover } from "./features/user-links/UserLinks.js";
 import { HelpPage } from "./features/help/HelpPage.js";
+import { BenchmarkPage } from "./features/benchmark/BenchmarkPage.js";
 import { RoomAgentDock } from "./features/room-agent/RoomAgentDock.js";
 import { SharedChatDock } from "./features/shared-chat/SharedChatDock.js";
 import { AgentSessionsDock } from "./features/agent-sessions/AgentSessionsDock.js";
@@ -395,7 +396,7 @@ type EventStreamStatus = "idle" | "connecting" | "connected" | "reconnecting" | 
 type ActiveRoomEventStreamStatus = "idle" | "connecting" | "connected" | "disconnected" | "unavailable";
 type RoomRefreshCategory = "panes" | "turns" | "swarm" | "events";
 type ShellMode = "desktop" | "tablet" | "mobile";
-type AppView = "workspace" | "help";
+type AppView = "workspace" | "help" | "benchmark";
 type PaneDensity = "regular" | "dense" | "tight";
 type PaneGridPlacement = {
   columnStart: number;
@@ -565,7 +566,9 @@ const ROOM_CLI_ACTIVITY_POLL_INTERVAL_MS = 5_000;
 
 function readAppView(): AppView {
   const pathname = window.location.pathname.replace(/\/+$/, "") || "/";
-  return pathname === "/help" ? "help" : "workspace";
+  if (pathname === "/help") return "help";
+  if (pathname === "/benchmark") return "benchmark";
+  return "workspace";
 }
 
 const paneGridDensityMetrics: Record<PaneDensity, { minWidthRem: number; gapRem: number }> = {
@@ -784,7 +787,7 @@ function resolvePaneGridColumnCount(input: {
   forceTabletTwoColumns?: boolean;
 }) {
   if (input.containerWidth > 0 && input.containerWidth <= 768) return 1;
-  if (input.paneLayoutColumns === 0) return 1;
+  if (input.paneLayoutColumns === 0 || input.paneLayoutColumns === 5) return 1;
   const automaticColumns = Math.min(4, detectPaneGridColumnCount(input));
   const requestedColumns = input.paneLayoutColumns ?? automaticColumns;
   const responsiveColumns =
@@ -2418,6 +2421,7 @@ export function App() {
     createPaneCompletionLifecycleState
   );
   const [paneGridWidth, setPaneGridWidth] = useState(() => readViewportWidth());
+  const [paneGridHeight, setPaneGridHeight] = useState(0);
   const [pendingBrowserHandoffPaneId, setPendingBrowserHandoffPaneId] = useState<string | null>(null);
   const [activeRoomEventStreamStatus, setActiveRoomEventStreamStatus] = useState<ActiveRoomEventStreamStatus>("idle");
   const cliMemorySaveModelId = useMemo(() => pickCliMemorySaveModelId(models), [models]);
@@ -2581,7 +2585,7 @@ export function App() {
   useEffect(() => {
     const syncViewFromLocation = () => {
       const nextView = readAppView();
-      if (nextView === "help") setIsVibeMusicOpen(false);
+      if (nextView === "help" || nextView === "benchmark") setIsVibeMusicOpen(false);
       setAppView(nextView);
     };
     window.addEventListener("popstate", syncViewFromLocation);
@@ -2589,7 +2593,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    document.title = appView === "help" ? "Space Help" : "Space";
+    document.title = appView === "help" ? "Space Help" : appView === "benchmark" ? "Space Benchmark" : "Space";
   }, [appView]);
 
   useEffect(() => {
@@ -3736,6 +3740,8 @@ export function App() {
     const updatePaneGridWidth = () => {
       const nextWidth = grid.clientWidth || grid.getBoundingClientRect().width || readViewportWidth();
       setPaneGridWidth((current) => (Math.abs(current - nextWidth) > 1 ? nextWidth : current));
+      const nextHeight = grid.clientHeight || grid.getBoundingClientRect().height || 0;
+      setPaneGridHeight((current) => (Math.abs(current - nextHeight) > 1 ? nextHeight : current));
     };
 
     updatePaneGridWidth();
@@ -3911,6 +3917,16 @@ export function App() {
   }
 
   function closeHelp() {
+    window.history.replaceState({ spaceView: "workspace" }, "", "/");
+    setAppView("workspace");
+  }
+
+  function openBenchmark() {
+    window.history.pushState({ spaceView: "benchmark" }, "", "/benchmark");
+    setAppView("benchmark");
+  }
+
+  function closeBenchmark() {
     window.history.replaceState({ spaceView: "workspace" }, "", "/");
     setAppView("workspace");
   }
@@ -5623,6 +5639,7 @@ export function App() {
   });
   const MoreRoomActionsIcon = MoreHorizontal;
   const HelpIcon = CircleHelp;
+  const GaugeIcon = Gauge;
   const roomToolbarRenderedActions = roomToolbar.visibleActions;
   const renderRoomToolbarAction = (action: IconToolbarAction) => {
     const Icon = action.icon;
@@ -6593,6 +6610,25 @@ export function App() {
     />
   );
 
+  if (auth?.isAuthenticated && appView === "benchmark") {
+    const benchmarkContent = <BenchmarkPage onBack={closeBenchmark} />;
+    return (
+      <AppIconProvider pack={uiTheme === "modern" ? modernIconPack : "lucide"}>
+        {uiTheme === "modern" ? (
+          <div
+            className="modern-theme-page"
+            data-ui-theme="modern"
+            data-color-mode={modernColorMode}
+            data-icon-pack={modernIconPack}
+            data-room-theme={roomTheme}
+          >
+            {benchmarkContent}
+          </div>
+        ) : benchmarkContent}
+      </AppIconProvider>
+    );
+  }
+
   if (auth?.isAuthenticated && appView === "help") {
     const helpContent = <>{vibeMusicPlayer}{oskKeyboard}<HelpPage onBack={closeHelp} /></>;
     return (
@@ -6705,6 +6741,15 @@ export function App() {
       : unorderedTerminalBootstrapPaneIds;
     const layerVisiblePaneCount = (shellMode === "mobile" || layerFullscreenLayout) && layerActivePane ? 1 : layerVisiblePanes.length;
     const layerHasMaximizedPane = shellMode !== "mobile" && layerVisiblePanes.some((pane) => pane.isMaximized);
+    const layerDoubleHeight =
+      layerRoom?.paneLayoutColumns === 5 && shellMode !== "mobile" && !layerHasMaximizedPane && layerVisiblePanes.length > 0;
+    const layerDoubleHeightRowCount = layerDoubleHeight ? layerVisiblePanes.length * 2 : 0;
+    const layerDoubleHeightRowPx =
+      layerDoubleHeight && paneGridHeight > 0
+        ? // The 1x5 baseline pane is max(H/N, 12rem pane-card min-height); the 2x5
+          // row must double that baseline even when the baseline is min-clamped.
+          Math.max(paneGridHeight / Math.max(layerVisiblePanes.length, 1), 192)
+        : 0;
 
     return (
       <div
@@ -6764,7 +6809,12 @@ export function App() {
                 data-column-count={layerColumnCount}
                 data-pane-layout-columns={layerRoom?.paneLayoutColumns ?? "automatic"}
                 data-fullscreen-layout={layerFullscreenLayout ? "true" : undefined}
-                style={{ gridTemplateColumns: `repeat(${layerColumnCount}, minmax(0, 1fr))` }}
+                style={{
+                  gridTemplateColumns: `repeat(${layerColumnCount}, minmax(0, 1fr))`,
+                  ...(layerDoubleHeight && layerDoubleHeightRowPx > 0
+                    ? { gridTemplateRows: `repeat(${layerDoubleHeightRowCount}, ${layerDoubleHeightRowPx}px)` }
+                    : null)
+                }}
               >
                 {layerRenderPanes.map((pane) => {
                   const latestCompletion = layerLatestCompletionByPane.get(pane.id) ?? null;
@@ -6819,6 +6869,7 @@ export function App() {
                       fullscreenCount={layerVisiblePanes.length}
                       onFullscreenNavigate={paneCardOnFullscreenNavigate}
                       effectiveColumnSpan={placement?.effectiveSpan ?? 1}
+                      rowSpan={layerDoubleHeight ? 2 : 1}
                       columnStart={placement?.columnStart ?? 1}
                       rowIndex={placement?.rowIndex ?? 0}
                       canGrowColumnSpan={placement?.canGrow ?? false}
@@ -7258,6 +7309,24 @@ export function App() {
                 </button>
                 <button
                   type="button"
+                  className="icon-button"
+                  title="Benchmark"
+                  aria-label="Benchmark"
+                  onClick={() => {
+                    roomToolbar.closeMenus();
+                    setIsThemeMenuOpen(false);
+                    setIsPaneLayoutMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
+                    setIsWorkspaceTextSizePickerOpen(false);
+                    setIsVibeMusicOpen(false);
+                    setIsCliLauncherOpen(false);
+                    openBenchmark();
+                  }}
+                >
+                  <GaugeIcon aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
                   title={isRoomFocusMode ? "Restore room" : "Maximize room"}
                   aria-label={isRoomFocusMode ? "Restore room" : "Maximize room"}
                   aria-pressed={isRoomFocusMode}
@@ -7474,6 +7543,8 @@ export function App() {
                       <span className="all-panes-minimized" role="status">All panes minimized</span>
                     ) : null}
                     {minimizedPanes.map((pane) => {
+                      const paneRunActive =
+                        paneCompletionLifecycle.panes[pane.id]?.activeRunKey != null;
                       return (
                         <button
                           key={pane.id}
@@ -7482,12 +7553,20 @@ export function App() {
                             else minimizedPaneRestoreRefs.current.delete(pane.id);
                           }}
                           type="button"
+                          className={paneRunActive ? "is-running" : undefined}
+                          data-category-color={pane.categoryColor ?? undefined}
                           aria-label={`Restore pane ${displayPaneTitle(pane)}`}
                           title={pane.title}
                           onClick={() => void restorePane(pane)}
                         >
                           <PaneModeIcon pane={pane} />
                           <span>{pane.title}</span>
+                          {paneRunActive ? (
+                            <>
+                              <Loader2 className="minimized-pane-run-indicator" aria-hidden="true" />
+                              <span className="sr-only">Agent is running</span>
+                            </>
+                          ) : null}
                         </button>
                       );
                     })}
@@ -8603,6 +8682,7 @@ const PaneCard = memo(function PaneCard({
   fullscreenCount,
   onFullscreenNavigate,
   effectiveColumnSpan,
+  rowSpan,
   columnStart,
   rowIndex,
   canGrowColumnSpan,
@@ -8664,6 +8744,7 @@ const PaneCard = memo(function PaneCard({
   fullscreenCount: number;
   onFullscreenNavigate: (direction: "previous" | "next") => void;
   effectiveColumnSpan: number;
+  rowSpan: number;
   columnStart: number;
   rowIndex: number;
   canGrowColumnSpan: boolean;
@@ -8786,9 +8867,10 @@ const PaneCard = memo(function PaneCard({
   const paneCardStyle = useMemo(
     () =>
       ({
-        "--pane-column-span": String(effectiveColumnSpan)
+        "--pane-column-span": String(effectiveColumnSpan),
+        ...(rowSpan > 1 ? { "--pane-row-span": String(rowSpan) } : null)
       }) as CSSProperties,
-    [effectiveColumnSpan]
+    [effectiveColumnSpan, rowSpan]
   );
   const handleTerminalBootstrapped = useCallback(
     (paneId: string) => onTerminalBootstrapped(pane.roomId, paneId),
