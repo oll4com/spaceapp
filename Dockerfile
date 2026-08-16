@@ -44,6 +44,7 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
     && npm cache clean --force \
     && apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git gosu liblzma5 postgresql-client procps ripgrep \
+    && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 spaceapp \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/spaceapp-cli --shell /bin/bash spaceapp
