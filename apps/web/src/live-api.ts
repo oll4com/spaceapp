@@ -165,6 +165,8 @@ import type {
   PaneCliModelSettings,
   PaneCliModelSettingsStatus,
   PaneCliTurnActivityResponse,
+  VncPresetListResponse,
+  VncTarget,
   PaneCliUploadSource,
   PaneCliUploadResponse,
   PaneCliWebSocketToken,
@@ -1335,6 +1337,7 @@ export const api = {
       modelId?: string | null;
       cwd?: string | null;
       terminalRuntimeId?: string | null;
+      vncTarget?: VncTarget | null;
       split?: Pane["split"];
     } = {}
   ) =>
@@ -1529,6 +1532,11 @@ export const api = {
   },
   rotateCliMullvadCity: async () => {
     const result = await request<CliVpnConnection>("/api/cli/egress/profiles/mullvad/random-city", { method: "POST", body: JSON.stringify({}) });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  rotateCliNordCity: async () => {
+    const result = await request<CliVpnConnection>("/api/cli/egress/profiles/nord/random-city", { method: "POST", body: JSON.stringify({}) });
     invalidateCliRuntimeSettings();
     return result;
   },
@@ -1925,6 +1933,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({})
     }),
+  vncPresets: () => request<VncPresetListResponse>("/api/vnc-presets"),
+  vncStreamWebSocketUrl: (paneId: string, host: string, port: number) => {
+    const params = new URLSearchParams({ host, port: String(port) });
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    if (!window.location.host) {
+      return `/api/panes/${encodeURIComponent(paneId)}/vnc/stream?${params.toString()}`;
+    }
+    return `${protocol}//${window.location.host}/api/panes/${encodeURIComponent(paneId)}/vnc/stream?${params.toString()}`;
+  },
   browserPages: (paneId: string) =>
     request<BrowserPageListPayload>(`/api/panes/${encodeURIComponent(paneId)}/browser/pages`),
   createBrowserPage: (paneId: string, input: CreateBrowserPageInput = { activate: true }) =>

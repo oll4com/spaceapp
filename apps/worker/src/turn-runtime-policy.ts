@@ -10,3 +10,9 @@ export function isNativeChatTurn(input: DummyTurnInput): input is DummyTurnInput
 } {
   return Boolean(input.agentSessionId && input.agentAssistantMessageId && !input.roomAgentMissionId);
 }
+
+const cliChatTurnRuntimeIds = new Set(["cli:cursor", "cli:copilot", "cli:gemini", "cli:deepseek"]);
+
+export function isCliChatTurnProviderId(providerId: string | null | undefined): boolean {
+  return Boolean(providerId && cliChatTurnRuntimeIds.has(providerId));
+}

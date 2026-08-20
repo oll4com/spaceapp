@@ -32,7 +32,7 @@ import {
   roomAgentMissionCompletion,
   stopRoomAgentMissions
 } from "./room-supervisor-state.js";
-import { isNativeChatTurn, NATIVE_CHAT_TURN_ACTIVITY_TIMEOUT } from "./turn-runtime-policy.js";
+import { isCliChatTurnProviderId, isNativeChatTurn, NATIVE_CHAT_TURN_ACTIVITY_TIMEOUT } from "./turn-runtime-policy.js";
 
 const { recordDummyTurnStarted, recordDummyTurnCompleted } = proxyActivities<typeof activities>({
   startToCloseTimeout: "1 minute",
@@ -65,6 +65,14 @@ const openCodeAgentTurnActivities = proxyActivities<typeof activities>({
   }
 });
 
+const cliChatTurnActivities = proxyActivities<typeof activities>({
+  startToCloseTimeout: "30 minutes",
+  heartbeatTimeout: ROOM_AGENT_TURN_HEARTBEAT_TIMEOUT,
+  retry: {
+    maximumAttempts: 1
+  }
+});
+
 const { markRoomAgentMissionStarted, markRoomAgentMissionFinished, markRoomAgentMissionContinued } = proxyActivities<typeof activities>({
   startToCloseTimeout: "1 minute",
   retry: {
@@ -85,6 +93,9 @@ export async function dummyTurnWorkflow(input: DummyTurnInput): Promise<DummyTur
 export async function codexAppServerTurnWorkflow(input: DummyTurnInput): Promise<TurnWorkflowResult> {
   if (input.providerId === "opencode") {
     return openCodeAgentTurnActivities.runOpenCodeAgentTurn(input);
+  }
+  if (isCliChatTurnProviderId(input.providerId)) {
+    return cliChatTurnActivities.runCliAgentTurn(input);
   }
   return isNativeChatTurn(input)
     ? nativeChatTurnActivities.runCodexAppServerTurn(input)

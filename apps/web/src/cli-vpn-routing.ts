@@ -19,7 +19,8 @@ const routeLabels = {
   direct: "Direct",
   greece: "Greece",
   thailand: "Thailand",
-  mullvad: "Mullvad"
+  mullvad: "Mullvad",
+  nord: "NordVPN"
 } as const;
 
 function relayCityLabel(status: CliVpnRoutingStatus): string | undefined {

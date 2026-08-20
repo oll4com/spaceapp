@@ -3,11 +3,11 @@ import autohandIconUrl from "./assets/autohand-icon.png";
 import claudeLogoUrl from "./assets/claude-logo.svg";
 import codexLogoUrl from "./assets/codex-logo.svg";
 import copilotLogoUrl from "./assets/copilot-logo.svg";
-import githubLogoUrl from "./assets/github-logo.svg";
 import cursorLogoUrl from "./assets/cursor-logo.svg";
 import deepseekLogoUrl from "./assets/deepseek-logo.svg";
 import geminiLogoUrl from "./assets/gemini-logo.svg";
 import grokLogoUrl from "./assets/grok-logo.svg";
+import hermesLogoUrl from "./assets/hermes-agent.png";
 import kimiLogoUrl from "./assets/kimi-logo.svg";
 import openCodeLogoUrl from "./assets/opencode-logo-dark-square.svg";
 import qwenCodeLogoUrl from "./assets/qwen-code-logo.svg";
@@ -32,7 +32,7 @@ export const CLI_RUNTIME_PRESENTATIONS = Object.freeze([
   { id: "cli:deepseek", brand: "deepseek", displayName: "DeepSeek CLI", shortLabel: "DeepSeek", iconSrc: deepseekLogoUrl },
   { id: "cli:cursor", brand: "cursor", displayName: "Cursor CLI", shortLabel: "Cursor", iconSrc: cursorLogoUrl },
   { id: "cli:copilot", brand: "copilot", displayName: "GitHub Copilot CLI", shortLabel: "Copilot", iconSrc: copilotLogoUrl },
-  { id: "cli:github", brand: "github", displayName: "GitHub CLI", shortLabel: "GitHub CLI", iconSrc: githubLogoUrl }
+  { id: "cli:hermes", brand: "hermes", displayName: "Hermes Agent CLI", shortLabel: "Hermes", iconSrc: hermesLogoUrl }
 ] as const satisfies readonly CliRuntimePresentation[]);
 
 const runtimePresentationById = new Map(

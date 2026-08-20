@@ -555,6 +555,7 @@ type PaneRow = {
   isClosed: boolean;
   split: Pane["split"];
   categoryColor: Pane["categoryColor"];
+  vncTarget: Pane["vncTarget"];
   createdAt: Date | string;
   updatedAt: Date | string;
 };
@@ -1483,6 +1484,7 @@ const paneSelect = `
     is_minimized AS "isMinimized",
     is_closed AS "isClosed",
     split,
+    vnc_target AS "vncTarget",
     category_color AS "categoryColor",
     created_at AS "createdAt",
     updated_at AS "updatedAt"
@@ -2557,6 +2559,7 @@ function mapPane(row: PaneRow): Pane {
     isClosed: row.isClosed,
     split: row.split,
     categoryColor: row.categoryColor,
+    vncTarget: row.vncTarget,
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt)
   });
@@ -5749,6 +5752,7 @@ export class PostgresSpaceStore implements SpaceStore {
             p.is_minimized AS "isMinimized",
             p.is_closed AS "isClosed",
             p.split,
+            p.vnc_target AS "vncTarget",
             p.category_color AS "categoryColor",
             p.created_at AS "createdAt",
             p.updated_at AS "updatedAt"
@@ -5798,6 +5802,7 @@ export class PostgresSpaceStore implements SpaceStore {
             is_minimized AS "isMinimized",
             is_closed AS "isClosed",
             split,
+            vnc_target AS "vncTarget",
             category_color AS "categoryColor",
             created_at AS "createdAt",
             updated_at AS "updatedAt"
@@ -6710,7 +6715,8 @@ export class PostgresSpaceStore implements SpaceStore {
               is_closed = $15,
               split = $16,
               category_color = $17,
-              updated_at = $18
+              vnc_target = $18,
+              updated_at = $19
           WHERE id = $1
           RETURNING
             id,
@@ -6730,6 +6736,7 @@ export class PostgresSpaceStore implements SpaceStore {
             is_minimized AS "isMinimized",
             is_closed AS "isClosed",
             split,
+            vnc_target AS "vncTarget",
             category_color AS "categoryColor",
             created_at AS "createdAt",
             updated_at AS "updatedAt"
@@ -6752,6 +6759,7 @@ export class PostgresSpaceStore implements SpaceStore {
           updated.isClosed,
           JSON.stringify(updated.split),
           updated.categoryColor,
+          updated.vncTarget ? JSON.stringify(updated.vncTarget) : null,
           timestamp
         ]
       );
@@ -6826,6 +6834,7 @@ export class PostgresSpaceStore implements SpaceStore {
             is_minimized AS "isMinimized",
             is_closed AS "isClosed",
             split,
+            vnc_target AS "vncTarget",
             category_color AS "categoryColor",
             created_at AS "createdAt",
             updated_at AS "updatedAt"
@@ -14211,10 +14220,11 @@ export class PostgresSpaceStore implements SpaceStore {
           is_minimized,
           is_closed,
           split,
+          vnc_target,
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, 'IDLE', $5, $6, $7, 'medium', $8, $9, 1, false, false, false, $10, $11, $11)
+        VALUES ($1, $2, $3, $4, 'IDLE', $5, $6, $7, 'medium', $8, $9, 1, false, false, false, $10, $11, $12, $12)
         RETURNING
           id,
           room_id AS "roomId",
@@ -14232,6 +14242,7 @@ export class PostgresSpaceStore implements SpaceStore {
           is_minimized AS "isMinimized",
           is_closed AS "isClosed",
           split,
+          vnc_target AS "vncTarget",
           category_color AS "categoryColor",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -14247,6 +14258,7 @@ export class PostgresSpaceStore implements SpaceStore {
         input.cwd ?? null,
         order,
         JSON.stringify(split),
+        input.vncTarget ? JSON.stringify(input.vncTarget) : null,
         timestamp
       ]
     );

@@ -34,6 +34,202 @@ export const opencodeChatProviderId = "opencode";
 export const codexChatProviderConfigIdPrefix = "codex-v1|";
 export const opencodeChatProviderConfigIdPrefix = "opencode-v1|";
 
+export interface CliChatRuntimeState {
+  enabled: boolean;
+  reason: string | null;
+}
+
+export type CliChatRuntimeStateResolver = (runtimeId: string) => Promise<CliChatRuntimeState>;
+
+const cliChatRuntimeNames: Record<string, string> = {
+  "cli:cursor": "Cursor",
+  "cli:copilot": "GitHub Copilot",
+  "cli:github": "GitHub CLI",
+  "cli:gemini": "Google Gemini",
+  "cli:deepseek": "DeepSeek"
+};
+
+export function cliChatRuntimeName(runtimeId: string): string {
+  return cliChatRuntimeNames[runtimeId] ?? runtimeId;
+}
+
+export function cliRuntimeChatProviderAdapter(options: {
+  runtimeId: string;
+  providerName?: string;
+  defaultModelId?: string;
+  defaultModelDisplayName?: string;
+  resolveState: CliChatRuntimeStateResolver;
+}): ChatProviderAdapter {
+  const providerId = options.runtimeId;
+  const defaultModelId = options.defaultModelId ?? "auto";
+  const defaultModelDisplayName = options.defaultModelDisplayName ?? "Auto model";
+  return {
+    providerId,
+    providerName: options.providerName ?? cliChatRuntimeName(providerId),
+    configIdPrefix: `${providerId}-v1|`,
+    async loadCatalog() {
+      try {
+        const state = await options.resolveState(providerId);
+        if (!state.enabled) {
+          return { models: [], current: null, error: state.reason ?? `${providerId} is not available.` };
+        }
+        return {
+          models: [
+            {
+              id: defaultModelId,
+              displayName: defaultModelDisplayName,
+              isDefault: true,
+              defaultReasoningEffort: "none",
+              supportedReasoningEfforts: ["none"],
+              reasoningOptions: [{ reasoningEffort: "none" }]
+            }
+          ],
+          current: null,
+          error: null
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "CLI chat runtime is unavailable.";
+        return { models: [], current: null, error: message };
+      }
+    }
+  };
+}
+
+export function geminiModelsChatProviderAdapter(options: {
+  runtimeId: string;
+  providerName?: string;
+  executeModels: () => Promise<string>;
+  resolveState: CliChatRuntimeStateResolver;
+}): ChatProviderAdapter {
+  const providerId = options.runtimeId;
+  return {
+    providerId,
+    providerName: options.providerName ?? cliChatRuntimeName(providerId),
+    configIdPrefix: `${providerId}-v1|`,
+    async loadCatalog() {
+      try {
+        const state = await options.resolveState(providerId);
+        if (!state.enabled) {
+          return { models: [], current: null, error: state.reason ?? `${providerId} is not available.` };
+        }
+        const raw = await options.executeModels();
+        const models = raw
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0)
+          .map((line) => {
+            const tab = line.indexOf("\t");
+            const id = tab > 0 ? line.slice(0, tab).trim() : line;
+            const displayName = tab > 0 ? line.slice(tab + 1).trim() : line;
+            return {
+              id,
+              displayName,
+              isDefault: false,
+              defaultReasoningEffort: "none" as const,
+              supportedReasoningEfforts: ["none"],
+              reasoningOptions: [{ reasoningEffort: "none" }]
+            };
+          })
+          .filter((model) => model.id.length > 0);
+        if (!models.length) {
+          return { models: [], current: null, error: "Gemini model catalog is unavailable." };
+        }
+        return { models, current: null, error: null };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Gemini model catalog is unavailable.";
+        return { models: [], current: null, error: message };
+      }
+    }
+  };
+}
+
+const cliModelIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const cliReasoningEffortPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function reasoningEffortLabel(effort: string): string {
+  switch (effort) {
+    case "none": return "No extra reasoning";
+    case "disabled": return "Reasoning disabled";
+    case "minimal": return "Minimal reasoning";
+    case "low": return "Low reasoning";
+    case "medium": return "Medium reasoning";
+    case "high": return "High reasoning";
+    case "xhigh": return "Extra high reasoning";
+    case "max": return "Maximum reasoning";
+    default: return `${effort[0]?.toUpperCase() ?? ""}${effort.slice(1).toLowerCase()} reasoning`;
+  }
+}
+
+function parseCliModelsTsv(raw: string): CodexModelCatalogOption[] {
+  const models: CodexModelCatalogOption[] = [];
+  const seen = new Set<string>();
+  let index = 0;
+  for (const rawLine of raw.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    if (!line.trim()) continue;
+    const columns = line.split("\t");
+    const id = (columns[0] ?? "").trim();
+    const displayName = (columns[1] ?? "").trim();
+    if (!id || !cliModelIdentifierPattern.test(id) || seen.has(id)) continue;
+    const efforts = (columns[2] ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value) => value && cliReasoningEffortPattern.test(value))
+      .slice(0, 20);
+    const declaredDefault = (columns[3] ?? "").trim();
+    const supportedReasoningEfforts = efforts.length ? efforts : ["none"];
+    const defaultReasoningEffort =
+      declaredDefault && supportedReasoningEfforts.includes(declaredDefault)
+        ? declaredDefault
+        : supportedReasoningEfforts[0] ?? "none";
+    seen.add(id);
+    models.push({
+      id,
+      displayName: displayName || id,
+      isDefault: index === 0,
+      defaultReasoningEffort,
+      supportedReasoningEfforts,
+      reasoningOptions: supportedReasoningEfforts.map((reasoningEffort) => ({
+        reasoningEffort,
+        description: reasoningEffortLabel(reasoningEffort)
+      }))
+    });
+    index += 1;
+  }
+  return models;
+}
+
+export function cliRuntimeModelsChatProviderAdapter(options: {
+  runtimeId: string;
+  providerName?: string;
+  executeModels: () => Promise<string>;
+  resolveState: CliChatRuntimeStateResolver;
+}): ChatProviderAdapter {
+  const providerId = options.runtimeId;
+  return {
+    providerId,
+    providerName: options.providerName ?? cliChatRuntimeName(providerId),
+    configIdPrefix: `${providerId}-v1|`,
+    async loadCatalog() {
+      try {
+        const state = await options.resolveState(providerId);
+        if (!state.enabled) {
+          return { models: [], current: null, error: state.reason ?? `${providerId} is not available.` };
+        }
+        const raw = await options.executeModels();
+        const models = parseCliModelsTsv(raw);
+        if (!models.length) {
+          return { models: [], current: null, error: `${providerId} model catalog is unavailable.` };
+        }
+        return { models, current: null, error: null };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : `${providerId} model catalog is unavailable.`;
+        return { models: [], current: null, error: message };
+      }
+    }
+  };
+}
+
 export function codexChatProviderAdapter(
   control: { listModels(): Promise<CodexAppServerSocketModelOption[]> } | null | undefined,
   loadCatalogOverride?: () => Promise<ChatProviderCatalogResult>

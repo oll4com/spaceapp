@@ -96,7 +96,7 @@ export const paginated = <T extends z.ZodType>(item: T) =>
   });
 
 export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"]);
-export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE"]);
+export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
 export const paneTitleSourceSchema = z.enum(["auto", "manual", "ai"]);
 export const paneCategoryColors = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
@@ -198,7 +198,7 @@ export const cliToggleRuntimeIds = [
   "cli:deepseek",
   "cli:cursor",
   "cli:copilot",
-  "cli:github"
+  "cli:hermes"
 ] as const;
 
 export const cliToggleRuntimeIdSchema = z.enum(cliToggleRuntimeIds);
@@ -328,6 +328,33 @@ export const reorderPanesInputSchema = z.object({
     .refine((paneIds) => new Set(paneIds).size === paneIds.length, "Pane ids must be unique.")
 });
 
+export const vncTargetSchema = z
+  .object({
+    presetId: z.string().trim().max(80).nullable().default(null),
+    host: z.string().trim().min(1).max(253),
+    port: z.number().int().min(1).max(65535),
+    password: z.string().max(255).nullable().default(null)
+  })
+  .strict();
+export type VncTarget = z.infer<typeof vncTargetSchema>;
+
+export const vncPresetSchema = z
+  .object({
+    id: z.string().trim().min(1).max(80),
+    name: z.string().trim().min(1).max(120),
+    host: z.string().trim().min(1).max(253),
+    port: z.number().int().min(1).max(65535)
+  })
+  .strict();
+export type VncPreset = z.infer<typeof vncPresetSchema>;
+
+export const vncPresetListResponseSchema = z
+  .object({
+    presets: z.array(vncPresetSchema)
+  })
+  .strict();
+export type VncPresetListResponse = z.infer<typeof vncPresetListResponseSchema>;
+
 export const paneSchema = z.object({
   id: idSchema,
   roomId: idSchema,
@@ -347,6 +374,7 @@ export const paneSchema = z.object({
   isClosed: z.boolean(),
   split: paneSplitSchema,
   categoryColor: paneCategoryColorSchema.default(null),
+  vncTarget: vncTargetSchema.nullable().default(null),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema
 });
@@ -400,6 +428,7 @@ export const createPaneInputSchema = z
     modelId: z.string().trim().max(160).nullable().optional(),
     terminalRuntimeId: z.string().trim().min(1).max(160).nullable().optional(),
     cwd: z.string().trim().max(500).nullable().optional(),
+    vncTarget: vncTargetSchema.nullable().optional(),
     split: paneSplitSchema.optional()
   })
   .superRefine((input, context) => {
@@ -408,6 +437,13 @@ export const createPaneInputSchema = z
         code: "custom",
         path: ["terminalRuntimeId"],
         message: "Terminal runtime selection requires TERMINAL mode."
+      });
+    }
+    if (input.vncTarget && input.mode !== "VNC") {
+      context.addIssue({
+        code: "custom",
+        path: ["vncTarget"],
+        message: "VNC target configuration requires VNC mode."
       });
     }
   });
@@ -422,6 +458,12 @@ export const roomPaneBatchItemSchema = z.discriminatedUnion("mode", [
   z
     .object({
       mode: z.literal("CHAT")
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("VNC"),
+      vncTarget: vncTargetSchema
     })
     .strict()
 ]);
@@ -491,7 +533,8 @@ export const updatePaneInputSchema = z
     isMinimized: z.boolean().optional(),
     isClosed: z.boolean().optional(),
     split: paneSplitSchema.optional(),
-    categoryColor: paneCategoryColorSchema.optional()
+    categoryColor: paneCategoryColorSchema.optional(),
+    vncTarget: vncTargetSchema.nullable().optional()
   })
   .refine((input) => !(input.isMaximized === true && input.isMinimized === true), {
     message: "A pane cannot be maximized and minimized at the same time."
@@ -1159,7 +1202,7 @@ export const agentPaneSessionSchema = z.object({
   runStatus: agentPaneRunStatusSchema,
   statusReason: z.string().min(1).max(1000),
   modelOptions: z.array(agentPaneModelOptionSchema).max(4000),
-  modelCatalog: z.array(codexModelCatalogOptionSchema).max(200).default([]),
+  modelCatalog: z.array(codexModelCatalogOptionSchema).max(400).default([]),
   modelProviders: z.array(agentPaneModelProviderSchema).max(8).default([]),
   selectedModelConfigId: agentModelConfigIdSchema.nullable(),
   toolOptions: z.array(agentPaneToolOptionSchema).max(100).default([]),
@@ -1455,8 +1498,8 @@ const cliVpnIpAddressSchema = z.string().trim().min(2).max(64).regex(/^[0-9A-Fa-
 
 export const cliMullvadRelaySchema = z
   .object({
-    hostname: z.string().trim().min(3).max(128).regex(/^[a-z0-9][a-z0-9-]*$/i),
-    cityCode: z.string().trim().min(2).max(24).regex(/^[a-z0-9-]+$/i),
+    hostname: z.string().trim().min(3).max(128).regex(/^[a-z0-9][a-z0-9.-]*$/i),
+    cityCode: z.string().trim().min(2).max(24).regex(/^[a-z0-9_-]+$/i),
     cityName: z.string().trim().min(2).max(96),
     countryCode: z.string().trim().length(2).regex(/^[a-z]{2}$/i),
     countryName: z.string().trim().min(2).max(96)
@@ -1486,8 +1529,8 @@ export const replaceCliVpnProfileInputSchema = z
   })
   .strict();
 
-export const cliEgressRouteIdSchema = z.enum(["direct", "greece", "thailand", "mullvad"]);
-export const cliVpnProfileIdSchema = z.enum(["greece", "thailand", "mullvad"]);
+export const cliEgressRouteIdSchema = z.enum(["direct", "greece", "thailand", "mullvad", "nord"]);
+export const cliVpnProfileIdSchema = z.enum(["greece", "thailand", "mullvad", "nord"]);
 
 export const cliEgressRuntimeStatusSchema = z
   .object({
@@ -1503,11 +1546,12 @@ export const cliGlobalEgressStatusSchema = z
     supported: z.boolean(),
     selectedRoute: cliEgressRouteIdSchema,
     directEgressIpv4: cliVpnIpAddressSchema.nullable(),
-    removedProfiles: z.array(cliVpnProfileIdSchema).max(3),
+    removedProfiles: z.array(cliVpnProfileIdSchema).max(4),
     profiles: z.object({
       greece: cliVpnConnectionSchema,
       thailand: cliVpnConnectionSchema,
-      mullvad: cliVpnConnectionSchema
+      mullvad: cliVpnConnectionSchema,
+      nord: cliVpnConnectionSchema
     }).strict(),
     applications: z.array(cliEgressRuntimeStatusSchema).max(cliToggleRuntimeIds.length),
     checkedAt: isoDateTimeSchema
@@ -1887,6 +1931,7 @@ export const cliTerminalClientEventTypeSchema = z.enum([
   "SOCKET_DISCONNECTED",
   "RECONNECT_SCHEDULED",
   "RECONNECT_SUCCEEDED",
+  "SESSION_RECOVERED",
   "RECONNECT_STOPPED",
   "CONTROL_STATE_CHANGED",
   "CONTROL_GRANTED",
@@ -1911,6 +1956,7 @@ export const cliTerminalTelemetryReasonSchema = z.enum([
   "SESSION_REFRESH",
   "SESSION_CLOSED",
   "UNRECOVERABLE_SESSION",
+  "AUTO_RESUME",
   "PERMANENT_ERROR",
   "SUPERSEDED",
   "SERVER_STATE",

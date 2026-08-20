@@ -44,6 +44,7 @@ function fixture() {
     isClosed: false,
     split: { parentId: null, direction: null, size: null },
     categoryColor: null,
+    vncTarget: null,
     createdAt: sampledAt,
     updatedAt: sampledAt
   };

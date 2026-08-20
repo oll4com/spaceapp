@@ -10,7 +10,7 @@ export const UI_PARITY_VIEWPORTS = [
 ] as const;
 
 export const UI_PARITY_PANE_MODES = [
-  "CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE"
+  "CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC"
 ] as const satisfies readonly Pane["mode"][];
 
 export const UI_PARITY_REACHABLE_STATES = [
@@ -22,7 +22,7 @@ export const UI_PARITY_REACHABLE_STATES = [
 ] as const;
 
 export type UiParitySurface =
-  | "auth" | "rooms" | "toolbar" | "pane" | "chat" | "cli" | "browser" | "youtube"
+  | "auth" | "rooms" | "toolbar" | "pane" | "chat" | "cli" | "browser" | "youtube" | "vnc"
   | "review" | "code" | "swarm" | "design" | "media" | "streaming" | "clipboard" | "tasks" | "links"
   | "settings" | "health" | "memory" | "quick-links" | "help" | "music"
   | "admin" | "responsive";
@@ -59,6 +59,7 @@ export const UI_PARITY_SURFACE_EVIDENCE = {
   "quick-links": ["tests/responsive-shell.test.tsx", "tests/demo-app.test.tsx"],
   help: ["tests/help-navigation.test.tsx", "tests/help-page.test.tsx"],
   music: ["tests/vibe-music-player.test.tsx", "tests/responsive-shell.test.tsx"],
+  vnc: ["tests/vnc-pane.test.tsx", "tests/demo-app.test.tsx"],
   admin: ["tests/admin-codex-tools.test.tsx", "tests/responsive-shell.test.tsx", "tests/demo-app.test.tsx"],
   responsive: ["tests/responsive-shell.test.tsx", "tests/icon-toolbar-scroll.test.tsx"]
 } as const satisfies Record<UiParitySurface, readonly string[]>;
@@ -114,6 +115,10 @@ export const UI_PARITY_ACTIONS = [
   ]),
   ...actions("youtube", [
     "render-pane-mode", "start", "url-lock", "stream-realtime", "live", "input", "reload", "retry", "empty"
+  ]),
+  ...actions("vnc", [
+    "render-pane-mode", "connect-dialog", "preset-select", "custom-host", "password",
+    "connect", "disconnect", "fullscreen", "connected", "connecting", "error", "closed", "empty"
   ]),
   ...actions("review", [
     "render-pane-mode", "empty", "latest-turn", "running", "completed", "error"

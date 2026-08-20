@@ -42,6 +42,10 @@ export interface ResolvedSpaceCliTask extends UnifiedCliTask {
   transcript: PaneCliTranscriptChunk[];
 }
 
+export interface UnifiedCliTaskRegistryOptions {
+  resolveNativeTaskRef?: (session: PaneCliSession) => Promise<string | null>;
+}
+
 const runtimeProviderLabels: Record<string, string> = {
   "cli:codex": "Codex",
   "cli:claude": "Claude Code",
@@ -53,7 +57,8 @@ const runtimeProviderLabels: Record<string, string> = {
   "cli:grok": "Grok Build",
   "cli:deepseek": "DeepSeek",
   "cli:cursor": "Cursor",
-  "cli:copilot": "GitHub Copilot"
+  "cli:copilot": "GitHub Copilot",
+  "cli:hermes": "Hermes Agent"
 };
 
 const ansiEscapePattern = /\u001b(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g;
@@ -103,7 +108,10 @@ function normalizeTask(record: PaneCliTaskHistoryRecord): UnifiedCliTask {
 }
 
 export class UnifiedCliTaskRegistry {
-  constructor(private readonly store: SpaceStore) {}
+  constructor(
+    private readonly store: SpaceStore,
+    private readonly options: UnifiedCliTaskRegistryOptions = {}
+  ) {}
 
   async findLatestTaskForPane(paneId: string, runtimeIds?: string[]): Promise<UnifiedCliTask | null> {
     const sessions = await this.store.listPaneCliSessions(paneId, 100);
@@ -153,7 +161,7 @@ export class UnifiedCliTaskRegistry {
     const logicalTask =
       (await this.store.getCliTask(taskIdOrLegacyThreadId)) ??
       (legacySession?.cliTaskId ? await this.store.getCliTask(legacySession.cliTaskId) : null);
-    const revision = logicalTask?.currentRevisionId
+    let revision = logicalTask?.currentRevisionId
       ? await this.store.getCliTaskRevision(logicalTask.currentRevisionId)
       : null;
     const session = revision?.latestSpaceSessionId
@@ -164,6 +172,17 @@ export class UnifiedCliTaskRegistry {
     }
     if (session.purpose !== "NORMAL") {
       throw new SpaceNotFoundError(`Space CLI task ${taskIdOrLegacyThreadId} was not found.`);
+    }
+    let nativeTaskRef = revision?.nativeTaskRef ?? session.codexThreadId;
+    if (!nativeTaskRef && this.options.resolveNativeTaskRef) {
+      nativeTaskRef = await this.options.resolveNativeTaskRef(session);
+      if (nativeTaskRef && revision) {
+        revision = await this.store.updateCliTaskRevision(
+          revision.revisionId,
+          { nativeTaskRef },
+          "trace:cli-task-native-ref-recovery"
+        );
+      }
     }
     const [pane, transcript] = await Promise.all([
       this.store.getPane(session.paneId),
@@ -176,7 +195,7 @@ export class UnifiedCliTaskRegistry {
       transcriptFirstUserMessage ?? revision?.firstUserMessage ?? "",
       2_000
     );
-    if (!firstUserMessage && !revision?.nativeTaskRef) {
+    if (!firstUserMessage && !nativeTaskRef) {
       throw new SpaceNotFoundError(`Space CLI task ${taskIdOrLegacyThreadId} has no resumable transcript.`);
     }
     const preview = [...transcript]
@@ -189,7 +208,7 @@ export class UnifiedCliTaskRegistry {
       runtimeId: session.runtimeId,
       providerId: session.providerId,
       agentId: session.agentId,
-      nativeTaskRef: session.codexThreadId,
+      nativeTaskRef,
       sourceRevisionId: null,
       latestSpaceSessionId: session.sessionId,
       displayTitle: pane.title,

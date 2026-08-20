@@ -730,3 +730,107 @@ export async function resolveOpenCodeTitleFallbackControl(
     updatedAt: new Date(0).toISOString()
   };
 }
+
+
+/**
+ * Creates a new OpenCode session on the shared server. Returns the native
+ * session id (ses_...) or null when the server rejects the request.
+ */
+export async function createOpenCodeSession(
+  control: OpenCodeServerControl,
+  title: string,
+  directory = "/etc"
+): Promise<string | null> {
+  try {
+    const response = await openCodeServerFetch(
+      control,
+      "/session",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ directory, title })
+      },
+      15_000
+    );
+    if (!response.ok) return null;
+    const payload = (await response.json()) as { id?: unknown };
+    return typeof payload.id === "string" && payload.id.length > 0 ? payload.id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns true when the OpenCode server still knows this native session.
+ */
+export async function openCodeSessionExists(
+  control: OpenCodeServerControl,
+  nativeSessionId: string
+): Promise<boolean> {
+  if (!nativeSessionId) return false;
+  try {
+    const response = await openCodeServerFetch(
+      control,
+      `/session/${encodeURIComponent(nativeSessionId)}`,
+      {},
+      opencodeServerControlHealthTimeoutMs
+    );
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+export function openCodeSpaceChatControlPath(): string {
+  return "/opt/spaceapp/var/opencode-space-chat-control.json";
+}
+
+/**
+ * Reads the Space-chat OpenCode control written by the API next to its own
+ * state root (usable without an active OpenCode CLI pane).
+ */
+export async function readOpenCodeSpaceChatControl(): Promise<OpenCodeServerControl | null> {
+  const path = openCodeSpaceChatControlPath();
+  try {
+    const metadata = await stat(path);
+    if (!metadata.isFile() || metadata.size <= 0 || metadata.size > opencodeServerControlMaxBytes) return null;
+    const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const control = parsed as Record<string, unknown>;
+    const serverPort = typeof control.serverPort === "number" && Number.isSafeInteger(control.serverPort)
+      ? control.serverPort
+      : typeof control.serverPort === "string"
+        ? Number.parseInt(control.serverPort, 10)
+        : NaN;
+    const nativeSessionId = typeof control.nativeSessionId === "string" ? control.nativeSessionId : "";
+    const serverUsername = typeof control.serverUsername === "string" ? control.serverUsername : "";
+    const serverPassword = typeof control.serverPassword === "string" ? control.serverPassword : "";
+    const rawServerHost = typeof control.serverHost === "string" && control.serverHost.length > 0
+      ? control.serverHost
+      : openCodeSharedServerHost;
+    if (
+      control.version !== 1 ||
+      control.spaceSessionId !== "space-chat" ||
+      !opencodeNativeSessionIdPattern.test(nativeSessionId) ||
+      !(Number.isSafeInteger(serverPort) && serverPort > 0 && serverPort < 65_536) ||
+      serverUsername.length === 0 ||
+      serverPassword.length === 0
+    ) {
+      return null;
+    }
+    return {
+      version: 1,
+      spaceSessionId: "space-chat",
+      nativeSessionId,
+      serverPort,
+      serverHost: isOpenCodeLoopbackHost(rawServerHost) ? openCodeSharedServerHost : rawServerHost,
+      serverUsername,
+      serverPassword,
+      updatedAt: typeof control.updatedAt === "string" ? control.updatedAt : new Date(0).toISOString()
+    };
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    if (error && typeof error === "object" && "code" in error && error.code === "EACCES") return null;
+    return null;
+  }
+}

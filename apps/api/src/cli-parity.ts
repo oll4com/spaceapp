@@ -30,6 +30,10 @@ export const grokDirectParityTmp = `${grokDirectParityRoot}/tmp`;
 export const geminiDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-gemini";
 export const geminiDirectParityTmp = `${geminiDirectParityRoot}/tmp`;
 export const qwenDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-qwen";
+export const hermesDirectParityRuntimeId = "cli:hermes";
+export const hermesDirectParityCommand = "hermes-vscode-parity";
+export const hermesDirectParityRoot = "/var/lib/spaceapp-user/.hermes";
+export const hermesDirectParityTmp = `${hermesDirectParityRoot}/tmp`;
 export const qwenDirectParityTmp = `${qwenDirectParityRoot}/tmp`;
 
 export function isCodexDirectParityRuntime(runtimeId: string | null | undefined): boolean {

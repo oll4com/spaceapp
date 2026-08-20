@@ -39,7 +39,7 @@ import { dispatchCliAccountProfilesChange } from "../../cli-account-profile-even
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 
 const VPN_PROFILE_MANAGER_STORAGE_KEY = "space.cliVpnProfileManager.profileId";
-const VPN_PROFILE_IDS = ["greece", "thailand", "mullvad"] as const;
+const VPN_PROFILE_IDS = ["greece", "thailand", "mullvad", "nord"] as const;
 
 function managedVpnProfileStorage(): Storage | null {
   try {
@@ -82,6 +82,7 @@ export interface CliRuntimeSettingsClient {
   verifyCliEgressProfile?: (profileId: CliVpnProfileId) => Promise<CliVpnConnection>;
   removeCliEgressProfile?: (profileId: CliVpnProfileId) => Promise<CliVpnConnection>;
   rotateCliMullvadCity?: () => Promise<CliVpnConnection>;
+  rotateCliNordCity?: () => Promise<CliVpnConnection>;
   replaceCliVpnProfile?: (config: string) => Promise<CliVpnConnection>;
   verifyCliVpnProfile?: () => Promise<CliVpnConnection>;
   removeCliVpnProfile?: () => Promise<CliVpnConnection>;
@@ -116,7 +117,8 @@ const cliEgressRoutes: ReadonlyArray<{ id: CliEgressRouteId; label: string }> = 
   { id: "direct", label: "Direct · Germany" },
   { id: "greece", label: "VPN · Greece" },
   { id: "thailand", label: "VPN · Thailand" },
-  { id: "mullvad", label: "VPN · Mullvad" }
+  { id: "mullvad", label: "VPN · Mullvad" },
+  { id: "nord", label: "VPN · NordVPN" }
 ];
 
 function cliEgressRouteLabel(routeId: CliEgressRouteId): string {
@@ -124,7 +126,7 @@ function cliEgressRouteLabel(routeId: CliEgressRouteId): string {
 }
 
 function cliVpnProfileLabel(profileId: CliVpnProfileId): string {
-  return profileId === "greece" ? "Greece WireGuard" : profileId === "thailand" ? "Thailand WireGuard" : "Mullvad WireGuard";
+  return profileId === "greece" ? "Greece WireGuard" : profileId === "thailand" ? "Thailand WireGuard" : profileId === "mullvad" ? "Mullvad WireGuard" : "NordVPN WireGuard";
 }
 
 function DisableRuntimeDialog({
@@ -432,7 +434,7 @@ export function CliRuntimeSettingsCard({
   useEffect(() => {
     const removed = response?.egress?.removedProfiles ?? [];
     if (!removed.includes(vpnProfileId)) return;
-    const fallback = (["greece", "thailand", "mullvad"] as const).find((profileId) => !removed.includes(profileId)) ?? "greece";
+    const fallback = (["greece", "thailand", "mullvad", "nord"] as const).find((profileId) => !removed.includes(profileId)) ?? "greece";
     setVpnProfileId(fallback);
     writeManagedVpnProfileId(fallback);
     setRemoveConfirmationProfileId(null);
@@ -814,6 +816,27 @@ export function CliRuntimeSettingsCard({
     }
   }
 
+  async function rotateNordCity() {
+    if (vpnProfilePending) return;
+    setVpnProfilePending(true);
+    setError(null);
+    setFeedback(null);
+    try {
+      if (!client.rotateCliNordCity) throw new Error("NordVPN city controls are unavailable.");
+      const connection = await client.rotateCliNordCity();
+      await loadSettings();
+      publishCliVpnRoutingStatus();
+      setFeedback(connection.relay
+        ? `NordVPN changed to ${connection.relay.cityName}, ${connection.relay.countryName} (${connection.egressIpv4 ?? "public IP verifying"}).`
+        : "NordVPN city changed and the new egress was verified.");
+      setFeedbackSensitive(Boolean(connection.relay));
+    } catch (rotateError) {
+      setError(errorMessage(rotateError, "NordVPN city could not be changed."));
+    } finally {
+      setVpnProfilePending(false);
+    }
+  }
+
   async function updateGlobalRoute(routeId: CliEgressRouteId) {
     if (pendingEgressRoute || routeId === response?.egress?.selectedRoute) return;
     setPendingEgressRoute(routeId);
@@ -863,7 +886,7 @@ export function CliRuntimeSettingsCard({
   if (!canManage) return null;
   const selectedRoute = response?.egress?.selectedRoute ?? "direct";
   const removedProfiles = response?.egress?.removedProfiles ?? [];
-  const availableProfileIds = (["greece", "thailand", "mullvad"] as const).filter((profileId) => !removedProfiles.includes(profileId));
+  const availableProfileIds = (["greece", "thailand", "mullvad", "nord"] as const).filter((profileId) => !removedProfiles.includes(profileId));
   const availableEgressRoutes = cliEgressRoutes.filter((route) => route.id === "direct" || !removedProfiles.includes(route.id));
   const vpnControlsPending = vpnProfilePending || Boolean(pendingEgressRoute) || Boolean(pendingVpnRuntimeId);
   const selectedRouteStatus = selectedRoute === "direct"
@@ -910,6 +933,13 @@ export function CliRuntimeSettingsCard({
       icon: RefreshCw,
       disabled: !managedProfile?.profileConfigured,
       onSelect: () => void rotateMullvadCity()
+    }] : []),
+    ...(vpnProfileId === "nord" ? [{
+      id: "change-city",
+      label: "Change NordVPN city",
+      icon: RefreshCw,
+      disabled: !managedProfile?.profileConfigured,
+      onSelect: () => void rotateNordCity()
     }] : []),
     {
       id: "replace-profile",
@@ -1009,7 +1039,7 @@ export function CliRuntimeSettingsCard({
                         <small>Root-managed WireGuard configuration.</small>
                       </span>
                       <div className="settings-flat-heading-actions">
-                        <span data-sensitive-masked={vpnProfileId === "mullvad" ? "manual" : undefined}>{managedProfile?.status ?? "NOT_CONFIGURED"}</span>
+                        <span data-sensitive-masked={vpnProfileId === "mullvad" || vpnProfileId === "nord" ? "manual" : undefined}>{managedProfile?.status ?? "NOT_CONFIGURED"}</span>
                         <SettingsActionMenu
                           label={`${managedProfileLabel} actions`}
                           actions={profileMenuActions}
@@ -1031,10 +1061,10 @@ export function CliRuntimeSettingsCard({
                         void selectVpnProfile(vpnProfileId, file);
                       }}
                     />
-                    <div data-sensitive-masked={vpnProfileId === "mullvad" ? "block" : undefined}>
+                    <div data-sensitive-masked={vpnProfileId === "mullvad" || vpnProfileId === "nord" ? "block" : undefined}>
                       <dl className="cli-vpn-profile-details settings-flat-metrics">
                         <div><dt>Public IPv4</dt><dd data-sensitive-masked="manual">{managedProfile?.egressIpv4 ?? "Not verified"}</dd></div>
-                        {vpnProfileId === "mullvad" && managedProfile?.relay ? (
+                        {(vpnProfileId === "mullvad" || vpnProfileId === "nord") && managedProfile?.relay ? (
                           <>
                             <div><dt>City</dt><dd>{managedProfile.relay.cityName}</dd></div>
                             <div><dt>Country</dt><dd>{managedProfile.relay.countryName}</dd></div>

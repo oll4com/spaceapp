@@ -161,6 +161,54 @@
   font-size: 0.68rem;
 }
 
+.system-analytics-boundary-error {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 0.8rem;
+}
+
+.system-analytics-boundary-message {
+  display: grid;
+  gap: 0.4rem;
+  justify-items: center;
+  max-width: 26rem;
+}
+
+.system-analytics-boundary-message h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.system-analytics-boundary-message p {
+  margin: 0;
+  color: #a7a59e;
+  font-size: 0.78rem;
+}
+
+.system-analytics-boundary-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+}
+
+.system-analytics-boundary-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid #3b4a47;
+  border-radius: 6px;
+  background: #171a1b;
+  color: #f1ece2;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.system-analytics-boundary-actions button:hover {
+  border-color: #5a6b66;
+}
+
 .system-analytics-body {
   min-width: 0;
   min-height: 0;

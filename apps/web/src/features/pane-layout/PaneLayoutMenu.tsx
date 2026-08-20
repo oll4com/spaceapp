@@ -11,6 +11,7 @@ interface PaneLayoutMenuProps {
   currentColumns: PaneLayoutColumns;
   error: string | null;
   maximumColumns: number;
+  menuId?: string;
   onClose: () => void;
   onSelect: (columns: PaneLayoutColumns) => void;
   pending: boolean;
@@ -90,6 +91,7 @@ export function PaneLayoutMenu({
   currentColumns,
   error,
   maximumColumns,
+  menuId = PANE_LAYOUT_MENU_ID,
   onClose,
   onSelect,
   pending,
@@ -143,7 +145,7 @@ export function PaneLayoutMenu({
   return (
     <div
       ref={menuRef}
-      id={PANE_LAYOUT_MENU_ID}
+      id={menuId}
       className="pane-layout-menu toolbar-floating-menu"
       role="menu"
       aria-label="Pane layout presets"

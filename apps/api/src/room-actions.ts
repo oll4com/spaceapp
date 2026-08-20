@@ -268,7 +268,7 @@ export function createRoomActionExecutor(options: {
         escapedStall = true;
         await reportProgress(
           bridge,
-          "Το υποβλημένο CLI turn δεν γράφει νέα Codex rollout events. Στέλνω μόνο Esc, χωρίς restart ή αλλαγή session/thread.",
+          "The submitted CLI turn is not writing new Codex rollout events. I only send Esc, without restart or session/thread change.",
           traceId
         );
         await sendCliEscape(sessionId, traceId, `${actionId}:escape-submitted-stall`);
@@ -294,7 +294,7 @@ export function createRoomActionExecutor(options: {
         if (activity.status !== "RUNNING" || lastRolloutActivityAtMs <= activityBeforeEscapeMs) {
           await reportProgress(
             bridge,
-            "BLOCKED: το CLI turn παρέμεινε κολλημένο μετά το Esc. Δεν άλλαξα task, session ή thread· απαιτείται manual operator decision.",
+            "BLOCKED: the CLI turn remained stalled after Esc. I did not change task, session or thread; a manual operator decision is required.",
             traceId
           );
           throw new Error("CLI task remains stalled after Escape; manual operator decision is required without changing its session or thread.");
@@ -372,7 +372,7 @@ export function createRoomActionExecutor(options: {
             }, input.traceId);
             await reportProgress(
               input.bridge,
-              `Το pane «${pane.title}» εκτελεί ήδη εργασία και συνεχίζει να δίνει live output. Το παρακολουθώ και θα στείλω το επόμενο βήμα μόνο όταν ολοκληρωθεί.`,
+              `The pane «${pane.title}» is already running a task and keeps producing live output. I am watching it and will send the next step only when it completes.`,
               input.traceId
             );
             reportedBusy = true;
@@ -386,7 +386,7 @@ export function createRoomActionExecutor(options: {
           } else if (current.status === "RUNNING" && Date.now() - lastProgressAtMs >= cliExistingTurnStallMs) {
             await reportProgress(
               input.bridge,
-              `Το pane «${pane.title}» σταμάτησε να δίνει output. Στέλνω μόνο Esc, όπως θα έκανε ο χρήστης, χωρίς restart ή αλλαγή session/thread.`,
+              `The pane «${pane.title}» stopped producing output. I only send Esc, as the operator would, without restart or session/thread change.`,
               input.traceId
             );
             await sendCliEscape(session.sessionId, input.traceId, `${input.actionId}:escape-stalled`);
@@ -399,7 +399,7 @@ export function createRoomActionExecutor(options: {
             if (current.status === "RUNNING") {
               await reportProgress(
                 input.bridge,
-                `BLOCKED: το pane «${pane.title}» παραμένει κολλημένο μετά το Esc. Δεν άλλαξα task, session ή thread· απαιτείται manual operator decision.`,
+                `BLOCKED: the pane «${pane.title}» remains stalled after Esc. I did not change task, session or thread; a manual operator decision is required.`,
                 input.traceId
               );
               throw new Error("CLI task remains stalled after Escape; manual operator decision is required without changing its session or thread.");
@@ -413,7 +413,7 @@ export function createRoomActionExecutor(options: {
         if (reportedBusy) {
           await reportProgress(
             input.bridge,
-            `Η ενεργή εργασία στο pane «${pane.title}» ολοκληρώθηκε. Υποβάλλω τώρα το επόμενο προγραμματισμένο βήμα.`,
+            `The active task in pane «${pane.title}» completed. I am now submitting the next scheduled step.`,
             input.traceId
           );
         }
@@ -1070,14 +1070,14 @@ export function createRoomActionExecutor(options: {
             if (retryCount > 1) {
               await reportProgress(
                 bridge,
-                `BLOCKED: το plan «${step.label ?? step.paneId}» απέτυχε και μετά το μοναδικό Esc recovery. Δεν άλλαξα task, session ή thread· απαιτείται manual operator decision.`,
+                `BLOCKED: the plan «${step.label ?? step.paneId}» failed even after the single Esc recovery. I did not change task, session or thread; a manual operator decision is required.`,
                 traceId
               );
               throw new Error(`Orchestration blocked at pane ${step.paneId}; manual operator decision is required.`);
             }
             await reportProgress(
               bridge,
-              `Το pane «${step.label ?? step.paneId}» χρειάζεται recovery. Στέλνω Esc και επαναλαμβάνω το ίδιο prompt στο ίδιο task/session/thread.`,
+              `The pane «${step.label ?? step.paneId}» needs recovery. I send Esc and repeat the same prompt in the same task/session/thread.`,
               traceId
             );
             const escapeRequest = {
@@ -1095,7 +1095,7 @@ export function createRoomActionExecutor(options: {
             }
             await reportProgress(
               bridge,
-              `Το Esc στάλθηκε στο pane «${step.label ?? step.paneId}». Επαναλαμβάνω τώρα το ίδιο prompt στο ίδιο task και συνεχίζω την παρακολούθηση.`,
+              `Esc was sent to the pane «${step.label ?? step.paneId}». I am now repeating the same prompt in the same task and continuing to monitor.`,
               traceId
             );
             }
@@ -1158,7 +1158,7 @@ export function createRoomActionExecutor(options: {
 
         await reportProgress(
           bridge,
-          `Εντόπισα ${normalized.length} plans. ${request.action.analysisSummary ?? "Ξεκινώ μαζί όσα είναι ανεξάρτητα και κρατώ τις εξαρτήσεις σε αναμονή."}`,
+          `I found ${normalized.length} plans. ${request.action.analysisSummary ?? "I start all independent ones together and keep dependencies waiting."}`,
           traceId
         );
         startReadySteps();
@@ -1186,8 +1186,8 @@ export function createRoomActionExecutor(options: {
           if (settled.result) {
             await reportProgress(
               bridge,
-              `Ολοκληρώθηκε το plan «${settled.result.label}» σε ${settled.result.durationMs} ms με score ${settled.result.score}/100. ` +
-                `${active.size} plan(s) τρέχουν ήδη και ${normalized.length - completed.size - failed.size - active.size} περιμένουν dependency.`,
+              `Plan «${settled.result.label}» completed in ${settled.result.durationMs} ms with score ${settled.result.score}/100. ` +
+                `${active.size} plan(s) are already running and ${normalized.length - completed.size - failed.size - active.size} are waiting on dependencies.`,
               traceId
             );
           }
@@ -1214,7 +1214,7 @@ export function createRoomActionExecutor(options: {
         const steps = normalized.map((step) => completed.get(step.stepId)!);
         await reportProgress(
           bridge,
-          `Ολοκληρώθηκαν και τα ${steps.length} plans με verified evidence. Κάνω τον τελικό έλεγχο της mission.`,
+          `All ${steps.length} plans completed with verified evidence. I am now doing the final mission check.`,
           traceId
         );
         return {

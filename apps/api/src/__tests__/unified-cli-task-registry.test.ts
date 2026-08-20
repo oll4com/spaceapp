@@ -147,6 +147,30 @@ describe("UnifiedCliTaskRegistry", () => {
     });
   });
 
+  it("recovers and persists an OpenCode native task ref when terminal control input is not resumable", async () => {
+    const store = new InMemorySpaceStore();
+    const source = appendTask(store, {
+      runtimeId: "cli:opencode",
+      providerId: "opencode",
+      title: "OpenCode recovery",
+      firstUserMessage: "\u001b[<35;33;8M",
+      response: "Prior OpenCode output"
+    });
+    const registry = new UnifiedCliTaskRegistry(store, {
+      resolveNativeTaskRef: async (session) =>
+        session.sessionId === source.session.sessionId ? "ses_exactRecovery123" : null
+    });
+
+    await expect(registry.getTask(source.session.sessionId)).resolves.toMatchObject({
+      taskId: source.session.sessionId,
+      revision: { nativeTaskRef: "ses_exactRecovery123" },
+      session: { sessionId: source.session.sessionId }
+    });
+    expect(store.getCliTaskRevision(source.session.cliTaskRevisionId!)).toMatchObject({
+      nativeTaskRef: "ses_exactRecovery123"
+    });
+  });
+
   it("returns one row per logical task and uses its current revision provider", async () => {
     const store = new InMemorySpaceStore();
     const original = appendTask(store, {

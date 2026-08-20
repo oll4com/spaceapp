@@ -4387,6 +4387,24 @@ export function TerminalPane({
       setSelectedRuntimeId(nextSession.session.runtimeId);
       setSessionResponse(nextSession);
       setTerminalStatus("idle");
+      const watchdogSessionId = nextSession.session.sessionId;
+      void waitForTerminalSocketOpen(watchdogSessionId, 5_000).then((opened) => {
+        if (opened) return;
+        const ready = readySocketRef.current;
+        const socketAlive =
+          Boolean(ready) &&
+          ready?.sessionId === watchdogSessionId &&
+          ready?.socket.readyState === WebSocket.OPEN;
+        if (socketAlive) return;
+        recordLifecycleDebugEvent({
+          type: "terminal_reconnect_watchdog_restart",
+          scope: "TerminalPane",
+          detail: `session=${watchdogSessionId} reconnect ticket did not open a socket within 5s`,
+          paneId: pane.id,
+          paneMode: pane.mode
+        });
+        void startOrReconnect();
+      });
     } catch (err) {
       setTerminalStatus("closed");
       setError(err instanceof Error ? err.message : "CLI reconnect failed");
@@ -4763,6 +4781,9 @@ export function TerminalPane({
         }
         setError("CLI connection was lost. Retry this input after the terminal reconnects.");
         updateClipboardDebug("bad", "send failed", `${source}: CLI WebSocket is not open and the pending input queue is full; inputLength=${terminalData.length}.`);
+        // The queue is full so this input is dropped - but never leave the pane dead:
+        // keep the reconnect machinery running while the user keeps typing.
+        triggerTerminalSocketRecovery("user-input-queue-full");
         return false;
       }
       setError("Attach a running CLI before pasting into it.");
