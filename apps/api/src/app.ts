@@ -6,7 +6,7 @@ import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { chmod, mkdir, readFile, stat, statfs, unlink, writeFile } from "node:fs/promises";
@@ -49,6 +49,7 @@ import {
   browserSetViewportInputSchema,
   browserStreamModeSchema,
   browserStreamTicketResponseSchema,
+  vncPresetListResponseSchema,
   browserStreamWebSocketClientMessageSchema,
   browserStreamWebSocketServerMessageSchema,
   browserToolActionInputSchema,
@@ -438,6 +439,7 @@ import {
   type BrowserSessionManagerWithHostHealth
 } from "./browser-host-proxy.js";
 import { assertSafeBrowserTargetUrl, type BrowserSessionManager } from "./browser-sessions.js";
+import { assertSafeVncTarget, pipeVncStream, vncPresets } from "./vnc-proxy.js";
 import { cliBrowserBridgeEnabled, cliBrowserBridgeTokenHeader, verifyCliBrowserBridgeToken } from "./cli-browser-bridge.js";
 import {
   codexDirectParityCodexHome,
@@ -551,6 +553,8 @@ import {
   type AgentToolsOptions
 } from "./agent-tools.js";
 import { getApiConfig, type SpaceApiConfig } from "./config.js";
+import { cliChatRuntimeName, cliRuntimeChatProviderAdapter, cliRuntimeModelsChatProviderAdapter } from "./chat-providers.js";
+import { createOpenCodeSession, openCodeSessionExists, openCodeSpaceChatControlPath, opencodeDirectParityRoot, readOpenCodeSpaceChatControl } from "@space/opencode-control";
 import type { OwnerSetupBootstrap } from "./owner-setup.js";
 import {
   createSetupConnectionsService,
@@ -1069,6 +1073,10 @@ const browserStreamQuerySchema = browserFrameQuerySchema.required({ token: true 
   mode: browserStreamModeSchema.default("AUTO")
 });
 const browserAudioQuerySchema = browserFrameQuerySchema.required({ token: true });
+const vncStreamQuerySchema = z.object({
+  host: z.string().trim().min(1).max(253),
+  port: z.coerce.number().int().min(1).max(65535)
+});
 const browserPageParamSchema = z.object({ id: idSchema, pageId: z.string().min(1).max(200) });
 const browserCaptureParamSchema = z.object({ id: idSchema, jobId: idSchema });
 const browserDiagnosticsQuerySchema = z.object({
@@ -3764,6 +3772,112 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       clientInfo: { name: "space", title: "Space", version: config.version },
       timeoutMs: 5_000
     }));
+  const cliChatRuntimeState = async (runtimeId: string) => {
+    const registry = await cliRuntimeRegistryCache.read();
+    const runtime = findRuntime(registry, runtimeId);
+    if (!runtime || runtime.adapterStatus !== "ENABLED" || !runtime.detectedCommandPath) {
+      return { enabled: false, reason: runtime?.statusReason ?? `${runtimeId} is not available.` };
+    }
+    return { enabled: true, reason: null };
+  };
+  const createCliModelsExecutor = (runtimeId: string) => {
+    const modelsFile = `/opt/spaceapp/var/${runtimeId.replace("cli:", "")}-models.last-good.json`;
+    let modelsCache: { raw: string; at: number } | null = null;
+    const readModelsFile = async (): Promise<string | null> => {
+      try {
+        const parsed = JSON.parse(await readFile(modelsFile, "utf8")) as { models?: unknown };
+        return typeof parsed.models === "string" && parsed.models.trim() ? parsed.models : null;
+      } catch {
+        return null;
+      }
+    };
+    const runModels = (): Promise<string> => new Promise((resolve, reject) => {
+      const child = spawn("/usr/bin/sudo", [
+        "-n", "/opt/spaceapp/bin/space-cli-vpn-broker", "exec", runtimeId, "models"
+      ], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" }
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill("SIGTERM");
+        reject(new Error(`${runtimeId} model catalog request timed out.`));
+      }, 60_000);
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        if (stdout.length > 512_000) child.kill("SIGTERM");
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.on("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (code !== 0 || !stdout.trim()) {
+          reject(new Error(stderr.trim() || `${runtimeId} model catalog command failed (exit ${code ?? "unknown"}).`));
+          return;
+        }
+        resolve(stdout);
+      });
+    });
+    return async (): Promise<string> => {
+      if (modelsCache && Date.now() - modelsCache.at < 10 * 60_000) {
+        return modelsCache.raw;
+      }
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const stdout = await runModels();
+          if (!stdout.trim()) throw new Error(`Empty ${runtimeId} model catalog.`);
+          modelsCache = { raw: stdout, at: Date.now() };
+          try {
+            await writeFile(modelsFile, JSON.stringify({ models: stdout, at: new Date().toISOString() }), "utf8");
+          } catch {
+            // best effort cache persistence
+          }
+          return stdout;
+        } catch (error) {
+          lastError = error;
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+      }
+      if (modelsCache) return modelsCache.raw;
+      const persisted = await readModelsFile();
+      if (persisted) return persisted;
+      const details = lastError && typeof lastError === "object" && "stderr" in lastError
+        ? String((lastError as { stderr?: unknown }).stderr ?? "").trim().slice(0, 300)
+        : "";
+      throw new Error(details || (lastError instanceof Error ? lastError.message : `${runtimeId} model catalog is unavailable.`));
+    };
+  };
+  const cliChatProviderAdapters = config.cliChatTurnsEnabled
+    ? config.cliChatTurnRuntimeIds.map((runtimeId) => {
+        if (runtimeId === "cli:gemini" || runtimeId === "cli:cursor" || runtimeId === "cli:copilot" || runtimeId === "cli:deepseek") {
+          return cliRuntimeModelsChatProviderAdapter({
+            runtimeId,
+            providerName: cliChatRuntimeName(runtimeId),
+            executeModels: createCliModelsExecutor(runtimeId),
+            resolveState: cliChatRuntimeState
+          });
+        }
+        return cliRuntimeChatProviderAdapter({
+          runtimeId,
+          providerName: cliChatRuntimeName(runtimeId),
+          resolveState: cliChatRuntimeState
+        });
+      })
+    : [];
   const spaceAgentAdapter =
     options.spaceAgentAdapter ??
     createSpaceAgentAdapter({
@@ -3771,6 +3885,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       config,
       codexTurnStarter,
       codexAgentControl,
+      cliChatProviderAdapters,
       openCodeControlResolver: async () => resolveChatPaneOpenCodeControl(),
       readGoal: async (threadId) => {
         const goal = (await codexGoals.list()).find((candidate) => candidate.threadId === threadId);
@@ -3848,7 +3963,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       codexRouteCommand: config.codexRouteCommand
     });
 
-  const unifiedCliTaskRegistry = new UnifiedCliTaskRegistry(store);
+  const unifiedCliTaskRegistry = new UnifiedCliTaskRegistry(store, {
+    resolveNativeTaskRef: async (session) => session.runtimeId === "cli:opencode"
+      ? readOpenCodeNativeSessionId(session.sessionId, options.opencodeStateRoot)
+      : null
+  });
   const agentSessionHistoryService = new AgentSessionHistoryService({ codexParity, unifiedCliTaskRegistry });
   let cliRuntimeRegistryCache!: ReturnType<typeof createAgentRuntimeRegistryCache>;
   let setupConnections!: SetupConnectionsService;
@@ -4440,9 +4559,38 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return control;
   };
   const resolveChatPaneOpenCodeControl = async (): Promise<OpenCodeServerControl> => {
-    const controls = await listOpenCodeServerControls(options.opencodeStateRoot);
+    const stateRoot = options.opencodeStateRoot ?? opencodeDirectParityRoot + "/state";
+    const controls = await listOpenCodeServerControls(stateRoot);
     for (const control of controls) {
-      if (await openCodeServerIsHealthy(control)) return control;
+      if (!(await openCodeServerIsHealthy(control))) continue;
+      if (!(await openCodeSessionExists(control, control.nativeSessionId))) continue;
+      return control;
+    }
+    const sharedControl = await resolveOpenCodeTitleFallbackControl(stateRoot);
+    if (sharedControl) {
+      const spaceChatControl = await readOpenCodeSpaceChatControl();
+      if (
+        spaceChatControl &&
+        (await openCodeServerIsHealthy(spaceChatControl)) &&
+        (await openCodeSessionExists(spaceChatControl, spaceChatControl.nativeSessionId))
+      ) {
+        return spaceChatControl;
+      }
+      const nativeSessionId = await createOpenCodeSession(sharedControl, "Space Chat", "/etc");
+      if (nativeSessionId) {
+        const control = {
+          ...sharedControl,
+          spaceSessionId: "space-chat",
+          nativeSessionId,
+          updatedAt: new Date().toISOString()
+        };
+        try {
+          await writeFile(openCodeSpaceChatControlPath(), JSON.stringify(control, null, 2), "utf8");
+        } catch {
+          // best effort; the chat provider can still use this in-memory control
+        }
+        return control;
+      }
     }
     throw new SpaceFeatureDisabledError(
       "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
@@ -6745,7 +6893,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           selectedRoute: "direct",
           directEgressIpv4: null,
           removedProfiles: [],
-          profiles: { greece: unavailable, thailand: unavailable, mullvad: unavailable },
+          profiles: { greece: unavailable, thailand: unavailable, mullvad: unavailable, nord: unavailable },
           applications: applications.map((application) => ({
             runtimeId: application.runtimeId,
             routeId: "direct",
@@ -6829,7 +6977,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           selectedRoute: fallbackRoute,
           directEgressIpv4: null,
           removedProfiles: [],
-          profiles: { greece: unavailable, thailand: unavailable, mullvad: unavailable },
+          profiles: { greece: unavailable, thailand: unavailable, mullvad: unavailable, nord: unavailable },
           applications: applications.map((application) => ({
             runtimeId: application.runtimeId,
             routeId: fallbackRoute,
@@ -7111,6 +7259,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       action: "cli.egress.mullvad.city.rotate",
       targetType: "cli_vpn_profile",
       targetId: "mullvad",
+      metadata: {
+        status: connection.status,
+        relay: connection.relay,
+        egressIpv4: connection.egressIpv4
+      }
+    });
+    return connection;
+  });
+
+  app.post("/api/cli/egress/profiles/nord/random-city", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
+    }
+    assertCliVpnAvailable();
+    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.rotateNordCity());
+    await recordAudit(store, request, {
+      action: "cli.egress.nord.city.rotate",
+      targetType: "cli_vpn_profile",
+      targetId: "nord",
       metadata: {
         status: connection.status,
         relay: connection.relay,
@@ -8544,6 +8711,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
+  app.get("/api/vnc-presets", defaultRouteRateLimitOptions, async () => {
+    return vncPresetListResponseSchema.parse({ presets: [...vncPresets] });
+  });
+
+  app.get("/api/panes/:id/vnc/stream", defaultWebsocketRateLimitOptions, (socket, request) => {
+    void (async () => {
+      const params = parseQuery(idParamSchema, request.params);
+      const query = parseQuery(vncStreamQuerySchema, request.query);
+      const pane = await getPaneById(store, params.id);
+      if (pane.mode !== "VNC") {
+        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; VNC streams require VNC panes.`);
+      }
+      assertSafeVncTarget(query.host);
+      await pipeVncStream(socket, query.host, query.port);
+    })().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "VNC stream setup failed.";
+      if (socket.readyState === 1) socket.close(1011, message.slice(0, 120));
+    });
+  });
+
   app.get("/api/panes", defaultRouteRateLimitOptions, async (request) => {
     const query = parseQuery(listPanesQuerySchema, request.query);
     const enabledRuntimeIds = new Set(await cliRuntimeVisibility.enabledRuntimeIds());
@@ -8578,6 +8765,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const paneInputs = input.panes.map((item: RoomPaneBatchItem) => {
       if (item.mode === "CHAT") {
         return { roomId: params.id, title: "Chat", mode: "CHAT" as const };
+      }
+      if (item.mode === "VNC") {
+        return { roomId: params.id, title: "VNC", mode: "VNC" as const, vncTarget: item.vncTarget };
       }
       if (item.terminalRuntimeId === "cli:root") {
         throw new SpaceConflictError("CLI ROOT cannot be created through room pane batches.");

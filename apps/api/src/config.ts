@@ -58,6 +58,8 @@ export interface SpaceApiConfig {
   cliMaintenanceRepairEnabled: boolean;
   cliKimiLoginBootstrapEnabled: boolean;
   cliGrokLoginBootstrapEnabled: boolean;
+  cliChatTurnsEnabled: boolean;
+  cliChatTurnRuntimeIds: string[];
   mcpServerConfigs?: McpServerConfig[];
   mcpConfigError?: string | null;
   mcpDiscoverySmokeEnabled?: boolean;
@@ -209,6 +211,10 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     cliMaintenanceRepairEnabled: env.SPACE_CLI_MAINTENANCE_REPAIR_ENABLED === "true",
     cliKimiLoginBootstrapEnabled: env.SPACE_CLI_KIMI_LOGIN_BOOTSTRAP === "true",
     cliGrokLoginBootstrapEnabled: env.SPACE_CLI_GROK_LOGIN_BOOTSTRAP === "true",
+    cliChatTurnsEnabled: env.SPACE_ENABLE_CLI_CHAT_TURNS === "true",
+    cliChatTurnRuntimeIds: parseCsvList(
+      env.SPACE_CLI_CHAT_TURN_RUNTIME_IDS ?? "cli:cursor,cli:copilot,cli:gemini,cli:deepseek"
+    ),
     mcpServerConfigs: mcpConfig.configs,
     mcpConfigError: mcpConfig.error,
     mcpDiscoverySmokeEnabled: env.SPACE_MCP_DISCOVERY_SMOKE_ENABLED === "true",

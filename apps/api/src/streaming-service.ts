@@ -483,7 +483,7 @@ export class StreamingService {
       customTextEnabled: settings.customTextEnabled,
       customText: settings.customText,
       ...(this.options.botTickerProvider
-        ? await this.options.botTickerProvider()
+        ? await this.options.botTickerProvider().then(({ enabled, ticker }) => ({ botTickerEnabled: enabled, botTicker: ticker }))
         : { botTickerEnabled: false, botTicker: [] })
     });
   }

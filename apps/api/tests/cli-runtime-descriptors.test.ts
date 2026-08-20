@@ -14,6 +14,11 @@ describe("CLI runtime descriptors", () => {
         expect(descriptor.credentialSmokeMarker).toBeNull();
         continue;
       }
+      if (descriptor.id === "cli:hermes") {
+        expect(descriptor.credentialObservationAction).toBeNull();
+        expect(descriptor.credentialSmokeMarker).toBe("SPACE_HERMES_OK");
+        continue;
+      }
       expect(descriptor.credentialObservationAction, descriptor.id).toBe("credential-observation");
       expect(descriptor.credentialSmokeMarker, descriptor.id).toBe(`SPACE_${descriptor.key.toUpperCase()}_OK`);
     }
@@ -32,7 +37,7 @@ describe("CLI runtime descriptors", () => {
       "cli:deepseek",
       "cli:cursor",
       "cli:copilot",
-      "cli:github"
+      "cli:hermes"
     ]);
     expect(cliRuntimeDescriptors.map(({ id, authMode, missingAuthState, loginAction }) => ({
       id,
@@ -51,7 +56,7 @@ describe("CLI runtime descriptors", () => {
       { id: "cli:deepseek", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
       { id: "cli:cursor", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:copilot", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
-      { id: "cli:github", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" }
+      { id: "cli:hermes", authMode: "NONE", missingAuthState: "UNAVAILABLE", loginAction: null }
     ]);
   });
 

@@ -40,6 +40,7 @@ import {
   Mic,
   Minimize2,
   Minus,
+  Monitor,
   MoreHorizontal,
   MoveHorizontal,
   Music2,
@@ -89,6 +90,7 @@ import type {
   AuthMe,
   BrowserEvidenceViewport,
   ClipboardItem,
+  CliEgressRouteId,
   CliTaskHistoryItem,
   CliVpnRoutingStatus,
   CodexEnvironment,
@@ -305,6 +307,7 @@ import {
   type ToolbarMetricsHandle
 } from "./features/toolbar-metrics/ToolbarMetrics.js";
 import type { SystemAnalyticsTab } from "./features/system-analytics/SystemAnalyticsWorkspace.js";
+import { SystemAnalyticsErrorBoundary } from "./features/system-analytics/SystemAnalyticsErrorBoundary.js";
 import {
   MAX_WORKSPACE_TEXT_SIZE,
   MIN_WORKSPACE_TEXT_SIZE,
@@ -368,7 +371,8 @@ const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
   SWARM: Boxes,
   DESIGN: Sparkles,
   TERMINAL: Terminal,
-  YOUTUBE: Youtube
+  YOUTUBE: Youtube,
+  VNC: Monitor
 };
 
 const ROOM_PRESENTATION_FAILURE_TIMEOUT_MS = 8_000;
@@ -528,6 +532,9 @@ const LazyBrowserPane = lazy(() =>
 );
 const LazyYouTubePane = lazy(() =>
   import("./features/browser-pane/YouTubePane.js").then((module) => ({ default: module.YouTubePane }))
+);
+const LazyVncPane = lazy(() =>
+  import("./features/vnc-pane/VncPane.js").then((module) => ({ default: module.VncPane }))
 );
 const LazyAdminOperationsDialog = lazy(() =>
   import("./features/admin-operations/AdminOperationsDialog.js")
@@ -1017,7 +1024,8 @@ const paneModeLabels: Record<Pane["mode"], string> = {
   SWARM: "Swarm",
   DESIGN: "Design",
   TERMINAL: "CLI",
-  YOUTUBE: "YouTube"
+  YOUTUBE: "YouTube",
+  VNC: "VNC"
 };
 
 function paneModeLabel(mode: Pane["mode"]): string {
@@ -2253,6 +2261,26 @@ export function App() {
     const interval = window.setInterval(() => publishCliVpnRoutingStatus(), 20_000);
     return () => window.clearInterval(interval);
   }, []);
+  const [toolbarVpnRoute, setToolbarVpnRoute] = useState<CliEgressRouteId | null>(null);
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      void api
+        .cliVpnRoutingStatus()
+        .then((status) => {
+          if (active) setToolbarVpnRoute(status.selectedRoute);
+        })
+        .catch(() => {
+          if (active) setToolbarVpnRoute(null);
+        });
+    };
+    refresh();
+    window.addEventListener(CLI_VPN_ROUTING_STATUS_EVENT, refresh);
+    return () => {
+      active = false;
+      window.removeEventListener(CLI_VPN_ROUTING_STATUS_EVENT, refresh);
+    };
+  }, []);
   useEffect(() => {
     const body = document.body;
     if (uiTheme !== "modern") {
@@ -2360,6 +2388,7 @@ export function App() {
   }, [roomTheme, uiTheme]);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [isPaneLayoutMenuOpen, setIsPaneLayoutMenuOpen] = useState(false);
+  const [isCollapsedPaneLayoutMenuOpen, setIsCollapsedPaneLayoutMenuOpen] = useState(false);
   const [paneLayoutPending, setPaneLayoutPending] = useState(false);
   const [paneLayoutError, setPaneLayoutError] = useState<string | null>(null);
   const [isPaneSpanAllMenuOpen, setIsPaneSpanAllMenuOpen] = useState(false);
@@ -2486,6 +2515,7 @@ export function App() {
   const workspaceTextSizeButtonRef = useRef<HTMLButtonElement | null>(null);
   const vibeMusicButtonRef = useRef<HTMLButtonElement | null>(null);
   const paneLayoutButtonRef = useRef<HTMLButtonElement | null>(null);
+  const paneLayoutCollapsedButtonRef = useRef<HTMLButtonElement | null>(null);
   const paneSpanAllButtonRef = useRef<HTMLButtonElement | null>(null);
   const roomThemeButtonRef = useRef<HTMLButtonElement | null>(null);
   const serverActionsButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -4029,6 +4059,7 @@ export function App() {
       isClosed: false,
       split: { parentId: null, direction: null, size: null },
       categoryColor: null,
+      vncTarget: null,
       createdAt: nowIso,
       updatedAt: nowIso
     };
@@ -4267,6 +4298,7 @@ export function App() {
       modelId: sourcePane.modelId,
       terminalRuntimeId: sourceTerminalRuntimeId,
       cwd: sourcePane.mode === "TERMINAL" ? null : sourcePane.cwd,
+      vncTarget: sourcePane.mode === "VNC" ? sourcePane.vncTarget : null,
       split: { parentId: sourcePane.id, direction, size: 50 }
     });
     setPanes((current) => [...current, pane]);
@@ -5448,6 +5480,15 @@ export function App() {
         disabled: !selectedRoomId || panes.length >= 16
       },
       {
+        id: "add-vnc",
+        label: "Add VNC pane",
+        title: "Add VNC pane",
+        ariaLabel: "Add VNC pane",
+        icon: Monitor,
+        onClick: () => addPane("VNC"),
+        disabled: !selectedRoomId || panes.length >= 16
+      },
+      {
         id: "add-review",
         label: "Add review pane",
         title: "Add review pane",
@@ -5494,6 +5535,78 @@ export function App() {
         ariaControls: OSK_PANEL_ID,
         ariaExpanded: isOskKeyboardOpen,
         ariaHasPopup: "dialog"
+      },
+      {
+        id: "help",
+        label: "Help",
+        title: "Help",
+        ariaLabel: "Help",
+        icon: CircleHelp,
+        onClick: openHelp
+      },
+      {
+        id: "benchmark",
+        label: "Benchmark",
+        title: "Benchmark",
+        ariaLabel: "Benchmark",
+        icon: Gauge,
+        onClick: openBenchmark
+      },
+      {
+        id: "vibe-music",
+        label: "Vibe music",
+        title: "Vibe music with freeCodeCamp Code Radio",
+        ariaLabel: "Music",
+        icon: Music2,
+        onClick: () => {
+          setIsQuickLinksOpen(false);
+          setIsThemeMenuOpen(false);
+          setIsPaneLayoutMenuOpen(false);
+          setIsPaneSpanAllMenuOpen(false);
+          setIsWorkspaceTextSizePickerOpen(false);
+          setIsServerActionsMenuOpen(false);
+          setIsCliLauncherOpen(false);
+          setIsVibeMusicOpen((current) => !current);
+        },
+        ariaControls: VIBE_MUSIC_PANEL_ID,
+        ariaExpanded: isVibeMusicOpen,
+        ariaHasPopup: "dialog",
+        hideable: false
+      },
+      {
+        id: "sign-out",
+        label: "Sign out",
+        title: "Sign out",
+        ariaLabel: "Sign out",
+        icon: LogOut,
+        onClick: () => void signOut(),
+        hideable: false
+      },
+      {
+        id: "room-focus",
+        label: isRoomFocusMode ? "Restore room" : "Maximize room",
+        title: isRoomFocusMode ? "Restore room" : "Maximize room",
+        ariaLabel: isRoomFocusMode ? "Restore room" : "Maximize room",
+        icon: isRoomFocusMode ? Minimize2 : Maximize2,
+        onClick: () => {
+          setIsPaneLayoutMenuOpen(false);
+          setIsCliLauncherOpen(false);
+          toggleRoomFocusMode();
+        },
+        ariaPressed: isRoomFocusMode,
+        hideable: false,
+        disabled: !activeRoom
+      },
+      {
+        id: "more-actions",
+        label: "More room actions",
+        title: "More room actions",
+        ariaLabel: "More room actions",
+        icon: MoreHorizontal,
+        onClick: () => {},
+        ariaControls: "room-actions-popup",
+        ariaHasPopup: shellMode === "mobile" ? "dialog" : "menu",
+        hideable: false
       }
       ];
       return actions;
@@ -5518,7 +5631,9 @@ export function App() {
       isSideSurfaceOpen,
       isCompactSideSurfaceOpen,
       isServerActionsMenuOpen,
+      isRoomFocusMode,
       isThemeMenuOpen,
+      isVibeMusicOpen,
       isWorkspaceTextSizePickerOpen,
       panes,
       paneLayoutPending,
@@ -5637,9 +5752,6 @@ export function App() {
     hiddenStorageKey: roomToolbarStorageKeys.hidden,
     orderStorageKey: roomToolbarStorageKeys.order
   });
-  const MoreRoomActionsIcon = MoreHorizontal;
-  const HelpIcon = CircleHelp;
-  const GaugeIcon = Gauge;
   const roomToolbarRenderedActions = roomToolbar.visibleActions;
   const renderRoomToolbarAction = (action: IconToolbarAction) => {
     const Icon = action.icon;
@@ -5659,7 +5771,11 @@ export function App() {
                   ? paneLayoutButtonRef
                 : action.id === "pane-span-all"
                   ? paneSpanAllButtonRef
-                  : undefined
+                : action.id === "vibe-music"
+                  ? vibeMusicButtonRef
+                  : action.id === "more-actions"
+                    ? roomOverflowTriggerRef
+                    : undefined
         }
         type="button"
         className={action.id === "category-color-filter"
@@ -5673,13 +5789,17 @@ export function App() {
           if (action.id !== "font-down") setIsWorkspaceTextSizePickerOpen(false);
           if (action.id !== "server-restart") setIsServerActionsMenuOpen(false);
           if (action.id !== "add-cli") setIsCliLauncherOpen(false);
+          if (action.id === "more-actions") {
+            roomToolbar.setIsOverflowOpen((current) => !current);
+            return;
+          }
           action.onClick();
         }}
         disabled={action.disabled}
         title={action.title}
         aria-label={action.ariaLabel}
         aria-controls={action.ariaControls}
-        aria-expanded={action.ariaExpanded}
+        aria-expanded={action.id === "more-actions" ? roomToolbar.isOverflowOpen : action.ariaExpanded}
         aria-haspopup={action.ariaHasPopup}
         aria-pressed={action.ariaPressed}
         onWheel={action.onWheel}
@@ -7021,11 +7141,13 @@ export function App() {
       ) : null}
       {systemAnalyticsTab ? (
         <Suspense fallback={<div className="system-analytics-loading" role="status">Loading system analytics…</div>}>
-          <LazySystemAnalyticsWorkspace
-            shellMode={shellMode}
-            initialTab={systemAnalyticsTab}
-            onClose={() => setSystemAnalyticsTab(null)}
-          />
+          <SystemAnalyticsErrorBoundary onClose={() => setSystemAnalyticsTab(null)}>
+            <LazySystemAnalyticsWorkspace
+              shellMode={shellMode}
+              initialTab={systemAnalyticsTab}
+              onClose={() => setSystemAnalyticsTab(null)}
+            />
+          </SystemAnalyticsErrorBoundary>
         </Suspense>
       ) : null}
       {!isMemoryWorkspaceOpen && !systemAnalyticsTab ? <section className={workspaceClassName}>
@@ -7067,6 +7189,106 @@ export function App() {
           {!isMobilePaneFocused && isRoomToolbarHidden ? (
             <div className="room-toolbar-collapsed room-toolbar-floating-controls" role="region" aria-label="Room toolbar hidden">
               <button
+                ref={paneLayoutCollapsedButtonRef}
+                type="button"
+                className="room-toolbar-visibility-button"
+                title="Pane layout"
+                aria-label="Pane layout"
+                aria-controls="pane-layout-presets-collapsed"
+                aria-expanded={isCollapsedPaneLayoutMenuOpen}
+                aria-haspopup="menu"
+                onClick={() => {
+                  setIsThemeMenuOpen(false);
+                  setIsPaneSpanAllMenuOpen(false);
+                  setIsWorkspaceTextSizePickerOpen(false);
+                  setIsVibeMusicOpen(false);
+                  setIsPaneLayoutMenuOpen(false);
+                  setIsCollapsedPaneLayoutMenuOpen((current) => !current);
+                }}
+                disabled={!activeRoom || paneLayoutPending}
+              >
+                <PanelsTopLeft aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="room-toolbar-visibility-button"
+                title="On-screen keyboard"
+                aria-label="On-screen keyboard"
+                aria-controls={OSK_PANEL_ID}
+                aria-expanded={isOskKeyboardOpen}
+                aria-haspopup="dialog"
+                onClick={() => {
+                  setIsThemeMenuOpen(false);
+                  setIsPaneLayoutMenuOpen(false);
+                  setIsCollapsedPaneLayoutMenuOpen(false);
+                  setIsPaneSpanAllMenuOpen(false);
+                  setIsWorkspaceTextSizePickerOpen(false);
+                  setIsVibeMusicOpen(false);
+                  setIsOskKeyboardOpen((current) => !current);
+                }}
+              >
+                <Keyboard aria-hidden="true" />
+              </button>
+              <button
+                ref={vibeMusicButtonRef}
+                type="button"
+                className="room-toolbar-visibility-button"
+                title="Vibe music with freeCodeCamp Code Radio"
+                aria-label="Music"
+                aria-controls={VIBE_MUSIC_PANEL_ID}
+                aria-expanded={isVibeMusicOpen}
+                aria-haspopup="dialog"
+                onClick={() => {
+                  setIsThemeMenuOpen(false);
+                  setIsPaneLayoutMenuOpen(false);
+                  setIsCollapsedPaneLayoutMenuOpen(false);
+                  setIsPaneSpanAllMenuOpen(false);
+                  setIsWorkspaceTextSizePickerOpen(false);
+                  setIsVibeMusicOpen((current) => !current);
+                }}
+              >
+                <Music2 aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="room-toolbar-visibility-button"
+                title="Show rooms"
+                aria-label="Show rooms"
+                aria-pressed={isSideSurfaceOpen && activeSideSurface === "rooms"}
+                onClick={() => {
+                  setIsThemeMenuOpen(false);
+                  setIsPaneLayoutMenuOpen(false);
+                  setIsCollapsedPaneLayoutMenuOpen(false);
+                  setIsPaneSpanAllMenuOpen(false);
+                  setIsWorkspaceTextSizePickerOpen(false);
+                  setIsVibeMusicOpen(false);
+                  toggleSideSurface("rooms");
+                }}
+              >
+                <PanelRight aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="room-toolbar-visibility-button"
+                title={`Change ${toolbarVpnRoute === "nord" ? "NordVPN" : "Mullvad"} city`}
+                aria-label={`Change ${toolbarVpnRoute === "nord" ? "NordVPN" : "Mullvad"} city`}
+                onClick={() => {
+                  setIsThemeMenuOpen(false);
+                  setIsPaneLayoutMenuOpen(false);
+                  setIsCollapsedPaneLayoutMenuOpen(false);
+                  setIsPaneSpanAllMenuOpen(false);
+                  setIsWorkspaceTextSizePickerOpen(false);
+                  setIsVibeMusicOpen(false);
+                  if (toolbarVpnRoute === "nord") {
+                    void api.rotateCliNordCity().catch(() => {});
+                  } else {
+                    void api.rotateCliMullvadCity().catch(() => {});
+                  }
+                }}
+              >
+                <RefreshCw aria-hidden="true" />
+              </button>
+              <button
                 type="button"
                 className="room-toolbar-visibility-button"
                 title="Show room toolbar"
@@ -7075,6 +7297,20 @@ export function App() {
               >
                 <PanelTopOpen aria-hidden="true" />
               </button>
+              {isCollapsedPaneLayoutMenuOpen && activeRoom ? (
+                <PaneLayoutMenu
+                  automaticColumns={automaticPaneGridColumnCount}
+                  currentColumns={activeRoom.paneLayoutColumns ?? null}
+                  error={paneLayoutError}
+                  maximumColumns={shellMode === "mobile" ? 1 : shellMode === "tablet" ? 2 : 4}
+                  menuId="pane-layout-presets-collapsed"
+                  onClose={() => setIsCollapsedPaneLayoutMenuOpen(false)}
+                  onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
+                  pending={paneLayoutPending}
+                  triggerRef={paneLayoutCollapsedButtonRef}
+                  visiblePaneCount={visiblePanes.length}
+                />
+              ) : null}
             </div>
           ) : null}
           {!isMobilePaneFocused && !isRoomToolbarHidden ? (
@@ -7208,145 +7444,43 @@ export function App() {
                   </div>
                 ) : roomToolbarRenderedActions.map(renderRoomToolbarAction)}
               </div>
-              <div className="toolbar-actions-fixed room-toolbar-floating-controls" role="group" aria-label="Room utility controls">
-                <div className="toolbar-overflow">
-                  <button
-                    ref={roomOverflowTriggerRef}
-                    type="button"
-                    title="More room actions"
-                    aria-label="More room actions"
-                    aria-controls="room-actions-popup"
-                    aria-expanded={roomToolbar.isOverflowOpen}
-                    aria-haspopup={shellMode === "mobile" ? "dialog" : "menu"}
-                    onClick={() => {
-                      setIsThemeMenuOpen(false);
-                      setIsPaneLayoutMenuOpen(false);
-                      setIsPaneSpanAllMenuOpen(false);
-                      setIsWorkspaceTextSizePickerOpen(false);
-                      setIsServerActionsMenuOpen(false);
-                      setIsCliLauncherOpen(false);
-                      roomToolbar.setActionMenu(null);
-                      roomToolbar.setIsOverflowOpen((current) => !current);
+              {roomToolbar.isOverflowOpen ? (
+                shellMode === "mobile" ? (
+                  <MobileActionSheet
+                    actionSections={uiTheme === "modern" ? groupModernRoomActions(roomToolbar.orderedActions) : undefined}
+                    actions={roomToolbar.orderedActions}
+                    hiddenActionIds={roomToolbar.hiddenActionIds}
+                    label="Room actions"
+                    onClose={roomToolbar.closeMenus}
+                    onHideAction={roomToolbar.hideAction}
+                    onShowAction={roomToolbar.showAction}
+                    onRunAction={(action) => {
+                      roomToolbar.closeMenus();
+                      if (action.id !== "theme") setIsThemeMenuOpen(false);
+                      if (action.id !== "pane-layout") setIsPaneLayoutMenuOpen(false);
+                      if (action.id !== "pane-span-all") setIsPaneSpanAllMenuOpen(false);
+                      if (action.id !== "font-down") setIsWorkspaceTextSizePickerOpen(false);
+                      if (action.id !== "add-cli") setIsCliLauncherOpen(false);
+                      action.onClick();
                     }}
-                  >
-                    <MoreRoomActionsIcon aria-hidden="true" />
-                  </button>
-                  {roomToolbar.isOverflowOpen ? (
-                    shellMode === "mobile" ? (
-                      <MobileActionSheet
-                        actionSections={uiTheme === "modern" ? groupModernRoomActions(roomToolbar.orderedActions) : undefined}
-                        actions={roomToolbar.orderedActions}
-                        hiddenActionIds={roomToolbar.hiddenActionIds}
-                        label="Room actions"
-                        onClose={roomToolbar.closeMenus}
-                        onHideAction={roomToolbar.hideAction}
-                        onShowAction={roomToolbar.showAction}
-                        onRunAction={(action) => {
-                          roomToolbar.closeMenus();
-                          if (action.id !== "theme") setIsThemeMenuOpen(false);
-                          if (action.id !== "pane-layout") setIsPaneLayoutMenuOpen(false);
-                          if (action.id !== "pane-span-all") setIsPaneSpanAllMenuOpen(false);
-                          if (action.id !== "font-down") setIsWorkspaceTextSizePickerOpen(false);
-                          if (action.id !== "add-cli") setIsCliLauncherOpen(false);
-                          action.onClick();
-                        }}
-                        popupId="room-actions-popup"
-                        summary={<ToolbarMetricsSummary environment={codexEnvironmentSummary} />}
-                        triggerRef={roomOverflowTriggerRef}
-                      />
-                    ) : (
-                      <DesktopActionManager
-                        actions={roomToolbar.orderedActions}
-                        hiddenActionIds={roomToolbar.hiddenActionIds}
-                        label="Room actions"
-                        onClose={roomToolbar.closeMenus}
-                        onHideAction={roomToolbar.hideAction}
-                        onShowAction={roomToolbar.showAction}
-                        popupId="room-actions-popup"
-                        triggerRef={roomOverflowTriggerRef}
-                      />
-                    )
-                  ) : null}
-                </div>
-                <button
-                  ref={vibeMusicButtonRef}
-                  type="button"
-                  title="Vibe music with freeCodeCamp Code Radio"
-                  aria-label="Music"
-                  aria-controls={VIBE_MUSIC_PANEL_ID}
-                  aria-expanded={isVibeMusicOpen}
-                  aria-haspopup="dialog"
-                  onClick={() => {
-                    roomToolbar.closeMenus();
-                    setIsQuickLinksOpen(false);
-                    setIsThemeMenuOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setIsServerActionsMenuOpen(false);
-                    setIsCliLauncherOpen(false);
-                    setIsVibeMusicOpen((current) => !current);
-                  }}
-                >
-                  <Music2 aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  title="Help"
-                  aria-label="Help"
-                  onClick={() => {
-                    roomToolbar.closeMenus();
-                    setIsThemeMenuOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setIsVibeMusicOpen(false);
-                    setIsCliLauncherOpen(false);
-                    openHelp();
-                  }}
-                >
-                  <HelpIcon aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  title="Benchmark"
-                  aria-label="Benchmark"
-                  onClick={() => {
-                    roomToolbar.closeMenus();
-                    setIsThemeMenuOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setIsVibeMusicOpen(false);
-                    setIsCliLauncherOpen(false);
-                    openBenchmark();
-                  }}
-                >
-                  <GaugeIcon aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  title={isRoomFocusMode ? "Restore room" : "Maximize room"}
-                  aria-label={isRoomFocusMode ? "Restore room" : "Maximize room"}
-                  aria-pressed={isRoomFocusMode}
-                  onClick={() => {
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsCliLauncherOpen(false);
-                    toggleRoomFocusMode();
-                  }}
-                  disabled={!activeRoom}
-                >
-                  {isRoomFocusMode ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-                </button>
-                <button
-                  type="button"
-                  title="Sign out"
-                  aria-label="Sign out"
-                  onClick={() => void signOut()}
-                >
-                  <LogOut aria-hidden="true" />
-                </button>
+                    popupId="room-actions-popup"
+                    summary={<ToolbarMetricsSummary environment={codexEnvironmentSummary} />}
+                    triggerRef={roomOverflowTriggerRef}
+                  />
+                ) : (
+                  <DesktopActionManager
+                    actions={roomToolbar.orderedActions}
+                    hiddenActionIds={roomToolbar.hiddenActionIds}
+                    label="Room actions"
+                    onClose={roomToolbar.closeMenus}
+                    onHideAction={roomToolbar.hideAction}
+                    onShowAction={roomToolbar.showAction}
+                    popupId="room-actions-popup"
+                    triggerRef={roomOverflowTriggerRef}
+                  />
+                )
+              ) : null}
+              <div className="toolbar-actions-fixed room-toolbar-floating-controls" role="group" aria-label="Room utility controls">
                 <button
                   type="button"
                   className="room-toolbar-visibility-button"
@@ -10119,6 +10253,10 @@ const PaneCard = memo(function PaneCard({
               observerOnly={browserObserverOnly}
               uiTheme={uiTheme}
             />
+          </Suspense>
+        ) : pane.mode === "VNC" ? (
+          <Suspense fallback={browserPaneLoadingFallback}>
+            <LazyVncPane pane={pane} observerOnly={browserObserverOnly} />
           </Suspense>
         ) : (
           <>

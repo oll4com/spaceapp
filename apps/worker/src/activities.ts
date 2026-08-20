@@ -8,7 +8,7 @@ import {
   type CodexAppServerStdioProcessFactory,
   type CodexAppServerTurnSessionState
 } from "@space/codex-app-server";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { basename, isAbsolute, resolve, sep } from "node:path";
 import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
@@ -29,6 +29,7 @@ import {
   openCodeServerIsHealthy,
   parseOpenCodeCompositeModelId,
   readOpenCodeServerControl,
+  readOpenCodeSpaceChatControl,
   switchOpenCodeSessionModel,
   type OpenCodeServerControl
 } from "@space/opencode-control";
@@ -800,14 +801,14 @@ function buildActivePlanFallbackAction(inventory: RoomAgentRoomInventory | undef
     paneId: plan.paneId,
     label: plan.paneTitle.slice(0, 160),
     instruction: [
-      `Συνέχισε και ολοκλήρωσε το ενεργό plan «${plan.title}».`,
-      "Δούλεψε μόνο μέσα στο υπάρχον CLI task/session/thread, διατήρησε ό,τι έχει ήδη ολοκληρωθεί και κάνε τους απαραίτητους scoped ελέγχους μέχρι verified completion.",
-      "Μην δημιουργήσεις νέο task και μην κάνεις restore, restart ή μεταφορά thread."
+      `Continue and complete the active plan «${plan.title}».`,
+      "Work only inside the existing CLI task/session/thread, keep what is already completed and run the necessary scoped checks until verified completion.",
+      "Do not create a new task and do not restore, restart or move the thread."
     ].join(" ").slice(0, 2_000),
     dependsOn: index === 0 ? [] : [`active-plan-${index}`]
   }));
   return [
-    `Εντόπισα ${steps.length} ενεργά pending plans. Δεν αποδείχθηκαν ασφαλείς παράλληλες εξαρτήσεις, οπότε ξεκινώ σειριακά χωρίς να αλλάξω κανένα CLI task/session/thread.`,
+    `I found ${steps.length} active pending plans. Safe parallel dependencies were not proven, so I start serially without changing any CLI task/session/thread.`,
     "```space-room-actions",
     JSON.stringify({
       version: 1,
@@ -1876,8 +1877,10 @@ async function runOpenCodeAgentTurnImplementation(
   }
 
   try {
-    await markSpaceAgentRunStarted(parsed, options.completionStore);
-    const control = await readOpenCodeServerControl(parsed.providerSessionId, config.stateRoot);
+    const durableRun = await markSpaceAgentRunStarted(parsed, options.completionStore);
+    await ensureCliTurnWorkflowRow(parsed, durableRun, { completionStore: options.completionStore, env: options.env });
+    const control = (await readOpenCodeServerControl(parsed.providerSessionId, config.stateRoot)) ??
+      await readOpenCodeSpaceChatControl();
     if (!control) {
       return recordOpenCodeAgentTurnFailure(
         parsed,
@@ -2065,4 +2068,294 @@ async function executeOpenCodeTurnPrompt(
   }
   const payload = (await response.json()) as { parts?: unknown };
   return extractOpenCodeAssistantText(payload.parts);
+}
+
+export interface CliAgentTurnActivityConfig {
+  enabled: boolean;
+  brokerExecutable: string;
+  turnTimeoutMs: number;
+  maxPromptBytes: number;
+  maxOutputBytes: number;
+}
+
+export function getCliAgentTurnActivityConfig(env: NodeJS.ProcessEnv = process.env): CliAgentTurnActivityConfig {
+  return {
+    enabled: env.SPACE_ENABLE_CLI_CHAT_TURNS === "true",
+    brokerExecutable: env.SPACE_CLI_VPN_BROKER || "/opt/spaceapp/bin/space-cli-vpn-broker",
+    turnTimeoutMs: positiveIntegerEnvMs(env.SPACE_CLI_CHAT_TURN_TIMEOUT_MS, 900_000),
+    maxPromptBytes: positiveIntegerEnvMs(env.SPACE_CLI_CHAT_TURN_MAX_PROMPT_BYTES, 32_768),
+    maxOutputBytes: positiveIntegerEnvMs(env.SPACE_CLI_CHAT_TURN_MAX_OUTPUT_BYTES, 65_536)
+  };
+}
+
+const cliChatTurnRuntimeIds = new Set(["cli:cursor", "cli:copilot", "cli:gemini", "cli:deepseek"]);
+
+export function supportsCliAgentTurn(providerId: string | null | undefined): boolean {
+  return Boolean(providerId && cliChatTurnRuntimeIds.has(providerId));
+}
+
+export interface RunCliAgentTurnOptions {
+  env?: NodeJS.ProcessEnv;
+  completionStore?: SpaceStore;
+  fetchImpl?: typeof fetch;
+  abortSignal?: AbortSignal;
+  heartbeat?: (details?: unknown) => void;
+  heartbeatIntervalMs?: number;
+}
+
+export async function runCliAgentTurn(
+  input: DummyTurnInput,
+  options: RunCliAgentTurnOptions = {}
+): Promise<TurnWorkflowResult> {
+  const stopHeartbeat = startActivityHeartbeat(
+    options.heartbeat ?? currentActivityHeartbeat(),
+    Math.max(1, options.heartbeatIntervalMs ?? ROOM_AGENT_TURN_HEARTBEAT_INTERVAL_MS)
+  );
+  try {
+    return await runCliAgentTurnImplementation(input, options);
+  } finally {
+    stopHeartbeat();
+  }
+}
+
+async function runCliAgentTurnImplementation(
+  input: DummyTurnInput,
+  options: RunCliAgentTurnOptions = {}
+): Promise<TurnWorkflowResult> {
+  const parsed = dummyTurnInputSchema.parse(input);
+  const abortSignal = options.abortSignal ?? currentActivityCancellationSignal();
+  const config = getCliAgentTurnActivityConfig(options.env);
+  if (!config.enabled) {
+    return recordCliAgentTurnFailure(
+      parsed,
+      "CLI_CHAT_TURNS_DISABLED",
+      "CLI chat turn execution is disabled. Set SPACE_ENABLE_CLI_CHAT_TURNS=true before running this workflow.",
+      {},
+      options.completionStore
+    );
+  }
+  const runtimeId = parsed.providerId;
+  if (!runtimeId || !cliChatTurnRuntimeIds.has(runtimeId)) {
+    return recordCliAgentTurnFailure(
+      parsed,
+      "CLI_CHAT_TURN_RUNTIME_UNAVAILABLE",
+      `CLI chat turns are not available for provider ${runtimeId ?? "unknown"}.`,
+      {},
+      options.completionStore
+    );
+  }
+  if (Buffer.byteLength(parsed.prompt, "utf8") > config.maxPromptBytes) {
+    return recordCliAgentTurnFailure(
+      parsed,
+      "CLI_CHAT_TURN_PROMPT_TOO_LARGE",
+      `The CLI chat prompt exceeds the ${config.maxPromptBytes} byte limit.`,
+      {},
+      options.completionStore
+    );
+  }
+
+  try {
+    const durableRun = await markSpaceAgentRunStarted(parsed, options.completionStore);
+    await ensureCliTurnWorkflowRow(parsed, durableRun, options);
+    const text = await executeCliAgentTurnPrompt(runtimeId, parsed, config, abortSignal);
+    if (abortSignal?.aborted) throw abortSignal.reason;
+    const metadata = { codexAppServer: { agentMessageText: text ?? null, turnStatus: "COMPLETED" } };
+    if (!text) {
+      return recordCliAgentTurnFailure(
+        parsed,
+        "CLI_CHAT_TURN_INCOMPLETE",
+        `The ${runtimeId} CLI did not produce assistant text for this turn.`,
+        metadata,
+        options.completionStore
+      );
+    }
+    const roomAgentOutcome = await recordSpaceAgentRunCompleted(
+      parsed,
+      metadata,
+      getCodexAppServerTurnActivityConfig(options.env),
+      options.completionStore,
+      {
+        fetchImpl: fetchWithCancellation(options.fetchImpl ?? fetch, abortSignal)
+      }
+    );
+    const verified = !roomAgentOutcome || roomAgentOutcome.status === "VERIFIED";
+    return turnWorkflowResultSchema.parse({
+      workflowId: buildCodexAppServerTurnWorkflowId(parsed),
+      roomId: parsed.roomId,
+      paneId: parsed.paneId,
+      traceId: parsed.traceId,
+      status: verified ? "COMPLETED" : "FAILED",
+      message: roomAgentOutcome && !verified
+        ? roomAgentOutcome.statusReason
+        : text.slice(0, 1000),
+      ...(roomAgentOutcome ? { roomAgentOutcome } : {})
+    });
+  } catch (error) {
+    if (abortSignal?.aborted) {
+      await recordSpaceAgentRunInterrupted(parsed, "CLI chat turn was stopped by the operator.", options.completionStore);
+      throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
+    }
+    return recordCliAgentTurnFailure(
+      parsed,
+      "CLI_CHAT_TURN_FAILED",
+      error instanceof Error ? error.message.slice(0, 500) : "The CLI chat turn failed.",
+      {},
+      options.completionStore
+    );
+  }
+}
+
+async function ensureCliTurnWorkflowRow(
+  input: DummyTurnInput,
+  durableRun: Awaited<ReturnType<typeof markSpaceAgentRunStarted>>,
+  options: RunCliAgentTurnOptions = {}
+): Promise<void> {
+  const store = getCompletionStore(options.completionStore);
+  if (!store || !durableRun) return;
+  console.log("ensureCliTurnWorkflowRow: start", input.providerId, buildCodexAppServerTurnWorkflowId(input));
+  try {
+    const providerId = input.providerId ?? null;
+    if (providerId) {
+      try {
+        const providers = await store.listProviders();
+        if (!providers.some((provider) => provider.id === providerId)) {
+          await store.createProvider({ id: providerId, displayName: providerId, type: "CUSTOM" });
+        }
+      } catch {
+        // provider row is optional; recordTurnQueued is best effort
+      }
+    }
+    await store.recordTurnQueued({
+      roomId: input.roomId,
+      paneId: input.paneId,
+      workflowId: buildCodexAppServerTurnWorkflowId(input),
+      runId: durableRun.temporalRunId ?? durableRun.runId,
+      taskQueue: (options.env ?? process.env).SPACE_TEMPORAL_TASK_QUEUE || "space-agent-turns",
+      traceId: input.traceId,
+      prompt: input.prompt,
+      artifactIds: input.artifactIds ?? [],
+      runtime: "CODEX_APP_SERVER",
+      providerId: input.providerId ?? null,
+      modelId: input.modelId ?? null
+    });
+    console.log("ensureCliTurnWorkflowRow: ok");
+  } catch (error) {
+    console.error("ensureCliTurnWorkflowRow failed:", error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function recordCliAgentTurnFailure(
+  input: DummyTurnInput,
+  reasonCode: string,
+  message: string,
+  metadata: Record<string, unknown> = {},
+  storeOverride?: SpaceStore
+): Promise<TurnWorkflowResult> {
+  const parsed = dummyTurnInputSchema.parse(input);
+  const result = turnWorkflowResultSchema.parse({
+    workflowId: buildCodexAppServerTurnWorkflowId(parsed),
+    roomId: parsed.roomId,
+    paneId: parsed.paneId,
+    traceId: parsed.traceId,
+    status: "FAILED",
+    message
+  });
+  const store = getCompletionStore(storeOverride);
+  if (store && !isSpaceAgentTurn(parsed)) {
+    await store.recordTurnFailed({
+      workflowId: result.workflowId,
+      traceId: result.traceId,
+      message: result.message,
+      reasonCode,
+      metadata
+    });
+  }
+  await recordSpaceAgentRunFailed(parsed, reasonCode, message, storeOverride);
+  return result;
+}
+
+async function executeCliAgentTurnPrompt(
+  runtimeId: string,
+  input: DummyTurnInput,
+  config: CliAgentTurnActivityConfig,
+  abortSignal: AbortSignal | undefined
+): Promise<string | null> {
+  const stdout = await runCliAgentTurnProcess(runtimeId, input.prompt, config, abortSignal, input.modelId, input.reasoningEffort);
+  const text = stdout.trim();
+  return text.length ? text.slice(0, config.maxOutputBytes) : null;
+}
+
+function runCliAgentTurnProcess(
+  runtimeId: string,
+  prompt: string,
+  config: CliAgentTurnActivityConfig,
+  abortSignal: AbortSignal | undefined,
+  modelId?: string | null,
+  reasoningEffort?: string | null
+): Promise<string> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const modelEnv = modelId && modelId !== "auto"
+      ? { SPACE_AGENT_CHAT_MODEL: modelId }
+      : {};
+    const effortEnv = reasoningEffort && reasoningEffort !== "none"
+      ? { SPACE_AGENT_CHAT_REASONING_EFFORT: reasoningEffort }
+      : {};
+    const child = spawn(
+      "/usr/bin/sudo",
+      ["-n", config.brokerExecutable, "exec", runtimeId, "agent-chat"],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          LANG: "C.UTF-8",
+          ...modelEnv,
+          ...effortEnv
+        },
+        windowsHide: true
+      }
+    );
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const boundedOutputLimit = Math.max(config.maxOutputBytes, 4096);
+    const settle = (resolve: boolean, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      abortSignal?.removeEventListener("abort", onAbort);
+      if (resolve) {
+        resolvePromise(stdout);
+      } else {
+        rejectPromise(error ?? new Error(stderr.slice(0, 500) || "CLI chat turn process failed."));
+      }
+    };
+    const onAbort = () => {
+      try { child.kill("SIGTERM"); } catch {}
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      settle(false, new Error("CLI chat turn timed out."));
+    }, config.turnTimeoutMs);
+    abortSignal?.addEventListener("abort", onAbort);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      if (stdout.length < boundedOutputLimit) stdout += chunk.slice(0, boundedOutputLimit - stdout.length);
+    });
+    child.stderr.on("data", (chunk: string) => {
+      if (stderr.length < 16_384) stderr += chunk.slice(0, 16_384 - stderr.length);
+    });
+    child.on("error", (error) => settle(false, error));
+    child.on("close", (code) => {
+      if (code === 0 || stdout.trim().length > 0) {
+        // Some CLIs print the answer and then exit non-zero for TTY reasons
+        // (e.g. deepseek reasonix bubbletea); the produced answer still counts.
+        settle(true);
+      } else {
+        settle(false, new Error(stderr.slice(0, 500) || `CLI chat turn process exited with code ${code ?? "unknown"}.`));
+      }
+    });
+    child.stdin.on("error", () => {});
+    child.stdin.end(prompt);
+  });
 }

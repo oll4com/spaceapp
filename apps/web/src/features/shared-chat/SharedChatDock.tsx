@@ -1,6 +1,6 @@
 import { MessageSquare, MessageSquareX, Send } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import type { AuditVerifyResponse, SharedChatMessage } from "@space/contracts";
+import type { SharedChatMessage } from "@space/contracts";
 import { api } from "../../api.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
@@ -31,7 +31,6 @@ function senderLabelFor(message: SharedChatMessage): string {
 export function SharedChatDock() {
   const runtime = getSpaceRuntime();
   const [messages, setMessages] = useState<SharedChatMessage[]>([]);
-  const [audit, setAudit] = useState<AuditVerifyResponse | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -42,7 +41,6 @@ export function SharedChatDock() {
     try {
       const result = await api.sharedChatMessages({ limit: 100 });
       setMessages(result.data);
-      setAudit(await api.auditVerify());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load the shared chat.");
@@ -65,7 +63,6 @@ export function SharedChatDock() {
         };
         if (parsed.type === "message" && parsed.message) {
           setMessages((current) => [parsed.message as SharedChatMessage, ...current]);
-          setAudit((current) => (current ? { ...current, entryCount: current.entryCount + 1 } : current));
         } else if (parsed.type === "clear") {
           setMessages([]);
           void refresh();
@@ -87,7 +84,6 @@ export function SharedChatDock() {
       const message = await api.sendSharedChatMessage({ senderLabel: "operator", content, kind: "message", metadata: {} });
       setDraft("");
       setMessages((current) => [message, ...current]);
-      setAudit(await api.auditVerify());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to send the message.");
     } finally {
@@ -96,13 +92,12 @@ export function SharedChatDock() {
   };
 
   const clearRoom = async () => {
-    if (!window.confirm("Να αδειάσει το Shared Chat; Το αδιάβλητο αρχείο κρατάει όλη την ιστορία.")) return;
+    if (!window.confirm("Clear the Shared Chat? The immutable audit file keeps the full history.")) return;
     setClearing(true);
     setError(null);
     try {
       const result = await api.clearSharedChat();
       setMessages([]);
-      setAudit(await api.auditVerify());
       void result;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to clear the shared chat.");
@@ -119,12 +114,9 @@ export function SharedChatDock() {
         </span>
         <span>
           <h2>Shared Chat</h2>
-          <small>Εσύ και όλα τα AI στο ίδιο δωμάτιο</small>
+          <small>You and all the AIs in the same room</small>
         </span>
         <span className="shared-chat-head-actions">
-          <span className={`shared-chat-audit-pill ${audit?.ok === false ? "is-bad" : "is-ok"}`}>
-            {audit ? (audit.ok ? `Audit OK · ${audit.entryCount}` : "Audit FAILED") : "Audit…"}
-          </span>
           <button
             type="button"
             className="shared-chat-clear"
@@ -143,7 +135,7 @@ export function SharedChatDock() {
           <div className="shared-chat-empty">
             <MessageSquare aria-hidden="true" />
             <span>
-              Κανένα μήνυμα ακόμα. Γράψε κάτι εδώ — όλοι οι agents θα ξυπνήσουν και θα απαντήσουν σε αυτό το δωμάτιο. (Το deepseek ξυπνά μόνο με ρητό @deepseek.)
+              No messages yet. Type something here — all agents will wake up and reply in this room. (Deepseek only wakes with an explicit @deepseek.)
             </span>
           </div>
         ) : (
@@ -194,12 +186,12 @@ export function SharedChatDock() {
           id="shared-chat-message"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="Γράψε σε όλους τους agents… Το deepseek ξυπνά μόνο με ρητό @deepseek."
+          placeholder="Message all agents… Deepseek only wakes with an explicit @deepseek."
           rows={3}
           maxLength={20_000}
         />
         <div className="shared-chat-composer-actions">
-          <small>Όλα τα μηνύματα μένουν καταγεγραμμένα στο αδιάβλητο αρχείο.</small>
+          <small>All messages stay recorded in the immutable audit file.</small>
           <button type="submit" className="shared-chat-send" disabled={sending || !draft.trim()}>
             <Send aria-hidden="true" />
             <span>Send</span>

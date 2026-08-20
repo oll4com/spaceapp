@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { z } from "zod";
 import {
+  cliToggleRuntimeIds,
   cliToggleRuntimeIdSchema,
   cliEgressRouteIdSchema,
   cliVpnProfileIdSchema,
@@ -39,9 +40,10 @@ const brokerInspectionResultSchema = z
     profiles: z.object({
       greece: cliVpnConnectionSchema,
       thailand: cliVpnConnectionSchema,
-      mullvad: cliVpnConnectionSchema
+      mullvad: cliVpnConnectionSchema,
+      nord: cliVpnConnectionSchema
     }).strict(),
-    runtimes: z.array(brokerRuntimeInspectionSchema).max(11)
+    runtimes: z.array(brokerRuntimeInspectionSchema).max(12)
   })
   .strict();
 const brokerGlobalRouteResultSchema = brokerInspectionResultSchema.omit({ connection: true }).extend({
@@ -50,7 +52,7 @@ const brokerGlobalRouteResultSchema = brokerInspectionResultSchema.omit({ connec
     routeId: cliEgressRouteIdSchema,
     isolatedPids: z.array(z.number().int().positive()).max(10_000),
     legacyPids: z.array(z.number().int().positive()).max(10_000)
-  }).strict()).max(11)
+  }).strict()).max(12)
 }).strict();
 const brokerErrorSchema = z
   .object({
@@ -113,6 +115,7 @@ export interface CliVpnBroker {
   verifyProfile(profileId: CliVpnProfileId): Promise<CliVpnConnection>;
   removeProfile(profileId: CliVpnProfileId): Promise<CliVpnConnection>;
   rotateMullvadCity(): Promise<CliVpnConnection>;
+  rotateNordCity(): Promise<CliVpnConnection>;
   setGlobalRoute(
     routeId: CliEgressRouteId,
     runtimes: Array<{ runtimeId: CliToggleRuntimeId; pids: number[] }>
@@ -237,10 +240,14 @@ export class CliVpnBrokerClient {
     return cliVpnConnectionSchema.parse(await this.run("rotate-mullvad-city"));
   }
 
+  async rotateNordCity(): Promise<CliVpnConnection> {
+    return cliVpnConnectionSchema.parse(await this.run("rotate-nord-city"));
+  }
+
   async inspectRuntimes(
     runtimes: Array<{ runtimeId: CliToggleRuntimeId; pids: number[] }>
   ): Promise<CliVpnInspectionResult> {
-    const payload = runtimes.slice(0, 11).map((runtime) => ({
+    const payload = runtimes.slice(0, cliToggleRuntimeIds.length).map((runtime) => ({
       runtimeId: cliToggleRuntimeIdSchema.parse(runtime.runtimeId),
       pids: runtime.pids.filter((pid) => Number.isSafeInteger(pid) && pid > 0).slice(0, 10_000)
     }));
@@ -255,7 +262,7 @@ export class CliVpnBrokerClient {
     routeId: CliEgressRouteId,
     runtimes: Array<{ runtimeId: CliToggleRuntimeId; pids: number[] }>
   ): Promise<CliVpnGlobalRouteResult> {
-    const payload = runtimes.slice(0, 11).map((runtime) => ({
+    const payload = runtimes.slice(0, cliToggleRuntimeIds.length).map((runtime) => ({
       runtimeId: cliToggleRuntimeIdSchema.parse(runtime.runtimeId),
       pids: runtime.pids.filter((pid) => Number.isSafeInteger(pid) && pid > 0).slice(0, 10_000)
     }));

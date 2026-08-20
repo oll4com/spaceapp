@@ -804,6 +804,7 @@ export function createSpaceAgentAdapter(options: {
   codexTurnStarter: TurnStarter;
   codexAgentControl?: SpaceAgentControl | null;
   openCodeControlResolver?: OpenCodeControlResolver | null;
+  cliChatProviderAdapters?: ChatProviderAdapter[];
   readGoal?: SpaceAgentGoalReader;
   requirementsCacheTtlMs?: number;
 }): SpaceAgentAdapter {
@@ -831,6 +832,9 @@ export function createSpaceAgentAdapter(options: {
     ];
     if (openCodeControlResolver) {
       providers.push(opencodeChatProviderAdapter(openCodeControlResolver));
+    }
+    if (options.cliChatProviderAdapters?.length) {
+      providers.push(...options.cliChatProviderAdapters);
     }
     return providers;
   }

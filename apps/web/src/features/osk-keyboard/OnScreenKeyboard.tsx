@@ -6,12 +6,19 @@ import "./osk-keyboard.css";
 
 export const OSK_PANEL_ID = "space-osk-keyboard";
 export const OSK_POSITION_STORAGE_KEY = "space.osk.position";
+export const OSK_SCALE_STORAGE_KEY = "space.osk.scale";
+export const OSK_LANG_STORAGE_KEY = "space.osk.lang";
 
 const VIEWPORT_MARGIN_PX = 8;
 const DEFAULT_PANEL_WIDTH_PX = 620;
 const DEFAULT_PANEL_HEIGHT_PX = 300;
 const MAX_DRAG_DISTANCE_PX = 12;
+const OSK_SCALE_MIN = 0.7;
+const OSK_SCALE_MAX = 1.6;
+const OSK_SCALE_STEP = 0.1;
+const OSK_SCALE_DEFAULT = 1;
 
+type OskLanguage = "en" | "el";
 type OskKeyKind = "char" | "space" | "backspace" | "enter" | "tab" | "shift" | "escape" | "arrow";
 
 type OskKey = {
@@ -39,6 +46,51 @@ const LETTER_ROWS: OskKey[][] = [
   ["z", "x", "c", "v", "b", "n", "m"].map((value) => ({ id: value, kind: "char", label: value, value, code: `Key${value.toUpperCase()}` }))
 ];
 
+const GREEK_LETTER_ROWS: { char: string; code: string }[][] = [
+  ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"].map((char) => ({ char, code: `Digit${char}` })),
+  [
+    { char: ";", code: "Semicolon" },
+    { char: "ς", code: "KeyQ" },
+    { char: "ε", code: "KeyW" },
+    { char: "ρ", code: "KeyE" },
+    { char: "τ", code: "KeyR" },
+    { char: "υ", code: "KeyT" },
+    { char: "θ", code: "KeyY" },
+    { char: "ι", code: "KeyU" },
+    { char: "ο", code: "KeyI" },
+    { char: "π", code: "KeyP" }
+  ],
+  [
+    { char: "α", code: "KeyA" },
+    { char: "σ", code: "KeyS" },
+    { char: "δ", code: "KeyD" },
+    { char: "φ", code: "KeyF" },
+    { char: "γ", code: "KeyG" },
+    { char: "η", code: "KeyH" },
+    { char: "ξ", code: "KeyJ" },
+    { char: "κ", code: "KeyK" },
+    { char: "λ", code: "KeyL" }
+  ],
+  [
+    { char: "ζ", code: "KeyZ" },
+    { char: "χ", code: "KeyX" },
+    { char: "ψ", code: "KeyC" },
+    { char: "ω", code: "KeyV" },
+    { char: "β", code: "KeyB" },
+    { char: "ν", code: "KeyN" },
+    { char: "μ", code: "KeyM" }
+  ]
+];
+
+function getLetterRows(lang: OskLanguage): OskKey[][] {
+  if (lang === "el") {
+    return GREEK_LETTER_ROWS.map((row) =>
+      row.map(({ char, code }) => ({ id: char, kind: "char" as const, label: char, value: char, code }))
+    );
+  }
+  return LETTER_ROWS;
+}
+
 const SHIFTED_SYMBOLS: Record<string, string> = {
   "1": "!",
   "2": "@",
@@ -49,7 +101,8 @@ const SHIFTED_SYMBOLS: Record<string, string> = {
   "7": "&",
   "8": "*",
   "9": "(",
-  "0": ")"
+  "0": ")",
+  ";": ":"
 };
 
 const SPECIAL_KEYS: Record<string, OskKey> = {
@@ -89,6 +142,45 @@ function persistPosition(position: { left: number; top: number }) {
     getSpaceRuntime().platform.localStorage.setItem(OSK_POSITION_STORAGE_KEY, JSON.stringify({ left: position.left, top: position.top }));
   } catch {
     // Position persistence is best effort only.
+  }
+}
+
+function readStoredScale(): number {
+  if (typeof window === "undefined") return OSK_SCALE_DEFAULT;
+  try {
+    const raw = getSpaceRuntime().platform.localStorage.getItem(OSK_SCALE_STORAGE_KEY);
+    if (!raw) return OSK_SCALE_DEFAULT;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return OSK_SCALE_DEFAULT;
+    return Math.min(OSK_SCALE_MAX, Math.max(OSK_SCALE_MIN, parsed));
+  } catch {
+    return OSK_SCALE_DEFAULT;
+  }
+}
+
+function persistScale(scale: number) {
+  try {
+    getSpaceRuntime().platform.localStorage.setItem(OSK_SCALE_STORAGE_KEY, String(scale));
+  } catch {
+    // Scale persistence is best effort only.
+  }
+}
+
+function readStoredLang(): OskLanguage {
+  if (typeof window === "undefined") return "en";
+  try {
+    const raw = getSpaceRuntime().platform.localStorage.getItem(OSK_LANG_STORAGE_KEY);
+    return raw === "el" ? "el" : "en";
+  } catch {
+    return "en";
+  }
+}
+
+function persistLang(lang: OskLanguage) {
+  try {
+    getSpaceRuntime().platform.localStorage.setItem(OSK_LANG_STORAGE_KEY, lang);
+  } catch {
+    // Language persistence is best effort only.
   }
 }
 
@@ -180,6 +272,8 @@ export function OnScreenKeyboard({
   const dragRef = useRef<{ startX: number; startY: number; originLeft: number; originTop: number; moved: boolean } | null>(null);
   const latestPositionRef = useRef<{ left: number; top: number } | null>(null);
   const [shiftHeld, setShiftHeld] = useState(false);
+  const [scale, setScale] = useState<number>(() => readStoredScale());
+  const [lang, setLang] = useState<OskLanguage>(() => readStoredLang());
   const [position, setPosition] = useState<PanelPosition>(() => readStoredPosition() ?? { left: VIEWPORT_MARGIN_PX, top: VIEWPORT_MARGIN_PX, ready: false });
 
   useEffect(() => {
@@ -196,6 +290,27 @@ export function OnScreenKeyboard({
       return { left, top, ready: true };
     });
   }, [open]);
+
+  useEffect(() => {
+    persistScale(scale);
+  }, [scale]);
+
+  useEffect(() => {
+    persistLang(lang);
+  }, [lang]);
+
+  useEffect(() => {
+    if (!open) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    const nextLeft = Math.max(VIEWPORT_MARGIN_PX, Math.min(window.innerWidth - rect.width - VIEWPORT_MARGIN_PX, position.left));
+    const nextTop = Math.max(VIEWPORT_MARGIN_PX, Math.min(window.innerHeight - rect.height - VIEWPORT_MARGIN_PX, position.top));
+    if (nextLeft !== position.left || nextTop !== position.top) {
+      setPosition({ left: nextLeft, top: nextTop, ready: true });
+      persistPosition({ left: nextLeft, top: nextTop });
+    }
+  }, [open, scale, position.left, position.top]);
 
   const handleDragStart = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -249,15 +364,31 @@ export function OnScreenKeyboard({
     sendKeyToFocusedElement(oskKey, input);
   }, [onInput, shiftHeld]);
 
+  const changeScale = useCallback((delta: number) => {
+    setScale((current) => Math.round((Math.min(OSK_SCALE_MAX, Math.max(OSK_SCALE_MIN, current + delta))) * 100) / 100);
+  }, []);
+
+  const toggleLang = useCallback(() => {
+    setLang((current) => (current === "en" ? "el" : "en"));
+  }, []);
+
   const panelStyle: CSSProperties | undefined = mobile
     ? undefined
-    : { left: `${position.left}px`, top: `${position.top}px`, visibility: position.ready ? "visible" : "hidden" };
+    : {
+        left: `${position.left}px`,
+        top: `${position.top}px`,
+        visibility: position.ready ? "visible" : "hidden",
+        transform: `scale(${scale})`,
+        transformOrigin: "top left"
+      };
+
+  const letterRows = getLetterRows(lang);
 
   const rows: OskKey[][] = [
-    [SPECIAL_KEYS.escape!, ...LETTER_ROWS[0]!, SPECIAL_KEYS.backspace!],
-    [...LETTER_ROWS[1]!, SPECIAL_KEYS.enter!],
-    [SPECIAL_KEYS.shift!, ...LETTER_ROWS[2]!, SPECIAL_KEYS.tab!],
-    [...LETTER_ROWS[3]!, SPECIAL_KEYS.space!, SPECIAL_KEYS.arrowLeft!, SPECIAL_KEYS.arrowUp!, SPECIAL_KEYS.arrowDown!, SPECIAL_KEYS.arrowRight!]
+    [SPECIAL_KEYS.escape!, ...letterRows[0]!, SPECIAL_KEYS.backspace!],
+    [...letterRows[1]!, SPECIAL_KEYS.enter!],
+    [SPECIAL_KEYS.shift!, ...letterRows[2]!, SPECIAL_KEYS.tab!],
+    [...letterRows[3]!, SPECIAL_KEYS.space!, SPECIAL_KEYS.arrowLeft!, SPECIAL_KEYS.arrowUp!, SPECIAL_KEYS.arrowDown!, SPECIAL_KEYS.arrowRight!]
   ];
 
   const panel = open ? (
@@ -285,6 +416,34 @@ export function OnScreenKeyboard({
         >
           <Keyboard aria-hidden="true" />
           <span>On-screen keyboard</span>
+        </div>
+        <div className="osk-controls">
+          <div className="osk-size-controls" role="group" aria-label="Keyboard size">
+            <button
+              type="button"
+              className="osk-size-btn"
+              aria-label="Smaller keyboard"
+              onClick={() => changeScale(-OSK_SCALE_STEP)}
+            >
+              −
+            </button>
+            <button
+              type="button"
+              className="osk-size-btn"
+              aria-label="Larger keyboard"
+              onClick={() => changeScale(OSK_SCALE_STEP)}
+            >
+              +
+            </button>
+          </div>
+          <button
+            type="button"
+            className="osk-lang-btn"
+            aria-label="Switch keyboard language"
+            onClick={toggleLang}
+          >
+            {lang === "en" ? "ΕΛ" : "EN"}
+          </button>
         </div>
         <button
           type="button"

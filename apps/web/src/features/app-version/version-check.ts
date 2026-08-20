@@ -8,7 +8,7 @@ export function isUpdateAvailable(status: AppVersionStatus | null): boolean {
 }
 
 export function versionLabel(status: AppVersionStatus | null): string {
-  return status?.appRelease ?? "…";
+  return status?.githubLatest ?? status?.appRelease ?? "…";
 }
 
 export async function fetchAppVersion(): Promise<AppVersionStatus | null> {

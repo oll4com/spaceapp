@@ -646,9 +646,8 @@ export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: sho
     const player = youtubePlayerRef.current;
     if (!player) return;
     const current = player.getCurrent();
-    if (current.total <= 1) return;
     setPlaylistStatus("connecting");
-    if (current.index >= current.total) player.playVideoAt(0);
+    if (current.total > 1 && current.index >= current.total) player.playVideoAt(0);
     else player.next();
     player.play();
   }, []);
@@ -725,28 +724,39 @@ export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: sho
   useEffect(() => {
     if (!queueOpen || !hasPlaylistSession || queueTracks !== null) return;
     let cancelled = false;
-    const ids = youtubePlayerRef.current?.getPlaylistIds() ?? [];
-    if (ids.length === 0) {
-      setQueueTracks([]);
-      return;
-    }
-    void Promise.all(ids.map(async (videoId, index) => {
-      try {
-        const response = await fetch(
-          `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}&format=json`
-        );
-        if (!response.ok) throw new Error("YouTube oEmbed failed.");
-        const data = (await response.json()) as { title?: unknown };
-        const title = typeof data.title === "string" && data.title.trim() ? data.title : `Track ${index + 1}`;
-        return { videoId, title };
-      } catch {
-        return { videoId, title: `Track ${index + 1}` };
+    let retryTimer: number | null = null;
+    let retries = 0;
+    const loadQueue = () => {
+      const ids = youtubePlayerRef.current?.getPlaylistIds() ?? [];
+      if (ids.length === 0) {
+        if (retries < 6) {
+          retries += 1;
+          retryTimer = window.setTimeout(loadQueue, 1000);
+        } else if (!cancelled) {
+          setQueueTracks([]);
+        }
+        return;
       }
-    })).then((tracks) => {
-      if (!cancelled) setQueueTracks(tracks);
-    });
+      void Promise.all(ids.map(async (videoId, index) => {
+        try {
+          const response = await fetch(
+            `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}&format=json`
+          );
+          if (!response.ok) throw new Error("YouTube oEmbed failed.");
+          const data = (await response.json()) as { title?: unknown };
+          const title = typeof data.title === "string" && data.title.trim() ? data.title : `Track ${index + 1}`;
+          return { videoId, title };
+        } catch {
+          return { videoId, title: `Track ${index + 1}` };
+        }
+      })).then((tracks) => {
+        if (!cancelled) setQueueTracks(tracks);
+      });
+    };
+    loadQueue();
     return () => {
       cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
     };
   }, [queueOpen, hasPlaylistSession, queueTracks]);
 
@@ -828,6 +838,19 @@ export function VibeMusicPlayer({ mobile, open, onOpenChange, persistVolume: sho
       window.removeEventListener(USER_LINKS_UPDATED_EVENT, loadMusicLibraryLinks);
     };
   }, [open, source]);
+
+  useEffect(() => {
+    if (
+      !open ||
+      source !== "playlist" ||
+      musicLinksLoading ||
+      musicLinks.length === 0 ||
+      playlistStatus !== "idle" ||
+      youtubePlayerRef.current
+    ) return;
+    const selectedLink = musicLinks.find((link) => link.id === selectedLinkId);
+    if (selectedLink) startPlaylist(selectedLink);
+  }, [musicLinks, musicLinksLoading, open, playlistStatus, selectedLinkId, source, startPlaylist]);
 
   useLayoutEffect(() => {
     if (!open || mobile) return;

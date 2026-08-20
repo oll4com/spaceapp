@@ -136,7 +136,7 @@ export function BenchmarkPage({ onBack }: { onBack: () => void }) {
           <span className="benchmark-title-icon" aria-hidden="true"><Gauge /></span>
           <div>
             <h1>Space Model Benchmark</h1>
-            <p>Εσωτερική σύγκριση μοντέλων για χρήση μέσα στο Space App — σκορ, χρόνος και tokens ανά εργασία.</p>
+            <p>Internal model comparison for use inside the Space App — score, time and tokens per task.</p>
           </div>
         </div>
         <button type="button" className="benchmark-refresh" onClick={() => void load()}>
@@ -144,22 +144,22 @@ export function BenchmarkPage({ onBack }: { onBack: () => void }) {
         </button>
       </header>
 
-      {state.status === "loading" && <p className="benchmark-status">Φόρτωση αποτελεσμάτων…</p>}
+      {state.status === "loading" && <p className="benchmark-status">Loading results…</p>}
       {state.status === "error" && (
         <p className="benchmark-status benchmark-error">
-          Δεν ήταν δυνατή η φόρτωση των δεδομένων: {state.message}
+          Could not load the data: {state.message}
           {" "}
-          <button type="button" className="benchmark-inline-button" onClick={() => void load()}>Δοκίμασε ξανά</button>
+          <button type="button" className="benchmark-inline-button" onClick={() => void load()}>Try again</button>
         </p>
       )}
       {state.status === "ready" && !state.data.available && (
         <p className="benchmark-status">
-          Δεν υπάρχουν δημοσιευμένα αποτελέσματα ακόμα (dir: {state.data.resultsDir}). Τρέξε το benchmark και μετά
+          No published results yet (dir: {state.data.resultsDir}). Run the benchmark and then
           {" "}<code>space-model-benchmark.sh --publish</code>.
         </p>
       )}
       {state.status === "ready" && state.data.available && runs.length === 0 && (
-        <p className="benchmark-status">Δεν υπάρχουν benchmark runs ακόμα. Τρέξε το space-model-benchmark και δημοσίευσε τα αποτελέσματα.</p>
+        <p className="benchmark-status">No benchmark runs yet. Run space-model-benchmark and publish the results.</p>
       )}
 
       {state.status === "ready" && runs.length > 0 && (
@@ -173,7 +173,7 @@ export function BenchmarkPage({ onBack }: { onBack: () => void }) {
                     <th>Model</th>
                     {categories.map((category) => <th key={category}>{category}</th>)}
                     <th>Avg</th>
-                    <th>Διάρκεια</th>
+                    <th>Duration</th>
                     <th>Tokens</th>
                     <th>Run</th>
                   </tr>
@@ -206,7 +206,7 @@ export function BenchmarkPage({ onBack }: { onBack: () => void }) {
 
           {selectedRun && (
             <div className="benchmark-run-detail">
-              <h2>{selectedRun.model} — εργασίες</h2>
+              <h2>{selectedRun.model} — tasks</h2>
               <p className="benchmark-run-meta">
                 runtime {selectedRun.runtime} · judge {selectedRun.noJudge ? "off" : (selectedRun.judgeModel ?? "n/a")} · {formatDate(selectedRun.runTs)}
               </p>
@@ -214,12 +214,12 @@ export function BenchmarkPage({ onBack }: { onBack: () => void }) {
                 <table className="benchmark-table">
                   <thead>
                     <tr>
-                      <th>Εργασία</th>
-                      <th>Κατηγορία</th>
+                      <th>Task</th>
+                      <th>Category</th>
                       <th>Deterministic</th>
                       <th>Judge</th>
                       <th>Final</th>
-                      <th>Διάρκεια</th>
+                      <th>Duration</th>
                       <th>Status</th>
                     </tr>
                   </thead>
@@ -241,7 +241,7 @@ export function BenchmarkPage({ onBack }: { onBack: () => void }) {
 
               {selectedRun.tasks.some((task) => task.deterministic?.checks?.length) && (
                 <details className="benchmark-checks">
-                  <summary>Ντετερμινιστικά checks</summary>
+                  <summary>Deterministic checks</summary>
                   {selectedRun.tasks.map((task) => (
                     <div key={task.taskId} className="benchmark-checks-task">
                       <strong>{task.taskId}</strong>
@@ -259,7 +259,7 @@ export function BenchmarkPage({ onBack }: { onBack: () => void }) {
 
               {selectedRun.tasks.some((task) => (task.judge?.criteria ?? []).length > 0) && (
                 <details className="benchmark-checks">
-                  <summary>Judge κριτήρια</summary>
+                  <summary>Judge criteria</summary>
                   {selectedRun.tasks.map((task) => (
                     <div key={task.taskId} className="benchmark-checks-task">
                       <strong>{task.taskId}</strong>

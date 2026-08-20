@@ -137,6 +137,7 @@ function pane(input: Pick<Pane, "id" | "roomId" | "title" | "mode" | "order"> & 
     isClosed: false,
     split: { parentId: null, direction: null, size: null },
     categoryColor: null,
+    vncTarget: null,
     createdAt: DEMO_FIXED_AT,
     updatedAt: DEMO_FIXED_AT,
     ...input

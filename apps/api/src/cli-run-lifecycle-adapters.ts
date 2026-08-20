@@ -23,7 +23,7 @@ const completionStrategyByRuntimeKey: Record<CliRuntimeKey, CliRunCompletionStra
   deepseek: "UNAVAILABLE_FAIL_CLOSED",
   cursor: "UNAVAILABLE_FAIL_CLOSED",
   copilot: "UNAVAILABLE_FAIL_CLOSED",
-  github: "UNAVAILABLE_FAIL_CLOSED"
+  hermes: "UNAVAILABLE_FAIL_CLOSED"
 };
 
 export const cliRunLifecycleAdapters: readonly CliRunLifecycleAdapter[] = cliRuntimeDescriptors.map(

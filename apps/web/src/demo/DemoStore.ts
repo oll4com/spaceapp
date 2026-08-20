@@ -160,7 +160,8 @@ const demoProviderNames: Readonly<Record<string, string>> = {
   "cli:grok": "xAI",
   "cli:deepseek": "DeepSeek",
   "cli:cursor": "Cursor",
-  "cli:copilot": "GitHub Copilot"
+  "cli:copilot": "GitHub Copilot",
+  "cli:hermes": "Hermes Agent"
 };
 
 function initialSetupConnectionResults(): Map<string, DemoSetupConnectionResult> {
@@ -1661,6 +1662,11 @@ export class DemoStore {
           if (item.mode === "CHAT") {
             return this.addPane(targetRoomId, `Chat ${finalNumber}`, "CHAT", {});
           }
+          if (item.mode === "VNC") {
+            return this.addPane(targetRoomId, `VNC ${finalNumber}`, "VNC", {
+              vncTarget: item.vncTarget
+            });
+          }
           const runtimeName = cliRuntimeLabel(item.terminalRuntimeId)!;
           return this.addPane(targetRoomId, `${runtimeName} ${finalNumber}`, "TERMINAL", {
             cwd: "/etc",
@@ -1715,7 +1721,8 @@ export class DemoStore {
       terminalRuntimeId: options.terminalRuntimeId ?? (mode === "TERMINAL" ? "codex" : null), reasoningEffort: "high",
       cwd: options.cwd ?? (mode === "TERMINAL" ? "/workspace/space-demo" : null), order: roomPanes.length,
       columnSpan: 1, isMaximized: false, isMinimized: false, isClosed: false,
-      split: options.split ?? { parentId: null, direction: null, size: null }, categoryColor: null, createdAt: DEMO_FIXED_AT, updatedAt: DEMO_FIXED_AT
+      split: options.split ?? { parentId: null, direction: null, size: null }, categoryColor: null,
+      vncTarget: options.vncTarget ?? null, createdAt: DEMO_FIXED_AT, updatedAt: DEMO_FIXED_AT
     };
     this.fixture.panes.push(pane);
     return structuredClone(pane);

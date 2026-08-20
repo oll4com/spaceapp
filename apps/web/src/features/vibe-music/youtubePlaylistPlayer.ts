@@ -162,6 +162,11 @@ export async function createYouTubePlaylistPlayer(
   let lastTitle = "";
   let lastTotal = 1;
   let lastIndex = 1;
+  let ready = false;
+  let destroyed = false;
+  let playlistSyncRetryTimer: number | null = null;
+  let pendingPlayback: "play" | "pause" | null = null;
+  let pendingOperations: Array<(activePlayer: YouTubeIFramePlayerLike) => void> = [];
 
   const playerVars: Record<string, string | number | boolean> = {
     autoplay: options.autoplay ? 1 : 0,
@@ -171,7 +176,8 @@ export async function createYouTubePlaylistPlayer(
     playsinline: 1,
     rel: 0,
     iv_load_policy: 3,
-    modestbranding: 1
+    modestbranding: 1,
+    origin: window.location.origin
   };
   if (target.kind === "playlist") {
     playerVars.listType = "playlist";
@@ -184,15 +190,56 @@ export async function createYouTubePlaylistPlayer(
     playerVars.start = Math.floor(options.startSeconds ?? 0);
   }
 
+  const runSafely = (operation: (activePlayer: YouTubeIFramePlayerLike) => void) => {
+    if (!player || destroyed) return;
+    try {
+      operation(player);
+    } catch {
+      // The iframe can transiently reject commands while its API is hydrating.
+    }
+  };
+
+  const runWhenReady = (operation: (activePlayer: YouTubeIFramePlayerLike) => void) => {
+    if (destroyed) return;
+    if (ready) {
+      runSafely(operation);
+      return;
+    }
+    pendingOperations.push(operation);
+  };
+
+  const readSafely = <T,>(reader: (activePlayer: YouTubeIFramePlayerLike) => T, fallback: T): T => {
+    if (!player || destroyed) return fallback;
+    try {
+      return reader(player);
+    } catch {
+      return fallback;
+    }
+  };
+
   const syncNowPlaying = () => {
     if (!player) return;
-    const data = player.getVideoData();
+    const data = readSafely((activePlayer) => activePlayer.getVideoData(), {});
     if (data?.title) lastTitle = data.title;
-    const playlist = player.getPlaylist();
+    const playlist = readSafely((activePlayer) => activePlayer.getPlaylist(), []);
     if (Array.isArray(playlist) && playlist.length > 0) {
       lastTotal = playlist.length;
-      lastIndex = Math.min(Math.max(player.getPlaylistIndex() + 1, 1), lastTotal);
+      const playlistIndex = readSafely((activePlayer) => activePlayer.getPlaylistIndex(), 0);
+      lastIndex = Math.min(Math.max(playlistIndex + 1, 1), lastTotal);
     }
+  };
+
+  const startPlaylistSyncRetry = () => {
+    if (target.kind !== "playlist" || playlistSyncRetryTimer !== null) return;
+    let attempts = 0;
+    playlistSyncRetryTimer = window.setInterval(() => {
+      attempts += 1;
+      syncNowPlaying();
+      if (lastTotal > 1 || attempts >= 10) {
+        if (playlistSyncRetryTimer !== null) window.clearInterval(playlistSyncRetryTimer);
+        playlistSyncRetryTimer = null;
+      }
+    }, 1000);
   };
 
   player = new yt.Player(container.id, {
@@ -202,7 +249,17 @@ export async function createYouTubePlaylistPlayer(
     playerVars,
     events: {
       onReady: () => {
+        if (destroyed || !player) return;
+        ready = true;
         syncNowPlaying();
+        startPlaylistSyncRetry();
+        const operations = pendingOperations;
+        pendingOperations = [];
+        operations.forEach((operation) => runSafely(operation));
+        const playback = pendingPlayback;
+        pendingPlayback = null;
+        if (playback === "play") runSafely((activePlayer) => activePlayer.playVideo());
+        if (playback === "pause") runSafely((activePlayer) => activePlayer.pauseVideo());
         callbacks.onReady?.();
       },
       onStateChange: (event) => {
@@ -217,66 +274,62 @@ export async function createYouTubePlaylistPlayer(
 
   return {
     play() {
-      player?.playVideo();
+      if (ready) runSafely((activePlayer) => activePlayer.playVideo());
+      else pendingPlayback = "play";
     },
     pause() {
-      player?.pauseVideo();
+      if (ready) runSafely((activePlayer) => activePlayer.pauseVideo());
+      else pendingPlayback = "pause";
     },
     next() {
-      player?.nextVideo();
+      runWhenReady((activePlayer) => activePlayer.nextVideo());
     },
     previous() {
-      player?.previousVideo();
+      runWhenReady((activePlayer) => activePlayer.previousVideo());
     },
     setVolume(volume: number) {
-      player?.setVolume(Math.round(Math.min(1, Math.max(0, volume)) * 100));
+      const percent = Math.round(Math.min(1, Math.max(0, volume)) * 100);
+      runWhenReady((activePlayer) => activePlayer.setVolume(percent));
     },
     getCurrent() {
+      syncNowPlaying();
       return { title: lastTitle, index: lastIndex, total: lastTotal };
     },
     getVideoId() {
-      return player?.getVideoData().video_id ?? null;
+      return readSafely((activePlayer) => activePlayer.getVideoData().video_id ?? null, null);
     },
     getPlaylistIds() {
-      return player?.getPlaylist() ?? [];
+      return readSafely((activePlayer) => activePlayer.getPlaylist(), []);
     },
     getCurrentTime() {
-      return player?.getCurrentTime() ?? 0;
+      return readSafely((activePlayer) => activePlayer.getCurrentTime(), 0);
     },
     getDuration() {
-      return player?.getDuration() ?? 0;
+      return readSafely((activePlayer) => activePlayer.getDuration(), 0);
     },
     setLoop(enabled) {
-      try {
-        player?.setLoop(enabled);
-      } catch {
-        // Loop control is best effort only.
-      }
+      runWhenReady((activePlayer) => activePlayer.setLoop(enabled));
     },
     getLoop() {
-      try {
-        return player?.getLoop() ?? false;
-      } catch {
-        return false;
-      }
+      return readSafely((activePlayer) => activePlayer.getLoop(), false);
     },
     seekTo(seconds) {
-      try {
-        player?.seekTo(Math.max(0, seconds), true);
-      } catch {
-        // Seeking is best effort only.
-      }
+      const targetSeconds = Math.max(0, seconds);
+      runWhenReady((activePlayer) => activePlayer.seekTo(targetSeconds, true));
     },
     playVideoAt(index) {
-      try {
-        player?.playVideoAt(index);
-      } catch {
-        // Track jump is best effort only.
-      }
+      runWhenReady((activePlayer) => activePlayer.playVideoAt(index));
     },
     destroy() {
+      const activePlayer = player;
+      destroyed = true;
+      ready = false;
+      pendingPlayback = null;
+      pendingOperations = [];
+      if (playlistSyncRetryTimer !== null) window.clearInterval(playlistSyncRetryTimer);
+      playlistSyncRetryTimer = null;
       try {
-        player?.destroy();
+        activePlayer?.destroy();
       } catch {
         // The player may already have been destroyed.
       }

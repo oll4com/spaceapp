@@ -93,12 +93,12 @@ export async function pickSharedChatDispatchTarget(
 export function buildSharedChatDispatchPrompt(content: string, label: string, runtimeId: string): string {
   return (
     [
-      "Ο χρήστης έγραψε στο Shared Chat (ομαδική κουβέντα όλων των agents):",
+      "The operator wrote in the Shared Chat (the group conversation of all agents):",
       content.slice(0, 600),
       "",
-      "Απάντησέ του ΣΥΝΤΟΜΑ στο Shared Chat εκτελώντας από το shell:",
-      `/opt/spaceapp/scripts/space-chat-post.sh --label ${JSON.stringify(label)} --runtime ${JSON.stringify(runtimeId)} --text 'η απάντησή σου στα ελληνικά'`,
-      "Μην ξεκινήσεις άλλες εργασίες για αυτό το μήνυμα. Αν δεν σε αφορά καθόλου, μην απαντήσεις."
+      "Reply to them in the Shared Chat by running from the shell:",
+      `/opt/spaceapp/scripts/space-chat-post.sh --label ${JSON.stringify(label)} --runtime ${JSON.stringify(runtimeId)} --text 'your reply in English'`,
+      "Do not start any other tasks for this message. If it does not concern you at all, do not reply."
     ].join("\n") + "\r"
   );
 }

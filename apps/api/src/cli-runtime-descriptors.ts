@@ -12,7 +12,7 @@ export type CliRuntimeKey =
   | "deepseek"
   | "cursor"
   | "copilot"
-  | "github";
+  | "hermes";
 
 export interface CliRuntimeDescriptor {
   key: CliRuntimeKey;
@@ -331,28 +331,28 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     loginBootstrapReason: null
   },
   {
-    key: "github",
-    id: "cli:github",
-    providerId: "github",
-    providerName: "GitHub",
-    agentName: "GitHub CLI",
-    commandName: "gh-vscode-parity",
-    commandEnv: "SPACE_CLI_GITHUB_COMMAND",
-    credentialSmokeEnv: "SPACE_CLI_GITHUB_CREDENTIAL_SMOKE",
-    authMode: "DEVICE_CODE",
-    missingAuthState: "LOGIN_REQUIRED",
-    missingAuthReason: "GitHub CLI (gh) login is required. Open its device-code login in Space to continue.",
-    loginAction: "login",
-    credentialObservationAction: "credential-observation",
-    credentialSmokeMarker: "SPACE_GITHUB_OK",
+    key: "hermes",
+    id: "cli:hermes",
+    providerId: "hermes",
+    providerName: "Hermes Agent",
+    agentName: "Hermes Agent CLI",
+    commandName: "hermes-vscode-parity",
+    commandEnv: "SPACE_CLI_HERMES_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_HERMES_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "Hermes Agent CLI is unavailable on this host.",
+    loginAction: null,
+    credentialObservationAction: null,
+    credentialSmokeMarker: "SPACE_HERMES_OK",
     loginBootstrapEnv: null,
     loginBootstrapRuntimeEnv: null,
-    stateRoot: `${codexHome}/space-gh`,
-    tempDir: `${codexHome}/space-gh/tmp`,
-    environment: { GITHUB_HOME: `${codexHome}/space-gh` },
+    stateRoot: "/var/lib/spaceapp-user/.hermes",
+    tempDir: "/var/lib/spaceapp-user/.codex/space-hermes/tmp",
+    environment: { HERMES_HOME: "/var/lib/spaceapp-user/.hermes" },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: null,
-    credentialVerifiedReason: "GitHub CLI (gh) with the official Copilot chat engine, gh account auth, /etc cwd, MCP access, and credential smoke are verified.",
+    defaultModelId: "opencode/deepseek-v4-flash-free",
+    credentialVerifiedReason: "Hermes Agent v0.20.1 installed at ~/.hermes; node-pty TUI smoke and end-to-end chat smoke verified.",
     loginBootstrapReason: null
   }
 ];

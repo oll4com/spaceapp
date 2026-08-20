@@ -115,6 +115,10 @@ const publicPackageTests = new Set([
 
 const publicBinaryFiles = new Map([
   [
+    "apps/web/src/assets/hermes-agent.png",
+    "f56dc7e9cd3320d7fad604d081af6a98c9bcb245311276e08563b62b1925cb1d"
+  ],
+  [
     "apps/web/public/brand/spaceapp-open-source-banner.webp",
     "ebe97ac74d4f287e5592b104f9ef54de1759716eba287bcbd20d21a293107de2"
   ],

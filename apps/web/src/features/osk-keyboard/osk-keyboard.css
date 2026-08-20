@@ -77,6 +77,49 @@
   height: 0.95rem;
 }
 
+.osk-controls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.4rem;
+}
+
+.osk-size-controls {
+  display: flex;
+  gap: 0.2rem;
+}
+
+.osk-size-btn,
+.osk-lang-btn {
+  min-width: 2rem;
+  min-height: 2rem;
+  display: grid;
+  place-items: center;
+  padding: 0 0.45rem;
+  border-color: #354044;
+  background: #101415;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.osk-size-btn {
+  padding: 0;
+}
+
+.osk-size-btn:hover:not(:disabled),
+.osk-size-btn:focus-visible,
+.osk-lang-btn:hover:not(:disabled),
+.osk-lang-btn:focus-visible {
+  border-color: var(--room-accent, #6db7aa);
+  background: #26302e;
+}
+
+.osk-sheet .osk-size-controls {
+  display: none;
+}
+
 .osk-keys {
   min-height: 0;
   display: grid;
