@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS build
+FROM node:26.6.0-trixie-slim@sha256:80f12a4030a00d8f78ebc4602bc3ef0f984932f498649b8ed3c0a740a6dff4a8 AS build
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential liblzma5 python3 pkg-config \
@@ -10,7 +10,7 @@ RUN npm ci --no-audit --no-fund \
     && npm run build \
     && npm prune --omit=dev
 
-FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS runtime-base
+FROM node:26.6.0-trixie-slim@sha256:80f12a4030a00d8f78ebc4602bc3ef0f984932f498649b8ed3c0a740a6dff4a8 AS runtime-base
 ARG TARGETARCH
 ARG NPM_VERSION=11.18.0
 ENV NODE_ENV=production \
