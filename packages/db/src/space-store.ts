@@ -7825,7 +7825,10 @@ export class PostgresSpaceStore implements SpaceStore {
           roomId: updated.roomId,
           paneId: updated.paneId,
           turnId: null,
-          workflowId: updated.workflowId,
+          // The Temporal workflow row is created by the first activity. A
+          // workflow-task failure can therefore be interrupted before that row
+          // exists, so this event must not depend on the workflow foreign key.
+          workflowId: null,
           traceId,
           type: "TURN_FAILED",
           message: updated.status === "INTERRUPTED" ? "Pane agent run interrupted." : "Pane agent run failed.",
@@ -7928,7 +7931,9 @@ export class PostgresSpaceStore implements SpaceStore {
         "SELECT EXISTS (SELECT 1 FROM space_agent_runs WHERE session_id = $1 AND status = 'RUNNING' AND run_id <> $2) AS exists",
         [input.sessionId, input.runId]
       );
-      const keepActive = !paneClosed || (otherRunningRunResult.rows[0]?.exists ?? false);
+      // A late completion must never reactivate a task that was superseded by
+      // a newer active Chat session for the same pane.
+      const keepActive = currentSession.isActive && (!paneClosed || (otherRunningRunResult.rows[0]?.exists ?? false));
       const updatedSession = await client.query<SpaceAgentSessionRow>(
         `
           UPDATE space_agent_sessions
@@ -14165,8 +14170,8 @@ export class PostgresSpaceStore implements SpaceStore {
       payload: { initialPaneCount: 0 }
     });
     // The starter room opens with the OpenCode CLI pane already in place so the
-    // owner's first visit lands on a working free-model agent immediately
-    // (default model: opencode/deepseek-v4-flash-free per cli-runtime-descriptors).
+    // owner's first visit lands on a working agent immediately (no default
+    // model; the CLI uses its own configured model).
     const starterPane = await this.insertPane(
       client,
       {

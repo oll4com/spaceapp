@@ -226,7 +226,7 @@ export function CodexComposer({
         value={prompt}
         onChange={(event) => onPromptChange(event.target.value)}
         onKeyDown={handlePromptKeyDown}
-        placeholder="Ask Codex"
+        placeholder="Ask the selected provider"
         rows={1}
         disabled={pending || isDisabled}
         title={disabledTitle}

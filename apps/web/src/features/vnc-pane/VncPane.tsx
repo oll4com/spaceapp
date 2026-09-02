@@ -49,36 +49,55 @@ export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
     const target = pendingTargetRef.current;
     const container = containerRef.current;
     if (!target || !container) return;
+    const connectionTarget = target;
+    const screenContainer = container;
+    let cancelled = false;
     pendingTargetRef.current = null;
     setStatusMessage(null);
     setDesktopName(null);
-    const url = api.vncStreamWebSocketUrl(pane.id, target.host, target.port);
-    const rfb = new RFB(container, url, {
-      credentials: target.password ? { password: target.password } : undefined
-    });
-    rfb.viewOnly = observerOnly;
-    rfb.scaleViewport = true;
-    rfb.resizeSession = false;
-    rfb.focusOnClick = true;
-    rfb.addEventListener("connect", () => {
-      setState("connected");
-      setStatusMessage(null);
-    });
-    rfb.addEventListener("disconnect", (event) => {
-      setState("closed");
-      setStatusMessage(event.detail.message || (event.detail.clean ? "Disconnected." : "Connection closed."));
-      rfbRef.current = null;
-    });
-    rfb.addEventListener("credentialsrequired", () => {
-      setState("error");
-      setStatusMessage("Password required. Reconnect with the VNC password.");
-    });
-    rfb.addEventListener("securityfailure", (event) => {
-      setState("error");
-      setStatusMessage(event.detail.reason || "VNC security failure.");
-    });
-    rfb.addEventListener("desktopname", (event) => setDesktopName(event.detail.name));
-    rfbRef.current = rfb;
+
+    async function startConnection() {
+      try {
+        const url = await api.vncStreamWebSocketUrl(pane.id, connectionTarget.host, connectionTarget.port);
+        if (cancelled) return;
+        const rfb = new RFB(screenContainer, url, {
+          credentials: connectionTarget.password ? { password: connectionTarget.password } : undefined
+        });
+        rfb.viewOnly = observerOnly;
+        rfb.scaleViewport = true;
+        rfb.resizeSession = false;
+        rfb.focusOnClick = true;
+        rfb.addEventListener("connect", () => {
+          setState("connected");
+          setStatusMessage(null);
+        });
+        rfb.addEventListener("disconnect", (event) => {
+          setState("closed");
+          setStatusMessage(event.detail.message || (event.detail.clean ? "Disconnected." : "Connection closed."));
+          rfbRef.current = null;
+        });
+        rfb.addEventListener("credentialsrequired", () => {
+          setState("error");
+          setStatusMessage("Password required. Reconnect with the VNC password.");
+        });
+        rfb.addEventListener("securityfailure", (event) => {
+          setState("error");
+          setStatusMessage(event.detail.reason || "VNC security failure.");
+        });
+        rfb.addEventListener("desktopname", (event) => setDesktopName(event.detail.name));
+        rfbRef.current = rfb;
+      } catch {
+        if (cancelled) return;
+        rfbRef.current = null;
+        setState("error");
+        setStatusMessage("VNC connection could not be started. Retry the connection.");
+      }
+    }
+
+    void startConnection();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, dialogOpen]);
 

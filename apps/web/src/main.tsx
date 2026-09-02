@@ -3,7 +3,10 @@ import { createRoot } from "react-dom/client";
 import { clearStaleBuildRecoveryGuard, handleStaleBuildLoadError } from "./entry-load-recovery.js";
 import { resolveEntryRoute } from "./entry-route.js";
 import { enableStrictCspCompatibility } from "./strict-csp.js";
-import { startAppDiagnosticsBootstrap } from "./app-diagnostics/app-diagnostics-bootstrap.js";
+import {
+  appDiagnosticsSessionIsAuthenticated,
+  startAppDiagnosticsBootstrap
+} from "./app-diagnostics/app-diagnostics-bootstrap.js";
 
 enableStrictCspCompatibility();
 
@@ -17,7 +20,7 @@ async function mount() {
     }
   }
   const route = resolveEntryRoute(window.location.pathname, window.location.hostname);
-  if (route === "app") {
+  if (route === "app" && await appDiagnosticsSessionIsAuthenticated()) {
     const diagnosticsStartup = startAppDiagnosticsBootstrap();
     await diagnosticsStartup.beforeMount;
   }

@@ -1667,6 +1667,9 @@ export class DemoStore {
               vncTarget: item.vncTarget
             });
           }
+          if (item.mode === "HARNESS") {
+            return this.addPane(targetRoomId, `Harness ${finalNumber}`, "HARNESS", {});
+          }
           const runtimeName = cliRuntimeLabel(item.terminalRuntimeId)!;
           return this.addPane(targetRoomId, `${runtimeName} ${finalNumber}`, "TERMINAL", {
             cwd: "/etc",

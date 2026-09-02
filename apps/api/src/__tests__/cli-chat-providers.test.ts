@@ -1,5 +1,74 @@
 import { describe, expect, it } from "vitest";
-import { cliRuntimeModelsChatProviderAdapter } from "../chat-providers.js";
+import {
+  cliChatRuntimeName,
+  cliRuntimeModelsChatProviderAdapter,
+  openCodeChatVerifiedModelIds,
+  opencodeChatProviderAdapter
+} from "../chat-providers.js";
+import type { OpenCodeServerControl } from "@space/opencode-control";
+
+const openCodeControl: OpenCodeServerControl = {
+  version: 1,
+  spaceSessionId: "space-shared",
+  nativeSessionId: "ses_catalog",
+  serverPort: 47047,
+  serverHost: "10.254.240.13",
+  serverUsername: "space",
+  serverPassword: "secret",
+  updatedAt: "2026-08-28T00:00:00.000Z"
+};
+
+describe("OpenCode Chat model policy", () => {
+  it("advertises only the model proven to complete a native Chat turn", () => {
+    expect(openCodeChatVerifiedModelIds).toEqual(["opencode/muse-spark-1.2-contributor-free"]);
+    expect(openCodeChatVerifiedModelIds).not.toContain("opencode/nemotron-3.5-lightning-free");
+  });
+
+  it("filters the live catalog to the verified model and makes it the default", async () => {
+    const adapter = opencodeChatProviderAdapter(
+      async () => openCodeControl,
+      async () => [
+        { providerId: "opencode", modelId: "nemotron-3.5-lightning-free", displayName: "Broken active model", variants: [], defaultVariant: null },
+        { providerId: "opencode", modelId: "muse-spark-1.2-contributor-free", displayName: "Muse Spark 1.2 Free", variants: [], defaultVariant: null }
+      ]
+    );
+
+    const result = await adapter.loadCatalog();
+
+    expect(result.error).toBeNull();
+    expect(result.models).toHaveLength(1);
+    expect(result.models[0]).toMatchObject({
+      id: "opencode/muse-spark-1.2-contributor-free",
+      displayName: "Muse Spark 1.2 Free",
+      isDefault: true
+    });
+  });
+
+  it("makes OpenCode unavailable when its verified Chat model disappears", async () => {
+    const adapter = opencodeChatProviderAdapter(
+      async () => openCodeControl,
+      async () => [
+        { providerId: "opencode", modelId: "nemotron-3.5-lightning-free", displayName: "Broken active model", variants: [], defaultVariant: null }
+      ]
+    );
+
+    const result = await adapter.loadCatalog();
+
+    expect(result.models).toEqual([]);
+    expect(result.error).toBe("OpenCode did not advertise a model verified for Chat panes.");
+  });
+});
+
+describe("cliChatRuntimeName", () => {
+  it("provides display names for every chat CLI runtime", () => {
+    expect(cliChatRuntimeName("cli:kimi")).toBe("Kimi Code");
+    expect(cliChatRuntimeName("cli:claude")).toBe("Claude Code");
+    expect(cliChatRuntimeName("cli:qwen")).toBe("Qwen Code");
+    expect(cliChatRuntimeName("cli:grok")).toBe("Grok");
+    expect(cliChatRuntimeName("cli:autohand")).toBe("Autohand");
+    expect(cliChatRuntimeName("cli:hermes")).toBe("Hermes");
+  });
+});
 
 describe("cliRuntimeModelsChatProviderAdapter", () => {
   it("parses 2-column TSV (gemini/cursor format) with single none effort", async () => {

@@ -73,7 +73,8 @@ import {
   UserCheck,
   Wrench,
   X,
-  Youtube
+  Youtube,
+  Zap
 } from "./features/ui-theme/app-icons.js";
 import type { LucideIcon } from "./features/ui-theme/app-icons.js";
 import { SensitiveDataMask } from "./features/sensitive-data/SensitiveDataMask.js";
@@ -177,6 +178,7 @@ import {
 } from "./cli-runtime-visibility-events.js";
 import {
   CLI_VPN_ROUTING_STATUS_EVENT,
+  harnessPaneVpnRoutingPresentation,
   loadCliVpnRoutingStatus,
   paneVpnRoutingPresentation,
   publishCliVpnRoutingStatus
@@ -222,6 +224,7 @@ import {
   AppDiagnosticsSettingsCard
 } from "./features/app-diagnostics/AppDiagnosticsSettingsCard.js";
 import { emitAppDiagnosticsPerformance } from "./app-diagnostics/app-diagnostics-performance.js";
+import { startAppDiagnosticsBootstrap } from "./app-diagnostics/app-diagnostics-bootstrap.js";
 import { CodexCliDefaultsCard } from "./features/codex-cli-defaults/CodexCliDefaultsCard.js";
 import {
   CLI_LAUNCHER_MENU_ID,
@@ -372,14 +375,19 @@ const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
   DESIGN: Sparkles,
   TERMINAL: Terminal,
   YOUTUBE: Youtube,
-  VNC: Monitor
+  VNC: Monitor,
+  HARNESS: Network
 };
 
 const ROOM_PRESENTATION_FAILURE_TIMEOUT_MS = 8_000;
 
 function PaneModeIcon({ pane }: { pane: Pick<Pane, "mode" | "terminalRuntimeId"> }) {
   const runtimeId = pane.terminalRuntimeId?.replace(/^cli:/, "") ?? "codex";
-  const runtimeBrand = pane.mode === "TERMINAL" ? cliRuntimePresentation(runtimeId) : undefined;
+  const runtimeBrand = pane.mode === "TERMINAL"
+    ? cliRuntimePresentation(runtimeId)
+    : pane.mode === "HARNESS"
+      ? cliRuntimePresentation("cli:harness")
+      : undefined;
   if (runtimeBrand) {
     return (
       <img
@@ -535,6 +543,9 @@ const LazyYouTubePane = lazy(() =>
 );
 const LazyVncPane = lazy(() =>
   import("./features/vnc-pane/VncPane.js").then((module) => ({ default: module.VncPane }))
+);
+const LazyHarnessPane = lazy(() =>
+  import("./features/harness-pane/HarnessPane.js").then((module) => ({ default: module.HarnessPane }))
 );
 const LazyAdminOperationsDialog = lazy(() =>
   import("./features/admin-operations/AdminOperationsDialog.js")
@@ -1025,7 +1036,8 @@ const paneModeLabels: Record<Pane["mode"], string> = {
   DESIGN: "Design",
   TERMINAL: "CLI",
   YOUTUBE: "YouTube",
-  VNC: "VNC"
+  VNC: "VNC",
+  HARNESS: "Harness"
 };
 
 function paneModeLabel(mode: Pane["mode"]): string {
@@ -2257,30 +2269,7 @@ export function App() {
     () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches
   );
   const modernColorMode = resolveModernColorMode(modernAppearance, systemPrefersDark);
-  useEffect(() => {
-    const interval = window.setInterval(() => publishCliVpnRoutingStatus(), 20_000);
-    return () => window.clearInterval(interval);
-  }, []);
   const [toolbarVpnRoute, setToolbarVpnRoute] = useState<CliEgressRouteId | null>(null);
-  useEffect(() => {
-    let active = true;
-    const refresh = () => {
-      void api
-        .cliVpnRoutingStatus()
-        .then((status) => {
-          if (active) setToolbarVpnRoute(status.selectedRoute);
-        })
-        .catch(() => {
-          if (active) setToolbarVpnRoute(null);
-        });
-    };
-    refresh();
-    window.addEventListener(CLI_VPN_ROUTING_STATUS_EVENT, refresh);
-    return () => {
-      active = false;
-      window.removeEventListener(CLI_VPN_ROUTING_STATUS_EVENT, refresh);
-    };
-  }, []);
   useEffect(() => {
     const body = document.body;
     if (uiTheme !== "modern") {
@@ -2301,6 +2290,42 @@ export function App() {
   const [auth, setAuth] = useState<AuthMe | null>(null);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const voiceSettingsAuthUserIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!auth?.isAuthenticated) return;
+    const interval = window.setInterval(() => publishCliVpnRoutingStatus(), 20_000);
+    return () => window.clearInterval(interval);
+  }, [auth?.isAuthenticated]);
+
+  useEffect(() => {
+    if (!auth?.isAuthenticated) {
+      setToolbarVpnRoute(null);
+      return;
+    }
+    let active = true;
+    const refresh = () => {
+      void api
+        .cliVpnRoutingStatus()
+        .then((status) => {
+          if (active) setToolbarVpnRoute(status.selectedRoute);
+        })
+        .catch(() => {
+          if (active) setToolbarVpnRoute(null);
+        });
+      void api
+        .cliRuntimeSettings({ forceRefresh: true })
+        .then((settings) => {
+          if (active) setCliRuntimeSettings(settings);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    window.addEventListener(CLI_VPN_ROUTING_STATUS_EVENT, refresh);
+    return () => {
+      active = false;
+      window.removeEventListener(CLI_VPN_ROUTING_STATUS_EVENT, refresh);
+    };
+  }, [auth?.isAuthenticated]);
 
   useEffect(() => {
     const authenticatedUserId = auth?.isAuthenticated ? auth.user?.id ?? "authenticated" : null;
@@ -2390,6 +2415,9 @@ export function App() {
   const [isPaneLayoutMenuOpen, setIsPaneLayoutMenuOpen] = useState(false);
   const [isCollapsedPaneLayoutMenuOpen, setIsCollapsedPaneLayoutMenuOpen] = useState(false);
   const [paneLayoutPending, setPaneLayoutPending] = useState(false);
+  const [vpnCityNotice, setVpnCityNotice] = useState<string | null>(null);
+  const [vpnCityPending, setVpnCityPending] = useState(false);
+  useAutoDismiss(vpnCityNotice, setVpnCityNotice);
   const [paneLayoutError, setPaneLayoutError] = useState<string | null>(null);
   const [isPaneSpanAllMenuOpen, setIsPaneSpanAllMenuOpen] = useState(false);
   const [paneSpanAllPending, setPaneSpanAllPending] = useState(false);
@@ -2516,6 +2544,8 @@ export function App() {
   const vibeMusicButtonRef = useRef<HTMLButtonElement | null>(null);
   const paneLayoutButtonRef = useRef<HTMLButtonElement | null>(null);
   const paneLayoutCollapsedButtonRef = useRef<HTMLButtonElement | null>(null);
+  const collapsedToolbarRef = useRef<HTMLDivElement | null>(null);
+  const vpnCityNoticeRef = useRef<HTMLDivElement | null>(null);
   const paneSpanAllButtonRef = useRef<HTMLButtonElement | null>(null);
   const roomThemeButtonRef = useRef<HTMLButtonElement | null>(null);
   const serverActionsButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -3513,8 +3543,6 @@ export function App() {
   }, []);
 
   async function refresh() {
-    // Prefetch CLI runtime registry before terminal panes mount so multi-pane rooms share one flight.
-    api.warmCliRuntimes();
     const me = await api.me();
     const nextSetupStatus: SetupStatus =
       me.isAuthenticated && !me.isSetupRequired
@@ -3524,18 +3552,12 @@ export function App() {
     setAuth(me);
     setAuthBootstrapError(null);
     if (!me.isAuthenticated) return;
+    // Prefetch only after authentication so the login surface never probes a
+    // protected runtime endpoint. Multi-pane rooms still share one flight.
+    api.warmCliRuntimes();
     if (me.user?.role === "ADMIN") api.warmCliRuntimeSettings();
 
     let roomPayload = await api.rooms();
-    if (me.user?.role === "ADMIN" && me.user?.automationScope !== "APP_DIAGNOSTICS") {
-      const recovery = await api.openCliMaintenanceRecovery().catch(() => {
-        setError("Scheduled CLI Recovery handoffs could not be opened automatically.");
-        return null;
-      });
-      if (recovery?.room && !roomPayload.data.some((room) => room.id === recovery.room?.id)) {
-        roomPayload = await api.rooms();
-      }
-    }
     if (
       selectedRoomId &&
       !roomPayload.data.some((room) => room.id === selectedRoomId) &&
@@ -3920,6 +3942,8 @@ export function App() {
   async function handleLogin(nextAuth: AuthMe) {
     setAuth(nextAuth);
     if (nextAuth.isAuthenticated) {
+      const diagnosticsStartup = startAppDiagnosticsBootstrap();
+      await diagnosticsStartup.beforeMount;
       await refresh();
     }
   }
@@ -4181,7 +4205,7 @@ export function App() {
     const activeCli = roomCliActivityCounts[roomId] ?? 0;
     if (activeCli > 0) {
       const confirmed = window.confirm(
-        `Το δωμάτιο έχει ${activeCli} ενεργά CLI ${activeCli === 1 ? "session" : "sessions"} που θα τερματιστούν. Να διαγραφεί το δωμάτιο;`
+        `This room has ${activeCli} active CLI ${activeCli === 1 ? "session" : "sessions"} that will be terminated. Delete the room?`
       );
       if (!confirmed) return;
     }
@@ -4282,6 +4306,36 @@ export function App() {
     setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
     setSelectedPaneId(pane.id);
     await refreshRoomEvents(selectedRoomId);
+  }
+
+  async function addHarnessPane() {
+    if (!selectedRoomId || panes.length >= 16) return;
+    try {
+      const pane = await api.createPane(selectedRoomId, paneTitleForMode("HARNESS", panes.length + 1), "HARNESS");
+      setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
+      setSelectedPaneId(pane.id);
+      await refreshRoomEvents(selectedRoomId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Harness pane failed to open");
+    }
+  }
+
+  async function addLegacyHarnessPane() {
+    if (!selectedRoomId || panes.length >= 16) return;
+    let createdPaneId: string | null = null;
+    try {
+      const pane = await api.createPane(selectedRoomId, "DeepSeek Harness", "BROWSER");
+      createdPaneId = pane.id;
+      await api.startBrowserSession(pane.id, {
+        targetUrl: "http://127.0.0.1:3080/"
+      });
+      setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
+      setSelectedPaneId(pane.id);
+      await refreshRoomEvents(selectedRoomId);
+    } catch (err) {
+      if (createdPaneId) await api.closePane(createdPaneId).catch(() => undefined);
+      setError(err instanceof Error ? err.message : "DeepSeek Harness pane failed to open");
+    }
   }
 
   async function splitPane(sourcePane: Pane, direction: "horizontal" | "vertical") {
@@ -5200,6 +5254,7 @@ export function App() {
       );
       setPaneLayoutPending(false);
       closePaneLayoutMenu();
+      setIsCollapsedPaneLayoutMenuOpen(false);
       emitAppDiagnosticsPerformance({
         category: "PERFORMANCE",
         metric: "PANE_LAYOUT",
@@ -5218,6 +5273,25 @@ export function App() {
       );
       setPaneLayoutError(layoutError instanceof Error ? layoutError.message : "Pane layout update failed");
       setPaneLayoutPending(false);
+    }
+  }
+
+  async function rotateVpnCityFromToolbar() {
+    if (vpnCityPending || !toolbarVpnRoute) return;
+    setVpnCityPending(true);
+    setVpnCityNotice(null);
+    const providerLabel = toolbarVpnRoute === "nord" ? "NordVPN" : "Mullvad";
+    try {
+      const connection = toolbarVpnRoute === "nord"
+        ? await api.rotateCliNordCity()
+        : await api.rotateCliMullvadCity();
+      setVpnCityNotice(connection.relay
+        ? `${providerLabel} changed to ${connection.relay.cityName}, ${connection.relay.countryName} (${connection.egressIpv4 ?? "public IP verifying"}).`
+        : `${providerLabel} city changed and the new egress was verified.`);
+    } catch {
+      setVpnCityNotice(`${providerLabel} city could not be changed.`);
+    } finally {
+      setVpnCityPending(false);
     }
   }
 
@@ -5471,6 +5545,15 @@ export function App() {
         disabled: !selectedRoomId || panes.length >= 16
       },
       {
+        id: "add-harness",
+        label: "Harness",
+        title: "Open DeepSeek Harness",
+        ariaLabel: "Harness",
+        icon: Network,
+        onClick: () => void addHarnessPane(),
+        disabled: !selectedRoomId || panes.length >= 16
+      },
+      {
         id: "add-youtube",
         label: "Add YouTube pane",
         title: "Add YouTube pane",
@@ -5677,6 +5760,16 @@ export function App() {
           onSelect: () => {
             adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
             setAdminOperationTool("maintenance");
+          }
+        },
+        {
+          id: "cli-update-all",
+          label: "Update all CLI types",
+          description: "Detect all CLI types and update every managed type, including disabled ones, while preserving custom procedures.",
+          icon: Zap,
+          onSelect: () => {
+            adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
+            setAdminOperationTool("update-all");
           }
         },
         {
@@ -5935,6 +6028,19 @@ export function App() {
       setIsWorkspaceTextSizePickerOpen(false);
       roomToolbar.closeMenus();
     }
+  });
+  useDismissibleToolbarLayer({
+    containerRef: collapsedToolbarRef,
+    active: isCollapsedPaneLayoutMenuOpen,
+    onDismiss: () => {
+      setIsCollapsedPaneLayoutMenuOpen(false);
+      window.requestAnimationFrame(() => paneLayoutCollapsedButtonRef.current?.focus());
+    }
+  });
+  useDismissibleToolbarLayer({
+    containerRef: vpnCityNoticeRef,
+    active: Boolean(vpnCityNotice),
+    onDismiss: () => setVpnCityNotice(null)
   });
   const dockBrowserPane = useMemo(
     () => (activePane?.mode === "BROWSER" || activePane?.mode === "YOUTUBE" ? activePane : visiblePanes.find((pane) => pane.mode === "BROWSER" || pane.mode === "YOUTUBE") ?? null),
@@ -6958,12 +7064,14 @@ export function App() {
                         layerShellVisiblePaneIds.has(pane.id)
                       }
                       isMobilePaneFocused={isInteractive && isMobilePaneFocused}
+                      oskOpen={isOskKeyboardOpen}
                       browserObserverOnly={auth?.user?.automationScope === "APP_DIAGNOSTICS"}
                       terminalObserverOnly={auth?.user?.automationScope === "APP_DIAGNOSTICS"}
                       uiTheme={uiTheme}
                       shellMode={shellMode}
                       codexTurnsEnabled={codexTurnsEnabled}
                       codexEnvironment={codexEnvironmentSummary}
+                      cliRuntimeSettings={cliRuntimeSettings}
                       canMoveToAnotherRoom={rooms.some((room) => room.id !== pane.roomId)}
                       draggedPaneId={draggedPaneId}
                       dragOverPaneId={paneDragOverId}
@@ -7109,6 +7217,11 @@ export function App() {
           <div className="notice-row"><span>{clipToolNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setClipToolNotice(null)}><X aria-hidden="true" /></button></div>
         </div>
       ) : null}
+      {vpnCityNotice ? (
+        <div ref={vpnCityNoticeRef} className="banner ok" role="status">
+          <div className="notice-row"><span>{vpnCityNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setVpnCityNotice(null)}><X aria-hidden="true" /></button></div>
+        </div>
+      ) : null}
       {!isRoomFocusMode && clipboardNotice ? (
         <div className="banner warn" role="status">
           <div className="notice-row"><span>{clipboardNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setClipboardNotice(null)}><X aria-hidden="true" /></button></div>
@@ -7187,7 +7300,7 @@ export function App() {
 
         <section className={boardClassName} aria-label="Pane board">
           {!isMobilePaneFocused && isRoomToolbarHidden ? (
-            <div className="room-toolbar-collapsed room-toolbar-floating-controls" role="region" aria-label="Room toolbar hidden">
+            <div ref={collapsedToolbarRef} className="room-toolbar-collapsed room-toolbar-floating-controls" role="region" aria-label="Room toolbar hidden">
               <button
                 ref={paneLayoutCollapsedButtonRef}
                 type="button"
@@ -7272,6 +7385,7 @@ export function App() {
                 className="room-toolbar-visibility-button"
                 title={`Change ${toolbarVpnRoute === "nord" ? "NordVPN" : "Mullvad"} city`}
                 aria-label={`Change ${toolbarVpnRoute === "nord" ? "NordVPN" : "Mullvad"} city`}
+                disabled={vpnCityPending}
                 onClick={() => {
                   setIsThemeMenuOpen(false);
                   setIsPaneLayoutMenuOpen(false);
@@ -7279,11 +7393,7 @@ export function App() {
                   setIsPaneSpanAllMenuOpen(false);
                   setIsWorkspaceTextSizePickerOpen(false);
                   setIsVibeMusicOpen(false);
-                  if (toolbarVpnRoute === "nord") {
-                    void api.rotateCliNordCity().catch(() => {});
-                  } else {
-                    void api.rotateCliMullvadCity().catch(() => {});
-                  }
+                  void rotateVpnCityFromToolbar();
                 }}
               >
                 <RefreshCw aria-hidden="true" />
@@ -8788,9 +8898,11 @@ const PaneCard = memo(function PaneCard({
   terminalObserverOnly,
   uiTheme,
   shellMode,
+  oskOpen,
   maskSensitiveData,
   codexTurnsEnabled,
   codexEnvironment,
+  cliRuntimeSettings,
   canMoveToAnotherRoom,
   draggedPaneId,
   dragOverPaneId,
@@ -8850,9 +8962,11 @@ const PaneCard = memo(function PaneCard({
   terminalObserverOnly: boolean;
   uiTheme: UiTheme;
   shellMode: ShellMode;
+  oskOpen: boolean;
   maskSensitiveData: boolean;
   codexTurnsEnabled: boolean;
   codexEnvironment: CodexEnvironment | null;
+  cliRuntimeSettings: CliRuntimeSettingsResponse | null;
   canMoveToAnotherRoom: boolean;
   draggedPaneId: string | null;
   dragOverPaneId: string | null;
@@ -8898,6 +9012,10 @@ const PaneCard = memo(function PaneCard({
   onTerminalPrefillReadyChange: (roomId: string, paneId: string, ready: boolean) => void;
   onTerminalRevealReady: (roomId: string, paneId: string, generation: number) => void;
 }) {
+  const isCoarsePointer = useMemo(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    return window.matchMedia("(pointer: coarse)").matches;
+  }, []);
   const agentResponse = latestCompletion ? extractAgentResponseFromEvent(latestCompletion) : null;
   const completionState = hasPendingCompletion
     ? "pending"
@@ -8906,7 +9024,7 @@ const PaneCard = memo(function PaneCard({
       : "idle";
   const title = displayPaneTitle(pane);
   const isTerminalPane = pane.mode === "TERMINAL";
-  const usesCompactPaneActions = isTerminalPane || pane.mode === "CHAT";
+  const usesCompactPaneActions = isTerminalPane || pane.mode === "CHAT" || pane.mode === "HARNESS";
   const isRootPane = pane.terminalRuntimeId === "cli:root";
   const maximizeLabel = shellMode === "mobile"
     ? isMobilePaneFocused
@@ -8952,14 +9070,21 @@ const PaneCard = memo(function PaneCard({
   const [modernPrimaryActionCapacity, setModernPrimaryActionCapacity] = useState<number | null>(null);
   const usesGenericImport = pane.mode !== "CHAT" && pane.mode !== "TERMINAL" && pane.mode !== "YOUTUBE";
   const sessionDebugInfo = terminalSessionMetadata ? formatTerminalSessionDebugInfo(terminalSessionMetadata) : null;
-  const vpnRoutingPresentation = paneVpnRoutingPresentation(cliVpnRoutingStatus, {
-    sessionId: terminalSessionMetadata?.sessionId ?? null,
-    runtimeId: terminalSessionMetadata?.runtimeId ?? null,
-    purpose: terminalSessionMetadata?.purpose ?? "NORMAL"
-  });
-  const paneIdentityBaseTitle = showSessionDebugIds && sessionDebugInfo
-    ? `${title} / Agent ${agentNumber} / ${sessionDebugInfo.title}`
-    : `${title} / Agent ${agentNumber}`;
+  const vpnRoutingPresentation = isTerminalPane
+    ? paneVpnRoutingPresentation(cliVpnRoutingStatus, {
+        sessionId: terminalSessionMetadata?.sessionId ?? null,
+        runtimeId: terminalSessionMetadata?.runtimeId ?? null,
+        purpose: terminalSessionMetadata?.purpose ?? "NORMAL"
+      })
+    : pane.mode === "HARNESS"
+      ? harnessPaneVpnRoutingPresentation(cliRuntimeSettings)
+      : null;
+  const harnessStatus = pane.mode === "HARNESS" ? cliRuntimeSettings?.harness ?? null : null;
+  const paneIdentityBaseTitle = pane.mode === "HARNESS" && showSessionDebugIds
+    ? `${title} / Agent ${agentNumber} / DeepSeek Harness pane session ${pane.id} / service PID ${harnessStatus?.pid ?? "inactive"}`
+    : showSessionDebugIds && sessionDebugInfo
+      ? `${title} / Agent ${agentNumber} / ${sessionDebugInfo.title}`
+      : `${title} / Agent ${agentNumber}`;
   const paneIdentityTitle = vpnRoutingPresentation && !maskSensitiveData
     ? `${paneIdentityBaseTitle} / ${vpnRoutingPresentation.label} — ${vpnRoutingPresentation.title}`
     : paneIdentityBaseTitle;
@@ -9084,9 +9209,7 @@ const PaneCard = memo(function PaneCard({
         .then((status) => {
           if (active) setCliVpnRoutingStatus(status);
         })
-        .catch(() => {
-          if (active) setCliVpnRoutingStatus(null);
-        });
+        .catch(() => undefined);
     };
     refresh();
     window.addEventListener(CLI_VPN_ROUTING_STATUS_EVENT, refresh);
@@ -9331,6 +9454,16 @@ const PaneCard = memo(function PaneCard({
         : ""
       : pane.mode === "TERMINAL" && terminalSessionMetadata
         ? formatTerminalSessionClipboardText(terminalSessionMetadata) ?? ""
+        : pane.mode === "HARNESS"
+          ? [
+              `Harness pane session ID: ${pane.id}`,
+              `Harness service PID: ${harnessStatus?.pid ?? "inactive"}`,
+              `Harness service state: ${harnessStatus?.enabled ? "ACTIVE" : "INACTIVE"}`,
+              `Harness network mode: ${harnessStatus?.effectiveMode ?? "UNKNOWN"}`,
+              ...(vpnRoutingPresentation && !maskSensitiveData
+                ? [`Harness VPN: ${vpnRoutingPresentation.label}`, vpnRoutingPresentation.title]
+                : [])
+            ].join("\n")
         : "";
     if ((pane.mode === "CHAT" || pane.mode === "TERMINAL") && !text) {
       window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_NOTICE_EVENT, {
@@ -10235,6 +10368,8 @@ const PaneCard = memo(function PaneCard({
             onBootstrapped={handleTerminalBootstrapped}
             onPrefillReadyChange={handleTerminalPrefillReadyChange}
             onRevealReady={handleTerminalRevealReady}
+            oskOpen={oskOpen}
+            mobile={shellMode === "mobile" || isCoarsePointer}
           />
         ) : pane.mode === "BROWSER" ? (
           <Suspense fallback={browserPaneLoadingFallback}>
@@ -10257,6 +10392,10 @@ const PaneCard = memo(function PaneCard({
         ) : pane.mode === "VNC" ? (
           <Suspense fallback={browserPaneLoadingFallback}>
             <LazyVncPane pane={pane} observerOnly={browserObserverOnly} />
+          </Suspense>
+        ) : pane.mode === "HARNESS" ? (
+          <Suspense fallback={browserPaneLoadingFallback}>
+            <LazyHarnessPane pane={pane} workspaceTextSize={terminalFontSize} />
           </Suspense>
         ) : (
           <>

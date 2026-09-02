@@ -1506,6 +1506,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       aria-label={`${pane.title} browser session`}
       data-browser-agent={agentNumber}
     >
+      {pane.title === "DeepSeek Harness" ? (
+        <div className="browser-pane-legacy-harness-notice" role="note" data-legacy-harness="true">
+          <span>Legacy Harness (Browser) — Convert to Harness</span>
+        </div>
+      ) : null}
       <div className="browser-tab-strip" role="tablist" aria-label={`Browser tabs ${pane.title}`}>
         <div className="browser-tab-scroll">
           {pages.map((page) => {

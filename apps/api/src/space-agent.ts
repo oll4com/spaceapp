@@ -34,11 +34,11 @@ import {
   codexChatProviderConfigIdPrefix,
   codexChatProviderId,
   opencodeChatProviderAdapter,
-  opencodeChatProviderConfigIdPrefix,
   providerForConfigId,
   type ChatProviderAdapter,
   type ChatProviderCatalogResult,
-  type OpenCodeControlResolver
+  type OpenCodeControlResolver,
+  type OpenCodeSessionControlResolver
 } from "./chat-providers.js";
 import type { SpaceApiConfig } from "./config.js";
 import { TurnStarterDisabledError, type TurnStarter } from "./turns.js";
@@ -635,10 +635,10 @@ function selectedSessionFields(select: {
   selectedTools: string[];
 }, fallback?: SpaceAgentSessionRecord) {
   return {
-    selectedProviderId: select.selectedModel?.providerId ?? fallback?.selectedProviderId ?? null,
+    selectedProviderId: select.selectedModel ? select.selectedModel.providerId : fallback?.selectedProviderId ?? null,
     selectedModelId: select.selectedModel?.model ?? fallback?.selectedModelId ?? null,
     selectedModelConfigId: select.selectedModel?.id ?? fallback?.selectedModelConfigId ?? null,
-    selectedProviderName: fallback?.selectedProviderName ?? null,
+    selectedProviderName: select.selectedModel ? select.selectedModel.providerName : fallback?.selectedProviderName ?? null,
     selectedModelName: select.selectedModel
       ? select.selectedModel.model ?? select.selectedModel.displayName
       : fallback?.selectedModelName ?? null,
@@ -795,6 +795,7 @@ interface SpaceAgentRuntimeCapabilitiesResult {
 interface SpaceAgentOperationContext {
   providers: ChatProviderAdapter[];
   providerCatalogs: Promise<ChatProviderCatalogResult[]>;
+  providerEnabled: Promise<boolean[]>;
   runtimeCapabilities: Promise<SpaceAgentRuntimeCapabilitiesResult>;
 }
 
@@ -804,11 +805,20 @@ export function createSpaceAgentAdapter(options: {
   codexTurnStarter: TurnStarter;
   codexAgentControl?: SpaceAgentControl | null;
   openCodeControlResolver?: OpenCodeControlResolver | null;
-  cliChatProviderAdapters?: ChatProviderAdapter[];
+  openCodeSessionControlResolver?: OpenCodeSessionControlResolver | null;
+  isChatProviderEnabled?: (providerId: string) => Promise<boolean>;
   readGoal?: SpaceAgentGoalReader;
   requirementsCacheTtlMs?: number;
 }): SpaceAgentAdapter {
-  const { store, config, codexTurnStarter, codexAgentControl, openCodeControlResolver, readGoal } = options;
+  const {
+    store,
+    config,
+    codexTurnStarter,
+    codexAgentControl,
+    openCodeControlResolver,
+    openCodeSessionControlResolver,
+    readGoal
+  } = options;
   let cachedRuntimeCapabilities: { value: SpaceAgentRuntimeCapabilities; expiresAt: number } | null = null;
 
   function createProviderRegistry(): ChatProviderAdapter[] {
@@ -833,9 +843,6 @@ export function createSpaceAgentAdapter(options: {
     if (openCodeControlResolver) {
       providers.push(opencodeChatProviderAdapter(openCodeControlResolver));
     }
-    if (options.cliChatProviderAdapters?.length) {
-      providers.push(...options.cliChatProviderAdapters);
-    }
     return providers;
   }
 
@@ -844,7 +851,7 @@ export function createSpaceAgentAdapter(options: {
     return () => {
       pending ??= codexAgentControl
         ? codexAgentControl.listModels()
-            .then((catalog) => ({ catalog, error: null }))
+            .then((catalog) => ({ catalog: catalog.filter((model) => model.id !== "gpt-5.2"), error: null }))
             .catch(() => ({ catalog: [], error: "Codex model catalog is unavailable." }))
         : Promise.resolve({ catalog: [], error: "Codex model catalog control is unavailable." });
       return pending;
@@ -875,9 +882,22 @@ export function createSpaceAgentAdapter(options: {
       .then((value) => ({ value, error: null }))
       .catch(() => ({ value: null, error: "Codex runtime requirements are unavailable." }));
     const providers = createProviderRegistry();
+    const providerEnabledChecks = providers.map((provider) =>
+      options.isChatProviderEnabled?.(provider.providerId) ?? Promise.resolve(true)
+    );
+    const providerEnabled = Promise.all(providerEnabledChecks);
     return {
       providers,
-      providerCatalogs: Promise.all(providers.map((provider) => provider.loadCatalog())),
+      providerEnabled,
+      // Codex catalog discovery stays concurrent with capability discovery.
+      // Optional providers are loaded only after their global switch resolves.
+      providerCatalogs: Promise.all(providers.map((provider, index) =>
+        provider.providerId === codexChatProviderId
+          ? provider.loadCatalog()
+          : providerEnabledChecks[index]!.then((enabled) => enabled
+              ? provider.loadCatalog()
+              : { models: [], current: null, error: `${provider.providerName} is disabled.` })
+      )),
       runtimeCapabilities: runtimeCapabilitiesSnapshot
     };
   }
@@ -886,17 +906,37 @@ export function createSpaceAgentAdapter(options: {
     roomId: string,
     providers: ChatProviderAdapter[],
     providerCatalogs: Promise<ChatProviderCatalogResult[]>,
+    providerEnabled: Promise<boolean[]>,
     selectedModelConfigId?: string | null,
     selectedToolIds?: string[] | null,
     strictModelSelection = false
   ) {
-    const [providerResults, mcpServers, mcpTools, browserSessions] = await Promise.all([
+    const [providerResults, enabled, mcpServers, mcpTools, browserSessions] = await Promise.all([
       providerCatalogs,
+      providerEnabled,
       store.listMcpServers(),
       store.listMcpTools(),
       store.listActivePaneBrowserSessions(roomId)
     ]);
-    const currentProvider = providerForConfigId(providers, selectedModelConfigId ?? null) ?? providers[0] ?? null;
+    const eligibleProviders = providers.filter((_provider, index) => enabled[index]);
+    const configuredProvider = providerForConfigId(providers, selectedModelConfigId ?? null);
+    if (strictModelSelection && configuredProvider && !eligibleProviders.includes(configuredProvider)) {
+      throw new SpaceFeatureDisabledError(
+        "SPACE_AGENT_PROVIDER_DISABLED",
+        `${configuredProvider.providerName} is disabled for Chat.`
+      );
+    }
+    const removedChatSelection = Boolean(selectedModelConfigId?.startsWith("cli:"));
+    if (strictModelSelection && removedChatSelection) {
+      throw new SpaceFeatureDisabledError(
+        "SPACE_AGENT_PROVIDER_UNSUPPORTED",
+        "The selected provider is not supported inside Chat panes."
+      );
+    }
+    const effectiveSelectedModelConfigId = removedChatSelection ? null : selectedModelConfigId;
+    const currentProvider = providerForConfigId(eligibleProviders, effectiveSelectedModelConfigId ?? null)
+      ?? eligibleProviders[0]
+      ?? null;
     const currentIndex = currentProvider ? providers.findIndex((provider) => provider === currentProvider) : -1;
     const currentResult = currentIndex >= 0 ? providerResults[currentIndex] : null;
     const currentCatalog = currentResult?.models ?? [];
@@ -906,19 +946,20 @@ export function createSpaceAgentAdapter(options: {
       : selectedModelFromOptions(
           modelList,
           currentCatalog,
-          selectedModelConfigId ?? null,
+          effectiveSelectedModelConfigId ?? null,
           strictModelSelection
         );
-    const modelProviders: AgentPaneModelProvider[] = providers.map((provider, index) => {
+    const modelProviders: AgentPaneModelProvider[] = providers.flatMap((provider, index) => {
+      if (!enabled[index]) return [];
       const result = providerResults[index];
-      return {
+      return [{
         providerId: provider.providerId,
         providerName: provider.providerName,
         configIdPrefix: provider.configIdPrefix,
         isCurrent: provider.providerId === currentProvider?.providerId,
         statusReason: result?.error ?? null,
         models: result?.models ?? []
-      };
+      }];
     });
     const tools = [
       ...memoryToolOptions,
@@ -942,7 +983,9 @@ export function createSpaceAgentAdapter(options: {
       modelCatalogGate: currentResult?.error
         ?? (modelList.length
           ? null
-          : `${currentProvider?.providerName ?? "Provider"} did not advertise a selectable model.`),
+          : currentProvider
+            ? `${currentProvider.providerName} did not advertise a selectable model.`
+            : "No Chat provider is enabled."),
       modelSelectionGate: modelSelection.modelSelectionGate,
       tools,
       selectedTools,
@@ -959,6 +1002,7 @@ export function createSpaceAgentAdapter(options: {
       input.pane.roomId,
       operation.providers,
       operation.providerCatalogs,
+      operation.providerEnabled,
       input.selectedModelConfigId === undefined ? session.selectedModelConfigId : input.selectedModelConfigId,
       input.selectedToolIds === undefined ? session.selectedToolIds : input.selectedToolIds,
       input.selectedModelConfigId !== undefined
@@ -1011,6 +1055,7 @@ export function createSpaceAgentAdapter(options: {
       input.pane.roomId,
       operation.providers,
       operation.providerCatalogs,
+      operation.providerEnabled,
       input.selectedModelConfigId,
       input.selectedToolIds,
       input.selectedModelConfigId !== undefined
@@ -1064,6 +1109,7 @@ export function createSpaceAgentAdapter(options: {
       currentSession.roomId,
       operation.providers,
       operation.providerCatalogs,
+      operation.providerEnabled,
       currentSession.selectedModelConfigId,
       currentSession.selectedToolIds
     );
@@ -1152,6 +1198,7 @@ export function createSpaceAgentAdapter(options: {
       input.pane.roomId,
       operation.providers,
       operation.providerCatalogs,
+      operation.providerEnabled,
       session.selectedModelConfigId,
       session.selectedToolIds
     );
@@ -1183,13 +1230,13 @@ export function createSpaceAgentAdapter(options: {
 
     let providerSessionId: string | undefined;
     if (session.selectedProviderId === "opencode") {
-      if (!openCodeControlResolver) {
+      if (!openCodeSessionControlResolver) {
         throw new SpaceFeatureDisabledError(
           "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
           "OpenCode runtime control is unavailable for this Space agent session."
         );
       }
-      providerSessionId = (await openCodeControlResolver()).spaceSessionId;
+      providerSessionId = (await openCodeSessionControlResolver(session.sessionId)).spaceSessionId;
     }
 
     const turnInput: DummyTurnInput = {

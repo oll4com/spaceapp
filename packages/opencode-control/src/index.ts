@@ -2,6 +2,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 export const opencodeDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-opencode";
+export const openCodeSpaceChatStateRoot = "/opt/spaceapp/var/opencode-chat-state";
 export const opencodeNativeSessionIdPattern = /^ses_[A-Za-z0-9]+$/;
 
 export const opencodeServerControlMaxBytes = 8_192;

@@ -8,7 +8,7 @@ import {
 } from "@space/contracts";
 import { makeSpaceId, redactMemoryText, type SpaceStore } from "@space/runtime";
 
-const chatActionBlockPattern = /```space-chat-actions\s*([\s\S]*?)```/gi;
+const chatActionBlockPattern = /```space-chat-actions\s*([\s\S]*?)(?:```|$)/gi;
 const readMessageCharacters = 2_000;
 const bridgeOutputCharacters = 12_000;
 

@@ -45,6 +45,8 @@ interface ViewportSize {
   mobile: boolean;
 }
 
+const DEEPSEEK_HARNESS_BROWSER_ORIGIN = "http://10.254.240.21:3080";
+
 export interface BrowserStreamProfile {
   requestedMode: BrowserStreamMode;
   resolvedMode: BrowserResolvedStreamMode;
@@ -1005,16 +1007,22 @@ export type BrowserAddressResolver = (hostname: string) => Promise<Array<{ addre
 
 export class BrowserRequestGuard {
   private readonly cache = new Map<string, { blocked: boolean; expiresAt: number }>();
+  private readonly allowedLocalOrigins: Set<string>;
 
   constructor(
-    private readonly allowedLocalOrigin: string,
+    allowedLocalOrigins: string | string[],
     private readonly options: {
       resolver?: BrowserAddressResolver;
       timeoutMs?: number;
       cacheTtlMs?: number;
       maxCacheEntries?: number;
     } = {}
-  ) {}
+  ) {
+    this.allowedLocalOrigins = new Set(
+      (Array.isArray(allowedLocalOrigins) ? allowedLocalOrigins : [allowedLocalOrigins])
+        .map((origin) => new URL(origin).origin)
+    );
+  }
 
   async assertAllowed(raw: string): Promise<string> {
     const url = new URL(raw);
@@ -1023,8 +1031,7 @@ export class BrowserRequestGuard {
         protocol: url.protocol
       });
     }
-    const allowedLocal = new URL(this.allowedLocalOrigin);
-    if (url.origin !== allowedLocal.origin) {
+    if (!this.allowedLocalOrigins.has(url.origin)) {
       const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
       if (blockedBrowserHostname(hostname)) this.block(hostname);
       const literalVersion = isIP(hostname);
@@ -1068,7 +1075,7 @@ export class BrowserRequestGuard {
 }
 
 export async function assertSafeBrowserTargetUrl(raw: string, allowedLocalOrigin: string): Promise<string> {
-  return new BrowserRequestGuard(allowedLocalOrigin).assertAllowed(raw);
+  return new BrowserRequestGuard([allowedLocalOrigin, DEEPSEEK_HARNESS_BROWSER_ORIGIN]).assertAllowed(raw);
 }
 
 class CdpClient {
@@ -1410,7 +1417,10 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   const capacity = new BrowserCapacityGate(8, 4);
   const captureQueue: string[] = [];
   const captureCommands = new Map<string, "STOP" | "CANCEL">();
-  const requestGuard = new BrowserRequestGuard(config.browserEvidenceTargetOrigin);
+  const requestGuard = new BrowserRequestGuard([
+    config.browserEvidenceTargetOrigin,
+    DEEPSEEK_HARNESS_BROWSER_ORIGIN
+  ]);
   let capturePumpRunning = false;
 
   async function captureMetrics(): Promise<BrowserHostCaptureMetrics> {

@@ -1,4 +1,5 @@
 import {
+  authMeSchema,
   appDiagnosticsStatusSchema,
   type AppDiagnosticsEventBatch,
   type AppDiagnosticsStatus
@@ -323,6 +324,19 @@ export function createAppDiagnosticsBootstrap(
 }
 
 let defaultBootstrap: AppDiagnosticsBootstrap | null = null;
+
+export async function appDiagnosticsSessionIsAuthenticated(
+  fetchImpl: typeof fetch = window.fetch.bind(window)
+): Promise<boolean> {
+  try {
+    const response = await fetchImpl("/api/auth/me", { credentials: "include" });
+    if (!response.ok) return false;
+    const parsed = authMeSchema.safeParse(await response.json());
+    return parsed.success && parsed.data.isAuthenticated;
+  } catch {
+    return false;
+  }
+}
 
 export function startAppDiagnosticsBootstrap(): { beforeMount: Promise<void> } {
   defaultBootstrap ??= createAppDiagnosticsBootstrap();

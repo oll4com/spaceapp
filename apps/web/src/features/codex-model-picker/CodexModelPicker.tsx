@@ -347,7 +347,12 @@ export function CodexModelPicker({
                       title={provider.statusReason ?? undefined}
                       onClick={() => selectProvider(provider.providerId)}
                     >
-                      <span>{provider.providerName}</span>
+                      <span className="terminal-model-provider-label">
+                        <span>{provider.providerName}</span>
+                        {provider.models.length === 0 && provider.statusReason ? (
+                          <small className="terminal-model-provider-reason">{provider.statusReason}</small>
+                        ) : null}
+                      </span>
                       {selected ? <Check className="terminal-model-selection-check" size={16} strokeWidth={2.5} aria-hidden="true" /> : null}
                     </button>
                   );

@@ -27,9 +27,9 @@ import {
   fetchOpenCodeSessionModels,
   openCodeServerBaseUrl,
   openCodeServerIsHealthy,
+  openCodeSpaceChatStateRoot,
   parseOpenCodeCompositeModelId,
   readOpenCodeServerControl,
-  readOpenCodeSpaceChatControl,
   switchOpenCodeSessionModel,
   type OpenCodeServerControl
 } from "@space/opencode-control";
@@ -55,7 +55,7 @@ import {
 } from "./room-action-bridge.js";
 import { executeSkillActionBridge, parseSkillActionBlock } from "./skill-action-bridge.js";
 import { ROOM_AGENT_TURN_HEARTBEAT_INTERVAL_MS } from "./room-supervisor-state.js";
-import { isNativeChatTurn } from "./turn-runtime-policy.js";
+import { isCliChatQuotaError, isCliChatTurnProviderId, isNativeChatTurn } from "./turn-runtime-policy.js";
 
 let cachedStore: PostgresSpaceStore | null = null;
 const execFileAsync = promisify(execFile);
@@ -457,8 +457,7 @@ async function defaultStdioTurnExecutor(
       title: "Space",
       version: "0.1.0"
     },
-    timeoutMs: nativeChat ? null : config.turnTimeoutMs ?? 240_000,
-    goalObjective: nativeChat ? input.prompt : undefined,
+    timeoutMs: config.turnTimeoutMs ?? 240_000,
     serverRequestHandler: nativeChat ? resolveCodexAppServerRequestUserInput : undefined,
     signal,
     spawnProcess,
@@ -1822,7 +1821,7 @@ export function getOpenCodeAgentTurnActivityConfig(env: NodeJS.ProcessEnv = proc
   return {
     enabled: env.SPACE_ENABLE_OPENCODE_TURNS === "true",
     stateRoot: env.SPACE_OPENCODE_STATE_ROOT || "/var/lib/spaceapp-user/.codex/space-opencode/state",
-    messageTimeoutMs: positiveIntegerEnvMs(env.SPACE_OPENCODE_MESSAGE_TIMEOUT_MS, 290_000)
+    messageTimeoutMs: positiveIntegerEnvMs(env.SPACE_OPENCODE_MESSAGE_TIMEOUT_MS, 60_000)
   };
 }
 
@@ -1833,6 +1832,10 @@ export interface RunOpenCodeAgentTurnOptions {
   abortSignal?: AbortSignal;
   heartbeat?: (details?: unknown) => void;
   heartbeatIntervalMs?: number;
+}
+
+export function openCodeAgentTurnStateRoot(providerSessionId: string, configuredStateRoot: string): string {
+  return providerSessionId.startsWith("agent_session:") ? openCodeSpaceChatStateRoot : configuredStateRoot;
 }
 
 export async function runOpenCodeAgentTurn(
@@ -1879,8 +1882,10 @@ async function runOpenCodeAgentTurnImplementation(
   try {
     const durableRun = await markSpaceAgentRunStarted(parsed, options.completionStore);
     await ensureCliTurnWorkflowRow(parsed, durableRun, { completionStore: options.completionStore, env: options.env });
-    const control = (await readOpenCodeServerControl(parsed.providerSessionId, config.stateRoot)) ??
-      await readOpenCodeSpaceChatControl();
+    const control = await readOpenCodeServerControl(
+      parsed.providerSessionId,
+      openCodeAgentTurnStateRoot(parsed.providerSessionId, config.stateRoot)
+    );
     if (!control) {
       return recordOpenCodeAgentTurnFailure(
         parsed,
@@ -2035,7 +2040,7 @@ function extractOpenCodeAssistantText(parts: unknown): string {
   return texts[texts.length - 1] ?? "";
 }
 
-async function executeOpenCodeTurnPrompt(
+export async function executeOpenCodeTurnPrompt(
   control: OpenCodeServerControl,
   input: DummyTurnInput,
   config: OpenCodeAgentTurnActivityConfig,
@@ -2054,20 +2059,33 @@ async function executeOpenCodeTurnPrompt(
   const signal = abortSignal
     ? AbortSignal.any([timeoutSignal, abortSignal])
     : timeoutSignal;
-  const response = await fetchImpl(`${baseUrl}/session/${encodeURIComponent(control.nativeSessionId)}/message`, {
-    method: "POST",
-    headers: {
-      authorization,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(body),
-    signal
-  });
-  if (!response.ok) {
-    throw new Error(`OpenCode message failed with HTTP ${response.status}.`);
+  try {
+    const response = await fetchImpl(`${baseUrl}/session/${encodeURIComponent(control.nativeSessionId)}/message`, {
+      method: "POST",
+      headers: {
+        authorization,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal
+    });
+    if (!response.ok) {
+      throw new Error(`OpenCode message failed with HTTP ${response.status}.`);
+    }
+    const payload = (await response.json()) as { parts?: unknown };
+    return extractOpenCodeAssistantText(payload.parts);
+  } catch (error) {
+    try {
+      await fetchImpl(`${baseUrl}/session/${encodeURIComponent(control.nativeSessionId)}/abort`, {
+        method: "POST",
+        headers: { authorization },
+        signal: AbortSignal.timeout(5_000)
+      });
+    } catch {
+      // Preserve the original turn failure; abort is a bounded cleanup attempt.
+    }
+    throw error;
   }
-  const payload = (await response.json()) as { parts?: unknown };
-  return extractOpenCodeAssistantText(payload.parts);
 }
 
 export interface CliAgentTurnActivityConfig {
@@ -2088,10 +2106,11 @@ export function getCliAgentTurnActivityConfig(env: NodeJS.ProcessEnv = process.e
   };
 }
 
-const cliChatTurnRuntimeIds = new Set(["cli:cursor", "cli:copilot", "cli:gemini", "cli:deepseek"]);
-
-export function supportsCliAgentTurn(providerId: string | null | undefined): boolean {
-  return Boolean(providerId && cliChatTurnRuntimeIds.has(providerId));
+export function supportsCliAgentTurn(
+  providerId: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  return isCliChatTurnProviderId(providerId, env);
 }
 
 export interface RunCliAgentTurnOptions {
@@ -2135,7 +2154,7 @@ async function runCliAgentTurnImplementation(
     );
   }
   const runtimeId = parsed.providerId;
-  if (!runtimeId || !cliChatTurnRuntimeIds.has(runtimeId)) {
+  if (!runtimeId || !isCliChatTurnProviderId(runtimeId, options.env)) {
     return recordCliAgentTurnFailure(
       parsed,
       "CLI_CHAT_TURN_RUNTIME_UNAVAILABLE",
@@ -2195,10 +2214,20 @@ async function runCliAgentTurnImplementation(
       await recordSpaceAgentRunInterrupted(parsed, "CLI chat turn was stopped by the operator.", options.completionStore);
       throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
     }
+    const failureMessage = error instanceof Error ? error.message.slice(0, 500) : "The CLI chat turn failed.";
+    if (isCliChatQuotaError(failureMessage)) {
+      return recordCliAgentTurnFailure(
+        parsed,
+        "CLI_CHAT_TURN_QUOTA_EXHAUSTED",
+        `${runtimeId} has no available tokens/quota right now. Top up the provider or pick another chat provider.`,
+        {},
+        options.completionStore
+      );
+    }
     return recordCliAgentTurnFailure(
       parsed,
       "CLI_CHAT_TURN_FAILED",
-      error instanceof Error ? error.message.slice(0, 500) : "The CLI chat turn failed.",
+      failureMessage,
       {},
       options.completionStore
     );

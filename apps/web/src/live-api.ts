@@ -67,6 +67,9 @@ import type {
   CliVpnProfileId,
   CliVpnRoutingStatus,
   CliMaintenanceRequest,
+  CliUpdateAllDetection,
+  CliUpdateAllRequest,
+  CliUpdateAllResult,
   CliRuntimeSettingsResponse,
   AgentToolsCatalogResponse,
   AgentToolAssignment,
@@ -78,6 +81,9 @@ import type {
   RestartCliRuntimeVpnSessionsResult,
   CliRuntimeRestartSessionsResult,
   CliRuntimeRestartAllResult,
+  HarnessMaintenanceRestartResult,
+  UpdateHarnessEnabledInput,
+  UpdateHarnessEnabledResult,
   CreateCliAccountProfileInput,
   CreateCliAccountProfileResponse,
   CliAccountProfileDetailsResponse,
@@ -187,6 +193,7 @@ import type {
   UpdateCliRuntimeSettingResult,
   UpdateCliRuntimeVpnInput,
   UpdateCliRuntimeVpnResult,
+  UpdateHarnessVpnResult,
   UpdateCliGlobalEgressResult,
   ReviewCheck,
   ReviewDecision,
@@ -366,6 +373,13 @@ export interface ReadyzPayload {
     codexTurns: string;
     codexLb: string;
   };
+}
+
+export interface HarnessHealth {
+  ok: boolean;
+  status: number;
+  checkedAt: string;
+  durationMs: number;
 }
 
 export interface AppVersionStatus {
@@ -785,7 +799,9 @@ function cliRuntimeSettingsSnapshot(): CliRuntimeSettingsResponse | null {
 }
 
 function invalidateCliRuntimeSettings(): void {
+  cliRuntimeSettingsCacheGeneration += 1;
   if (cliRuntimeSettingsCache) cliRuntimeSettingsCache.expiresAt = 0;
+  cliRuntimeSettingsFlight = null;
 }
 
 function resetCliRuntimeSettingsCache(): void {
@@ -829,6 +845,8 @@ function loadActiveCliSession(
 export const api = {
   readyz: () => request<ReadyzPayload>("/readyz"),
   appVersion: () => request<AppVersionStatus>("/api/app/version"),
+  harnessHealth: () => request<HarnessHealth>("/api/harness/healthz"),
+  harnessUrl: "/api/harness/",
   eventStreamUrl,
   me: () => request<AuthMe>("/api/auth/me"),
   setupStatus: () => request<SetupStatus>("/api/setup/status"),
@@ -1295,6 +1313,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  detectCliUpdateAll: () =>
+    request<CliUpdateAllDetection>("/api/admin/cli-maintenance/update-all/detect"),
+  runCliUpdateAll: (input: CliUpdateAllRequest) =>
+    request<CliUpdateAllResult>("/api/admin/cli-maintenance/update-all/run", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   createReleasePreview: (input: CreateReleasePreviewInput) =>
     request<ReleasePreview>("/api/admin/releases/previews", {
       method: "POST",
@@ -1443,6 +1468,19 @@ export const api = {
   cliRuntimeRestartAll: async () => {
     const result = await request<CliRuntimeRestartAllResult>("/api/admin/cli/runtime/restart-all", {
       method: "POST"
+    });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  restartHarness: async () => {
+    const result = await request<HarnessMaintenanceRestartResult>("/api/admin/harness/restart", { method: "POST" });
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  updateHarnessEnabled: async (input: UpdateHarnessEnabledInput) => {
+    const result = await request<UpdateHarnessEnabledResult>("/api/admin/harness/enabled", {
+      method: "PATCH",
+      body: JSON.stringify(input)
     });
     invalidateCliRuntimeSettings();
     return result;
@@ -1671,6 +1709,14 @@ export const api = {
       `/api/cli/runtime-settings/${encodeURIComponent(runtimeId)}/vpn`,
       { method: "PATCH", body: JSON.stringify(input) }
     );
+    invalidateCliRuntimeSettings();
+    return result;
+  },
+  updateHarnessVpn: async (input: UpdateCliRuntimeVpnInput) => {
+    const result = await request<UpdateHarnessVpnResult>("/api/admin/harness/vpn", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    });
     invalidateCliRuntimeSettings();
     return result;
   },
@@ -2385,6 +2431,14 @@ export const api = {
     const form = new FormData();
     input.files.forEach((file) => form.append("file", file, file.name || "upload"));
     return request<{ artifacts: Artifact[] }>(`/api/artifacts/file-uploads?${params.toString()}`, {
+      method: "POST",
+      body: form
+    });
+  },
+  uploadAgentFiles: (input: { roomId: string; files: File[] }) => {
+    const form = new FormData();
+    input.files.forEach((file) => form.append("file", file, file.name || "agent-file"));
+    return request<{ artifacts: Artifact[] }>(`/api/rooms/${encodeURIComponent(input.roomId)}/agent-files/uploads`, {
       method: "POST",
       body: form
     });

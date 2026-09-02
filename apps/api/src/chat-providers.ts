@@ -1,7 +1,6 @@
 import type { CodexAppServerSocketModelOption } from "@space/codex-app-server";
 import type { CodexModelCatalogOption } from "@space/contracts";
 import {
-  fetchOpenCodeCurrentModel,
   fetchOpenCodeSessionModels,
   openCodeDefaultReasoningEffort,
   type OpenCodeServerControl
@@ -27,12 +26,14 @@ export interface ChatProviderAdapter {
 }
 
 export type OpenCodeControlResolver = () => Promise<OpenCodeServerControl>;
+export type OpenCodeSessionControlResolver = (spaceAgentSessionId: string) => Promise<OpenCodeServerControl>;
 
 export const codexChatProviderId = "codex";
 export const opencodeChatProviderId = "opencode";
 
 export const codexChatProviderConfigIdPrefix = "codex-v1|";
 export const opencodeChatProviderConfigIdPrefix = "opencode-v1|";
+export const openCodeChatVerifiedModelIds = ["opencode/muse-spark-1.2-contributor-free"] as const;
 
 export interface CliChatRuntimeState {
   enabled: boolean;
@@ -42,11 +43,17 @@ export interface CliChatRuntimeState {
 export type CliChatRuntimeStateResolver = (runtimeId: string) => Promise<CliChatRuntimeState>;
 
 const cliChatRuntimeNames: Record<string, string> = {
+  "cli:claude": "Claude Code",
   "cli:cursor": "Cursor",
   "cli:copilot": "GitHub Copilot",
   "cli:github": "GitHub CLI",
   "cli:gemini": "Google Gemini",
-  "cli:deepseek": "DeepSeek"
+  "cli:deepseek": "DeepSeek",
+  "cli:qwen": "Qwen Code",
+  "cli:kimi": "Kimi Code",
+  "cli:grok": "Grok",
+  "cli:autohand": "Autohand",
+  "cli:hermes": "Hermes"
 };
 
 export function cliChatRuntimeName(runtimeId: string): string {
@@ -257,7 +264,10 @@ export function codexChatProviderAdapter(
   };
 }
 
-export function opencodeChatProviderAdapter(resolveControl: OpenCodeControlResolver): ChatProviderAdapter {
+export function opencodeChatProviderAdapter(
+  resolveControl: OpenCodeControlResolver,
+  fetchModels: typeof fetchOpenCodeSessionModels = fetchOpenCodeSessionModels
+): ChatProviderAdapter {
   return {
     providerId: opencodeChatProviderId,
     providerName: "OpenCode",
@@ -265,10 +275,19 @@ export function opencodeChatProviderAdapter(resolveControl: OpenCodeControlResol
     async loadCatalog() {
       try {
         const control = await resolveControl();
-        const descriptors = await fetchOpenCodeSessionModels(control);
-        const currentModel = await fetchOpenCodeCurrentModel(control, control.nativeSessionId).catch(() => null);
-        const currentModelId = currentModel ? `${currentModel.providerID}/${currentModel.id}` : null;
-        const models = descriptors.map((descriptor) => {
+        const descriptors = await fetchModels(control);
+        const verifiedModelIds = new Set<string>(openCodeChatVerifiedModelIds);
+        const verifiedDescriptors = descriptors.filter((descriptor) =>
+          verifiedModelIds.has(`${descriptor.providerId}/${descriptor.modelId}`)
+        );
+        if (verifiedDescriptors.length === 0) {
+          return {
+            models: [],
+            current: null,
+            error: "OpenCode did not advertise a model verified for Chat panes."
+          };
+        }
+        const models = verifiedDescriptors.map((descriptor, index) => {
           const optionId = `${descriptor.providerId}/${descriptor.modelId}`;
           const listedVariants = descriptor.variants.length > 0 ? descriptor.variants : [];
           const supportedReasoningEfforts = listedVariants.length > 0
@@ -277,7 +296,7 @@ export function opencodeChatProviderAdapter(resolveControl: OpenCodeControlResol
           return {
             id: optionId,
             displayName: descriptor.displayName,
-            isDefault: optionId === currentModelId,
+            isDefault: index === 0,
             defaultReasoningEffort:
               descriptor.defaultVariant ?? listedVariants[0] ?? openCodeDefaultReasoningEffort,
             supportedReasoningEfforts,
@@ -286,13 +305,9 @@ export function opencodeChatProviderAdapter(resolveControl: OpenCodeControlResol
         });
         return {
           models,
-          current: currentModel
-            ? {
-                providerId: opencodeChatProviderId,
-                modelId: `${currentModel.providerID}/${currentModel.id}`,
-                reasoningEffort: currentModel.variant ?? null
-              }
-            : null,
+          // The catalog may be read through a shared OpenCode server control,
+          // but Chat must never inherit that control's native CLI session.
+          current: null,
           error: null
         };
       } catch (error) {

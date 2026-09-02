@@ -617,6 +617,26 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     handleTerminalResize(cols: number, rows: number) {
       sendResizeOnce(cols, rows);
     },
+    reconcileResize(cols: number, rows: number) {
+      if (!isEligible() || !Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) return;
+      const identity = options.getResizeIdentity();
+      if (
+        !identity ||
+        !Number.isInteger(identity.socketGeneration) ||
+        identity.socketGeneration <= 0 ||
+        !identity.sessionId
+      ) {
+        return;
+      }
+      lastResizeKey = JSON.stringify([
+        identity.socketGeneration,
+        identity.sessionId,
+        identity.leaseId,
+        cols,
+        rows
+      ]);
+      options.sendResize({ cols, rows, leaseId: identity.leaseId });
+    },
     repairIfBroken(): boolean {
       const terminal = options.getTerminal();
       const fitAddon = options.getFitAddon();

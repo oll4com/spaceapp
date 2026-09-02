@@ -11,6 +11,7 @@ export type YouTubePlayerCallbacks = {
   onReady?: () => void;
   onStateChange?: (state: YouTubePlayerState) => void;
   onError?: (code: number) => void;
+  onMixFallback?: () => void;
 };
 
 export type YouTubePlaylistPlayerOptions = {
@@ -34,6 +35,7 @@ export type YouTubePlaylistPlayer = {
   getLoop(): boolean;
   seekTo(seconds: number): void;
   playVideoAt(index: number): void;
+  isReady(): boolean;
   destroy(): void;
 };
 
@@ -57,7 +59,7 @@ type YouTubeIFramePlayerLike = {
 
 type YouTubeNamespace = {
   Player: new (
-    elementId: string,
+    element: HTMLElement | string,
     options: {
       height: number;
       width: number;
@@ -167,28 +169,47 @@ export async function createYouTubePlaylistPlayer(
   let playlistSyncRetryTimer: number | null = null;
   let pendingPlayback: "play" | "pause" | null = null;
   let pendingOperations: Array<(activePlayer: YouTubeIFramePlayerLike) => void> = [];
+  let usedMixFallback = false;
+  let lastVolumePercent: number | null = null;
+  let lastLoopDesired = true;
 
-  const playerVars: Record<string, string | number | boolean> = {
-    autoplay: options.autoplay ? 1 : 0,
-    controls: 0,
-    disablekb: 1,
-    fs: 0,
-    playsinline: 1,
-    rel: 0,
-    iv_load_policy: 3,
-    modestbranding: 1,
-    origin: window.location.origin
+  const isPlaylistMode = () => target.kind === "playlist" || (target.kind === "video" && !usedMixFallback);
+
+  const mountStage = (): HTMLDivElement => {
+    const inner = document.createElement("div");
+    container.replaceChildren(inner);
+    return inner;
   };
-  if (target.kind === "playlist") {
-    playerVars.listType = "playlist";
-    playerVars.list = target.playlistId;
-    if (Number.isInteger(options.startIndex) && (options.startIndex ?? 0) >= 0) {
-      playerVars.index = options.startIndex ?? 0;
+
+  const buildPlayerVars = (withMix: boolean): Record<string, string | number | boolean> => {
+    const playerVars: Record<string, string | number | boolean> = {
+      autoplay: options.autoplay ? 1 : 0,
+      controls: 0,
+      disablekb: 1,
+      fs: 0,
+      playsinline: 1,
+      rel: 0,
+      iv_load_policy: 3,
+      modestbranding: 1,
+      origin: window.location.origin
+    };
+    if (target.kind === "playlist") {
+      playerVars.listType = "playlist";
+      playerVars.list = target.playlistId;
+      if (Number.isInteger(options.startIndex) && (options.startIndex ?? 0) >= 0) {
+        playerVars.index = options.startIndex ?? 0;
+      }
+    } else if (withMix) {
+      // Single-video links load inside their YouTube Mix (RD<videoId>) so
+      // next/previous/queue controls operate on a real track list.
+      playerVars.listType = "playlist";
+      playerVars.list = `RD${target.videoId}`;
     }
-  }
-  if (Number.isFinite(options.startSeconds) && (options.startSeconds ?? 0) > 0) {
-    playerVars.start = Math.floor(options.startSeconds ?? 0);
-  }
+    if (Number.isFinite(options.startSeconds) && (options.startSeconds ?? 0) > 0) {
+      playerVars.start = Math.floor(options.startSeconds ?? 0);
+    }
+    return playerVars;
+  };
 
   const runSafely = (operation: (activePlayer: YouTubeIFramePlayerLike) => void) => {
     if (!player || destroyed) return;
@@ -230,7 +251,7 @@ export async function createYouTubePlaylistPlayer(
   };
 
   const startPlaylistSyncRetry = () => {
-    if (target.kind !== "playlist" || playlistSyncRetryTimer !== null) return;
+    if (!isPlaylistMode() || playlistSyncRetryTimer !== null) return;
     let attempts = 0;
     playlistSyncRetryTimer = window.setInterval(() => {
       attempts += 1;
@@ -242,34 +263,64 @@ export async function createYouTubePlaylistPlayer(
     }, 1000);
   };
 
-  player = new yt.Player(container.id, {
+  const buildEvents = () => ({
+    onReady: () => {
+      if (destroyed || !player) return;
+      ready = true;
+      syncNowPlaying();
+      startPlaylistSyncRetry();
+      const operations = pendingOperations;
+      pendingOperations = [];
+      operations.forEach((operation) => runSafely(operation));
+      if (lastVolumePercent !== null) runSafely((activePlayer) => activePlayer.setVolume(lastVolumePercent!));
+      runSafely((activePlayer) => activePlayer.setLoop(lastLoopDesired));
+      const playback = pendingPlayback;
+      pendingPlayback = null;
+      if (playback === "play") runSafely((activePlayer) => activePlayer.playVideo());
+      if (playback === "pause") runSafely((activePlayer) => activePlayer.pauseVideo());
+      callbacks.onReady?.();
+    },
+    onStateChange: (event: { data?: number }) => {
+      syncNowPlaying();
+      callbacks.onStateChange?.(stateFromCode(event.data ?? -1));
+    },
+    onError: (event: { data?: number }) => {
+      const code = event.data ?? 0;
+      if (target.kind === "video" && !usedMixFallback && !destroyed) {
+        usedMixFallback = true;
+        ready = false;
+        pendingPlayback = null;
+        pendingOperations = [];
+        if (playlistSyncRetryTimer !== null) window.clearInterval(playlistSyncRetryTimer);
+        playlistSyncRetryTimer = null;
+        lastTitle = "";
+        lastTotal = 1;
+        lastIndex = 1;
+        try {
+          player?.destroy();
+        } catch {
+          // The previous iframe may already be gone.
+        }
+        player = new yt.Player(mountStage(), {
+          height: 1,
+          width: 1,
+          videoId: target.kind === "video" ? target.videoId : undefined,
+          playerVars: buildPlayerVars(false),
+          events: buildEvents()
+        });
+        callbacks.onMixFallback?.();
+        return;
+      }
+      callbacks.onError?.(code);
+    }
+  });
+
+  player = new yt.Player(mountStage(), {
     height: 1,
     width: 1,
     videoId: target.kind === "video" ? target.videoId : undefined,
-    playerVars,
-    events: {
-      onReady: () => {
-        if (destroyed || !player) return;
-        ready = true;
-        syncNowPlaying();
-        startPlaylistSyncRetry();
-        const operations = pendingOperations;
-        pendingOperations = [];
-        operations.forEach((operation) => runSafely(operation));
-        const playback = pendingPlayback;
-        pendingPlayback = null;
-        if (playback === "play") runSafely((activePlayer) => activePlayer.playVideo());
-        if (playback === "pause") runSafely((activePlayer) => activePlayer.pauseVideo());
-        callbacks.onReady?.();
-      },
-      onStateChange: (event) => {
-        syncNowPlaying();
-        callbacks.onStateChange?.(stateFromCode(event.data ?? -1));
-      },
-      onError: (event) => {
-        callbacks.onError?.(event.data ?? 0);
-      }
-    }
+    playerVars: buildPlayerVars(true),
+    events: buildEvents()
   });
 
   return {
@@ -289,6 +340,7 @@ export async function createYouTubePlaylistPlayer(
     },
     setVolume(volume: number) {
       const percent = Math.round(Math.min(1, Math.max(0, volume)) * 100);
+      lastVolumePercent = percent;
       runWhenReady((activePlayer) => activePlayer.setVolume(percent));
     },
     getCurrent() {
@@ -308,6 +360,7 @@ export async function createYouTubePlaylistPlayer(
       return readSafely((activePlayer) => activePlayer.getDuration(), 0);
     },
     setLoop(enabled) {
+      lastLoopDesired = enabled;
       runWhenReady((activePlayer) => activePlayer.setLoop(enabled));
     },
     getLoop() {
@@ -319,6 +372,9 @@ export async function createYouTubePlaylistPlayer(
     },
     playVideoAt(index) {
       runWhenReady((activePlayer) => activePlayer.playVideoAt(index));
+    },
+    isReady() {
+      return ready && !destroyed;
     },
     destroy() {
       const activePlayer = player;
@@ -334,6 +390,7 @@ export async function createYouTubePlaylistPlayer(
         // The player may already have been destroyed.
       }
       player = null;
+      container.replaceChildren();
     }
   };
 }

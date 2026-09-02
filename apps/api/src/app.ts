@@ -9,7 +9,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { execFile, spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, mkdir, readFile, stat, statfs, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -81,6 +81,8 @@ import {
   cliTaskHistoryQuerySchema,
   cliRuntimeDisablePreviewSchema,
   cliRuntimeSettingsResponseSchema,
+  harnessMaintenanceRestartResultSchema,
+  harnessMaintenanceStatusSchema,
   cliRuntimeVpnStatusSchema,
   cliGlobalEgressStatusSchema,
   cliEgressRouteIdSchema,
@@ -155,6 +157,9 @@ import {
   updateCliRuntimeSettingResultSchema,
   updateCliRuntimeVpnInputSchema,
   updateCliRuntimeVpnResultSchema,
+  updateHarnessEnabledInputSchema,
+  updateHarnessEnabledResultSchema,
+  updateHarnessVpnResultSchema,
   restartCliRuntimeVpnSessionsResultSchema,
   replaceCliVpnProfileInputSchema,
   updateRoomInputSchema,
@@ -173,6 +178,7 @@ import {
   updateCliAccountProfileInputSchema,
   updateCliAccountProfileResponseSchema,
   cliMaintenanceRequestSchema,
+  cliUpdateAllRequestSchema,
   cliTerminalClientEventInputSchema,
   cliTerminalClientEventResponseSchema,
   idSchema,
@@ -401,6 +407,7 @@ import {
 } from "./app-diagnostics.js";
 import { ActivityLogService } from "./activity-log.js";
 import { registerBenchmarkRoutes } from "./benchmark-routes.js";
+import { isHarnessRootHttpPath, registerHarnessRoutes } from "./harness-proxy.js";
 import { createActiveAgentCountProvider } from "./active-agent-count.js";
 import { buildCliAgentBootstrapMarkdown } from "./agent-bootstrap.js";
 import {
@@ -497,6 +504,8 @@ import {
   parseOpenCodeCompositeModelId,
   readOpenCodeServerControl,
   listOpenCodeServerControls,
+  openCodeSpaceChatStateRoot,
+  opencodeServerControlPath,
   resolveOpenCodeTitleFallbackControl,
   switchOpenCodeSessionModel,
   updateOpenCodeSessionTitle,
@@ -547,14 +556,14 @@ import {
   CliMaintenanceError,
   CliMaintenanceManager
 } from "./cli-maintenance.js";
+import { createCliUpdateAllRunner, type CliUpdateAllRunner } from "./cli-maintenance.js";
 import {
   applyAgentTools,
   buildAgentToolsCatalog,
   type AgentToolsOptions
 } from "./agent-tools.js";
 import { getApiConfig, type SpaceApiConfig } from "./config.js";
-import { cliChatRuntimeName, cliRuntimeChatProviderAdapter, cliRuntimeModelsChatProviderAdapter } from "./chat-providers.js";
-import { createOpenCodeSession, openCodeSessionExists, openCodeSpaceChatControlPath, opencodeDirectParityRoot, readOpenCodeSpaceChatControl } from "@space/opencode-control";
+import { createOpenCodeSession, openCodeSessionExists, opencodeDirectParityRoot } from "@space/opencode-control";
 import type { OwnerSetupBootstrap } from "./owner-setup.js";
 import {
   createSetupConnectionsService,
@@ -602,10 +611,13 @@ import {
 import {
   CORE_RESTART_SERVICES,
   CORE_SERVICE_RESTART_COMMAND,
+  createDeepSeekHarnessServiceController,
   readServiceRestartCooldown,
+  restartOpenCodeSharedServer,
   runCoreServiceRestart,
   writeServiceRestartCooldown,
-  type CoreServiceRestarter
+  type CoreServiceRestarter,
+  type DeepSeekHarnessServiceController
 } from "./service-restarts.js";
 import {
   restartAllCliRuntimes,
@@ -766,10 +778,12 @@ export interface CreateAppOptions {
   cliSessionCleanupService?: CliSessionCleanupService;
   codexHistoryAccessCoordinator?: CodexHistoryAccessCoordinator;
   serviceRestarter?: CoreServiceRestarter;
+  deepSeekHarnessServiceController?: DeepSeekHarnessServiceController;
   serviceRestartCooldownPath?: string;
   telegramIntegrationManager?: TelegramIntegrationManager;
   sourceControlPublishingManager?: SourceControlPublishingManager;
   cliMaintenanceManager?: CliMaintenanceManager;
+  cliUpdateAllRunner?: CliUpdateAllRunner;
   cliRecoveryLoginOpener?: (input: {
     roomId: string;
     runtimeId: string;
@@ -1096,6 +1110,11 @@ const browserCaptureTimelineManifestSchema = z.object({
 const cliUploadsQuerySchema = z.object({
   source: paneCliUploadSourceSchema.default("USER_UPLOAD")
 });
+// Reasonix CLI (Space's DeepSeek deepseek-vscode-parity runtime) accepts image
+// input only when a pasted reference matches its `.reasonix/attachments`
+// clipboard pattern. We mirror image uploads there so the pane passes them as
+// real image attachments instead of a plain path.
+const REASONIX_CLI_RUNTIME_ID = "cli:deepseek";
 const clipboardDebugSeveritySchema = z.enum(["info", "good", "bad"]);
 const cliClipboardDebugEntrySchema = z.object({
   severity: clipboardDebugSeveritySchema,
@@ -1152,7 +1171,7 @@ const listEventsQuerySchema = z
     pageSize: input.pageSize ?? input.limit ?? 50,
     sortOrder: input.sortOrder ?? "desc"
   }));
-const storageMinimumRecommendedFreeBytes = 150 * 1024 * 1024 * 1024;
+const storageMinimumRecommendedFreeBytes = 20 * 1024 * 1024 * 1024;
 const imageExtensionByMime = {
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -1503,6 +1522,29 @@ function buildCliUploadStorage(input: {
       `${encodeURIComponent(input.sessionId)}/${day}/${encodeURIComponent(storedFilename)}`,
     storedFilename
   };
+}
+
+/**
+ * Reasonix resolves `@.reasonix/attachments/...` references relative to the
+ * session workspace root (`<cwd>/.reasonix/attachments`). For image uploads on
+ * a Reasonix (cli:deepseek) pane we write a copy there with the exact
+ * clipboard-file naming pattern Reasonix auto-attaches, and return the
+ * `@.reasonix/attachments/<name>` reference as the terminal path so the model
+ * receives the image as image input (not as a plain path with a title).
+ */
+function buildReasonixAttachmentUpload(input: {
+  workspaceRoot: string;
+  mimeType: string;
+}): { terminalPath: string; absoluteDir: string; absolutePath: string } {
+  const extension = input.mimeType === "image/jpeg" ? "jpg" : input.mimeType === "image/webp" ? "webp" : "png";
+  const now = new Date();
+  const pad = (value: number, length = 2) => String(value).padStart(length, "0");
+  const millis = pad(now.getMilliseconds(), 3);
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const filename = `clipboard-${timestamp}.${millis}.${extension}`;
+  const absoluteDir = join(input.workspaceRoot, ".reasonix", "attachments");
+  const absolutePath = join(absoluteDir, filename);
+  return { terminalPath: `@.reasonix/attachments/${filename}`, absoluteDir, absolutePath };
 }
 
 function isVideoMimeType(mimeType: string): boolean {
@@ -3545,9 +3587,9 @@ async function collectStorageReadiness(): Promise<StorageReadiness> {
   const rootWarn = root.usedPercent >= 80;
   const status = !dedicatedAppVolume || freeSpaceBlocked ? "BLOCKED" : rootWarn ? "WARN" : "VERIFIED";
   const statusReason = !dedicatedAppVolume
-    ? "Dedicated /opt/spaceapp volume is not detected; production/browser-heavy launch requires isolated 150-250GB app storage."
+    ? "Dedicated /opt/spaceapp volume is not detected; production/browser-heavy launch requires isolated dedicated app storage with at least 20GB free."
     : freeSpaceBlocked
-      ? "Dedicated /opt/spaceapp volume exists but available space is below the 150GB minimum recommendation."
+      ? "Dedicated /opt/spaceapp volume exists but available space is below the 20GB minimum recommendation."
       : rootWarn
         ? "Root filesystem is above the 80% warning threshold."
         : "Storage readiness meets the current Space launch thresholds.";
@@ -3678,6 +3720,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       store,
       repairEnabled: config.cliMaintenanceRepairEnabled
     });
+  const cliUpdateAllRunner = options.cliUpdateAllRunner ?? createCliUpdateAllRunner();
   const releasePublishingManager =
     options.releasePublishingManager ?? new ReleasePublishingManager({ store });
   const telegramIntegrationManager =
@@ -3772,112 +3815,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       clientInfo: { name: "space", title: "Space", version: config.version },
       timeoutMs: 5_000
     }));
-  const cliChatRuntimeState = async (runtimeId: string) => {
-    const registry = await cliRuntimeRegistryCache.read();
-    const runtime = findRuntime(registry, runtimeId);
-    if (!runtime || runtime.adapterStatus !== "ENABLED" || !runtime.detectedCommandPath) {
-      return { enabled: false, reason: runtime?.statusReason ?? `${runtimeId} is not available.` };
-    }
-    return { enabled: true, reason: null };
-  };
-  const createCliModelsExecutor = (runtimeId: string) => {
-    const modelsFile = `/opt/spaceapp/var/${runtimeId.replace("cli:", "")}-models.last-good.json`;
-    let modelsCache: { raw: string; at: number } | null = null;
-    const readModelsFile = async (): Promise<string | null> => {
-      try {
-        const parsed = JSON.parse(await readFile(modelsFile, "utf8")) as { models?: unknown };
-        return typeof parsed.models === "string" && parsed.models.trim() ? parsed.models : null;
-      } catch {
-        return null;
-      }
-    };
-    const runModels = (): Promise<string> => new Promise((resolve, reject) => {
-      const child = spawn("/usr/bin/sudo", [
-        "-n", "/opt/spaceapp/bin/space-cli-vpn-broker", "exec", runtimeId, "models"
-      ], {
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" }
-      });
-      let stdout = "";
-      let stderr = "";
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        child.kill("SIGTERM");
-        reject(new Error(`${runtimeId} model catalog request timed out.`));
-      }, 60_000);
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk;
-        if (stdout.length > 512_000) child.kill("SIGTERM");
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk;
-      });
-      child.on("error", (error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.on("close", (code) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (code !== 0 || !stdout.trim()) {
-          reject(new Error(stderr.trim() || `${runtimeId} model catalog command failed (exit ${code ?? "unknown"}).`));
-          return;
-        }
-        resolve(stdout);
-      });
-    });
-    return async (): Promise<string> => {
-      if (modelsCache && Date.now() - modelsCache.at < 10 * 60_000) {
-        return modelsCache.raw;
-      }
-      let lastError: unknown = null;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-          const stdout = await runModels();
-          if (!stdout.trim()) throw new Error(`Empty ${runtimeId} model catalog.`);
-          modelsCache = { raw: stdout, at: Date.now() };
-          try {
-            await writeFile(modelsFile, JSON.stringify({ models: stdout, at: new Date().toISOString() }), "utf8");
-          } catch {
-            // best effort cache persistence
-          }
-          return stdout;
-        } catch (error) {
-          lastError = error;
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
-        }
-      }
-      if (modelsCache) return modelsCache.raw;
-      const persisted = await readModelsFile();
-      if (persisted) return persisted;
-      const details = lastError && typeof lastError === "object" && "stderr" in lastError
-        ? String((lastError as { stderr?: unknown }).stderr ?? "").trim().slice(0, 300)
-        : "";
-      throw new Error(details || (lastError instanceof Error ? lastError.message : `${runtimeId} model catalog is unavailable.`));
-    };
-  };
-  const cliChatProviderAdapters = config.cliChatTurnsEnabled
-    ? config.cliChatTurnRuntimeIds.map((runtimeId) => {
-        if (runtimeId === "cli:gemini" || runtimeId === "cli:cursor" || runtimeId === "cli:copilot" || runtimeId === "cli:deepseek") {
-          return cliRuntimeModelsChatProviderAdapter({
-            runtimeId,
-            providerName: cliChatRuntimeName(runtimeId),
-            executeModels: createCliModelsExecutor(runtimeId),
-            resolveState: cliChatRuntimeState
-          });
-        }
-        return cliRuntimeChatProviderAdapter({
-          runtimeId,
-          providerName: cliChatRuntimeName(runtimeId),
-          resolveState: cliChatRuntimeState
-        });
-      })
-    : [];
   const spaceAgentAdapter =
     options.spaceAgentAdapter ??
     createSpaceAgentAdapter({
@@ -3885,8 +3822,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       config,
       codexTurnStarter,
       codexAgentControl,
-      cliChatProviderAdapters,
-      openCodeControlResolver: async () => resolveChatPaneOpenCodeControl(),
+      openCodeControlResolver: async () => resolveChatOpenCodeCatalogControl(),
+      openCodeSessionControlResolver: async (spaceAgentSessionId) =>
+        resolveChatPaneOpenCodeControl(spaceAgentSessionId),
+      isChatProviderEnabled: async (providerId) => cliRuntimeVisibility.isEnabled(
+        providerId === "opencode" ? "cli:opencode" : "cli:codex"
+      ),
       readGoal: async (threadId) => {
         const goal = (await codexGoals.list()).find((candidate) => candidate.threadId === threadId);
         return goal
@@ -4087,6 +4028,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
   const cliVpnBroker = options.cliVpnBroker ?? new CliVpnBrokerClient();
+  const deepSeekHarnessServiceController = options.deepSeekHarnessServiceController ?? createDeepSeekHarnessServiceController();
   const cliVpnSessionPidResolver = options.cliVpnSessionPidResolver
     ?? ((sessions: readonly PaneCliSession[]) => cliTerminalManager.activeSessionPids(sessions));
   const cliVpnSessionRestarter = options.cliVpnSessionRestarter
@@ -4558,44 +4500,72 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     return control;
   };
-  const resolveChatPaneOpenCodeControl = async (): Promise<OpenCodeServerControl> => {
+  const openCodeChatControlPromises = new Map<string, Promise<OpenCodeServerControl>>();
+  const resolveChatOpenCodeCatalogControl = async (): Promise<OpenCodeServerControl> => {
     const stateRoot = options.opencodeStateRoot ?? opencodeDirectParityRoot + "/state";
-    const controls = await listOpenCodeServerControls(stateRoot);
-    for (const control of controls) {
-      if (!(await openCodeServerIsHealthy(control))) continue;
-      if (!(await openCodeSessionExists(control, control.nativeSessionId))) continue;
-      return control;
-    }
     const sharedControl = await resolveOpenCodeTitleFallbackControl(stateRoot);
-    if (sharedControl) {
-      const spaceChatControl = await readOpenCodeSpaceChatControl();
-      if (
-        spaceChatControl &&
-        (await openCodeServerIsHealthy(spaceChatControl)) &&
-        (await openCodeSessionExists(spaceChatControl, spaceChatControl.nativeSessionId))
-      ) {
-        return spaceChatControl;
-      }
-      const nativeSessionId = await createOpenCodeSession(sharedControl, "Space Chat", "/etc");
-      if (nativeSessionId) {
-        const control = {
-          ...sharedControl,
-          spaceSessionId: "space-chat",
-          nativeSessionId,
-          updatedAt: new Date().toISOString()
-        };
-        try {
-          await writeFile(openCodeSpaceChatControlPath(), JSON.stringify(control, null, 2), "utf8");
-        } catch {
-          // best effort; the chat provider can still use this in-memory control
-        }
-        return control;
-      }
-    }
+    if (sharedControl && await openCodeServerIsHealthy(sharedControl)) return sharedControl;
     throw new SpaceFeatureDisabledError(
       "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
-      "Live OpenCode model control is unavailable; the chat provider catalog could not be loaded."
+      "Live OpenCode model control is unavailable; the Chat provider catalog could not be loaded."
     );
+  };
+  const resolveChatPaneOpenCodeControl = async (spaceAgentSessionId: string): Promise<OpenCodeServerControl> => {
+    if (!/^agent_session:[A-Za-z0-9_-]+$/.test(spaceAgentSessionId)) {
+      throw new SpaceFeatureDisabledError(
+        "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+        "OpenCode Chat requires a valid isolated Space agent session."
+      );
+    }
+    const existing = await readOpenCodeServerControl(spaceAgentSessionId, openCodeSpaceChatStateRoot);
+    if (
+      existing &&
+      await openCodeServerIsHealthy(existing) &&
+      await openCodeSessionExists(existing, existing.nativeSessionId)
+    ) return existing;
+
+    const inFlight = openCodeChatControlPromises.get(spaceAgentSessionId);
+    if (inFlight) return inFlight;
+    const createControl = (async () => {
+      const sharedControl = await resolveChatOpenCodeCatalogControl();
+      const nativeSessionId = await createOpenCodeSession(
+        sharedControl,
+        `Space Chat ${spaceAgentSessionId.slice(-12)}`,
+        "/etc"
+      );
+      if (!nativeSessionId) {
+        throw new SpaceFeatureDisabledError(
+          "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+          "OpenCode could not create an isolated session for this Chat task."
+        );
+      }
+      const control: OpenCodeServerControl = {
+        ...sharedControl,
+        spaceSessionId: spaceAgentSessionId,
+        nativeSessionId,
+        updatedAt: new Date().toISOString()
+      };
+      const controlPath = opencodeServerControlPath(spaceAgentSessionId, openCodeSpaceChatStateRoot);
+      const temporaryPath = `${controlPath}.${process.pid}.${nanoid(8)}.tmp`;
+      await mkdir(dirname(controlPath), { recursive: true, mode: 0o700 });
+      await writeFile(temporaryPath, JSON.stringify(control, null, 2), { encoding: "utf8", mode: 0o600 });
+      await chmod(temporaryPath, 0o600);
+      await rename(temporaryPath, controlPath);
+      const stored = await readOpenCodeServerControl(spaceAgentSessionId, openCodeSpaceChatStateRoot);
+      if (!stored || stored.nativeSessionId !== nativeSessionId) {
+        throw new SpaceFeatureDisabledError(
+          "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+          "The isolated OpenCode Chat session could not be persisted."
+        );
+      }
+      return stored;
+    })();
+    openCodeChatControlPromises.set(spaceAgentSessionId, createControl);
+    try {
+      return await createControl;
+    } finally {
+      openCodeChatControlPromises.delete(spaceAgentSessionId);
+    }
   };
   const readPaneOpenCodeModelSettings = async (pane: Pane, session: PaneCliSession, traceId: string) => {
     const control = await resolveOpenCodeServerControl(session);
@@ -5191,6 +5161,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (
       request.user?.automationScope === "APP_DIAGNOSTICS" &&
       request.url.startsWith("/api/") &&
+      request.routeOptions.url !== "/api/:method" &&
       !isAllowedAppDiagnosticsAutomationMutation(request)
     ) {
       return sendApiError(
@@ -5201,6 +5172,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       );
     }
     if (request.user && requiresCsrf(request)) {
+      if (request.routeOptions.url === "/api/:method" || isHarnessRootHttpPath(request.url)) {
+        return;
+      }
       const submittedToken = request.headers[csrfHeaderName];
       if (!verifyCsrfToken(request.cookies[cookieName], submittedToken, auth.sessionSecret)) {
         return sendApiError(reply, 403, "CSRF_INVALID", "A valid CSRF token is required for this action.");
@@ -5797,6 +5771,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   registerBenchmarkRoutes(app, defaultRouteRateLimitOptions);
+
+  registerHarnessRoutes(app, config);
 
   app.post(
     "/api/app-diagnostics/event-batches",
@@ -6850,6 +6826,78 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
+  async function runningDeepSeekHarnessPid(): Promise<number> {
+    const pid = await deepSeekHarnessServiceController.mainPid();
+    if (!pid) {
+      throw new CliVpnError("HARNESS_UNAVAILABLE", "DeepSeek Harness is not running.", 503);
+    }
+    return pid;
+  }
+
+  async function assertDeepSeekHarnessIsolated(pid: number): Promise<void> {
+    const inspection = await cliVpnBroker.inspectRuntimes([{ runtimeId: "cli:harness", pids: [pid] }]);
+    const harness = inspection.runtimes.find((runtime) => runtime.runtimeId === "cli:harness");
+    if (!harness?.isolatedPids.includes(pid)) {
+      throw new CliVpnError(
+        "HARNESS_NETWORK_ISOLATION_FAILED",
+        "DeepSeek Harness did not enter its protected network namespace.",
+        502
+      );
+    }
+  }
+
+  async function readDeepSeekHarnessMaintenanceStatus() {
+    if (!config.harnessEnabled) {
+      return harnessMaintenanceStatusSchema.parse({
+        runtimeId: "cli:harness",
+        enabled: false,
+        vpnEnabled: false,
+        effectiveMode: "DIRECT",
+        isolated: false,
+        pid: null
+      });
+    }
+    const pid = await deepSeekHarnessServiceController.mainPid().catch(() => null);
+    if (!config.cliVpnEnabled) {
+      return harnessMaintenanceStatusSchema.parse({
+        runtimeId: "cli:harness",
+        enabled: Boolean(pid),
+        vpnEnabled: false,
+        effectiveMode: "DIRECT",
+        isolated: false,
+        pid
+      });
+    }
+    try {
+      const inspection = await cliVpnBroker.inspectRuntimes([{ runtimeId: "cli:harness", pids: pid ? [pid] : [] }]);
+      const harness = inspection.runtimes.find((runtime) => runtime.runtimeId === "cli:harness");
+      const vpnEnabled = harness?.mode === "vpn";
+      const isolated = Boolean(pid && harness?.isolatedPids.includes(pid));
+      const selectedConnection = inspection.selectedRoute === "direct"
+        ? null
+        : inspection.profiles[inspection.selectedRoute];
+      return harnessMaintenanceStatusSchema.parse({
+        runtimeId: "cli:harness",
+        enabled: Boolean(pid),
+        vpnEnabled,
+        effectiveMode: vpnEnabled
+          ? isolated && selectedConnection?.status === "CONNECTED" ? "VPN" : "BLOCKED"
+          : "DIRECT",
+        isolated,
+        pid
+      });
+    } catch {
+      return harnessMaintenanceStatusSchema.parse({
+        runtimeId: "cli:harness",
+        enabled: Boolean(pid),
+        vpnEnabled: false,
+        effectiveMode: "BLOCKED",
+        isolated: false,
+        pid
+      });
+    }
+  }
+
   function unavailableCliVpnConnection(error: unknown) {
     const toolingUnavailable = error instanceof CliVpnError && error.code === "TOOLING_UNAVAILABLE";
     return cliVpnConnectionSchema.parse({
@@ -7009,9 +7057,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     const [settings, registry] = await Promise.all([
       store.listCliRuntimeSettings(),
-      cliRuntimeRegistryCache.read()
+      cliRuntimeRegistryCache.readStaleWhileRefreshing()
     ]);
     const vpn = await readCliVpnApplications(settings);
+    const harness = await readDeepSeekHarnessMaintenanceStatus();
     return cliRuntimeSettingsResponseSchema.parse({
       settings,
       runtimes: registry.data.filter((runtime) => settings.some((setting) => setting.runtimeId === runtime.id)),
@@ -7019,8 +7068,100 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       vpnConnection: vpn.connection,
       vpnApplications: vpn.applications,
       egress: vpn.egress,
+      harness,
       checkedAt: nowIso()
     });
+  });
+
+  app.patch("/api/admin/harness/vpn", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Harness VPN settings require the ADMIN role.");
+    }
+    if (!config.harnessEnabled) {
+      throw new SpaceFeatureDisabledError("HARNESS_DISABLED", "DeepSeek Harness is disabled.");
+    }
+    assertCliVpnAvailable();
+    const input = parseBody(updateCliRuntimeVpnInputSchema, request.body ?? {});
+    const previous = await readDeepSeekHarnessMaintenanceStatus();
+    let pid = await runningDeepSeekHarnessPid();
+    let routed = await cliVpnBroker.setRuntime("cli:harness", input.enabled, [pid]);
+    if (!routed.isolatedPids.includes(pid)) {
+      await deepSeekHarnessServiceController.restart();
+      pid = await runningDeepSeekHarnessPid();
+      routed = await cliVpnBroker.setRuntime("cli:harness", input.enabled, [pid]);
+    }
+    if (!routed.isolatedPids.includes(pid)) {
+      await cliVpnBroker.setRuntime("cli:harness", previous.vpnEnabled, [pid]).catch(() => undefined);
+      throw new CliVpnError(
+        "HARNESS_NETWORK_ISOLATION_FAILED",
+        "DeepSeek Harness could not be moved onto the selected protected route.",
+        502
+      );
+    }
+    const status = await readDeepSeekHarnessMaintenanceStatus();
+    await recordAudit(store, request, {
+      action: "harness.vpn.update",
+      targetType: "managed_service",
+      targetId: "space-deepseek-harness.service",
+      metadata: { enabled: input.enabled, effectiveMode: status.effectiveMode, isolated: status.isolated }
+    });
+    return updateHarnessVpnResultSchema.parse({ status, connection: routed.connection });
+  });
+
+  app.patch("/api/admin/harness/enabled", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Harness service settings require the ADMIN role.");
+    }
+    if (!config.harnessEnabled) {
+      throw new SpaceFeatureDisabledError("HARNESS_DISABLED", "DeepSeek Harness is disabled.");
+    }
+    const input = parseBody(updateHarnessEnabledInputSchema, request.body ?? {});
+    const previous = await readDeepSeekHarnessMaintenanceStatus();
+    await deepSeekHarnessServiceController.setEnabled(input.enabled);
+    if (input.enabled) {
+      const pid = await runningDeepSeekHarnessPid();
+      if (config.cliVpnEnabled) {
+        const routed = await cliVpnBroker.setRuntime("cli:harness", previous.vpnEnabled, [pid]);
+        if (!routed.isolatedPids.includes(pid)) {
+          await deepSeekHarnessServiceController.setEnabled(false).catch(() => undefined);
+          throw new CliVpnError(
+            "HARNESS_NETWORK_ISOLATION_FAILED",
+            "DeepSeek Harness did not enter its protected network namespace.",
+            502
+          );
+        }
+        await assertDeepSeekHarnessIsolated(pid);
+      }
+    }
+    const status = await readDeepSeekHarnessMaintenanceStatus();
+    await recordAudit(store, request, {
+      action: input.enabled ? "harness.enabled" : "harness.disabled",
+      targetType: "managed_service",
+      targetId: "space-deepseek-harness.service",
+      metadata: { enabled: status.enabled, isolated: status.isolated, effectiveMode: status.effectiveMode }
+    });
+    return updateHarnessEnabledResultSchema.parse({ status });
+  });
+
+  app.post("/api/admin/harness/restart", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Harness restarts require the ADMIN role.");
+    }
+    if (!config.harnessEnabled) {
+      throw new SpaceFeatureDisabledError("HARNESS_DISABLED", "DeepSeek Harness is disabled.");
+    }
+    assertCliVpnAvailable();
+    await deepSeekHarnessServiceController.restart();
+    const pid = await runningDeepSeekHarnessPid();
+    await assertDeepSeekHarnessIsolated(pid);
+    const status = await readDeepSeekHarnessMaintenanceStatus();
+    await recordAudit(store, request, {
+      action: "harness.restart_requested",
+      targetType: "managed_service",
+      targetId: "space-deepseek-harness.service",
+      metadata: { isolated: status.isolated, effectiveMode: status.effectiveMode }
+    });
+    return harnessMaintenanceRestartResultSchema.parse({ status });
   });
 
   const agentToolsOptions = options.agentToolsOptions;
@@ -7736,6 +7877,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           failedSessionCount: result.failedSessionIds.length
         }
       });
+      if (params.runtimeId === "cli:opencode") {
+        await restartOpenCodeSharedServer();
+      }
       return result;
     } finally {
       cliRuntimeRestartPendingRuntimes.delete(params.runtimeId);
@@ -7776,6 +7920,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           failedSessionCount: result.failedSessionIds.length
         }
       });
+      if (result.requestedRuntimes.includes("cli:opencode")) {
+        await restartOpenCodeSharedServer();
+      }
       return result;
     } finally {
       cliRuntimeRestartAllInFlight = false;
@@ -8769,6 +8916,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (item.mode === "VNC") {
         return { roomId: params.id, title: "VNC", mode: "VNC" as const, vncTarget: item.vncTarget };
       }
+      if (item.mode === "HARNESS") {
+        return { roomId: params.id, title: "Harness", mode: "HARNESS" as const };
+      }
       if (item.terminalRuntimeId === "cli:root") {
         throw new SpaceConflictError("CLI ROOT cannot be created through room pane batches.");
       }
@@ -8949,8 +9099,46 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.post("/api/panes/:id/title/generate", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
+    if (pane.mode === "HARNESS") {
+      const [providers, providerSettings, models] = await Promise.all([
+        store.listProviders(),
+        store.getProviderSettings(),
+        store.listModels()
+      ]);
+      const selection = selectTerminalPaneTitleGeneration(providers, models, providerSettings);
+      const generated = await generateTerminalPaneTitle({
+        config,
+        provider: selection.provider,
+        model: selection.model,
+        currentTitle: pane.title,
+        cwd: pane.cwd,
+        primaryTaskRequest: `DeepSeek Harness workspace: ${pane.title}`,
+        trustPrimaryTaskRequest: true,
+        reasoningEffort: selection.reasoningEffort,
+        transcript: []
+      });
+      const updated = await store.updatePane(
+        pane.id,
+        { title: generated.title, titleSource: "ai" },
+        request.requestIdForSpace
+      );
+      const latestEvent = await getLatestRoomEvent(store, updated.roomId);
+      if (latestEvent) eventBus.publish(latestEvent);
+      await recordAudit(store, request, {
+        action: "pane.title_generate",
+        targetType: "pane",
+        targetId: updated.id,
+        metadata: {
+          roomId: updated.roomId,
+          providerId: generated.providerId,
+          modelId: generated.modelId,
+          paneMode: "HARNESS"
+        }
+      });
+      return updated;
+    }
     if (pane.mode !== "TERMINAL" && pane.mode !== "CHAT") {
-      throw new SpaceConflictError("AI title generation is only available for Chat and CLI panes.");
+      throw new SpaceConflictError("AI title generation is only available for Chat, CLI, and Harness panes.");
     }
     const session = pane.mode === "CHAT"
       ? await store.getActiveSpaceAgentSession(pane.id)
@@ -9029,8 +9217,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     let codexGenerationError: unknown = null;
     if (!opencodeResult) {
-      // OpenCode first: shared server with deepseek-v4-flash-free (free model),
-      // 45s timeout + one retry. Codex is now the fallback.
+      // OpenCode first: shared server using its last-used model (no hardcoded
+      // default), 45s timeout + one retry. Codex is now the fallback.
       const sharedControl = await resolveOpenCodeTitleFallbackControl(options.opencodeStateRoot);
       if (sharedControl) {
         const sharedInput = {
@@ -11005,6 +11193,29 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         request.requestIdForSpace
       );
       eventBus.publish(artifactRecord.event);
+
+      let terminalPath = storage.filePath;
+      let shellQuoted = shellQuotePath(storage.filePath);
+      if (declaredImage && active.runtimeId === REASONIX_CLI_RUNTIME_ID) {
+        const workspaceRoot = pane.cwd ?? (("cwd" in active && active.cwd) ? active.cwd : null);
+        if (!workspaceRoot) {
+          return sendApiError(reply, 409, "REASONIX_WORKSPACE_ROOT_MISSING", "Reasonix pane has no workspace root; cannot attach image as an image input.");
+        }
+        const reasonixAttachment = buildReasonixAttachmentUpload({ workspaceRoot, mimeType: declaredMimeType });
+        try {
+          await mkdir(reasonixAttachment.absoluteDir, { recursive: true });
+          await writeFile(reasonixAttachment.absolutePath, buffer, { flag: "wx", mode: CLI_UPLOAD_FILE_MODE });
+          await chmod(reasonixAttachment.absolutePath, CLI_UPLOAD_FILE_MODE);
+          terminalPath = reasonixAttachment.terminalPath;
+          shellQuoted = reasonixAttachment.terminalPath;
+        } catch (error) {
+          request.log.warn(
+            { err: error, requestId: request.requestIdForSpace, paneId: pane.id, sessionId: active.sessionId },
+            "reasonix image attachment mirror failed; falling back to plain CLI-upload path"
+          );
+        }
+      }
+
       files.push({
         artifactId: artifactRecord.artifact.id,
         sessionId: active.sessionId,
@@ -11016,8 +11227,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         byteSize,
         sha256,
         storageUri: storage.storageUri,
-        terminalPath: storage.filePath,
-        shellQuotedPath: shellQuotePath(storage.filePath),
+        terminalPath,
+        shellQuotedPath: shellQuoted,
         isImage: declaredImage
       });
     }
@@ -11259,7 +11470,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.post("/api/panes/:id/agent-session", defaultRouteRateLimitOptions, async (request) => codexHistoryAccessCoordinator.withHistoryAttachment(async () => {
-    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createAgentPaneSessionInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -11275,7 +11485,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   }));
 
   app.post("/api/panes/:id/agent/messages", defaultRouteRateLimitOptions, async (request) => {
-    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneSendMessageInputSchema, request.body);
     const pane = await getPaneById(store, params.id);
@@ -11314,7 +11523,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.patch("/api/panes/:id/agent/settings", defaultRouteRateLimitOptions, async (request) => {
-    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneSettingsInputSchema, request.body);
     const pane = await getPaneById(store, params.id);
@@ -12898,6 +13106,56 @@ app.post(
       return reply.status(202).send(run);
     }
   );
+  app.get(
+    "/api/admin/cli-maintenance/update-all/detect",
+    { config: { rateLimit: { max: 30, timeWindow: "15 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI update-all detection requires the ADMIN role.");
+      }
+      try {
+        const detection = await cliUpdateAllRunner.detect(await store.listCliRuntimeSettings());
+        return reply.send(detection);
+      } catch (error) {
+        request.log.error({ err: error }, "CLI update-all detection failed");
+        return sendApiError(reply, 502, "UPDATE_ALL_DETECTION_FAILED", "CLI update-all detection could not be completed.");
+      }
+    }
+  );
+  app.post(
+    "/api/admin/cli-maintenance/update-all/run",
+    { config: { rateLimit: { max: 4, timeWindow: "15 minutes" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI update-all requires the ADMIN role.");
+      }
+      let input: ReturnType<typeof cliUpdateAllRequestSchema.parse> = {};
+      try {
+        input = cliUpdateAllRequestSchema.parse(request.body ?? {});
+      } catch {
+        return sendApiError(reply, 400, "INVALID_UPDATE_ALL_REQUEST", "Invalid CLI update-all request body.");
+      }
+      try {
+        const result = await cliUpdateAllRunner.updateAll(input);
+        await recordAudit(store, request, {
+          action: "cli_maintenance.update_all_completed",
+          targetType: "cli_update_all",
+          targetId: `admin_run:${Date.now().toString(36)}`,
+          metadata: {
+            mode: result.mode,
+            overallStatus: result.overallStatus,
+            runtimeCount: result.runtimes?.length ?? 0,
+            scope: result.scope,
+            reinstall: result.reinstall
+          }
+        });
+        return reply.send(result);
+      } catch (error) {
+        request.log.error({ err: error }, "CLI update-all run failed");
+        return sendApiError(reply, 502, "UPDATE_ALL_FAILED", "CLI update-all could not be completed.");
+      }
+    }
+  );
   app.post(
     "/api/admin/releases/previews",
     { config: { rateLimit: { max: 6, timeWindow: "15 minutes" } } },
@@ -13971,6 +14229,95 @@ app.post(
     });
     return result;
   });
+  app.post("/api/rooms/:id/agent-files/uploads", defaultRouteRateLimitOptions, async (request, reply) => {
+    const params = parseBody(idParamSchema, request.params);
+    await store.getRoom(params.id);
+    if (!request.isMultipart()) {
+      return sendApiError(reply, 400, "BAD_REQUEST", "Agent Files uploads must use multipart/form-data.");
+    }
+
+    const uploads: Array<{ buffer: Buffer; filename: string; declaredMimeType: string }> = [];
+    let totalBytes = 0;
+    for await (const part of request.parts()) {
+      if (part.type !== "file") continue;
+      if (uploads.length >= agentFileMaxCount) {
+        return sendApiError(reply, 422, "UPLOAD_LIMIT_EXCEEDED", `At most ${agentFileMaxCount} Agent Files can be uploaded at once.`);
+      }
+      const chunks: Buffer[] = [];
+      let byteSize = 0;
+      for await (const chunk of part.file) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        byteSize += buffer.byteLength;
+        totalBytes += buffer.byteLength;
+        if (byteSize > agentFileMaxBytes) {
+          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "Each Agent File must be 100 MiB or smaller.");
+        }
+        if (totalBytes > agentFileMaxRequestBytes) {
+          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "One Agent Files upload request cannot exceed 250 MiB.");
+        }
+        chunks.push(buffer);
+      }
+      if (byteSize === 0) {
+        return sendApiError(reply, 422, "EMPTY_UPLOAD", "Agent Files must not be empty.");
+      }
+      uploads.push({
+        buffer: Buffer.concat(chunks),
+        filename: part.filename || "agent-file",
+        declaredMimeType: part.mimetype || "application/octet-stream"
+      });
+    }
+    if (!uploads.length) {
+      return sendApiError(reply, 422, "EMPTY_UPLOAD", "Upload at least one Agent File.");
+    }
+
+    const rootStats = await statfs(config.browserEvidenceArtifactRoot);
+    const freeBytes = Number(rootStats.bavail) * Number(rootStats.bsize);
+    if (freeBytes < totalBytes + 1024 * 1024 * 1024) {
+      return sendApiError(reply, 507, "STORAGE_FULL", "Agent Files uploading requires at least 1 GiB of free space after this upload.");
+    }
+
+    const artifacts: Artifact[] = [];
+    for (const upload of uploads) {
+      let record: Awaited<ReturnType<typeof persistAgentFile>>;
+      try {
+        record = await persistAgentFile({
+          store,
+          artifactRoot: config.browserEvidenceArtifactRoot,
+          roomId: params.id,
+          paneId: null,
+          cliSessionId: null,
+          runtimeId: "user",
+          originalFilename: upload.filename,
+          declaredMimeType: upload.declaredMimeType,
+          buffer: upload.buffer,
+          traceId: request.requestIdForSpace,
+          source: "USER_UPLOAD",
+          docxNormalizer: options.agentFileDocxNormalizer
+        });
+      } catch (error) {
+        if (error instanceof AgentFileDocxNormalizationError) {
+          return sendApiError(reply, 422, "DOCX_NORMALIZATION_FAILED", error.message);
+        }
+        throw error;
+      }
+      eventBus.publish(record.event);
+      artifacts.push(record.artifact);
+    }
+    await recordAudit(store, request, {
+      action: "agent_file.upload",
+      targetType: "room",
+      targetId: params.id,
+      metadata: {
+        roomId: params.id,
+        userId: request.user?.id ?? null,
+        artifactCount: artifacts.length,
+        artifactIds: artifacts.map((artifact) => artifact.id),
+        totalBytes
+      }
+    });
+    return { artifacts };
+  });
+
   app.delete("/api/rooms/:id/agent-files", defaultRouteRateLimitOptions, async (request) => {
     const params = parseBody(idParamSchema, request.params);
     await store.getRoom(params.id);

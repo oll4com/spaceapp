@@ -99,15 +99,15 @@ export interface PersistAgentFileInput {
   store: SpaceStore;
   artifactRoot: string;
   roomId: string;
-  paneId: string;
-  cliSessionId: string;
+  paneId: string | null;
+  cliSessionId: string | null;
   runtimeId: string;
   originalFilename: string;
   declaredMimeType: string;
   buffer: Buffer;
   traceId: string;
   docxNormalizer?: AgentFileDocxNormalizer;
-  source?: "AGENT_OUTPUT" | "AGENT_OUTPUT_BACKFILL";
+  source?: "AGENT_OUTPUT" | "AGENT_OUTPUT_BACKFILL" | "USER_UPLOAD";
   backfillProvenance?: {
     sourceStorageUri: string;
     sourceArtifactId: string | null;
@@ -379,11 +379,22 @@ export function cliAgentFilesApiBaseUrl(
   return `http://${host}:${config.port}`;
 }
 
+export const agentFileUserPaneSegment = "user";
+export const agentFileUserSessionSegment = "browser";
+
+function agentFilePaneSegment(paneId: string | null): string {
+  return safeStorageSegment(paneId ?? agentFileUserPaneSegment);
+}
+
+function agentFileSessionSegment(cliSessionId: string | null): string {
+  return safeStorageSegment(cliSessionId ?? agentFileUserSessionSegment);
+}
+
 export function agentFileStoragePath(input: {
   artifactRoot: string;
   roomId: string;
-  paneId: string;
-  cliSessionId: string;
+  paneId: string | null;
+  cliSessionId: string | null;
   day: string;
   storedFilename: string;
 }): string {
@@ -391,8 +402,8 @@ export function agentFileStoragePath(input: {
     input.artifactRoot,
     "agent-files",
     safeStorageSegment(input.roomId),
-    safeStorageSegment(input.paneId),
-    safeStorageSegment(input.cliSessionId),
+    agentFilePaneSegment(input.paneId),
+    agentFileSessionSegment(input.cliSessionId),
     safeStorageSegment(input.day),
     safeStorageSegment(input.storedFilename)
   );
@@ -435,8 +446,9 @@ export async function persistAgentFile(input: PersistAgentFileInput) {
   });
   const partialPath = `${filePath}.partial-${safeStorageSegment(makeSpaceId("write"))}`;
   const storageUri =
-    `space-artifact://agent-files/${encodeURIComponent(input.roomId)}/${encodeURIComponent(input.paneId)}/` +
-    `${encodeURIComponent(input.cliSessionId)}/${day}/${encodeURIComponent(storedFilename)}`;
+    `space-artifact://agent-files/${encodeURIComponent(input.roomId)}/` +
+    `${encodeURIComponent(input.paneId ?? agentFileUserPaneSegment)}/` +
+    `${encodeURIComponent(input.cliSessionId ?? agentFileUserSessionSegment)}/${day}/${encodeURIComponent(storedFilename)}`;
   const sha256 = createHash("sha256").update(persistedBuffer).digest("hex");
   const kind: Artifact["kind"] = mimeType.startsWith("image/")
     ? "IMAGE"
@@ -474,7 +486,7 @@ export async function persistAgentFile(input: PersistAgentFileInput) {
           source: input.source ?? "AGENT_OUTPUT",
           originalFilename,
           storedFilename,
-          cliSessionId: input.cliSessionId,
+          ...(input.cliSessionId ? { cliSessionId: input.cliSessionId } : {}),
           runtimeId: input.runtimeId,
           previewKind: agentFilePreviewKindFor(mimeType, originalFilename),
           ...(shouldNormalizeDocx

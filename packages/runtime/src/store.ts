@@ -4798,7 +4798,7 @@ export class InMemorySpaceStore implements SpaceStore {
         roomId: updated.roomId,
         paneId: updated.paneId,
         turnId: null,
-        workflowId: updated.workflowId,
+        workflowId: null,
         traceId,
         type: "TURN_FAILED",
         message: updated.status === "INTERRUPTED" ? "Pane agent run interrupted." : "Pane agent run failed.",
@@ -4860,7 +4860,7 @@ export class InMemorySpaceStore implements SpaceStore {
       status: "READY",
       threadId: input.codexThreadId,
       lastSyncedAt: input.completedAt,
-      isActive: !paneClosed || hasOtherRunningRun
+      isActive: currentSession.isActive && (!paneClosed || hasOtherRunningRun)
     });
     const event = this.appendEvent({
       roomId: run.roomId,

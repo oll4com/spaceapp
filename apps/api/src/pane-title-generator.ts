@@ -6,9 +6,6 @@ import { fetchOpenCodeSessionTitle, openCodeServerBaseUrl, type OpenCodeServerCo
 type FetchLike = typeof fetch;
 type ReadFileLike = (path: string) => Promise<string>;
 
-export const openCodeTitleProviderId = "opencode";
-export const openCodeTitleModelId = "deepseek-v4-flash-free";
-
 export interface TerminalPaneTitleGenerationSelection {
   provider: Provider;
   model: Model;
@@ -536,6 +533,35 @@ async function fetchOpenCodeFirstUserMessage(
   return "";
 }
 
+interface OpenCodeLastUsedModel {
+  providerId: string;
+  modelId: string;
+}
+
+async function fetchOpenCodeLastUsedModel(
+  baseUrl: string,
+  authorization: string,
+  nativeSessionId: string,
+  fetchImpl: FetchLike
+): Promise<OpenCodeLastUsedModel | null> {
+  try {
+    const response = await fetchImpl(`${baseUrl}/session/${encodeURIComponent(nativeSessionId)}`, {
+      headers: { authorization },
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (!response.ok) return null;
+    const session = (await response.json()) as { model?: { id?: unknown; providerID?: unknown } | null };
+    const model = session?.model;
+    if (!model || typeof model.id !== "string" || model.id.length === 0) return null;
+    return {
+      providerId: typeof model.providerID === "string" && model.providerID.length > 0 ? model.providerID : "opencode",
+      modelId: model.id
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function generateOpenCodePaneTitle(
   input: GenerateOpenCodePaneTitleInput,
   options: TerminalPaneTitleGenerationOptions = {}
@@ -543,8 +569,14 @@ export async function generateOpenCodePaneTitle(
   const fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init));
   const baseUrl = openCodeServerBaseUrl(input.control.serverPort, input.control.serverHost);
   const authorization = openCodeAuthorization(input.control);
-  const providerId = input.providerId ?? openCodeTitleProviderId;
-  const modelId = input.modelId ?? openCodeTitleModelId;
+  // No hardcoded default model: fall back to the last-used model of the
+  // OpenCode instance behind this control. Fail closed when unavailable.
+  const lastUsedModel = await fetchOpenCodeLastUsedModel(baseUrl, authorization, input.control.nativeSessionId, fetchImpl);
+  const providerId = input.providerId ?? lastUsedModel?.providerId;
+  const modelId = input.modelId ?? lastUsedModel?.modelId;
+  if (!providerId || !modelId) {
+    throw new Error("No last-used OpenCode model is available for pane title generation.");
+  }
   const directory = input.cwd?.trim() || "/etc";
 
   let primaryTaskRequest = input.primaryTaskRequest?.trim() ?? "";

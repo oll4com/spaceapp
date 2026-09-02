@@ -11,6 +11,7 @@ const port = Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10);
 const distDir = path.resolve(process.env.SPACE_WEB_DIST ?? path.join(__dirname, "dist"));
 const apiOrigin = new URL(process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910");
 const proxyPrefixes = ["/api", "/healthz", "/readyz", "/version"];
+const proxyPaths = new Set(["/plugins/events"]);
 const retryableProxyMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 const configuredRecoveryWindowMs = Number.parseInt(process.env.SPACE_API_RECOVERY_WINDOW_MS ?? "10000", 10);
 const apiRecoveryWindowMs = process.env.NODE_ENV === "test" && Number.isFinite(configuredRecoveryWindowMs) && configuredRecoveryWindowMs > 0
@@ -76,7 +77,7 @@ function sendHomepageConfig(request, response) {
 }
 
 function shouldProxy(pathname) {
-  return proxyPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+  return proxyPaths.has(pathname) || proxyPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
 function appendForwardedFor(existing, remoteAddress) {

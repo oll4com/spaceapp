@@ -91,7 +91,8 @@
 }
 
 .osk-size-btn,
-.osk-lang-btn {
+.osk-lang-btn,
+.osk-symbol-btn {
   min-width: 2rem;
   min-height: 2rem;
   display: grid;
@@ -111,7 +112,14 @@
 .osk-size-btn:hover:not(:disabled),
 .osk-size-btn:focus-visible,
 .osk-lang-btn:hover:not(:disabled),
-.osk-lang-btn:focus-visible {
+.osk-lang-btn:focus-visible,
+.osk-symbol-btn:hover:not(:disabled),
+.osk-symbol-btn:focus-visible {
+  border-color: var(--room-accent, #6db7aa);
+  background: #26302e;
+}
+
+.osk-symbol-btn[aria-pressed="true"] {
   border-color: var(--room-accent, #6db7aa);
   background: #26302e;
 }

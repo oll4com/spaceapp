@@ -1,4 +1,4 @@
-import type { CliVpnRoutingStatus } from "@space/contracts";
+import type { CliRuntimeSettingsResponse, CliVpnRoutingStatus } from "@space/contracts";
 import { api } from "./api.js";
 
 export const CLI_VPN_ROUTING_STATUS_EVENT = "space:cli-vpn-routing-status";
@@ -23,10 +23,41 @@ const routeLabels = {
   nord: "NordVPN"
 } as const;
 
-function relayCityLabel(status: CliVpnRoutingStatus): string | undefined {
+function relayCityLabel(status: Pick<CliVpnRoutingStatus, "relay">): string | undefined {
   const relay = status.relay;
   if (!relay) return undefined;
   return relay.countryCode ? `${relay.cityName} (${relay.countryCode.toUpperCase()})` : relay.cityName;
+}
+
+export function harnessPaneVpnRoutingPresentation(
+  settings: CliRuntimeSettingsResponse | null
+): PaneVpnRoutingPresentation | null {
+  const harness = settings?.harness;
+  const egress = settings?.egress;
+  if (!settings?.vpnSupported || !harness?.enabled || !harness.vpnEnabled || !egress || egress.selectedRoute === "direct") {
+    return null;
+  }
+  const connection = egress.profiles[egress.selectedRoute];
+  const routeLabel = routeLabels[egress.selectedRoute];
+  if (harness.effectiveMode !== "VPN" || !harness.isolated || connection.status !== "CONNECTED") {
+    return {
+      label: "VPN unavailable",
+      title: "DeepSeek Harness VPN routing is enabled, but the protected connection is unavailable.",
+      tone: "blocked"
+    };
+  }
+  const egressIp = connection.egressIpv4 ?? connection.egressIpv6;
+  const city = relayCityLabel(connection);
+  const label = egressIp ? `${routeLabel} · ${egressIp}` : `${routeLabel} connected`;
+  const title = egressIp
+    ? `DeepSeek Harness is connected through the ${routeLabel} VPN egress ${egressIp}.`
+    : `DeepSeek Harness is connected through the ${routeLabel} VPN.`;
+  return {
+    label: city ? `${label} · ${city}` : label,
+    title: city ? `${title} VPN city: ${city}.` : title,
+    tone: "vpn",
+    city
+  };
 }
 
 export function paneVpnRoutingPresentation(

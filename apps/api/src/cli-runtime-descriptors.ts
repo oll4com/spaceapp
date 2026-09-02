@@ -70,7 +70,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
       XDG_STATE_HOME: `${codexHome}/space-opencode/state`
     },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: "opencode/deepseek-v4-flash-free",
+    defaultModelId: null,
     credentialVerifiedReason: "OpenCode CLI direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
@@ -351,7 +351,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: "/var/lib/spaceapp-user/.codex/space-hermes/tmp",
     environment: { HERMES_HOME: "/var/lib/spaceapp-user/.hermes" },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: "opencode/deepseek-v4-flash-free",
+    defaultModelId: null,
     credentialVerifiedReason: "Hermes Agent v0.20.1 installed at ~/.hermes; node-pty TUI smoke and end-to-end chat smoke verified.",
     loginBootstrapReason: null
   }

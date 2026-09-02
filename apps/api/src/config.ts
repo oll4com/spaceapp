@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { mcpServerConfigListSchema, type McpServerConfig } from "@space/contracts";
+import { cliChatTurnDefaultRuntimeIds, mcpServerConfigListSchema, type McpServerConfig } from "@space/contracts";
 import { resolveCanonicalGeminiMemoryPaths } from "@space/runtime";
 import {
   configuredCliCredentialSmoke,
@@ -116,6 +116,10 @@ export interface SpaceApiConfig {
   streamingSecretRoot: string;
   streamingYoutubeDailyQuotaBudget: number;
   agentToolsWriterCommand: string | null;
+  harnessEnabled: boolean;
+  harnessOrigin: string;
+  harnessHealthTimeoutMs: number;
+  harnessProxyTimeoutMs: number;
 }
 
 function parseCsvList(raw: string | undefined): string[] {
@@ -213,7 +217,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     cliGrokLoginBootstrapEnabled: env.SPACE_CLI_GROK_LOGIN_BOOTSTRAP === "true",
     cliChatTurnsEnabled: env.SPACE_ENABLE_CLI_CHAT_TURNS === "true",
     cliChatTurnRuntimeIds: parseCsvList(
-      env.SPACE_CLI_CHAT_TURN_RUNTIME_IDS ?? "cli:cursor,cli:copilot,cli:gemini,cli:deepseek"
+      env.SPACE_CLI_CHAT_TURN_RUNTIME_IDS ?? cliChatTurnDefaultRuntimeIds.join(",")
     ),
     mcpServerConfigs: mcpConfig.configs,
     mcpConfigError: mcpConfig.error,
@@ -270,6 +274,10 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     telegramSecretRoot: env.SPACE_TELEGRAM_SECRET_ROOT || "/opt/spaceapp/secrets/telegram",
     streamingSecretRoot: env.SPACE_STREAMING_SECRET_ROOT || "/opt/spaceapp/var/streaming-secrets",
     streamingYoutubeDailyQuotaBudget: Math.min(parsePositiveInt(env.SPACE_STREAMING_YOUTUBE_DAILY_QUOTA_BUDGET, 8000), 10000),
-    agentToolsWriterCommand: env.SPACE_AGENT_TOOLS_WRITER || "/opt/spaceapp/bin/space-agent-tools-writer"
+    agentToolsWriterCommand: env.SPACE_AGENT_TOOLS_WRITER || "/opt/spaceapp/bin/space-agent-tools-writer",
+    harnessEnabled: env.SPACE_HARNESS_ENABLED === "true",
+    harnessOrigin: env.SPACE_HARNESS_ORIGIN || "http://10.254.240.21:3080",
+    harnessHealthTimeoutMs: Math.min(parsePositiveInt(env.SPACE_HARNESS_HEALTH_TIMEOUT_MS, 3000), 15000),
+    harnessProxyTimeoutMs: Math.min(parsePositiveInt(env.SPACE_HARNESS_PROXY_TIMEOUT_MS, 30000), 120000)
   };
 }

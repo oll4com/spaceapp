@@ -96,7 +96,7 @@ export const paginated = <T extends z.ZodType>(item: T) =>
   });
 
 export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"]);
-export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC"]);
+export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
 export const paneTitleSourceSchema = z.enum(["auto", "manual", "ai"]);
 export const paneCategoryColors = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
@@ -202,6 +202,21 @@ export const cliToggleRuntimeIds = [
 ] as const;
 
 export const cliToggleRuntimeIdSchema = z.enum(cliToggleRuntimeIds);
+
+// CLI runtimes offered as native-chat providers (model picker). `cli:codex` and
+// `cli:opencode` are excluded because they already exist as native providers.
+export const cliChatTurnDefaultRuntimeIds = [
+  "cli:claude",
+  "cli:gemini",
+  "cli:qwen",
+  "cli:kimi",
+  "cli:grok",
+  "cli:deepseek",
+  "cli:cursor",
+  "cli:copilot",
+  "cli:autohand",
+  "cli:hermes"
+] as const;
 
 export const proofRoomProfileSchema = z.enum(["STANDARD", "ACTIVE_AGENT_STRESS", "CLI_INPUT"]);
 
@@ -464,6 +479,11 @@ export const roomPaneBatchItemSchema = z.discriminatedUnion("mode", [
     .object({
       mode: z.literal("VNC"),
       vncTarget: vncTargetSchema
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("HARNESS")
     })
     .strict()
 ]);
@@ -1203,7 +1223,7 @@ export const agentPaneSessionSchema = z.object({
   statusReason: z.string().min(1).max(1000),
   modelOptions: z.array(agentPaneModelOptionSchema).max(4000),
   modelCatalog: z.array(codexModelCatalogOptionSchema).max(400).default([]),
-  modelProviders: z.array(agentPaneModelProviderSchema).max(8).default([]),
+  modelProviders: z.array(agentPaneModelProviderSchema).max(24).default([]),
   selectedModelConfigId: agentModelConfigIdSchema.nullable(),
   toolOptions: z.array(agentPaneToolOptionSchema).max(100).default([]),
   selectedToolIds: z.array(z.string().min(1).max(160)).max(50).default([]),
@@ -1662,8 +1682,35 @@ export const cliRuntimeSettingsResponseSchema = z.object({
   vpnConnection: cliVpnConnectionSchema.optional(),
   vpnApplications: z.array(cliRuntimeVpnStatusSchema).max(cliToggleRuntimeIds.length).default([]),
   egress: cliGlobalEgressStatusSchema.optional(),
+  harness: z.object({
+    runtimeId: z.literal("cli:harness"),
+    enabled: z.boolean(),
+    vpnEnabled: z.boolean(),
+    effectiveMode: z.enum(["DIRECT", "VPN", "BLOCKED"]),
+    isolated: z.boolean(),
+    pid: z.number().int().positive().nullable()
+  }).strict().optional(),
   checkedAt: isoDateTimeSchema
 });
+
+export const harnessMaintenanceStatusSchema = cliRuntimeSettingsResponseSchema.shape.harness.unwrap();
+
+export const harnessMaintenanceRestartResultSchema = z.object({
+  status: harnessMaintenanceStatusSchema
+}).strict();
+
+export const updateHarnessEnabledInputSchema = z.object({
+  enabled: z.boolean()
+}).strict();
+
+export const updateHarnessEnabledResultSchema = z.object({
+  status: harnessMaintenanceStatusSchema
+}).strict();
+
+export const updateHarnessVpnResultSchema = z.object({
+  status: harnessMaintenanceStatusSchema,
+  connection: cliVpnConnectionSchema
+}).strict();
 
 export const cliVpnRoutingStatusSchema = z
   .object({
@@ -4796,7 +4843,122 @@ export const cliMaintenanceRuntimeResultSchema = z
           })
           .strict()
       )
-      .max(32)
+      .max(32),
+    outcome: z.string().trim().min(1).max(80).optional(),
+    authRequired: z.boolean().optional(),
+    rollback: z
+      .object({
+        performed: z.boolean(),
+        verified: z.boolean(),
+        summary: z.string().trim().max(1000)
+      })
+      .nullable()
+      .optional()
+  })
+  .strict();
+
+// ---- Custom-aware update-all (server action: "Update all CLI types") ----
+// The procedure enumerates every CLI type (including ones that are not enabled
+// in the UI), detects the custom procedures attached to each, shows a message
+// for the ones that carry customs, then performs a guarded bulk update that
+// preserves those customs. Phase 2 adds upgrade + reinstall of the custom.
+export const cliUpdateAllCustomProcedureKindSchema = z.enum([
+  "script",
+  "config",
+  "mcp",
+  "binary",
+  "package"
+]);
+export const cliUpdateAllCustomProcedureSchema = z
+  .object({
+    kind: cliUpdateAllCustomProcedureKindSchema,
+    path: z.string().trim().min(1).max(512),
+    label: z.string().trim().min(1).max(240),
+    present: z.boolean()
+  })
+  .strict();
+export const cliUpdateAllEndpointSchema = z
+  .object({
+    key: z.string().trim().min(1).max(80),
+    cliType: z.string().trim().min(1).max(80).regex(/^cli:[A-Za-z0-9_.-]+$/),
+    displayName: z.string().trim().min(1).max(160),
+    managed: z.boolean(),
+    updateKind: z.string().trim().min(1).max(80),
+    enabled: z.boolean(),
+    hasCustom: z.boolean(),
+    custom: z.array(cliUpdateAllCustomProcedureSchema).max(64)
+  })
+  .strict();
+export const cliUpdateAllDetectionSchema = z
+  .object({
+    schemaVersion: z.literal("space.cli-update-all.detection.v1"),
+    detectedAt: isoDateTimeSchema,
+    cliTypes: z.array(cliUpdateAllEndpointSchema).min(1).max(64)
+  })
+  .strict();
+export const cliUpdateAllReinstallResultSchema = z
+  .object({
+    path: z.string().trim().min(1).max(512),
+    kind: z.string().trim().min(1).max(40),
+    status: cliMaintenanceCheckStatusSchema,
+    code: z.string().trim().min(1).max(80).regex(/^[A-Z0-9_]+$/),
+    message: z.string().trim().min(1).max(1000),
+    errorMessage: z.string().trim().min(1).max(1000).optional()
+  })
+  .strict();
+export const cliUpdateAllResultSchema = z
+  .object({
+    mode: z.literal("UPDATE_ALL"),
+    overallStatus: cliMaintenanceCheckStatusSchema,
+    scope: z.union([z.array(z.string().trim().min(1).max(80)).max(64), z.literal("all")]),
+    reinstall: z.boolean(),
+    runtimes: z
+      .array(
+        cliMaintenanceRuntimeResultSchema
+          .extend({
+            customPreserved: z.boolean(),
+            customReinstalled: z.boolean().optional(),
+            reinstallResults: z.array(cliUpdateAllReinstallResultSchema).max(64).optional(),
+            errorMessage: z.string().trim().min(1).max(1000).optional()
+          })
+          .strict()
+      )
+      .max(64),
+    customSummary: z
+      .array(
+        z
+          .object({
+            key: z.string().trim().min(1).max(80),
+            hasCustom: z.boolean(),
+            custom: z.array(cliUpdateAllCustomProcedureSchema).max(64)
+          })
+          .strict()
+      )
+      .max(64)
+      .optional(),
+    startedAt: isoDateTimeSchema.nullable(),
+    finishedAt: isoDateTimeSchema
+  })
+  .strict();
+export const cliUpdateAllRequestSchema = z
+  .object({
+    keys: z
+      .array(z.enum([
+        "codex",
+        "claude",
+        "gemini",
+        "opencode",
+        "autohand",
+        "qwen",
+        "kimi",
+        "grok",
+        "deepseek",
+        "cursor",
+        "copilot"
+      ]))
+      .max(11)
+      .optional(),
+    reinstall: z.boolean().optional()
   })
   .strict();
 
@@ -7882,6 +8044,11 @@ export type CliAccountProfileDetailsResponse = z.infer<typeof cliAccountProfileD
 export type ListCliAccountProfilesResponse = z.infer<typeof listCliAccountProfilesResponseSchema>;
 export type RemoveCliAccountProfileResponse = z.infer<typeof removeCliAccountProfileResponseSchema>;
 export type CliRuntimeSettingsResponse = z.infer<typeof cliRuntimeSettingsResponseSchema>;
+export type HarnessMaintenanceStatus = z.infer<typeof harnessMaintenanceStatusSchema>;
+export type HarnessMaintenanceRestartResult = z.infer<typeof harnessMaintenanceRestartResultSchema>;
+export type UpdateHarnessEnabledInput = z.infer<typeof updateHarnessEnabledInputSchema>;
+export type UpdateHarnessEnabledResult = z.infer<typeof updateHarnessEnabledResultSchema>;
+export type UpdateHarnessVpnResult = z.infer<typeof updateHarnessVpnResultSchema>;
 export type CliRuntimeDisablePreview = z.infer<typeof cliRuntimeDisablePreviewSchema>;
 export type UpdateCliRuntimeSettingInput = z.infer<typeof updateCliRuntimeSettingInputSchema>;
 export type CliRuntimeCleanupResult = z.infer<typeof cliRuntimeCleanupResultSchema>;
@@ -7925,6 +8092,12 @@ export type CreateCliMaintenanceAuthHandoffInput = z.infer<typeof createCliMaint
 export type UpdateCliMaintenanceAuthHandoffInput = z.infer<typeof updateCliMaintenanceAuthHandoffInputSchema>;
 export type CliMaintenanceAuthHandoff = z.infer<typeof cliMaintenanceAuthHandoffSchema>;
 export type CliMaintenanceRuntimeResult = z.infer<typeof cliMaintenanceRuntimeResultSchema>;
+export type CliUpdateAllCustomProcedure = z.infer<typeof cliUpdateAllCustomProcedureSchema>;
+export type CliUpdateAllEndpoint = z.infer<typeof cliUpdateAllEndpointSchema>;
+export type CliUpdateAllDetection = z.infer<typeof cliUpdateAllDetectionSchema>;
+export type CliUpdateAllReinstallResult = z.infer<typeof cliUpdateAllReinstallResultSchema>;
+export type CliUpdateAllResult = z.infer<typeof cliUpdateAllResultSchema>;
+export type CliUpdateAllRequest = z.infer<typeof cliUpdateAllRequestSchema>;
 export type SourceControlProvider = z.infer<typeof sourceControlProviderSchema>;
 export type SourceControlConnectionStatus = z.infer<typeof sourceControlConnectionStatusSchema>;
 export type SourceControlVerificationCode = z.infer<typeof sourceControlVerificationCodeSchema>;

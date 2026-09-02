@@ -1,12 +1,44 @@
 import { Loader2, RotateCw, X } from "../ui-theme/app-icons.js";
-import type { CodexThreadItem } from "@space/contracts";
+import type { AgentPaneMessage, CodexThreadItem } from "@space/contracts";
 
-export function visibleCodexThreadItems(items: CodexThreadItem[]): CodexThreadItem[] {
-  return items.filter((item) => item.kind === "message" && (item.role === "user" || item.role === "assistant"));
+type VisibleChatMessage = Pick<CodexThreadItem, "id" | "role" | "content" | "createdAt">;
+
+const internalSpaceActionBlockPattern =
+  /```space-(?:room|memory|clipboard|chat|task|skill|mcp|browser)-actions\b[\s\S]*?(?:```|$)/gi;
+
+export function visibleAssistantContent(content: string): string {
+  return content
+    .replace(internalSpaceActionBlockPattern, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
-export function copyableCodexTranscript(items: CodexThreadItem[]): string {
-  return visibleCodexThreadItems(items)
+export function visibleCodexThreadItems(items: CodexThreadItem[]): CodexThreadItem[] {
+  return items.flatMap((item) => {
+    if (
+      (item.role !== "user" && item.role !== "assistant") ||
+      (item.kind !== "message" && (item.kind !== "event" || item.rawType !== "agent_message"))
+    ) return [];
+    const content = item.role === "assistant" ? visibleAssistantContent(item.content) : item.content;
+    return content.trim().length > 0 ? [{ ...item, content }] : [];
+  });
+}
+
+export function visibleChatMessages(
+  items: CodexThreadItem[],
+  messages: AgentPaneMessage[]
+): VisibleChatMessage[] {
+  const nativeItems = visibleCodexThreadItems(items);
+  if (nativeItems.length) return nativeItems;
+  return messages.flatMap((message) => {
+    if (message.role !== "user" && message.role !== "assistant") return [];
+    const content = message.role === "assistant" ? visibleAssistantContent(message.content) : message.content;
+    return content.trim().length > 0 ? [{ ...message, content }] : [];
+  });
+}
+
+export function copyableCodexTranscript(items: CodexThreadItem[], messages: AgentPaneMessage[] = []): string {
+  return visibleChatMessages(items, messages)
     .map((item) => `${item.role === "user" ? "User" : "Assistant"}:\n${item.content}`)
     .join("\n\n");
 }
@@ -25,7 +57,7 @@ function formatElapsed(totalSeconds: number): string {
   return `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
-function CodexRunningIndicator({ elapsedSeconds }: { elapsedSeconds: number }) {
+function CodexRunningIndicator({ elapsedSeconds, providerName }: { elapsedSeconds: number; providerName: string }) {
   return (
     <div className="codex-running-row" role="status">
       <span className="codex-streaming-dots" aria-hidden="true">
@@ -34,7 +66,7 @@ function CodexRunningIndicator({ elapsedSeconds }: { elapsedSeconds: number }) {
         <span />
       </span>
       <span className="codex-running-label">
-        <span>Codex is working</span>
+        <span>{providerName} is working</span>
         <time className="codex-running-timer">{formatElapsed(elapsedSeconds)}</time>
       </span>
     </div>
@@ -43,27 +75,31 @@ function CodexRunningIndicator({ elapsedSeconds }: { elapsedSeconds: number }) {
 
 export function CodexTranscript({
   items,
+  messages,
   isRunning,
   loading,
-  elapsedSeconds
+  elapsedSeconds,
+  providerName
 }: {
   items: CodexThreadItem[];
+  messages: AgentPaneMessage[];
   isRunning: boolean;
   loading: boolean;
   elapsedSeconds: number;
+  providerName: string;
 }) {
-  const visibleItems = visibleCodexThreadItems(items);
+  const visibleItems = visibleChatMessages(items, messages);
   return (
     <main className="codex-transcript" aria-live="polite">
       {loading && !visibleItems.length ? <div className="codex-transcript-state" role="status"><Loader2 aria-hidden="true" /><span>Loading task</span></div> : null}
-      {!loading && !visibleItems.length ? <div className="codex-transcript-empty" role="status"><strong>Start a new task</strong><span>Ask Codex to work in this Space.</span></div> : null}
+      {!loading && !visibleItems.length ? <div className="codex-transcript-empty" role="status"><strong>Start a new task</strong><span>Ask the selected provider to work in this Space.</span></div> : null}
       {visibleItems.map((item) => (
         <article className={`codex-message ${item.role ?? "assistant"}`} key={item.id}>
           <p>{item.content}</p>
           {item.createdAt ? <time>{itemTime(item.createdAt)}</time> : null}
         </article>
       ))}
-      {isRunning ? <CodexRunningIndicator elapsedSeconds={elapsedSeconds} /> : null}
+      {isRunning ? <CodexRunningIndicator elapsedSeconds={elapsedSeconds} providerName={providerName} /> : null}
     </main>
   );
 }

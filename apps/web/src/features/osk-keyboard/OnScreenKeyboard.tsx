@@ -105,6 +105,53 @@ const SHIFTED_SYMBOLS: Record<string, string> = {
   ";": ":"
 };
 
+const SYMBOL_ROWS: OskKey[][] = [
+  [
+    { id: "/", kind: "char", label: "/", value: "/", code: "Slash" },
+    { id: "-", kind: "char", label: "-", value: "-", code: "Minus" },
+    { id: "_", kind: "char", label: "_", value: "_", code: "Minus" },
+    { id: ".", kind: "char", label: ".", value: ".", code: "Period" },
+    { id: ",", kind: "char", label: ",", value: ",", code: "Comma" },
+    { id: ":", kind: "char", label: ":", value: ":", code: "Semicolon" },
+    { id: ";", kind: "char", label: ";", value: ";", code: "Semicolon" },
+    { id: "@", kind: "char", label: "@", value: "@", code: "Digit2" },
+    { id: "=", kind: "char", label: "=", value: "=", code: "Equal" },
+    { id: "+", kind: "char", label: "+", value: "+", code: "Equal" }
+  ],
+  [
+    { id: "!", kind: "char", label: "!", value: "!", code: "Digit1" },
+    { id: "?", kind: "char", label: "?", value: "?", code: "Slash" },
+    { id: "#", kind: "char", label: "#", value: "#", code: "Digit3" },
+    { id: "$", kind: "char", label: "$", value: "$", code: "Digit4" },
+    { id: "%", kind: "char", label: "%", value: "%", code: "Digit5" },
+    { id: "^", kind: "char", label: "^", value: "^", code: "Digit6" },
+    { id: "&", kind: "char", label: "&", value: "&", code: "Digit7" },
+    { id: "*", kind: "char", label: "*", value: "*", code: "Digit8" },
+    { id: "(", kind: "char", label: "(", value: "(", code: "Digit9" },
+    { id: ")", kind: "char", label: ")", value: ")", code: "Digit0" }
+  ],
+  [
+    { id: "[", kind: "char", label: "[", value: "[", code: "BracketLeft" },
+    { id: "]", kind: "char", label: "]", value: "]", code: "BracketRight" },
+    { id: "{", kind: "char", label: "{", value: "{", code: "BracketLeft" },
+    { id: "}", kind: "char", label: "}", value: "}", code: "BracketRight" },
+    { id: "|", kind: "char", label: "|", value: "|", code: "Backslash" },
+    { id: "\\", kind: "char", label: "\\", value: "\\", code: "Backslash" },
+    { id: "~", kind: "char", label: "~", value: "~", code: "Backquote" },
+    { id: "'", kind: "char", label: "'", value: "'", code: "Quote" },
+    { id: '"', kind: "char", label: '"', value: '"', code: "Quote" }
+  ],
+  [
+    { id: "`", kind: "char", label: "`", value: "`", code: "Backquote" },
+    { id: "<", kind: "char", label: "<", value: "<", code: "Comma" },
+    { id: ">", kind: "char", label: ">", value: ">", code: "Period" },
+    { id: "€", kind: "char", label: "€", value: "€", code: "Digit4" },
+    { id: "£", kind: "char", label: "£", value: "£", code: "Digit3" },
+    { id: "¥", kind: "char", label: "¥", value: "¥", code: "Digit5" },
+    { id: "°", kind: "char", label: "°", value: "°", code: "IntlBackslash" }
+  ]
+];
+
 const SPECIAL_KEYS: Record<string, OskKey> = {
   escape: { id: "escape", kind: "escape", label: "Esc", value: "Escape", code: "Escape" },
   backspace: { id: "backspace", kind: "backspace", label: "⌫", value: "Backspace", code: "Backspace", wide: true },
@@ -272,6 +319,7 @@ export function OnScreenKeyboard({
   const dragRef = useRef<{ startX: number; startY: number; originLeft: number; originTop: number; moved: boolean } | null>(null);
   const latestPositionRef = useRef<{ left: number; top: number } | null>(null);
   const [shiftHeld, setShiftHeld] = useState(false);
+  const [symbolLayer, setSymbolLayer] = useState(false);
   const [scale, setScale] = useState<number>(() => readStoredScale());
   const [lang, setLang] = useState<OskLanguage>(() => readStoredLang());
   const [position, setPosition] = useState<PanelPosition>(() => readStoredPosition() ?? { left: VIEWPORT_MARGIN_PX, top: VIEWPORT_MARGIN_PX, ready: false });
@@ -372,6 +420,11 @@ export function OnScreenKeyboard({
     setLang((current) => (current === "en" ? "el" : "en"));
   }, []);
 
+  const toggleSymbolLayer = useCallback(() => {
+    setShiftHeld(false);
+    setSymbolLayer((current) => !current);
+  }, []);
+
   const panelStyle: CSSProperties | undefined = mobile
     ? undefined
     : {
@@ -383,12 +436,13 @@ export function OnScreenKeyboard({
       };
 
   const letterRows = getLetterRows(lang);
+  const activeRows = symbolLayer ? SYMBOL_ROWS : letterRows;
 
   const rows: OskKey[][] = [
-    [SPECIAL_KEYS.escape!, ...letterRows[0]!, SPECIAL_KEYS.backspace!],
-    [...letterRows[1]!, SPECIAL_KEYS.enter!],
-    [SPECIAL_KEYS.shift!, ...letterRows[2]!, SPECIAL_KEYS.tab!],
-    [...letterRows[3]!, SPECIAL_KEYS.space!, SPECIAL_KEYS.arrowLeft!, SPECIAL_KEYS.arrowUp!, SPECIAL_KEYS.arrowDown!, SPECIAL_KEYS.arrowRight!]
+    [SPECIAL_KEYS.escape!, ...activeRows[0]!, SPECIAL_KEYS.backspace!],
+    [...activeRows[1]!, SPECIAL_KEYS.enter!],
+    [SPECIAL_KEYS.shift!, ...activeRows[2]!, SPECIAL_KEYS.tab!],
+    [...activeRows[3]!, SPECIAL_KEYS.space!, SPECIAL_KEYS.arrowLeft!, SPECIAL_KEYS.arrowUp!, SPECIAL_KEYS.arrowDown!, SPECIAL_KEYS.arrowRight!]
   ];
 
   const panel = open ? (
@@ -436,6 +490,15 @@ export function OnScreenKeyboard({
               +
             </button>
           </div>
+          <button
+            type="button"
+            className="osk-symbol-btn"
+            aria-label={symbolLayer ? "Switch to letters" : "Switch to symbols"}
+            aria-pressed={symbolLayer}
+            onClick={toggleSymbolLayer}
+          >
+            {symbolLayer ? "ABC" : "?123"}
+          </button>
           <button
             type="button"
             className="osk-lang-btn"

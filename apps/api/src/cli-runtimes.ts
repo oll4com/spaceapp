@@ -309,9 +309,7 @@ async function cliRuntime(
   const observedCredentialStatus = adapterEnabled && !staticallyVerified && definition.authMode !== "MANAGED" && !credentialsNotManagedBySpace
     ? await readCredentialStatus(detectedCommandPath as string)
     : null;
-  const dynamicCredentialStatus = observedCredentialStatus === "READY_QUOTA_EXHAUSTED" && definition.key !== "kimi"
-    ? null
-    : observedCredentialStatus;
+  const dynamicCredentialStatus = observedCredentialStatus;
   const credentialVerified = credentialsNotManagedBySpace || staticallyVerified || dynamicCredentialStatus !== null;
   const adapterReason = !config.cliEnabled
     ? "SPACE_CLI_ENABLED=true is required before CLI runtimes can start."
@@ -331,7 +329,7 @@ async function cliRuntime(
       : definition.missingAuthState;
   const authReason = authState === "READY"
     ? dynamicCredentialStatus === "READY_QUOTA_EXHAUSTED"
-      ? "Kimi Code credentials are valid, but the current billing-cycle quota is exhausted. The CLI remains available and usage will resume when the provider refreshes the quota."
+      ? `${definition.agentName} credentials are valid, but the current billing-cycle quota is exhausted (no available tokens). The CLI remains available and usage will resume when the provider refreshes the quota.`
       : definition.credentialVerifiedReason
     : adapterStatus === "ENABLED"
       ? definition.missingAuthReason
@@ -381,7 +379,11 @@ export async function discoverAgentRuntimes(config: SpaceApiConfig): Promise<Age
 export function createAgentRuntimeRegistryCache(
   discover: () => Promise<AgentRuntimeRegistry>,
   options: { ttlMs?: number; now?: () => number } = {}
-): { read: () => Promise<AgentRuntimeRegistry>; invalidate: () => void } {
+): {
+  read: () => Promise<AgentRuntimeRegistry>;
+  readStaleWhileRefreshing: () => Promise<AgentRuntimeRegistry>;
+  invalidate: () => void;
+} {
   const ttlMs = options.ttlMs ?? 10_000;
   const now = options.now ?? Date.now;
   if (!Number.isFinite(ttlMs) || ttlMs < 0) throw new Error("Agent runtime cache TTL must be non-negative.");
@@ -389,20 +391,28 @@ export function createAgentRuntimeRegistryCache(
   let cached: { registry: AgentRuntimeRegistry; expiresAtMs: number } | null = null;
   let inFlight: Promise<AgentRuntimeRegistry> | null = null;
 
+  const read = (): Promise<AgentRuntimeRegistry> => {
+    const currentTimeMs = now();
+    if (cached && currentTimeMs < cached.expiresAtMs) return Promise.resolve(cached.registry);
+    if (inFlight) return inFlight;
+    const loadRevision = revision;
+    const load = discover().then((registry) => {
+      if (revision === loadRevision) cached = { registry, expiresAtMs: now() + ttlMs };
+      return registry;
+    }).finally(() => {
+      if (inFlight === load) inFlight = null;
+    });
+    inFlight = load;
+    return load;
+  };
+
   return {
-    read() {
-      const currentTimeMs = now();
-      if (cached && currentTimeMs < cached.expiresAtMs) return Promise.resolve(cached.registry);
-      if (inFlight) return inFlight;
-      const loadRevision = revision;
-      const load = discover().then((registry) => {
-        if (revision === loadRevision) cached = { registry, expiresAtMs: now() + ttlMs };
-        return registry;
-      }).finally(() => {
-        if (inFlight === load) inFlight = null;
-      });
-      inFlight = load;
-      return load;
+    read,
+    readStaleWhileRefreshing() {
+      if (!cached) return read();
+      const snapshot = cached.registry;
+      if (now() >= cached.expiresAtMs) void read().catch(() => undefined);
+      return Promise.resolve(snapshot);
     },
     invalidate() {
       revision += 1;

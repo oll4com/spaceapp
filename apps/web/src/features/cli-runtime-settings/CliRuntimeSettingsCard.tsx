@@ -6,6 +6,10 @@ import {
   type CliRuntimeRestartSessionsResult,
   type CliRuntimeSettingsResponse,
   type CliToggleRuntimeId,
+  type HarnessMaintenanceRestartResult,
+  type UpdateHarnessEnabledInput,
+  type UpdateHarnessEnabledResult,
+  type UpdateHarnessVpnResult,
   type CliVpnConnection,
   type CliEgressRouteId,
   type CliVpnProfileId,
@@ -28,7 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import { api, SpaceApiError } from "../../api.js";
 import { SettingsActionMenu, type SettingsActionMenuItem } from "../settings/SettingsActionMenu.js";
 import { useAutoDismiss, DEFAULT_NOTICE_DISMISS_MS } from "../../use-auto-dismiss.js";
-import { CLI_RUNTIME_PRESENTATIONS, cliRuntimePresentation } from "../../cli-runtime-presentation.js";
+import { CLI_MAINTENANCE_PRESENTATIONS, cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import {
   CLI_RUNTIME_VISIBILITY_EVENT,
   dispatchCliRuntimeVisibilityChange,
@@ -73,6 +77,8 @@ export interface CliRuntimeSettingsClient {
   cliRuntimeSettingsSnapshot?: () => CliRuntimeSettingsResponse | null;
   cliRuntimeDisablePreview: (runtimeId: string) => Promise<CliRuntimeDisablePreview>;
   cliRuntimeRestart?: (runtimeId: string) => Promise<CliRuntimeRestartSessionsResult>;
+  restartHarness?: () => Promise<HarnessMaintenanceRestartResult>;
+  updateHarnessEnabled?: (input: UpdateHarnessEnabledInput) => Promise<UpdateHarnessEnabledResult>;
   updateCliRuntimeSetting: (
     runtimeId: string,
     input: UpdateCliRuntimeSettingInput
@@ -87,6 +93,7 @@ export interface CliRuntimeSettingsClient {
   verifyCliVpnProfile?: () => Promise<CliVpnConnection>;
   removeCliVpnProfile?: () => Promise<CliVpnConnection>;
   updateCliRuntimeVpn?: (runtimeId: string, input: UpdateCliRuntimeVpnInput) => Promise<UpdateCliRuntimeVpnResult>;
+  updateHarnessVpn?: (input: UpdateCliRuntimeVpnInput) => Promise<UpdateHarnessVpnResult>;
   restartCliRuntimeVpnSessions?: (runtimeId: string) => Promise<RestartCliRuntimeVpnSessionsResult>;
   listCliAccountProfiles?: (runtimeId: string) => Promise<ListCliAccountProfilesResponse>;
   createCliAccountProfile?: (input: CreateCliAccountProfileInput) => Promise<CreateCliAccountProfileResponse>;
@@ -105,12 +112,63 @@ interface DisableDialogState {
 }
 
 interface RestartDialogState {
-  runtimeId: CliToggleRuntimeId;
+  runtimeId: MaintenanceRuntimeId;
   runtimeName: string;
 }
 
+type MaintenanceRuntimeId = CliToggleRuntimeId | "cli:harness";
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() ? error.message : fallback;
+}
+
+function withSelectedVpnConnection(
+  response: CliRuntimeSettingsResponse,
+  connection: CliVpnConnection
+): CliRuntimeSettingsResponse {
+  const selectedRoute = response.egress?.selectedRoute;
+  return {
+    ...response,
+    vpnConnection: connection,
+    egress: response.egress && selectedRoute && selectedRoute !== "direct"
+      ? {
+          ...response.egress,
+          profiles: {
+            ...response.egress.profiles,
+            [selectedRoute]: connection
+          }
+        }
+      : response.egress
+  };
+}
+
+function applyRuntimeVpnResult(
+  response: CliRuntimeSettingsResponse,
+  runtimeId: CliToggleRuntimeId,
+  result: UpdateCliRuntimeVpnResult
+): CliRuntimeSettingsResponse {
+  const updated = withSelectedVpnConnection(response, result.connection);
+  return {
+    ...updated,
+    settings: updated.settings.map((setting) => setting.runtimeId === runtimeId ? result.setting : setting),
+    vpnApplications: updated.vpnApplications.map((application) => application.runtimeId === runtimeId
+      ? { runtimeId, ...result.application }
+      : application),
+    egress: updated.egress
+      ? {
+          ...updated.egress,
+          applications: updated.egress.applications.map((application) => application.runtimeId === runtimeId
+            ? {
+                runtimeId,
+                routeId: result.setting.vpnEnabled ? updated.egress!.selectedRoute : "direct",
+                appliedSessionIds: result.application.appliedSessionIds,
+                restartRequiredSessionIds: result.application.restartRequiredSessionIds
+              }
+            : application)
+        }
+      : updated.egress,
+    checkedAt: result.setting.updatedAt
+  };
 }
 
 const cliEgressRoutes: ReadonlyArray<{ id: CliEgressRouteId; label: string }> = [
@@ -328,8 +386,9 @@ export function CliRuntimeSettingsCard({
   );
   const [loading, setLoading] = useState(false);
   const [pendingRuntimeId, setPendingRuntimeId] = useState<CliToggleRuntimeId | null>(null);
-  const [pendingRestartRuntimeId, setPendingRestartRuntimeId] = useState<CliToggleRuntimeId | null>(null);
-  const [pendingVpnRuntimeId, setPendingVpnRuntimeId] = useState<CliToggleRuntimeId | null>(null);
+  const [pendingRestartRuntimeId, setPendingRestartRuntimeId] = useState<MaintenanceRuntimeId | null>(null);
+  const [harnessEnabledPending, setHarnessEnabledPending] = useState(false);
+  const [pendingVpnRuntimeId, setPendingVpnRuntimeId] = useState<MaintenanceRuntimeId | null>(null);
   const [pendingEgressRoute, setPendingEgressRoute] = useState<CliEgressRouteId | null>(null);
   const [vpnProfilePending, setVpnProfilePending] = useState(false);
   const [vpnProfileId, setVpnProfileId] = useState<CliVpnProfileId>(readManagedVpnProfileId);
@@ -351,7 +410,7 @@ export function CliRuntimeSettingsCard({
   const [dialog, setDialog] = useState<DisableDialogState | null>(null);
   const [restartDialog, setRestartDialog] = useState<RestartDialogState | null>(null);
   const toggleRefs = useRef(new Map<CliToggleRuntimeId, HTMLInputElement>());
-  const restartRefs = useRef(new Map<CliToggleRuntimeId, HTMLButtonElement>());
+  const restartRefs = useRef(new Map<MaintenanceRuntimeId, HTMLButtonElement>());
   const vpnProfileFileInputRef = useRef<HTMLInputElement | null>(null);
   const mountedRef = useRef(true);
 
@@ -448,7 +507,7 @@ export function CliRuntimeSettingsCard({
     window.requestAnimationFrame(() => toggleRefs.current.get(runtimeId)?.focus());
   }
 
-  function restoreRestartFocus(runtimeId: CliToggleRuntimeId) {
+  function restoreRestartFocus(runtimeId: MaintenanceRuntimeId) {
     window.requestAnimationFrame(() => restartRefs.current.get(runtimeId)?.focus());
   }
 
@@ -459,21 +518,29 @@ export function CliRuntimeSettingsCard({
     restoreRestartFocus(runtimeId);
   }
 
-  async function confirmRuntimeRestart() {
-    if (!restartDialog || pendingRestartRuntimeId) return;
-    const { runtimeId, runtimeName } = restartDialog;
+  async function restartRuntime(runtimeId: MaintenanceRuntimeId, runtimeName: string) {
+    if (pendingRestartRuntimeId) return;
     setPendingRestartRuntimeId(runtimeId);
     setError(null);
     setFeedback(null);
     try {
-      if (!client.cliRuntimeRestart) throw new Error("Per-CLI restart controls are unavailable.");
-      const result = await client.cliRuntimeRestart(runtimeId);
+      const result = runtimeId === "cli:harness"
+        ? client.restartHarness
+          ? await client.restartHarness()
+          : (() => { throw new Error("Harness restart controls are unavailable."); })()
+        : client.cliRuntimeRestart
+          ? await client.cliRuntimeRestart(runtimeId)
+          : (() => { throw new Error("Per-CLI restart controls are unavailable."); })();
       client.invalidateCliRuntimeSettings?.();
-      const restarted = result.restartedSessionIds.length;
-      const failed = result.failedSessionIds.length;
-      setFeedback(failed > 0
-        ? `${runtimeName}: ${restarted} restarted, ${failed} failed.`
-        : `${runtimeName}: ${restarted} session${restarted === 1 ? "" : "s"} restarted.`);
+      if (runtimeId === "cli:harness") {
+        setFeedback("DeepSeek Harness restarted.");
+      } else if ("restartedSessionIds" in result) {
+        const restarted = result.restartedSessionIds.length;
+        const failed = result.failedSessionIds.length;
+        setFeedback(failed > 0
+          ? `${runtimeName}: ${restarted} restarted, ${failed} failed.`
+          : `${runtimeName}: ${restarted} session${restarted === 1 ? "" : "s"} restarted.`);
+      }
       void loadSettings({ forceRefresh: true });
     } catch (restartError) {
       setError(errorMessage(restartError, "CLI runtime restart failed."));
@@ -482,6 +549,11 @@ export function CliRuntimeSettingsCard({
       setRestartDialog(null);
       restoreRestartFocus(runtimeId);
     }
+  }
+
+  async function confirmRuntimeRestart() {
+    if (!restartDialog || pendingRestartRuntimeId) return;
+    await restartRuntime(restartDialog.runtimeId, restartDialog.runtimeName);
   }
 
   function closeDialog() {
@@ -543,6 +615,25 @@ export function CliRuntimeSettingsCard({
       setError(errorMessage(previewError, "Disable impact could not be loaded."));
     } finally {
       setPendingRuntimeId(null);
+    }
+  }
+
+  async function updateHarnessEnabled(enabled: boolean) {
+    if (harnessEnabledPending) return;
+    setHarnessEnabledPending(true);
+    setError(null);
+    setFeedback(null);
+    try {
+      if (!client.updateHarnessEnabled) throw new Error("Harness service controls are unavailable.");
+      const result = await client.updateHarnessEnabled({ enabled });
+      setResponse((current) => current ? { ...current, harness: result.status } : current);
+      client.invalidateCliRuntimeSettings?.();
+      publishCliVpnRoutingStatus();
+      setFeedback(`DeepSeek Harness is now ${result.status.enabled ? "active" : "inactive"}.`);
+    } catch (updateError) {
+      setError(errorMessage(updateError, "Harness service state could not be changed."));
+    } finally {
+      setHarnessEnabledPending(false);
     }
   }
 
@@ -862,20 +953,32 @@ export function CliRuntimeSettingsCard({
     }
   }
 
-  async function updateRuntimeVpn(runtimeId: CliToggleRuntimeId, enabled: boolean) {
+  async function updateRuntimeVpn(runtimeId: MaintenanceRuntimeId, enabled: boolean) {
     if (pendingVpnRuntimeId) return;
     setPendingVpnRuntimeId(runtimeId);
     setError(null);
     setFeedback(null);
     try {
-      if (!client.updateCliRuntimeVpn) throw new Error("Per-CLI VPN controls are unavailable.");
-      await client.updateCliRuntimeVpn(runtimeId, { enabled });
-      await loadSettings();
+      if (runtimeId === "cli:harness") {
+        if (!client.updateHarnessVpn) throw new Error("Harness VPN controls are unavailable.");
+        const result = await client.updateHarnessVpn({ enabled });
+        setResponse((current) => current
+          ? {
+              ...withSelectedVpnConnection(current, result.connection),
+              harness: result.status
+            }
+          : current);
+      } else {
+        if (!client.updateCliRuntimeVpn) throw new Error("Per-CLI VPN controls are unavailable.");
+        const result = await client.updateCliRuntimeVpn(runtimeId, { enabled });
+        setResponse((current) => current ? applyRuntimeVpnResult(current, runtimeId, result) : current);
+      }
       publishCliVpnRoutingStatus();
       const displayName = cliRuntimePresentation(runtimeId)?.displayName ?? runtimeId;
       setFeedback(enabled
         ? `${displayName} now uses ${cliEgressRouteLabel(selectedRoute)}. Active sessions were restarted when needed.`
         : `${displayName} now uses Direct network access. Active sessions were restarted when needed.`);
+      void loadSettings({ forceRefresh: true });
     } catch (vpnError) {
       setError(errorMessage(vpnError, "CLI VPN route could not be changed."));
     } finally {
@@ -904,6 +1007,7 @@ export function CliRuntimeSettingsCard({
     || pendingVpnRuntimeId
     || pendingEgressRoute
     || vpnProfilePending
+    || harnessEnabledPending
   );
   const runtimeMenuActions: SettingsActionMenuItem[] = [{
     id: "refresh",
@@ -958,7 +1062,7 @@ export function CliRuntimeSettingsCard({
   ];
 
   return (
-    <section className="agent-settings-card settings-flat-card cli-runtime-settings-card" aria-label="CLI runtime visibility settings" aria-busy={loading}>
+    <section className="agent-settings-card settings-flat-card cli-runtime-settings-card" aria-label="CLI runtime visibility settings" aria-busy={loading || !response}>
       <div className="agent-settings-section-title settings-flat-heading cli-runtime-settings-title">
         <Terminal aria-hidden="true" />
         <span>
@@ -968,11 +1072,17 @@ export function CliRuntimeSettingsCard({
         <SettingsActionMenu
           label="CLI runtime actions"
           actions={runtimeMenuActions}
-          disabled={loading || runtimeActionsPending || restartAllPending}
+          disabled={!response || loading || runtimeActionsPending || restartAllPending}
         />
       </div>
 
-      <div className={`cli-vpn-profile settings-flat-vpn${selectedRouteStatus === "DIRECT" || selectedRouteStatus === "CONNECTED" ? " is-connected" : ""}`} aria-label="Global CLI network route">
+      {!response ? (
+        <small className="cli-vpn-profile-note cli-runtime-settings-loading" role="status">
+          Loading CLI runtime settings…
+        </small>
+      ) : null}
+
+      <div hidden={!response} className={`cli-vpn-profile settings-flat-vpn${selectedRouteStatus === "DIRECT" || selectedRouteStatus === "CONNECTED" ? " is-connected" : ""}`} aria-label="Global CLI network route">
         <div className="cli-vpn-profile-heading">
           <Shield aria-hidden="true" />
           <span>
@@ -1212,10 +1322,11 @@ export function CliRuntimeSettingsCard({
         </small>
       </div>
 
-      <div className="cli-runtime-settings-list">
-        {CLI_RUNTIME_PRESENTATIONS.map((presentation) => {
-          const runtimeId = presentation.id as CliToggleRuntimeId;
-          const setting = settingById.get(runtimeId);
+      <div hidden={!response} className="cli-runtime-settings-list">
+        {CLI_MAINTENANCE_PRESENTATIONS.map((presentation) => {
+          const runtimeId = presentation.id as MaintenanceRuntimeId;
+          const isHarness = runtimeId === "cli:harness";
+          const setting = isHarness ? response?.harness : settingById.get(runtimeId);
           const enabled = setting?.enabled ?? true;
           const vpnEnabled = setting?.vpnEnabled ?? false;
           return (
@@ -1235,7 +1346,13 @@ export function CliRuntimeSettingsCard({
                   aria-label={`Restart ${presentation.displayName}`}
                   title={`Restart ${presentation.displayName}`}
                   disabled={!response || !enabled || runtimeActionsPending || restartAllPending}
-                  onClick={() => setRestartDialog({ runtimeId, runtimeName: presentation.displayName })}
+                  onClick={() => {
+                    if (isHarness) {
+                      void restartRuntime(runtimeId, presentation.displayName);
+                    } else {
+                      setRestartDialog({ runtimeId, runtimeName: presentation.displayName });
+                    }
+                  }}
                 >
                   {pendingRestartRuntimeId === runtimeId ? <Loader2 className="spin" aria-hidden="true" /> : <Recycle aria-hidden="true" />}
                 </button>
@@ -1245,33 +1362,52 @@ export function CliRuntimeSettingsCard({
                     ? "Choose a VPN route before enabling this CLI."
                     : `VPN ${vpnEnabled ? "on" : "off"} for ${presentation.displayName}`}
                 >
+                  <span className="cli-runtime-vpn-label" aria-hidden="true">
+                    {pendingVpnRuntimeId === runtimeId ? <Loader2 className="spin" /> : "VPN"}
+                  </span>
                   <input
                     type="checkbox"
                     role="switch"
                     name={`cli-runtime-vpn-${presentation.brand}`}
                     aria-label={`Use VPN for ${presentation.displayName}`}
+                    aria-busy={pendingVpnRuntimeId === runtimeId}
                     checked={vpnEnabled}
                     disabled={!response || !enabled || runtimeActionsPending || restartAllPending || (selectedRoute === "direct" && !vpnEnabled)}
                     onChange={(event) => void updateRuntimeVpn(runtimeId, event.target.checked)}
                   />
                   <span className="sr-only">VPN {vpnEnabled ? "on" : "off"}</span>
                 </label>
-                <label className="cli-runtime-visibility-toggle" title={`${presentation.displayName} ${enabled ? "on" : "off"}`}>
-                  <input
-                    ref={(element) => {
-                      if (element) toggleRefs.current.set(runtimeId, element);
-                      else toggleRefs.current.delete(runtimeId);
-                    }}
-                    type="checkbox"
-                    role="switch"
-                    name={`cli-runtime-enabled-${presentation.brand}`}
-                    aria-label={`Enable ${presentation.displayName}`}
-                    checked={enabled}
-                    disabled={!response || runtimeActionsPending || restartAllPending}
-                    onChange={(event) => void requestToggle(runtimeId, event.target.checked)}
-                  />
-                  <span className="sr-only">{enabled ? "On" : "Off"}</span>
-                </label>
+                {!isHarness ? (
+                  <label className="cli-runtime-visibility-toggle" title={`${presentation.displayName} ${enabled ? "on" : "off"}`}>
+                    <input
+                      ref={(element) => {
+                        if (element) toggleRefs.current.set(runtimeId, element);
+                        else toggleRefs.current.delete(runtimeId);
+                      }}
+                      type="checkbox"
+                      role="switch"
+                      name={`cli-runtime-enabled-${presentation.brand}`}
+                      aria-label={`Enable ${presentation.displayName}`}
+                      checked={enabled}
+                      disabled={!response || runtimeActionsPending || restartAllPending}
+                      onChange={(event) => void requestToggle(runtimeId, event.target.checked)}
+                    />
+                    <span className="sr-only">{enabled ? "On" : "Off"}</span>
+                  </label>
+                ) : (
+                  <label className="cli-runtime-visibility-toggle" title={`DeepSeek Harness ${enabled ? "active" : "inactive"}`}>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      name="cli-runtime-enabled-harness"
+                      aria-label="Enable DeepSeek Harness"
+                      checked={enabled}
+                      disabled={!response || runtimeActionsPending || restartAllPending}
+                      onChange={(event) => void updateHarnessEnabled(event.target.checked)}
+                    />
+                    <span className="sr-only">{enabled ? "Active" : "Inactive"}</span>
+                  </label>
+                )}
               </div>
             </div>
           );

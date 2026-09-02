@@ -65,6 +65,13 @@ function pickQuickMemorySaveModelConfigId(modelOptions: AgentModelOption[], sele
   return genericMini?.id ?? selectedModelConfigId ?? null;
 }
 
+function modelConfigProviderKey(modelConfigId: string | null | undefined): string {
+  if (!modelConfigId) return "codex";
+  if (modelConfigId.startsWith("opencode-v1|")) return "opencode";
+  if (modelConfigId.startsWith("cli:")) return modelConfigId.split("-v1|")[0] ?? modelConfigId;
+  return "codex";
+}
+
 function extractClipboardFiles(event: ClipboardEvent<HTMLElement>): File[] {
   const files = Array.from(event.clipboardData.files ?? []);
   const itemFiles = Array.from(event.clipboardData.items ?? [])
@@ -208,7 +215,6 @@ export function AgentPane({
   onSessionIdentityChange
 }: AgentPaneProps) {
   const isCodexEnabled = codexEnvironment?.isCodexEnabled ?? true;
-  const codexDisabledReason = "Enable Codex in Settings";
   const initialDraft = readAgentPaneDraft(pane.id);
   const [session, setSession] = useState<AgentPaneSession | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
@@ -234,10 +240,14 @@ export function AgentPane({
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const lastSessionThreadIdRef = useRef<string | null>(null);
   const followTranscriptRef = useRef(true);
+  const isChatEnabled = session
+    ? session.modelProviders.length > 0 || session.modelOptions.length > 0
+    : true;
+  const chatDisabledReason = "Enable a Chat provider in Settings";
   const trimmedPrompt = prompt.trim();
   const hasAttachments = attachments.length > 0;
   const canSend =
-    isCodexEnabled &&
+    isChatEnabled &&
     Boolean(session?.capabilities.canSend) &&
     !pending &&
     (trimmedPrompt.length > 0 || hasAttachments);
@@ -271,7 +281,7 @@ export function AgentPane({
   }
 
   async function reconnectChat() {
-    if (!isCodexEnabled || pending) return;
+    if (!isChatEnabled || pending) return;
     setError(null);
     setNotice(null);
     try {
@@ -287,7 +297,7 @@ export function AgentPane({
   }
 
   async function copyChat() {
-    const text = copyableCodexTranscript(thread?.items ?? []);
+    const text = copyableCodexTranscript(thread?.items ?? [], session?.messages ?? []);
     if (!text) {
       setNotice(null);
       setError("There are no visible Chat contents to copy.");
@@ -312,13 +322,13 @@ export function AgentPane({
     setThreadLoading(true);
     setCodexError(null);
     try {
-      if (bindToSession && isCodexEnabled && session && !isRunning && session.threadId !== threadId) {
+      if (bindToSession && isChatEnabled && session && !isRunning && session.threadId !== threadId) {
         setPending(true);
         try {
           setSession(
             await api.createAgentSession(pane.id, {
               title: session.binding.title,
-              sessionId: session.binding.sessionId ?? undefined,
+              sessionId: null,
               threadId,
               selectedModelConfigId: session.selectedModelConfigId ?? null,
               selectedToolIds: session.selectedToolIds ?? []
@@ -391,11 +401,11 @@ export function AgentPane({
   }, [pane.id]);
 
   useEffect(() => {
-    if (isCodexEnabled) return;
+    if (isChatEnabled) return;
     setGoalDialogOpen(false);
     setDragActive(false);
     voiceInput.cancel(voiceOwnerId);
-  }, [isCodexEnabled, voiceInput.cancel, voiceOwnerId]);
+  }, [isChatEnabled, voiceInput.cancel, voiceOwnerId]);
 
   useEffect(() => {
     if (session?.capabilities.canSend === false) voiceInput.cancel(voiceOwnerId);
@@ -483,7 +493,7 @@ export function AgentPane({
   }
 
   async function updateCollaborationMode(collaborationMode: CollaborationMode) {
-    if (!isCodexEnabled || !session) return;
+    if (!isChatEnabled || !session) return;
     setPending(true);
     setError(null);
     try {
@@ -496,8 +506,8 @@ export function AgentPane({
   }
 
   async function updateModelConfig(selectedModelConfigId: string): Promise<string | null> {
-    if (!isCodexEnabled) {
-      throw new Error(codexDisabledReason);
+    if (!isChatEnabled) {
+      throw new Error(chatDisabledReason);
     }
     if (!session?.capabilities.canSelectModel) {
       throw new Error("Model selection is unavailable for this Chat session.");
@@ -505,6 +515,25 @@ export function AgentPane({
     setPending(true);
     setError(null);
     try {
+      const providerChanged = modelConfigProviderKey(session.selectedModelConfigId) !== modelConfigProviderKey(selectedModelConfigId);
+      const hasConversation = Boolean(
+        session.threadId || session.messages.some((message) => message.content.trim().length > 0)
+      );
+      if (providerChanged && hasConversation) {
+        const updated = await api.createAgentSession(pane.id, {
+          title: session.binding.title,
+          sessionId: null,
+          threadId: null,
+          selectedModelConfigId,
+          selectedToolIds: session.selectedToolIds ?? []
+        });
+        setSession(updated);
+        setActiveThreadId(null);
+        setThread(null);
+        setHomePinned(true);
+        setNotice(`Started a new ${updated.binding.selectedProviderName ?? "Codex"} Chat task.`);
+        return updated.selectedModelConfigId;
+      }
       const updated = await api.updateAgentSettings(pane.id, { selectedModelConfigId });
       setSession(updated);
       return updated.selectedModelConfigId;
@@ -518,7 +547,7 @@ export function AgentPane({
   }
 
   async function saveGoal(objective: string) {
-    if (!isCodexEnabled) return;
+    if (!isChatEnabled) return;
     setPending(true);
     setError(null);
     try {
@@ -532,7 +561,7 @@ export function AgentPane({
   }
 
   async function clearGoal() {
-    if (!isCodexEnabled) return;
+    if (!isChatEnabled) return;
     setPending(true);
     setError(null);
     try {
@@ -548,7 +577,7 @@ export function AgentPane({
   async function submitMessage(content: string, promptToRestore = prompt): Promise<boolean> {
     const attachmentsToSend = attachments.slice();
     if (
-      !isCodexEnabled ||
+      !isChatEnabled ||
       (!content && attachmentsToSend.length === 0) ||
       pending ||
       session?.capabilities.canSend === false
@@ -589,7 +618,7 @@ export function AgentPane({
   }
 
   async function submitQuickMessage(content: string, options: { selectedModelConfigId?: string | null } = {}) {
-    if (!isCodexEnabled || !content.trim() || pending || session?.capabilities.canSend === false) return;
+    if (!isChatEnabled || !content.trim() || pending || session?.capabilities.canSend === false) return;
     setPending(true);
     setHomePinned(false);
     setError(null);
@@ -625,7 +654,7 @@ export function AgentPane({
   }
 
   async function startNewTask() {
-    if (!isCodexEnabled || pending || isRunning) return;
+    if (!isChatEnabled || pending || isRunning) return;
     setPending(true);
     setError(null);
     try {
@@ -651,7 +680,7 @@ export function AgentPane({
   }
 
   async function uploadFiles(files: File[], source: "USER_UPLOAD" | "CLIPBOARD" | "DROP") {
-    if (!isCodexEnabled || !files.length) return;
+    if (!isChatEnabled || !files.length) return;
     setUploading(true);
     setError(null);
     try {
@@ -671,7 +700,7 @@ export function AgentPane({
   }
 
   function handlePaste(event: ClipboardEvent<HTMLElement>) {
-    if (!isCodexEnabled) return;
+    if (!isChatEnabled) return;
     const files = extractClipboardFiles(event);
     if (!files.length) return;
     event.preventDefault();
@@ -692,7 +721,7 @@ export function AgentPane({
   function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.stopPropagation();
-    if (!isCodexEnabled) {
+    if (!isChatEnabled) {
       setDragActive(false);
       return;
     }
@@ -718,7 +747,7 @@ export function AgentPane({
   useEffect(() => {
     function handleAgentPaneAction(event: Event) {
       if (!(event instanceof CustomEvent) || !isAgentPaneAction(event.detail) || event.detail.paneId !== pane.id) return;
-      if (!isCodexEnabled && event.detail.action !== "copy") return;
+      if (!isChatEnabled && event.detail.action !== "copy") return;
       if (event.detail.action === "upload") {
         fileInputRef.current?.click();
         return;
@@ -769,7 +798,7 @@ export function AgentPane({
     }
     function handleAgentPaneAttachments(event: Event) {
       if (!(event instanceof CustomEvent) || !isAgentPaneAttachments(event.detail) || event.detail.paneId !== pane.id) return;
-      if (!isCodexEnabled) return;
+      if (!isChatEnabled) return;
       setAttachments((current) => mergeArtifacts(current, event.detail.artifacts));
     }
     window.addEventListener(AGENT_PANE_ACTION_EVENT, handleAgentPaneAction);
@@ -780,10 +809,10 @@ export function AgentPane({
       window.removeEventListener(AGENT_PANE_ACTION_EVENT, handleAgentPaneAction);
       window.removeEventListener(AGENT_PANE_ATTACHMENTS_EVENT, handleAgentPaneAttachments);
     };
-  }, [activeThreadId, isCodexEnabled, isRunning, pane.id, pane.title, pending, session, thread]);
+  }, [activeThreadId, isChatEnabled, isRunning, pane.id, pane.title, pending, session, thread]);
 
   function toggleVoiceCapture() {
-    if (!isCodexEnabled) return;
+    if (!isChatEnabled) return;
     if (voiceInput.ownerId === voiceOwnerId && voiceInput.status === "recording") {
       voiceInput.stop(voiceOwnerId);
       return;
@@ -805,7 +834,7 @@ export function AgentPane({
   }
 
   async function interrupt() {
-    if (!isCodexEnabled || pending || !session?.capabilities.canInterrupt) return;
+    if (!isChatEnabled || pending || !session?.capabilities.canInterrupt) return;
     setPending(true);
     setError(null);
     try {
@@ -819,7 +848,7 @@ export function AgentPane({
 
   const voiceOwned = voiceInput.ownerId === voiceOwnerId;
   const voiceDisabled =
-    !isCodexEnabled ||
+    !isChatEnabled ||
     !voiceInput.settings.enabled ||
     !voiceInput.serverSettings?.enabled ||
     voiceInput.settingsLoading ||
@@ -850,13 +879,14 @@ export function AgentPane({
       aria-label={`Native agent ${pane.title}`}
       data-agent-pane-id={pane.id}
       data-codex-enabled={isCodexEnabled ? "true" : "false"}
+      data-chat-enabled={isChatEnabled ? "true" : "false"}
       data-workspace-text-size={workspaceTextSize}
       style={{ "--codex-workspace-text-size": `${workspaceTextSize}px` } as CSSProperties}
-      onPasteCapture={isCodexEnabled ? handlePaste : undefined}
-      onDrop={isCodexEnabled ? handleDrop : undefined}
+      onPasteCapture={isChatEnabled ? handlePaste : undefined}
+      onDrop={isChatEnabled ? handleDrop : undefined}
       onDragOver={(event) => {
         event.preventDefault();
-        if (isCodexEnabled) setDragActive(true);
+        if (isChatEnabled) setDragActive(true);
       }}
       onDragLeave={() => setDragActive(false)}
     >
@@ -866,7 +896,7 @@ export function AgentPane({
         name={`agent-files-${pane.id}`}
         multiple
         hidden
-        disabled={!isCodexEnabled}
+        disabled={!isChatEnabled}
         onChange={(event) => {
           const files = event.currentTarget.files ? Array.from(event.currentTarget.files) : [];
           event.currentTarget.value = "";
@@ -882,7 +912,7 @@ export function AgentPane({
         name={`agent-folders-${pane.id}`}
         multiple
         hidden
-        disabled={!isCodexEnabled}
+        disabled={!isChatEnabled}
         onChange={(event) => {
           const files = event.currentTarget.files ? Array.from(event.currentTarget.files) : [];
           event.currentTarget.value = "";
@@ -897,7 +927,7 @@ export function AgentPane({
             aria-label={`Disable Plan mode ${pane.title}`}
             aria-pressed="true"
             title="Plan mode is active. Click to return to Default mode."
-            disabled={pending || !isCodexEnabled}
+            disabled={pending || !isChatEnabled}
             onClick={() => void updateCollaborationMode("default")}
           >
             <PanelRight aria-hidden="true" />
@@ -909,7 +939,14 @@ export function AgentPane({
           className={`codex-transcript-scroll${session?.collaborationMode === "plan" ? " has-plan-mode" : ""}`}
           onScroll={handleTranscriptScroll}
         >
-          <CodexTranscript items={thread?.items ?? []} isRunning={isRunning} loading={threadLoading || loading} elapsedSeconds={elapsedSeconds} />
+          <CodexTranscript
+            items={thread?.items ?? []}
+            messages={session?.messages ?? []}
+            isRunning={isRunning}
+            loading={threadLoading || loading}
+            elapsedSeconds={elapsedSeconds}
+            providerName={session?.binding.selectedProviderName ?? "Codex"}
+          />
         </div>
         <div className="codex-notification-stack">
           {session?.binding.status === "BLOCKED" ? (
@@ -941,7 +978,7 @@ export function AgentPane({
         </div>
         <CodexComposer
           paneTitle={pane.title}
-          disabledReason={isCodexEnabled ? null : codexDisabledReason}
+          disabledReason={isChatEnabled ? null : chatDisabledReason}
           prompt={prompt}
           onPromptChange={setPrompt}
           attachments={attachments}

@@ -56,7 +56,7 @@ function errorMessage(error: unknown, fallback: string): string {
 export function VoiceInputProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<VoiceComposerSettings>(() => readVoiceComposerSettings());
   const [serverSettings, setServerSettings] = useState<VoiceTranscriptionSettings | null>(null);
-  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [ownerId, setOwnerId] = useState<string | null>(null);
   const [status, setStatus] = useState<VoiceInputStatus>("idle");
@@ -220,10 +220,6 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
   }, [loadServerSettings]);
 
   useEffect(() => {
-    void loadServerSettings();
-  }, [loadServerSettings]);
-
-  useEffect(() => {
     const handleSettingsUpdate = () => setSettings(readVoiceComposerSettings());
     window.addEventListener(VOICE_SETTINGS_UPDATED_EVENT, handleSettingsUpdate);
     return () => window.removeEventListener(VOICE_SETTINGS_UPDATED_EVENT, handleSettingsUpdate);
@@ -236,6 +232,19 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [cancel]);
+
+  useEffect(() => {
+    if (status !== "connecting" && status !== "recording") return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      cancel();
+    };
+    window.addEventListener("keydown", handleEscape, true);
+    return () => window.removeEventListener("keydown", handleEscape, true);
+  }, [cancel, status]);
 
   useEffect(() => () => {
     cancel();

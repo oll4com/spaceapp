@@ -1,6 +1,9 @@
 import type {
   AdminOperationRun,
   CliMaintenanceRequest,
+  CliUpdateAllDetection,
+  CliUpdateAllRequest,
+  CliUpdateAllResult,
   CreateReleasePreviewInput,
   CreateReleaseRequest,
   ReleasePreview
@@ -9,7 +12,7 @@ import type {
   CliMaintenanceRecoveryPayload,
   CliMaintenanceReplayPayload
 } from "../../live-api.js";
-import { Rocket, Wrench, X } from "../ui-theme/app-icons.js";
+import { Rocket, Wrench, Zap, X } from "../ui-theme/app-icons.js";
 import {
   useCallback,
   useEffect,
@@ -19,10 +22,11 @@ import {
 } from "react";
 import { api } from "../../api.js";
 import { MaintenancePanel } from "./MaintenancePanel.js";
+import { CliUpdateAllPanel } from "./CliUpdateAllPanel.js";
 import { ReleasePanel } from "./ReleasePanel.js";
 import "./admin-operations.css";
 
-export type AdminOperationTool = "maintenance" | "release";
+export type AdminOperationTool = "maintenance" | "release" | "update-all";
 
 export interface AdminOperationsClient {
   listCliMaintenanceRuns(): Promise<{ data: AdminOperationRun[] }>;
@@ -31,6 +35,8 @@ export interface AdminOperationsClient {
   cliMaintenanceExportUrl(runId: string): string;
   openCliMaintenanceRecovery(): Promise<CliMaintenanceRecoveryPayload>;
   startCliMaintenance(input: CliMaintenanceRequest): Promise<AdminOperationRun>;
+  detectCliUpdateAll(): Promise<CliUpdateAllDetection>;
+  runCliUpdateAll(input: CliUpdateAllRequest): Promise<CliUpdateAllResult>;
   createReleasePreview(input: CreateReleasePreviewInput): Promise<ReleasePreview>;
   publishRelease(input: CreateReleaseRequest): Promise<AdminOperationRun>;
   listReleaseRuns(): Promise<{ data: AdminOperationRun[] }>;
@@ -48,11 +54,17 @@ export function AdminOperationsDialog({
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
-  const title = initialTool === "maintenance" ? "Space & CLI maintenance" : "Publish Space release";
+  const title = initialTool === "maintenance"
+    ? "Space & CLI maintenance"
+    : initialTool === "update-all"
+      ? "Update all CLI types"
+      : "Publish Space release";
   const description = initialTool === "maintenance"
     ? "Repair Space and every managed CLI with live stages, durable history, safe rollback and provider-login handoff."
-    : "Preview and publish the clean live Space version to the fixed Gitea and GitHub repositories.";
-  const HeaderIcon = initialTool === "maintenance" ? Wrench : Rocket;
+    : initialTool === "update-all"
+      ? "Detect every Space CLI type and update all managed types, including disabled ones, while preserving each custom procedure."
+      : "Preview and publish the clean live Space version to the fixed Gitea and GitHub repositories.";
+  const HeaderIcon = initialTool === "maintenance" ? Wrench : initialTool === "update-all" ? Zap : Rocket;
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => closeRef.current?.focus());
@@ -112,7 +124,9 @@ export function AdminOperationsDialog({
         </header>
         {initialTool === "maintenance"
           ? <MaintenancePanel client={client} onBusyChange={setBusy} />
-          : <ReleasePanel client={client} onBusyChange={setBusy} />}
+          : initialTool === "update-all"
+            ? <CliUpdateAllPanel client={client} onBusyChange={setBusy} />
+            : <ReleasePanel client={client} onBusyChange={setBusy} />}
       </section>
     </div>
   );

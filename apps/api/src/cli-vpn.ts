@@ -2,12 +2,10 @@ import { spawn } from "node:child_process";
 import { z } from "zod";
 import {
   cliToggleRuntimeIds,
-  cliToggleRuntimeIdSchema,
   cliEgressRouteIdSchema,
   cliVpnProfileIdSchema,
   cliVpnConnectionSchema,
   replaceCliVpnProfileInputSchema,
-  type CliToggleRuntimeId,
   type CliEgressRouteId,
   type CliVpnProfileId,
   type CliVpnConnection
@@ -15,6 +13,9 @@ import {
 
 const brokerCommand = "/usr/bin/sudo";
 const brokerExecutable = "/opt/spaceapp/bin/space-cli-vpn-broker";
+const cliVpnManagedRuntimeIds = [...cliToggleRuntimeIds, "cli:harness"] as const;
+const cliVpnManagedRuntimeIdSchema = z.enum(cliVpnManagedRuntimeIds);
+export type CliVpnManagedRuntimeId = z.infer<typeof cliVpnManagedRuntimeIdSchema>;
 const brokerRouteResultSchema = z
   .object({
     mode: z.enum(["direct", "vpn"]),
@@ -28,7 +29,7 @@ const brokerRuntimeInspectionSchema = brokerRouteResultSchema.pick({
   isolatedPids: true,
   legacyPids: true
 }).extend({
-  runtimeId: cliToggleRuntimeIdSchema,
+  runtimeId: cliVpnManagedRuntimeIdSchema,
   routeId: cliEgressRouteIdSchema.optional()
 }).strict();
 const brokerInspectionResultSchema = z
@@ -43,16 +44,16 @@ const brokerInspectionResultSchema = z
       mullvad: cliVpnConnectionSchema,
       nord: cliVpnConnectionSchema
     }).strict(),
-    runtimes: z.array(brokerRuntimeInspectionSchema).max(12)
+    runtimes: z.array(brokerRuntimeInspectionSchema).max(cliVpnManagedRuntimeIds.length)
   })
   .strict();
 const brokerGlobalRouteResultSchema = brokerInspectionResultSchema.omit({ connection: true }).extend({
   runtimes: z.array(z.object({
-    runtimeId: cliToggleRuntimeIdSchema,
+    runtimeId: cliVpnManagedRuntimeIdSchema,
     routeId: cliEgressRouteIdSchema,
     isolatedPids: z.array(z.number().int().positive()).max(10_000),
     legacyPids: z.array(z.number().int().positive()).max(10_000)
-  }).strict()).max(12)
+  }).strict()).max(cliVpnManagedRuntimeIds.length)
 }).strict();
 const brokerErrorSchema = z
   .object({
@@ -80,7 +81,7 @@ export interface CliVpnRouteResult {
 }
 
 export interface CliVpnRuntimeInspection extends Omit<CliVpnRouteResult, "connection"> {
-  runtimeId: CliToggleRuntimeId;
+  runtimeId: CliVpnManagedRuntimeId;
   routeId?: CliEgressRouteId;
 }
 
@@ -99,7 +100,7 @@ export interface CliVpnGlobalRouteResult {
   removedProfiles: CliVpnProfileId[];
   profiles: Record<CliVpnProfileId, CliVpnConnection>;
   runtimes: Array<{
-    runtimeId: CliToggleRuntimeId;
+    runtimeId: CliVpnManagedRuntimeId;
     routeId: CliEgressRouteId;
     isolatedPids: number[];
     legacyPids: number[];
@@ -118,10 +119,10 @@ export interface CliVpnBroker {
   rotateNordCity(): Promise<CliVpnConnection>;
   setGlobalRoute(
     routeId: CliEgressRouteId,
-    runtimes: Array<{ runtimeId: CliToggleRuntimeId; pids: number[] }>
+    runtimes: Array<{ runtimeId: CliVpnManagedRuntimeId; pids: number[] }>
   ): Promise<CliVpnGlobalRouteResult>;
-  inspectRuntimes(runtimes: Array<{ runtimeId: CliToggleRuntimeId; pids: number[] }>): Promise<CliVpnInspectionResult>;
-  setRuntime(runtimeId: CliToggleRuntimeId, enabled: boolean, pids: number[]): Promise<CliVpnRouteResult>;
+  inspectRuntimes(runtimes: Array<{ runtimeId: CliVpnManagedRuntimeId; pids: number[] }>): Promise<CliVpnInspectionResult>;
+  setRuntime(runtimeId: CliVpnManagedRuntimeId, enabled: boolean, pids: number[]): Promise<CliVpnRouteResult>;
 }
 
 export type CliVpnBrokerExecutor = (command: string, args: string[], stdin: string) => Promise<string>;
@@ -245,10 +246,10 @@ export class CliVpnBrokerClient {
   }
 
   async inspectRuntimes(
-    runtimes: Array<{ runtimeId: CliToggleRuntimeId; pids: number[] }>
+    runtimes: Array<{ runtimeId: CliVpnManagedRuntimeId; pids: number[] }>
   ): Promise<CliVpnInspectionResult> {
-    const payload = runtimes.slice(0, cliToggleRuntimeIds.length).map((runtime) => ({
-      runtimeId: cliToggleRuntimeIdSchema.parse(runtime.runtimeId),
+    const payload = runtimes.slice(0, cliVpnManagedRuntimeIds.length).map((runtime) => ({
+      runtimeId: cliVpnManagedRuntimeIdSchema.parse(runtime.runtimeId),
       pids: runtime.pids.filter((pid) => Number.isSafeInteger(pid) && pid > 0).slice(0, 10_000)
     }));
     return brokerInspectionResultSchema.parse(await this.run(
@@ -260,10 +261,10 @@ export class CliVpnBrokerClient {
 
   async setGlobalRoute(
     routeId: CliEgressRouteId,
-    runtimes: Array<{ runtimeId: CliToggleRuntimeId; pids: number[] }>
+    runtimes: Array<{ runtimeId: CliVpnManagedRuntimeId; pids: number[] }>
   ): Promise<CliVpnGlobalRouteResult> {
-    const payload = runtimes.slice(0, cliToggleRuntimeIds.length).map((runtime) => ({
-      runtimeId: cliToggleRuntimeIdSchema.parse(runtime.runtimeId),
+    const payload = runtimes.slice(0, cliVpnManagedRuntimeIds.length).map((runtime) => ({
+      runtimeId: cliVpnManagedRuntimeIdSchema.parse(runtime.runtimeId),
       pids: runtime.pids.filter((pid) => Number.isSafeInteger(pid) && pid > 0).slice(0, 10_000)
     }));
     return brokerGlobalRouteResultSchema.parse(await this.run(
@@ -274,11 +275,11 @@ export class CliVpnBrokerClient {
   }
 
   async setRuntime(
-    runtimeId: CliToggleRuntimeId,
+    runtimeId: CliVpnManagedRuntimeId,
     enabled: boolean,
     pids: number[]
   ): Promise<CliVpnRouteResult> {
-    const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
+    const parsedRuntimeId = cliVpnManagedRuntimeIdSchema.parse(runtimeId);
     const boundedPids = pids.filter((pid) => Number.isSafeInteger(pid) && pid > 0).slice(0, 10_000);
     return brokerRouteResultSchema.parse(await this.run(
       "set-runtime",

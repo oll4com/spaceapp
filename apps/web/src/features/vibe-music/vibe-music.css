@@ -535,6 +535,66 @@
   box-shadow: 0 -1rem 2.8rem rgba(0, 0, 0, 0.42);
 }
 
+.vibe-music-debug {
+  min-width: 0;
+  max-width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.35rem;
+  border: 1px solid #684047;
+  border-radius: 6px;
+  padding: 0.45rem 0.5rem;
+  background: #1c1113;
+}
+
+.vibe-music-debug-label {
+  color: #f0b2b8;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vibe-music-debug-bar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.vibe-music-debug-copy {
+  border: 1px solid #684047;
+  border-radius: 5px;
+  padding: 0.15rem 0.45rem;
+  background: #241519;
+  color: #f0b2b8;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.vibe-music-debug-copy:hover,
+.vibe-music-debug-copy:focus-visible {
+  background: #331c22;
+}
+
+.vibe-music-debug pre {
+  min-width: 0;
+  max-width: 100%;
+  max-height: 8rem;
+  margin: 0;
+  overflow: auto;
+  color: #e8c9a8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.62rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 @media (max-width: 480px) {
   .vibe-music-sheet-backdrop {
     padding-right: 0.5rem;

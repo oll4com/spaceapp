@@ -9,10 +9,11 @@ import {
   Minimize2,
   RefreshCw,
   Trash2,
+  Upload,
   X
 } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
-import { ARTIFACTS_UPDATED_EVENT, isArtifactsUpdatedDetail } from "../../artifact-events.js";
+import { ARTIFACTS_UPDATED_EVENT, dispatchArtifactsUpdated, isArtifactsUpdatedDetail } from "../../artifact-events.js";
 import { setArtifactDragData } from "../artifacts/artifact-drag.js";
 
 interface AgentFilesDockProps {
@@ -118,12 +119,18 @@ function previewKindFor(artifact: Artifact): AgentFilePreviewKind {
 }
 
 function runtimeLabel(artifact: Artifact): string {
+  if (isUserUpload(artifact)) return "You";
   const runtimeId = metadataString(artifact, "runtimeId");
   if (!runtimeId) return "Agent";
   return runtimeId.replace(/^cli:/, "").replaceAll("-", " ");
 }
 
+function isUserUpload(artifact: Artifact): boolean {
+  return metadataString(artifact, "source") === "USER_UPLOAD";
+}
+
 function paneLabel(artifact: Artifact): string {
+  if (isUserUpload(artifact)) return "User upload";
   return artifact.paneId ? `Pane ${artifact.paneId}` : "Room deliverable";
 }
 
@@ -167,8 +174,11 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const loadSequence = useRef(0);
   const previewSequence = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const activeRoomId = useRef<string | null>(activeRoom?.id ?? null);
   activeRoomId.current = activeRoom?.id ?? null;
   const entries = useMemo(() => agentFileEntries(artifacts), [artifacts]);
@@ -383,6 +393,42 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
     }
   }
 
+  async function uploadFiles(files: File[]) {
+    if (!activeRoom || !files.length) return;
+    setUploading(true);
+    setError(null);
+    try {
+      const uploaded = await api.uploadAgentFiles({ roomId: activeRoom.id, files });
+      setArtifacts((current) => mergeAgentFiles(current, uploaded.artifacts));
+      dispatchArtifactsUpdated(activeRoom.id, uploaded.artifacts);
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "Agent Files upload failed");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
+    if (!activeRoom) return;
+    if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+    event.preventDefault();
+    setDragOver(true);
+  }
+
+  function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setDragOver(false);
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    if (!activeRoom) return;
+    if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+    event.preventDefault();
+    setDragOver(false);
+    void uploadFiles(Array.from(event.dataTransfer.files));
+  }
+
   function previewBody(entry: AgentFileEntry) {
     const previewUrl = api.agentFilePreviewUrl(entry.artifact.id);
     if (entry.previewKind === "IMAGE") {
@@ -416,10 +462,24 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
 
   return (
     <div className={["agent-files-dock-shell", isFullscreen ? "is-fullscreen" : ""].filter(Boolean).join(" ")}>
-      <div className="dock-panel agent-files-dock">
+      <div
+        className={["dock-panel", "agent-files-dock", dragOver ? "is-dragover" : ""].filter(Boolean).join(" ")}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         <div className="agent-files-dock-head">
           <h2>Agent Files</h2>
           <div className="agent-files-dock-actions">
+            <button
+              className="icon-action"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={!activeRoom || uploading || clearingAll}
+              aria-label="Upload files to Agent Files"
+              title="Upload files to Agent Files"
+            >
+              <Upload aria-hidden="true" />
+            </button>
             <button
               className="icon-action"
               onClick={() => setIsFullscreen((current) => !current)}
@@ -454,11 +514,12 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
           <FolderOpen aria-hidden="true" />
           <span>
             <strong>{activeRoom ? `${entries.length} agent-created file${entries.length === 1 ? "" : "s"}` : "No room selected"}</strong>
-            <small>Final deliverables published by agents stay here until you delete them.</small>
+            <small>Final deliverables published by agents stay here until you delete them. Drag files here or use the upload button to add your own.</small>
           </span>
         </section>
 
         {error ? <div className="banner bad">{error}</div> : null}
+        {uploading ? <div className="banner" role="status">Uploading files…</div> : null}
 
         {!activeRoom ? (
           <div className="empty-state" role="status">
@@ -516,11 +577,21 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
             ))}
           </div>
         ) : (
-          <div className="empty-state" role="status">
-            <FolderOpen aria-hidden="true" />
-            <span>No agent-created files have been published in this room yet.</span>
+          <div className={["empty-state", dragOver ? "is-dragover" : ""].filter(Boolean).join(" ")} role="status">
+            <Upload aria-hidden="true" />
+            <span>Drop files here or use the upload button to add files to this room.</span>
           </div>
         )}
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={(event) => void uploadFiles(Array.from(event.target.files ?? []))}
+        />
 
         {selected ? (
           <div

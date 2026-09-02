@@ -15,6 +15,7 @@ const createActionIds = new Set([
   "add-cli",
   "add-root-admin-cli",
   "add-browser",
+  "add-harness",
   "add-youtube",
   "add-review"
 ]);

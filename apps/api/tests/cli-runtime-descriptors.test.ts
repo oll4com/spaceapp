@@ -96,7 +96,7 @@ describe("CLI runtime descriptors", () => {
         XDG_STATE_HOME: "/var/lib/spaceapp-user/.codex/space-opencode/state"
       },
       nativeResumeArgs: ["--continue"],
-      defaultModelId: "opencode/deepseek-v4-flash-free"
+      defaultModelId: null
     });
   });
 

@@ -2,11 +2,17 @@ import { spawn } from "node:child_process";
 import {
   cliMaintenanceRequestSchema,
   cliToggleRuntimeIdSchema,
+  cliUpdateAllDetectionSchema,
+  cliUpdateAllRequestSchema,
+  cliUpdateAllResultSchema,
   idSchema,
   type AdminOperationRun,
   type CliMaintenanceAuthHandoff,
   type CliMaintenanceEvent,
-  type CliMaintenanceRequest
+  type CliMaintenanceRequest,
+  type CliUpdateAllDetection,
+  type CliUpdateAllRequest,
+  type CliUpdateAllResult
 } from "@space/contracts";
 import {
   SpaceNotFoundError,
@@ -86,6 +92,11 @@ export interface CliMaintenanceDispatcher {
   dispatch(runId: string): Promise<void>;
 }
 
+export interface CliUpdateAllRunner {
+  detect(runtimeSettings?: ReadonlyArray<{ runtimeId: string; enabled: boolean }>): Promise<CliUpdateAllDetection>;
+  updateAll(input?: CliUpdateAllRequest): Promise<CliUpdateAllResult>;
+}
+
 export type CliMaintenanceDispatcherExecutor = (command: string, args: string[]) => Promise<void>;
 
 function executeDispatcher(command: string, args: string[]): Promise<void> {
@@ -124,6 +135,176 @@ export function createCliMaintenanceDispatcherClient(
     async dispatch(runId: string) {
       const parsedRunId = idSchema.parse(runId);
       await execute(dispatcherCommand, ["-n", dispatcherExecutable, parsedRunId]);
+    }
+  };
+}
+
+const updateAllScript = "/opt/spaceapp/scripts/cli-maintenance-update-all.mjs";
+const updateAllControlExecutable = "/usr/bin/sudo";
+const updateAllControl = "/opt/spaceapp/bin/space-cli-update-all-control";
+
+export type CliUpdateAllExecutor = (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+export type CliUpdateAllControlExecutor = (input: CliUpdateAllRequest) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+
+function executeBounded(args: string[], timeoutMs = 1_800_000): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("/usr/bin/node", args, {
+      env: {
+        ...process.env,
+        PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        LANG: "C.UTF-8"
+      },
+      detached: true,
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const killProcessGroup = () => {
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+          return;
+        } catch {
+          // Fall back to the direct child when the process group is already gone.
+        }
+      }
+      child.kill("SIGKILL");
+    };
+    const timer = setTimeout(() => {
+      killProcessGroup();
+      if (!settled) {
+        settled = true;
+        reject(new Error("CLI update-all timed out."));
+      }
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      if (stdout.length > 512 * 1024) killProcessGroup();
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+      if (stderr.length > 512 * 1024) killProcessGroup();
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+function executeUpdateControlBounded(
+  input: CliUpdateAllRequest,
+  timeoutMs = 1_800_000
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(updateAllControlExecutable, ["-n", updateAllControl], {
+      env: {
+        PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        LANG: "C.UTF-8"
+      },
+      detached: true,
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const killProcessGroup = () => {
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+          return;
+        } catch {
+          // Fall back to the direct child when the process group is already gone.
+        }
+      }
+      child.kill("SIGKILL");
+    };
+    const timer = setTimeout(() => {
+      killProcessGroup();
+      if (!settled) {
+        settled = true;
+        reject(new Error("CLI update-all control timed out."));
+      }
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      if (stdout.length > 512 * 1024) killProcessGroup();
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+      if (stderr.length > 512 * 1024) killProcessGroup();
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      resolve({ code, stdout, stderr });
+    });
+    child.stdin?.on("error", () => {
+      // The fixed control's non-zero close status carries any early rejection.
+    });
+    child.stdin?.end(JSON.stringify(input));
+  });
+}
+
+function lastJsonLine(stdout: string): string {
+  const lines = String(stdout ?? "").trim().split("\n").filter(Boolean);
+  return lines.at(-1) ?? "";
+}
+
+export function createCliUpdateAllRunner(
+  execute: CliUpdateAllExecutor = executeBounded,
+  executeUpdate: CliUpdateAllControlExecutor = executeUpdateControlBounded
+): CliUpdateAllRunner {
+  let updateInFlight = false;
+  return {
+    async detect(runtimeSettings = []) {
+      const { code, stdout, stderr } = await execute([updateAllScript, "detect"]);
+      if (code !== 0) {
+        throw new Error(`CLI update-all detection failed: ${stderr.trim() || "unknown error"}`);
+      }
+      const detected = cliUpdateAllDetectionSchema.parse(JSON.parse(lastJsonLine(stdout)));
+      const enabledByRuntime = new Map(runtimeSettings.map((setting) => [setting.runtimeId, setting.enabled]));
+      return cliUpdateAllDetectionSchema.parse({
+        ...detected,
+        cliTypes: detected.cliTypes.map((entry) => ({
+          ...entry,
+          enabled: enabledByRuntime.get(entry.cliType) ?? entry.enabled
+        }))
+      });
+    },
+    async updateAll(input = {}) {
+      if (updateInFlight) {
+        throw new Error("A CLI update-all run is already in progress.");
+      }
+      const request = cliUpdateAllRequestSchema.parse(input);
+      updateInFlight = true;
+      try {
+        const { code, stdout, stderr } = await executeUpdate(request);
+        if (code !== 0) {
+          throw new Error(`CLI update-all run failed: ${stderr.trim() || "unknown error"}`);
+        }
+        return cliUpdateAllResultSchema.parse(JSON.parse(lastJsonLine(stdout)));
+      } finally {
+        updateInFlight = false;
+      }
     }
   };
 }
@@ -245,6 +426,11 @@ export class CliMaintenanceManager {
   }
 
   async listAuthHandoffsForRecovery(): Promise<CliMaintenanceAuthHandoff[]> {
+    const enabledRuntimeIds = new Set(
+      (await this.options.store.listCliRuntimeSettings())
+        .filter((setting) => setting.enabled)
+        .map((setting) => setting.runtimeId)
+    );
     const runs = (await this.options.store.listAdminOperationRuns(500))
       .filter((run) => run.operationType === "CLI_MAINTENANCE_REPAIR");
     const handoffs = (
@@ -252,6 +438,7 @@ export class CliMaintenanceManager {
     ).flat();
     return handoffs
       .filter((handoff) => ["PENDING", "OPENED", "FAILED"].includes(handoff.status))
+      .filter((handoff) => enabledRuntimeIds.has(handoff.runtimeId))
       .filter((handoff) => handoff.attemptCount < 10)
       .sort((left, right) =>
         left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)

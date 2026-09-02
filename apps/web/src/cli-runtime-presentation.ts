@@ -35,14 +35,27 @@ export const CLI_RUNTIME_PRESENTATIONS = Object.freeze([
   { id: "cli:hermes", brand: "hermes", displayName: "Hermes Agent CLI", shortLabel: "Hermes", iconSrc: hermesLogoUrl }
 ] as const satisfies readonly CliRuntimePresentation[]);
 
+export const HARNESS_MAINTENANCE_PRESENTATION = Object.freeze({
+  id: "cli:harness",
+  brand: "harness",
+  displayName: "DeepSeek Harness",
+  shortLabel: "Harness",
+  iconSrc: deepseekLogoUrl
+} as const satisfies CliRuntimePresentation);
+
+export const CLI_MAINTENANCE_PRESENTATIONS = Object.freeze([
+  ...CLI_RUNTIME_PRESENTATIONS,
+  HARNESS_MAINTENANCE_PRESENTATION
+] as const satisfies readonly CliRuntimePresentation[]);
+
 const runtimePresentationById = new Map(
-  CLI_RUNTIME_PRESENTATIONS.flatMap((presentation) => [
+  CLI_MAINTENANCE_PRESENTATIONS.flatMap((presentation) => [
     [presentation.id, presentation] as const,
     [presentation.id.replace(/^cli:/, ""), presentation] as const
   ])
 );
 const runtimeOrderById = new Map<string, number>(
-  CLI_RUNTIME_PRESENTATIONS.map((presentation, index) => [presentation.id, index])
+  CLI_MAINTENANCE_PRESENTATIONS.map((presentation, index) => [presentation.id, index])
 );
 
 export function cliRuntimePresentation(runtimeId: string | null | undefined): CliRuntimePresentation | undefined {

@@ -9,15 +9,19 @@ import { ChevronRight, Grid2X2, Loader2, Minus, Plus, RefreshCw, RotateCcw, X } 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
-import { CLI_RUNTIME_PRESENTATIONS } from "../../cli-runtime-presentation.js";
+import {
+  CLI_RUNTIME_PRESENTATIONS,
+  HARNESS_MAINTENANCE_PRESENTATION
+} from "../../cli-runtime-presentation.js";
 import {
   CLI_RUNTIME_VISIBILITY_EVENT,
   readCliRuntimeVisibilityChange
 } from "../../cli-runtime-visibility-events.js";
 
 const runtimeDefinitions = CLI_RUNTIME_PRESENTATIONS;
+const harnessId = "harness" as const;
 const chatId = "chat" as const;
-type ComposerRuntimeId = (typeof runtimeDefinitions)[number]["id"] | typeof chatId;
+type ComposerRuntimeId = (typeof runtimeDefinitions)[number]["id"] | typeof harnessId | typeof chatId;
 type PaneCounts = Record<ComposerRuntimeId, number>;
 
 const emptyCounts = (): PaneCounts => ({
@@ -33,6 +37,7 @@ const emptyCounts = (): PaneCounts => ({
   "cli:cursor": 0,
   "cli:copilot": 0,
   "cli:hermes": 0,
+  harness: 0,
   chat: 0
 });
 
@@ -101,7 +106,10 @@ export function RoomPaneComposer({
       runtimeSnapshotAvailableRef.current = true;
       setRuntimes(nextRuntimes);
       setCounts((current) => Object.fromEntries(
-        Object.entries(current).map(([id, count]) => [id, id === chatId || nextRuntimeIds.has(id) ? count : 0])
+        Object.entries(current).map(([id, count]) => [
+          id,
+          id === harnessId || id === chatId || nextRuntimeIds.has(id) ? count : 0
+        ])
       ) as PaneCounts);
     } catch (error) {
       if (requestSequenceRef.current !== sequence) return;
@@ -197,6 +205,7 @@ export function RoomPaneComposer({
         panes.push({ mode: "TERMINAL", terminalRuntimeId: id });
       }
     }
+    for (let index = 0; index < counts.harness; index += 1) panes.push({ mode: "HARNESS" });
     for (let index = 0; index < counts.chat; index += 1) panes.push({ mode: "CHAT" });
 
     setApplying(true);
@@ -322,10 +331,65 @@ export function RoomPaneComposer({
         })}
         {!loading && !loadError && visibleRuntimeDefinitions.length === 0 ? (
           <div className="room-pane-runtime-empty" role="status">
-            <span>All CLI runtimes are disabled. Chat remains available.</span>
+            <span>All CLI runtimes are disabled. Harness and Chat remain available.</span>
             {onOpenSettings ? <button type="button" onClick={onOpenSettings}>Open Settings</button> : null}
           </div>
         ) : null}
+        <div className="room-pane-mix-row">
+          <div className="room-pane-runtime-label">
+            <img
+              src={HARNESS_MAINTENANCE_PRESENTATION.iconSrc}
+              alt=""
+              aria-hidden="true"
+              data-terminal-runtime-brand={HARNESS_MAINTENANCE_PRESENTATION.brand}
+              draggable={false}
+            />
+            <span>{HARNESS_MAINTENANCE_PRESENTATION.shortLabel}</span>
+          </div>
+          <div className="room-pane-controls">
+            <div className="room-pane-quick-actions">
+              <button
+                type="button"
+                className="room-pane-quick-action"
+                aria-label="Fill all with Harness"
+                title="Fill the room with Harness panes"
+                onClick={() => fillRoomWithType(harnessId)}
+                disabled={applying || availableSlots === 0}
+              >
+                <Grid2X2 aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="room-pane-quick-action"
+                aria-label="Clear Harness count"
+                title="Reset Harness pane count"
+                onClick={() => clearRuntimeCount(harnessId)}
+                disabled={applying || counts.harness === 0}
+              >
+                <RotateCcw aria-hidden="true" />
+              </button>
+            </div>
+            <div className="room-pane-counter">
+              <button
+                type="button"
+                aria-label="Decrease Harness panes"
+                onClick={() => adjustCount(harnessId, -1)}
+                disabled={applying || counts.harness === 0}
+              >
+                <Minus aria-hidden="true" />
+              </button>
+              <output aria-label="Harness pane count">{counts.harness}</output>
+              <button
+                type="button"
+                aria-label="Increase Harness panes"
+                onClick={() => adjustCount(harnessId, 1)}
+                disabled={applying || assigned >= availableSlots}
+              >
+                <Plus aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        </div>
         <div className="room-pane-mix-row">
           <div className="room-pane-runtime-label"><span>Chat</span></div>
           <div className="room-pane-counter">

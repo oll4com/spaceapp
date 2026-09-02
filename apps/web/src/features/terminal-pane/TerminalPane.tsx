@@ -113,6 +113,8 @@ interface TerminalPaneProps {
   fullscreenLayout?: boolean;
   observerOnly?: boolean;
   hideFloatingControls?: boolean;
+  oskOpen?: boolean;
+  mobile?: boolean;
   cliDebugModeEnabled?: boolean;
   maxImagePreviews?: number;
   onCliDebugModeChange?: (enabled: boolean) => void;
@@ -244,6 +246,7 @@ const DEFAULT_CLI_RUNTIME_ID = "cli:codex";
 const ROOT_CLI_RUNTIME_ID = "cli:root";
 const CLAUDE_CLI_RUNTIME_ID = "cli:claude";
 const OPENCODE_CLI_RUNTIME_ID = "cli:opencode";
+const HERMES_CLI_RUNTIME_ID = "cli:hermes";
 const isCliModelSettingsRuntime = (runtimeId: string | null | undefined): boolean =>
   runtimeId === DEFAULT_CLI_RUNTIME_ID || runtimeId === OPENCODE_CLI_RUNTIME_ID;
 const isRunCapableCliSession = (
@@ -927,6 +930,12 @@ function scrollTerminalViewportByTouchDelta(viewport: HTMLElement, deltaY: numbe
   return true;
 }
 
+export function encodeSgrMouseWheel(deltaY: number, col: number, row: number): string {
+  const safeCol = Math.max(1, Number.isFinite(col) ? Math.floor(col) : 1);
+  const safeRow = Math.max(1, Number.isFinite(row) ? Math.floor(row) : 1);
+  const button = deltaY > 0 ? 65 : 64;
+  return `\u001b[<${button};${safeCol};${safeRow}M`;
+}
 function scrollXtermByTouchDelta(terminal: XtermTerminal | null, deltaY: number, fontSize: number): boolean {
   if (!terminal) return false;
   const buffer = terminal.buffer.active;
@@ -1370,7 +1379,9 @@ export function TerminalPane({
   onBootstrapped,
   onPrefillReadyChange,
   revealGeneration = 0,
-  onRevealReady
+  onRevealReady,
+  oskOpen = false,
+  mobile = false
 }: TerminalPaneProps) {
   const voiceInput = useVoiceInput();
   const voiceOwnerId = `cli:${pane.id}`;
@@ -1402,12 +1413,29 @@ export function TerminalPane({
   const [terminalPromptDraft, setTerminalPromptDraft] = useState("");
   const [activeCliTurn, setActiveCliTurn] = useState<ActiveCliTurn | null>(null);
   const fallbackRunRef = useRef<{ runKey: string } | null>(null);
+  const [fallbackRunActive, setFallbackRunActive] = useState(false);
   const fallbackRunIdleTimerRef = useRef<number | null>(null);
+  const terminalTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const oskOpenRef = useRef(oskOpen);
+  oskOpenRef.current = oskOpen;
+  const mobileRef = useRef(mobile);
+  mobileRef.current = mobile;
 
-  function finishFallbackRun(runKey: string | null = null) {
+  useEffect(() => {
+    const textarea = terminalTextareaRef.current;
+    if (!textarea) return;
+    const suppressNativeKeyboard = oskOpen && mobile;
+    textarea.readOnly = suppressNativeKeyboard;
+    if (suppressNativeKeyboard && document.activeElement === textarea) {
+      textarea.blur();
+    }
+  }, [oskOpen, mobile]);
+
+  function finishFallbackRun(runKey: string | null = null, status: "COMPLETED" | "FAILED" = "COMPLETED") {
     const run = fallbackRunRef.current;
     if (!run || (runKey !== null && run.runKey !== runKey)) return;
     fallbackRunRef.current = null;
+    setFallbackRunActive(false);
     if (fallbackRunIdleTimerRef.current !== null) {
       window.clearTimeout(fallbackRunIdleTimerRef.current);
       fallbackRunIdleTimerRef.current = null;
@@ -1416,7 +1444,7 @@ export function TerminalPane({
       roomId: pane.roomId,
       paneId: pane.id,
       runKey: run.runKey,
-      status: "COMPLETED"
+      status
     });
   }
 
@@ -1435,6 +1463,7 @@ export function TerminalPane({
   function armFallbackRunWatcher(runKey: string) {
     finishFallbackRun();
     fallbackRunRef.current = { runKey };
+    setFallbackRunActive(true);
     resetFallbackRunIdleTimer();
   }
 
@@ -1449,6 +1478,7 @@ export function TerminalPane({
   const terminalRef = useRef<XtermTerminal | null>(null);
   const fitAddonRef = useRef<XtermFitAddon | null>(null);
   const terminalFontSizeRef = useRef(terminalFontSize);
+  const wheelGeometryReconcileAtRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
   const bufferedSocketRef = useRef<BufferedTerminalSocket | null>(null);
   const loadRuntimesGenerationRef = useRef(0);
@@ -1546,17 +1576,19 @@ export function TerminalPane({
   const activeTurnMarker = activeCliTurn?.marker ?? null;
   const isCodexCliSession = sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId === DEFAULT_CLI_RUNTIME_ID;
   const isOpenCodeCliSession = sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId === OPENCODE_CLI_RUNTIME_ID;
+  const isHermesCliSession = sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId === HERMES_CLI_RUNTIME_ID;
   const isCliModelSettingsSession = isCodexCliSession || isOpenCodeCliSession;
+  const isFloatingTurnControlSession = isCliModelSettingsSession || isHermesCliSession;
   const isNormalAttachedCli = Boolean(
     sessionResponse?.session.purpose === "NORMAL" &&
       sessionResponse.session.isActive &&
       sessionResponse.websocket
   );
-  const isTurnRunning = Boolean(activeCliTurn || modelSettings?.isTurnActive);
+  const isTurnRunning = Boolean(activeCliTurn || modelSettings?.isTurnActive || fallbackRunActive);
   const turnControlState = isTurnRunning
     ? "running"
     : terminalPromptDraft.trim() &&
-        isCliModelSettingsSession &&
+        isFloatingTurnControlSession &&
         terminalStatus === "attached" &&
         terminalControlState === "CONTROLLER"
       ? "ready"
@@ -2639,15 +2671,49 @@ export function TerminalPane({
       lastTouchY = null;
     };
 
+    // Full-screen TUIs such as the opencode TUI request mouse reporting
+    // (1000/1002/1003/1006) and own the wheel: forward gestures as SGR scroll
+    // events so their conversation list scrolls. This must apply regardless of
+    // buffer type - ink redraws in the normal buffer too, and the leftover
+    // normal-buffer scrollback (a few startup lines) would otherwise swallow
+    // the wheel for a useless partial scroll. Apps without mouse tracking
+    // (plain shells) keep native viewport scrolling.
+    const handleMouseWheel = (event: WheelEvent) => {
+      if (event.deltaY === 0 || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+      const terminal = terminalRef.current;
+      if (!terminal) return;
+      if ((terminal.modes?.mouseTrackingMode ?? "none") === "none") return;
+      event.preventDefault();
+      event.stopPropagation();
+      // Reconcile the pane host PTY geometry on interaction: the one-shot resize
+      // path is deduped and can leave the PTY at a stale size (e.g. after a
+      // failed or dropped resize), so full-screen TUIs keep rendering frames at
+      // the old size and the browser wraps them into garbage at the edges.
+      const reconcileAt = Date.now();
+      if (reconcileAt - wheelGeometryReconcileAtRef.current >= 1500) {
+        wheelGeometryReconcileAtRef.current = reconcileAt;
+        terminalGeometryCoordinatorRef.current?.reconcileResize(terminal.cols, terminal.rows);
+      }
+      const hostRect = host.getBoundingClientRect();
+      if (hostRect.width <= 0 || hostRect.height <= 0) return;
+      const cellWidth = hostRect.width / terminal.cols;
+      const cellHeight = hostRect.height / terminal.rows;
+      const col = Math.max(1, Math.min(terminal.cols, Math.ceil((event.clientX - hostRect.left) / Math.max(0.001, cellWidth))));
+      const row = Math.max(1, Math.min(terminal.rows, Math.ceil((event.clientY - hostRect.top) / Math.max(0.001, cellHeight))));
+      sendTerminalInput(encodeSgrMouseWheel(event.deltaY, col, row), "mouse wheel", "hidden");
+    };
+
     host.addEventListener("touchstart", handleTouchStart, { capture: true, passive: true });
     host.addEventListener("touchmove", handleTouchMove, { capture: true, passive: false });
     host.addEventListener("touchend", clearTouch, { capture: true });
     host.addEventListener("touchcancel", clearTouch, { capture: true });
+    host.addEventListener("wheel", handleMouseWheel, { capture: true, passive: false });
     return () => {
       host.removeEventListener("touchstart", handleTouchStart, { capture: true });
       host.removeEventListener("touchmove", handleTouchMove, { capture: true });
       host.removeEventListener("touchend", clearTouch, { capture: true });
       host.removeEventListener("touchcancel", clearTouch, { capture: true });
+      host.removeEventListener("wheel", handleMouseWheel, { capture: true });
     };
   }, [pane.id, sessionResponse?.websocket]);
 
@@ -3345,6 +3411,10 @@ export function TerminalPane({
           textarea?: HTMLTextAreaElement;
         };
         nameTerminalInput(terminalDom.textarea);
+        if (terminalDom.textarea) {
+          terminalTextareaRef.current = terminalDom.textarea;
+          terminalDom.textarea.readOnly = oskOpenRef.current && mobileRef.current;
+        }
         addNativePasteTarget(terminalHost);
         addNativeCopyTarget(terminalHost);
         addNativePasteTarget(terminalDom.element);
@@ -4046,6 +4116,7 @@ export function TerminalPane({
 
     return () => {
       disposed = true;
+      terminalTextareaRef.current = null;
       finishFallbackRun();
       if (inputTokenizerFlushTimer !== null) {
         window.clearTimeout(inputTokenizerFlushTimer);
@@ -4141,6 +4212,54 @@ export function TerminalPane({
     }, delayMs);
   }
 
+  async function attemptAutomaticCliSessionRecovery(
+    expectedSocketGeneration: number | undefined
+  ): Promise<"recovered" | "scheduled" | "permanent"> {
+    try {
+      const recovery = await api.recoveryCliTask(pane.id);
+      const recoveryTaskId = recovery.threads[0]?.taskId ?? null;
+      if (!recoveryTaskId) {
+        return "permanent";
+      }
+      const resumed = await api.resumeCliSession(pane.id, { taskId: recoveryTaskId });
+      const nextSession = {
+        session: resumed.session,
+        runtime: resumed.runtime,
+        transcript: resumed.transcript,
+        websocket: resumed.websocket
+      };
+      clearReconnectTimer();
+      reconnectAttemptRef.current = 0;
+      setError(null);
+      setConnectionAlert(null);
+      setSelectedRuntimeId(nextSession.session.runtimeId);
+      setSessionResponse(nextSession);
+      setTerminalStatus("idle");
+      reportCliLifecycleEvent(
+        "SESSION_RECOVERED",
+        "SUCCESS",
+        "AUTO_RESUME",
+        expectedSocketGeneration === undefined ? {} : { socketGeneration: expectedSocketGeneration }
+      );
+      recordLifecycleDebugEvent({
+        type: "terminal_reconnect_recovered",
+        scope: "TerminalPane",
+        detail: `task=${recoveryTaskId} session=${nextSession.session.sessionId} generation=${expectedSocketGeneration ?? "unknown"}`,
+        paneId: pane.id,
+        paneMode: pane.mode
+      });
+      return "recovered";
+    } catch (recoveryErr) {
+      if (isRetryableCliReconnectError(recoveryErr) && expectedSocketGeneration !== undefined) {
+        setTerminalStatus("reconnecting");
+        setConnectionAlert(null);
+        scheduleReconnect(expectedSocketGeneration);
+        return "scheduled";
+      }
+      return "permanent";
+    }
+  }
+
   async function requestCliSession(
     input: { accountProfileId?: string | null; modelId?: string | null; forceRestart?: boolean; resume?: boolean } = {},
     options: { automaticReconnect?: boolean; expectedSocketGeneration?: number } = {}
@@ -4215,6 +4334,34 @@ export function TerminalPane({
           setTerminalStatus("reconnecting");
           setConnectionAlert(null);
           scheduleReconnect(options.expectedSocketGeneration);
+        } else if (
+          options.automaticReconnect &&
+          options.expectedSocketGeneration !== undefined &&
+          reconnectCoordinatorRef.current.isCurrentSocketGeneration(options.expectedSocketGeneration) &&
+          err instanceof SpaceApiError &&
+          err.code === "CLI_SESSION_CLOSED"
+        ) {
+          const recovery = await attemptAutomaticCliSessionRecovery(options.expectedSocketGeneration);
+          if (recovery !== "permanent") {
+            return null;
+          }
+          clearReconnectTimer();
+          setTerminalStatus("closed");
+          setError(err instanceof Error ? err.message : "CLI reconnect stopped");
+          reconnectInProgressRef.current = false;
+          reportCliLifecycleEvent(
+            "RECONNECT_STOPPED",
+            "FAILURE",
+            "PERMANENT_ERROR",
+            { socketGeneration: options.expectedSocketGeneration }
+          );
+          recordLifecycleDebugEvent({
+            type: "terminal_reconnect_suppressed",
+            scope: "TerminalPane",
+            detail: `generation=${options.expectedSocketGeneration ?? "unknown"} permanent=${String(!isRetryableCliReconnectError(err))}`,
+            paneId: pane.id,
+            paneMode: pane.mode
+          });
         } else if (options.automaticReconnect) {
           clearReconnectTimer();
           setTerminalStatus("closed");
@@ -4990,6 +5137,9 @@ export function TerminalPane({
         clearStoredActiveCliTurn(pane.id);
         setActiveCliTurn(null);
         setModelSettings((current) => current ? { ...current, isTurnActive: false } : current);
+        if (isHermesCliSession) {
+          finishFallbackRun(null, "FAILED");
+        }
       }
       return;
     }
@@ -6212,13 +6362,13 @@ export function TerminalPane({
                 <VoiceInputButton label={pane.title.replace(/^Terminal\b/i, "CLI")} active={voiceOwned && voiceInput.status === "recording"} disabled={voiceDisabled} onClick={toggleTerminalVoiceCapture} onPrewarm={voiceInput.prewarm} />
               ) : null}
               {isCliModelSettingsSession && modelSettings && voiceInput.settings.terminalModelPicker ? <CodexModelPicker settings={modelSettings} onSwitch={handleModelSwitch} /> : null}
-              {isCliModelSettingsSession && voiceInput.settings.terminalTurnControl ? (
+              {isFloatingTurnControlSession && voiceInput.settings.terminalTurnControl ? (
                 <button
                   type="button"
                   className="terminal-turn-control"
                   data-state={turnControlState}
-                  aria-label={isTurnRunning ? (isOpenCodeCliSession ? "Stop OpenCode" : "Stop Codex") : "Send prompt"}
-                  title={isTurnRunning ? (isOpenCodeCliSession ? "Pause OpenCode" : "Pause Codex") : "Send prompt"}
+                  aria-label={isTurnRunning ? (isOpenCodeCliSession ? "Stop OpenCode" : isHermesCliSession ? "Stop Hermes" : "Stop Codex") : "Send prompt"}
+                  title={isTurnRunning ? (isOpenCodeCliSession ? "Pause OpenCode" : isHermesCliSession ? "Pause Hermes" : "Pause Codex") : "Send prompt"}
                   disabled={isTurnRunning ? terminalStatus !== "attached" : !canSendTurn}
                   onClick={handleTurnControlClick}
                 >
