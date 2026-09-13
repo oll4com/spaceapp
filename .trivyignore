@@ -15,3 +15,10 @@ CVE-2026-55388 exp:2026-10-25
 # CVE-2026-41907 is in uuid 8.3.2, bundled inside the vendored autohand-cli
 # node_modules tree. Pinned by the upstream package; recheck after the next vendor refresh.
 CVE-2026-41907 exp:2026-10-25
+
+# CVE-2026-16732 affects numeric trustProxy hop count; Space uses boolean trust proxy.
+# Fastify >=5.12.1 introduces breaking TypeScript type changes with @fastify/* plugins.
+CVE-2026-16732 exp:2026-10-25
+
+# CVE-2026-18504 affects schema validation coercion bypass on root primitive types.
+CVE-2026-18504 exp:2026-10-25
