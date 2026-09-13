@@ -12040,7 +12040,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   const spaceControlRoutes = registerSpaceControlRoutes(app,spaceControl,{cliRoom:request=>controlCliRooms.get(request)??null,resolveActor:controlUser});
-  app.post("/api/control/v1/grant",async request=>{
+  app.post("/api/control/v1/grant", defaultRouteRateLimitOptions, async request=>{
     if(!request.user||request.user.role!=="ADMIN"||request.user.automationScope)throw new SpaceConflictError("Only the operator may grant control access.");
     const input=z.object({roomId:z.string().min(1),enabled:z.boolean()}).strict().parse(request.body);
     await store.getRoom(input.roomId);const actor=await controlUser(request.user.id,request.user.email);
