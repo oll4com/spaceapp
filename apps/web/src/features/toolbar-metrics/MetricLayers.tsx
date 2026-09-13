@@ -7,6 +7,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { X } from "../ui-theme/app-icons.js";
 
 export function MetricPopover({
   anchor,
@@ -133,6 +134,14 @@ export function ConfirmationDialog({
       >
         <header>
           <strong>{label}</strong>
+          <button
+            type="button"
+            aria-label={`Close ${label}`}
+            disabled={busy}
+            onClick={onCancel}
+          >
+            <X aria-hidden="true" />
+          </button>
         </header>
         <div className="toolbar-metric-dialog-copy">{children}</div>
         <div className="toolbar-metric-dialog-actions">

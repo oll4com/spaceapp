@@ -1,4 +1,6 @@
-import { canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions } from "@space/contracts";
+import { taskTitleSettingsSchema, shortTaskTitle } from "@space/contracts";
+import { demoHealthSnapshot } from "./demo-health.js";
+import { canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema } from "@space/contracts";
 import type {
   AgentRuntime,
   AgentRuntimeRegistry,
@@ -151,7 +153,7 @@ interface DemoSetupCheckRunState {
 
 const demoProviderNames: Readonly<Record<string, string>> = {
   "cli:codex": "Codex",
-  "cli:claude": "Claude Code via Legacy",
+  "cli:claude": "Claude Code",
   "cli:gemini": "Google Gemini",
   "cli:opencode": "OpenCode",
   "cli:autohand": "OpenRouter",
@@ -194,6 +196,7 @@ export class DemoStore {
   private setupCheckRuns = new Map<string, DemoSetupCheckRunState>();
   private setupCheckSequence = 0;
   private streamingSettings = initialStreamingSettings();
+  private taskTitlePolicy = taskTitleSettingsSchema.parse({});
   private streamingBotSettings = initialStreamingBotSettings();
   private streamingBotStatus = initialStreamingBotStatus();
   readonly api: SpaceApiClient;
@@ -211,6 +214,7 @@ export class DemoStore {
   }
 
   reset(): void {
+    this.toolRoutingState = defaultToolRoutingState();
     this.fixture = cloneFixture();
     this.sequence = 0;
     this.cliRuntimeEnabled = new Map(cliToggleRuntimeIds.map((runtimeId) => [runtimeId, true]));
@@ -662,9 +666,21 @@ export class DemoStore {
     }
   }
 
+  private toolRoutingState = defaultToolRoutingState();
+
   private invoke(method: string, args: unknown[]): unknown {
     const roomId = typeof args[0] === "string" ? args[0] : null;
     switch (method) {
+      case "modelCapabilities": return { profiles: [], state: structuredClone(this.toolRoutingState) };
+      case "effectiveToolRouting": return buildEffectiveToolPlan(this.toolRoutingState, {
+        version: 1, runtimeId: String(args[0]), modelId: String(args[1]), capabilities: {}
+      });
+      case "saveToolRouting": {
+        const input = updateToolRoutingSchema.parse(args[0]);
+        if (input.expectedRevision !== this.toolRoutingState.revision) throw new SpaceApiError("Routing policy changed; reload before saving.", { status: 409 });
+        this.toolRoutingState = { ...this.toolRoutingState, enabledRuntimeIds: input.enabledRuntimeIds, overrides: input.overrides, revision: input.expectedRevision + 1 };
+        return structuredClone(this.toolRoutingState);
+      }
       case "me": return Promise.resolve(structuredClone(this.fixture.auth));
       case "setupStatus": return Promise.resolve({ setupRequired: false, expiresAt: null });
       case "claimSetup": {
@@ -725,6 +741,18 @@ export class DemoStore {
       });
       case "login": this.fixture.auth.isAuthenticated = true; return Promise.resolve(structuredClone(this.fixture.auth));
       case "logout": this.fixture.auth.isAuthenticated = false; return Promise.resolve({ ok: true });
+      case "healthPing": return Promise.resolve({ ok: true });
+      case "systemHealth": return Promise.resolve(demoHealthSnapshot());
+      case "systemHealthHistory": {
+        const range = String(args[0] ?? "10m");
+        const duration = ({ "1m": 60, "10m": 600, "1h": 3600, "7d": 604800, "30d": 2592000 } as Record<string, number>)[range] ?? 600;
+        const snapshot = demoHealthSnapshot();
+        return Promise.resolve({ range, sampledAt: snapshot.sampledAt, series: snapshot.metrics.filter(m => m.value !== null).map(m => ({
+          id: m.id, label: m.label, unit: m.unit,
+          points: Array.from({ length: 60 }, (_, i) => { const value = Math.max(0, m.value! * (0.8 + Math.sin(i * .7) * .15));
+            return { at: new Date(Date.now() - (59 - i) * duration / 60 * 1000).toISOString(), min: value * .9, avg: value, max: value * 1.1 }; }),
+        })) });
+      }
       case "readyz": return Promise.resolve({
         ok: true,
         apiStartedAt: DEMO_FIXED_AT,
@@ -767,6 +795,21 @@ export class DemoStore {
         return Promise.resolve(paginated(structuredClone(this.fixture.events.filter((event) => !query?.roomId || event.roomId === query.roomId))));
       }
       case "providers": return Promise.resolve(paginated(structuredClone(this.fixture.providers)));
+      case "taskTitleSettings": return structuredClone(this.taskTitlePolicy);
+      case "updateTaskTitleSettings": this.taskTitlePolicy=taskTitleSettingsSchema.parse(args[0]);return structuredClone(this.taskTitlePolicy);
+      case "taskTitleAvailability": return {candidates:[]};
+      case "bindHarnessTitleSession":return structuredClone(this.fixture.panes.find(pane=>pane.id===String(args[0]))!);
+      case "setPaneTitlePreference": {
+        const pane=this.fixture.panes.find(pane=>pane.id===String(args[0]))!;
+        if(pane.taskMetadata)pane.taskMetadata={...pane.taskMetadata,preferredCandidateId:args[1] as string|null,version:pane.taskMetadata.version+1};
+        return structuredClone(pane);
+      }
+      case "generatePaneTitle": {
+        const pane=this.fixture.panes.find(pane=>pane.id===String(args[0]))!;
+        if(pane.titleSource!=="manual")pane.title=shortTaskTitle(pane.title,"Task");
+        pane.taskMetadata={taskKey: `demo:${pane.id}`,version:1,description:pane.title,steps:[pane.title],earlierWork:"",source:"local",generationStatus:"ready",nativeSyncStatus:"unsupported",providerId:null,modelId:null,updatedAt:DEMO_FIXED_AT};
+        return structuredClone(pane);
+      }
       case "providerSettings": return Promise.resolve(structuredClone(this.fixture.providerSettings));
       case "updateProviderSettings": {
         const input = args[0] as UpdateProviderSettingsInput;
@@ -853,9 +896,11 @@ export class DemoStore {
       case "worker": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.worker));
       case "codexEnvironment": return Promise.resolve(structuredClone({
         ...this.fixture.codexEnvironment,
+        checkedAt: new Date().toISOString(),
+        lbUsage: this.fixture.codexEnvironment.lbUsage ? { ...this.fixture.codexEnvironment.lbUsage, checkedAt: new Date().toISOString() } : undefined,
         isCodexEnabled: this.cliRuntimeEnabled.get("cli:codex") !== false
       }));
-      case "toolbarUsageAccounts": return Promise.resolve(structuredClone(this.fixture.codexUsageAccounts));
+      case "toolbarUsageAccounts": return Promise.resolve(structuredClone({ ...this.fixture.codexUsageAccounts, checkedAt: new Date().toISOString(), data: this.fixture.codexUsageAccounts.data.map(account => ({ ...account, sampledAt: new Date().toISOString() })) }));
       case "toolbarResetCredits": return Promise.resolve(structuredClone(this.fixture.codexResetCredits));
       case "redeemToolbarResetCredit": {
         const accountId = String(args[0] ?? "");
@@ -879,7 +924,7 @@ export class DemoStore {
         this.resetRedemptions.set(requestKey, result);
         return Promise.resolve(structuredClone(result));
       }
-      case "toolbarCliSessions": return Promise.resolve(structuredClone(this.fixture.cliSessionStats));
+      case "toolbarCliSessions": return Promise.resolve(structuredClone({ ...this.fixture.cliSessionStats, sampledAt: new Date().toISOString() }));
       case "toolbarModelStats": return Promise.resolve(structuredClone(this.fixture.modelStats));
       case "systemAnalyticsOverview": return Promise.resolve(structuredClone({
         ...this.fixture.systemAnalyticsOverview,
@@ -887,6 +932,7 @@ export class DemoStore {
       }));
       case "systemAnalyticsModels": return Promise.resolve(structuredClone({
         ...this.fixture.systemAnalyticsModels,
+        sampledAt: new Date().toISOString(),
         range: args[0] ?? "10m"
       }));
       case "systemAnalyticsResources": return Promise.resolve(structuredClone({
@@ -1249,6 +1295,7 @@ export class DemoStore {
         return Promise.resolve(this.agentSession(paneId));
       }
       case "roomAgent":
+      case "acknowledgeRoomAgentCommand":
       case "sendRoomAgentMessage":
       case "stopRoomAgent":
       case "controlRoomAgent":
@@ -1430,6 +1477,10 @@ export class DemoStore {
         const ticket = args[0] as { paneId: string; sessionId: string };
         return `demo-terminal://local/${encodeURIComponent(ticket.paneId)}?sessionId=${encodeURIComponent(ticket.sessionId)}`;
       }
+      case "youtubePlayback": return { playback: null };
+      case "saveYouTubePlayback": return { ok: true };
+      case "watchYouTube": return { currentUrl: null };
+      case "browserAccounts": return { selectedProfileId: null, profiles: [] };
       case "browserStatus": return Promise.resolve({ enabled: true, statusReason: "Local canvas fixture; no browser host is connected.", defaultUrl: "https://demo.invalid/space-launch", checkedAt: DEMO_FIXED_AT });
       case "browserSession":
       case "startBrowserSession":
@@ -1614,7 +1665,7 @@ export class DemoStore {
         const name = String(args[0] ?? "Demo room").trim() || "Demo room";
         const initialPaneCount = Math.min(16, Math.max(0, Number(args[1] ?? 4)));
         const id = this.nextId("room");
-        const room = { ...this.fixture.rooms[0]!, id, name, order: this.fixture.rooms.length, paneLayoutColumns: null, traceId: this.nextId("trace") };
+        const room = { ...this.fixture.rooms[0]!, id, name, order: this.fixture.rooms.length, paneLayoutColumns: null, paneLayoutHeight: 1 as const, traceId: this.nextId("trace") };
         this.fixture.rooms.push(room);
         for (let index = 0; index < initialPaneCount; index += 1) this.addPane(id, `Agent ${index + 1}`, "CHAT", {});
         return Promise.resolve(structuredClone(room));
@@ -1633,7 +1684,9 @@ export class DemoStore {
       }
       case "updateRoomPaneLayout": {
         const room = this.fixture.rooms.find((candidate) => candidate.id === roomId)!;
-        room.paneLayoutColumns = (args[1] as { paneLayoutColumns: Room["paneLayoutColumns"] }).paneLayoutColumns;
+        const input = args[1] as { paneLayoutColumns?: Room["paneLayoutColumns"]; paneLayoutHeight?: Room["paneLayoutHeight"] };
+        if (input.paneLayoutColumns !== undefined) room.paneLayoutColumns = input.paneLayoutColumns;
+        if (input.paneLayoutHeight !== undefined) room.paneLayoutHeight = input.paneLayoutHeight;
         const panes = this.fixture.panes.filter((pane) => pane.roomId === roomId);
         return Promise.resolve({ room: structuredClone(room), panes: structuredClone(panes) });
       }
@@ -1669,6 +1722,12 @@ export class DemoStore {
           }
           if (item.mode === "HARNESS") {
             return this.addPane(targetRoomId, `Harness ${finalNumber}`, "HARNESS", {});
+          }
+          if (item.mode === "BROWSER" || item.mode === "YOUTUBE") {
+            return this.addPane(targetRoomId, `${item.mode === "BROWSER" ? "Browser" : "YouTube"} ${finalNumber}`, item.mode, {});
+          }
+          if (item.mode === "LIVE") {
+            return this.addPane(targetRoomId, `Live ${finalNumber}`, "LIVE", {});
           }
           const runtimeName = cliRuntimeLabel(item.terminalRuntimeId)!;
           return this.addPane(targetRoomId, `${runtimeName} ${finalNumber}`, "TERMINAL", {

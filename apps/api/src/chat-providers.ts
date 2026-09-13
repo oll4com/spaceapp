@@ -33,7 +33,6 @@ export const opencodeChatProviderId = "opencode";
 
 export const codexChatProviderConfigIdPrefix = "codex-v1|";
 export const opencodeChatProviderConfigIdPrefix = "opencode-v1|";
-export const openCodeChatVerifiedModelIds = ["opencode/muse-spark-1.2-contributor-free"] as const;
 
 export interface CliChatRuntimeState {
   enabled: boolean;
@@ -167,7 +166,7 @@ function reasoningEffortLabel(effort: string): string {
   }
 }
 
-function parseCliModelsTsv(raw: string): CodexModelCatalogOption[] {
+export function parseCliModelsTsv(raw: string): CodexModelCatalogOption[] {
   const models: CodexModelCatalogOption[] = [];
   const seen = new Set<string>();
   let index = 0;
@@ -276,18 +275,16 @@ export function opencodeChatProviderAdapter(
       try {
         const control = await resolveControl();
         const descriptors = await fetchModels(control);
-        const verifiedModelIds = new Set<string>(openCodeChatVerifiedModelIds);
-        const verifiedDescriptors = descriptors.filter((descriptor) =>
-          verifiedModelIds.has(`${descriptor.providerId}/${descriptor.modelId}`)
-        );
-        if (verifiedDescriptors.length === 0) {
+        if (descriptors.length === 0) {
           return {
             models: [],
             current: null,
-            error: "OpenCode did not advertise a model verified for Chat panes."
+            error: "OpenCode did not advertise any available models."
           };
         }
-        const models = verifiedDescriptors.map((descriptor, index) => {
+        // Use the configured native catalog, including OpenCode Zen and Go.
+        // A fixed Chat allowlist hides available models whenever that catalog changes.
+        const models = descriptors.map((descriptor, index) => {
           const optionId = `${descriptor.providerId}/${descriptor.modelId}`;
           const listedVariants = descriptor.variants.length > 0 ? descriptor.variants : [];
           const supportedReasoningEfforts = listedVariants.length > 0
@@ -296,6 +293,7 @@ export function opencodeChatProviderAdapter(
           return {
             id: optionId,
             displayName: descriptor.displayName,
+            description: descriptor.providerName ?? descriptor.providerId,
             isDefault: index === 0,
             defaultReasoningEffort:
               descriptor.defaultVariant ?? listedVariants[0] ?? openCodeDefaultReasoningEffort,

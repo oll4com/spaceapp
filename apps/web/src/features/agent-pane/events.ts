@@ -9,6 +9,11 @@ type AgentPaneActionEventDetail =
       action:
         | "upload"
         | "plan"
+  | "toggle_plan"
+  | "build"
+  | "plan_progress"
+  | "deploy"
+  | "permissions"
         | "resume"
         | "copy"
         | "reconnect"

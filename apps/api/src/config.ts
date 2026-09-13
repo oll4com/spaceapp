@@ -1,5 +1,13 @@
 import { join } from "node:path";
-import { cliChatTurnDefaultRuntimeIds, mcpServerConfigListSchema, type McpServerConfig } from "@space/contracts";
+import {
+  cliChatTurnDefaultRuntimeIds,
+  mcpServerConfigListSchema,
+  voiceTranscriptionModelSchema,
+  voiceModelVoiceSchema,
+  type McpServerConfig,
+  type VoiceTranscriptionModel,
+  type VoiceModelVoice
+} from "@space/contracts";
 import { resolveCanonicalGeminiMemoryPaths } from "@space/runtime";
 import {
   configuredCliCredentialSmoke,
@@ -58,6 +66,7 @@ export interface SpaceApiConfig {
   cliMaintenanceRepairEnabled: boolean;
   cliKimiLoginBootstrapEnabled: boolean;
   cliGrokLoginBootstrapEnabled: boolean;
+  cliClaudeLoginBootstrapEnabled: boolean;
   cliChatTurnsEnabled: boolean;
   cliChatTurnRuntimeIds: string[];
   mcpServerConfigs?: McpServerConfig[];
@@ -82,10 +91,13 @@ export interface SpaceApiConfig {
   voiceTranscriptionEnabled: boolean;
   voiceTranscriptionBaseUrl: string;
   voiceTranscriptionKeyFile: string | null;
-  voiceTranscriptionModel: "gpt-live-transcribe";
+  voiceTranscriptionModel: VoiceTranscriptionModel;
+  voiceTranscriptionVoice: VoiceModelVoice;
   voiceTranscriptionDelay: "minimal" | "low" | "medium" | "high" | "xhigh";
   voiceTranscriptionTimeoutMs: number;
   voiceTranscriptionMaxDurationMs: number;
+  localVoiceProviderUrl: string;
+  localVoiceProviderToken: string | null;
   geminiMemoryIndexPath: string;
   geminiMemoryMonthlyPath: string;
   geminiMemoryLockPath: string;
@@ -106,6 +118,7 @@ export interface SpaceApiConfig {
   browserSessionsAudioEnabled: boolean;
   browserSessionsPulseServer: string;
   browserSessionsPulseSink: string;
+  browserSessionsYouTubeAdBlockEnabled: boolean;
   browserToolBridgeEnabled: boolean;
   browserHostTransport: "in-process" | "unix";
   browserHostSocketPath: string;
@@ -116,6 +129,8 @@ export interface SpaceApiConfig {
   streamingSecretRoot: string;
   streamingYoutubeDailyQuotaBudget: number;
   agentToolsWriterCommand: string | null;
+  roomPaneCommandsEnabled: boolean;
+  roomMiniRouterEnabled: boolean;
   harnessEnabled: boolean;
   harnessOrigin: string;
   harnessHealthTimeoutMs: number;
@@ -151,10 +166,14 @@ function parseMcpServerConfigs(raw: string | undefined): { configs: McpServerCon
   }
 }
 
-function parseVoiceTranscriptionModel(raw: string | undefined): SpaceApiConfig["voiceTranscriptionModel"] {
-  // All historical values intentionally migrate to the official live model.
-  void raw;
-  return "gpt-live-transcribe";
+function parseVoiceTranscriptionModel(raw: string | undefined): VoiceTranscriptionModel {
+  const parsed = voiceTranscriptionModelSchema.safeParse(raw);
+  return parsed.success ? parsed.data : "gpt-transcribe";
+}
+
+function parseVoiceTranscriptionVoice(raw: string | undefined): VoiceModelVoice {
+  const parsed = voiceModelVoiceSchema.safeParse(raw);
+  return parsed.success ? parsed.data : "alloy";
 }
 
 export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
@@ -215,6 +234,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     cliMaintenanceRepairEnabled: env.SPACE_CLI_MAINTENANCE_REPAIR_ENABLED === "true",
     cliKimiLoginBootstrapEnabled: env.SPACE_CLI_KIMI_LOGIN_BOOTSTRAP === "true",
     cliGrokLoginBootstrapEnabled: env.SPACE_CLI_GROK_LOGIN_BOOTSTRAP === "true",
+    cliClaudeLoginBootstrapEnabled: env.SPACE_CLI_CLAUDE_LOGIN_BOOTSTRAP === "true",
     cliChatTurnsEnabled: env.SPACE_ENABLE_CLI_CHAT_TURNS === "true",
     cliChatTurnRuntimeIds: parseCsvList(
       env.SPACE_CLI_CHAT_TURN_RUNTIME_IDS ?? cliChatTurnDefaultRuntimeIds.join(",")
@@ -242,9 +262,12 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     voiceTranscriptionBaseUrl: env.SPACE_VOICE_TRANSCRIPTION_BASE_URL || "https://api.openai.com/v1",
     voiceTranscriptionKeyFile: env.SPACE_VOICE_TRANSCRIPTION_KEY_FILE || null,
     voiceTranscriptionModel: parseVoiceTranscriptionModel(env.SPACE_VOICE_TRANSCRIPTION_MODEL),
+    voiceTranscriptionVoice: parseVoiceTranscriptionVoice(env.SPACE_VOICE_NAME),
     voiceTranscriptionDelay: parseVoiceTranscriptionDelay(env.SPACE_VOICE_TRANSCRIPTION_DELAY),
     voiceTranscriptionTimeoutMs: Math.min(parsePositiveInt(env.SPACE_VOICE_TRANSCRIPTION_TIMEOUT_MS, 15000), 60000),
     voiceTranscriptionMaxDurationMs: Math.min(parsePositiveInt(env.SPACE_VOICE_TRANSCRIPTION_MAX_DURATION_MS, 60000), 5 * 60 * 1000),
+    localVoiceProviderUrl: env.SPACE_LOCAL_VOICE_PROVIDER_URL || "http://192.168.10.213:8765",
+    localVoiceProviderToken: env.SPACE_LOCAL_VOICE_PROVIDER_TOKEN || null,
     geminiMemoryIndexPath: geminiMemoryPaths.indexPath,
     geminiMemoryMonthlyPath: geminiMemoryPaths.monthlyPath,
     geminiMemoryLockPath: geminiMemoryPaths.lockPath,
@@ -265,6 +288,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     browserSessionsAudioEnabled: env.SPACE_BROWSER_SESSIONS_AUDIO_ENABLED !== "false",
     browserSessionsPulseServer: env.SPACE_BROWSER_SESSIONS_PULSE_SERVER || "unix:/run/pulse/native",
     browserSessionsPulseSink: env.SPACE_BROWSER_SESSIONS_PULSE_SINK || "space_audio",
+    browserSessionsYouTubeAdBlockEnabled: env.SPACE_BROWSER_SESSIONS_YOUTUBE_AD_BLOCK_ENABLED !== "false",
     browserToolBridgeEnabled: env.SPACE_BROWSER_TOOL_BRIDGE_ENABLED === "true",
     browserHostTransport: env.SPACE_BROWSER_HOST_TRANSPORT === "unix" ? "unix" : "in-process",
     browserHostSocketPath: env.SPACE_BROWSER_HOST_SOCKET || "/run/space-browser-host/browser-host.sock",
@@ -275,6 +299,8 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     streamingSecretRoot: env.SPACE_STREAMING_SECRET_ROOT || "/opt/spaceapp/var/streaming-secrets",
     streamingYoutubeDailyQuotaBudget: Math.min(parsePositiveInt(env.SPACE_STREAMING_YOUTUBE_DAILY_QUOTA_BUDGET, 8000), 10000),
     agentToolsWriterCommand: env.SPACE_AGENT_TOOLS_WRITER || "/opt/spaceapp/bin/space-agent-tools-writer",
+    roomMiniRouterEnabled: env.SPACE_ROOM_MINI_ROUTER_ENABLED === "true",
+    roomPaneCommandsEnabled: env.SPACE_ROOM_PANE_COMMANDS_ENABLED === "true",
     harnessEnabled: env.SPACE_HARNESS_ENABLED === "true",
     harnessOrigin: env.SPACE_HARNESS_ORIGIN || "http://10.254.240.21:3080",
     harnessHealthTimeoutMs: Math.min(parsePositiveInt(env.SPACE_HARNESS_HEALTH_TIMEOUT_MS, 3000), 15000),

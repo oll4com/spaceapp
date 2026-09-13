@@ -1,8 +1,13 @@
+import { useGoogleAccountSignIn } from "./useGoogleAccountSignIn.js";
+import { useBrowserAudio } from "./useBrowserAudio.js";
+import { resolveBrowserAddress } from "./browser-address.js";
+import type { YouTubeAccounts as GoogleAccounts } from "./youtube-accounts.js";
 import {
   Bookmark,
   BookmarkPlus,
   Bug,
   Camera,
+  Check,
   ChevronLeft,
   ChevronRight,
   CircleStop,
@@ -13,6 +18,7 @@ import {
   Maximize2,
   Minimize2,
   Monitor,
+  RectangleHorizontal,
   MoreHorizontal,
   MousePointer2,
   Pin,
@@ -28,6 +34,7 @@ import {
   Trash2,
   Upload,
   UserCheck,
+  Users,
   Video,
   X
 } from "../ui-theme/app-icons.js";
@@ -77,6 +84,8 @@ import {
   parseBrowserPaneActionDetail,
   registerBrowserPaneEventTarget
 } from "./events.js";
+import { BrowserLiveStatus } from "./BrowserLiveStatus.js";
+import { loadSharedBrowserStatus } from "./browser-status.js";
 
 export {
   BROWSER_PANE_ACTION_EVENT,
@@ -110,7 +119,7 @@ const recordingDurationOptions = [
   { label: "30m", milliseconds: 1_800_000 }
 ] as const;
 
-type BrowserDebugTab = "console" | "network" | "timeline" | "artifacts";
+type BrowserDebugTab = "console" | "network" | "timeline" | "artifacts" | "agents";
 type BrowserSessionV2 = PaneBrowserSessionResponse["session"];
 
 const streamModeOptions: Array<{ id: BrowserStreamMode; label: string }> = [
@@ -118,7 +127,7 @@ const streamModeOptions: Array<{ id: BrowserStreamMode; label: string }> = [
   { id: "SILENT", label: "Silent" },
   { id: "PREVIEW", label: "Preview" },
   { id: "INTERACTIVE", label: "Interactive" },
-  { id: "REALTIME", label: "Real-time" }
+  { id: "REALTIME", label: "Live" }
 ];
 
 const emptyDiagnostics: BrowserDiagnosticsPayload = { sessionId: "browser:pending", events: [] };
@@ -140,7 +149,7 @@ const viewportOptions: Array<{ id: BrowserSessionViewport; label: string; title:
   { id: "desktop", label: "PC", title: "PC view", Icon: Monitor },
   { id: "tablet", label: "Tablet", title: "Tablet view", Icon: Tablet },
   { id: "mobile", label: "Mobile", title: "Mobile view", Icon: Smartphone },
-  { id: "wide", label: "Wide", title: "Widescreen view", Icon: Monitor }
+  { id: "wide", label: "Wide", title: "Widescreen view", Icon: RectangleHorizontal }
 ];
 
 const viewportSizes: Record<BrowserSessionViewport, { width: number; height: number }> = {
@@ -154,12 +163,14 @@ const browserInputAckTimeoutMs = 2_000;
 const browserStreamReconnectMessage = "Browser frame stream disconnected; reconnecting.";
 
 interface PendingBrowserInputAck {
+  motion: boolean;
   sentAt: number;
   timeoutId: number;
 }
 
-function displayUrl(response: PaneBrowserSessionResponse | null, status: BrowserStatusPayload | null): string {
-  return response?.session.currentUrl ?? response?.session.targetUrl ?? status?.defaultUrl ?? "https://www.example.invalid/";
+function displayUrl(response: PaneBrowserSessionResponse | null): string {
+  const value = response?.session.currentUrl ?? response?.session.targetUrl ?? "";
+  return value === "about:blank" ? "" : value;
 }
 
 function isBrowserFrameMessage(value: unknown): value is BrowserFrameMessage {
@@ -175,18 +186,32 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const [status, setStatus] = useState<BrowserStatusPayload | null>(null);
   const [response, setResponse] = useState<PaneBrowserSessionResponse | null>(null);
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
-  const [url, setUrl] = useState("https://www.example.invalid/");
+  const [url, setUrl] = useState("");
   const [handoff, setHandoff] = useState(false);
+  const [googleAccounts, setGoogleAccounts] = useState<GoogleAccounts | null>(null);
+  const [googleAccountMenuOpen, setGoogleAccountMenuOpen] = useState(false);
+  const googleAccountPickerRef = useRef<HTMLDivElement | null>(null);
+  const googleAccountButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [googleSignInTarget, setGoogleSignInTarget] = useState<string | null>(null);
   const [controlLease, setControlLease] = useState<BrowserControlLeasePayload | null>(null);
   const [streamMode, setStreamMode] = useState<BrowserStreamMode>("AUTO");
+  const [blankTabRequested, setBlankTabRequested] = useState(false);
   const [pages, setPages] = useState<BrowserPageSummaryPayload[]>([]);
+  const emptyBrowser = !blankTabRequested && pages.length === 1 && pages[0]?.url === "about:blank";
   const [activePageId, setActivePageId] = useState<string | null>(null);
+  const pageListRef = useRef<BrowserPageListPayload | null>(null);
+  const pageSessionIdRef = useRef<string | null>(null);
+  const pageRequestRef = useRef(0);
+  const pageMutationRef = useRef(false);
   const [canvasHistoryLength, setCanvasHistoryLength] = useState(0);
   const [selectedFrameIndex, setSelectedFrameIndex] = useState<number | null>(null);
   const [debugOpen, setDebugOpen] = useState(false);
   const [debugTab, setDebugTab] = useState<BrowserDebugTab>("console");
   const [diagnostics, setDiagnostics] = useState<BrowserDiagnosticsPayload>(emptyDiagnostics);
   const [diagnosticsPending, setDiagnosticsPending] = useState(false);
+  const [diagnosticsLive, setDiagnosticsLive] = useState(true);
+  const [diagnosticsFilter, setDiagnosticsFilter] = useState("");
+  const diagnosticsLoadingRef = useRef(false);
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
   const [captureJobs, setCaptureJobs] = useState<BrowserCaptureJobPayload[]>([]);
   const [recordingControlsOpen, setRecordingControlsOpen] = useState(false);
@@ -206,6 +231,14 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const [recordingTimelinePending, setRecordingTimelinePending] = useState(false);
   const [persistedRecordingFrame, setPersistedRecordingFrame] = useState(0);
   const [focusMode, setFocusMode] = useState(false);
+  // Start compact until the pane has been measured so its address stays usable
+  // during the first paint in narrow rooms and after a page reload.
+  const [toolbarWidth, setToolbarWidth] = useState(() => typeof ResizeObserver === "undefined" ? 1000 : 0);
+  const [fitPane, setFitPane] = useState(false);
+  const [streamDimensions, setStreamDimensions] = useState<{ width: number; height: number } | null>(null);
+  const frameShellRef = useRef<HTMLDivElement | null>(null);
+  const resizeBusyRef = useRef(false);
+  const streamedViewportRef = useRef<{ width: number; height: number } | undefined>(undefined);
   const [textInput, setTextInput] = useState("");
   const [textInputOpen, setTextInputOpen] = useState(false);
   const [bookmarks, setBookmarks] = useState<BrowserBookmark[]>([]);
@@ -219,6 +252,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   useAutoDismiss(captureNotice, setCaptureNotice);
   const canvasRef = useRef<BrowserCanvasHandle | null>(null);
   const paneRef = useRef<HTMLElement | null>(null);
+  const urlDraftRef = useRef<string | null>(null);
   const browserToolbarRef = useRef<HTMLDivElement | null>(null);
   const bookmarkImportRef = useRef<HTMLInputElement | null>(null);
   const handoffInputRef = useRef<HTMLInputElement | null>(null);
@@ -234,7 +268,26 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const coalescedBrowserInputRef = useRef<BrowserInputPayload | null>(null);
   const coalescedBrowserInputFrameRef = useRef<number | null>(null);
 
+  useEffect(() => {
+    const paneElement = paneRef.current;
+    if (!paneElement || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const bounds = paneElement.getBoundingClientRect();
+      const toolbarBottom = paneElement.querySelector(".browser-pane-toolbar")?.getBoundingClientRect().bottom ?? bounds.top + 74;
+      setToolbarWidth(Math.round(bounds.width));
+      paneElement.style.setProperty("--browser-pane-width", `${bounds.width}px`);
+      paneElement.style.setProperty("--browser-menu-height", `${Math.max(64, bounds.bottom - toolbarBottom - 10)}px`);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(paneElement);
+    const toolbarElement = paneElement.querySelector(".browser-pane-toolbar");
+    if (toolbarElement) observer.observe(toolbarElement);
+    measure();
+    return () => observer.disconnect();
+  }, []);
+  const compactToolbar = toolbarWidth < 1000;
   const session = (response?.session as BrowserSessionV2 | undefined) ?? null;
+  const { audioState, resumeAudio } = useBrowserAudio(pane.id, session?.sessionId, !observerOnly && session?.status !== "CLOSED");
   const viewport = session?.viewport ?? defaultViewport;
   const activeFrame = frame ?? response?.frame ?? null;
   const statusText = session?.statusReason ?? status?.statusReason ?? "Browser session";
@@ -294,6 +347,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     const element = paneRef.current;
     if (!element) return;
     element.dataset.browserInputPending = String(pendingBrowserInputAcksRef.current.size);
+    element.dataset.browserInputPeakPending = String(Math.max(Number(element.dataset.browserInputPeakPending ?? 0), pendingBrowserInputAcksRef.current.size));
     if (lastAck) element.dataset.browserInputLastAck = lastAck;
   }
 
@@ -316,8 +370,9 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       if (!pendingAck) return;
       pendingBrowserInputAcksRef.current.delete(requestId);
       updateBrowserInputTelemetry("timeout");
+      if (pendingAck.motion) flushCoalescedBrowserInput();
     }, browserInputAckTimeoutMs);
-    pendingBrowserInputAcksRef.current.set(requestId, { sentAt, timeoutId });
+    pendingBrowserInputAcksRef.current.set(requestId, { sentAt, timeoutId, motion: (input.type === "POINTER" && (input.eventType === "mouseMoved" || input.eventType === "mouseWheel")) || (input.type === "TOUCH" && input.eventType === "touchMove") });
     updateBrowserInputTelemetry();
     try {
       socket.send(JSON.stringify({ type: "input", requestId, input }));
@@ -352,11 +407,23 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     const socket = browserStreamSocketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     const coalescible =
-      (input.type === "POINTER" && input.eventType === "mouseMoved") ||
+      (input.type === "POINTER" && (input.eventType === "mouseMoved" || input.eventType === "mouseWheel")) ||
       (input.type === "TOUCH" && input.eventType === "touchMove");
     if (!coalescible) {
       flushCoalescedBrowserInput();
       return sendBrowserInputNow(input);
+    }
+    const previous = coalescedBrowserInputRef.current;
+    if (previous) {
+      const sameKind = previous.type === input.type && "eventType" in previous && "eventType" in input && previous.eventType === input.eventType && previous.leaseId === input.leaseId;
+      if (sameKind && previous.type === "POINTER" && input.type === "POINTER" && input.eventType === "mouseWheel" && previous.modifiers === input.modifiers) {
+        const deltaX = (previous.deltaX ?? 0) + (input.deltaX ?? 0);
+        const deltaY = (previous.deltaY ?? 0) + (input.deltaY ?? 0);
+        // Preserve distance, modifiers and ordering. Split only at the wire
+        // contract's limit; never replace wheel deltas with the last event.
+        if (Math.abs(deltaX) <= 10000 && Math.abs(deltaY) <= 10000) input = { ...input, deltaX, deltaY };
+        else flushCoalescedBrowserInput();
+      } else if (!sameKind || (previous.type === "POINTER" && input.type === "POINTER" && previous.modifiers !== input.modifiers)) flushCoalescedBrowserInput();
     }
     coalescedBrowserInputRef.current = input;
     if (coalescedBrowserInputFrameRef.current === null) {
@@ -364,14 +431,18 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         coalescedBrowserInputFrameRef.current = null;
         const pendingInput = coalescedBrowserInputRef.current;
         coalescedBrowserInputRef.current = null;
-        if (pendingInput) sendBrowserInputNow(pendingInput);
+        if (pendingInput) {
+          if ([...pendingBrowserInputAcksRef.current.values()].some((ack) => ack.motion)) coalescedBrowserInputRef.current = pendingInput;
+          else sendBrowserInputNow(pendingInput);
+        }
       });
     }
     return true;
   }
 
   function syntheticPage(nextSession: BrowserSessionV2): BrowserPageSummaryPayload[] {
-    if (nextSession.pages?.length) return nextSession.pages;
+    if (nextSession.status === "CLOSED") return [];
+    if (nextSession.pages !== undefined) return nextSession.pages;
     return [
       {
         pageId: nextSession.activePageId ?? `legacy:${nextSession.sessionId}`,
@@ -434,25 +505,48 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   }, [pane.id, pane.mode, pane.title]);
 
   function applyResponse(next: PaneBrowserSessionResponse) {
-    setResponse(next);
-    appendFrame(next.frame);
-    setUrl(displayUrl(next, status));
     const nextSession = next.session as BrowserSessionV2;
+    if (pageSessionIdRef.current !== nextSession.sessionId || nextSession.status === "CLOSED") {
+      pageSessionIdRef.current = nextSession.sessionId;
+      pageListRef.current = null;
+      pageRequestRef.current += 1;
+    }
+    // Session snapshots can predate a tab mutation or a Chrome restore. Once
+    // available, only the page-list endpoint owns the tab strip's identities.
+    const knownPages = pageListRef.current;
+    setResponse(knownPages ? { ...next, session: { ...nextSession, pages: knownPages.pages, activePageId: knownPages.activePageId } } : next);
+    if (nextSession.status === "CLOSED") setFrame(null);
+    else appendFrame(next.frame);
+    if (urlDraftRef.current === null) setUrl(nextSession.status === "CLOSED" ? "" : displayUrl(next));
     setStreamMode(nextSession.streamMode ?? "AUTO");
-    const nextPages = syntheticPage(nextSession);
+    const nextPages = knownPages?.pages ?? syntheticPage(nextSession);
     setPages(nextPages);
-    setActivePageId(nextSession.activePageId ?? nextPages.find((page) => page.isActive)?.pageId ?? nextPages[0]?.pageId ?? null);
+    setActivePageId(knownPages ? knownPages.activePageId : nextSession.activePageId ?? nextPages.find((page) => page.isActive)?.pageId ?? nextPages[0]?.pageId ?? null);
+    if (nextSession.status !== "CLOSED") void loadPages();
   }
 
   async function loadPages() {
+    const request = ++pageRequestRef.current;
+    const sessionId = pageSessionIdRef.current;
     try {
       const next = await api.browserPages(pane.id);
-      setPages(next.pages);
-      setActivePageId(next.activePageId);
+      if (request !== pageRequestRef.current || sessionId !== pageSessionIdRef.current || next.sessionId !== sessionId) return null;
+      applyPagePayload(next);
+      return next;
     } catch {
       // The legacy browser host exposes one implicit page through the session response.
+      return null;
     }
   }
+
+  useEffect(() => {
+    if (!session || session.status === "CLOSED") return;
+    // Other operators and agents share these tabs with the current pane.
+    const timer = window.setInterval(() => {
+      if (!pageMutationRef.current && document.visibilityState !== "hidden") void loadPages();
+    }, 5000);
+    return () => { window.clearInterval(timer); pageRequestRef.current += 1; };
+  }, [pane.id, session?.sessionId, session?.status]);
 
   async function loadArtifacts() {
     setArtifactsPending(true);
@@ -466,23 +560,66 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     }
   }
 
+  useEffect(() => {
+    if (observerOnly || pane.mode !== "BROWSER" || typeof api.browserAccounts !== "function") return;
+    let disposed = false;
+    api.browserAccounts(pane.id).then((accounts) => { if (!disposed) setGoogleAccounts(accounts); }).catch(() => undefined);
+    return () => { disposed = true; };
+  }, [pane.id, pane.mode, observerOnly]);
+
+  async function selectGoogleAccount(profileId: string | null) {
+    if (pending || observerOnly) return;
+    setGoogleAccountMenuOpen(false);
+    setPending(true);
+    setError(null);
+    try {
+      const selected = await api.selectBrowserAccount(pane.id, profileId);
+      controlLeaseRef.current = null;
+      legacyControlRef.current = false;
+      setControlLease(null);
+      setHandoff(false);
+      pageSessionIdRef.current = null;
+      pageListRef.current = null;
+      pageRequestRef.current += 1;
+      setResponse(null);
+      setFrame(null);
+      setPages([]);
+      setActivePageId(null);
+      urlDraftRef.current = null;
+      setUrl(selected.targetUrl);
+      setGoogleAccounts((current) => current ? { ...current, selectedProfileId: selected.selectedProfileId } : current);
+      setGoogleSignInTarget(profileId ? selected.targetUrl : null);
+      applyResponse(await api.startBrowserSession(pane.id, { viewport, targetUrl: selected.targetUrl, ownerAgentId: `agent:${agentNumber}` }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The Google account could not be opened.");
+    } finally { setPending(false); }
+  }
+
+  useGoogleAccountSignIn({
+    paneId: pane.id, targetUrl: googleSignInTarget, session, enabled: !observerOnly && !pending,
+    acquireControl: acquireControlForInput, onFrame: appendFrame, onError: setError
+  });
+
   async function loadOrStart(showPending = true) {
     if (showPending) setPending(true);
     setError(null);
     try {
-      const nextStatus = await api.browserStatus();
+      const nextStatus = await loadSharedBrowserStatus();
       setStatus(nextStatus);
-      const homeUrl = nextStatus.defaultUrl;
-      setUrl((current) => current || homeUrl);
+      const homeUrl = "about:blank";
       if (!nextStatus.enabled) {
         setResponse(null);
         setFrame(null);
         return;
       }
       try {
-        const nextResponse = await api.browserSession(pane.id);
+        let nextResponse = await api.browserSession(pane.id);
+        if (!observerOnly && (nextResponse.session.status === "CLOSED" || nextResponse.session.status === "ERROR")) {
+          nextResponse = await api.startBrowserSession(pane.id, {
+            viewport: defaultViewport, targetUrl: homeUrl, ownerAgentId: `agent:${agentNumber}`
+          });
+        }
         applyResponse(nextResponse);
-        void loadPages();
         recordLifecycleDebugEvent({
           type: "session_sync",
           scope: "BrowserPane",
@@ -509,7 +646,6 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           ownerAgentId: `agent:${agentNumber}`
         });
         applyResponse(nextResponse);
-        void loadPages();
         recordLifecycleDebugEvent({
           type: "session_sync",
           scope: "BrowserPane",
@@ -533,7 +669,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   useEffect(() => {
     const fallbackTicket = response?.websocket ?? null;
     const sessionId = session?.sessionId ?? null;
-    if (!fallbackTicket || !sessionId || streamMode === "SILENT") {
+    if (!fallbackTicket || !sessionId || session?.status === "CLOSED" || streamMode === "SILENT") {
       updateBrowserStreamTelemetry(streamMode === "SILENT" ? "silent" : "idle");
       return;
     }
@@ -593,7 +729,13 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       });
       socket.addEventListener("message", (event) => {
         if (event.data instanceof Blob) {
-          canvasRef.current?.present(event.data, new Date().toISOString());
+          const acknowledge = () => {
+            if (!disposed && socket.readyState === WebSocket.OPEN && new URL(socketUrl, window.location.href).searchParams.get("frameAck") === "1") {
+              socket.send(JSON.stringify({ type: "frameAck" }));
+            }
+          };
+          if (canvasRef.current) canvasRef.current.present(event.data, new Date().toISOString(), streamedViewportRef.current, acknowledge);
+          else acknowledge();
           return;
         }
         try {
@@ -616,6 +758,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
               setError((current) => current === browserStreamReconnectMessage ? null : current);
               return;
             }
+            if (message.type === "viewport") {
+              streamedViewportRef.current = message.dimensions;
+              setStreamDimensions((previous) => previous?.width === message.dimensions.width && previous.height === message.dimensions.height ? previous : message.dimensions);
+              return;
+            }
             if (message.type === "inputAck") {
               const pendingAck = pendingBrowserInputAcksRef.current.get(message.requestId);
               if (pendingAck) {
@@ -623,6 +770,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                 pendingBrowserInputAcksRef.current.delete(message.requestId);
                 const roundTripMs = Math.max(0, Math.round(performance.now() - pendingAck.sentAt));
                 if (paneRef.current) paneRef.current.dataset.browserInputRttMs = String(roundTripMs);
+                if (pendingAck.motion) flushCoalescedBrowserInput();
+                if (paneRef.current) paneRef.current.dataset.browserInputRttAt = String(performance.now());
                 updateBrowserInputTelemetry(message.ok ? "ok" : "failed");
               }
               if (!message.ok) setError(message.error.message);
@@ -674,7 +823,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     };
     // Browser input refs intentionally keep high-frequency ACKs outside React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id, response?.websocket?.token, session?.sessionId, streamMode]);
+  }, [pane.id, response?.websocket?.token, session?.sessionId, session?.status, streamMode]);
 
   useEffect(() => {
     controlLeaseRef.current = controlLease?.status === "ACTIVE" ? controlLease : null;
@@ -689,14 +838,14 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   }, [debugOpen, debugTab]);
 
   useEffect(() => {
-    if (!session || streamMode === "SILENT") return;
+    if (!session || session.status === "CLOSED" || streamMode === "SILENT") return;
     const intervalMs = streamMode === "PREVIEW" || streamMode === "AUTO" ? 5000 : streamMode === "INTERACTIVE" ? 1500 : 5000;
     const interval = window.setInterval(() => {
       if (browserStreamSocketRef.current?.readyState === WebSocket.OPEN) return;
       api.browserFrame(pane.id, session.sessionId).then(appendFrame).catch(() => undefined);
     }, intervalMs);
     return () => window.clearInterval(interval);
-  }, [pane.id, session?.sessionId, streamMode]);
+  }, [pane.id, session?.sessionId, session?.status, streamMode]);
 
   useEffect(() => {
     if (!controlLease) return;
@@ -784,7 +933,15 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     setPending(true);
     setError(null);
     try {
-      applyResponse(await api.navigateBrowser(pane.id, url.trim()));
+      const submittedAddress = url.trim();
+      const targetUrl = resolveBrowserAddress(submittedAddress);
+      let next = !session || session.status === "CLOSED"
+        ? await api.startBrowserSession(pane.id, { viewport, targetUrl, ownerAgentId: `agent:${agentNumber}` })
+        : await api.navigateBrowser(pane.id, targetUrl);
+      // Restoring an older session may select its previous page first.
+      if (next.session.targetUrl !== targetUrl && next.session.currentUrl !== targetUrl) next = await api.navigateBrowser(pane.id, targetUrl);
+      if (urlDraftRef.current?.trim() === submittedAddress) urlDraftRef.current = null;
+      applyResponse(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Browser navigation failed");
     } finally {
@@ -793,7 +950,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   }
 
   async function setViewport(nextViewport: BrowserSessionViewport) {
-    if (pending || nextViewport === viewport) return;
+    if (pending) return;
+    setFitPane(false);
     setPending(true);
     setError(null);
     try {
@@ -804,6 +962,43 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       setPending(false);
     }
   }
+
+  useEffect(() => {
+    const surface = frameShellRef.current;
+    if (!fitPane || !handoff || !session || session.status === "CLOSED" || !surface || typeof ResizeObserver === "undefined") return;
+    let disposed = false;
+    let timer: number;
+    let lastSize = "";
+    const resize = async () => {
+      if (disposed || document.visibilityState === "hidden") return;
+      if (resizeBusyRef.current) { timer = window.setTimeout(() => void resize(), 250); return; }
+      const canvas = surface.querySelector("canvas");
+      const bounds = canvas?.getBoundingClientRect();
+      if (!bounds || bounds.width < 50 || bounds.height < 50) return;
+      const scale = Math.min(1, 2560 / bounds.width, 1600 / bounds.height);
+      const dimensions = { width: Math.max(240, Math.round(bounds.width * scale)), height: Math.max(180, Math.round(bounds.height * scale)) };
+      const key = `${dimensions.width}:${dimensions.height}`;
+      if (key === lastSize) return;
+      resizeBusyRef.current = true;
+      try {
+        const next = await api.setBrowserViewport(pane.id, "desktop", dimensions);
+        if (!disposed) {
+          lastSize = key;
+          // Preserve the existing stream ticket and socket during a resize.
+          setResponse((previous) => previous?.session.sessionId === next.session.sessionId
+            ? { ...previous, session: next.session, viewportDimensions: next.viewportDimensions }
+            : previous);
+        }
+      } catch (error) {
+        if (!disposed) { setFitPane(false); setError(error instanceof Error ? error.message : "Browser resize failed"); }
+      } finally { resizeBusyRef.current = false; }
+    };
+    const schedule = () => { window.clearTimeout(timer); timer = window.setTimeout(() => void resize(), 250); };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(surface);
+    schedule();
+    return () => { disposed = true; window.clearTimeout(timer); observer.disconnect(); };
+  }, [fitPane, handoff, pane.id, session?.sessionId, session?.status]);
 
   async function setStream(nextMode: BrowserStreamMode) {
     if (!session || pending || nextMode === streamMode) return;
@@ -828,46 +1023,83 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   }
 
   function applyPagePayload(next: BrowserPageListPayload) {
+    if (next.sessionId !== pageSessionIdRef.current) return;
+    pageRequestRef.current += 1;
+    pageListRef.current = next;
     setPages(next.pages);
     setActivePageId(next.activePageId);
     const active = next.pages.find((page) => page.pageId === next.activePageId);
-    if (active?.url) setUrl(active.url);
+    if (!next.pages.length) {
+      setFrame(null);
+      setSelectedFrameIndex(null);
+      controlLeaseRef.current = null;
+      if (urlDraftRef.current === null) setUrl("");
+    }
+    setResponse((previous) => previous?.session.sessionId === next.sessionId ? {
+      ...previous,
+      ...(!next.pages.length ? { frame: null, websocket: null } : {}),
+      session: { ...previous.session, pages: next.pages, activePageId: next.activePageId,
+        ...(!next.pages.length ? { status: "CLOSED", isActive: false, currentUrl: null, targetUrl: "about:blank", title: null } : {}),
+        ...(active ? { currentUrl: active.url, title: active.title } : {}) }
+    } : previous);
+    if (active?.url && urlDraftRef.current === null) setUrl(active.url === "about:blank" ? "" : active.url);
   }
 
   async function activatePage(pageId: string) {
-    if (!session || pageId === activePageId || pageId.startsWith("legacy:")) return;
+    if (!session || session.status === "CLOSED" || observerOnly || pending || pageMutationRef.current || pageId === activePageId || pageId.startsWith("legacy:")) return;
+    pageMutationRef.current = true;
+    pageRequestRef.current += 1;
     setPending(true);
     setError(null);
     try {
       applyPagePayload(await api.activateBrowserPage(pane.id, pageId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser tab failed to activate");
+      const refreshed = await loadPages();
+      if (!refreshed || refreshed.pages.some((page) => page.pageId === pageId)) {
+        setError(err instanceof Error ? err.message : "Browser tab failed to activate");
+      }
     } finally {
+      pageMutationRef.current = false;
       setPending(false);
     }
   }
 
   async function createPage() {
-    if (!session) return;
+    if (observerOnly || pending || pageMutationRef.current || !status?.enabled) return;
+    setBlankTabRequested(true);
+    if (emptyBrowser && session && session.status !== "CLOSED") return;
+    pageMutationRef.current = true;
+    pageRequestRef.current += 1;
     setPending(true);
     setError(null);
     try {
-      applyPagePayload(await api.createBrowserPage(pane.id, { activate: true }));
-    } catch {
-      setCaptureNotice("New tabs require the Browser Host v2 runtime.");
+      if (!session || session.status === "CLOSED") {
+        urlDraftRef.current = null;
+        applyResponse(await api.startBrowserSession(pane.id, { viewport, targetUrl: "about:blank", streamMode, ownerAgentId: `agent:${agentNumber}` }));
+      } else applyPagePayload(await api.createBrowserPage(pane.id, { activate: true }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Browser tab failed to open");
     } finally {
+      pageMutationRef.current = false;
       setPending(false);
     }
   }
 
   async function closePage(pageId: string) {
-    if (pages.length <= 1 || pageId.startsWith("legacy:")) return;
+    if (!session || session.status === "CLOSED" || observerOnly || pending || pageMutationRef.current || pageId.startsWith("legacy:")) return;
+    pageMutationRef.current = true;
+    pageRequestRef.current += 1;
     setPending(true);
+    setError(null);
     try {
       applyPagePayload(await api.closeBrowserPage(pane.id, pageId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser tab failed to close");
+      const refreshed = await loadPages();
+      if (!refreshed || refreshed.pages.some((page) => page.pageId === pageId)) {
+        setError(err instanceof Error ? err.message : "Browser tab failed to close");
+      }
     } finally {
+      pageMutationRef.current = false;
       setPending(false);
     }
   }
@@ -944,7 +1176,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   }
 
   async function loadDiagnostics() {
-    if (!session || diagnosticsPending) return;
+    if (!session || diagnosticsLoadingRef.current) return;
+    diagnosticsLoadingRef.current = true;
     setDiagnosticsPending(true);
     setError(null);
     try {
@@ -978,9 +1211,31 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         setError(err instanceof Error ? err.message : "Browser diagnostics failed");
       }
     } finally {
+      diagnosticsLoadingRef.current = false;
       setDiagnosticsPending(false);
     }
   }
+
+  useEffect(() => {
+    if (!debugOpen || !diagnosticsLive || !session || session.status === "CLOSED" || !["console", "network"].includes(debugTab)) return;
+    let cancelled = false;
+    let timer: number;
+    const refresh = async () => {
+      if (cancelled) return;
+      if (document.visibilityState !== "hidden") await loadDiagnostics();
+      if (!cancelled) timer = window.setTimeout(() => void refresh(), 2000);
+    };
+    void refresh();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+    // Reads only this pane; a ref prevents overlapping manual/live requests.
+  }, [debugOpen, diagnosticsLive, debugTab, pane.id, session?.sessionId, session?.status]);
+
+  useEffect(() => {
+    if (!debugOpen || debugTab !== "timeline") {
+      setSelectedFrameIndex(null);
+      canvasRef.current?.showHistory(null);
+    }
+  }, [debugOpen, debugTab]);
 
   async function toggleDebug() {
     const next = !debugOpen;
@@ -1043,10 +1298,16 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   }
 
   async function reconnect() {
+    if (pending) return;
     setPending(true);
     setError(null);
     try {
-      applyResponse(await api.startBrowserSession(pane.id, { viewport, targetUrl: url, ownerAgentId: `agent:${agentNumber}` }));
+      const submittedAddress = url.trim();
+      const targetUrl = submittedAddress ? resolveBrowserAddress(submittedAddress) : "about:blank";
+      let next = await api.startBrowserSession(pane.id, { viewport, targetUrl, ownerAgentId: `agent:${agentNumber}` });
+      if (next.session.targetUrl !== targetUrl && next.session.currentUrl !== targetUrl) next = await api.navigateBrowser(pane.id, targetUrl);
+      if (urlDraftRef.current?.trim() === submittedAddress) urlDraftRef.current = null;
+      applyResponse(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Browser reconnect failed");
     } finally {
@@ -1116,8 +1377,10 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   }
 
   async function acquireControlForInput(): Promise<BrowserControlLeasePayload | null> {
-    if (!session) return null;
-    if (controlLeaseRef.current?.status === "ACTIVE") return controlLeaseRef.current;
+    if (!session || session.status === "CLOSED" || observerOnly) return null;
+    const currentLease = controlLeaseRef.current;
+    if (currentLease?.status === "ACTIVE" && currentLease.sessionId === session.sessionId && Date.parse(currentLease.expiresAt) > Date.now() + 1000) return currentLease;
+    controlLeaseRef.current = null;
     if (controlAcquirePromiseRef.current) return controlAcquirePromiseRef.current;
     const acquisition = api.acquireBrowserControl(pane.id, {
       holderType: "OPERATOR",
@@ -1243,6 +1506,9 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     setError(null);
     try {
       await api.stopBrowserSession(pane.id);
+      pageSessionIdRef.current = null;
+      pageListRef.current = null;
+      pageRequestRef.current += 1;
       setResponse(null);
       setFrame(null);
       setPages([]);
@@ -1460,13 +1726,13 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     [bookmarksOpen, debugOpen, pane.title, pending, recording, recordingActionPending, recordingControlsOpen, session, status?.enabled, textInputOpen]
   );
   const [browserToolbarStorageKeys] = useState(() => {
-    const storageKeys = uiTheme === "modern"
+    const storageKeys = uiTheme !== "classic"
       ? modernPaneToolbarStorageKeys(pane.mode)
       : {
           hidden: BROWSER_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY,
           order: BROWSER_TOOLBAR_ACTION_ORDER_STORAGE_KEY
         };
-    if (uiTheme === "modern") {
+    if (uiTheme !== "classic") {
       migrateModernToolbarPreference(
         getSpaceRuntime().platform.localStorage,
         BROWSER_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY,
@@ -1484,7 +1750,12 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     actions: browserToolbarActions,
     hiddenStorageKey: browserToolbarStorageKeys.hidden,
     orderStorageKey: browserToolbarStorageKeys.order,
-    preserveUnknownActionIds: uiTheme === "modern"
+    preserveUnknownActionIds: uiTheme !== "classic"
+  });
+  useDismissibleToolbarLayer({
+    containerRef: googleAccountPickerRef,
+    active: googleAccountMenuOpen,
+    onDismiss: () => setGoogleAccountMenuOpen(false)
   });
   useDismissibleToolbarLayer({
     containerRef: browserToolbarRef,
@@ -1496,8 +1767,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       browserToolbar.closeMenus();
     }
   });
-  const consoleEvents = diagnostics.events.filter((entry) => entry.type === "CONSOLE" || entry.type === "ERROR");
-  const networkEvents = diagnostics.events.filter((entry) => entry.type === "NETWORK");
+  const filteredEvents = diagnostics.events.filter((entry) =>
+    !diagnosticsFilter || `${entry.level} ${entry.message} ${JSON.stringify(entry.metadata)}`.toLowerCase().includes(diagnosticsFilter.toLowerCase())
+  );
+  const consoleEvents = filteredEvents.filter((entry) => entry.type === "CONSOLE" || entry.type === "ERROR");
+  const networkEvents = filteredEvents.filter((entry) => entry.type === "NETWORK");
 
   return (
     <section
@@ -1505,35 +1779,39 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       className={`browser-pane${focusMode ? " browser-pane-focus" : ""}${debugOpen ? " debugger-open" : ""}`}
       aria-label={`${pane.title} browser session`}
       data-browser-agent={agentNumber}
+      data-browser-audio-state={audioState}
+      data-browser-session-status={session?.status ?? "NONE"}
     >
       {pane.title === "DeepSeek Harness" ? (
-        <div className="browser-pane-legacy-harness-notice" role="note" data-legacy-harness="true">
+      <div className="browser-pane-legacy-harness-notice" role="note" data-legacy-harness="true">
           <span>Legacy Harness (Browser) — Convert to Harness</span>
         </div>
       ) : null}
       <div className="browser-tab-strip" role="tablist" aria-label={`Browser tabs ${pane.title}`}>
         <div className="browser-tab-scroll">
-          {pages.map((page) => {
-            const selected = page.pageId === activePageId || page.isActive;
+          {(emptyBrowser ? [] : pages).map((page) => {
+            const selected = activePageId ? page.pageId === activePageId : page.isActive;
             return (
-              <div key={page.pageId} className={`browser-tab${selected ? " selected" : ""}`}>
+              <div key={page.pageId} data-browser-page-id={page.pageId} className={`browser-tab${selected ? " selected" : ""}`}>
                 <button
                   type="button"
                   role="tab"
                   aria-selected={selected}
                   aria-label={page.title ?? page.url ?? "Browser tab"}
                   title={page.url ?? page.title ?? "Browser tab"}
+                  disabled={observerOnly || pending || session?.status === "CLOSED" || page.pageId.startsWith("legacy:")}
                   onClick={() => void activatePage(page.pageId)}
                 >
                   <Globe2 aria-hidden="true" />
                   <span>{page.title ?? page.url ?? "New tab"}</span>
                 </button>
-                {pages.length > 1 ? (
+                {!page.pageId.startsWith("legacy:") ? (
                   <button
                     type="button"
                     className="browser-tab-close"
                     aria-label={`Close browser tab ${page.title ?? page.url ?? "tab"}`}
                     title="Close tab"
+                    disabled={observerOnly || pending || session?.status === "CLOSED"}
                     onClick={() => void closePage(page.pageId)}
                   >
                     <X aria-hidden="true" />
@@ -1543,19 +1821,38 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             );
           })}
         </div>
-        <button type="button" className="browser-new-tab" aria-label={`New browser tab ${pane.title}`} title="New tab" onClick={() => void createPage()} disabled={!session || pending}>
+        <button type="button" className="browser-new-tab" aria-label={`New browser tab ${pane.title}`} title="New tab" onClick={() => void createPage()} disabled={observerOnly || !status?.enabled || pending}>
           <Plus aria-hidden="true" />
         </button>
       </div>
-      <div className="browser-pane-toolbar">
+      <div className={`browser-pane-toolbar${compactToolbar ? " browser-toolbar-compact" : ""}`} data-toolbar-width={toolbarWidth}>
+      {googleAccounts?.profiles.length ? <div ref={googleAccountPickerRef} className="browser-account-picker"
+        onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGoogleAccountMenuOpen(false); }}
+        onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setGoogleAccountMenuOpen(false); googleAccountButtonRef.current?.focus(); } }}>
+        <button ref={googleAccountButtonRef} type="button" className={`browser-account-trigger${googleAccounts.selectedProfileId ? " selected" : ""}`}
+          aria-label={`Google account for ${pane.title}`} aria-haspopup="menu" aria-expanded={googleAccountMenuOpen}
+          title={`Google account: ${googleAccounts.profiles.find((profile) => profile.profileId === googleAccounts.selectedProfileId)?.displayName ?? "Saved pane account"}`}
+          disabled={pending || observerOnly} onClick={() => { browserToolbar.closeMenus(); setGoogleAccountMenuOpen((value) => !value); }}><Users aria-hidden="true" /></button>
+        {googleAccountMenuOpen ? <div className="browser-account-menu" role="menu" aria-label={`Google accounts for ${pane.title}`}>
+          <strong>Google account</strong>
+          {[{ profileId: null, displayName: "Saved pane account" }, ...googleAccounts.profiles].map((profile) => <button key={profile.profileId ?? "pane-account"}
+            type="button" role="menuitemradio" data-profile-id={profile.profileId ?? ""} aria-checked={googleAccounts.selectedProfileId === profile.profileId}
+            onClick={() => void selectGoogleAccount(profile.profileId)}>
+            <span>{profile.displayName}</span>{googleAccounts.selectedProfileId === profile.profileId ? <Check aria-hidden="true" /> : null}
+          </button>)}
+          {googleAccounts.selectedProfileId ? <button type="button" role="menuitem" onClick={() => void selectGoogleAccount(googleAccounts.selectedProfileId)}>Sign in to selected account</button> : null}
+          <small>Sign in once. Chrome remembers this account in this pane.</small>
+        </div> : null}
+      </div> : null}
         <form onSubmit={navigate} className="browser-url-form">
           <Globe2 aria-hidden="true" />
-          <input name="browser-url" value={url} onChange={(event) => setUrl(event.target.value)} aria-label={`Browser URL ${pane.title}`} disabled={!canUseSession || pending} />
-          <button type="submit" title="Navigate browser" aria-label={`Navigate browser ${pane.title}`} disabled={!canUseSession || pending || !url.trim()}>
+          <input name="browser-url" value={url} onChange={(event) => { urlDraftRef.current = event.target.value; setUrl(event.target.value); }} aria-label={`Browser URL ${pane.title}`} placeholder="Search or enter address" autoCapitalize="none" autoCorrect="off" spellCheck={false} disabled={observerOnly} />
+          <button type="submit" title="Navigate browser" aria-label={`Navigate browser ${pane.title}`} disabled={observerOnly || pending || !url.trim()}>
             <Send aria-hidden="true" />
           </button>
         </form>
         <div className="browser-compact-controls">
+          {!compactToolbar ? <>
           <label className="browser-stream-select">
             <span
               className={`browser-runtime-indicator ${pending ? "working" : session?.status.toLowerCase() ?? (status?.enabled ? "ready" : "disabled")}`}
@@ -1575,7 +1872,19 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
               ))}
             </select>
           </label>
-          <div className="browser-viewport-control" role="group" aria-label={`Browser viewport ${pane.title}`}>
+          <button type="button" className={`browser-devtools-toggle${debugOpen ? " selected" : ""}`}
+            aria-label={`DevTools ${pane.title}`} title="DevTools: console, network and agent tools"
+            aria-expanded={debugOpen} onClick={() => void toggleDebug()} disabled={!session}>
+            <Bug aria-hidden="true" /><span>DevTools</span>
+          </button>
+          <button type="button" className="browser-fit-toggle" aria-label={`Fit browser to pane ${pane.title}`}
+            title="Resize the web page to fill this pane" aria-pressed={fitPane}
+            disabled={!canUseSession || pending}
+            onClick={() => {
+              if (fitPane) { setFitPane(false); return; }
+              void acquireControlForInput().then(() => setFitPane(true)).catch((error) => setError(error instanceof Error ? error.message : "Browser control unavailable"));
+            }}><Maximize2 aria-hidden="true" /><span>Fit pane</span></button>
+          {!compactToolbar ? <div className="browser-viewport-control" role="group" aria-label={`Browser viewport ${pane.title}`}>
             {viewportOptions.map(({ id, label, title, Icon }) => (
               <button
                 key={id}
@@ -1591,7 +1900,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                 <span>{label}</span>
               </button>
             ))}
-          </div>
+          </div> : null}
           <button
             type="button"
             className={`browser-control-toggle${handoff ? " selected" : ""}`}
@@ -1603,7 +1912,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           >
             {pending ? <Loader2 aria-hidden="true" /> : <UserCheck aria-hidden="true" />}
           </button>
-          <button
+          {!compactToolbar ? <button
             type="button"
             className={`browser-focus-toggle${focusMode ? " selected" : ""}`}
             title={focusMode ? "Exit browser focus mode" : "Expand browser view"}
@@ -1613,7 +1922,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             disabled={!session}
           >
             {focusMode ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-          </button>
+          </button> : null}
+          </> : null}
           <div ref={browserToolbarRef} className="browser-pane-actions" aria-label={`Browser toolbar actions ${pane.title}`}>
             <div className="pane-actions-overflow browser-toolbar-overflow">
             <button
@@ -1622,6 +1932,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
               aria-label={`More browser actions ${pane.title}`}
               aria-expanded={browserToolbar.isOverflowOpen}
               onClick={() => {
+                setGoogleAccountMenuOpen(false);
                 setBookmarksOpen(false);
                 if (!activeRecordingJob) setRecordingControlsOpen(false);
                 setTextInputOpen(false);
@@ -1634,6 +1945,25 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             </button>
             {browserToolbar.isOverflowOpen ? (
               <div className="icon-overflow-menu browser-tools-menu" role="menu" aria-label={`Browser actions ${pane.title}`}>
+                {compactToolbar ? <>
+                  <label className="browser-menu-stream">Stream mode
+                    <select name="browser-stream-mode" value={streamMode} aria-label={`Stream mode ${pane.title}`} disabled={!session || pending}
+                      onChange={(event) => void setStream(event.target.value as BrowserStreamMode)}>
+                      {streamModeOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                    </select>
+                  </label>
+                  <button type="button" role="menuitem" aria-label={`DevTools ${pane.title}`} aria-expanded={debugOpen} disabled={!session}
+                    onClick={() => { browserToolbar.closeMenus(); void toggleDebug(); }}><Bug aria-hidden="true" /><span>DevTools</span></button>
+                  <button type="button" role="menuitem" aria-label={`Fit browser to pane ${pane.title}`} aria-pressed={fitPane} disabled={!canUseSession || pending}
+                    onClick={() => { browserToolbar.closeMenus(); if (fitPane) { setFitPane(false); return; } void acquireControlForInput().then(() => setFitPane(true)).catch((error) => setError(error instanceof Error ? error.message : "Browser control unavailable")); }}><Maximize2 aria-hidden="true" /><span>Fit pane</span></button>
+                  <button type="button" role="menuitem" aria-label={`${handoff ? "Release browser control" : "Join browser session"} ${pane.title}`} aria-pressed={handoff} disabled={!session || pending}
+                    onClick={() => { browserToolbar.closeMenus(); void (handoff ? releaseControl() : joinSession()); }}><UserCheck aria-hidden="true" /><span>{handoff ? "Release browser control" : "Join browser session"}</span></button>
+                  <span className="browser-tools-menu-label" role="presentation">Viewport</span>
+                  {viewportOptions.map(({ id, label, Icon }) => <button key={id} type="button" role="menuitem" aria-label={`${label} view ${pane.title}`} aria-pressed={viewport === id && !fitPane} disabled={!canUseSession || pending}
+                    onClick={() => { browserToolbar.closeMenus(); void setViewport(id); }}><Icon aria-hidden="true" /><span>{label} view</span></button>)}
+                  <button type="button" role="menuitem" aria-label={`${focusMode ? "Exit browser focus mode" : "Expand browser view"} ${pane.title}`} disabled={!session}
+                    onClick={() => { browserToolbar.closeMenus(); toggleFocusMode(); }}><Maximize2 aria-hidden="true" /><span>{focusMode ? "Exit focus mode" : "Expand browser view"}</span></button>
+                </> : null}
                 {browserToolbar.visibleActions.map((action) => {
                   const Icon = action.icon;
                   return (
@@ -1878,22 +2208,28 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           ) : null}
         </div>
       </div>
+      <BrowserLiveStatus compact paneRef={paneRef} sessionId={session?.status === "CLOSED" ? null : session?.sessionId ?? null} paused={selectedFrameIndex !== null} handoff={handoff} />
       </div>
 
       <div className={`browser-workspace${debugOpen ? " with-debugger" : ""}`}>
-        <div className="browser-frame-shell">
+        <div ref={frameShellRef} className="browser-frame-shell">
           <BrowserCanvas
+            key={session?.status === "CLOSED" ? "empty" : session?.sessionId ?? "empty"}
             ref={canvasRef}
+            historyLimit={debugOpen && debugTab === "timeline" ? 48 : 1}
+            onPresented={() => {
+              if (paneRef.current) paneRef.current.dataset.browserPresentedFrames = String(Number(paneRef.current.dataset.browserPresentedFrames ?? 0) + 1);
+            }}
             ariaLabel={`${pane.title} browser frame`}
-            viewportSize={viewportSizes[viewport]}
-            interactive={Boolean(session)}
-            source={activeFrame?.screenshotDataUrl}
+            viewportSize={streamDimensions ?? response?.viewportDimensions ?? viewportSizes[viewport]}
+            interactive={!observerOnly && Boolean(session && session.status !== "CLOSED") && !pending}
+            source={emptyBrowser ? undefined : activeFrame?.screenshotDataUrl}
             capturedAt={activeFrame?.capturedAt}
             onInput={(input) => void sendCanvasInput(input)}
           />
-          {!activeFrame?.screenshotDataUrl ? (
+          {emptyBrowser || !activeFrame?.screenshotDataUrl ? (
             <div className="browser-frame-empty" role="status">
-              {pending ? <Loader2 aria-hidden="true" /> : <MousePointer2 aria-hidden="true" />}
+              {pending ? <Loader2 aria-hidden="true" /> : emptyBrowser || session?.status === "CLOSED" ? <span>No open tabs. Use + to open a new tab.</span> : <MousePointer2 aria-hidden="true" />}
             </div>
           ) : null}
           {selectedFrameIndex !== null ? <span className="browser-frame-paused">Frame {selectedFrameIndex + 1} / {canvasHistoryLength}</span> : null}
@@ -1902,7 +2238,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         {debugOpen ? (
           <aside className="browser-debug-drawer" aria-label={`Browser debugger ${pane.title}`}>
             <div className="browser-debug-tabs" role="tablist" aria-label="Browser debug views">
-              {(["console", "network", "timeline", "artifacts"] as BrowserDebugTab[]).map((tab) => (
+              {(["console", "network", "timeline", "artifacts", "agents"] as BrowserDebugTab[]).map((tab) => (
                 <button
                   key={tab}
                   type="button"
@@ -1918,22 +2254,43 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
               </button>
             </div>
             <div className="browser-debug-body">
-              {diagnosticsPending ? <span role="status">Loading diagnostics...</span> : null}
-              {!diagnosticsPending && debugTab === "console" ? (
+              {["console", "network"].includes(debugTab) ? (
+                <div className="browser-devtools-controls">
+                  <input aria-label="Filter browser diagnostics" placeholder="Filter events" value={diagnosticsFilter} onChange={(event) => setDiagnosticsFilter(event.target.value)} />
+                  <button type="button" aria-pressed={diagnosticsLive} onClick={() => setDiagnosticsLive((value) => !value)}>Live</button>
+                  <button type="button" aria-label="Refresh browser diagnostics" disabled={diagnosticsPending} onClick={() => void loadDiagnostics()}><RefreshCw aria-hidden="true" /></button>
+                </div>
+              ) : null}
+              {diagnosticsPending && !diagnostics.events.length ? <span role="status">Loading diagnostics...</span> : null}
+              {debugTab === "agents" ? (
+                <div className="browser-agent-tools">
+                  <strong>One browser, shared with your agents</strong>
+                  <p>Agents in this room can inspect and operate this session. Take control to type or sign in; release control when the agent can continue.</p>
+                  <dl><dt>Pane</dt><dd>{pane.id}</dd><dt>Session</dt><dd>{session?.sessionId ?? "No session"}</dd></dl>
+                  <p><code>browser_context</code> discovers this room's browsers.</p>
+                  <p><code>browser_devtools</code> reads console errors and network events, including while you hold control.</p>
+                  <p><code>browser_tabs</code>, <code>browser_extract_text</code> and <code>browser_screenshot</code> inspect the page.</p>
+                  <p><code>browser_click</code>, <code>browser_type</code>, <code>browser_scroll</code> and <code>browser_navigate</code> operate the same session.</p>
+                  <p><code>browser_request_handoff</code> asks you to complete login, CAPTCHA or MFA inside this browser.</p>
+                </div>
+              ) : null}
+              {debugTab === "console" ? (
                 consoleEvents.length ? consoleEvents.map((entry) => (
                   <div key={entry.eventId} className={`browser-debug-entry ${entry.level.toLowerCase()}`}>
-                    <span>{entry.level}</span><p>{entry.message}</p><time>{new Date(entry.occurredAt).toLocaleTimeString()}</time>
+                    <span>{entry.level}</span><p>{Array.isArray(entry.metadata.values)
+                      ? entry.metadata.values.map((value) => typeof value === "string" ? value : JSON.stringify(value)).join(" ")
+                      : entry.message}</p><time>{new Date(entry.occurredAt).toLocaleTimeString()}</time>
                   </div>
                 )) : <span>No console events</span>
               ) : null}
-              {!diagnosticsPending && debugTab === "network" ? (
+              {debugTab === "network" ? (
                 networkEvents.length ? networkEvents.map((entry) => (
                   <div key={entry.eventId} className="browser-debug-entry network">
                     <span>{metadataText(entry.metadata, "method")}</span><strong>{metadataText(entry.metadata, "status")}</strong><p title={metadataText(entry.metadata, "url")}>{metadataText(entry.metadata, "url", entry.message)}</p>
                   </div>
                 )) : <span>No network events</span>
               ) : null}
-              {!diagnosticsPending && debugTab === "timeline" ? (
+              {debugTab === "timeline" ? (
                 <>
                   <div className="browser-frame-controls">
                     <button
@@ -2132,6 +2489,13 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           </button>
         </div>
       ) : null}
+      {session?.status === "CLOSED" ? (
+        <div className="browser-pane-notice" role="status">
+          <span>Browser is stopped.</span>
+          {!observerOnly ? <button type="button" onClick={() => void reconnect()} disabled={pending}>Start browser</button> : null}
+        </div>
+      ) : null}
+      {audioState === "blocked" ? <button type="button" className="browser-pane-notice" onClick={resumeAudio}>Resume audio</button> : null}
       {error ? (
         <div className="browser-pane-error" role="alert">
           <span>{error}</span>

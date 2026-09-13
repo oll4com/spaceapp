@@ -10,7 +10,7 @@ export const UI_PARITY_VIEWPORTS = [
 ] as const;
 
 export const UI_PARITY_PANE_MODES = [
-  "CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS"
+  "CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE"
 ] as const satisfies readonly Pane["mode"][];
 
 export const UI_PARITY_REACHABLE_STATES = [

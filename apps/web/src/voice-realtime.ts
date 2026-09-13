@@ -1,11 +1,19 @@
 import { api } from "./api.js";
-import type { VoiceTranscriptionDelay, VoiceTranscriptionLanguage, VoiceTranscriptionModel } from "@space/contracts";
+import type { VoiceModelVoice, VoiceTranscriptionDelay, VoiceTranscriptionLanguage, VoiceTranscriptionModel } from "@space/contracts";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime } from "./runtime/SpaceRuntime.js";
 
 export interface VoiceRealtimeSessionOptions {
   model: VoiceTranscriptionModel;
   language: VoiceTranscriptionLanguage;
   delay: VoiceTranscriptionDelay;
+  voice?: VoiceModelVoice;
+  opening?: string;
+  prompt?: string;
+  delegatedModel?: string;
+  delegatedType?: "responses" | "client";
+  delegatedReasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  delegatedWebSearch?: boolean;
+  delegatedPrompt?: string;
 }
 
 export interface VoiceRealtimeSessionCallbacks {
@@ -46,6 +54,14 @@ function parseRealtimeEvent(raw: string): unknown {
 
 function isRecordingAudioTrack(track: MediaStreamTrack): boolean {
   return track.kind === "audio" && track.readyState === "live";
+}
+
+export function isLiveConversationModel(model?: string): boolean {
+  return typeof model === "string" && (model.startsWith("gpt-live-") || model === "gpt-transcribe");
+}
+
+export function isLiveTranscriptionModel(model?: string): boolean {
+  return isLiveConversationModel(model);
 }
 
 function finiteNumber(value: unknown): number | null {
@@ -199,15 +215,40 @@ export async function openVoiceRealtimeSession(
   const channel = connection.createDataChannel("oai-events");
   const audioSenders: RTCRtpSender[] = [];
 
+  let fallbackDoneTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearFallbackDoneTimer = () => {
+    if (fallbackDoneTimer !== null) {
+      clearTimeout(fallbackDoneTimer);
+      fallbackDoneTimer = null;
+    }
+  };
+
   const close = () => {
     if (closed) return;
     closed = true;
-    channel.close();
+    clearFallbackDoneTimer();
+    if (isLiveTranscriptionModel(options.model) && channel.readyState === "open") {
+      try {
+        channel.send(JSON.stringify({ type: "session.close" }));
+      } catch {
+        // Safe ignore on close
+      }
+    }
+    try {
+      channel.close();
+    } catch {
+      // Safe ignore
+    }
     connection.getSenders().forEach((sender) => sender.track?.stop());
     stream.getTracks().forEach((track) => {
       if (track.readyState === "live") track.stop();
     });
-    connection.close();
+    try {
+      connection.close();
+    } catch {
+      // Safe ignore
+    }
   };
 
   const fail = (message: string) => {
@@ -226,18 +267,32 @@ export async function openVoiceRealtimeSession(
       error?: { message?: unknown };
     };
     switch (typed.type) {
+      case "session.input_transcript.delta":
+      case "session.output_transcript.delta":
+      case "response.audio_transcript.delta":
       case "conversation.item.input_audio_transcription.delta":
         if (typeof typed.delta === "string" && typed.delta) {
           transcript += typed.delta;
           callbacks.onTranscriptDelta?.(transcript);
         }
         break;
+      case "session.input_transcript.done":
+      case "session.output_transcript.done":
+      case "response.audio_transcript.done":
       case "conversation.item.input_audio_transcription.completed": {
-        const finalTranscript = typeof typed.transcript === "string" && typed.transcript.trim() ? typed.transcript : transcript;
-        void callbacks.onTranscriptComplete?.(finalTranscript.trim());
+        clearFallbackDoneTimer();
+        const payloadText =
+          typeof typed.transcript === "string" && typed.transcript.trim()
+            ? typed.transcript
+            : typeof (typed as { text?: unknown }).text === "string" && String((typed as { text?: unknown }).text).trim()
+              ? String((typed as { text?: unknown }).text)
+              : transcript;
+        const finalTranscript = payloadText.trim();
+        void callbacks.onTranscriptComplete?.(finalTranscript);
         close();
         break;
       }
+      case "session.error":
       case "conversation.item.input_audio_transcription.failed":
         fail(typeof typed.error?.message === "string" ? typed.error.message : "Voice transcription failed.");
         break;
@@ -273,14 +328,27 @@ export async function openVoiceRealtimeSession(
   try {
     const offer = await connection.createOffer();
     await connection.setLocalDescription(offer);
-    if (!connection.localDescription?.sdp) {
+    const offerSdp = offer.sdp || connection.localDescription?.sdp;
+    if (!offerSdp) {
       throw new Error("Voice Realtime call did not produce a local SDP offer.");
     }
+    const cleanOfferSdp = offerSdp
+      .split(/\r?\n/)
+      .filter((line) => !line.startsWith("a=candidate:"))
+      .join("\r\n");
     const answer = await api.createVoiceRealtimeCall({
-      offerSdp: connection.localDescription.sdp,
+      offerSdp: cleanOfferSdp,
       model: options.model,
       language: options.language,
-      delay: options.delay
+      delay: options.delay,
+      voice: options.voice,
+      opening: options.opening,
+      prompt: options.prompt,
+      delegatedModel: options.delegatedModel,
+      delegatedType: options.delegatedType,
+      delegatedReasoningEffort: options.delegatedReasoningEffort,
+      delegatedWebSearch: options.delegatedWebSearch,
+      delegatedPrompt: options.delegatedPrompt
     });
     await connection.setRemoteDescription({ type: "answer", sdp: answer.answerSdp });
     await waitForDataChannelOpen(channel, 15000);
@@ -308,7 +376,11 @@ export async function openVoiceRealtimeSession(
           return;
         }
         try {
-          channel.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          if (isLiveTranscriptionModel(options.model)) {
+            channel.send(JSON.stringify({ type: "session.input_audio.mute" }));
+          } else {
+            channel.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          }
         } catch (error) {
           fail(errorMessage(error, "Voice Realtime audio could not be submitted."));
           return;
@@ -316,6 +388,19 @@ export async function openVoiceRealtimeSession(
         stream.getTracks().forEach((track) => {
           if (track.readyState === "live") track.stop();
         });
+        if (isLiveTranscriptionModel(options.model)) {
+          clearFallbackDoneTimer();
+          fallbackDoneTimer = setTimeout(() => {
+            if (!closed) {
+              if (transcript.trim()) {
+                void callbacks.onTranscriptComplete?.(transcript.trim());
+                close();
+              } else {
+                fail("No speech was recognized. Hold the microphone button briefly and try again.");
+              }
+            }
+          }, 2500);
+        }
       })();
     },
     close

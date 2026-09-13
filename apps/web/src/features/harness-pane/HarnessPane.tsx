@@ -12,9 +12,79 @@ interface HarnessPaneProps {
 export function HarnessPane({ pane, workspaceTextSize }: HarnessPaneProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const watchdogRef = useRef<number | null>(null);
-  const [health, setHealth] = useState<{ ok: boolean; status: number } | null>(null);
+  const readSelectedSessionRef = useRef<(() => void) | null>(null);
+  const [health, setHealth] = useState<{ ok: boolean; status: number } | null>(
+    null,
+  );
   const [checking, setChecking] = useState(true);
   const [frameRevision, setFrameRevision] = useState(0);
+
+  useEffect(() => {
+    const paneSessionId = `space-pane-${pane.id.slice(5)}`;
+    let confirmed = pane.taskMetadata?.harnessSessionId ?? paneSessionId,
+      pending: string | null = null,
+      running = false,
+      cancelled = false;
+    async function flush() {
+      if (running || cancelled) return;
+      running = true;
+      try {
+        while (pending && !cancelled) {
+          const selected = pending;
+          pending = null;
+          if (selected === confirmed) continue;
+          try {
+            await api.bindHarnessTitleSession(pane.id, selected);
+            confirmed = selected;
+          } catch {
+            break;
+          }
+        }
+      } finally {
+        running = false;
+      }
+    }
+    function select(sessionId: unknown) {
+      if (
+        typeof sessionId !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(sessionId)
+      )
+        return;
+      pending = sessionId;
+      void flush();
+    }
+    function readSelected() {
+      try {
+        select(
+          JSON.parse(
+            iframeRef.current?.contentWindow?.localStorage.getItem(
+              "dsh.sessions.current",
+            ) ?? "null",
+          )?.sessionId,
+        );
+      } catch {}
+    }
+    function onMessage(event: MessageEvent) {
+      if (
+        event.origin !== window.location.origin ||
+        event.source !== iframeRef.current?.contentWindow ||
+        event.data?.type !== "space:harness-session" ||
+        event.data.paneSessionId !== paneSessionId
+      )
+        return;
+      select(event.data.sessionId);
+    }
+    readSelectedSessionRef.current = readSelected;
+    window.addEventListener("message", onMessage);
+    // Reconcile after an API reconnect; unchanged selection makes no request.
+    const timer = window.setInterval(readSelected, 15000);
+    return () => {
+      cancelled = true;
+      readSelectedSessionRef.current = null;
+      window.clearInterval(timer);
+      window.removeEventListener("message", onMessage);
+    };
+  }, [pane.id]);
 
   useEffect(() => {
     recordLifecycleDebugEvent({
@@ -22,7 +92,7 @@ export function HarnessPane({ pane, workspaceTextSize }: HarnessPaneProps) {
       scope: "HarnessPane",
       detail: `pane=${pane.title}`,
       paneId: pane.id,
-      paneMode: pane.mode
+      paneMode: pane.mode,
     });
     return () => {
       recordLifecycleDebugEvent({
@@ -30,7 +100,7 @@ export function HarnessPane({ pane, workspaceTextSize }: HarnessPaneProps) {
         scope: "HarnessPane",
         detail: `pane=${pane.title}`,
         paneId: pane.id,
-        paneMode: pane.mode
+        paneMode: pane.mode,
       });
     };
   }, [pane.id, pane.mode, pane.title]);
@@ -56,19 +126,27 @@ export function HarnessPane({ pane, workspaceTextSize }: HarnessPaneProps) {
     };
   }, [pane.id]);
 
-  useEffect(() => () => {
-    if (watchdogRef.current !== null) window.clearTimeout(watchdogRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (watchdogRef.current !== null)
+        window.clearTimeout(watchdogRef.current);
+    },
+    [],
+  );
 
   function handleFrameLoad() {
+    readSelectedSessionRef.current?.();
     if (watchdogRef.current !== null) window.clearTimeout(watchdogRef.current);
     watchdogRef.current = window.setTimeout(() => {
-      const frameWindow = iframeRef.current?.contentWindow as (Window & {
-        __ModuleLoader__?: { mode?: string };
-      }) | null;
+      const frameWindow = iframeRef.current?.contentWindow as
+        | (Window & {
+            __ModuleLoader__?: { mode?: string };
+          })
+        | null;
       const frameDocument = iframeRef.current?.contentDocument;
       const loaderLive = frameWindow?.__ModuleLoader__?.mode === "live";
-      const loadingPlugins = frameDocument?.body?.innerText.includes("Loading plugins...") === true;
+      const loadingPlugins =
+        frameDocument?.body?.innerText.includes("Loading plugins...") === true;
       if (!loaderLive && loadingPlugins && frameRevision === 0) {
         setFrameRevision((revision) => revision + 1);
       }
@@ -84,7 +162,11 @@ export function HarnessPane({ pane, workspaceTextSize }: HarnessPaneProps) {
       data-harness-pane-id={pane.id}
       data-harness-health={healthy ? "ok" : "down"}
       data-workspace-text-size={workspaceTextSize}
-      style={{ "--harness-workspace-text-size": `${workspaceTextSize}px` } as CSSProperties}
+      style={
+        {
+          "--harness-workspace-text-size": `${workspaceTextSize}px`,
+        } as CSSProperties
+      }
     >
       {!healthy ? (
         <div className="pane-copy harness-pane-status" role="status">

@@ -7,6 +7,7 @@ import type {
 } from "@space/contracts";
 import { CheckCircle2, Loader2, RefreshCw, Save, ServerCog, Sparkles } from "../ui-theme/app-icons.js";
 import { api, SpaceApiError } from "../../api.js";
+import { ToolRoutingSettings } from "./ToolRoutingSettings.js";
 
 interface AgentToolsDockProps {
   canManage: boolean;
@@ -179,6 +180,7 @@ export function AgentToolsDock({ canManage, refreshKey }: AgentToolsDockProps) {
         <p className="dock-muted-text">The ADMIN role can manage agent tools across CLI runtimes.</p>
       ) : (
         <>
+          <ToolRoutingSettings />
           {error && <p className="dock-error-text">{error}</p>}
 
           <div className="agent-tools-bulk">

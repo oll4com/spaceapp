@@ -20,12 +20,15 @@ import {
   X
 } from "../ui-theme/app-icons.js";
 import "./system-analytics.css";
+import { modelColumns, sortModels, type ModelSortKey } from "./model-sort.js";
+import { groupModelTokens, recordedTotal, sumTokenCounts } from "./token-totals.js";
 
 export type SystemAnalyticsTab = "overview" | "models" | "resources" | "sessions";
 
 const ranges: Array<{ value: SystemAnalyticsRange; label: string }> = [
   { value: "10m", label: "10 min" },
   { value: "1h", label: "1 hour" },
+  { value: "24h", label: "1 day" },
   { value: "7d", label: "7 days" },
   { value: "30d", label: "30 days" }
 ];
@@ -119,14 +122,18 @@ function BackfillNote({ data }: { data: SystemAnalyticsModelsResponse["backfill"
 export function SystemAnalyticsWorkspace({
   shellMode,
   initialTab,
+  modelsOnly = false,
   onClose
 }: {
   shellMode: "desktop" | "tablet" | "mobile";
   initialTab: SystemAnalyticsTab;
+  modelsOnly?: boolean;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<SystemAnalyticsTab>(initialTab);
-  const [range, setRange] = useState<SystemAnalyticsRange>("10m");
+  const [modelSort, setModelSort] = useState<{ key: ModelSortKey; direction: "asc" | "desc" }>({ key: "total", direction: "desc" });
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [range, setRange] = useState<SystemAnalyticsRange>(modelsOnly ? "24h" : "10m");
   const [overview, setOverview] = useState<SystemAnalyticsOverviewResponse | null>(null);
   const [models, setModels] = useState<SystemAnalyticsModelsResponse | null>(null);
   const [resources, setResources] = useState<SystemAnalyticsResourcesResponse | null>(null);
@@ -179,17 +186,10 @@ export function SystemAnalyticsWorkspace({
     return () => { active = false; };
   }, [processPage, processQuery, processSort, range, refreshToken, tab]);
 
-  useEffect(() => {
-    const refreshVisible = () => {
-      if (document.visibilityState === "visible") refresh();
-    };
-    const timer = window.setInterval(refreshVisible, 10_000);
-    document.addEventListener("visibilitychange", refreshVisible);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refreshVisible);
-    };
-  }, [refresh]);
+  const modelGroups = useMemo(() => groupModelTokens(models?.models ?? []).filter(model => recordedTotal(model) !== 0), [models]);
+  const periodTotals = useMemo(() => sumTokenCounts(models?.models ?? []), [models]);
+  const visibleModels = sortModels(models?.models.filter(model => recordedTotal(model) !== 0 && (selectedModel === null || model.modelId === selectedModel)) ?? [], modelSort.key, modelSort.direction);
+  const usagePeriod = ranges.find(item => item.value === range)?.label ?? range;
 
   const cpuSeries = useMemo(() => resources?.series.filter((entry) => entry.id === "host-cpu") ?? [], [resources]);
   const ramSeries = useMemo(
@@ -200,8 +200,8 @@ export function SystemAnalyticsWorkspace({
   return <section className="system-analytics-workspace" aria-label="System analytics workspace" data-shell-mode={shellMode}>
     <header className="system-analytics-header">
       <div className="system-analytics-heading">
-        <span><Activity aria-hidden="true" /> Live system telemetry</span>
-        <div><h2>System analytics</h2><p>Global public-host view · room and pane identity preserved</p></div>
+        <span><Activity aria-hidden="true" /> {modelsOnly ? "Historical usage" : "Live system telemetry"}</span>
+        <div><h2>{modelsOnly ? "Token usage" : "System analytics"}</h2><p>{modelsOnly ? "Tokens by provider and model across the selected period" : "Global activity and resource history"}</p></div>
       </div>
       <div className="system-analytics-header-actions">
         <button type="button" onClick={refresh} title="Refresh analytics"><RefreshCw aria-hidden="true" /> Refresh</button>
@@ -210,18 +210,18 @@ export function SystemAnalyticsWorkspace({
     </header>
 
     <div className="system-analytics-controls">
-      <div className="system-analytics-tabs" role="tablist" aria-label="Analytics sections">
+      {!modelsOnly && <div className="system-analytics-tabs" role="tablist" aria-label="Analytics sections">
         {tabs.map((item) => <button key={item.value} type="button" role="tab" aria-selected={tab === item.value} onClick={() => setTab(item.value)}>{item.label}</button>)}
-      </div>
+      </div>}
       <div className="system-analytics-ranges" role="group" aria-label="Analytics range">
-        {ranges.map((item) => <button key={item.value} type="button" aria-pressed={range === item.value} onClick={() => { setRange(item.value); setProcessPage(1); }}>{item.label}</button>)}
+        {ranges.map((item) => <button key={item.value} data-range={item.value} type="button" aria-pressed={range === item.value} onClick={() => { setRange(item.value); setProcessPage(1); }}>{item.label}</button>)}
       </div>
     </div>
 
     {error ? <div className="system-analytics-error" role="alert"><span>{error}</span><button type="button" onClick={refresh}>Retry</button></div> : null}
     {loading ? <div className="system-analytics-loading" role="status">Refreshing {tabs.find((item) => item.value === tab)?.label.toLocaleLowerCase()}…</div> : null}
 
-    <div className="system-analytics-body">
+    <div className={`system-analytics-body${tab === "models" ? " token-usage-body" : ""}`} data-loaded-range={tab === "models" ? models?.range : undefined}>
       {tab === "overview" && overview && resources ? <>
         <div className="system-analytics-stats">
           <StatCard label="CPU" value={`${Math.round(overview.cpuUsagePercent)}%`} detail={`${resources.current.coreCount} cores`} />
@@ -243,12 +243,31 @@ export function SystemAnalyticsWorkspace({
         <BackfillNote data={overview.backfill} />
       </> : null}
 
-      {tab === "models" && models ? <>
-        <div className="system-analytics-provider-grid">
-          {models.providers.map((provider) => <article key={provider.providerId} className="system-analytics-provider-card"><span>{provider.providerId}</span><strong>{provider.activeSessions} active</strong><small>{provider.modelCount} models · {provider.completedTurns} completed turns</small><small>{formatNumber(provider.tokensIn)} in / {formatNumber(provider.tokensOut)} out</small></article>)}
+      {tab === "models" && models && models.range === range ? <>
+        {modelGroups.length === 0 ? <p>No recorded token usage for this period.</p> : null}
+        <section className="token-usage-summary" aria-label="Period token totals">
+          <div className="system-analytics-stats">
+            <article className="system-analytics-stat" data-period-total={recordedTotal(periodTotals) ?? ""}><span>Total tokens</span><strong>{formatNumber(recordedTotal(periodTotals))}</strong><small>All models · Last {usagePeriod.toLowerCase()}</small></article>
+            <StatCard label="Input tokens" value={formatNumber(periodTotals.tokensIn)} />
+            <StatCard label="Output tokens" value={formatNumber(periodTotals.tokensOut)} />
+            <StatCard label="Reasoning tokens" value={formatNumber(periodTotals.tokensReasoning)} detail="Reported separately" />
+          </div>
+          <p>Total tokens = recorded input + output. Reasoning is shown separately and is not added again. Unreported usage is excluded. Periods end now.</p>
+        </section>
+        <section className="system-analytics-panel" aria-label="Tokens by model">
+          <header><Database aria-hidden="true" /><div><strong>Tokens by model</strong><small>Last {usagePeriod.toLowerCase()} · All providers combined</small></div>{selectedModel !== null && <button type="button" onClick={() => setSelectedModel(null)}>All models</button>}</header>
+          <div className="token-model-grid">
+            {modelGroups.filter(model => selectedModel === null || model.modelId === selectedModel).map(model => <button type="button" className="token-model-card" key={model.modelId} data-model-id={model.modelId} data-model-total={recordedTotal(model) ?? ""} aria-label={`View token usage for ${model.modelId}`} aria-pressed={selectedModel === model.modelId} onClick={() => setSelectedModel(model.modelId)}>
+              <span>{model.modelId}</span><strong>{formatNumber(recordedTotal(model))} tokens</strong><small>{model.providerCount} providers · {formatNumber(model.tokensIn)} in / {formatNumber(model.tokensOut)} out</small>{model.incomplete && <small>Some usage is not reported</small>}
+            </button>)}
+          </div>
+          {selectedModel !== null && !modelGroups.some(model => model.modelId === selectedModel) ? <p>No recorded usage for {selectedModel} in this period.</p> : null}
+        </section>
+        <div className="system-analytics-provider-grid" hidden={selectedModel !== null}>
+          {models.providers.filter(provider => recordedTotal(provider) !== 0).map((provider) => <article key={provider.providerId} className="system-analytics-provider-card"><span>{provider.providerId}</span><strong>{formatNumber(recordedTotal(provider))} tokens</strong><small>{provider.modelCount} models · {provider.completedTurns} completed turns</small><small>{formatNumber(provider.tokensIn)} in / {formatNumber(provider.tokensOut)} out</small></article>)}
         </div>
-        <article className="system-analytics-panel system-analytics-table-panel"><header><Database aria-hidden="true" /><div><strong>Provider and model detail</strong><small>native metrics where the CLI exposes them</small></div></header><div className="system-analytics-table-scroll"><table><thead><tr><th>Provider / model</th><th>Coverage</th><th>Sessions / active</th><th>Completed / aborted</th><th>Tokens in / out / reasoning</th><th>TTFT</th><th>Duration</th><th>Tok/s</th><th>Last activity</th></tr></thead><tbody>
-          {models.models.map((model) => <tr key={`${model.providerId}:${model.modelId}`}><td><strong>{model.modelId}</strong><small>{model.providerId} · {model.runtimeIds.join(", ") || "runtime unknown"}</small></td><td><CoverageBadge value={model.coverage} /></td><td>{model.activeSessions} / {model.activeTurns}</td><td>{model.completedTurns} / {model.abortedTurns}</td><td>{formatNumber(model.tokensIn)} / {formatNumber(model.tokensOut)} / {formatNumber(model.tokensReasoning)}</td><td>{model.avgTtftMs === null ? "—" : `${Math.round(model.avgTtftMs)} ms`}</td><td>{model.avgDurationMs === null ? "—" : formatDuration(Math.round(model.avgDurationMs / 1000))}</td><td>{model.avgTokPerSec === null ? "—" : model.avgTokPerSec.toFixed(1)}</td><td>{formatDate(model.lastActivityAt)}</td></tr>)}
+        <article className="system-analytics-panel system-analytics-table-panel"><header><Database aria-hidden="true" /><div><strong>Provider and model detail</strong><small>native metrics where the CLI exposes them</small></div></header><div className="system-analytics-table-scroll"><table><thead><tr>{modelColumns.map(([key, label]) => <th key={key} aria-sort={modelSort.key === key ? modelSort.direction === "asc" ? "ascending" : "descending" : "none"}><button type="button" className="model-sort-button" data-sort-key={key} onClick={() => setModelSort(current => ({ key, direction: current.key === key && current.direction === "asc" ? "desc" : "asc" }))}>{label}<span aria-hidden="true">{modelSort.key === key ? modelSort.direction === "asc" ? " ↑" : " ↓" : " ↕"}</span></button></th>)}</tr></thead><tbody>
+          {visibleModels.map((model) => <tr key={`${model.providerId}:${model.modelId}`}><td><strong>{model.modelId}</strong><small>{model.providerId} · {model.runtimeIds.join(", ") || "runtime unknown"}</small></td><td><CoverageBadge value={model.coverage} /></td><td>{model.activeSessions} / {model.activeTurns}</td><td>{model.completedTurns} / {model.abortedTurns}</td><td>{formatNumber(recordedTotal(model))}</td><td>{formatNumber(model.tokensIn)} / {formatNumber(model.tokensOut)} / {formatNumber(model.tokensReasoning)}</td><td>{model.avgTtftMs === null ? "—" : `${Math.round(model.avgTtftMs)} ms`}</td><td>{model.avgDurationMs === null ? "—" : formatDuration(Math.round(model.avgDurationMs / 1000))}</td><td>{model.avgTokPerSec === null ? "—" : model.avgTokPerSec.toFixed(1)}</td><td>{formatDate(model.lastActivityAt)}</td></tr>)}
         </tbody></table></div></article>
         <BackfillNote data={models.backfill} />
       </> : null}

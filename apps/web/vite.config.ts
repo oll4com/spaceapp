@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { retainOpenTabAssets } from "./vite.asset-retention.js";
 import react from "@vitejs/plugin-react";
 import { demoBundleBoundaryPlugin } from "./vite.demo-boundary.js";
 
@@ -16,8 +17,9 @@ export function manualChunkForModule(moduleId: string): string | undefined {
 }
 
 export default defineConfig({
-  plugins: [react(), demoBundleBoundaryPlugin()],
+  plugins: [react(), demoBundleBoundaryPlugin(), retainOpenTabAssets()],
   build: {
+    emptyOutDir: false,
     cssCodeSplit: true,
     rollupOptions: {
       output: {

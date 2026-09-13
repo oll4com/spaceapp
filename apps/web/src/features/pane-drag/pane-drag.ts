@@ -4,7 +4,14 @@ const SPACE_PANE_TASK_REQUEST_MAX_LENGTH = 2_000;
 
 export const SPACE_PANE_CONTEXT_MIME = "application/x-space-pane-context";
 
-export function reorderPanesByTarget(panes: Pane[], draggedPaneId: string, targetPaneId: string): Pane[] {
+export type PaneDropPosition = "before" | "after";
+
+export function reorderPanesByTarget(
+  panes: Pane[],
+  draggedPaneId: string,
+  targetPaneId: string,
+  position: PaneDropPosition = "before"
+): Pane[] {
   if (draggedPaneId === targetPaneId) return panes;
   const draggedIndex = panes.findIndex((pane) => pane.id === draggedPaneId);
   if (draggedIndex === -1) return panes;
@@ -13,7 +20,8 @@ export function reorderPanesByTarget(panes: Pane[], draggedPaneId: string, targe
   if (!draggedPane) return panes;
   const targetIndex = next.findIndex((pane) => pane.id === targetPaneId);
   if (targetIndex === -1) return panes;
-  next.splice(targetIndex, 0, draggedPane);
+  const insertIndex = position === "after" ? targetIndex + 1 : targetIndex;
+  next.splice(insertIndex, 0, draggedPane);
   return next.map((pane, index) => (pane.order === index ? pane : { ...pane, order: index }));
 }
 

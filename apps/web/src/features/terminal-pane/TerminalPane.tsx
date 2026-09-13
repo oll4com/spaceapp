@@ -1,5 +1,10 @@
-import { ArrowUp, Loader2, Square, Terminal as TerminalIcon, X } from "../ui-theme/app-icons.js";
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent } from "react";
+import { returnCliToBuildMode } from "./cli-build-mode.js";
+import { submitCliShortcut } from "./submit-cli-shortcut.js";
+import { CliShortcutsMenu } from "./CliShortcutsMenu.js";
+import { resolveCliModeShortcut, OSK_CLI_COMMANDS, type OskCliCommand } from "../osk-keyboard/cli-shortcuts.js";
+import { ArrowUp, BrainCircuit, Images, Loader2, Square, Terminal as TerminalIcon, X } from "../ui-theme/app-icons.js";
+import { GoogleGIcon } from "../ui-theme/GoogleGIcon.js";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent } from "react";
 import { createPortal } from "react-dom";
 import type { IDisposable, Terminal as XtermTerminal } from "@xterm/xterm";
 import type { FitAddon as XtermFitAddon } from "@xterm/addon-fit";
@@ -51,9 +56,9 @@ import { isCliRuntimeTerminalLaunchable } from "../../cli-runtime-presentation.j
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
 import { emitAppDiagnosticsPerformance } from "../../app-diagnostics/app-diagnostics-performance.js";
 import { readFullscreenGeometry, recordFullscreenGeometry } from "./fullscreen-geometry.js";
+import { watchTerminalPaint } from "./terminal-paint-recovery.js";
 import { reportCliClientEventBounded } from "../../cli-client-event-reporter.js";
 import { CLI_ACCOUNT_PROFILES_EVENT } from "../../cli-account-profile-events.js";
-import { CodexModelPicker } from "../codex-model-picker/CodexModelPicker.js";
 import { useAutoDismiss, DEFAULT_NOTICE_DISMISS_MS } from "../../use-auto-dismiss.js";
 import { publishPaneRunLifecycle } from "../../pane-run-lifecycle-events.js";
 import {
@@ -76,7 +81,18 @@ import { useVoiceInput } from "../voice-input/VoiceInputProvider.js";
 import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
 import type { VoiceInsertMode } from "../../voice-settings.js";
 
-export { CodexModelPicker, isNonMutatingTerminalProtocolResponse };
+export { isNonMutatingTerminalProtocolResponse };
+
+const LazyCodexModelPicker = lazy(() =>
+  import("../codex-model-picker/CodexModelPicker.js").then((module) => ({ default: module.CodexModelPicker }))
+);
+const modelPickerLoadingFallback = (
+  <div className="terminal-model-picker">
+    <button type="button" className="terminal-model-chip" aria-label="Loading model selector" disabled>
+      <Loader2 aria-hidden="true" />
+    </button>
+  </div>
+);
 
 const TERMINAL_PAINT_PHASES = {
   initial: "PAINT_INITIAL",
@@ -246,9 +262,10 @@ const DEFAULT_CLI_RUNTIME_ID = "cli:codex";
 const ROOT_CLI_RUNTIME_ID = "cli:root";
 const CLAUDE_CLI_RUNTIME_ID = "cli:claude";
 const OPENCODE_CLI_RUNTIME_ID = "cli:opencode";
-const HERMES_CLI_RUNTIME_ID = "cli:hermes";
 const isCliModelSettingsRuntime = (runtimeId: string | null | undefined): boolean =>
   runtimeId === DEFAULT_CLI_RUNTIME_ID || runtimeId === OPENCODE_CLI_RUNTIME_ID;
+const isModelPickerRuntime = (runtimeId: string | null | undefined): boolean =>
+  Boolean(runtimeId?.startsWith("cli:") && runtimeId !== ROOT_CLI_RUNTIME_ID);
 const isRunCapableCliSession = (
   session: Pick<PaneCliSessionResponse["session"], "purpose" | "runtimeId"> | null | undefined
 ): boolean => Boolean(session?.purpose === "NORMAL" && session.runtimeId !== ROOT_CLI_RUNTIME_ID);
@@ -274,7 +291,11 @@ const CLI_RECONNECT_JITTER_MS = 100;
 const CLI_TURN_ACTIVITY_POLL_MS = 900;
 const CLI_FALLBACK_RUN_IDLE_MS = 8_000;
 const CLI_MODEL_SETTINGS_REFRESH_DELAY_MS = 400;
-const CLI_MODEL_SETTINGS_STARTUP_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
+// A fresh OpenCode pane can take a few seconds before the CLI's own model is
+// readable (native footer / runtime server); keep re-reading long enough that
+// the picker converges on the real model instead of keeping the pane's
+// persisted default. A settled reading stops the retries immediately.
+const CLI_MODEL_SETTINGS_STARTUP_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000, 8_000] as const;
 const CLI_TURN_ACTIVITY_DISCOVERY_GRACE_MS = 5_000;
 const ACTIVE_CLI_TURN_STORAGE_PREFIX = "space.cliActiveTurn:";
 const CLI_TURN_MARKER_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -348,10 +369,11 @@ const initialTerminalControlSnapshot: TerminalControlSnapshot = {
 };
 
 type TerminalPaneActionDetail =
-  | { paneId: string; action: "upload" | "reconnect" | "copy" | "focus" | "cancel_login" }
+  | { paneId: string; action: "upload" | "reconnect" | "copy" | "focus" | "cancel_login" | "new_task" }
   | { paneId: string; action: "attach_clip_image"; file: File }
   | { paneId: string; action: "insert_text"; text: string }
   | { paneId: string; action: "keyboard_input"; text: string }
+  | { paneId: string; action: "cli_shortcut"; commandId: string }
   | { paneId: string; action: "insert_clipboard_text"; text: string }
   | { paneId: string; action: "start_task_item"; objective: string }
   | { paneId: string; action: "ensure_plan_mode" }
@@ -412,6 +434,7 @@ interface ManagedPromptAttachment {
 }
 
 interface ManagedPromptAttachmentState {
+  imageCount: number;
   videoCount: number;
   fileCount: number;
   pending: ManagedPromptAttachment[];
@@ -764,6 +787,7 @@ function isTerminalPaneAction(detail: unknown): detail is TerminalPaneActionDeta
     file?: unknown;
     text?: unknown;
     objective?: unknown;
+    commandId?: unknown;
     key?: unknown;
     runtimeId?: unknown;
     session?: unknown;
@@ -777,7 +801,8 @@ function isTerminalPaneAction(detail: unknown): detail is TerminalPaneActionDeta
     maybeDetail.action === "copy" ||
     maybeDetail.action === "focus" ||
     maybeDetail.action === "cancel_login" ||
-    maybeDetail.action === "ensure_plan_mode"
+    maybeDetail.action === "ensure_plan_mode" ||
+    maybeDetail.action === "new_task"
   ) return true;
   if (maybeDetail.action === "attach_clip_image") {
     return maybeDetail.file instanceof File && SUPPORTED_CLIPBOARD_IMAGE_TYPES.has(maybeDetail.file.type.toLowerCase());
@@ -788,6 +813,9 @@ function isTerminalPaneAction(detail: unknown): detail is TerminalPaneActionDeta
     maybeDetail.action === "keyboard_input"
   ) {
     return typeof maybeDetail.text === "string";
+  }
+  if (maybeDetail.action === "cli_shortcut") {
+    return OSK_CLI_COMMANDS.some((command) => command.id === maybeDetail.commandId);
   }
   if (maybeDetail.action === "start_task_item") {
     return typeof maybeDetail.objective === "string";
@@ -882,6 +910,33 @@ function clipboardTextFilename(now = new Date()): string {
 
 function containsCliUploadPath(text: string): boolean {
   return text.includes("/opt/spaceapp/var/artifacts/cli-uploads/") || text.includes("/cli-uploads/");
+}
+
+export const CLI_UPLOAD_WRAPPED_PATH_PATTERN =
+  /(?:[ \t]*(?:\r?\n|\r)[ \t]*|\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t])*['"]?(?:\/srv\/space\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t]*(?:\r?\n|\r)[ \t]*(?:\x1b\[[0-9;?]*[ -/]*[@-~])*)+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
+
+export function isUploadPathCutoff(text: string): number {
+  const marker = "/cli-uploads/";
+  const index = text.lastIndexOf(marker);
+  if (index === -1) {
+    const fullPrefix = "/opt/spaceapp/var/artifacts/cli-uploads/";
+    for (let len = Math.min(text.length, fullPrefix.length); len >= 8; len -= 1) {
+      if (text.endsWith(fullPrefix.slice(0, len))) return text.length - len;
+    }
+    return -1;
+  }
+  const after = text.slice(index);
+  if (/\.[a-zA-Z0-9]{1,10}(?:[\s'"]|$)/.test(after)) return -1;
+  let start = index;
+  const fullPrefix = "/opt/spaceapp/var/artifacts";
+  if (start >= fullPrefix.length && text.slice(start - fullPrefix.length, start) === fullPrefix) {
+    start -= fullPrefix.length;
+  }
+  let lineStart = Math.max(text.lastIndexOf("\n", start), text.lastIndexOf("\r", start));
+  if (lineStart > 0 && text[lineStart] === "\n" && text[lineStart - 1] === "\r") {
+    lineStart -= 1;
+  }
+  return lineStart >= 0 ? lineStart : start;
 }
 
 export function hiddenEchoCandidates(data: string): string[] {
@@ -1014,6 +1069,38 @@ export function terminalControlKeySequence(key: "ctrl_c" | "shift_tab" | "escape
   return key === "shift_tab" ? "\u001b[Z" : "\u001b";
 }
 
+/**
+ * Interrupt key for the floating turn-control button per CLI runtime. Codex is
+ * the only TUI that pauses its running turn on ESC; every other CLI runtime
+ * (Hermes, Claude, Gemini, Qwen, Kimi, Grok, DeepSeek, Cursor, Copilot,
+ * Autohand, …) cancels its running turn on Ctrl-C (0x03).
+ */
+export function floatingTurnPauseSequence(runtimeId: string | null | undefined): string {
+  return runtimeId === DEFAULT_CLI_RUNTIME_ID
+    ? terminalControlKeySequence("escape")
+    : terminalControlKeySequence("ctrl_c");
+}
+
+const FLOATING_STOP_LABELS: Readonly<Record<string, string>> = {
+  "cli:autohand": "Stop Autohand",
+  "cli:claude": "Stop Claude",
+  "cli:codex": "Stop Codex",
+  "cli:copilot": "Stop Copilot",
+  "cli:cursor": "Stop Cursor",
+  "cli:deepseek": "Stop DeepSeek",
+  "cli:gemini": "Stop Gemini",
+  "cli:grok": "Stop Grok",
+  "cli:hermes": "Stop Hermes",
+  "cli:kimi": "Stop Kimi",
+  "cli:opencode": "Stop OpenCode",
+  "cli:qwen": "Stop Qwen"
+};
+
+/** Accessible stop label for the floating turn-control button per CLI runtime. */
+export function floatingTurnControlStopLabel(runtimeId: string | null | undefined): string {
+  return (runtimeId && FLOATING_STOP_LABELS[runtimeId]) ?? "Stop CLI";
+}
+
 export function reasonixShortcutSequence(
   event: Pick<KeyboardEvent, "altKey" | "code" | "ctrlKey" | "defaultPrevented" | "key" | "metaKey" | "shiftKey">
 ): string | null {
@@ -1127,6 +1214,15 @@ function isTerminalSubmitInput(data: string): boolean {
 
 export function shouldRefreshCliModelSettings(source: "input" | "output", data: string): boolean {
   return source === "input" && /[\r\n]/.test(data);
+}
+
+/** A picker reading is settled only once the CLI runtime confirmed the model.
+ * "session-default" is the pane's persisted default, used as a placeholder while
+ * neither the native TUI nor the runtime's own server reports a model yet: a pane
+ * holding one must keep re-reading, or a fresh OpenCode pane keeps showing the
+ * descriptor default instead of the model the CLI actually runs. */
+export function cliModelSettingsCurrentIsSettled(settings: PaneCliModelSettings | null | undefined): boolean {
+  return Boolean(settings?.current) && settings?.currentSource !== "session-default";
 }
 
 export function nameTerminalInput(textarea: HTMLTextAreaElement | undefined) {
@@ -1389,6 +1485,12 @@ export function TerminalPane({
   const [selectedRuntimeId, setSelectedRuntimeId] = useState(pane.terminalRuntimeId ?? DEFAULT_CLI_RUNTIME_ID);
   const [geminiAccountProfiles, setGeminiAccountProfiles] = useState<CliAccountProfile[]>([]);
   const [selectedGeminiAccountProfileId, setSelectedGeminiAccountProfileId] = useState(readLastGeminiAccountProfileId);
+  const [geminiAccountMenuOpen, setGeminiAccountMenuOpen] = useState(false);
+  const geminiAccountPickerRef = useRef<HTMLDivElement | null>(null);
+  const geminiAccountButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [uploadPreviewsOpen, setUploadPreviewsOpen] = useState(false);
+  const uploadPreviewsPickerRef = useRef<HTMLDivElement | null>(null);
+  const uploadPreviewsButtonRef = useRef<HTMLButtonElement | null>(null);
   const [sessionResponse, setSessionResponse] = useState<PaneCliSessionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
@@ -1468,7 +1570,12 @@ export function TerminalPane({
   }
 
   const openCodeObservedRunningMarkerRef = useRef<string | null>(null);
+  const shortcutPendingRef = useRef(false);
+  const [shortcutPending, setShortcutPending] = useState(false);
+  const shortcutLiveRef = useRef(true);
+  useEffect(() => { shortcutLiveRef.current = true; return () => { shortcutLiveRef.current = false; }; }, []);
   const [modelSettings, setModelSettings] = useState<PaneCliModelSettings | null>(null);
+  const [modelSettingsError, setModelSettingsError] = useState<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const xtermHostRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1509,8 +1616,11 @@ export function TerminalPane({
   const modelSettingsRef = useRef<PaneCliModelSettings | null>(null);
   modelSettingsRef.current = modelSettings;
   const hiddenInputEchoFiltersRef = useRef<HiddenInputEchoFilter[]>([]);
+  const hiddenEchoPendingChunkRef = useRef("");
+  const hiddenEchoFlushTimerRef = useRef<number | null>(null);
   const terminalPromptDraftRef = useRef<TerminalPromptDraftState>({ text: "", cursor: 0 });
   const managedPromptAttachmentsRef = useRef<ManagedPromptAttachmentState>({
+    imageCount: 0,
     videoCount: 0,
     fileCount: 0,
     pending: []
@@ -1576,9 +1686,8 @@ export function TerminalPane({
   const activeTurnMarker = activeCliTurn?.marker ?? null;
   const isCodexCliSession = sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId === DEFAULT_CLI_RUNTIME_ID;
   const isOpenCodeCliSession = sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId === OPENCODE_CLI_RUNTIME_ID;
-  const isHermesCliSession = sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId === HERMES_CLI_RUNTIME_ID;
-  const isCliModelSettingsSession = isCodexCliSession || isOpenCodeCliSession;
-  const isFloatingTurnControlSession = isCliModelSettingsSession || isHermesCliSession;
+  const isCliModelSettingsSession = sessionResponse?.session.purpose === "NORMAL" && isModelPickerRuntime(sessionResponse.session.runtimeId);
+  const isFloatingTurnControlSession = isRunCapableCliSession(sessionResponse?.session);
   const isNormalAttachedCli = Boolean(
     sessionResponse?.session.purpose === "NORMAL" &&
       sessionResponse.session.isActive &&
@@ -1908,12 +2017,13 @@ export function TerminalPane({
         modelSettingsRefreshGenerationRef.current !== generation ||
         !activeSession?.isActive ||
         activeSession.purpose !== "NORMAL" ||
-        !isCliModelSettingsRuntime(activeSession.runtimeId) ||
+        !isModelPickerRuntime(activeSession.runtimeId) ||
         activeSession.sessionId !== expectedSessionId
       ) {
         return false;
       }
       if (result.status === "UNAVAILABLE") {
+        setModelSettingsError(result.reason);
         if (modelSettingsRef.current?.sessionId === expectedSessionId) {
           return true;
         }
@@ -1922,6 +2032,7 @@ export function TerminalPane({
       const settings = result.settings;
       if (settings.sessionId !== expectedSessionId) return false;
       modelSettingsRef.current = settings;
+      setModelSettingsError(null);
       setModelSettings(settings);
       return true;
     } catch {
@@ -1930,7 +2041,7 @@ export function TerminalPane({
         modelSettingsRefreshGenerationRef.current !== generation ||
         !activeSession?.isActive ||
         activeSession.purpose !== "NORMAL" ||
-        !isCliModelSettingsRuntime(activeSession.runtimeId) ||
+        !isModelPickerRuntime(activeSession.runtimeId) ||
         activeSession.sessionId !== expectedSessionId
       ) {
         return false;
@@ -1938,6 +2049,7 @@ export function TerminalPane({
       if (modelSettingsRef.current?.sessionId === expectedSessionId) {
         return true;
       }
+      setModelSettingsError("Model settings are unavailable. Click to retry.");
       return false;
     }
   }
@@ -1957,7 +2069,7 @@ export function TerminalPane({
     const socket = socketRef.current;
     return Boolean(
       session?.isActive &&
-        isCliModelSettingsRuntime(session.runtimeId) &&
+        isModelPickerRuntime(session.runtimeId) &&
         session.sessionId === arm.sessionId &&
         socket === arm.socket &&
         socket.readyState === WebSocket.OPEN &&
@@ -2074,7 +2186,7 @@ export function TerminalPane({
       setActiveCliTurn(null);
     }
     terminalPromptDraftRef.current = { text: "", cursor: 0 };
-    managedPromptAttachmentsRef.current = { videoCount: 0, fileCount: 0, pending: [] };
+    managedPromptAttachmentsRef.current = { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
     setTerminalPromptDraft("");
   }, [pane.id, sessionResponse?.session.isActive, sessionResponse?.session.purpose, sessionResponse?.session.runtimeId, sessionResponse?.session.sessionId]);
 
@@ -2084,7 +2196,7 @@ export function TerminalPane({
       !sessionResponse?.websocket ||
       !session?.isActive ||
       session.purpose !== "NORMAL" ||
-      !isCliModelSettingsRuntime(session.runtimeId) ||
+      !isModelPickerRuntime(session.runtimeId) ||
       terminalStatus !== "attached" ||
       !terminalReplayReady
     ) {
@@ -2097,13 +2209,20 @@ export function TerminalPane({
     if (modelSettingsRef.current?.sessionId !== session.sessionId) {
       modelSettingsRef.current = null;
       setModelSettings(null);
+      setModelSettingsError(null);
     }
     const generation = modelSettingsRefreshGenerationRef.current;
     let disposed = false;
     let retryTimer: number | null = null;
     const loadStartupModelSettings = async (attempt: number) => {
       const loaded = await refreshModelSettings(session.sessionId);
-      if (disposed || modelSettingsRefreshGenerationRef.current !== generation || loaded) return;
+      if (disposed || modelSettingsRefreshGenerationRef.current !== generation) return;
+      if (loaded && modelSettingsRef.current?.sessionId === session.sessionId &&
+        cliModelSettingsCurrentIsSettled(modelSettingsRef.current)) return;
+      // Keep polling until the runtime confirms the current model (fresh OpenCode
+      // panes resolve it shortly after boot). A session-default reading is only a
+      // placeholder, so it does not stop the retries. Stops as soon as a
+      // confirmed current appears so idle panes do not poll forever.
       const retryDelay = CLI_MODEL_SETTINGS_STARTUP_RETRY_DELAYS_MS[attempt];
       if (retryDelay === undefined) return;
       retryTimer = window.setTimeout(() => {
@@ -2510,6 +2629,66 @@ export function TerminalPane({
   }, [isGeminiRuntime, observerOnly]);
 
   useEffect(() => {
+    if (!isGeminiRuntime || !geminiAccountProfiles.length) {
+      setGeminiAccountMenuOpen(false);
+    }
+  }, [isGeminiRuntime, geminiAccountProfiles.length]);
+
+  useEffect(() => {
+    if (!geminiAccountMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (geminiAccountPickerRef.current?.contains(target)) return;
+      setGeminiAccountMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setGeminiAccountMenuOpen(false);
+      geminiAccountButtonRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [geminiAccountMenuOpen]);
+
+  useEffect(() => {
+    if (!uploadPreviews.length) {
+      setUploadPreviewsOpen(false);
+    }
+  }, [uploadPreviews.length]);
+
+  useEffect(() => {
+    if (!uploadPreviewsOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (selectedUploadPreviewId) return;
+      if (uploadPreviewsPickerRef.current?.contains(target)) return;
+      setUploadPreviewsOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (selectedUploadPreviewId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setUploadPreviewsOpen(false);
+      uploadPreviewsButtonRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [uploadPreviewsOpen, selectedUploadPreviewId]);
+
+  useEffect(() => {
     const session = sessionResponse?.session;
     if (session?.runtimeId !== "cli:gemini") return;
     const profileId = session.accountProfileId ?? "main";
@@ -2523,6 +2702,10 @@ export function TerminalPane({
       if (clipboardAttemptTimerRef.current !== null) {
         window.clearTimeout(clipboardAttemptTimerRef.current);
         clipboardAttemptTimerRef.current = null;
+      }
+      if (hiddenEchoFlushTimerRef.current !== null) {
+        window.clearTimeout(hiddenEchoFlushTimerRef.current);
+        hiddenEchoFlushTimerRef.current = null;
       }
     },
     []
@@ -2751,6 +2934,7 @@ export function TerminalPane({
     let dataDisposable: IDisposable | null = null;
     let scrollDisposable: IDisposable | null = null;
     let writeParsedDisposable: IDisposable | null = null;
+    let paintRecoveryDisposable: IDisposable | null = null;
     let resizeDisposable: IDisposable | null = null;
     const inputTokenizer = createTerminalInputTokenizer();
     let inputTokenizerFlushTimer: number | null = null;
@@ -3393,6 +3577,10 @@ export function TerminalPane({
         const activeTerminal = terminal;
         activeTerminal.open(terminalHost);
         terminalSurfaceOpened = true;
+        paintRecoveryDisposable = watchTerminalPaint(activeTerminal, terminalHost, terminalSurfaceEligible, {
+          roomId: pane.roomId,
+          paneId: pane.id
+        });
         emitAppDiagnosticsPerformance({
           category: "PERFORMANCE",
           metric: "TERMINAL_GEOMETRY",
@@ -4162,6 +4350,7 @@ export function TerminalPane({
       dataDisposable?.dispose();
       scrollDisposable?.dispose();
       writeParsedDisposable?.dispose();
+      paintRecoveryDisposable?.dispose();
       resizeDisposable?.dispose();
       socket?.close();
       terminal?.dispose();
@@ -4980,7 +5169,7 @@ export function TerminalPane({
         terminalData.includes("\u0015") ||
         (nextDraft !== null && Boolean(previousDraft.text) && !trackedDraft.text);
       if (!isTerminalSubmitInput(terminalData) && promptWasCleared) {
-        managedPromptAttachmentsRef.current = { videoCount: 0, fileCount: 0, pending: [] };
+        managedPromptAttachmentsRef.current = { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
       } else if (nextDraft === null) {
         managedPromptAttachmentsRef.current = {
           ...managedPromptAttachmentsRef.current,
@@ -5019,7 +5208,7 @@ export function TerminalPane({
       terminalPromptDraftRef.current.text.includes(attachment.token)
     );
     if (activeAttachments.length) {
-      const hiddenPaths = `${activeAttachments.map((attachment) => attachment.terminalInputPath).join(" ")} `;
+      const hiddenPaths = ` ${activeAttachments.map((attachment) => attachment.terminalInputPath).join(" ")} `;
       if (!sendTerminalInput(hiddenPaths, `${source}: attachment paths`, "hidden", true, { trackDraft: false })) {
         return false;
       }
@@ -5031,9 +5220,115 @@ export function TerminalPane({
     }
     const sent = sendTerminalInput(data, source, "visible", false, options);
     if (sent) {
-      managedPromptAttachmentsRef.current = { videoCount: 0, fileCount: 0, pending: [] };
+      managedPromptAttachmentsRef.current = { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
     }
     return sent;
+  }
+
+  async function runCliShortcut(command: OskCliCommand) {
+    if (shortcutPendingRef.current) return;
+    const identity = sessionResponseRef.current?.session;
+    const socket = socketRef.current;
+    if (!identity || identity.purpose !== "NORMAL" || !socket) return;
+    const isCurrent = () => shortcutLiveRef.current && isVisibleRef.current && !paneMinimizedRef.current &&
+      sessionResponseRef.current?.session.sessionId === identity.sessionId && socketRef.current === socket &&
+      readySocketRef.current?.socket === socket && socket.readyState === WebSocket.OPEN;
+    shortcutPendingRef.current = true;
+    setShortcutPending(true);
+    try {
+      if (command.action) {
+        setNotice(null);
+        setError(null);
+        if (!isCurrent()) throw new Error("CLI connection or room changed. Shortcut cancelled.");
+        if (isTurnRunning) throw new Error("Wait for the current CLI turn to finish before changing modes.");
+        if (command.action === "build" && identity.runtimeId === "cli:hermes" && terminalPromptDraftRef.current.text.trim() === "/plan") {
+          if (!sendTerminalInput("\u0015", "Clear Hermes planning prefix")) throw new Error("Planning prefix could not be cleared.");
+        }
+        if (terminalPromptDraftRef.current.text.trim()) throw new Error("Send or clear the current CLI draft before changing modes.");
+        if (command.action === "build") {
+          await returnCliToBuildMode(identity.runtimeId, {
+            screen: () => terminalRef.current ? terminalCurrentScreenText(terminalRef.current) : "",
+            isCurrent,
+            write: text => sendTerminalInput(text, "CLI Build mode", "visible", false, { trackDraft: false }),
+            submit: text => submitCliShortcut({ ...command, text, enter: true }, {
+              isCurrent, prepare: async () => {},
+              write: value => sendTerminalInput(value, "CLI Build mode"),
+              enter: () => sendTerminalInput("\r", "CLI Build mode enter")
+            }),
+            sleep: ms => new Promise(resolve => setTimeout(resolve, ms))
+          });
+          setNotice("Build mode is ready. Send a task to continue.");
+          return;
+        }
+        const native = resolveCliModeShortcut(identity.runtimeId, command.action);
+        if ("unavailable" in native) throw new Error(native.unavailable);
+        if (native.prefix) {
+          if (!sendTerminalInput(native.prefix, "CLI permissions palette", "visible", false, { trackDraft: false })) throw new Error("CLI permissions palette could not be opened.");
+          await new Promise<void>(resolve => setTimeout(resolve, 250));
+          if (!isCurrent()) throw new Error("CLI connection or room changed. Shortcut cancelled.");
+        }
+        if (!native.enter) {
+          if (!sendTerminalInput(native.text, "CLI mode shortcut", "visible", false, { trackDraft: identity.runtimeId === "cli:hermes" && command.action === "plan" })) throw new Error("CLI mode key could not be sent.");
+          return;
+        }
+        await submitCliShortcut({ ...command, text: native.text, enter: true }, {
+          isCurrent, prepare: async () => {},
+          write: text => sendTerminalInput(text, "CLI mode shortcut"),
+          enter: () => sendTerminalInput("\r", "CLI mode shortcut enter")
+        });
+        return;
+      }
+      await submitCliShortcut(command, {
+        isCurrent,
+        prepare: async () => {
+          if (command.id !== "memory") return;
+          if (!isCliModelSettingsRuntime(identity.runtimeId)) return;
+          try {
+            const status = await api.cliModelSettingsStatus(pane.id);
+            if (!isCurrent()) throw new Error("CLI changed before the shortcut could be sent.");
+            if (status.status === "UNAVAILABLE" || !status.settings.current || status.settings.sessionId !== identity.sessionId) {
+              throw new Error("Current model settings are unavailable. Save to memory was not sent.");
+            }
+            const current = status.settings.current;
+            const model = status.settings.models.find((entry) => entry.id === current.modelId);
+            if (!model?.supportedReasoningEfforts.includes("low")) {
+              throw new Error("The current model does not support Low reasoning. Save to memory was not sent.");
+            }
+            if (current.reasoningEffort !== "low") {
+              const result = await handleModelSwitch(current.modelId, "low", null, false);
+              if (result.current.modelId !== current.modelId || result.current.reasoningEffort !== "low") {
+                throw new Error("Low reasoning was not confirmed. Save to memory was not sent.");
+              }
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            // All CLI shortcuts must remain usable. Low switch is best-effort: transient
+            // native-picker state, unavailable settings or missing Low support must not
+            // block "save to memory" itself. Fall back to sending with current reasoning.
+            if (
+              message.includes("still preparing its native input") ||
+              message.includes("Current model settings are unavailable") ||
+              message.includes("does not support Low") ||
+              message.includes("was not confirmed") ||
+              message.includes("OpenCode")
+            ) {
+              return;
+            }
+            throw error;
+          }
+        },
+        write: (text) => sendTerminalInput(text, "CLI shortcut"),
+        enter: () => sendTerminalSubmit("\r", "CLI shortcut enter", {
+          turnMarker: isRunCapableCliSession(identity) ? createCliTurnMarker() : undefined
+        })
+      });
+      if (isCurrent()) focusTerminal();
+    } catch (error) {
+      if (shortcutLiveRef.current) setError(error instanceof Error ? error.message : "CLI shortcut failed.");
+    } finally {
+      shortcutPendingRef.current = false;
+      if (shortcutLiveRef.current) setShortcutPending(false);
+    }
   }
 
   function submitVoiceTranscript(transcript: string): boolean {
@@ -5048,7 +5343,7 @@ export function TerminalPane({
       ? { turnMarker: createCliTurnMarker() }
       : {};
     if (voiceSubmit.replace) {
-      managedPromptAttachmentsRef.current = { videoCount: 0, fileCount: 0, pending: [] };
+      managedPromptAttachmentsRef.current = { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
       if (!sendTerminalInput(voiceSubmit.data, "voice transcript replace", "visible", true)) return false;
     } else if (!sendTerminalInput(voiceSubmit.data, "voice transcript append", "visible", true)) {
       return false;
@@ -5077,9 +5372,16 @@ export function TerminalPane({
     attachmentNotice: string
   ): boolean {
     const previous = managedPromptAttachmentsRef.current;
+    let imageCount = previous.imageCount;
     let videoCount = previous.videoCount;
     let fileCount = previous.fileCount;
     const attachments = files.map((file) => {
+      if (file.isImage) {
+        return {
+          token: `[Image #${++imageCount}]`,
+          terminalInputPath: terminalInputPath(file)
+        };
+      }
       const isVideo = isVideoUpload(file);
       const number = isVideo ? ++videoCount : ++fileCount;
       return {
@@ -5093,6 +5395,7 @@ export function TerminalPane({
     );
     if (!sent) return false;
     managedPromptAttachmentsRef.current = {
+      imageCount,
       videoCount,
       fileCount,
       pending: [...previous.pending, ...attachments]
@@ -5124,7 +5427,13 @@ export function TerminalPane({
         void abortOpenCodeTurn();
         return;
       }
-      const sent = sendTerminalInput("\u001b", "floating turn pause", "visible", true, { trackDraft: false });
+      const sent = sendTerminalInput(
+        floatingTurnPauseSequence(sessionResponse?.session.runtimeId ?? null),
+        "floating turn pause",
+        "visible",
+        true,
+        { trackDraft: false }
+      );
       if (sent) {
         if (activeTurnMarker) {
           publishPaneRunLifecycle({
@@ -5137,9 +5446,7 @@ export function TerminalPane({
         clearStoredActiveCliTurn(pane.id);
         setActiveCliTurn(null);
         setModelSettings((current) => current ? { ...current, isTurnActive: false } : current);
-        if (isHermesCliSession) {
-          finishFallbackRun(null, "FAILED");
-        }
+        finishFallbackRun(null, "FAILED");
       }
       return;
     }
@@ -5168,7 +5475,9 @@ export function TerminalPane({
 
   async function handleModelSwitch(
     modelId: string,
-    reasoningEffort: string
+    reasoningEffort: string,
+    _providerId: string | null = null,
+    continueActiveTurn = true
   ): Promise<{
     current: NonNullable<PaneCliModelSettings["current"]>;
     message: string | null;
@@ -5179,8 +5488,15 @@ export function TerminalPane({
       expectedSessionId: currentSession.session.sessionId,
       modelId,
       reasoningEffort,
-      continueActiveTurn: true
+      continueActiveTurn
+    }).catch(async (error: unknown) => {
+      await refreshModelSettings(currentSession.session.sessionId);
+      throw error;
     });
+    if (sessionResponseRef.current?.session.sessionId !== currentSession.session.sessionId ||
+        result.settings.sessionId !== currentSession.session.sessionId) {
+      throw new Error("The CLI session changed while updating its model settings.");
+    }
     modelSettingsRef.current = result.settings;
     setModelSettings(result.settings);
     setSessionResponse((current) => {
@@ -5215,12 +5531,47 @@ export function TerminalPane({
   function stripHiddenTerminalEcho(data: string): string {
     const now = Date.now();
     hiddenInputEchoFiltersRef.current = hiddenInputEchoFiltersRef.current.filter((item) => item.remaining && item.expiresAtMs > now);
-    if (!hiddenInputEchoFiltersRef.current.length) return data;
-
     let output = data;
+    if (hiddenEchoPendingChunkRef.current) {
+      output = `${hiddenEchoPendingChunkRef.current}${output}`;
+      hiddenEchoPendingChunkRef.current = "";
+      if (hiddenEchoFlushTimerRef.current !== null) {
+        window.clearTimeout(hiddenEchoFlushTimerRef.current);
+        hiddenEchoFlushTimerRef.current = null;
+      }
+    }
+    const hasActiveUploadPathFilter = hiddenInputEchoFiltersRef.current.some((item) => containsCliUploadPath(item.value));
+    if (hasActiveUploadPathFilter || containsCliUploadPath(output)) {
+      output = output.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
+      const cutoff = isUploadPathCutoff(output);
+      if (cutoff >= 0) {
+        hiddenEchoPendingChunkRef.current = output.slice(cutoff);
+        output = output.slice(0, cutoff);
+        if (hiddenEchoFlushTimerRef.current !== null) {
+          window.clearTimeout(hiddenEchoFlushTimerRef.current);
+        }
+        hiddenEchoFlushTimerRef.current = window.setTimeout(() => {
+          hiddenEchoFlushTimerRef.current = null;
+          const pending = hiddenEchoPendingChunkRef.current;
+          hiddenEchoPendingChunkRef.current = "";
+          if (pending && terminalRef.current) {
+            const stripped = pending.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
+            if (stripped && !containsCliUploadPath(stripped) && isUploadPathCutoff(stripped) < 0) {
+              terminalRef.current.write(stripped);
+            }
+          }
+        }, 1500);
+      }
+    }
+    if (!hiddenInputEchoFiltersRef.current.length) return output;
+
     for (let index = 0; index < hiddenInputEchoFiltersRef.current.length && output; ) {
       const pending = hiddenInputEchoFiltersRef.current[index];
       if (!pending) {
+        index += 1;
+        continue;
+      }
+      if (containsCliUploadPath(pending.value)) {
         index += 1;
         continue;
       }
@@ -5342,23 +5693,33 @@ export function TerminalPane({
           return Array.from(byId.values()).slice(-imagePreviewLimit);
         });
       }
-      const imageFiles = uploadedFiles.filter((file) => file.isImage);
-      const attachedImageCount = imageFiles.filter((file) =>
-        sendTerminalInput(terminalImagePaste(file), `${debugSource}: image attachment`, "hidden", true)
-      ).length;
-      const terminalFiles = uploadedFiles.filter((file) => !file.isImage);
-      if (terminalFiles.length) {
-        const sent = insertManagedPromptAttachments(terminalFiles, debugSource, attachmentNotice);
+      if (isCodexCliSession) {
+        const imageFiles = uploadedFiles.filter((file) => file.isImage);
+        const attachedImageCount = imageFiles.filter((file) =>
+          sendTerminalInput(terminalImagePaste(file), `${debugSource}: image attachment`, "hidden", true)
+        ).length;
+        const terminalFiles = uploadedFiles.filter((file) => !file.isImage);
+        if (terminalFiles.length) {
+          const sent = insertManagedPromptAttachments(terminalFiles, debugSource, attachmentNotice);
+          updateClipboardDebug(
+            sent ? "good" : "bad",
+            sent ? "attachment labels inserted" : "attachment labels failed",
+            `${debugSource}: uploaded=${uploadedFiles.length}; tokenCount=${terminalFiles.length}; display=visible; containsUploadPath=false.`
+          );
+        } else {
+          updateClipboardDebug(
+            attachedImageCount === imageFiles.length ? "good" : "bad",
+            attachedImageCount === imageFiles.length ? "image attached" : "image attachment failed",
+            `${debugSource}: uploaded=${uploadedFiles.length}; attachedImageCount=${attachedImageCount}; imagePathCount=${imageFiles.length}; display=hidden.`
+          );
+          focusTerminal();
+        }
+      } else {
+        const sent = insertManagedPromptAttachments(uploadedFiles, debugSource, attachmentNotice);
         updateClipboardDebug(
           sent ? "good" : "bad",
           sent ? "attachment labels inserted" : "attachment labels failed",
-          `${debugSource}: uploaded=${uploadedFiles.length}; tokenCount=${terminalFiles.length}; display=visible; containsUploadPath=false.`
-        );
-      } else {
-        updateClipboardDebug(
-          attachedImageCount === imageFiles.length ? "good" : "bad",
-          attachedImageCount === imageFiles.length ? "image attached" : "image attachment failed",
-          `${debugSource}: uploaded=${uploadedFiles.length}; attachedImageCount=${attachedImageCount}; imagePathCount=${imageFiles.length}; display=hidden.`
+          `${debugSource}: uploaded=${uploadedFiles.length}; tokenCount=${uploadedFiles.length}; display=visible; containsUploadPath=false.`
         );
         focusTerminal();
       }
@@ -6020,6 +6381,23 @@ export function TerminalPane({
         await reconnectTerminal();
         return;
       }
+      if (event.detail.action === "new_task") {
+        clearReconnectTimer();
+        reconnectAttemptRef.current = 0;
+        reconnectInProgressRef.current = false;
+        setConnectionAlert(null);
+        setNotice(null);
+        setError(null);
+        autoAttachAttemptRef.current = null;
+        takeCliResumeIntent(pane.id);
+        terminalPromptDraftRef.current = { text: "", cursor: 0 };
+        setTerminalPromptDraft("");
+        if (typeof terminalRef.current?.reset === "function") {
+          terminalRef.current.reset();
+        }
+        await requestCliSession({ forceRestart: true });
+        return;
+      }
       if (event.detail.action === "replace_session") {
         clearReconnectTimer();
         reconnectAttemptRef.current = 0;
@@ -6049,6 +6427,12 @@ export function TerminalPane({
           "terminal action insert_text",
           `received insert_text action; textLength=${event.detail.text.length}; display=visible; containsUploadPath=false.`
         );
+        return;
+      }
+      if (event.detail.action === "cli_shortcut") {
+        const commandId = event.detail.commandId;
+        const command = OSK_CLI_COMMANDS.find((entry) => entry.id === commandId);
+        if (command) await runCliShortcut(command);
         return;
       }
       if (event.detail.action === "keyboard_input") {
@@ -6158,6 +6542,16 @@ export function TerminalPane({
           </div>
         </div>
       ) : null}
+      {notice && ["CLI content copied.", "CLI selection copied.", "CLI memory save requested.", "Build mode is ready. Send a task to continue."].includes(notice) ? (
+        <div className="terminal-alert good" role="status">
+          <div className="terminal-alert-head">
+            <span>{notice}</span>
+            <button type="button" className="terminal-alert-close" aria-label="Dismiss action message" onClick={() => setNotice(null)}>
+              <X aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      ) : null}
       {connectionAlert ? (
         <div className={["terminal-alert", connectionAlert.tone === "bad" ? "bad" : "", connectionAlert.tone === "good" ? "good" : ""].filter(Boolean).join(" ")} role={connectionAlert.tone === "bad" ? "alert" : "status"}>
           <div className="terminal-alert-head">
@@ -6234,94 +6628,90 @@ export function TerminalPane({
         : null}
 
       <div className="terminal-stage">
-        {isGeminiRuntime && geminiAccountProfiles.length ? (
-          <label className="terminal-gemini-account-picker">
-            <span>Google account</span>
-            <select
-              aria-label={`Google account for ${pane.title}`}
-              value={selectedGeminiAccountProfileId}
-              disabled={pending || observerOnly}
-              onChange={(event) => {
-                const profileId = event.currentTarget.value;
-                const currentProfileId = sessionResponseRef.current?.session.accountProfileId ?? "main";
-                setSelectedGeminiAccountProfileId(profileId);
-                writeLastGeminiAccountProfileId(profileId);
-                if (sessionResponseRef.current && profileId !== currentProfileId) {
-                  void requestCliSession({ accountProfileId: profileId, forceRestart: true });
-                }
-              }}
+        {uploadPreviews.length ? (
+          <div ref={uploadPreviewsPickerRef} className="terminal-upload-preview-picker">
+            <button
+              ref={uploadPreviewsButtonRef}
+              type="button"
+              className={`terminal-upload-preview-trigger${uploadPreviewsOpen ? " is-open" : ""}`}
+              aria-label={`Photos (${uploadPreviews.length}) for ${pane.title}`}
+              aria-haspopup="dialog"
+              aria-expanded={uploadPreviewsOpen}
+              title={`Photos (${uploadPreviews.length})`}
+              onClick={() => setUploadPreviewsOpen((prev) => !prev)}
             >
-              {geminiAccountProfiles.map((profile) => (
-                <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-        {notice || uploading || dragActive || uploadPreviews.length ? (
-          <div className="terminal-floating-stack" aria-label={`CLI transient uploads ${pane.title}`}>
-            {notice ? (
-              <div
-                className={[
-                  "terminal-alert",
-                  "good",
-                  "terminal-floating-alert",
-                  notice === MANAGED_ATTACHMENT_NOTICE || notice === CLIPBOARD_TEXT_FILE_NOTICE ? "terminal-floating-alert-subtle" : ""
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                role="status"
-              >
-                <div className="terminal-alert-head">
-                  <span>{notice}</span>
-                  <button type="button" className="terminal-alert-close" aria-label="Dismiss message" onClick={() => setNotice(null)}>
-                    <X aria-hidden="true" />
-                  </button>
+              <Images size={16} aria-hidden="true" />
+              {uploadPreviews.length > 1 ? (
+                <span className="terminal-upload-trigger-badge" aria-hidden="true">
+                  {uploadPreviews.length}
+                </span>
+              ) : null}
+            </button>
+            {uploadPreviewsOpen ? (
+              <div className="terminal-upload-preview-popover" role="dialog" aria-label={`CLI photos ${pane.title}`}>
+                <div className="terminal-upload-strip terminal-upload-strip-floating" aria-label={`CLI image uploads ${pane.title}`}>
+                  {uploadPreviews.map((preview, index) => (
+                    <figure key={preview.id} className="terminal-upload-preview" title={`Image ${index + 1}: ${preview.name}`}>
+                      <button
+                        type="button"
+                        className="terminal-upload-open"
+                        aria-label={`Open image ${index + 1}`}
+                        onClick={(event) => {
+                          uploadPreviewReturnFocusRef.current = event.currentTarget;
+                          setSelectedUploadPreviewId(preview.id);
+                        }}
+                      >
+                        <span className="terminal-upload-index" aria-hidden="true">
+                          {index + 1}
+                        </span>
+                        <img src={preview.objectUrl} alt={`Image ${index + 1} preview`} />
+                      </button>
+                    </figure>
+                  ))}
                 </div>
               </div>
             ) : null}
-            {uploading || dragActive ? (
-              <div className="terminal-alert terminal-floating-alert" role="status">
-                {uploading ? "Uploading files and preparing terminal paths..." : "Drop files or photos to upload them to this CLI session."}
-              </div>
-            ) : null}
-            {uploadPreviews.length ? (
-              <div className="terminal-upload-strip terminal-upload-strip-floating" aria-label={`CLI image uploads ${pane.title}`}>
-                <button
-                  type="button"
-                  className="terminal-upload-strip-close"
-                  onClick={clearUploadPreviews}
-                  aria-label={`Dismiss all images ${pane.title}`}
-                  title="Dismiss all images"
-                >
-                  <X aria-hidden="true" />
-                </button>
-                {uploadPreviews.map((preview, index) => (
-                  <figure key={preview.id} className="terminal-upload-preview" title={`Image ${index + 1}: ${preview.name}`}>
-                    <button
-                      type="button"
-                      className="terminal-upload-open"
-                      aria-label={`Open image ${index + 1}`}
-                      onClick={(event) => {
-                        uploadPreviewReturnFocusRef.current = event.currentTarget;
-                        setSelectedUploadPreviewId(preview.id);
-                      }}
-                    >
-                      <span className="terminal-upload-index" aria-hidden="true">
-                        {index + 1}
-                      </span>
-                      <img src={preview.objectUrl} alt={`Image ${index + 1} preview`} />
-                    </button>
-                    <button
-                      type="button"
-                      className="terminal-upload-remove"
-                      aria-label={`Remove image ${index + 1}`}
-                      title={`Remove image ${index + 1}`}
-                      onClick={() => removeUploadPreview(preview.id)}
-                    >
-                      <X aria-hidden="true" />
-                    </button>
-                  </figure>
-                ))}
+          </div>
+        ) : null}
+        {isGeminiRuntime && geminiAccountProfiles.length ? (
+          <div ref={geminiAccountPickerRef} className="terminal-gemini-account-picker">
+            <button
+              ref={geminiAccountButtonRef}
+              type="button"
+              className={`terminal-gemini-account-trigger${geminiAccountMenuOpen ? " is-open" : ""}`}
+              aria-label={`Google account for ${pane.title}`}
+              aria-haspopup="dialog"
+              aria-expanded={geminiAccountMenuOpen}
+              title={`Google account: ${geminiAccountProfiles.find((profile) => profile.profileId === selectedGeminiAccountProfileId)?.displayName ?? "Select account"}`}
+              disabled={pending || observerOnly}
+              onClick={() => setGeminiAccountMenuOpen((prev) => !prev)}
+            >
+              <GoogleGIcon size={16} />
+            </button>
+            {geminiAccountMenuOpen ? (
+              <div className="terminal-gemini-account-popover" role="dialog" aria-label={`Google account for ${pane.title}`}>
+                <label className="terminal-gemini-account-popover-label">
+                  <span>Google account</span>
+                  <select
+                    aria-label={`Google account for ${pane.title}`}
+                    value={selectedGeminiAccountProfileId}
+                    disabled={pending || observerOnly}
+                    autoFocus
+                    onChange={(event) => {
+                      const profileId = event.currentTarget.value;
+                      const currentProfileId = sessionResponseRef.current?.session.accountProfileId ?? "main";
+                      setSelectedGeminiAccountProfileId(profileId);
+                      writeLastGeminiAccountProfileId(profileId);
+                      if (sessionResponseRef.current && profileId !== currentProfileId) {
+                        void requestCliSession({ accountProfileId: profileId, forceRestart: true });
+                      }
+                    }}
+                  >
+                    {geminiAccountProfiles.map((profile) => (
+                      <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+                    ))}
+                  </select>
+                </label>
               </div>
             ) : null}
           </div>
@@ -6358,17 +6748,42 @@ export function TerminalPane({
               </div>
             ) : null}
             <div className="terminal-floating-controls">
+              <CliShortcutsMenu disabled={terminalStatus !== "attached" || shortcutPending} active={isVisible && !pane.isMinimized} onCommand={runCliShortcut} />
               {voiceInput.settings.terminalVoiceButton ? (
                 <VoiceInputButton label={pane.title.replace(/^Terminal\b/i, "CLI")} active={voiceOwned && voiceInput.status === "recording"} disabled={voiceDisabled} onClick={toggleTerminalVoiceCapture} onPrewarm={voiceInput.prewarm} />
               ) : null}
-              {isCliModelSettingsSession && modelSettings && voiceInput.settings.terminalModelPicker ? <CodexModelPicker settings={modelSettings} onSwitch={handleModelSwitch} /> : null}
+              {isCliModelSettingsSession && voiceInput.settings.terminalModelPicker ? modelSettings ? (
+                <Suspense fallback={modelPickerLoadingFallback}>
+                  <LazyCodexModelPicker
+                    key={modelSettings.sessionId}
+                    compact
+                    allowSelectionWithoutCurrent
+                    groupNativeProviders={selectedRuntime?.id === OPENCODE_CLI_RUNTIME_ID}
+                    settings={modelSettings}
+                    disabled={terminalStatus !== "attached" || terminalControlState !== "CONTROLLER" ||
+                      (modelSettings.controlMode === "NATIVE" && (isTurnRunning || Boolean(terminalPromptDraft.trim())))}
+                    onSwitch={handleModelSwitch}
+                  />
+                </Suspense>
+              ) : (
+                <div className="terminal-model-picker">
+                  <button type="button" className="terminal-model-chip"
+                    aria-label={modelSettingsError ? "Retry model settings" : "Loading models"}
+                    title={modelSettingsError ?? "Loading models…"}
+                    disabled={!modelSettingsError || terminalStatus !== "attached"}
+                    onClick={() => {
+                      const sessionId = sessionResponseRef.current?.session.sessionId;
+                      if (sessionId) { setModelSettingsError(null); void refreshModelSettings(sessionId); }
+                    }}><BrainCircuit aria-hidden="true" /></button>
+                </div>
+              ) : null}
               {isFloatingTurnControlSession && voiceInput.settings.terminalTurnControl ? (
                 <button
                   type="button"
                   className="terminal-turn-control"
                   data-state={turnControlState}
-                  aria-label={isTurnRunning ? (isOpenCodeCliSession ? "Stop OpenCode" : isHermesCliSession ? "Stop Hermes" : "Stop Codex") : "Send prompt"}
-                  title={isTurnRunning ? (isOpenCodeCliSession ? "Pause OpenCode" : isHermesCliSession ? "Pause Hermes" : "Pause Codex") : "Send prompt"}
+                  aria-label={isTurnRunning ? floatingTurnControlStopLabel(sessionResponse?.session.runtimeId ?? null) : "Send prompt"}
+                  title={isTurnRunning ? floatingTurnControlStopLabel(sessionResponse?.session.runtimeId ?? null) : "Send prompt"}
                   disabled={isTurnRunning ? terminalStatus !== "attached" : !canSendTurn}
                   onClick={handleTurnControlClick}
                 >

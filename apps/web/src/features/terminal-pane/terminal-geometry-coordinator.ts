@@ -66,6 +66,8 @@ export interface TerminalRefitOptions {
 const LEGACY_COLLAPSE_MAX_COLS = 8;
 const GEOMETRY_COLLAPSE_RATIO = 0.7;
 const STABLE_LAYOUT_TOLERANCE_PX = 1;
+const GEOMETRY_OVERFLOW_TOLERANCE_PX = 2;
+const GEOMETRY_OVERFLOW_MAX_CLAMP_COLS = 3;
 const REFIT_STABILIZE_DELAY_MS = 48;
 
 interface LayoutSample {
@@ -116,6 +118,34 @@ function screenRectSample(host: HTMLElement): LayoutSample | null {
 function suspectBlankPaint(host: HTMLElement, sample: LayoutSample): boolean {
   const screen = screenRectSample(host);
   return !screen || screen.width < sample.width * GEOMETRY_COLLAPSE_RATIO;
+}
+
+function screenOverflowsHost(host: HTMLElement, sample: LayoutSample): boolean {
+  const screen = screenRectSample(host);
+  return Boolean(screen) && screen!.width > sample.width + GEOMETRY_OVERFLOW_TOLERANCE_PX;
+}
+
+function clampTerminalOverflow(
+  terminal: TerminalGeometryTerminal,
+  host: HTMLElement,
+  sample: LayoutSample
+): boolean {
+  let clamped = false;
+  for (let pass = 0; pass < GEOMETRY_OVERFLOW_MAX_CLAMP_COLS; pass += 1) {
+    const screen = screenRectSample(host);
+    if (!screen || screen.width <= sample.width + GEOMETRY_OVERFLOW_TOLERANCE_PX) break;
+    if (!Number.isInteger(terminal.cols) || terminal.cols <= 2) break;
+    const cellWidth = terminal.cols > 0 ? screen.width / terminal.cols : 0;
+    const overflowCols = cellWidth > 0
+      ? Math.max(1, Math.ceil((screen.width - sample.width) / cellWidth))
+      : 1;
+    const nextCols = terminal.cols - Math.min(overflowCols, GEOMETRY_OVERFLOW_MAX_CLAMP_COLS);
+    if (nextCols < 2 || nextCols >= terminal.cols) break;
+    if (typeof terminal.resize === "function") terminal.resize(nextCols, terminal.rows);
+    else terminal.cols = nextCols;
+    clamped = true;
+  }
+  return clamped;
 }
 
 function canvasBackingSample(host: HTMLElement): { width: number; height: number; present: boolean } {
@@ -257,7 +287,8 @@ function geometryIsBroken(
   const screenWidth = positiveDimension(
     host.querySelector<HTMLElement>(".xterm-screen")?.getBoundingClientRect().width ?? 0
   );
-  return hostWidth > 0 && screenWidth > 0 && screenWidth < hostWidth * GEOMETRY_COLLAPSE_RATIO;
+  if (hostWidth > 0 && screenWidth > 0 && screenWidth < hostWidth * GEOMETRY_COLLAPSE_RATIO) return true;
+  return hostWidth > 0 && screenWidth > hostWidth + GEOMETRY_OVERFLOW_TOLERANCE_PX;
 }
 
 export function createTerminalGeometryCoordinator(options: TerminalGeometryCoordinatorOptions) {
@@ -383,6 +414,8 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       pendingRefit = true;
       return;
     }
+    const overflowClamped = clampTerminalOverflow(terminal, options.host, sample);
+    const repaired = broken || overflowClamped;
     terminal.refresh(0, terminal.rows - 1);
     const paintScreen = screenRectSample(options.host);
     const backing = canvasBackingSample(options.host);
@@ -393,7 +426,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       rows: terminal.rows,
       width: paintScreen?.width ?? sample.width,
       height: paintScreen?.height ?? sample.height,
-      suspect: broken || suspectBlankPaint(options.host, sample),
+      suspect: repaired || suspectBlankPaint(options.host, sample),
       canvasWidth: backing.width,
       canvasHeight: backing.height,
       canvasBlank: backing.present && (backing.width <= 0 || backing.height <= 0),
@@ -403,7 +436,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       blankRowRatio: rowSample.blankRowRatio
     });
     if (keepAtBottom) options.scrollToBottom?.();
-    updateGeometryDataset(terminal, sample, broken);
+    updateGeometryDataset(terminal, sample, repaired);
     sendResizeOnce(terminal.cols, terminal.rows);
     lastStableGeometry = {
       sample,
@@ -417,7 +450,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       leaseId: options.getResizeIdentity()?.leaseId ?? null,
       width: sample.width,
       height: sample.height,
-      repaired: broken
+      repaired
     });
   };
 

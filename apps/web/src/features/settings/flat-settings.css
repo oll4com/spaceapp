@@ -284,13 +284,20 @@
   margin-top: 0.45rem;
 }
 
-.cli-runtime-settings-card.settings-flat-card {
+.cli-runtime-settings-card.settings-flat-card,
+.cli-vpn-settings-card.settings-flat-card,
+.cli-gemini-accounts-card.settings-flat-card {
   gap: 0;
   padding: 0.55rem 0.65rem;
 }
 
 .cli-runtime-settings-card .cli-runtime-settings-title > span > strong {
   font-size: 0.82rem;
+}
+
+.cli-vpn-settings-card .cli-vpn-profile.settings-flat-vpn,
+.cli-gemini-accounts-card .cli-account-profiles.settings-flat-vpn {
+  border-top: 0;
 }
 
 .cli-vpn-profile.settings-flat-vpn {

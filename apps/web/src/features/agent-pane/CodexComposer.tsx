@@ -1,7 +1,8 @@
 import { ArrowUp, Bot, File, FileVideo, Square, Trash2, X } from "../ui-theme/app-icons.js";
-import { useEffect, useMemo, useRef, type FormEvent, type KeyboardEvent } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { AgentPaneModelProvider, PaneCliModelSettings } from "@space/contracts";
-import { CodexModelPicker } from "../codex-model-picker/CodexModelPicker.js";
+import { CliShortcutsMenu } from "../terminal-pane/CliShortcutsMenu.js";
+import { OSK_CLI_COMMANDS, type OskCliCommand } from "../osk-keyboard/cli-shortcuts.js";
 import { api } from "../../api.js";
 import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
 import {
@@ -10,10 +11,25 @@ import {
   type CodexModelOption
 } from "./codex-chat-types.js";
 
+const OSK_CHAT_MODE_COMMANDS = OSK_CLI_COMMANDS.filter(command => Boolean(command.action) || command.id === "plan_progress" || command.id === "deploy");
+
 type CodexModelCatalog = PaneCliModelSettings["models"];
+
+const LazyCodexModelPicker = lazy(() =>
+  import("../codex-model-picker/CodexModelPicker.js").then((module) => ({ default: module.CodexModelPicker }))
+);
+const modelPickerLoadingFallback = (
+  <div className="terminal-model-picker">
+    <button type="button" className="terminal-model-chip" aria-label="Loading model selector" disabled>
+      <Bot aria-hidden="true" />
+    </button>
+  </div>
+);
 
 export interface CodexComposerProps {
   paneTitle: string;
+  onShortcut?: (command: OskCliCommand) => void;
+  isVisible?: boolean;
   disabledReason?: string | null;
   prompt: string;
   onPromptChange: (value: string) => void;
@@ -29,12 +45,13 @@ export interface CodexComposerProps {
   canInterrupt: boolean;
   canSelectModel: boolean;
   pending: boolean;
-  onSend: () => void;
+  onSend: (message?: string) => void;
   onStop: () => void;
   modelCatalog: CodexModelCatalog;
   modelOptions: CodexModelOption[];
   modelProviders: AgentPaneModelProvider[];
   selectedModelConfigId: string | null;
+  onRefreshModelCatalog?: () => Promise<void>;
   onModelConfigChange: (modelConfigId: string) => Promise<string | null>;
 }
 
@@ -60,6 +77,8 @@ function attachmentKind(attachment: CodexComposerAttachment): "image" | "video" 
 
 export function CodexComposer({
   paneTitle,
+  onShortcut,
+  isVisible = true,
   disabledReason = null,
   prompt,
   onPromptChange,
@@ -81,10 +100,13 @@ export function CodexComposer({
   modelOptions,
   modelProviders,
   selectedModelConfigId,
+  onRefreshModelCatalog,
   onModelConfigChange
 }: CodexComposerProps) {
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  const initialPromptRef = useRef(prompt);
   const restorePromptFocusRef = useRef(false);
+  const [hasText, setHasText] = useState(() => Boolean(initialPromptRef.current.trim()));
   const modelSettings = useMemo<PaneCliModelSettings | null>(() => {
     if (!modelCatalog.length) return null;
     return {
@@ -99,12 +121,53 @@ export function CodexComposer({
   const isDisabled = Boolean(disabledReason);
   const disabledTitle = disabledReason ?? undefined;
 
-  useEffect(() => {
+  const isComposingRef = useRef(false);
+  const debounceTimerRef = useRef<number | null>(null);
+
+  const supportsFieldSizing = typeof CSS !== "undefined" && Boolean(CSS.supports?.("field-sizing", "content"));
+
+  const resizeTextarea = () => {
+    if (supportsFieldSizing) return;
+    const textarea = promptRef.current;
+    if (!textarea) return;
+    if (textarea.scrollHeight > textarea.clientHeight) {
+      textarea.style.height = String(Math.min(textarea.scrollHeight, 160)) + "px";
+    }
+  };
+
+  const resetTextareaHeight = () => {
+    if (supportsFieldSizing) return;
     const textarea = promptRef.current;
     if (!textarea) return;
     textarea.style.height = "auto";
-    textarea.style.height = String(Math.min(textarea.scrollHeight, 160)) + "px";
+    if (textarea.value) {
+      textarea.style.height = String(Math.min(textarea.scrollHeight, 160)) + "px";
+    }
+  };
+
+  useEffect(() => {
+    const textarea = promptRef.current;
+    if (!textarea) return;
+    if (prompt === "") {
+      if (textarea.value !== "") {
+        textarea.value = "";
+      }
+      setHasText(false);
+      resetTextareaHeight();
+    } else if (document.activeElement !== textarea && textarea.value !== prompt) {
+      textarea.value = prompt;
+      setHasText(Boolean(prompt.trim()));
+      resetTextareaHeight();
+    }
   }, [prompt]);
+
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current !== null) {
+        window.clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (pending || !restorePromptFocusRef.current) return;
@@ -112,18 +175,28 @@ export function CodexComposer({
     promptRef.current?.focus();
   }, [pending]);
 
+  const canSubmit = !isDisabled && !pending && !isRunning && (attachments.length > 0 || hasText || canSend);
+
   function submit(event?: FormEvent) {
     event?.preventDefault();
-    if (!isDisabled && canSend && !pending && !isRunning) {
+    const currentValue = promptRef.current?.value ?? "";
+    const canDoSubmit = !isDisabled && !pending && !isRunning && (attachments.length > 0 || Boolean(currentValue.trim()) || canSend);
+    if (canDoSubmit) {
+      if (debounceTimerRef.current !== null) {
+        window.clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      onPromptChange(currentValue);
       restorePromptFocusRef.current = true;
-      onSend();
+      onSend(currentValue.trim());
     }
   }
 
   function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
-    event.preventDefault();
-    submit();
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !isComposingRef.current) {
+      event.preventDefault();
+      submit();
+    }
   }
 
   async function switchModel(modelId: string, reasoningEffort: string, providerId: string | null) {
@@ -223,33 +296,83 @@ export function CodexComposer({
         ref={promptRef}
         name="agent-message"
         aria-label={"Message " + paneTitle}
-        value={prompt}
-        onChange={(event) => onPromptChange(event.target.value)}
+        defaultValue={initialPromptRef.current}
+        onCompositionStart={() => {
+          isComposingRef.current = true;
+        }}
+        onCompositionEnd={(event) => {
+          isComposingRef.current = false;
+          const value = event.currentTarget.value;
+          const hasNow = Boolean(value.trim());
+          if (hasNow !== hasText) {
+            setHasText(hasNow);
+          }
+          if (debounceTimerRef.current !== null) {
+            window.clearTimeout(debounceTimerRef.current);
+          }
+          debounceTimerRef.current = window.setTimeout(() => {
+            onPromptChange(value);
+          }, 1000);
+        }}
+        onBlur={(event) => {
+          if (debounceTimerRef.current !== null) {
+            window.clearTimeout(debounceTimerRef.current);
+            debounceTimerRef.current = null;
+          }
+          onPromptChange(event.currentTarget.value);
+          resetTextareaHeight();
+        }}
+        onChange={(event) => {
+          const value = event.target.value;
+          const hasNow = Boolean(value.trim());
+          if (hasNow !== hasText) {
+            setHasText(hasNow);
+          }
+          resizeTextarea();
+          if (debounceTimerRef.current !== null) {
+            window.clearTimeout(debounceTimerRef.current);
+          }
+          debounceTimerRef.current = window.setTimeout(() => {
+            onPromptChange(value);
+          }, 1000);
+        }}
         onKeyDown={handlePromptKeyDown}
         placeholder="Ask the selected provider"
         rows={1}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="none"
+        spellCheck={false}
+        enterKeyHint="send"
+        data-gramm="false"
+        data-enable-grammarly="false"
         disabled={pending || isDisabled}
         title={disabledTitle}
       />
       <div className="codex-composer-toolbar" aria-label={"Agent composer controls " + paneTitle}>
         <div className="codex-composer-spacer" />
+        {onShortcut ? <CliShortcutsMenu active={isVisible} disabled={isDisabled || pending || isRunning} onCommand={onShortcut} commands={OSK_CHAT_MODE_COMMANDS} /> : null}
         <VoiceInputButton label={paneTitle} active={voiceActive} disabled={voiceDisabled || isDisabled} onClick={onVoice} onPrewarm={onVoicePrewarm} />
         {modelSettings ? (
           <span title={disabledTitle}>
-            <CodexModelPicker
-              settings={modelSettings}
-              providers={modelProviders}
-              disabled={isDisabled || pending || isRunning || !canSelectModel}
-              allowSelectionWithoutCurrent
-              onSwitch={switchModel}
-            />
+            <Suspense fallback={modelPickerLoadingFallback}>
+              <LazyCodexModelPicker
+                compact
+                settings={modelSettings}
+                providers={modelProviders}
+                disabled={isDisabled || pending || isRunning || !canSelectModel}
+                allowSelectionWithoutCurrent
+                onRefreshCatalog={onRefreshModelCatalog}
+                onSwitch={switchModel}
+              />
+            </Suspense>
           </span>
         ) : <button type="button" className="codex-model-unavailable" aria-label={`Codex model unavailable ${paneTitle}`} title={disabledTitle ?? "Codex model catalog unavailable"} disabled><Bot aria-hidden="true" /></button>}
         <button
           type={isRunning ? "button" : "submit"}
           className="codex-send"
           onClick={isRunning ? onStop : undefined}
-          disabled={isDisabled || (isRunning ? !canInterrupt || pending : !canSend || pending)}
+          disabled={isDisabled || (isRunning ? !canInterrupt || pending : !canSubmit || pending)}
           title={disabledTitle}
           aria-label={(isRunning ? "Stop" : "Send") + " " + paneTitle}
         >{isRunning ? <Square aria-hidden="true" fill="currentColor" /> : <ArrowUp aria-hidden="true" />}</button>

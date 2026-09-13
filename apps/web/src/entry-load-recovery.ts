@@ -73,7 +73,7 @@ export function clearStaleBuildRecoveryGuard(storage: EntryLoadRecoveryStorage |
   }
 }
 
-function renderReloadFallback(rootElement: HTMLElement | null, reload: () => void) {
+export function renderReloadFallback(rootElement: HTMLElement | null, reload: () => void, messageText = "Space updated while this tab was open.") {
   const root = rootElement ?? getDefaultRootElement();
   if (!root) return;
 
@@ -94,7 +94,7 @@ function renderReloadFallback(rootElement: HTMLElement | null, reload: () => voi
   });
 
   const message = document.createElement("p");
-  message.textContent = "Space updated while this tab was open.";
+  message.textContent = messageText;
   Object.assign(message.style, {
     fontSize: "1rem",
     margin: "0",

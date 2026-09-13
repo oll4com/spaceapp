@@ -426,3 +426,62 @@ export async function createMemoryEmbedding(
     clearTimeout(timeout);
   }
 }
+
+export async function createMemoryEmbeddings(
+  config: SpaceApiConfig,
+  input: string[],
+  options: CreateMemoryEmbeddingOptions = {}
+): Promise<number[][]> {
+  if (!input.length || input.length > 16 || input.some(text => !text || text.length > 10000)) throw new Error("Embedding batch bounds exceeded.");
+  if (!config.memoryEmbeddingProvider || !config.memoryEmbeddingModel) {
+    throw new Error("Memory embedding provider is not configured.");
+  }
+  const embeddingProvider = parseMemoryEmbeddingProvider(config.memoryEmbeddingProvider);
+  if (!embeddingProvider) {
+    throw new Error("Configured memory embedding provider is not supported.");
+  }
+  const credentialLabel =
+    config.memoryEmbeddingKeyName ?? (config.memoryEmbeddingKeyFile ? basename(config.memoryEmbeddingKeyFile) : null);
+  if (!credentialLabel?.startsWith("space-") || !config.memoryEmbeddingKeyFile) {
+    throw new Error("Dedicated Space embedding credential is not configured.");
+  }
+  const endpoint = embeddingsUrl(embeddingProvider, config.memoryEmbeddingBaseUrl);
+  const readCredential = options.readFileImpl ?? ((path: string) => readFile(path, "utf8"));
+  const credential = (await readCredential(config.memoryEmbeddingKeyFile)).trim();
+  if (!credential) {
+    throw new Error("Embedding credential file is empty.");
+  }
+  const fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init));
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), config.memoryEmbeddingTimeoutMs);
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: config.memoryEmbeddingModel,
+        input,
+        dimensions: config.memoryEmbeddingDimensions
+      }),
+      signal: abort.signal
+    });
+    if (!response.ok) {
+      throw new Error(`${embeddingProviderName(embeddingProvider)} embedding request failed with HTTP ${response.status}.`);
+    }
+    const payload = await response.json() as { data?: Array<{ index?: number; embedding?: number[] }> };
+    if (!Array.isArray(payload.data) || payload.data.length !== input.length) throw new Error("Embedding batch response count was invalid.");
+    const ordered = [...payload.data].sort((a, b) => (a.index ?? -1) - (b.index ?? -1));
+    return ordered.map((row, index) => {
+      if (row.index !== index || !Array.isArray(row.embedding) || row.embedding.length !== config.memoryEmbeddingDimensions ||
+          !row.embedding.every(value => typeof value === "number" && Number.isFinite(value))) {
+        throw new Error("Embedding batch response dimensions or ordering were invalid.");
+      }
+      return row.embedding;
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}

@@ -1,4 +1,7 @@
-export { buildMemoryGraphSnapshot, calculateMemoryGraphSourceHash } from "./parser.js";
+export { buildMemoryGraphSnapshot, calculateMemoryGraphSourceHash, parseMemorySourceRecords } from "./parser.js";
+export { searchMemoryDocuments, normalizeMemoryQuery } from "./retrieval.js";
+export { normalizeMemoryDates, memoryQueryTerms, memoryTermMatches } from "./query-normalization.js";
+export { memoryExcerpt } from "./excerpt.js";
 export { positionMemoryGraphNodes } from "./layout.js";
 export {
   evaluateMemoryQueries,

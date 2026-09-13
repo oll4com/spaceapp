@@ -9,6 +9,7 @@ import type {
   BrowserPageSummary,
   BrowserRuntimeInput,
   BrowserSessionViewport,
+  BrowserViewportDimensions,
   BrowserStreamMode,
   BrowserToolActionInput,
   BrowserToolActionResult,
@@ -24,6 +25,7 @@ export type BrowserHostActorContext = BrowserHostActionContext;
 
 export interface BrowserHostStartInput {
   pane: Pane;
+  profileKey?: string | null;
   viewport?: BrowserSessionViewport;
   targetUrl?: string | null;
   streamMode?: BrowserStreamMode;
@@ -130,7 +132,7 @@ export interface BrowserHostRuntime {
   startOrRestore(input: BrowserHostStartInput, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse>;
   getActive(pane: Pane): Promise<PaneBrowserSessionResponse | null>;
   navigate(pane: Pane, url: string, traceId: string, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse>;
-  setViewport(pane: Pane, viewport: BrowserSessionViewport, traceId: string, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse>;
+  setViewport(pane: Pane, viewport: BrowserSessionViewport, traceId: string, context?: BrowserHostActorContext, dimensions?: BrowserViewportDimensions): Promise<PaneBrowserSessionResponse>;
   setStreamMode?(pane: Pane, mode: BrowserStreamMode, traceId: string, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse>;
   action(pane: Pane, input: BrowserToolActionInput, traceId: string, context?: BrowserHostActionContext): Promise<BrowserToolActionResult>;
   captureFrame(sessionId: string): Promise<BrowserFrame>;

@@ -1,4 +1,4 @@
-import { Loader2, ShieldCheck } from "lucide-react";
+import { Loader2, ShieldCheck } from "../ui-theme/app-icons.js";
 
 export function AuthenticationBootstrap({
   error,

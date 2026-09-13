@@ -20,6 +20,12 @@ import { SettingsActionMenu } from "../settings/SettingsActionMenu.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import "./app-diagnostics-settings.css";
 
+const recordingErrorMessages: Record<string, string> = {
+  CAPTURE_HANDLE_MISMATCH: "The browser could not verify this Space tab. Try recording again and select this tab in the browser's sharing dialog.",
+  TAB_REQUIRED: "Select this Space browser tab instead of a window or screen, then try recording again.",
+  PERMISSION_DENIED: "Tab sharing was cancelled or denied. Start recording again when you are ready to share this Space tab."
+};
+
 interface AppDiagnosticsSettingsClient {
   updateStatus(isEnabled: boolean): Promise<AppDiagnosticsStatus>;
 }
@@ -215,8 +221,8 @@ export function AppDiagnosticsSettingsCard({
       ) : null}
 
       {error || recorder.errorCode || state.lastErrorCode ? (
-        <p className="app-diagnostics-error" role="alert">
-          {error ?? recorder.errorCode ?? state.lastErrorCode}
+        <p className="app-diagnostics-error" role="alert" data-recorder-error-code={recorder.errorCode ?? undefined}>
+          {error ?? (recorder.errorCode ? recordingErrorMessages[recorder.errorCode] ?? recorder.errorCode : state.lastErrorCode)}
         </p>
       ) : null}
     </section>

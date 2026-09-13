@@ -1,6 +1,6 @@
 import { Crosshair, PanelRight, X } from "../ui-theme/app-icons.js";
 import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type UIEvent } from "react";
-import type { AgentPaneGoal, AgentPaneSession, Artifact, CodexEnvironment, CodexThreadResponse, CollaborationMode, Pane, PaneCliModelSettings } from "@space/contracts";
+import type { AgentPaneGoal, AgentPaneSession, Artifact, CodexEnvironment, CodexThreadResponse, CollaborationMode, Pane, PaneCliModelSettings, PermissionMode } from "@space/contracts";
 import { api } from "../../api.js";
 import { dispatchArtifactsUpdated } from "../../artifact-events.js";
 import { SPACE_CLIPBOARD_ITEM_MIME, SPACE_CLIPBOARD_ITEM_TITLE_MIME, captureClipboardText, writeClipboardText } from "../clipboard-dock/clipboard-events.js";
@@ -41,6 +41,11 @@ const AGENT_PANE_SETTINGS_EVENT = "space:agent-pane-settings-updated";
 type AgentPaneAction =
   | "upload"
   | "plan"
+  | "toggle_plan"
+  | "build"
+  | "plan_progress"
+  | "deploy"
+  | "permissions"
   | "resume"
   | "copy"
   | "reconnect"
@@ -94,6 +99,11 @@ function isAgentPaneAction(detail: unknown): detail is AgentPaneActionDetail {
     ((maybeDetail.action === "insert_text" && typeof (maybeDetail as { text?: unknown }).text === "string") ||
       maybeDetail.action === "upload" ||
       maybeDetail.action === "plan" ||
+      maybeDetail.action === "toggle_plan" ||
+      maybeDetail.action === "build" ||
+      maybeDetail.action === "plan_progress" ||
+      maybeDetail.action === "deploy" ||
+      maybeDetail.action === "permissions" ||
       maybeDetail.action === "resume" ||
       maybeDetail.action === "copy" ||
       maybeDetail.action === "reconnect" ||
@@ -229,9 +239,13 @@ export function AgentPane({
   const [error, setError] = useState<string | null>(null);
   const [codexError, setCodexError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [dismissedRunError, setDismissedRunError] = useState<string | null>(null);
+  const retryInFlightRef = useRef(false);
   const voiceInput = useVoiceInput();
   const voiceOwnerId = `chat:${pane.id}`;
   const [homePinned, setHomePinned] = useState(false);
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
+  const permissionsRef = useRef<HTMLElement | null>(null);
   const [goalDialogOpen, setGoalDialogOpen] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const turnStartedAtRef = useRef<number | null>(null);
@@ -252,9 +266,26 @@ export function AgentPane({
     !pending &&
     (trimmedPrompt.length > 0 || hasAttachments);
   const isRunning = Boolean(session && runningStatuses.includes(session.runStatus));
-  const runError = session?.runStatus === "ERROR"
+  useEffect(() => {
+    if (!isVisible || pane.isMinimized) setPermissionsOpen(false);
+  }, [isVisible, pane.isMinimized]);
+
+  useEffect(() => {
+    if (!permissionsOpen || !isVisible || pane.isMinimized) return;
+    const previous = document.activeElement;
+    permissionsRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, [permissionsOpen, isVisible, pane.isMinimized]);
+  const runErrorMessage = session?.runStatus === "ERROR"
     ? session.statusReason || "The Chat run failed."
     : null;
+  const runError = runErrorMessage && runErrorMessage !== dismissedRunError ? runErrorMessage : null;
+
+  useEffect(() => {
+    if (session?.runStatus !== "ERROR") setDismissedRunError(null);
+  }, [session?.runStatus]);
 
   useAutoDismiss(notice, setNotice);
   useAutoDismiss(error, setError);
@@ -278,6 +309,18 @@ export function AgentPane({
     } finally {
       if (showLoading) setLoading(false);
     }
+  }
+
+  async function refreshModelCatalog() {
+    const nextSession = await api.agentSession(pane.id);
+    // Refresh only catalog fields so a read cannot overwrite concurrent run updates.
+    setSession(current => current && current.binding.sessionId === session?.binding.sessionId
+      && current.selectedModelConfigId === session?.selectedModelConfigId ? {
+      ...current,
+      modelCatalog: nextSession.modelCatalog,
+      modelProviders: nextSession.modelProviders,
+      modelOptions: nextSession.modelOptions
+    } : current);
   }
 
   async function reconnectChat() {
@@ -493,16 +536,32 @@ export function AgentPane({
   }
 
   async function updateCollaborationMode(collaborationMode: CollaborationMode) {
-    if (!isChatEnabled || !session) return;
+    if (!isChatEnabled || !session || pending || isRunning || !isVisible) return;
     setPending(true);
     setError(null);
     try {
-      setSession(await api.updateAgentSettings(pane.id, { collaborationMode }));
+      const updated = await api.updateAgentSettings(pane.id, { collaborationMode });
+      if (updated.collaborationMode !== collaborationMode) throw new Error("The provider did not confirm the selected Plan mode.");
+      setSession(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Agent settings update failed");
     } finally {
       setPending(false);
     }
+  }
+
+  async function updatePermissions(permissionMode: PermissionMode) {
+    if (!session || pending || isRunning || !isVisible || pane.isMinimized) return;
+    setPending(true);
+    setError(null);
+    try {
+      const updated = await api.updateAgentSettings(pane.id, { permissionMode });
+      if (updated.permissionState.effectiveMode !== permissionMode) throw new Error("The provider did not confirm the selected permissions.");
+      setSession(updated);
+      setPermissionsOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Permissions update failed.");
+    } finally { setPending(false); }
   }
 
   async function updateModelConfig(selectedModelConfigId: string): Promise<string | null> {
@@ -772,6 +831,24 @@ export function AgentPane({
         void interrupt();
         return;
       }
+      if (event.detail.action === "permissions") {
+        if (!isVisible || pane.isMinimized) return;
+        setPermissionsOpen(true);
+        return;
+      }
+      if (event.detail.action === "build") {
+        void updateCollaborationMode("default");
+        return;
+      }
+      if (event.detail.action === "plan_progress" || event.detail.action === "deploy") {
+        if (!isVisible || pane.isMinimized) return;
+        void submitQuickMessage(event.detail.action === "plan_progress" ? "Plan completion percentage" : "Deploy the project to Gitea and GitHub.");
+        return;
+      }
+      if (event.detail.action === "toggle_plan") {
+        if (!pending && !isRunning) void updateCollaborationMode(session?.collaborationMode === "plan" ? "default" : "plan");
+        return;
+      }
       if (event.detail.action === "plan") {
         void updateCollaborationMode("plan");
         return;
@@ -809,7 +886,7 @@ export function AgentPane({
       window.removeEventListener(AGENT_PANE_ACTION_EVENT, handleAgentPaneAction);
       window.removeEventListener(AGENT_PANE_ATTACHMENTS_EVENT, handleAgentPaneAttachments);
     };
-  }, [activeThreadId, isChatEnabled, isRunning, pane.id, pane.title, pending, session, thread]);
+  }, [activeThreadId, isChatEnabled, isRunning, isVisible, pane.id, pane.title, pane.isMinimized, pending, session, thread]);
 
   function toggleVoiceCapture() {
     if (!isChatEnabled) return;
@@ -867,11 +944,55 @@ export function AgentPane({
           ? voiceInput.preview || "Transcribing"
           : voiceInput.error;
 
-  function retryLatestError() {
+  function lastUserPrompt(): string | null {
+    const messages = session?.messages ?? [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message && message.role === "user" && message.content.trim()) return message.content;
+    }
+    return null;
+  }
+
+  async function retryLatestError() {
+    if (retryInFlightRef.current) return;
     setError(null);
     setCodexError(null);
-    void loadSession(false);
-    if (activeThreadId) void openThread(activeThreadId, false);
+    setDismissedRunError(null);
+    const retryPrompt = lastUserPrompt();
+    if (!retryPrompt) {
+      setNotice("Nothing to retry: this Chat pane has no user request recorded yet.");
+      void loadSession(false);
+      if (activeThreadId) void openThread(activeThreadId, false);
+      return;
+    }
+    if (pending || isRunning || session?.capabilities.canSend === false) {
+      setNotice("Retry is unavailable while this Chat pane is not accepting new messages.");
+      return;
+    }
+    retryInFlightRef.current = true;
+    setPending(true);
+    setNotice("Retrying the last request…");
+    try {
+      const nextSession = await api.sendAgentMessage(
+        pane.id,
+        retryPrompt,
+        session?.selectedModelConfigId ?? null,
+        session?.selectedToolIds ?? [],
+        []
+      );
+      setSession(nextSession);
+      setNotice("Retried the last request.");
+      if (nextSession.threadId) {
+        await openThread(nextSession.threadId, false);
+      } else if (activeThreadId) {
+        await openThread(activeThreadId, false);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Retry failed");
+    } finally {
+      retryInFlightRef.current = false;
+      setPending(false);
+    }
   }
   return (
     <section
@@ -958,12 +1079,11 @@ export function AgentPane({
               tone="error"
               message={error ?? codexError ?? runError ?? "Codex error"}
               onRetry={retryLatestError}
-              onDismiss={error || codexError
-                ? () => {
-                  setError(null);
-                  setCodexError(null);
-                }
-                : undefined}
+              onDismiss={() => {
+                if (error) setError(null);
+                if (codexError) setCodexError(null);
+                if (runError) setDismissedRunError(runError);
+              }}
             />
           ) : null}
           {uploading || dragActive ? (
@@ -978,6 +1098,13 @@ export function AgentPane({
         </div>
         <CodexComposer
           paneTitle={pane.title}
+          isVisible={isVisible}
+          onShortcut={command => {
+            if (command.action === "build") void updateCollaborationMode("default");
+            if (command.id === "plan_progress" || command.id === "deploy") void submitQuickMessage(command.text);
+            if (command.action === "permissions") setPermissionsOpen(true);
+            if (command.action === "plan") void updateCollaborationMode(session?.collaborationMode === "plan" ? "default" : "plan");
+          }}
           disabledReason={isChatEnabled ? null : chatDisabledReason}
           prompt={prompt}
           onPromptChange={setPrompt}
@@ -991,17 +1118,49 @@ export function AgentPane({
           isRunning={isRunning}
           canSend={canSend}
           canInterrupt={Boolean(session?.capabilities.canInterrupt)}
-          pending={pending}
-          onSend={() => void submitMessage(trimmedPrompt)}
+          pending={pending || loading}
+          onSend={(message) => void submitMessage(message ?? trimmedPrompt, message ?? prompt)}
           onStop={() => void interrupt()}
           modelCatalog={(session as AgentPaneSessionWithModelCatalog | null)?.modelCatalog ?? []}
           modelOptions={session?.modelOptions ?? []}
           modelProviders={session?.modelProviders ?? []}
           selectedModelConfigId={session?.selectedModelConfigId ?? null}
           canSelectModel={Boolean(session?.capabilities.canSelectModel)}
+          onRefreshModelCatalog={refreshModelCatalog}
           onModelConfigChange={updateModelConfig}
         />
       </div>
+      {permissionsOpen && isVisible && !pane.isMinimized ? (
+        <div className="attachment-modal codex-resume-modal" onClick={() => setPermissionsOpen(false)} onKeyDown={event => {
+          event.stopPropagation();
+          if (event.key === "Escape") { event.preventDefault(); setPermissionsOpen(false); }
+          if (event.key === "Tab") {
+            const buttons = permissionsRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)");
+            if (!buttons?.length) return;
+            const first = buttons[0]!;
+            const last = buttons[buttons.length - 1]!;
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+          }
+        }}>
+          <section ref={permissionsRef} className="attachment-modal-body codex-resume-modal-body" role="dialog" aria-modal="true" aria-label="Chat permissions" onClick={event => event.stopPropagation()}>
+            <button className="terminal-upload-modal-close codex-resume-modal-close" type="button" aria-label="Close permissions" onClick={() => setPermissionsOpen(false)}><X aria-hidden="true" /></button>
+            <div className="codex-resume-modal-header"><strong>Permissions</strong><small>Choose permissions for the next Chat turn.</small></div>
+            <p>{session?.permissionState.statusReason ?? "Loading permissions…"}</p>
+            {session?.permissionOptions.map(option => (
+              <div key={option.mode}>
+              <button type="button" key={option.mode} data-permission-mode={option.mode} disabled={pending || isRunning || !option.isAvailable}
+                aria-pressed={session.permissionState.effectiveMode === option.mode}
+                title={option.statusReason ?? option.description} onClick={() => void updatePermissions(option.mode)}>
+                {option.label}{session.permissionState.effectiveMode === option.mode ? " ✓" : ""}
+              </button>
+              <p>{option.statusReason ?? option.description}</p>
+              </div>
+            ))}
+            {error ? <p role="alert">{error}</p> : null}
+          </section>
+        </div>
+      ) : null}
       {goalDialogOpen ? (
         <CodexGoalDialog
           paneTitle={pane.title}

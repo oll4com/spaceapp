@@ -1,19 +1,23 @@
+import { useMenuWheel, useRailPopover } from "../rail-popover.js";
 import { Check, Loader2 } from "../ui-theme/app-icons.js";
 import { useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent, type RefObject } from "react";
 import type { Room } from "@space/contracts";
-
-export const PANE_LAYOUT_MENU_ID = "pane-layout-presets";
+import { PANE_LAYOUT_MENU_ID } from "../toolbar-menu-ids.js";
+export { PANE_LAYOUT_MENU_ID } from "../toolbar-menu-ids.js";
 
 type PaneLayoutColumns = Room["paneLayoutColumns"];
+type PaneLayoutHeight = Room["paneLayoutHeight"];
 
 interface PaneLayoutMenuProps {
   automaticColumns: number;
   currentColumns: PaneLayoutColumns;
+  currentHeight?: PaneLayoutHeight;
   error: string | null;
   maximumColumns: number;
   menuId?: string;
   onClose: () => void;
   onSelect: (columns: PaneLayoutColumns) => void;
+  onSelectHeight?: (height: 1 | 2 | 3 | 4) => void;
   pending: boolean;
   triggerRef: RefObject<HTMLButtonElement | null>;
   visiblePaneCount: number;
@@ -23,13 +27,12 @@ const paneLayoutOptions: Array<{ label: string; value: PaneLayoutColumns }> = [
   { label: "Automatic", value: null },
   { label: "Fullscreen", value: 0 },
   { label: "1 column", value: 1 },
-  { label: "Double height", value: 5 },
   { label: "2 columns", value: 2 },
   { label: "3 columns", value: 3 },
   { label: "4 columns", value: 4 }
 ];
 
-type PaneLayoutPreviewMetrics = { columns: number; rows: number; rowSpan?: number };
+type PaneLayoutPreviewMetrics = { columns: number; rows: number };
 
 function previewMetrics(
   value: PaneLayoutColumns,
@@ -39,9 +42,6 @@ function previewMetrics(
 ): PaneLayoutPreviewMetrics {
   if (value === 0) {
     return { columns: 1, rows: 1 };
-  }
-  if (value === 5) {
-    return { columns: 1, rows: visiblePaneCount, rowSpan: 2 };
   }
   const requestedColumns = value ?? automaticColumns;
   const columns = Math.max(1, Math.min(requestedColumns, maximumColumns, Math.max(visiblePaneCount, 1)));
@@ -57,6 +57,9 @@ function visiblePaneLayoutOptions(
   maximumColumns: number,
   visiblePaneCount: number
 ) {
+  if (visiblePaneCount <= 1) {
+    return [{ label: "Automatic", value: null, metrics: { columns: 1, rows: visiblePaneCount } }];
+  }
   const options = paneLayoutOptions.map((option) => ({
     ...option,
     metrics: previewMetrics(option.value, automaticColumns, maximumColumns, visiblePaneCount)
@@ -64,9 +67,7 @@ function visiblePaneLayoutOptions(
   const signature = (option: (typeof options)[number]) =>
     option.value === 0
       ? `fullscreen-${option.metrics.rows}`
-      : option.metrics.rowSpan
-        ? `${option.metrics.rowSpan}x${option.metrics.rows}`
-        : `${option.metrics.columns}x${option.metrics.rows}`;
+      : `${option.metrics.columns}x${option.metrics.rows}`;
   const currentSignature = signature(options.find((option) => option.value === currentColumns) ?? options[0]!);
 
   return options.filter((option, index) => {
@@ -80,25 +81,26 @@ function optionAccessibleName(label: string, visiblePaneCount: number, metrics: 
   if (label === "Fullscreen") {
     return `${label}, ${visiblePaneCount} visible pane${visiblePaneCount === 1 ? "" : "s"}, one at a time`;
   }
-  if (metrics.rowSpan) {
-    return `${label}, ${visiblePaneCount} visible pane${visiblePaneCount === 1 ? "" : "s"}, ${metrics.rowSpan} rows per pane`;
-  }
   return `${label}, ${visiblePaneCount} visible pane${visiblePaneCount === 1 ? "" : "s"}, ${metrics.rows} row${metrics.rows === 1 ? "" : "s"}`;
 }
 
 export function PaneLayoutMenu({
   automaticColumns,
   currentColumns,
+  currentHeight = 1,
   error,
   maximumColumns,
   menuId = PANE_LAYOUT_MENU_ID,
   onClose,
   onSelect,
+  onSelectHeight,
   pending,
   triggerRef,
   visiblePaneCount
 }: PaneLayoutMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
+  useRailPopover(menuRef, triggerRef);
+  useMenuWheel(menuRef, '[role="menuitemradio"]', true, triggerRef, true);
   const visibleOptions = useMemo(
     () => visiblePaneLayoutOptions(automaticColumns, currentColumns, maximumColumns, visiblePaneCount),
     [automaticColumns, currentColumns, maximumColumns, visiblePaneCount]
@@ -152,10 +154,34 @@ export function PaneLayoutMenu({
       aria-busy={pending}
       onKeyDown={handleKeyDown}
     >
-      <header>
-        <strong>Pane layout</strong>
-        <span>{visiblePaneCount} visible pane{visiblePaneCount === 1 ? "" : "s"}</span>
+      <header className="pane-layout-header">
+        <div className="pane-layout-header-title">
+          <strong>Pane layout</strong>
+          <span className="pane-layout-pane-count">{visiblePaneCount} visible pane{visiblePaneCount === 1 ? "" : "s"}</span>
+        </div>
+        <div className="pane-layout-height-control" role="group" aria-label="Height multiplier">
+          <span className="pane-layout-height-label">Height</span>
+          <div className="pane-layout-height-buttons">
+            {([1, 2, 3, 4] as const).map((height) => {
+              const isSelected = (currentHeight ?? 1) === height;
+              return (
+                <button
+                  key={height}
+                  type="button"
+                  className={`pane-layout-height-btn${isSelected ? " selected" : ""}`}
+                  aria-pressed={isSelected}
+                  aria-label={`Height ${height}`}
+                  disabled={pending}
+                  onClick={() => onSelectHeight?.(height)}
+                >
+                  {height}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </header>
+      {visiblePaneCount <= 1 ? <p className="pane-layout-status">{visiblePaneCount === 0 ? "Add panes to choose a layout." : "One pane uses the available space. More layouts appear when you add panes."}</p> : null}
       <div className="pane-layout-options">
         {visibleOptions.map((option) => {
           const isCurrent = option.value === currentColumns;
@@ -185,7 +211,7 @@ export function PaneLayoutMenu({
               </span>
               <span className="pane-layout-option-copy">
                 <strong>{option.label}</strong>
-                <small>{metrics.rowSpan ? `${metrics.rowSpan} × ${metrics.rows || 0}` : `${metrics.columns} × ${metrics.rows || 0}`}</small>
+                <small>{metrics.columns} × {metrics.rows || 0}</small>
               </span>
               <Check className="pane-layout-check" aria-hidden="true" />
             </button>

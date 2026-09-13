@@ -4,10 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/entry-loading.css" />
     <title>Space</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="entry-loading" aria-label="Space loading">
+        <p role="status">Loading Space…</p>
+        <a href="">Reload Space</a>
+        <noscript>Enable JavaScript to open Space.</noscript>
+      </main>
+    </div>
     <script src="/homepage-config.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>

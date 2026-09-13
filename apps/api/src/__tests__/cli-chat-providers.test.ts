@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   cliChatRuntimeName,
   cliRuntimeModelsChatProviderAdapter,
-  openCodeChatVerifiedModelIds,
   opencodeChatProviderAdapter
 } from "../chat-providers.js";
 import type { OpenCodeServerControl } from "@space/opencode-control";
@@ -18,44 +17,56 @@ const openCodeControl: OpenCodeServerControl = {
   updatedAt: "2026-08-28T00:00:00.000Z"
 };
 
-describe("OpenCode Chat model policy", () => {
-  it("advertises only the model proven to complete a native Chat turn", () => {
-    expect(openCodeChatVerifiedModelIds).toEqual(["opencode/muse-spark-1.2-contributor-free"]);
-    expect(openCodeChatVerifiedModelIds).not.toContain("opencode/nemotron-3.5-lightning-free");
-  });
-
-  it("filters the live catalog to the verified model and makes it the default", async () => {
+describe("OpenCode Chat native model catalog", () => {
+  it("advertises configured Zen and Go models with their native reasoning options", async () => {
     const adapter = opencodeChatProviderAdapter(
       async () => openCodeControl,
       async () => [
-        { providerId: "opencode", modelId: "nemotron-3.5-lightning-free", displayName: "Broken active model", variants: [], defaultVariant: null },
-        { providerId: "opencode", modelId: "muse-spark-1.2-contributor-free", displayName: "Muse Spark 1.2 Free", variants: [], defaultVariant: null }
+        { providerId: "opencode", providerName: "OpenCode Zen", modelId: "nemotron-3-ultra-free", displayName: "Nemotron 3 Ultra Free", variants: [], defaultVariant: null },
+        { providerId: "opencode-go", providerName: "OpenCode Go", modelId: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", variants: ["high", "max"], defaultVariant: "max" },
+        { providerId: "opencode-go", providerName: "OpenCode Go", modelId: "qwen3.7-plus", displayName: "Qwen3.7 Plus", variants: ["minimal", "high"], defaultVariant: null }
       ]
     );
 
     const result = await adapter.loadCatalog();
 
     expect(result.error).toBeNull();
-    expect(result.models).toHaveLength(1);
+    expect(result.current).toBeNull();
+    expect(result.models.map(model => model.id)).toEqual([
+      "opencode/nemotron-3-ultra-free", "opencode-go/deepseek-v4-pro", "opencode-go/qwen3.7-plus"
+    ]);
     expect(result.models[0]).toMatchObject({
-      id: "opencode/muse-spark-1.2-contributor-free",
-      displayName: "Muse Spark 1.2 Free",
-      isDefault: true
+      displayName: "Nemotron 3 Ultra Free", description: "OpenCode Zen", isDefault: true,
+      supportedReasoningEfforts: ["medium"], reasoningOptions: []
     });
+    expect(result.models[1]).toMatchObject({
+      description: "OpenCode Go", isDefault: false, defaultReasoningEffort: "max",
+      supportedReasoningEfforts: ["high", "max"],
+      reasoningOptions: [{ reasoningEffort: "high" }, { reasoningEffort: "max" }]
+    });
+    expect(result.models[2]!.defaultReasoningEffort).toBe("minimal");
   });
 
-  it("makes OpenCode unavailable when its verified Chat model disappears", async () => {
+  it("picks up newly advertised models without a Chat allowlist update", async () => {
     const adapter = opencodeChatProviderAdapter(
       async () => openCodeControl,
-      async () => [
-        { providerId: "opencode", modelId: "nemotron-3.5-lightning-free", displayName: "Broken active model", variants: [], defaultVariant: null }
-      ]
+      async () => [{ providerId: "opencode", modelId: "new-model", displayName: "New model", variants: [], defaultVariant: null }]
     );
-
     const result = await adapter.loadCatalog();
+    expect(result.error).toBeNull();
+    expect(result.models.map(model => model.id)).toEqual(["opencode/new-model"]);
+  });
 
+  it("reports an empty native catalog without inventing model options", async () => {
+    const adapter = opencodeChatProviderAdapter(async () => openCodeControl, async () => []);
+    const result = await adapter.loadCatalog();
     expect(result.models).toEqual([]);
-    expect(result.error).toBe("OpenCode did not advertise a model verified for Chat panes.");
+    expect(result.error).toBe("OpenCode did not advertise any available models.");
+  });
+
+  it("reports catalog failures and does not fall back to a stale model", async () => {
+    const adapter = opencodeChatProviderAdapter(async () => openCodeControl, async () => { throw new Error("Catalog unavailable"); });
+    expect(await adapter.loadCatalog()).toEqual({ models: [], current: null, error: "Catalog unavailable" });
   });
 });
 

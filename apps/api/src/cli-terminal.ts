@@ -1,3 +1,6 @@
+import { issueControlToken } from "./space-control-token.js";
+import { projectRoomTerminalScreen, restoreRoomTerminalGeometry } from "./room-terminal-screen.js";
+import { readRoomHostScreen, readRoomHostScreenSnapshot } from "./room-host-screen.js";
 import { randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
@@ -7,6 +10,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { WebSocket } from "ws";
 import {
+  CLI_UPLOAD_WRAPPED_PATH_PATTERN,
+  isUploadPathCutoff,
   CliHostClient,
   CliHostError,
   type CliHostAttachInput,
@@ -251,11 +256,18 @@ interface ManagedCliSession {
   pendingHostOutput: CliHostOutputBatch | null;
   hostOutputQueue: CliHostOutputBatch[];
   hostOutputFlushTimer: ReturnType<typeof setTimeout> | null;
+  pendingHiddenTail: string;
+  pendingHiddenTailTimer: ReturnType<typeof setTimeout> | null;
   nextTranscriptSequence: number;
   persistQueue: Promise<void>;
   controlQueue: Promise<void>;
   controlOutput: string;
   controlOutputRevision: number;
+  roomScreenCols: number;
+  roomScreenRows: number;
+  roomScreenGeometryKnown: boolean;
+  roomScreenGeometryQueue: Promise<void>;
+  roomScreenSnapshot?: { generationId: string; revision: number; cols: number; rows: number; unwrap: boolean; text: string };
   reportedNullAgentMessageTurns: Set<string>;
   nullAgentMessageCheckSinceMs: number | null;
   nullAgentMessageCheckUntilMs: number;
@@ -496,6 +508,7 @@ export interface CliTerminalManagerOptions {
   store: SpaceStore;
   config: SpaceApiConfig;
   discoverRuntimes: () => Promise<AgentRuntimeRegistry>;
+  discoverRuntimesForAttach?: () => Promise<AgentRuntimeRegistry>;
   findCodexThreadId?: CodexThreadFinder;
   findCodexThreadResumeSettings?: CodexThreadResumeSettingsFinder;
   findCodexCliTurnActivity?: CodexCliTurnActivityFinder;
@@ -517,6 +530,8 @@ export interface CliTerminalManagerOptions {
     outcome: "CANCELLED" | "TIMEOUT" | "PROVIDER_FAILURE"
   ) => Promise<void>;
   onTelemetry?: (event: CliTerminalManagerTelemetryEvent) => void;
+  onTaskInput?: (paneId: string) => void;
+  withOperatorMutation?: <T>(paneId: string, work: () => Promise<T>) => Promise<T>;
 }
 
 export interface CliTerminalManagerTelemetryEvent {
@@ -804,6 +819,8 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
   } else {
     env.SPACE_BROWSER_BRIDGE_ENABLED = cliBrowserBridgeEnabled(config) ? "unavailable" : "false";
   }
+  const controlToken=context.runtimeId==="cli:codex"?issueControlToken(config.internalApiToken,context):null;
+  if(controlToken){env.SPACE_CONTROL_TOKEN=controlToken;env.SPACE_CONTROL_ENDPOINT=`${cliAgentFilesApiBaseUrl(config)}/api/cli/control/mcp`;}
   const cliAgentFilesToken = context.purpose === "LOGIN" ? null : issueCliAgentFilesToken(config, context);
   if (cliAgentFilesToken) {
     env.SPACE_AGENT_FILES_ENABLED = "true";
@@ -1101,7 +1118,25 @@ export class CliTerminalManager {
 
   async inspectSessionHost(session: PaneCliSession): Promise<CliHostSessionSummary | null> {
     const identity = await this.buildHostIdentity(session);
-    return this.hostForRuntime(session.runtimeId, session.sessionId).inspect(identity);
+    return this.inspectHostSession(this.hostForRuntime(session.runtimeId, session.sessionId), identity);
+  }
+
+  private async inspectHostSession(host: CliHostGateway, identity: CliHostIdentity): Promise<CliHostSessionSummary | null> {
+    try {
+      return await host.inspect(identity);
+    } catch (error) {
+      if (!(error instanceof CliHostError) || error.code !== "CLI_HOST_IDENTITY_MISMATCH") throw error;
+      const existing = (await host.health()).sessions.find((candidate) => candidate.cliSessionId === identity.cliSessionId);
+      // Moving a pane updates its database room, while the independent PTY
+      // retains its launch identity. Only that room difference is recoverable.
+      if (
+        !existing ||
+        existing.paneId !== identity.paneId ||
+        existing.runtimeId !== identity.runtimeId ||
+        existing.roomId === identity.roomId
+      ) throw error;
+      return host.inspect({ ...identity, roomId: existing.roomId });
+    }
   }
 
   async reconcileNormalSessionHostState(session: PaneCliSession): Promise<PaneCliSession> {
@@ -1653,6 +1688,90 @@ export class CliTerminalManager {
     return (await this.options.store.getPaneCliSession(session.sessionId)) ?? session;
   }
 
+  async observeRoomScreen(sessionId: string, unwrap = false): Promise<{ text: string; revision: number }> {
+    const managed = this.sessions.get(sessionId);
+    if (!managed) {
+      const session = await this.options.store.getPaneCliSession(sessionId);
+      if (session?.runtimeId === "cli:opencode" && session.purpose === "NORMAL") {
+        const geometry = session.terminalGeometry;
+        if (!geometry) return { text: "", revision: 0 };
+        // A closed observer WebSocket need not leave an API-managed transport.
+        // Read the independent host without spawning or taking browser control.
+        return readRoomHostScreenSnapshot(this.hostForRuntime(session.runtimeId, sessionId), await this.buildHostIdentity(session),
+          geometry.cols, geometry.rows, unwrap, geometry.generationId).catch(() => ({ text: "", revision: 0 }));
+      }
+    }
+    if (managed?.runtimeId === "cli:opencode" && !managed.roomScreenGeometryKnown) return { text: "", revision: managed.controlOutputRevision };
+    if (managed) await this.flushHostOutput(managed);
+    const chunks = await this.options.store.listPaneCliTranscriptChunks(sessionId, 256);
+    const output = chunks.filter((chunk) => chunk.stream !== "stdin" && chunk.stream !== "system").slice(-256);
+    const cols = managed?.roomScreenCols ?? 100, rows = managed?.roomScreenRows ?? 30;
+    const revision = managed?.controlOutputRevision ?? chunks.at(-1)?.sequence ?? 0;
+    const cached = managed?.roomScreenSnapshot;
+    if (cached && cached.generationId === managed?.generationId && cached.revision === revision && cached.cols === cols && cached.rows === rows && cached.unwrap === unwrap) return { text: cached.text, revision };
+    // OpenCode emits small animation deltas which can evict an unchanged
+    // composer from the DB tail. Its existing host has a larger bounded replay.
+    // This observer is separate from browser attachment/replay ownership.
+    let text: string | null = null;
+    if (managed?.runtimeId === "cli:opencode" && managed.purpose === "NORMAL") {
+      text = await readRoomHostScreen(this.hostForRuntime(managed.runtimeId, sessionId), managed.identity, cols, rows, unwrap, managed.generationId).catch(() => null);
+    }
+    const hostReadFailed = managed?.runtimeId === "cli:opencode" && text === null;
+    if (hostReadFailed) return { text: "", revision };
+    text ??= await projectRoomTerminalScreen(output.map(chunk => chunk.content), cols, rows, unwrap);
+    if (managed && !hostReadFailed) managed.roomScreenSnapshot = { generationId: managed.generationId, revision, cols, rows, unwrap, text };
+    return { text, revision };
+  }
+
+  /**
+   * Nudge a fullscreen TUI into repainting its current frame without typing.
+   * A same-dimensions resize only repaints changed regions, which is not
+   * enough when the bounded replay holds deltas alone: briefly shrinking a
+   * column forces a full reflow with text, then restores the geometry. Best
+   * effort: returns false when the session dimensions are unknown or the
+   * host call fails.
+   */
+  async refreshRoomScreen(sessionId: string): Promise<boolean> {
+    try {
+      const managed = this.sessions.get(sessionId);
+      if (managed) {
+        if (!managed.roomScreenCols || !managed.roomScreenRows) return false;
+        return await this.nudgeHostRepaint(managed.runtimeId, sessionId,
+          managed.identity, managed.roomScreenCols, managed.roomScreenRows);
+      }
+      const session = await this.options.store.getPaneCliSession(sessionId);
+      const geometry = session?.terminalGeometry;
+      if (!session || !geometry) return false;
+      return await this.nudgeHostRepaint(session.runtimeId, sessionId,
+        await this.buildHostIdentity(session), geometry.cols, geometry.rows);
+    } catch {
+      return false;
+    }
+  }
+
+  private async nudgeHostRepaint(runtimeId: string, sessionId: string,
+    identity: CliHostIdentity, cols: number, rows: number): Promise<boolean> {
+    // Empty replay: only the attachment is needed for the resize nudges.
+    const observer = await this.hostForRuntime(runtimeId, sessionId)
+      .attach({ identity, afterSequence: Number.MAX_SAFE_INTEGER }).catch(() => null);
+    if (!observer) return false;
+    try {
+      const shrunk = Math.max(10, cols - 1);
+      await this.hostForRuntime(runtimeId, sessionId)
+        .resize(identity, observer.attachmentId, shrunk, rows).catch(() => null);
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      await this.hostForRuntime(runtimeId, sessionId)
+        .resize(identity, observer.attachmentId, cols, rows).catch(() => null);
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    } finally {
+      await this.hostForRuntime(runtimeId, sessionId)
+        .detach(identity, observer.attachmentId).catch(() => null);
+    }
+    const managed = this.sessions.get(sessionId);
+    if (managed) managed.roomScreenSnapshot = undefined;
+    return true;
+  }
+
   async ensurePaneControlReady(pane: Pane, traceId: string): Promise<PaneCliSession> {
     const session = await this.ensurePaneTransportReady(pane, traceId);
     const managed = this.sessions.get(session.sessionId);
@@ -1691,7 +1810,13 @@ export class CliTerminalManager {
     };
     let managed = (await this.getOrSpawnSession(session, runtime, traceId)).managed;
     activateTransport(managed);
-    const terminalData = sanitizeCliTerminalInput(managed.runtimeId, data);
+    const roomPromptPaste = isCodexDirectParityRuntime(managed.runtimeId) && turnMarker !== null &&
+      data.includes(`<space-room-action marker="${turnMarker}">`);
+    // Codex treats a raw multiline burst and the immediately following Enter
+    // as one paste. Delimit the Room Agent prompt explicitly, then let its
+    // paste buffer settle before acknowledging content to the submit phase.
+    const sanitizedData = sanitizeCliTerminalInput(managed.runtimeId, data);
+    const terminalData = roomPromptPaste ? `\u001b[200~${sanitizedData}\u001b[201~` : sanitizedData;
     if (data.length > 0 && terminalData.length === 0) {
       return { turnMarker: null, markerAtMs: Date.now() };
     }
@@ -1737,6 +1862,7 @@ export class CliTerminalManager {
     if (terminalData.trim()) {
       await this.options.store.touchPaneCliSessionActivity(sessionId, traceId);
     }
+    if (roomPromptPaste) await new Promise((resolve) => setTimeout(resolve, 200));
     return { turnMarker, markerAtMs };
   }
 
@@ -1747,13 +1873,24 @@ export class CliTerminalManager {
     reasoningEffort: string;
     traceId: string;
   }): Promise<void> {
+    return this.updateCodexNativeModelSettings({ ...input, expectedThreadId: null });
+  }
+
+  async updateCodexNativeModelSettings(input: {
+    sessionId: string;
+    expectedThreadId: string | null;
+    models: readonly CodexCliModelSelectionOption[];
+    modelId: string;
+    reasoningEffort: string;
+    traceId: string;
+  }): Promise<void> {
     const session = await this.options.store.getPaneCliSession(input.sessionId);
     if (!session) throw new SpaceNotFoundError(`CLI session ${input.sessionId} was not found.`);
     if (!session.isActive || session.status === "EXITED" || session.status === "ERROR") {
       throw new SpaceConflictError(`CLI session ${input.sessionId} is not active.`);
     }
-    if (!isCodexDirectParityRuntime(session.runtimeId) || session.codexThreadId) {
-      throw new SpaceConflictError("Pre-thread model control requires a running Codex CLI session without a bound thread.");
+    if (!isCodexDirectParityRuntime(session.runtimeId) || session.codexThreadId !== input.expectedThreadId) {
+      throw new SpaceConflictError("Codex model control requires the expected active native thread.");
     }
     const registry = await this.options.discoverRuntimes();
     const runtime = registry.data.find((candidate) => candidate.id === session.runtimeId);
@@ -1776,6 +1913,10 @@ export class CliTerminalManager {
       const host = this.hostForRuntime(managed.runtimeId, managed.sessionId);
       let inputIndex = 0;
       const sendHiddenInput = async (data: string) => {
+        const current = await this.options.store.getPaneCliSession(input.sessionId);
+        if (!current?.isActive || current.codexThreadId !== input.expectedThreadId || managed.closed) {
+          throw new SpaceConflictError("The native Codex session changed during model control.");
+        }
         const result = await host.input(
           managed.identity,
           managed.attachmentId,
@@ -1826,9 +1967,9 @@ export class CliTerminalManager {
         }
         await this.waitForCodexModelChange(managed, input.modelId, input.reasoningEffort);
       } catch (error) {
-        await host.input(managed.identity, managed.attachmentId, "\u001b\u001b\u001b", "hidden").catch(() => undefined);
+        await sendHiddenInput("\u001b\u001b\u001b").catch(() => undefined);
         if (error instanceof SpaceConflictError) throw error;
-        throw new SpaceConflictError("Codex did not apply the requested pre-thread model settings.");
+        throw new SpaceConflictError("Codex did not apply the requested native model settings.");
       }
     });
     managed.controlQueue = operation.catch(() => undefined);
@@ -1988,7 +2129,7 @@ export class CliTerminalManager {
     const readOnlyObserver = input.proofScope === "READ_ONLY";
     const runtime = readOnlyObserver
       ? activeCliSessionObserverRuntime(this.options.config, session.runtimeId)
-      : (await this.options.discoverRuntimes()).data.find((candidate) => candidate.id === session.runtimeId);
+      : (await (this.options.discoverRuntimesForAttach ?? this.options.discoverRuntimes)()).data.find((candidate) => candidate.id === session.runtimeId);
     if (!runtime) {
       throw new SpaceNotFoundError(`CLI runtime ${session.runtimeId} was not found.`);
     }
@@ -2211,7 +2352,7 @@ export class CliTerminalManager {
     const baseSession = codexForkThreadId ? { ...session, codexThreadId: null } : session;
     const baseIdentity = await this.buildHostIdentity(baseSession);
     const hostClient = this.hostForRuntime(session.runtimeId, session.sessionId);
-    const inspected = await hostClient.inspect(baseIdentity);
+    const inspected = await this.inspectHostSession(hostClient, baseIdentity);
     if (!inspected && options.existingOnly) {
       throw new SpaceNotFoundError(
         `Running CLI host session ${session.sessionId} was not found for a read-only observer.`
@@ -2270,7 +2411,7 @@ export class CliTerminalManager {
     const identity: CliHostIdentity = {
       cliSessionId: boundSession.sessionId,
       paneId: boundSession.paneId,
-      roomId: boundSession.roomId,
+      roomId: inspected?.roomId ?? boundSession.roomId,
       runtimeId: boundSession.runtimeId,
       codexThreadId: spawnSession.codexThreadId,
       modelId: spawnSession.codexResumeModelId ?? spawnSession.modelId,
@@ -2340,6 +2481,10 @@ export class CliTerminalManager {
         ) &&
         Date.now() - Date.parse(inspected.startedAt) >= (this.options.startupReadyTimeoutMs ?? cliStartupReadyTimeoutMs)
       );
+    const roomGeometry = restoreRoomTerminalGeometry(hostAttach.session.generationId, Boolean(inspected), session.terminalGeometry, initialGeometry);
+    if (!inspected && session.purpose === "NORMAL" && roomGeometry) {
+      await this.options.store.updatePaneCliTerminalGeometry(session.sessionId, { generationId: hostAttach.session.generationId, ...roomGeometry });
+    }
     managed = {
       identity: {
         cliSessionId: hostAttach.session.cliSessionId,
@@ -2378,11 +2523,17 @@ export class CliTerminalManager {
       pendingHostOutput: null,
       hostOutputQueue: [],
       hostOutputFlushTimer: null,
+      pendingHiddenTail: "",
+      pendingHiddenTailTimer: null,
       nextTranscriptSequence: (transcript.at(-1)?.sequence ?? -1) + 1,
       persistQueue: Promise.resolve(),
       controlQueue: Promise.resolve(),
       controlOutput: "",
       controlOutputRevision: 0,
+      roomScreenCols: roomGeometry?.cols ?? 100,
+      roomScreenRows: roomGeometry?.rows ?? 30,
+      roomScreenGeometryKnown: roomGeometry !== null,
+      roomScreenGeometryQueue: Promise.resolve(),
       reportedNullAgentMessageTurns: new Set(),
       nullAgentMessageCheckSinceMs: null,
       nullAgentMessageCheckUntilMs: 0,
@@ -2476,6 +2627,10 @@ export class CliTerminalManager {
   }
 
   private async codexHistoryTransferForkThreadId(session: PaneCliSession): Promise<string | null> {
+    // Explicit native resume already resolved a persisted thread. The current
+    // per-session app-server can load it; legacy history ownership must not
+    // silently convert the requested continuation into a new native task.
+    if (session.launchMode === "RESUME") return null;
     if (!isCodexDirectParityRuntime(session.runtimeId) || !session.codexThreadId) return null;
     const ownership = await this.options.store.getPaneCliCodexThreadOwnership(session.codexThreadId);
     return ownership?.source === "HISTORY_TRANSFER" && ownership.cliSessionId === session.sessionId
@@ -3029,7 +3184,7 @@ export class CliTerminalManager {
       const diagnosticSinceMs = receivedAtMs - 1000;
       const hiddenInput = message.display === "hidden";
       await this.flushHostOutput(managed);
-      const inputResult = await this.withFreshHostAttachment(managed, () =>
+      const writeInput = () => this.withFreshHostAttachment(managed, () =>
         this.hostForRuntime(managed.runtimeId, managed.sessionId).input(
           managed.identity,
           managed.attachmentId,
@@ -3037,6 +3192,12 @@ export class CliTerminalManager {
           message.display
         )
       );
+      // Only authorized operator submissions/stops supersede queued controls.
+      // Run the actual native write in the same critical section as invalidation.
+      const supersedesSchedule = managed.purpose === "NORMAL" && /[\r\n\x03\x1b]/.test(terminalData);
+      const inputResult = supersedesSchedule && this.options.withOperatorMutation
+        ? await this.options.withOperatorMutation(managed.paneId, writeInput)
+        : await writeInput();
       const markerAtMs = inputResult?.acceptedAtMs ?? receivedAtMs;
       if (managed.purpose === "NORMAL" && message.turnMarker && inputResult?.accepted !== false) {
         this.pruneTurnMarkers(managed);
@@ -3058,6 +3219,7 @@ export class CliTerminalManager {
       }
       if (!hiddenInput && managed.purpose !== "LOGIN") {
         await this.appendTranscript(managed, "stdin", terminalData);
+        if (/[\r\n]/.test(terminalData)) this.options.onTaskInput?.(managed.paneId);
       }
       if (!hiddenInput && managed.purpose !== "LOGIN" && terminalData.trim()) {
         this.scheduleCodexNullAgentMessageCheck(managed, diagnosticSinceMs, terminalData);
@@ -3068,6 +3230,7 @@ export class CliTerminalManager {
     if (parsed.data.type === "resize") {
       const message = parsed.data;
       if (!await this.authorizeHostMutation(managed, socket, client, message.leaseId, "resize")) return;
+      const geometryChanged = !managed.roomScreenGeometryKnown || managed.roomScreenCols !== message.cols || managed.roomScreenRows !== message.rows;
       await this.withFreshHostAttachment(managed, () =>
         this.hostForRuntime(managed.runtimeId, managed.sessionId).resize(
           managed.identity,
@@ -3076,6 +3239,15 @@ export class CliTerminalManager {
           message.rows
         )
       );
+      managed.roomScreenCols = message.cols;
+      managed.roomScreenRows = message.rows;
+      managed.roomScreenGeometryKnown = true;
+      if (managed.purpose === "NORMAL" && geometryChanged) {
+        const geometry = { generationId: managed.generationId, cols: message.cols, rows: message.rows };
+        managed.roomScreenGeometryQueue = managed.roomScreenGeometryQueue.catch(() => undefined)
+          .then(() => this.options.store.updatePaneCliTerminalGeometry(managed.sessionId, geometry));
+        await managed.roomScreenGeometryQueue;
+      }
       return;
     }
     if (!await this.authorizeHostMutation(managed, socket, client, parsed.data.leaseId, "interrupt")) return;
@@ -3084,13 +3256,17 @@ export class CliTerminalManager {
       await this.failLoginSession(managed.sessionId, "CANCELLED", managed, true);
       return;
     }
-    await this.appendTranscript(managed, "system", "Interrupt requested from terminal WebSocket.");
-    try {
-      await this.terminateManagedHostSession(managed);
-    } catch (error) {
-      if (!cliHostSessionUnavailable(error)) throw error;
-      await this.closeUnavailableHostSession(managed);
-    }
+    const stop = async () => {
+      await this.appendTranscript(managed, "system", "Interrupt requested from terminal WebSocket.");
+      try {
+        await this.terminateManagedHostSession(managed);
+      } catch (error) {
+        if (!cliHostSessionUnavailable(error)) throw error;
+        await this.closeUnavailableHostSession(managed);
+      }
+    };
+    if (this.options.withOperatorMutation) await this.options.withOperatorMutation(managed.paneId, stop);
+    else await stop();
   }
 
   private async withFreshHostAttachment<T>(managed: ManagedCliSession, operation: () => Promise<T>): Promise<T> {
@@ -3216,15 +3392,36 @@ export class CliTerminalManager {
     const transcriptReplay = this.enqueuePersistence(managed, async () => {
       const transcript = transcriptSeed ?? await this.options.store.listPaneCliTranscriptChunks(managed.sessionId);
       let framesSinceYield = 0;
+      let replayPendingTail = "";
       for (const chunk of transcript) {
         if (chunk.stream !== "stdout" && chunk.stream !== "stderr") continue;
         if (!chunk.content) continue;
-        const frames = this.serialize({ type: "output", stream: chunk.stream, data: chunk.content });
+        const raw = replayPendingTail ? `${replayPendingTail}${chunk.content}` : chunk.content;
+        replayPendingTail = "";
+        let content = raw.includes("/cli-uploads/")
+          ? raw.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "")
+          : raw;
+        if (content.includes("/cli-uploads/")) {
+          const cutoff = isUploadPathCutoff(content);
+          if (cutoff >= 0) {
+            replayPendingTail = content.slice(cutoff);
+            content = content.slice(0, cutoff);
+          }
+        }
+        if (!content) continue;
+        const frames = this.serialize({ type: "output", stream: chunk.stream, data: content });
         this.sendSerialized(socket, frames);
         framesSinceYield += frames.length;
         if (framesSinceYield >= terminalReplayFramesPerYield) {
           framesSinceYield = 0;
           await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      }
+      if (replayPendingTail) {
+        const stripped = replayPendingTail.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
+        if (stripped && !stripped.includes("/cli-uploads/") && isUploadPathCutoff(stripped) < 0) {
+          const frames = this.serialize({ type: "output", stream: "stdout", data: stripped });
+          this.sendSerialized(socket, frames);
         }
       }
     }, replayPrerequisite, false);
@@ -3397,14 +3594,43 @@ export class CliTerminalManager {
   private handleHostEvent(managed: ManagedCliSession, event: CliHostEvent): void {
     if (managed.closed) return;
     if (event.type === "output") {
-      managed.controlOutput = `${managed.controlOutput}${event.data}`.slice(-16_000);
-      if (event.data.length > 0) managed.controlOutputRevision += 1;
+      if (managed.pendingHiddenTailTimer !== null) {
+        clearTimeout(managed.pendingHiddenTailTimer);
+        managed.pendingHiddenTailTimer = null;
+      }
+      const raw = managed.pendingHiddenTail ? `${managed.pendingHiddenTail}${event.data}` : event.data;
+      managed.pendingHiddenTail = "";
+      let data = raw.includes("/cli-uploads/")
+        ? raw.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "")
+        : raw;
+      if (data.includes("/cli-uploads/")) {
+        const cutoff = isUploadPathCutoff(data);
+        if (cutoff >= 0) {
+          managed.pendingHiddenTail = data.slice(cutoff);
+          data = data.slice(0, cutoff);
+          managed.pendingHiddenTailTimer = setTimeout(() => {
+            managed.pendingHiddenTailTimer = null;
+            const tail = managed.pendingHiddenTail;
+            managed.pendingHiddenTail = "";
+            if (tail) {
+              const strippedTail = tail.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
+              if (strippedTail && !strippedTail.includes("/cli-uploads/") && isUploadPathCutoff(strippedTail) < 0) {
+                this.broadcast(managed, { type: "output", stream: event.stream, data: strippedTail });
+                this.bufferHostOutput(managed, { ...event, data: strippedTail });
+              }
+            }
+          }, 1500);
+        }
+      }
+      if (!data) return;
+      managed.controlOutput = `${managed.controlOutput}${data}`.slice(-16_000);
+      if (data.length > 0) managed.controlOutputRevision += 1;
       this.scheduleQwenAuthBootstrap(managed);
       if (!managed.codexModelControlReady && isCodexDirectParityRuntime(managed.runtimeId)) {
-        managed.startupOutput = `${managed.startupOutput}${event.data}`.slice(-16_000);
+        managed.startupOutput = `${managed.startupOutput}${data}`.slice(-16_000);
       }
-      this.broadcast(managed, { type: "output", stream: event.stream, data: event.data });
-      this.bufferHostOutput(managed, event);
+      this.broadcast(managed, { type: "output", stream: event.stream, data });
+      this.bufferHostOutput(managed, { ...event, data });
       return;
     }
     if (managed.purpose === "LOGIN") {
@@ -3416,6 +3642,10 @@ export class CliTerminalManager {
       return;
     }
     managed.closed = true;
+    if (managed.pendingHiddenTailTimer !== null) {
+      clearTimeout(managed.pendingHiddenTailTimer);
+      managed.pendingHiddenTailTimer = null;
+    }
     this.sessions.delete(managed.sessionId);
     managed.controlOutput = "";
     managed.startupOutput = "";

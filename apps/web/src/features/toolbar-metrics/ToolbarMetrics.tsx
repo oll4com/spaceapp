@@ -29,8 +29,14 @@ import type { SystemAnalyticsTab } from "../system-analytics/SystemAnalyticsWork
 import { api, SpaceApiError } from "../../api.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
-import { X } from "../ui-theme/app-icons.js";
+import { Activity, X } from "../ui-theme/app-icons.js";
+import { ResourcesDrawer } from "./ResourcesDrawer.js";
 import { ConfirmationDialog, MetricPopover } from "./MetricLayers.js";
+import {
+  CODEX_EXHAUSTION_THRESHOLD_PERCENT,
+  computeCodexCooldown,
+  isCodexAccountActive,
+} from "../system-health/health-model.js";
 import "./toolbar-metrics.css";
 
 type PanelKey = "accounts" | "cli" | "memory" | "cpu" | "rtt" | "provider" | "models";
@@ -67,6 +73,8 @@ export function modelShortCode(modelId: string): string {
 }
 
 export interface ToolbarMetricsHandle {
+  openResources(trigger?: HTMLButtonElement): void;
+  openMetricDetails(panel: "accounts" | "provider" | "cli"): void;
   openCliCleanup(trigger?: HTMLButtonElement | null): void;
   openMemoryReclaim(trigger?: HTMLButtonElement | null): void;
 }
@@ -266,7 +274,11 @@ function MetricRow({ label, value }: { label: string; value: string }) {
 }
 
 export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
+  presentation?: "strip" | "drawer";
+  onOpenResources?: () => void;
+  hideTrigger?: boolean;
   canManage?: boolean;
+  allowChanges?: boolean;
   client?: ToolbarMetricsClient;
   environment: CodexEnvironment | null;
   onChanged?: () => void | Promise<void>;
@@ -274,7 +286,11 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   roomId?: string | null;
   onOpenAnalytics?: (tab: SystemAnalyticsTab) => void;
 }>(function ToolbarMetrics({
+  presentation = "strip",
+  onOpenResources,
+  hideTrigger = false,
   canManage = true,
+  allowChanges = canManage,
   client = defaultClient,
   environment,
   onChanged,
@@ -310,9 +326,23 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const actionTriggerRef = useRef<HTMLButtonElement | null>(null);
   const providerMenuRef = useRef<HTMLDivElement | null>(null);
   const [activePanel, setActivePanel] = useState<PanelKey | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerTriggerRef = useRef<HTMLButtonElement>(null);
+  const telemetryVisible = presentation === "strip" || drawerOpen;
   const [confirmation, setConfirmation] = useState<ConfirmationKind | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const isExhausted = Boolean(
+    accounts.data?.data.length &&
+    !accounts.data.data.some((a) => isCodexAccountActive(a)),
+  );
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!telemetryVisible || !isExhausted) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [telemetryVisible, isExhausted]);
+  const cooldown = computeCodexCooldown(accounts.data, environment, clock);
   useAutoDismiss(actionMessage, setActionMessage);
   const [providerMenuFocusRequested, setProviderMenuFocusRequested] = useState(false);
   const [providerSwitchingId, setProviderSwitchingId] = useState<string | null>(null);
@@ -340,14 +370,21 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           : String(badgeModels.length)
       : modelStats.loading || analyticsModels.loading ? "…" : "--";
 
+  const loadModels = useCallback(async (force = false) => {
+    // Detailed analytics already supplies the badge and popover. Fetch the
+    // legacy transcript collector only when that source is unavailable; on
+    // HTTP/1.1 both requests otherwise occupy scarce browser connections.
+    if (client.analyticsModels && await analyticsModels.load(force)) return;
+    await modelStats.load(force);
+  }, [analyticsModels.load, client, modelStats.load]);
+
   useEffect(() => setSwitchedProviderCode(null), [environment]);
   useEffect(() => {
-    if (!canManage) return;
+    if (!canManage || !telemetryVisible) return;
     let disposed = false;
     const load = () => {
       if (disposed || document.visibilityState !== "visible") return;
-      void modelStats.load(true);
-      if (client.analyticsModels) void analyticsModels.load(true);
+      void loadModels(true);
     };
     load();
     const timer = window.setInterval(load, 30_000);
@@ -355,13 +392,14 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [analyticsModels.load, canManage, client, modelStats.load]);
+  }, [canManage, loadModels, telemetryVisible]);
   useEffect(() => {
     if (isCodexEnabled) return;
     setActivePanel((current) => current === "accounts" || current === "provider" ? null : current);
     setProviderMenuFocusRequested(false);
   }, [isCodexEnabled]);
   useEffect(() => {
+    if (!telemetryVisible) return;
     let disposed = false;
     let inFlight = false;
 
@@ -403,7 +441,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [client]);
+  }, [client, telemetryVisible]);
   useEffect(() => {
     if (!providerMenuFocusRequested || !providers.data) return;
     providerMenuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
@@ -438,10 +476,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       case "memory": return Promise.all([memory.load(), analyticsResources.load()]);
       case "cpu": return Promise.all([memory.load(), analyticsResources.load()]);
       case "rtt": return Promise.resolve();
-      case "models": return Promise.all([
-        modelStats.load(),
-        client.analyticsModels ? analyticsModels.load() : Promise.resolve(null)
-      ]);
+      case "models": return loadModels();
       case "provider": return providers.load();
     }
   }
@@ -454,16 +489,27 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   }
 
   const openConfirmation = useCallback((kind: ConfirmationKind, trigger?: HTMLButtonElement | null) => {
-    if (!canManage) return;
+    if (!canManage || !allowChanges) return;
     actionTriggerRef.current = trigger ?? anchorsRef.current[kind === "cli" ? "cli" : "memory"];
     setActionMessage(null);
     setConfirmation(kind);
-  }, [canManage]);
+  }, [canManage, allowChanges]);
 
+  useEffect(() => {
+    const dismiss = () => { setDrawerOpen(false); setActivePanel(null); };
+    window.addEventListener("space:navigation-open", dismiss);
+    return () => window.removeEventListener("space:navigation-open", dismiss);
+  }, []);
   useImperativeHandle(ref, () => ({
+    openResources: (trigger) => {
+      if (trigger) drawerTriggerRef.current = trigger;
+      if (onOpenResources) onOpenResources();
+      else setDrawerOpen(true);
+    },
+    openMetricDetails: (panel) => { setDrawerOpen(true); openPanel(panel); },
     openCliCleanup: (trigger) => openConfirmation("cli", trigger),
     openMemoryReclaim: (trigger) => openConfirmation("memory", trigger),
-  }), [openConfirmation]);
+  }), [openConfirmation, onOpenResources]);
 
   function closeConfirmation() {
     setConfirmation(null);
@@ -471,7 +517,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   }
 
   async function confirmAction() {
-    if (!confirmation || actionBusy) return;
+    if (!confirmation || actionBusy || !allowChanges || !canManage) return;
     setActionBusy(true);
     setActionMessage(null);
     try {
@@ -500,7 +546,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   }
 
   async function switchProvider(providerId: string) {
-    if (!isCodexEnabled || providerSwitchingId) return;
+    if (!isCodexEnabled || providerSwitchingId || !allowChanges || !canManage) return;
     const target = providers.data?.data.find((item) => item.providerId === providerId);
     setProviderSwitchingId(providerId);
     setActionMessage(null);
@@ -548,7 +594,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   }
 
   async function redeemReset(accountId: string) {
-    if (!isCodexEnabled || resetInFlightRef.current.has(accountId)) return;
+    if (!isCodexEnabled || resetInFlightRef.current.has(accountId) || !allowChanges || !canManage) return;
     const retainedAttempt = resetAttempts[accountId];
     const idempotencyKey = retainedAttempt?.status === "retry"
       ? retainedAttempt.idempotencyKey
@@ -611,6 +657,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const cpuValue = snapshot.cpu;
 
   function anchorEvents(panel: PanelKey) {
+    if (presentation === "drawer") return {};
     const hoverOpen = panel !== "cpu";
     return {
       onMouseEnter: hoverOpen ? () => openPanel(panel) : undefined,
@@ -626,6 +673,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         type="button"
         className="toolbar-metric-open-analysis"
         onClick={() => {
+          setDrawerOpen(false);
           closePanel();
           onOpenAnalytics(target);
         }}
@@ -665,13 +713,16 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
               <strong>{account.label}</strong>
               <button
                 type="button"
-                disabled={resetLabel(account.id).disabled}
+                disabled={!allowChanges || resetLabel(account.id).disabled}
                 title={resetLabel(account.id).disabled ? undefined : `Use the earliest-expiring reset credit for ${account.label}`}
                 onClick={() => void redeemReset(account.id)}
               >{resetLabel(account.id).label}</button>
             </div>
             <span>5h {formatPercent(account.fiveHourRemainingPercent)} · week {formatPercent(account.weeklyRemainingPercent)}</span>
             <span>{formatWeeklyReset(account.weeklyResetAt)}</span>
+            {account.fiveHourResetAt && (account.fiveHourRemainingPercent ?? 0) < CODEX_EXHAUSTION_THRESHOLD_PERCENT ? (
+              <span>{formatWeeklyReset(account.fiveHourResetAt).replace("week resets", "5h resets")}</span>
+            ) : null}
           </li>)}
           {!accounts.data.data.length ? <li><span>No enabled account samples.</span></li> : null}
         </ul> : null}
@@ -846,7 +897,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
               type="button"
               role="menuitemradio"
               aria-checked={provider.isCurrent}
-              disabled={provider.isCurrent || Boolean(providerSwitchingId)}
+              disabled={!allowChanges || provider.isCurrent || Boolean(providerSwitchingId)}
               title={provider.reason ?? undefined}
               onClick={() => void switchProvider(provider.providerId)}
             >
@@ -869,8 +920,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     models: "Active model details",
   };
 
-  return <>
-    <section className="toolbar-lb-strip toolbar-metrics-strip" aria-label={roomName ? `Room Codex LB ${roomName}` : "Toolbar system metrics"}>
+  const metricStrip = <section className="toolbar-lb-strip toolbar-metrics-strip" aria-label={roomName ? `Room Codex LB ${roomName}` : "Toolbar system metrics"}>
       <button
         ref={(node) => { anchorsRef.current.accounts = node; }}
         type="button"
@@ -880,8 +930,21 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         aria-controls="toolbar-metric-panel-accounts"
         disabled={!isCodexEnabled}
         title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
+        onClick={() => openPanel("accounts")}
         {...anchorEvents("accounts")}
-      ><small>ALL</small><strong>{snapshot.all}</strong></button>
+      ><small>{presentation === "drawer" ? "Account usage" : "ALL"}</small><strong>{snapshot.all}</strong></button>
+      {cooldown ? (
+        <button
+          type="button"
+          className="toolbar-lb-badge toolbar-metric-trigger tone-warn"
+          aria-label={`Reset in ${cooldown.formatted}`}
+          aria-expanded={activePanel === "accounts"}
+          aria-controls="toolbar-metric-panel-accounts"
+          title={`Next Codex token reset: ${cooldown.formatted}${cooldown.accountLabel ? ` (${cooldown.accountLabel})` : ""}`}
+          onClick={() => openPanel("accounts")}
+          {...anchorEvents("accounts")}
+        ><small>{presentation === "drawer" ? "Token reset" : "RST"}</small><strong>{cooldown.formatted}</strong></button>
+      ) : null}
       <button
         ref={(node) => { anchorsRef.current.cli = node; }}
         type="button"
@@ -889,9 +952,9 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         aria-label={host ? `CLI ${host.cliSessions.active} running, ${host.cliSessions.attached} attached, ${host.cliSessions.detached} detached` : "CLI unavailable"}
         aria-expanded={activePanel === "cli"}
         aria-controls="toolbar-metric-panel-cli"
-        onClick={(event: MouseEvent<HTMLButtonElement>) => openConfirmation("cli", event.currentTarget)}
+        onClick={(event: MouseEvent<HTMLButtonElement>) => presentation === "drawer" ? openPanel("cli") : openConfirmation("cli", event.currentTarget)}
         {...anchorEvents("cli")}
-      ><small>CLI</small><strong>{snapshot.cli}</strong></button>
+      ><small>{presentation === "drawer" ? "CLI sessions" : "CLI"}</small><strong>{snapshot.cli}</strong></button>
       <button
         ref={(node) => { anchorsRef.current.memory = node; }}
         type="button"
@@ -899,9 +962,9 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         aria-label={host ? `RAM ${ramValue}, ${formatBytes(host.memory.usedBytes)} of ${formatBytes(host.memory.totalBytes)}` : "RAM unavailable"}
         aria-expanded={activePanel === "memory"}
         aria-controls="toolbar-metric-panel-memory"
-        onClick={(event: MouseEvent<HTMLButtonElement>) => openConfirmation("memory", event.currentTarget)}
+        onClick={(event: MouseEvent<HTMLButtonElement>) => presentation === "drawer" ? openPanel("memory") : openConfirmation("memory", event.currentTarget)}
         {...anchorEvents("memory")}
-      ><small>RAM</small><strong>{ramValue}</strong></button>
+      ><small>{presentation === "drawer" ? "Memory & storage" : "RAM"}</small><strong>{ramValue}</strong></button>
       <button
         ref={(node) => { anchorsRef.current.cpu = node; }}
         type="button"
@@ -931,7 +994,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
             : `RTT: ${rtt.value} ms · ${rtt.status[0]?.toUpperCase()}${rtt.status.slice(1)}`}
         onClick={() => openPanel("rtt")}
         {...anchorEvents("rtt")}
-      ><small>RTT</small><strong data-sensitive-ignore>{rtt.value}</strong></button>
+      ><small>{presentation === "drawer" ? "Network latency" : "RTT"}</small><strong data-sensitive-ignore>{rtt.value}</strong></button>
       <button
         ref={(node) => { anchorsRef.current.models = node; }}
         type="button"
@@ -942,7 +1005,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         title="Global active models (last 10 min)"
         onClick={() => openPanel("models")}
         {...anchorEvents("models")}
-      ><small>MDL</small><strong data-sensitive-ignore>{modelBadge}</strong></button>
+      ><small>{presentation === "drawer" ? "Active models" : "MDL"}</small><strong data-sensitive-ignore>{modelBadge}</strong></button>
       <button
         ref={(node) => { anchorsRef.current.provider = node; }}
         type="button"
@@ -957,9 +1020,23 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           if (canManage) setProviderMenuFocusRequested(true);
         }}
         {...anchorEvents("provider")}
-      ><small>{providerCode}</small></button>
-    </section>
-    {activePanel ? <MetricPopover
+      ><small>{presentation === "drawer" ? "Provider" : providerCode}</small>{presentation === "drawer" ? <strong>{providerCode}</strong> : null}</button>
+    </section>;
+  return <>
+    {presentation === "drawer" ? <>
+      <button hidden={hideTrigger} style={hideTrigger ? { display: "none" } : undefined} ref={drawerTriggerRef} className="resources-trigger" type="button"
+        aria-expanded={drawerOpen} aria-controls="resources-drawer"
+        onClick={() => {
+          if (onOpenResources) { setDrawerOpen(false); closePanel(); onOpenResources(); return; }
+          setDrawerOpen(!drawerOpen);
+          if (drawerOpen) closePanel();
+        }}><Activity aria-hidden="true" />Resources</button>
+      {drawerOpen ? <ResourcesDrawer triggerRef={drawerTriggerRef} onClose={() => { setDrawerOpen(false); closePanel(); }}>
+        {metricStrip}
+        {activePanel ? <section className="resources-drawer-details" aria-label={panelLabels[activePanel]}>{panelContent()}</section> : null}
+      </ResourcesDrawer> : null}
+    </> : metricStrip}
+    {activePanel && presentation === "strip" ? <MetricPopover
       anchor={anchorsRef.current[activePanel]}
       id={`toolbar-metric-panel-${activePanel}`}
       label={panelLabels[activePanel]}

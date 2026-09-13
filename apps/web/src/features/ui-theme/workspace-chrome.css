@@ -1,0 +1,274 @@
+/* Workspace controls own space; they must never cover a pane's title or input. */
+.space-shell .board {
+  display: flex;
+  flex-direction: column;
+}
+.space-shell .board > .room-runtime-stack { flex: 1 1 0; min-height: 0; }
+.space-shell .board > .board-toolbar {
+  position: relative;
+  inset: auto;
+  flex: 0 0 auto;
+  width: 100%;
+  box-shadow: none;
+  z-index: 70;
+}
+.space-shell .board > :not(.room-runtime-stack) { flex-shrink: 0; }
+.space-shell .board-toolbar .toolbar-actions-fixed {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.space-shell[data-workspace-rail="true"] {
+  padding-right: calc(64px + env(safe-area-inset-right));
+}
+.space-shell .room-toolbar-collapsed {
+  --toolbar-control-size: 44px;
+  --toolbar-icon-size: 20px;
+  width: 56px;
+  right: max(4px, env(safe-area-inset-right));
+  top: auto;
+  bottom: max(8px, env(safe-area-inset-bottom));
+  max-height: calc(100dvh - 24px);
+  padding: 4px;
+  align-items: center;
+  gap: 4px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.space-shell .health-indicator-rail,
+.space-shell .health-indicator-rail.is-offset {
+  top: max(8px, env(safe-area-inset-top));
+  right: max(4px, env(safe-area-inset-right));
+  width: 56px;
+  padding: 4px;
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.space-shell .health-indicator { width: 48px; height: 44px; min-height: 44px; }
+.space-shell:has(.room-toolbar-collapsed) .health-indicator-rail { max-height: min(460px, calc(100dvh - 360px)); }
+.space-shell:has(.health-indicator-rail) .room-toolbar-collapsed {
+  top: auto;
+  bottom: max(8px, env(safe-area-inset-bottom));
+  max-height: calc(100dvh - var(--resource-rail-height, 52px) - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+}
+.space-shell .health-indicator-rail::-webkit-scrollbar,
+.space-shell .room-toolbar-collapsed::-webkit-scrollbar { display: none; }
+.space-shell .health-rail-expander {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  min-height: 44px;
+}
+.space-shell .health-rail-expander svg { width: 20px; height: 20px; }
+.space-shell .health-rail-expander { display: none; }
+.space-shell .room-rail-more { display: none; }
+@media (max-height: 850px), (max-width: 768px) {
+  .space-shell .health-rail-expander { display: grid; }
+  .space-shell .health-indicator-rail:not(.is-expanded) .health-rail-items { display: none; }
+  .space-shell .room-toolbar-collapsed > .room-rail-secondary,
+  .space-shell .room-toolbar-collapsed > .desktop-create-rail:has([aria-label="Show docks"]),
+  .space-shell .room-toolbar-collapsed > .desktop-create-rail:has([aria-label="Workspace tools"]) { display: none; }
+  .space-shell .room-rail-more { display: contents; }
+}
+.space-shell .pane-card > header { position: relative; min-width: 0; }
+.space-shell .pane-actions-fixed { flex-shrink: 0; }
+.space-shell .pane-title-block, .space-shell .pane-title-row { min-width: 0; }
+.pane-title-details,
+.space-shell .pane-title-details {
+  position: relative;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+.pane-title-details > summary,
+.space-shell .pane-title-details > summary {
+  list-style: none;
+  overflow: hidden;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+}
+.pane-title-details > summary::-webkit-details-marker,
+.space-shell .pane-title-details > summary::-webkit-details-marker { display: none; }
+.pane-title-details > summary:focus-visible,
+.space-shell .pane-title-details > summary:focus-visible { outline: 2px solid var(--room-accent, #79b8ff); outline-offset: -2px; }
+.pane-title-details[open],
+.space-shell .pane-title-details[open] { position: static; }
+.pane-title-detail-content {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% - 4px);
+  left: 8px;
+  right: 8px;
+  display: flex;
+  align-items: start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 8px;
+  background: var(--room-surface, #141617);
+  box-shadow: 0 8px 24px #0005;
+}
+.pane-title-detail-content > span { flex: 1; min-width: 0; overflow-wrap: anywhere; user-select: text; }
+.pane-title-detail-content > button { flex: none; min-height: 36px; }
+@media (max-width: 768px), (pointer: coarse) {
+  .pane-title-detail-content > button { min-height: 44px; min-width: 44px; }
+  .space-shell .pane-actions-fixed > button,
+  .space-shell .pane-actions-fixed > .pane-actions-overflow > button,
+  .space-shell .board-toolbar button { min-height: 44px; min-width: 44px; }
+  .space-shell .board-title-row h2 { font-size: 1rem; }
+  .space-shell .pane-card > header,
+  .space-shell .pane-card > header.is-actions-stacked {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "badge title fixed";
+  }
+  .space-shell .pane-card > header > .pane-actions { display: none; }
+}
+@container pane-card (max-width: 420px) {
+  .space-shell .pane-card > header,
+  .space-shell .pane-card > header.is-actions-stacked {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "badge title fixed";
+    gap: 4px;
+    padding: 6px;
+  }
+  .space-shell .pane-card > header > .pane-actions { display: none; }
+}
+
+.space-shell .board-toolbar { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; padding: 8px; }
+.space-shell .board-toolbar-main { flex: 1 1 auto; min-width: 0; }
+.space-shell .board-title-row, .space-shell .board-title-heading { min-width: 0; flex-wrap: nowrap; }
+.space-shell .board-title-heading h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.space-shell .board-toolbar .toolbar-actions { display: flex; width: auto; min-width: 0; flex: 0 0 auto; flex-wrap: nowrap; gap: 6px; }
+.space-shell .board-toolbar .toolbar-actions-scroll { display: flex; width: auto; overflow: visible; flex: none; flex-wrap: nowrap; }
+@media (max-width: 1100px) {
+  .space-shell .board-title-nav, .space-shell .room-title-nav, .space-shell .room-title-edit { display: none; }
+  .space-shell .board-toolbar .resources-trigger { display: none; }
+  .space-shell .board-toolbar { flex-wrap: wrap; }
+  .space-shell .board-toolbar-main { flex: 1 1 110px; }
+  .space-shell .board-toolbar .toolbar-actions { flex: 0 1 auto; }
+}
+
+.space-shell .board-toolbar .desktop-navigation > button {
+  width: auto; flex: 0 0 auto; min-width: 0; padding: 8px 10px; gap: 4px;
+}
+.space-shell .board-toolbar .desktop-navigation .desktop-mode-switch { padding: 8px; min-width: 36px; }
+@media (max-width: 768px) {
+  .space-shell .board-toolbar .desktop-navigation > button { min-height: 44px; }
+  .space-shell .board-toolbar .desktop-navigation .desktop-mode-switch { min-width: 44px; }
+}
+
+/* Fullscreen pane navigation is a primary control even in a narrow pane. */
+.space-shell .pane-card > header:has(.pane-fullscreen-nav) {
+  grid-template-areas: "badge title fixed" "actions actions actions";
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+.space-shell .pane-card > header > .pane-actions:has(.pane-fullscreen-nav) { display: flex; }
+.space-shell .pane-card > header > .pane-actions:has(.pane-fullscreen-nav) > button { display: none; }
+
+/* A scrolled grid must size rows to its cards, including tall tablet chat panes. */
+.space-shell .pane-grid { min-height: 0; overflow: auto; }
+.space-shell[data-shell-mode="tablet"] .pane-grid[data-column-count="1"]:not(.maximized):not([data-fullscreen-layout="true"]) {
+  grid-auto-rows: minmax(34rem, auto);
+}
+body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility: hidden; }
+
+/* Room discovery filters only the list; mounted room runtimes stay independent. */
+.rooms-controls { display: grid; gap: 8px; min-width: 0; }
+.rooms-search { display: flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--room-border, #343638); border-radius: 8px; }
+.rooms-search > svg { width: 16px; height: 16px; flex: none; }
+.rooms-search > input { min-width: 0; width: 100%; min-height: 40px; border: 0; background: transparent; color: inherit; }
+.rooms-filter { display: flex; gap: 4px; }
+.rooms-filter > button { flex: 1; padding: 6px; min-height: 36px; border: 1px solid var(--room-border, #343638); border-radius: 6px; background: transparent; color: var(--room-muted, #a2a7ad); font-size: .7rem; }
+.rooms-filter > button[aria-pressed="true"] { color: var(--room-text, #f4efe5); background: var(--room-accent-soft, #202425); border-color: var(--room-accent, #79b8ff); }
+.rooms-filter-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: .75rem; }
+.rooms-filter-summary > button { padding: 5px; min-height: 32px; }
+.rooms-empty { margin: 12px 0; color: var(--room-muted, #a2a7ad); font-size: .8rem; }
+.room-attention-badge { font-size: .66rem; border-radius: 4px; padding: 2px 4px; color: var(--room-text, #f4efe5); border: 1px solid #a77836; }
+.space-shell .room-pane-composer-toggle { min-height: 44px; min-width: 44px; }
+.mobile-pane-navigation { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.mobile-pane-navigation > button { flex: none; display: grid; place-items: center; width: 44px; height: 44px; }
+.mobile-pane-navigation > button > svg { width: 18px; height: 18px; }
+.mobile-pane-navigation > label { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.mobile-pane-navigation > label > span { flex: none; font-size: .7rem; color: var(--room-muted, #a2a7ad); }
+.mobile-pane-navigation select { flex: 1; width: 100%; min-width: 0; min-height: 44px; padding: 8px 4px; border: 1px solid var(--room-border, #343638); border-radius: 7px; color: var(--room-text, #f4efe5); background: var(--room-surface, #141617); font-size: 16px; text-overflow: ellipsis; }
+@media (pointer: coarse), (max-width: 768px) {
+  .rooms-search > input { min-height: 44px; font-size: 16px; }
+  .rooms-filter > button, .rooms-filter-summary > button { min-height: 44px; }
+}
+
+.surface-load-error { margin: 16px; padding: 20px; border: 1px solid var(--modern-border, #454545); border-radius: 12px; background: var(--modern-surface, #171717); color: var(--modern-text, #f5f5f5); font: 14px/1.5 system-ui, sans-serif; }
+.surface-load-error button { min-height: 44px; margin: 4px 8px 0 0; padding: 8px 16px; border: 1px solid #555; border-radius: 8px; background: #292929; color: #fff; cursor: pointer; }
+.action-disabled-reason { display: block; margin-top: 4px; font-size: 11px; line-height: 1.4; white-space: normal; color: var(--modern-muted, #aaa); }
+
+/* Classic keeps mobile pane navigation on tablets; its dock need not cover the board. */
+@media (min-width: 768px) {
+  .space-shell .side-surface-drawer,
+  .space-shell[data-shell-mode="mobile"] .side-surface-drawer {
+    width: min(24rem, calc(100vw - 1rem));
+    max-width: 100vw;
+    inset: 0 auto 0 0;
+    border-right: 1px solid var(--modern-border, #2b2e30);
+  }
+}
+
+/* Task metadata stays inside the existing pane header; terminal hosts are untouched. */
+.space-shell .pane-title-details .pane-title-text { font-size: .8125rem; font-weight: 600; line-height: 1.3; }
+.space-shell .task-title-popover { position: fixed; margin: 0; inset: auto; width: min(520px, calc(100vw - 32px)); max-width: calc(100vw - 32px); box-sizing: border-box; max-height: min(65vh, 560px); overflow-y: auto; color: inherit; }
+.task-title-body { flex: 1; min-width: 0; user-select: text; overflow-wrap: anywhere; }
+.task-title-body p { margin: 0 0 .65rem; white-space: normal; }
+.task-title-heading { font-weight: 600; }
+.task-title-description { font-size: .875rem; line-height: 1.5; }
+.task-title-body ol { padding-left: 1.25rem; font-size: .8125rem; line-height: 1.5; }
+.task-title-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.task-title-preferences { display: grid; gap: .5rem; margin-top: .75rem; }
+.task-title-preferences select { max-width: 100%; }
+.task-title-settings { display: grid; gap: .75rem; padding-block: 1rem; }
+.task-title-settings label { display: grid; gap: .35rem; }
+.task-title-settings table { width: 100%; font-size: .8125rem; text-align: left; }
+
+/* Wheel selection remains visible after mouse-originated focus. */
+.pane-layout-options > button[data-wheel-selected="true"],
+.desktop-navigation-menu button[data-wheel-selected="true"] {
+  outline: 2px solid var(--room-accent, #79b8ff);
+  outline-offset: -2px;
+  background: var(--room-surface-soft, #252a30);
+}
+
+.health-indicator-rail button[data-dragging="true"],
+.room-toolbar-floating-controls button[data-dragging="true"] { opacity: .45; }
+.health-indicator-rail button[data-drop-position="before"],
+.room-toolbar-floating-controls button[data-drop-position="before"] { box-shadow: 0 -3px 0 var(--room-accent, #79b8ff); }
+.health-indicator-rail button[data-drop-position="after"],
+.room-toolbar-floating-controls button[data-drop-position="after"] { box-shadow: 0 3px 0 var(--room-accent, #79b8ff); }
+
+.health-indicator-rail .minimized-pane-bar-toggle {
+  width: 52px;
+  height: 52px;
+  min-height: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--health-border, #2a3949);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--health-surface, #131b24) 95%, transparent);
+  color: var(--health-text, #e8eef5);
+  box-shadow: 0 5px 16px #0003;
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  padding: 4px;
+  box-sizing: border-box;
+}
+.space-shell .health-indicator-rail .minimized-pane-bar-toggle {
+  width: 48px;
+  height: 44px;
+  min-height: 44px;
+}
+

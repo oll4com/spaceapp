@@ -201,6 +201,7 @@
 
 .shared-chat-composer textarea {
   width: 100%;
+  field-sizing: content;
   min-height: 5rem;
   max-height: 10rem;
   resize: vertical;

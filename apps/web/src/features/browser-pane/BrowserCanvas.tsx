@@ -5,8 +5,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
-  type PointerEvent,
-  type WheelEvent
+  type PointerEvent
 } from "react";
 
 export interface BrowserViewportSize {
@@ -49,7 +48,7 @@ export type BrowserCanvasInput =
     };
 
 export interface BrowserCanvasHandle {
-  present(source: string | Blob, capturedAt?: string): void;
+  present(source: string | Blob, capturedAt?: string, viewport?: BrowserViewportSize, consumed?: () => void): void;
   showHistory(index: number | null): void;
   historyLength(): number;
   focus(): void;
@@ -63,15 +62,19 @@ interface BrowserCanvasProps {
   capturedAt?: string | null;
   historyLimit?: number;
   onInput(input: BrowserCanvasInput): void;
+  onPresented?(): void;
 }
 
 interface DecodedFrame {
+  viewport?: BrowserViewportSize;
   capturedAt: string;
   image: CanvasImageSource;
   dispose(): void;
 }
 
 interface PendingFrame {
+  consumed?: () => void;
+  viewport: BrowserViewportSize;
   source: string | Blob;
   capturedAt: string;
 }
@@ -170,12 +173,14 @@ async function decodeFrame(source: string | Blob): Promise<DecodedFrame> {
 }
 
 export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>(function BrowserCanvas(
-  { ariaLabel, viewportSize, interactive, source, capturedAt, historyLimit = MAX_FRAME_HISTORY, onInput },
+  { ariaLabel, viewportSize, interactive, source, capturedAt, historyLimit = 1, onInput, onPresented },
   forwardedRef
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewportRef = useRef(viewportSize);
   const inputRef = useRef(onInput);
+  const presentedRef = useRef(onPresented);
+  const historyLimitRef = useRef(historyLimit);
   const historyRef = useRef<DecodedFrame[]>([]);
   const pendingRef = useRef<PendingFrame | null>(null);
   const decodingRef = useRef(false);
@@ -186,8 +191,11 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
   const hasFrameRef = useRef(false);
   const [hasFrame, setHasFrame] = useState(false);
 
-  viewportRef.current = viewportSize;
+  const defaultViewportRef = useRef(viewportSize);
+  defaultViewportRef.current = viewportSize;
   inputRef.current = onInput;
+  presentedRef.current = onPresented;
+  historyLimitRef.current = historyLimit;
 
   function draw(frame: DecodedFrame | undefined) {
     const canvas = canvasRef.current;
@@ -202,6 +210,7 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
     context.setTransform(density, 0, 0, density, 0, 0);
     context.fillStyle = "#070909";
     context.fillRect(0, 0, width, height);
+    viewportRef.current = frame.viewport ?? defaultViewportRef.current;
     const fitted = fitViewportIntoRect({ left: 0, top: 0, width, height }, viewportRef.current);
     context.drawImage(frame.image, fitted.left, fitted.top, fitted.width, fitted.height);
   }
@@ -217,17 +226,24 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
         try {
           decoded = await decodeFrame(pending.source);
         } catch {
+          pending.consumed?.();
           continue;
         }
         decoded.capturedAt = pending.capturedAt;
+        decoded.viewport = pending.viewport;
         if (disposedRef.current) {
           decoded.dispose();
+          pending.consumed?.();
           continue;
         }
         historyRef.current.push(decoded);
-        const effectiveLimit = Math.max(1, historyLimit);
+        const effectiveLimit = Math.min(MAX_FRAME_HISTORY, Math.max(1, historyLimitRef.current));
         while (historyRef.current.length > effectiveLimit) historyRef.current.shift()?.dispose();
-        if (selectedIndexRef.current === null) draw(decoded);
+        if (selectedIndexRef.current === null) {
+          draw(decoded);
+          presentedRef.current?.();
+        }
+        pending.consumed?.();
         if (!hasFrameRef.current) {
           hasFrameRef.current = true;
           setHasFrame(true);
@@ -239,8 +255,9 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
     }
   }
 
-  function present(nextSource: string | Blob, nextCapturedAt = new Date().toISOString()) {
-    pendingRef.current = { source: nextSource, capturedAt: nextCapturedAt };
+  function present(nextSource: string | Blob, nextCapturedAt = new Date().toISOString(), viewport = defaultViewportRef.current, consumed?: () => void) {
+    pendingRef.current?.consumed?.();
+    pendingRef.current = { source: nextSource, capturedAt: nextCapturedAt, viewport, consumed };
     void pumpFrames();
   }
 
@@ -253,6 +270,15 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
     historyLength: () => historyRef.current.length,
     focus: () => canvasRef.current?.focus()
   }));
+
+  useEffect(() => {
+    const limit = Math.min(MAX_FRAME_HISTORY, Math.max(1, historyLimit));
+    while (historyRef.current.length > limit) historyRef.current.shift()?.dispose();
+    if (limit === 1) {
+      selectedIndexRef.current = null;
+      draw(historyRef.current.at(-1));
+    }
+  }, [historyLimit]);
 
   useEffect(() => {
     const identity = source ? `${capturedAt ?? ""}:${source}` : null;
@@ -280,12 +306,31 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
 
   useEffect(() => () => {
     disposedRef.current = true;
+    pendingRef.current?.consumed?.();
     pendingRef.current = null;
     for (const frame of historyRef.current) frame.dispose();
     historyRef.current = [];
   }, []);
 
-  function point(event: PointerEvent | WheelEvent) {
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !interactive) return;
+    // React's delegated wheel listener is passive. A local non-passive
+    // listener keeps scrolling inside Chrome, even in a scrollable Space pane.
+    const wheel = (event: globalThis.WheelEvent) => {
+      const mapped = point(event);
+      if (!mapped) return;
+      event.preventDefault();
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewportRef.current.height : 1;
+      inputRef.current({ type: "POINTER", eventType: "mouseWheel", ...mapped, button: "none",
+        deltaX: Math.max(-10000, Math.min(10000, event.deltaX * unit)),
+        deltaY: Math.max(-10000, Math.min(10000, event.deltaY * unit)), modifiers: modifierMaskFromEvent(event) });
+    };
+    canvas.addEventListener("wheel", wheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", wheel);
+  }, [interactive]);
+
+  function point(event: { clientX: number; clientY: number }) {
     const canvas = canvasRef.current;
     return canvas ? mapClientPointToViewport(event.clientX, event.clientY, canvas.getBoundingClientRect(), viewportRef.current) : null;
   }
@@ -366,21 +411,6 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
           lastPointerPointRef.current.delete(event.pointerId);
           event.currentTarget.releasePointerCapture?.(event.pointerId);
         }}
-        onWheel={(event) => {
-          if (!interactive) return;
-          const mapped = point(event);
-          if (!mapped) return;
-          event.preventDefault();
-          inputRef.current({
-            type: "POINTER",
-            eventType: "mouseWheel",
-            ...mapped,
-            button: "none",
-            deltaX: Math.round(event.deltaX),
-            deltaY: Math.round(event.deltaY),
-            modifiers: modifierMaskFromEvent(event)
-          });
-        }}
         onKeyDown={(event) => {
           if (!interactive || event.nativeEvent.isComposing) return;
           const isPasteShortcut =
@@ -392,7 +422,7 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
             eventType: "keyDown",
             key: event.key,
             code: event.code || undefined,
-            ...(event.key.length === 1 ? { text: event.key } : {}),
+            ...(event.key === "Enter" ? { text: "\r" } : event.key.length === 1 ? { text: event.key } : {}),
             modifiers: modifierMaskFromEvent(event)
           });
         }}

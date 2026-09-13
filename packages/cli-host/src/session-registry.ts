@@ -47,6 +47,8 @@ interface ManagedSession {
   detachedAtMs: number | null;
   terminationRequested: boolean;
   pendingHiddenEchoes: Array<{ value: string; remaining: string; expiresAtMs: number }>;
+  pendingHiddenTail: string;
+  pendingHiddenTailTimer: ReturnType<typeof setTimeout> | null;
   acceptedInputs: Map<string, { acceptedAtMs: number; payloadHash: string }>;
   startedAt: string;
   endedAt: string | null;
@@ -384,12 +386,18 @@ export class CliHostSessionRegistry {
       detachedAtMs: null,
       terminationRequested: false,
       pendingHiddenEchoes: [],
+      pendingHiddenTail: "",
+      pendingHiddenTailTimer: null,
       acceptedInputs: new Map(),
       startedAt: new Date().toISOString(),
       endedAt: null
     };
     pty.onData((data) => this.recordOutput(managed, data));
     pty.onExit((event) => {
+      if (managed.pendingHiddenTailTimer !== null) {
+        clearTimeout(managed.pendingHiddenTailTimer);
+        managed.pendingHiddenTailTimer = null;
+      }
       managed.exitCode = event.exitCode;
       managed.signal = event.signal ?? null;
       managed.status = event.exitCode === 0 || event.signal ? "EXITED" : "ERROR";
@@ -412,7 +420,33 @@ export class CliHostSessionRegistry {
   }
 
   private recordOutput(managed: ManagedSession, data: string): void {
-    const visibleData = consumeHiddenEcho(managed.pendingHiddenEchoes, data);
+    if (managed.pendingHiddenTailTimer !== null) {
+      clearTimeout(managed.pendingHiddenTailTimer);
+      managed.pendingHiddenTailTimer = null;
+    }
+    const raw = managed.pendingHiddenTail ? `${managed.pendingHiddenTail}${data}` : data;
+    managed.pendingHiddenTail = "";
+    let visibleData = consumeHiddenEcho(managed.pendingHiddenEchoes, raw);
+    if (visibleData.includes("/cli-uploads/")) {
+      const cutoff = isUploadPathCutoff(visibleData);
+      if (cutoff >= 0) {
+        managed.pendingHiddenTail = visibleData.slice(cutoff);
+        visibleData = visibleData.slice(0, cutoff);
+        managed.pendingHiddenTailTimer = setTimeout(() => {
+          managed.pendingHiddenTailTimer = null;
+          const tail = managed.pendingHiddenTail;
+          managed.pendingHiddenTail = "";
+          if (tail) {
+            const strippedTail = tail.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
+            if (strippedTail && !strippedTail.includes("/cli-uploads/") && isUploadPathCutoff(strippedTail) < 0) {
+              for (let offset = 0; offset < strippedTail.length; offset += 8_000) {
+                this.recordOutputChunk(managed, strippedTail.slice(offset, offset + 8_000));
+              }
+            }
+          }
+        }, 1500);
+      }
+    }
     if (!visibleData) return;
     for (let offset = 0; offset < visibleData.length; offset += 8_000) {
       this.recordOutputChunk(managed, visibleData.slice(offset, offset + 8_000));
@@ -488,7 +522,34 @@ export class CliHostSessionRegistry {
   }
 }
 
-function hiddenEchoCandidates(data: string): string[] {
+export const CLI_UPLOAD_WRAPPED_PATH_PATTERN =
+  /(?:[ \t]*(?:\r?\n|\r)[ \t]*|\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t])*['"]?(?:\/srv\/space\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t]*(?:\r?\n|\r)[ \t]*(?:\x1b\[[0-9;?]*[ -/]*[@-~])*)+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
+
+export function isUploadPathCutoff(text: string): number {
+  const marker = "/cli-uploads/";
+  const index = text.lastIndexOf(marker);
+  if (index === -1) {
+    const fullPrefix = "/opt/spaceapp/var/artifacts/cli-uploads/";
+    for (let len = Math.min(text.length, fullPrefix.length); len >= 8; len -= 1) {
+      if (text.endsWith(fullPrefix.slice(0, len))) return text.length - len;
+    }
+    return -1;
+  }
+  const after = text.slice(index);
+  if (/\.[a-zA-Z0-9]{1,10}(?:[\s'"]|$)/.test(after)) return -1;
+  let start = index;
+  const fullPrefix = "/opt/spaceapp/var/artifacts";
+  if (start >= fullPrefix.length && text.slice(start - fullPrefix.length, start) === fullPrefix) {
+    start -= fullPrefix.length;
+  }
+  let lineStart = Math.max(text.lastIndexOf("\n", start), text.lastIndexOf("\r", start));
+  if (lineStart > 0 && text[lineStart] === "\n" && text[lineStart - 1] === "\r") {
+    lineStart -= 1;
+  }
+  return lineStart >= 0 ? lineStart : start;
+}
+
+export function hiddenEchoCandidates(data: string): string[] {
   const candidates = new Set<string>();
   if (data) candidates.add(data);
   for (const token of data.split(/\s+/)) {
@@ -497,15 +558,19 @@ function hiddenEchoCandidates(data: string): string[] {
   return [...candidates];
 }
 
-function consumeHiddenEcho(
+export function consumeHiddenEcho(
   pendingHiddenEchoes: Array<{ value: string; remaining: string; expiresAtMs: number }>,
   data: string
 ): string {
   const active = pendingHiddenEchoes.filter((item) => item.remaining && item.expiresAtMs > Date.now());
   pendingHiddenEchoes.splice(0, pendingHiddenEchoes.length, ...active);
   let output = data;
+  if (output.includes("/cli-uploads/") || active.some((item) => item.value.includes("/cli-uploads/"))) {
+    output = output.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
+  }
   for (const pending of active) {
     if (!output) break;
+    if (pending.value.includes("/cli-uploads/")) continue;
     const exactIndex = output.indexOf(pending.remaining);
     if (exactIndex >= 0) {
       output = `${output.slice(0, exactIndex)}${output.slice(exactIndex + pending.remaining.length)}`;

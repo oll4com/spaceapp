@@ -40,13 +40,14 @@ export function UiThemeSettingsCard({
         >
           <option value="classic">Classic</option>
           <option value="modern">Modern</option>
+          <option value="codex">Codex LB</option>
         </select>
       </label>
 
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy">
           <strong>Color mode</strong>
-          <small>Available with the Modern interface.</small>
+          <small>Modern supports light and dark. Classic and Codex LB use dark colors.</small>
         </span>
         <select
           aria-label="Modern color mode"
@@ -68,13 +69,12 @@ export function UiThemeSettingsCard({
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy">
           <strong>Icon pack</strong>
-          <small>Available with the Modern interface.</small>
+          <small>Available in every interface theme.</small>
         </span>
         <select
-          aria-label="Modern icon pack"
+          aria-label="Icon pack"
           name="modern-icon-pack"
           value={currentIconPack}
-          disabled={currentTheme !== "modern"}
           onChange={(event) => onChange({
             appearance: currentAppearance,
             iconPack: event.target.value as ModernIconPack,

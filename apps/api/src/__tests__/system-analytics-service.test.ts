@@ -19,6 +19,7 @@ function fixture() {
     kind: "WORKSPACE",
     order: 0,
     paneLayoutColumns: 2,
+    paneLayoutHeight: 1,
     createdAt: sampledAt,
     updatedAt: sampledAt,
     archivedAt: null,
@@ -247,6 +248,81 @@ describe("SystemAnalyticsService", () => {
       summary: { running: 1 },
       sessions: [expect.objectContaining({ sessionId: input.live.cliSessionId, paneTitle: input.pane.title })]
     });
+    await service.dispose();
+  });
+
+  it("resolves unknown model IDs to default model names and computes token counts without unknowns", async () => {
+    const input = fixture();
+    const repository = new InMemorySystemAnalyticsRepository();
+    await repository.upsertModelEvents([
+      {
+        eventKey: "session:unknown:codex",
+        source: "session",
+        runtimeId: "cli:codex",
+        providerId: "codex-lb",
+        modelId: "unknown",
+        roomId: input.room.id,
+        paneId: input.pane.id,
+        sessionId: input.session.sessionId,
+        turnId: null,
+        status: "SESSION",
+        coverage: "SESSION_ONLY",
+        turnCount: 0,
+        startedAt: sampledAt,
+        endedAt: null,
+        tokensIn: null,
+        tokensOut: null,
+        tokensReasoning: null,
+        ttftMs: null,
+        durationMs: null,
+        updatedAt: sampledAt
+      },
+      {
+        eventKey: "codex:live:turn",
+        source: "codex",
+        runtimeId: "cli:codex",
+        providerId: "codex",
+        modelId: "gpt-5.6-sol",
+        roomId: input.room.id,
+        paneId: input.pane.id,
+        sessionId: input.session.sessionId,
+        turnId: "turn-1",
+        status: "COMPLETED",
+        coverage: "NATIVE",
+        turnCount: 1,
+        startedAt: sampledAt,
+        endedAt: sampledAt,
+        tokensIn: 5000,
+        tokensOut: 250,
+        tokensReasoning: 50,
+        ttftMs: 120,
+        durationMs: 300,
+        updatedAt: sampledAt
+      }
+    ]);
+    const service = new SystemAnalyticsService({
+      repository,
+      store: createStore(input),
+      liveSessions: async () => [input.live],
+      now: () => new Date(sampledAt),
+      coreCount: 4,
+      readProcessTable: async () => [],
+      readMeminfo: async () => "MemTotal: 1000 kB\nMemAvailable: 400 kB\nCached: 200 kB\nShmem: 10 kB\nSwapTotal: 100 kB\nSwapFree: 75 kB\n",
+      readProcStat: async () => "cpu  100 0 100 800 0 0 0 0 0 0\n"
+    });
+
+    await service.sample();
+    const response = await service.models("10m");
+    expect(response.models.some((m) => m.modelId === "unknown")).toBe(false);
+    const codexModel = response.models.find((m) => m.providerId === "codex");
+    expect(codexModel).toBeDefined();
+    expect(codexModel?.modelId).toBe("gpt-5.6-sol");
+    expect(codexModel?.tokensIn).toBe(5000);
+    expect(codexModel?.tokensOut).toBe(250);
+    const codexProvider = response.providers.find((p) => p.providerId === "codex");
+    expect(codexProvider).toBeDefined();
+    expect(codexProvider?.tokensIn).toBe(5000);
+    expect(codexProvider?.tokensOut).toBe(250);
     await service.dispose();
   });
 });

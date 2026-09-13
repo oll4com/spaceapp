@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
-import { CheckCheck, RefreshCw, X } from "lucide-react";
-import type { RefObject } from "react";
+import { Check as CheckCheck, RefreshCw, X } from "../ui-theme/app-icons.js";
+import { useEffect, useState, type ReactNode, type RefObject } from "react";
 import type { SetupOverview } from "@space/contracts";
 import { SetupConnectionCard } from "./SetupConnectionCard.js";
 import {
@@ -10,6 +10,8 @@ import {
 import "./setup-connections.css";
 
 interface SetupConnectionsWizardProps {
+  guided?: boolean;
+  connectionsContent?: ReactNode;
   checks: SetupConnectionChecksClient;
   open: boolean;
   finish: () => Promise<SetupOverview>;
@@ -30,6 +32,8 @@ function formatElapsed(totalSeconds: number): string {
 }
 
 export function SetupConnectionsWizard({
+  guided = false,
+  connectionsContent,
   checks,
   open,
   finish,
@@ -42,6 +46,14 @@ export function SetupConnectionsWizard({
   replayIntervalMs = 2_000,
   triggerRef
 }: SetupConnectionsWizardProps) {
+  const [step, setStep] = useState(0);
+  const [showAllTools, setShowAllTools] = useState(false);
+  const [connectionsVisited, setConnectionsVisited] = useState(false);
+  useEffect(() => { if (step === 2) setConnectionsVisited(true); }, [step]);
+  const steps = ["Welcome", "Tools", "Connections", "Ready"];
+  useEffect(() => {
+    if (open) { setStep(0); setShowAllTools(false); }
+  }, [open]);
   const wizard = useSetupConnectionsWizard({
     checks,
     finish,
@@ -68,6 +80,11 @@ export function SetupConnectionsWizard({
       .map((event) => event.connectionId)
   );
   const activeRun = wizard.checkRun?.status === "RUNNING";
+  const toolConnections = [...(wizard.overview?.connections ?? [])].sort((a, b) =>
+    Number(b.id === "cli:opencode") - Number(a.id === "cli:opencode"));
+  const visibleConnections = guided && !showAllTools && toolConnections.some(connection => connection.id === "cli:opencode")
+    ? toolConnections.filter(connection => connection.id === "cli:opencode")
+    : toolConnections;
 
   return createPortal(
     <div className="setup-connections-backdrop" onClick={wizard.dismiss}>
@@ -82,13 +99,13 @@ export function SetupConnectionsWizard({
       >
         <header className="setup-connections-header">
           <div>
-            <span>SpaceApp onboarding</span>
+            <span>Space setup</span>
             <h2 id="setup-connections-title" ref={wizard.headingRef} tabIndex={-1}>
               Setup &amp; connections
             </h2>
             <p>
-              Functional means the CLI is installed, launchable, and has a recognized credential.
-              Live verification is stronger provider evidence and is tracked separately.
+              {guided ? "Set up what you need now. You can return here to add more tools at any time." :
+                "Functional means the CLI is installed, launchable, and has a recognized credential. Live verification is stronger provider evidence and is tracked separately."}
             </p>
           </div>
           <button type="button" aria-label="Close Setup & connections" onClick={wizard.dismiss}>
@@ -96,6 +113,22 @@ export function SetupConnectionsWizard({
           </button>
         </header>
 
+        {guided ? <nav className="setup-guide-steps" aria-label="Setup steps">
+          {steps.map((label, index) => <button key={label} type="button" aria-current={step === index ? "step" : undefined}
+            onClick={() => setStep(index)}><span>{index + 1}</span>{label}</button>)}
+        </nav> : null}
+        {guided && step === 0 ? <div className="setup-guide-intro">
+          <h3>Your workspace, one step at a time</h3>
+          <p>Start with one coding assistant. Add other tools and connections whenever you need them.</p>
+          <dl>
+            <div><dt>Rooms</dt><dd>Separate workspaces for projects. Switch between them while your tools keep working.</dd></div>
+            <div><dt>Panes</dt><dd>A CLI, Chat, or Browser inside a room. Use Create to add one.</dd></div>
+            <div><dt>Docks</dt><dd>Open files, tasks, notes, and settings from the Workspace menu.</dd></div>
+          </dl>
+          <p>User mode keeps daily actions close. Administrators can switch to Admin mode for installation settings and maintenance.</p>
+        </div> : null}
+
+        <div hidden={guided && step !== 1} className="setup-guide-tools">
         <div className="setup-connections-summary" aria-label="CLI setup summary">
           <div>
             <strong>{summary.functional} of {summary.total} functional</strong>
@@ -160,6 +193,12 @@ export function SetupConnectionsWizard({
           </button>
         </div>
 
+        {guided ? <div className="setup-guide-tool-choice">
+          <p><strong>Recommended first tool: OpenCode</strong><br />Starts with the free DeepSeek V4 Flash model. Tools already set up stay ready.</p>
+          <button type="button" onClick={() => setShowAllTools(!showAllTools)}>
+            {showAllTools ? "Show recommended tool" : "Show all tools"}
+          </button>
+        </div> : null}
         <div className="setup-connections-list" aria-busy={wizard.loading}>
           {wizard.loading && !wizard.overview ? (
             <p className="setup-connections-empty" role="status">Detecting CLIs…</p>
@@ -172,7 +211,7 @@ export function SetupConnectionsWizard({
             </div>
           ) : null}
 
-          {wizard.overview?.connections.map((connection) => {
+          {visibleConnections.map((connection) => {
             const connectionEvents = wizard.checkEvents.filter((event) =>
               event.connectionId === connection.id
             );
@@ -197,11 +236,27 @@ export function SetupConnectionsWizard({
             );
           })}
         </div>
+        </div>
+
+        {guided ? <div hidden={step !== 2} className="setup-guide-connections">
+          <h3>Optional connections & defaults</h3>
+          <p>Open only what you want to configure. These settings are also available under Admin → Advanced settings.</p>
+          {connectionsVisited ? connectionsContent ?? <p>No additional connections are available for this account.</p> : null}
+        </div> : null}
+        {guided && step === 3 ? <div className="setup-guide-intro" aria-label="Setup result">
+          <h3>{summary.functional ? "You can start working" : "Continue when you are ready"}</h3>
+          <p>{summary.functional} of {summary.total} tools are ready to launch. {summary.needsSetup} still need setup.</p>
+          <p>Open Rooms to choose or create a workspace, then use Create to add a CLI, Chat, or Browser pane.</p>
+          <p>You can reopen this wizard from Help → Setup wizard. Optional connections can be added later.</p>
+        </div> : null}
 
         <footer className="setup-connections-footer">
+          {guided && step !== 1 && wizard.error ? <p role="alert" className="setup-connections-error">{wizard.error}</p> : null}
           <span>
             Finish for now closes this wizard without cancelling an active CLI check.
           </span>
+          {guided && step > 0 ? <button type="button" onClick={() => setStep(step - 1)}>Back</button> : null}
+          {guided && step < 3 ? <button type="button" onClick={() => setStep(step + 1)}>Continue</button> : null}
           <button
             type="button"
             disabled={wizard.finishPending}

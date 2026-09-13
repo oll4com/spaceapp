@@ -299,7 +299,17 @@ export function MaintenancePanel({
                 key={run.id}
                 onClick={() => void selectRun(run.id)}
               >
-                <span className={`admin-operation-status ${run.status.toLowerCase()}`}>{run.status}</span>
+                <span
+                  className={`admin-operation-status ${run.status.toLowerCase()}${
+                    run.status === "PARTIAL" && run.summary && /provider login|operator attention/i.test(run.summary)
+                      ? " auth-needed"
+                      : ""
+                  }`}
+                >
+                  {run.status === "PARTIAL" && run.summary && /provider login|operator attention/i.test(run.summary)
+                    ? "PARTIAL · AUTH NEEDED"
+                    : run.status}
+                </span>
                 <strong>{run.operationType === "CLI_MAINTENANCE_REPAIR" ? "Health & repair" : run.operationType}</strong>
                 <small>{run.updatedAt}</small>
               </button>
@@ -335,7 +345,9 @@ export function MaintenancePanel({
                 {results.map((result, index) => (
                   <div key={`${String(result.runtimeId ?? "runtime")}-${index}`}>
                     <strong>{String(result.displayName ?? result.runtimeId ?? "Runtime")}</strong>
-                    <span>{String(result.outcome ?? result.status ?? "UNKNOWN")}</span>
+                    <span className={`admin-operation-outcome ${String(result.outcome ?? result.status ?? "").toLowerCase().replace(/_/g, "-")}`}>
+                      {result.outcome === "ACTION_REQUIRED" ? "AUTH REQUIRED" : String(result.outcome ?? result.status ?? "UNKNOWN")}
+                    </span>
                     <small>{String(result.summary ?? result.code ?? "")}</small>
                   </div>
                 ))}

@@ -83,9 +83,11 @@ export interface SpaceAgentGoalInput extends SpaceAgentAdapterInput {
 export interface SpaceAgentMutationResult {
   binding: AgentPaneBinding;
   session: AgentPaneSession;
+  submission?: { sessionId: string; responseMessageId: string; runId: string };
 }
 
 export interface SpaceAgentAdapter {
+  listRoomChatTypes?(): Promise<Array<{ id: string; title: string; mode: "CHAT"; selectedModelConfigId: string }>>;
   loadSession(input: SpaceAgentAdapterInput): Promise<AgentPaneSession>;
   createOrRestoreSession(input: SpaceAgentCreateInput): Promise<AgentPaneSession>;
   sendMessage(input: SpaceAgentSendInput): Promise<SpaceAgentMutationResult>;
@@ -734,45 +736,34 @@ const permissionCopy: Record<PermissionMode, { label: string; description: strin
   }
 };
 
-function fullAccessRequirementsGate(requirements: CodexConfigRequirements | null): string | null {
-  try {
-    validatePermissionModeRequirements("full_access", requirements);
-    return null;
-  } catch {
-    return "Full access is disabled by Codex runtime requirements.";
-  }
+function permissionRequirementsGate(mode: PermissionMode, requirements: CodexConfigRequirements | null): string | null {
+  try { validatePermissionModeRequirements(mode, requirements); return null; }
+  catch { return `${permissionCopy[mode].label} is disabled by Codex runtime requirements.`; }
 }
 
-function permissionOptions(
-  requirements: CodexConfigRequirements | null,
-  unavailableReason: string | null
-): AgentPaneSession["permissionOptions"] {
-  const mode = "full_access" as const;
+function permissionOptions(requirements: CodexConfigRequirements | null, unavailableReason: string | null,
+  providerId: string | null = null): AgentPaneSession["permissionOptions"] {
+  return (["ask_for_approval", "approve_for_me", "full_access"] as const).map(mode => {
+    const params = permissionParamsForMode(mode)!;
+    const statusReason = providerId
+      ? mode === "full_access" ? null : "Interactive permission approvals are unavailable in this provider's Chat transport. Use its CLI permissions control."
+      : mode === "ask_for_approval" ? "Interactive approval prompts are not supported in Chat. Use the CLI for this permission mode."
+      : unavailableReason ?? permissionRequirementsGate(mode, requirements);
+    return { mode, ...permissionCopy[mode],
+      sandbox: params.sandbox as "workspace-write" | "danger-full-access",
+      approvalPolicy: params.approvalPolicy as "on-request" | "never",
+      reviewer: params.approvalsReviewer as "user" | "guardian_subagent",
+      isAvailable: statusReason === null, statusReason };
+  });
+}
+
+function permissionState(mode: PermissionMode): AgentPaneSession["permissionState"] {
   const params = permissionParamsForMode(mode)!;
-  const statusReason = unavailableReason ?? fullAccessRequirementsGate(requirements);
-  return [{
-    mode,
-    ...permissionCopy[mode],
+  return { mode, effectiveMode: mode, isInherited: false,
     sandbox: params.sandbox as "workspace-write" | "danger-full-access",
     approvalPolicy: params.approvalPolicy as "on-request" | "never",
     reviewer: params.approvalsReviewer as "user" | "guardian_subagent",
-    isAvailable: statusReason === null,
-    statusReason
-  }];
-}
-
-function permissionState(): AgentPaneSession["permissionState"] {
-  const mode = "full_access" as const;
-  const params = permissionParamsForMode(mode)!;
-  return {
-    mode,
-    effectiveMode: mode,
-    isInherited: false,
-    sandbox: params.sandbox as "workspace-write" | "danger-full-access",
-    approvalPolicy: params.approvalPolicy as "on-request" | "never",
-    reviewer: params.approvalsReviewer as "user" | "guardian_subagent",
-    statusReason: "Full access is fixed for Chat tasks."
-  };
+    statusReason: `${permissionCopy[mode].label} applies to the next turn.` };
 }
 
 interface SpaceAgentRuntimeCapabilities {
@@ -806,6 +797,7 @@ export function createSpaceAgentAdapter(options: {
   codexAgentControl?: SpaceAgentControl | null;
   openCodeControlResolver?: OpenCodeControlResolver | null;
   openCodeSessionControlResolver?: OpenCodeSessionControlResolver | null;
+  cliChatProviderAdapters?: ChatProviderAdapter[];
   isChatProviderEnabled?: (providerId: string) => Promise<boolean>;
   readGoal?: SpaceAgentGoalReader;
   requirementsCacheTtlMs?: number;
@@ -842,6 +834,9 @@ export function createSpaceAgentAdapter(options: {
     ];
     if (openCodeControlResolver) {
       providers.push(opencodeChatProviderAdapter(openCodeControlResolver));
+    }
+    if (options.cliChatProviderAdapters?.length) {
+      providers.push(...options.cliChatProviderAdapters);
     }
     return providers;
   }
@@ -892,11 +887,9 @@ export function createSpaceAgentAdapter(options: {
       // Codex catalog discovery stays concurrent with capability discovery.
       // Optional providers are loaded only after their global switch resolves.
       providerCatalogs: Promise.all(providers.map((provider, index) =>
-        provider.providerId === codexChatProviderId
+        providerEnabledChecks[index]!.then((enabled) => enabled
           ? provider.loadCatalog()
-          : providerEnabledChecks[index]!.then((enabled) => enabled
-              ? provider.loadCatalog()
-              : { models: [], current: null, error: `${provider.providerName} is disabled.` })
+          : { models: [], current: null, error: `${provider.providerName} is disabled.` })
       )),
       runtimeCapabilities: runtimeCapabilitiesSnapshot
     };
@@ -926,7 +919,10 @@ export function createSpaceAgentAdapter(options: {
         `${configuredProvider.providerName} is disabled for Chat.`
       );
     }
-    const removedChatSelection = Boolean(selectedModelConfigId?.startsWith("cli:"));
+    // Keep rejecting legacy CLI selections when no adapter is registered, while
+    // allowing configured CLI chat providers such as DeepSeek to use their
+    // advertised `${runtimeId}-v1|...` model IDs.
+    const removedChatSelection = Boolean(selectedModelConfigId?.startsWith("cli:") && !configuredProvider);
     if (strictModelSelection && removedChatSelection) {
       throw new SpaceFeatureDisabledError(
         "SPACE_AGENT_PROVIDER_UNSUPPORTED",
@@ -941,12 +937,15 @@ export function createSpaceAgentAdapter(options: {
     const currentResult = currentIndex >= 0 ? providerResults[currentIndex] : null;
     const currentCatalog = currentResult?.models ?? [];
     const modelList = currentProvider ? providerModelOptions(currentProvider, currentCatalog) : [];
+    const modelSelectionConfigId = configuredProvider && eligibleProviders.includes(configuredProvider)
+      ? effectiveSelectedModelConfigId
+      : null;
     const modelSelection = currentResult?.error
       ? { selectedModel: null, modelSelectionGate: null }
       : selectedModelFromOptions(
           modelList,
           currentCatalog,
-          effectiveSelectedModelConfigId ?? null,
+          modelSelectionConfigId ?? null,
           strictModelSelection
         );
     const modelProviders: AgentPaneModelProvider[] = providers.flatMap((provider, index) => {
@@ -1009,7 +1008,16 @@ export function createSpaceAgentAdapter(options: {
     );
   }
 
-  async function ensureSession(
+  const sessionMutations = new Map<string, Promise<SpaceAgentSessionRecord>>();
+  async function ensureSession(input: SpaceAgentCreateInput, operation: SpaceAgentOperationContext): Promise<SpaceAgentSessionRecord> {
+    const previous = sessionMutations.get(input.pane.id);
+    const pending = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() => ensureSessionSerialized(input, operation));
+    sessionMutations.set(input.pane.id, pending);
+    try { return await pending; }
+    finally { if (sessionMutations.get(input.pane.id) === pending) sessionMutations.delete(input.pane.id); }
+  }
+
+  async function ensureSessionSerialized(
     input: SpaceAgentCreateInput,
     operation: SpaceAgentOperationContext
   ): Promise<SpaceAgentSessionRecord> {
@@ -1031,7 +1039,7 @@ export function createSpaceAgentAdapter(options: {
         title: input.title ?? existing.title,
         threadId: input.threadId === undefined ? existing.threadId : input.threadId,
         ...selectedSessionFields(select, existing),
-        permissionMode: "full_access",
+        permissionMode: existing.permissionMode ?? "full_access",
         lastSyncedAt: nowIso()
       });
     }
@@ -1046,7 +1054,7 @@ export function createSpaceAgentAdapter(options: {
         title: input.title ?? active.title,
         threadId: input.threadId === undefined ? active.threadId : input.threadId,
         ...selectedSessionFields(select, active),
-        permissionMode: "full_access",
+        permissionMode: active.permissionMode ?? "full_access",
         lastSyncedAt: nowIso()
       });
     }
@@ -1080,13 +1088,14 @@ export function createSpaceAgentAdapter(options: {
     select: Awaited<ReturnType<typeof selection>>,
     runtimeResult: SpaceAgentRuntimeCapabilitiesResult
   ) {
-    const availablePermissionOptions = permissionOptions(runtimeResult.value?.requirements ?? null, runtimeResult.error);
-    const fullAccessOption = availablePermissionOptions[0] ?? null;
-    const permissionGate = fullAccessOption && !fullAccessOption.isAvailable
-      ? fullAccessOption.statusReason ?? "Full access is unavailable."
+    const availablePermissionOptions = permissionOptions(runtimeResult.value?.requirements ?? null, runtimeResult.error, session.selectedProviderId ?? null);
+    const selectedPermissionOption = availablePermissionOptions.find(option => option.mode === (session.permissionMode ?? "full_access")) ?? null;
+    const permissionGate = selectedPermissionOption && !selectedPermissionOption.isAvailable
+      ? selectedPermissionOption.statusReason ?? "The selected permissions are unavailable."
       : null;
     const collaborationGate =
       session.collaborationMode === "plan" &&
+      !session.selectedProviderId &&
       !runtimeResult.value?.collaborationModes.some((mode) => mode.mode === "plan")
         ? runtimeResult.error ?? "Plan mode is unavailable in this Codex runtime."
         : null;
@@ -1129,7 +1138,7 @@ export function createSpaceAgentAdapter(options: {
     const projectedSession = {
       ...statusSession,
       status: projectedStatus,
-      permissionMode: "full_access" as const,
+      permissionMode: statusSession.permissionMode ?? "full_access" as const,
       collaborationMode: statusSession.collaborationMode ?? "default",
       ...selectedSessionFields(select, select.modelSelectionGate ? undefined : statusSession)
     };
@@ -1160,7 +1169,7 @@ export function createSpaceAgentAdapter(options: {
       selectedToolIds: select.selectedTools,
       permissionMode: projectedSession.permissionMode,
       collaborationMode: projectedSession.collaborationMode,
-      permissionState: permissionState(),
+      permissionState: permissionState(projectedSession.permissionMode),
       permissionOptions: gates.availablePermissionOptions,
       goal,
       history: historyFromNativeAndLegacy(nativeHistory, legacyHistory),
@@ -1259,7 +1268,7 @@ export function createSpaceAgentAdapter(options: {
       agentThreadId: session.threadId,
       operatorUserId: input.operatorUserId,
       selectedToolIds: session.selectedToolIds ?? [],
-      permissionMode: "full_access",
+      permissionMode: session.permissionMode ?? "full_access",
       collaborationMode: session.collaborationMode ?? "default",
       traceId: input.traceId
     };
@@ -1299,7 +1308,8 @@ export function createSpaceAgentAdapter(options: {
     }
 
     const nextSession = await buildSession(session, operation);
-    return { binding: nextSession.binding, session: nextSession };
+    return { binding: nextSession.binding, session: nextSession,
+      submission: { sessionId: session.sessionId, responseMessageId: assistantMessage.messageId, runId: run.runId } };
   }
 
   async function interrupt(input: SpaceAgentInterruptInput): Promise<SpaceAgentMutationResult> {
@@ -1334,29 +1344,20 @@ export function createSpaceAgentAdapter(options: {
   }
 
   async function updateSettings(input: SpaceAgentSettingsInput): Promise<SpaceAgentMutationResult> {
-    if (input.permissionMode !== undefined && input.permissionMode !== "full_access") {
-      throw new SpaceFeatureDisabledError(
-        "SPACE_AGENT_PERMISSION_FIXED_FULL_ACCESS",
-        "Chat tasks always use Full access. Other permission modes cannot be selected."
-      );
-    }
     const operation = createOperationContext();
-    if (input.permissionMode === "full_access") {
+    const current = await store.getActiveSpaceAgentSession(input.pane.id);
+    const select = await selection(input.pane.roomId, operation.providers, operation.providerCatalogs,
+      operation.providerEnabled, input.selectedModelConfigId === undefined
+        ? current?.selectedModelConfigId : input.selectedModelConfigId,
+      input.selectedToolIds, input.selectedModelConfigId !== undefined);
+    const providerId = select.selectedModel?.providerId ?? null;
+    if (input.permissionMode !== undefined) {
+      const mode = input.permissionMode ?? "full_access";
       const runtimeResult = await operation.runtimeCapabilities;
-      if (!runtimeResult.value) {
-        throw new SpaceFeatureDisabledError(
-          "CODEX_PERMISSION_REQUIREMENTS_UNAVAILABLE",
-          "Explicit permission overrides require current Codex runtime requirements."
-        );
-      }
-      if (fullAccessRequirementsGate(runtimeResult.value.requirements)) {
-        throw new SpaceFeatureDisabledError(
-          "CODEX_PERMISSION_MODE_DISALLOWED",
-          "Full access is disabled by Codex runtime requirements."
-        );
-      }
+      const option = permissionOptions(runtimeResult.value?.requirements ?? null, runtimeResult.error, providerId).find(option => option.mode === mode)!;
+      if (!option.isAvailable) throw new SpaceFeatureDisabledError("CODEX_PERMISSION_MODE_DISALLOWED", option.statusReason!);
     }
-    if (input.collaborationMode === "plan") {
+    if (input.collaborationMode === "plan" && !providerId) {
       const runtimeResult = await operation.runtimeCapabilities;
       if (!runtimeResult.value) {
         throw new SpaceFeatureDisabledError(
@@ -1374,10 +1375,10 @@ export function createSpaceAgentAdapter(options: {
       selectedModelConfigId: input.selectedModelConfigId,
       selectedToolIds: input.selectedToolIds
     }, operation);
-    if (input.collaborationMode !== undefined) {
+    if (input.collaborationMode !== undefined || input.permissionMode !== undefined) {
       session = await store.updateSpaceAgentSession(session.sessionId, {
-        collaborationMode: input.collaborationMode,
-        permissionMode: "full_access",
+        ...(input.collaborationMode !== undefined ? { collaborationMode: input.collaborationMode } : {}),
+        ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode ?? "full_access" } : {}),
         lastSyncedAt: nowIso()
       });
     }
@@ -1416,6 +1417,18 @@ export function createSpaceAgentAdapter(options: {
   }
 
   return {
+    async listRoomChatTypes() {
+      const types: Array<{ id: string; title: string; mode: "CHAT"; selectedModelConfigId: string }> = [];
+      for (const provider of createProviderRegistry()) {
+        if (options.isChatProviderEnabled && !await options.isChatProviderEnabled(provider.providerId)) continue;
+        const result = await provider.loadCatalog();
+        if (result.error) continue;
+        const models = providerModelOptions(provider, result.models);
+        const selected = models.find((model) => model.isDefault);
+        if (selected) types.push({ id: provider.providerId, title: provider.providerName, mode: "CHAT", selectedModelConfigId: selected.id });
+      }
+      return types;
+    },
     loadSession,
     createOrRestoreSession,
     sendMessage,

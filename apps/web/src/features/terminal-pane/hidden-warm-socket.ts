@@ -1,5 +1,11 @@
-/** After PREFILL is ready on a hidden warm pane, park the live WS to free host/browser sockets. */
+/** Legacy deadline, retained for the guarded parking/recovery path. */
 export const HIDDEN_WARM_SOCKET_PARK_MS = 30_000;
+
+// Warm rooms must retain their live terminal connection as well as their room
+// layer. Parking after 30s caused a fresh ticket, xterm rebuild and replay on
+// return, even with warm cache enabled. User-requested restoration 2026-09-05.
+// The bounded room cache still disposes terminals when a room is evicted.
+export const HIDDEN_WARM_SOCKET_PARK_ENABLED = false;
 
 /** Controller heartbeats run less often while the pane is not interactive. */
 export const HIDDEN_TERMINAL_CONTROL_HEARTBEAT_MIN_MS = 30_000;
@@ -14,6 +20,7 @@ export function shouldParkHiddenWarmSocket(input: {
   alreadyParked: boolean;
 }): boolean {
   return (
+    HIDDEN_WARM_SOCKET_PARK_ENABLED &&
     input.prefillEnabled &&
     input.prefillReady &&
     !input.isVisible &&

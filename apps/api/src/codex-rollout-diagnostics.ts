@@ -1,7 +1,10 @@
 import { execFile } from "node:child_process";
-import { open, readdir, readFile, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { IncrementalRolloutReader, type RolloutReducer } from "./codex-rollout-reader.js";
+import { codexTaskTimelineReducer, type NativeTaskExecution } from "./room-task-telemetry.js";
 
 const execFileAsync = promisify(execFile);
 const currentTurnTailBytes = 2 * 1024 * 1024;
@@ -226,67 +229,82 @@ function diagnosticMessage(input: {
   return parts.join(" ").slice(0, 500);
 }
 
-export function detectNullAgentMessageRollout(
-  rolloutPath: string,
-  content: string,
-  options: DetectNullAgentMessageRolloutOptions = {}
-): NullAgentMessageDiagnostic | null {
+function nullDiagnosticReducer(rolloutPath: string, options: DetectNullAgentMessageRolloutOptions): RolloutReducer<NullAgentMessageDiagnostic | null> {
   let sessionId: string | null = null;
   let cwd: string | null = null;
   let turnId: string | null = null;
   let latestDiagnostic: NullAgentMessageDiagnostic | null = null;
 
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
+  return {
+    accept(content: string) {
+      for (const rawLine of content.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const record = asRecord(parsed);
+        const type = stringField(record, "type");
+        const payload = asRecord(record?.payload);
+        if (type === "session_meta") {
+          sessionId = stringField(payload, "session_id") ?? stringField(payload, "id") ?? sessionId;
+          cwd = stringField(payload, "cwd") ?? cwd;
+          continue;
+        }
+        if (type === "turn_context") {
+          turnId = stringField(payload, "turn_id") ?? turnId;
+          cwd = stringField(payload, "cwd") ?? cwd;
+          continue;
+        }
+        if (type !== "event_msg") continue;
+        if (stringField(payload, "type") !== "task_complete") continue;
+        if (payload?.last_agent_message !== null) continue;
+        const completedAt = numberField(payload, "completed_at");
+        const completedAtMs = timestampToMs(completedAt);
+        if (options.sinceMs && completedAtMs !== null && completedAtMs < options.sinceMs) continue;
+        const durationMs = numberField(payload, "duration_ms");
+        const completedTurnId = stringField(payload, "turn_id") ?? turnId;
+        latestDiagnostic = {
+          rolloutPath,
+          sessionId,
+          turnId: completedTurnId,
+          cwd,
+          completedAt,
+          durationMs,
+          message: diagnosticMessage({
+            rolloutPath,
+            sessionId,
+            turnId: completedTurnId,
+            completedAt,
+            durationMs
+          })
+        };
+      }
+    },
+    result() {
+      return latestDiagnostic;
+    },
+    checkpoint() { return { sessionId, cwd, turnId, latestDiagnostic }; },
+    restore(checkpoint: unknown) {
+      const saved = checkpoint as { sessionId: string | null; cwd: string | null; turnId: string | null; latestDiagnostic: NullAgentMessageDiagnostic | null };
+      sessionId = saved.sessionId;
+      cwd = saved.cwd;
+      turnId = saved.turnId;
+      latestDiagnostic = saved.latestDiagnostic;
     }
-    const record = asRecord(parsed);
-    const type = stringField(record, "type");
-    const payload = asRecord(record?.payload);
-    if (type === "session_meta") {
-      sessionId = stringField(payload, "session_id") ?? stringField(payload, "id") ?? sessionId;
-      cwd = stringField(payload, "cwd") ?? cwd;
-      continue;
-    }
-    if (type === "turn_context") {
-      turnId = stringField(payload, "turn_id") ?? turnId;
-      cwd = stringField(payload, "cwd") ?? cwd;
-      continue;
-    }
-    if (type !== "event_msg") continue;
-    if (stringField(payload, "type") !== "task_complete") continue;
-    if (payload?.last_agent_message !== null) continue;
-    const completedAt = numberField(payload, "completed_at");
-    const completedAtMs = timestampToMs(completedAt);
-    if (options.sinceMs && completedAtMs !== null && completedAtMs < options.sinceMs) continue;
-    const durationMs = numberField(payload, "duration_ms");
-    const completedTurnId = stringField(payload, "turn_id") ?? turnId;
-    latestDiagnostic = {
-      rolloutPath,
-      sessionId,
-      turnId: completedTurnId,
-      cwd,
-      completedAt,
-      durationMs,
-      message: diagnosticMessage({
-        rolloutPath,
-        sessionId,
-        turnId: completedTurnId,
-        completedAt,
-        durationMs
-      })
-    };
-  }
-
-  return latestDiagnostic;
+  };
 }
 
-export function inspectCodexCliTurnActivity(content: string, options: InspectCodexCliTurnActivityOptions): CodexCliTurnActivity {
+export function detectNullAgentMessageRollout(rolloutPath: string, content: string, options: DetectNullAgentMessageRolloutOptions = {}): NullAgentMessageDiagnostic | null {
+  const reducer = nullDiagnosticReducer(rolloutPath, options);
+  reducer.accept(content);
+  return reducer.result();
+}
+
+function activityReducer(options: InspectCodexCliTurnActivityOptions): RolloutReducer<CodexCliTurnActivity> {
   let turnId = options.turnId ?? null;
   let contextualTurnId = turnId;
   let markerMatched = !options.inputMarker || Boolean(turnId);
@@ -295,87 +313,110 @@ export function inspectCodexCliTurnActivity(content: string, options: InspectCod
   let terminalStatus: "COMPLETED" | "ABORTED" | null = null;
   let terminalTurnId: string | null = turnId;
 
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const record = asRecord(parsed);
-    const payload = asRecord(record?.payload);
-    const eventAtMs = rolloutEventAtMs(record, payload);
-    if (eventAtMs === null || eventAtMs < options.markerAtMs) continue;
-
-    const type = stringField(record, "type");
-    if (type === "turn_context") {
-      const candidate = stringField(payload, "turn_id");
-      if (candidate) contextualTurnId = candidate;
-      if (!options.inputMarker && candidate && (!turnId || candidate === turnId)) turnId = candidate;
-      if (markerMatched && goalStatus && candidate && candidate !== turnId) {
-        goalTurnId = candidate;
-        terminalStatus = null;
-        terminalTurnId = candidate;
-      }
-      continue;
-    }
-    if (type !== "event_msg") continue;
-
-    const eventType = stringField(payload, "type");
-    const eventTurnId = stringField(payload, "turn_id");
-    if (eventType === "user_message" && (!turnId || !eventTurnId || eventTurnId === turnId)) {
-      if (options.inputMarker && !JSON.stringify(payload).includes(options.inputMarker)) continue;
-      turnId = eventTurnId ?? contextualTurnId ?? turnId;
-      markerMatched = true;
-      continue;
-    }
-    if (!markerMatched) continue;
-    if (eventType === "thread_goal_updated") {
-      const status = stringField(asRecord(payload?.goal), "status");
-      if (status && codexRolloutGoalStatuses.has(status)) {
-        if (!goalStatus && !goalTurnId) {
-          terminalStatus = null;
-          terminalTurnId = null;
+  return {
+    accept(content: string) {
+      for (const rawLine of content.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
         }
-        goalStatus = status;
-      }
-      continue;
-    }
-    if (eventType === "task_started" && goalStatus) {
-      const candidate = eventTurnId ?? contextualTurnId;
-      if (candidate && candidate !== turnId) {
-        goalTurnId = candidate;
-        terminalStatus = null;
-        terminalTurnId = candidate;
-      }
-      continue;
-    }
-    if (eventType !== "task_complete" && eventType !== "turn_aborted") continue;
-    const candidate = eventTurnId ?? contextualTurnId ?? turnId;
-    if (goalStatus) {
-      if (candidate && candidate !== turnId) goalTurnId = candidate;
-      if (!goalTurnId || !candidate || candidate === goalTurnId) {
-        terminalStatus = eventType === "turn_aborted" ? "ABORTED" : "COMPLETED";
-        terminalTurnId = goalTurnId ?? candidate ?? turnId;
-      }
-      continue;
-    }
-    if (turnId && (!candidate || candidate === turnId)) {
-      terminalStatus = eventType === "turn_aborted" ? "ABORTED" : "COMPLETED";
-      terminalTurnId = turnId;
-    }
-  }
+        const record = asRecord(parsed);
+        const payload = asRecord(record?.payload);
+        const eventAtMs = rolloutEventAtMs(record, payload);
+        if (eventAtMs === null || eventAtMs < options.markerAtMs) continue;
 
-  const effectiveTurnId = goalTurnId ?? terminalTurnId ?? turnId;
-  if (goalStatus === "active") {
-    return effectiveTurnId ? { status: "RUNNING", turnId: effectiveTurnId } : { status: "PENDING", turnId: null };
-  }
-  if (terminalStatus) return { status: terminalStatus, turnId: effectiveTurnId };
-  return markerMatched && effectiveTurnId
-    ? { status: "RUNNING", turnId: effectiveTurnId }
-    : { status: "PENDING", turnId: null };
+        const type = stringField(record, "type");
+        if (type === "turn_context") {
+          const candidate = stringField(payload, "turn_id");
+          if (candidate) contextualTurnId = candidate;
+          if (!options.inputMarker && candidate && (!turnId || candidate === turnId)) turnId = candidate;
+          if (markerMatched && goalStatus && candidate && candidate !== turnId) {
+            goalTurnId = candidate;
+            terminalStatus = null;
+            terminalTurnId = candidate;
+          }
+          continue;
+        }
+        const eventTurnId = stringField(payload, "turn_id");
+        const userText = userMessageText(record, payload);
+        const eventType = stringField(payload, "type");
+        const isUserMessage = userText !== null || (type === "event_msg" && eventType === "user_message");
+        if (isUserMessage && (!turnId || !eventTurnId || eventTurnId === turnId)) {
+          if (options.inputMarker && !(userText ?? "").includes(options.inputMarker)) continue;
+          turnId = eventTurnId ?? contextualTurnId ?? turnId;
+          markerMatched = true;
+          continue;
+        }
+        if (type !== "event_msg") continue;
+        if (!markerMatched) continue;
+        if (eventType === "thread_goal_updated") {
+          const status = stringField(asRecord(payload?.goal), "status");
+          if (status && codexRolloutGoalStatuses.has(status)) {
+            if (!goalStatus && !goalTurnId) {
+              terminalStatus = null;
+              terminalTurnId = null;
+            }
+            goalStatus = status;
+          }
+          continue;
+        }
+        if (eventType === "task_started" && goalStatus) {
+          const candidate = eventTurnId ?? contextualTurnId;
+          if (candidate && candidate !== turnId) {
+            goalTurnId = candidate;
+            terminalStatus = null;
+            terminalTurnId = candidate;
+          }
+          continue;
+        }
+        if (eventType !== "task_complete" && eventType !== "turn_aborted") continue;
+        const candidate = eventTurnId ?? contextualTurnId ?? turnId;
+        if (goalStatus) {
+          if (candidate && candidate !== turnId) goalTurnId = candidate;
+          if (!goalTurnId || !candidate || candidate === goalTurnId) {
+            terminalStatus = eventType === "turn_aborted" ? "ABORTED" : "COMPLETED";
+            terminalTurnId = goalTurnId ?? candidate ?? turnId;
+          }
+          continue;
+        }
+        if (turnId && (!candidate || candidate === turnId)) {
+          terminalStatus = eventType === "turn_aborted" ? "ABORTED" : "COMPLETED";
+          terminalTurnId = turnId;
+        }
+      }
+    },
+    result() {
+      const effectiveTurnId = goalTurnId ?? terminalTurnId ?? turnId;
+      if (goalStatus === "active") {
+        return effectiveTurnId ? { status: "RUNNING", turnId: effectiveTurnId } : { status: "PENDING", turnId: null };
+      }
+      if (terminalStatus) return { status: terminalStatus, turnId: effectiveTurnId };
+      return markerMatched && effectiveTurnId
+        ? { status: "RUNNING", turnId: effectiveTurnId }
+        : { status: "PENDING", turnId: null };
+    },
+    checkpoint() { return { turnId, contextualTurnId, markerMatched, goalStatus, goalTurnId, terminalStatus, terminalTurnId }; },
+    restore(checkpoint: unknown) {
+      const saved = checkpoint as { turnId: string | null; contextualTurnId: string | null; markerMatched: boolean; goalStatus: string | null; goalTurnId: string | null; terminalStatus: "COMPLETED" | "ABORTED" | null; terminalTurnId: string | null };
+      turnId = saved.turnId;
+      contextualTurnId = saved.contextualTurnId;
+      markerMatched = saved.markerMatched;
+      goalStatus = saved.goalStatus;
+      goalTurnId = saved.goalTurnId;
+      terminalStatus = saved.terminalStatus;
+      terminalTurnId = saved.terminalTurnId;
+    }
+  };
+}
+
+export function inspectCodexCliTurnActivity(content: string, options: InspectCodexCliTurnActivityOptions): CodexCliTurnActivity {
+  const reducer = activityReducer(options);
+  reducer.accept(content);
+  return reducer.result();
 }
 
 export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTurnActivity {
@@ -472,28 +513,140 @@ function rolloutThreadId(content: string): string | null {
   return null;
 }
 
+
+const incrementalRollouts = new IncrementalRolloutReader();
+
+const missingTaskTimelines = new Map<string, number>();
+
+export async function findCodexTaskTimeline(options: FindCurrentCodexCliTurnActivityOptions): Promise<NativeTaskExecution[]> {
+  const cacheKey = JSON.stringify([options.codexHome, options.threadId]);
+  if ((missingTaskTimelines.get(cacheKey) ?? 0) > Date.now()) return [];
+  const path = await resolveDiagnosticRollout({ ...options, sinceMs: 0 });
+  if (!path) {
+    if (missingTaskTimelines.size >= 512) missingTaskTimelines.delete(missingTaskTimelines.keys().next().value!);
+    missingTaskTimelines.set(cacheKey, Date.now() + 30_000); return [];
+  }
+  missingTaskTimelines.delete(cacheKey);
+  try {
+    const sample = await incrementalRollouts.read({ home: options.codexHome, path,
+      key: JSON.stringify(["task-timeline", options.threadId]),
+      create: () => scopedReducer(options.threadId, codexTaskTimelineReducer(), [] as NativeTaskExecution[]) });
+    return sample.value;
+  } catch { forgetDiagnosticRollout(options.codexHome, options.threadId); return []; }
+}
+const diagnosticRolloutPaths = new Map<string, { path: string; checkedAt: number }>();
+const diagnosticPathFlights = new Map<string, Promise<string | null>>();
+const diagnosticPathTtlMs = 60_000;
+
+async function matchingRolloutPath(home: string, path: string, threadId: string, indexed = false): Promise<string | null> {
+  let handle;
+  try {
+    const root = await realpath(home);
+    const candidate = await realpath(path);
+    if (!candidate.startsWith(`${root}${sep}`)) return null;
+    handle = await open(candidate, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+    if (!(await handle.stat()).isFile()) return null;
+    // An exact native DB mapping/filename selects the file; scopedReducer
+    // verifies session_meta while streaming, even with a very large header.
+    if (indexed || candidate.endsWith(`-${threadId}.jsonl`)) return candidate;
+    // Identity lives in session_meta at the beginning of native JSONL. Never
+    // read another thread's complete transcript just to find its identity.
+    const header = Buffer.alloc(256 * 1024);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    return rolloutThreadId(header.toString("utf8", 0, bytesRead)) === threadId ? candidate : null;
+  } catch { return null; }
+  finally { await handle?.close().catch(() => undefined); }
+}
+
+async function resolveDiagnosticRollout(options: {
+  codexHome: string; threadId: string; sinceMs: number; maxFiles?: number;
+}): Promise<string | null> {
+  const key = `${resolve(options.codexHome)}\0${options.threadId}`;
+  const cached = diagnosticRolloutPaths.get(key);
+  if (cached && Date.now() - cached.checkedAt < diagnosticPathTtlMs) {
+    return cached.path;
+  }
+  const flight = diagnosticPathFlights.get(key);
+  if (flight) return flight;
+  const request = (async () => {
+    let path: string | null = null;
+    try {
+      const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json",
+        join(options.codexHome, "state_5.sqlite"),
+        `SELECT rollout_path FROM threads WHERE id = ${sqliteQuote(options.threadId)} LIMIT 2`
+      ], { timeout: 1_500, maxBuffer: 64 * 1024 });
+      const rows = JSON.parse(stdout) as Array<{ rollout_path?: unknown }>;
+      if (rows.length === 1 && typeof rows[0]?.rollout_path === "string") {
+        path = await matchingRolloutPath(options.codexHome, rows[0].rollout_path, options.threadId, true);
+      }
+    } catch { /* New native threads can precede their state DB mapping. */ }
+    if (!path) {
+      const files = (await collectRecentRolloutFiles(join(options.codexHome, "sessions"), options.sinceMs))
+        .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, options.maxFiles ?? 12);
+      for (const file of files) {
+        path = await matchingRolloutPath(options.codexHome, file.path, options.threadId);
+        if (path) break;
+      }
+    }
+    if (path) {
+      diagnosticRolloutPaths.delete(key);
+      diagnosticRolloutPaths.set(key, { path, checkedAt: Date.now() });
+      while (diagnosticRolloutPaths.size > currentTurnRolloutPathCacheMax) {
+        const first = diagnosticRolloutPaths.keys().next().value;
+        if (first !== undefined) diagnosticRolloutPaths.delete(first);
+      }
+    } else diagnosticRolloutPaths.delete(key);
+    return path;
+  })();
+  diagnosticPathFlights.set(key, request);
+  try { return await request; }
+  finally { diagnosticPathFlights.delete(key); }
+}
+
+function forgetDiagnosticRollout(home: string, threadId: string): void {
+  diagnosticRolloutPaths.delete(`${resolve(home)}\0${threadId}`);
+}
+
 export async function findRecentCodexCliTurnActivity(
   options: FindRecentCodexCliTurnActivityOptions
 ): Promise<CodexCliTurnActivity> {
-  const files = (await collectRecentRolloutFiles(join(options.codexHome, "sessions"), options.markerAtMs))
-    .sort((left, right) => right.mtimeMs - left.mtimeMs)
-    .slice(0, options.maxFiles ?? 12);
-  let running: CodexCliTurnActivity | null = null;
-
-  for (const file of files) {
-    let content: string;
-    try {
-      content = await readFile(file.path, "utf8");
-    } catch {
-      continue;
-    }
-    if (rolloutThreadId(content) !== options.threadId) continue;
-    const activity = inspectCodexCliTurnActivity(content, options);
-    if (activity.status === "COMPLETED") return activity;
-    if (activity.status === "RUNNING" && running === null) running = { ...activity, lastActivityAtMs: file.mtimeMs };
+  const pending = { status: "PENDING" as const, turnId: options.turnId ?? null };
+  const path = await resolveDiagnosticRollout({ ...options, sinceMs: options.markerAtMs });
+  if (!path) return pending;
+  try {
+    const sample = await incrementalRollouts.read({
+      home: options.codexHome, path,
+      key: JSON.stringify(["activity", options.threadId, options.markerAtMs, options.turnId, options.inputMarker]),
+      create: () => scopedReducer(options.threadId, activityReducer(options), pending)
+    });
+    if (sample.mtimeMs < options.markerAtMs) return pending;
+    return sample.value.status === "RUNNING"
+      ? { ...sample.value, lastActivityAtMs: sample.mtimeMs }
+      : sample.value;
+  } catch {
+    forgetDiagnosticRollout(options.codexHome, options.threadId);
+    return pending;
   }
+}
 
-  return running ?? { status: "PENDING", turnId: options.turnId ?? null };
+// Verify session_meta again when a file is replaced/truncated between polls.
+function scopedReducer<T>(threadId: string, inner: RolloutReducer<T>, empty: T): RolloutReducer<T> {
+  let sessionId: string | null = null;
+  return {
+    accept(line) {
+      if (sessionId === null) {
+        sessionId = rolloutThreadId(line);
+      }
+      if (sessionId === threadId) inner.accept(line);
+    },
+    result: () => sessionId === threadId ? inner.result() : empty,
+    checkpoint: () => ({ sessionId, inner: inner.checkpoint() }),
+    restore(checkpoint) {
+      const saved = checkpoint as { sessionId: string | null; inner: unknown };
+      sessionId = saved.sessionId;
+      inner.restore(saved.inner);
+    }
+  };
 }
 
 export async function findCurrentCodexCliTurnActivity(
@@ -574,23 +727,20 @@ export async function findCodexCliPlanState(
 export async function findRecentNullAgentMessageDiagnostic(
   options: FindRecentNullAgentMessageDiagnosticOptions
 ): Promise<NullAgentMessageDiagnostic | null> {
-  const files = (await collectRecentRolloutFiles(join(options.codexHome, "sessions"), options.sinceMs))
-    .sort((left, right) => right.mtimeMs - left.mtimeMs)
-    .slice(0, options.maxFiles ?? 12);
-  for (const file of files) {
-    let content: string;
-    try {
-      content = await readFile(file.path, "utf8");
-    } catch {
-      continue;
-    }
-    if (rolloutThreadId(content) !== options.threadId) continue;
-    const inputText = options.inputText?.trim();
-    if (inputText && !content.includes(inputText)) continue;
-    const diagnostic = detectNullAgentMessageRollout(file.path, content, { sinceMs: options.sinceMs });
-    if (!diagnostic) continue;
-    if (options.cwd && diagnostic.cwd && diagnostic.cwd !== options.cwd) continue;
+  const path = await resolveDiagnosticRollout(options);
+  if (!path) return null;
+  try {
+    const sample = await incrementalRollouts.read({
+      home: options.codexHome, path, contains: options.inputText?.trim(),
+      key: JSON.stringify(["null-message", options.threadId, options.sinceMs]),
+      create: () => scopedReducer(options.threadId, nullDiagnosticReducer(path, options), null)
+    });
+    if (!sample.matched || sample.mtimeMs < options.sinceMs) return null;
+    const diagnostic = sample.value;
+    if (options.cwd && diagnostic?.cwd && diagnostic.cwd !== options.cwd) return null;
     return diagnostic;
+  } catch {
+    forgetDiagnosticRollout(options.codexHome, options.threadId);
+    return null;
   }
-  return null;
 }

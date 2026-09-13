@@ -8,6 +8,9 @@ const MODEL_POPOVER_BOUNDARY_INSET_PX = 8;
 
 function reasoningEffortLabel(value: string): string {
   const labels: Record<string, string> = {
+    auto: "Auto",
+    disabled: "Disabled",
+    unknown: "Unknown",
     none: "None",
     minimal: "Minimal",
     low: "Low",
@@ -22,9 +25,12 @@ function reasoningEffortLabel(value: string): string {
 
 export interface CodexModelPickerProps {
   settings: PaneCliModelSettings;
+  compact?: boolean;
+  groupNativeProviders?: boolean;
   providers?: AgentPaneModelProvider[];
   disabled?: boolean;
   allowSelectionWithoutCurrent?: boolean;
+  onRefreshCatalog?: () => Promise<void>;
   onSwitch: (
     modelId: string,
     reasoningEffort: string,
@@ -38,13 +44,17 @@ export interface CodexModelPickerProps {
 export function CodexModelPicker({
   settings,
   providers = [],
+  compact = false,
+  groupNativeProviders = false,
   disabled = false,
   allowSelectionWithoutCurrent = false,
+  onRefreshCatalog,
   onSwitch
 }: CodexModelPickerProps) {
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [step, setStep] = useState<"providers" | "models" | "reasoning">("models");
   const [feedback, setFeedback] = useState<{ message: string; tone: "good" | "bad" } | null>(null);
   const [draft, setDraft] = useState<{
@@ -52,6 +62,7 @@ export function CodexModelPicker({
     reasoningEffort: string;
     providerId: string | null;
   } | null>(null);
+  const [quickProviderKey, setQuickProviderKey] = useState<string | null>(null);
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(settings.current);
   const [popoverMaxHeight, setPopoverMaxHeight] = useState<number | null>(null);
@@ -64,6 +75,10 @@ export function CodexModelPicker({
   const hasProviders = providers.length > 1;
   const currentSettings = settings.current;
   const currentProviderId = providers.find((provider) => provider.isCurrent)?.providerId ?? null;
+  const [confirmedProviderId, setConfirmedProviderId] = useState(currentProviderId);
+  const confirmedModels = compact && hasProviders
+    ? providers.find((provider) => provider.providerId === confirmedProviderId)?.models ?? settings.models
+    : settings.models;
   const activeProvider = hasProviders
     ? providers.find((provider) => provider.providerId === activeProviderId) ?? null
     : null;
@@ -72,8 +87,48 @@ export function CodexModelPicker({
   const effectiveCurrentRef = useRef(effectiveCurrent);
   effectiveCurrentRef.current = effectiveCurrent;
   const selectedModel = effectiveCurrent
-    ? settings.models.find((model) => model.id === effectiveCurrent.modelId) ?? null
+    ? confirmedModels.find((model) => model.id === effectiveCurrent.modelId) ?? null
     : null;
+
+  // Group the upstream catalog independently from the runtime used to execute it.
+  // Keep the original runtime/model pair in every option for selection routing.
+  const catalogProviders = providers.length ? providers : [{
+    providerId: "", providerName: "Models", models: settings.models, statusReason: null
+  }];
+  const providerGroups = catalogProviders.flatMap(provider => {
+    if (!(provider.providerId === "opencode" || (!providers.length && groupNativeProviders)) || !provider.models.length) {
+      return [{ key: provider.providerId, label: provider.providerName, provider, models: provider.models }];
+    }
+    const groups = new Map<string, { key: string; label: string; provider: typeof provider; models: typeof provider.models }>();
+    for (const model of provider.models) {
+      const nativeProviderId = model.id.split("/")[0]!;
+      const key = `${provider.providerId}:${nativeProviderId}`;
+      const group = groups.get(key) ?? {
+        key, label: model.description || nativeProviderId, provider, models: []
+      };
+      group.models.push(model);
+      groups.set(key, group);
+    }
+    return [...groups.values()];
+  });
+  const confirmedGroup = providerGroups.find(group =>
+    (!hasProviders || group.provider.providerId === confirmedProviderId) &&
+    group.models.some(model => model.id === effectiveCurrent?.modelId));
+  const quickGroup = providerGroups.find(group => group.key === quickProviderKey) ?? confirmedGroup ?? providerGroups[0];
+  const quickModels = quickGroup?.models ?? [];
+  const quickShowsCurrent = Boolean(quickGroup && quickGroup.key === confirmedGroup?.key);
+
+  async function refreshCatalog() {
+    if (!onRefreshCatalog || refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefreshCatalog();
+    } catch {
+      if (mountedRef.current) setFeedback({ tone: "bad", message: "Could not refresh the model catalog. Close and reopen the picker to retry." });
+    } finally {
+      if (mountedRef.current) setRefreshing(false);
+    }
+  }
 
   function clearCollapseTimer() {
     if (collapseTimerRef.current === null) return;
@@ -113,7 +168,12 @@ export function CodexModelPicker({
 
   useEffect(() => {
     setConfirmed(currentSettings);
+    if (compact && currentSettings && !switching) {
+      setDraft({ ...currentSettings, providerId: null });
+    }
   }, [currentSettings?.modelId, currentSettings?.reasoningEffort]);
+
+  useEffect(() => { setConfirmedProviderId(currentProviderId); }, [currentProviderId]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -200,7 +260,7 @@ export function CodexModelPicker({
         <button
           type="button"
           className="terminal-model-chip is-expanded"
-          aria-label="Detecting Codex model"
+          aria-label="Detecting model"
           disabled
         >
           <span>Detecting model…</span>
@@ -217,7 +277,7 @@ export function CodexModelPicker({
   const reasoningOptions: Array<{ reasoningEffort: string; description?: string }> =
     draftedModel?.reasoningOptions ?? draftedModel?.supportedReasoningEfforts.map((reasoningEffort) => ({ reasoningEffort })) ?? [];
   const currentModelOption = current
-    ? settings.models.find((model) => model.id === current.modelId) ?? null
+    ? confirmedModels.find((model) => model.id === current.modelId) ?? null
     : null;
   const activeReasoningOptions: Array<{ reasoningEffort: string; description?: string }> =
     currentModelOption?.reasoningOptions ?? currentModelOption?.supportedReasoningEfforts.map((reasoningEffort) => ({ reasoningEffort })) ?? [];
@@ -269,9 +329,9 @@ export function CodexModelPicker({
   async function apply(modelId: string, effort: string, providerId: string | null) {
     if (disabled || switching) return;
     const selection = { modelId, reasoningEffort: effort, providerId };
-    const sameProvider = providerId === null || providerId === currentProviderId;
+    const sameProvider = providerId === null || providerId === (compact ? confirmedProviderId : currentProviderId);
     if (sameProvider && current && modelId === current.modelId && effort === current.reasoningEffort) {
-      completeSelection(selection);
+      if (!compact) completeSelection(selection);
       return;
     }
     const generation = switchGenerationRef.current + 1;
@@ -281,9 +341,17 @@ export function CodexModelPicker({
     try {
       const outcome = await onSwitch(modelId, effort, providerId);
       if (!mountedRef.current || switchGenerationRef.current !== generation) return;
-      completeSelection(outcome.current);
+      if (compact) {
+        if (providerId !== null) setConfirmedProviderId(providerId);
+        setConfirmed(outcome.current);
+        setDraft({ ...outcome.current, providerId });
+        setFeedback(outcome.message ? { message: outcome.message, tone: "good" } : null);
+      } else {
+        completeSelection(outcome.current);
+      }
     } catch (error) {
       if (!mountedRef.current || switchGenerationRef.current !== generation) return;
+      if (compact && effectiveCurrentRef.current) setDraft({ ...effectiveCurrentRef.current, providerId: null });
       setFeedback({
         message: error instanceof Error ? error.message : "Model settings could not be changed.",
         tone: "bad"
@@ -298,7 +366,7 @@ export function CodexModelPicker({
       <button
         ref={triggerRef}
         type="button"
-        className={`terminal-model-chip${expanded ? " is-expanded" : ""}`}
+        className={`terminal-model-chip${expanded && !compact ? " is-expanded" : ""}`}
         aria-label={current ? `Change model and reasoning. Current ${chipLabel}` : "Select model and reasoning"}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -310,21 +378,88 @@ export function CodexModelPicker({
           }
           clearCollapseTimer();
           setExpanded(true);
+          setQuickProviderKey(null);
           setOpen(true);
+          void refreshCatalog();
         }}
       >
         <BrainCircuit aria-hidden="true" />
-        {expanded ? <span>{switching ? "Switching…" : chipLabel}</span> : null}
+        {expanded && !compact ? <span>{chipLabel}</span> : null}
       </button>
       {open ? (
         <div
           ref={popoverRef}
-          className="terminal-model-popover"
+          className={`terminal-model-popover${compact ? " terminal-model-popover-quick" : ""}`}
           role="dialog"
-          aria-label="Codex model and reasoning"
+          aria-label="Model and reasoning"
           style={popoverMaxHeight === null ? undefined : { maxHeight: `${popoverMaxHeight}px` }}
         >
-          {step === "providers" ? (
+          {compact ? (
+            <>
+              {providerGroups.length > 1 ? (
+                <label className="terminal-quick-provider-field">
+                  <span>Provider</span>
+                  <select className="terminal-quick-model-select" aria-label="Provider"
+                    value={quickGroup?.key ?? ""} disabled={disabled || switching || refreshing}
+                    onChange={event => setQuickProviderKey(event.target.value)}>
+                    {providerGroups.map(group => <option key={group.key} value={group.key}
+                      disabled={!group.models.length}>{group.label}{!group.models.length ? ` — ${group.provider.statusReason ?? "No models available"}` : ""}</option>)}
+                  </select>
+                </label>
+              ) : null}
+              <select
+                className="terminal-quick-model-select"
+                aria-label="Model"
+                value={quickShowsCurrent ? current?.modelId ?? "" : ""}
+                disabled={disabled || switching || refreshing || !quickModels.length}
+                onChange={(event) => {
+                  const model = quickModels.find(entry => entry.id === event.target.value);
+                  const providerId = hasProviders ? quickGroup?.provider.providerId ?? null : null;
+                  if (model) void apply(model.id, model.defaultReasoningEffort, providerId);
+                }}
+              >
+                {!quickShowsCurrent ? <option value="" disabled>Select model</option> : null}
+                {quickModels.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}
+              </select>
+              {refreshing ? <div role="status">Refreshing models…</div> : null}
+              {activeReasoningOptions.length > 0 && current && quickShowsCurrent ? (
+                <div className="terminal-quick-effort">
+                  <strong>
+                    Reasoning{" "}
+                    <span>{reasoningEffortLabel(draft?.reasoningEffort ?? current.reasoningEffort)}</span>
+                  </strong>
+                  <input
+                    type="range"
+                    aria-label="Reasoning effort"
+                    aria-valuetext={reasoningEffortLabel(draft?.reasoningEffort ?? current.reasoningEffort)}
+                    style={{ background: `linear-gradient(to right, #3385ff ${100 * Math.max(0, activeReasoningOptions.findIndex((option) => option.reasoningEffort === (draft?.reasoningEffort ?? current.reasoningEffort))) / Math.max(1, activeReasoningOptions.length - 1)}%, #505050 0)` }}
+                    min={0}
+                    max={Math.max(0, activeReasoningOptions.length - 1)}
+                    step={1}
+                    value={Math.max(0, activeReasoningOptions.findIndex((option) => option.reasoningEffort === (draft?.reasoningEffort ?? current.reasoningEffort)))}
+                    disabled={disabled || switching || refreshing || activeReasoningOptions.length < 2}
+                    onChange={(event) => {
+                      const effort = activeReasoningOptions[Number(event.target.value)]?.reasoningEffort;
+                      if (effort) setDraft({ ...current, reasoningEffort: effort, providerId: null });
+                    }}
+                    onPointerUp={(event) => {
+                      const effort = activeReasoningOptions[Number(event.currentTarget.value)]?.reasoningEffort;
+                      if (effort) void apply(current.modelId, effort, hasProviders ? confirmedProviderId : null);
+                    }}
+                    onKeyUp={(event) => {
+                      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) return;
+                      const effort = activeReasoningOptions[Number(event.currentTarget.value)]?.reasoningEffort;
+                      if (effort) void apply(current.modelId, effort, hasProviders ? confirmedProviderId : null);
+                    }}
+                  />
+                  <div className="terminal-quick-effort-labels" aria-hidden="true">
+                    <span>{reasoningEffortLabel(activeReasoningOptions[0]!.reasoningEffort)}</span>
+                    <span>{reasoningEffortLabel(activeReasoningOptions[activeReasoningOptions.length - 1]!.reasoningEffort)}</span>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : step === "providers" ? (
             <>
               <div className="terminal-model-popover-head">
                 <div>

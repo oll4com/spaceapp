@@ -1,7 +1,8 @@
+import { useMenuWheel, useRailPopover } from "../rail-popover.js";
 import { Check, Loader2 } from "../ui-theme/app-icons.js";
 import { useEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from "react";
-
-export const PANE_SPAN_ALL_MENU_ID = "pane-span-all-options";
+import { PANE_SPAN_ALL_MENU_ID } from "../toolbar-menu-ids.js";
+export { PANE_SPAN_ALL_MENU_ID } from "../toolbar-menu-ids.js";
 
 interface PaneSpanAllMenuProps {
   activeColumnCount: number;
@@ -25,6 +26,8 @@ export function PaneSpanAllMenu({
   visiblePaneCount
 }: PaneSpanAllMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
+  useRailPopover(menuRef, triggerRef);
+  useMenuWheel(menuRef, '[role="menuitemradio"]', true, triggerRef);
   const spans = useMemo(() => {
     const count = Math.max(1, Math.min(activeColumnCount, visiblePaneCount));
     return Array.from({ length: count }, (_, index) => index + 1);
@@ -76,6 +79,7 @@ export function PaneSpanAllMenu({
       role="menu"
       aria-label="Pane width for all panes"
       aria-busy={pending}
+      onPointerDown={(event) => event.stopPropagation()}
       onKeyDown={handleKeyDown}
     >
       <header>

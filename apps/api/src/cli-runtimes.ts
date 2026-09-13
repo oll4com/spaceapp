@@ -416,7 +416,9 @@ export function createAgentRuntimeRegistryCache(
     },
     invalidate() {
       revision += 1;
-      cached = null;
+      // Fresh catalog callers must reload, while an existing CLI attachment
+      // can still use the last validated descriptors during that refresh.
+      if (cached) cached.expiresAtMs = Number.NEGATIVE_INFINITY;
       inFlight = null;
     }
   };

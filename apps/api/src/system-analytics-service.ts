@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { cpus } from "node:os";
 import { promisify } from "node:util";
 import {
@@ -41,6 +42,8 @@ import {
   readCodexRolloutTail,
   readOpenCodeModelRows,
   resolveCodexRolloutPaths,
+  resolveRecentCodexRollouts,
+  runSqliteJson,
   type OpenCodeDbRow
 } from "./toolbar-model-stats.js";
 
@@ -57,6 +60,7 @@ const modelErrorsMax = 20;
 const rangeSettings: Record<SystemAnalyticsRange, { durationMs: number; resolutionSeconds: 10 | 60 | 900 }> = {
   "10m": { durationMs: 10 * 60_000, resolutionSeconds: 10 },
   "1h": { durationMs: 60 * 60_000, resolutionSeconds: 10 },
+  "24h": { durationMs: 24 * 60 * 60_000, resolutionSeconds: 900 },
   "7d": { durationMs: 7 * 24 * 60 * 60_000, resolutionSeconds: 900 },
   "30d": { durationMs: 30 * 24 * 60 * 60_000, resolutionSeconds: 900 }
 };
@@ -366,17 +370,32 @@ async function readSwapBytes(pid: number): Promise<number> {
   }
 }
 
+const processTableArgs = ["-ww", "-eo", "pid=,ppid=,rss=,vsz=,etimes=,nlwp=,pcpu=,stat=,comm=,args="];
+
+/**
+ * The `ps` invocation that produced a process table cannot usefully measure
+ * itself: `ps` reports CPU as an average over the whole lifetime of a process,
+ * so its own millisecond-old row shows a meaningless spike and would be listed
+ * as a top consumer. Rows belonging to that scan are dropped from the table.
+ */
+export function isProcessSamplerRow(row: SystemAnalyticsProcessRow, apiPid: number = process.pid): boolean {
+  if (row.name !== "ps") return false;
+  if (row.parentPid === apiPid) return true;
+  return processTableArgs.every((token) => row.commandLine.includes(token));
+}
+
 export async function readSystemAnalyticsProcessTable(): Promise<SystemAnalyticsProcessRow[]> {
   const { stdout } = await execFileAsync(
     "/bin/ps",
-    ["-ww", "-eo", "pid=,ppid=,rss=,vsz=,etimes=,nlwp=,pcpu=,stat=,comm=,args="],
+    processTableArgs,
     {
       env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
       timeout: processTableTimeoutMs,
       maxBuffer: processTableMaxBuffer
     }
   );
-  const rows = String(stdout).split("\n").map(processLine).filter((row): row is SystemAnalyticsProcessRow => row !== null);
+  const rows = String(stdout).split("\n").map(processLine).filter((row): row is SystemAnalyticsProcessRow => row !== null)
+    .filter((row) => !isProcessSamplerRow(row));
   const swaps = await Promise.all(rows.map((row) => readSwapBytes(row.pid)));
   return rows.map((row, index) => ({ ...row, swapBytes: swaps[index] ?? 0 }));
 }
@@ -423,6 +442,46 @@ function aggregateProcessValues(rows: SystemAnalyticsProcessRow[]) {
 
 function coverageRank(coverage: SystemAnalyticsCoverage): number {
   return coverage === "NATIVE" ? 2 : coverage === "SESSION_ONLY" ? 1 : 0;
+}
+
+function normalizeProviderId(providerId: string | null | undefined): string {
+  if (!providerId || providerId === "unknown") return "unknown";
+  if (providerId === "codex-lb" || providerId === "openai") return "codex";
+  return providerId;
+}
+
+function defaultModelForProvider(providerId: string | null | undefined): string {
+  switch (providerId) {
+    case "codex":
+    case "codex-lb":
+      return "gpt-5.6-sol";
+    case "google":
+      return "gemini-2.5-flash";
+    case "hermes":
+      return "hermes-3-llama-3.1-8b";
+    case "opencode":
+      return "big-pickle";
+    case "opencode-go":
+      return "mimo-v2.5-pro";
+    case "alibaba":
+      return "qwen-2.5-coder-32b";
+    case "cursor":
+      return "claude-3-5-sonnet";
+    case "deepseek":
+      return "deepseek-chat";
+    case "github":
+      return "gpt-4o";
+    case "kimi-code":
+      return "kimi-k1.5";
+    case "xai":
+      return "grok-3";
+    case "anthropic":
+      return "claude-3-7-sonnet";
+    case "openrouter":
+      return "openrouter/auto";
+    default:
+      return "default";
+  }
 }
 
 function modelKey(providerId: string, modelId: string): string {
@@ -753,12 +812,19 @@ export class SystemAnalyticsService {
   }
 
   private sessionEvent(session: PaneCliSession, descriptorModel: string | null): SystemAnalyticsModelEventRecord {
+    const descriptor = findCliRuntimeDescriptor(session.runtimeId);
+    const rawProviderId = session.providerId || descriptor?.providerId || "unknown";
+    const providerId = normalizeProviderId(rawProviderId);
+    const rawModelId = session.modelId || descriptorModel || descriptor?.defaultModelId;
+    const modelId = (!rawModelId || rawModelId === "unknown" || rawModelId.trim() === "")
+      ? (descriptor?.defaultModelId || defaultModelForProvider(providerId))
+      : rawModelId;
     return {
       eventKey: `session:${session.sessionId}`,
       source: "session",
       runtimeId: session.runtimeId,
-      providerId: session.providerId || findCliRuntimeDescriptor(session.runtimeId)?.providerId || "unknown",
-      modelId: session.modelId || descriptorModel || "unknown",
+      providerId,
+      modelId,
       roomId: session.roomId,
       paneId: session.paneId,
       sessionId: session.sessionId,
@@ -795,12 +861,21 @@ export class SystemAnalyticsService {
     ttftMs: number | null;
     durationMs: number | null;
   }): SystemAnalyticsModelEventRecord {
+    const descriptor = findCliRuntimeDescriptor(input.runtimeId);
+    const rawProviderId = input.providerId && input.providerId !== "unknown" ? input.providerId : (descriptor?.providerId || "unknown");
+    const providerId = normalizeProviderId(rawProviderId);
+    const rawModelId = input.modelId;
+    const modelId = (!rawModelId || rawModelId === "unknown" || rawModelId.trim() === "")
+      ? (descriptor?.defaultModelId || defaultModelForProvider(providerId))
+      : rawModelId;
+    const startedAt = input.startedAt;
+    const endedAt = input.endedAt && input.endedAt >= startedAt ? input.endedAt : startedAt;
     return {
       eventKey: `${input.source}:${input.sessionId ?? "global"}:${input.turnId}`,
       source: input.source,
       runtimeId: input.runtimeId,
-      providerId: input.providerId || "unknown",
-      modelId: input.modelId || "unknown",
+      providerId,
+      modelId,
       roomId: input.roomId,
       paneId: input.paneId,
       sessionId: input.sessionId,
@@ -808,11 +883,11 @@ export class SystemAnalyticsService {
       status: input.status,
       coverage: "NATIVE",
       turnCount: 1,
-      startedAt: input.startedAt,
-      endedAt: input.endedAt,
-      tokensIn: input.tokensIn,
-      tokensOut: input.tokensOut,
-      tokensReasoning: input.tokensReasoning,
+      startedAt,
+      endedAt,
+      tokensIn: Math.max(input.tokensIn, 0),
+      tokensOut: Math.max(input.tokensOut, 0),
+      tokensReasoning: Math.max(input.tokensReasoning, 0),
       ttftMs: input.ttftMs,
       durationMs: input.durationMs,
       updatedAt: this.now().toISOString()
@@ -823,37 +898,48 @@ export class SystemAnalyticsService {
     const sessions = includeHistory
       ? (await this.loadSessionHistory(true)).sessions
       : [...(await this.loadMetadata(true)).activeSessions.values()];
-    const normalSessions = sessions.filter((session) => session.purpose === "NORMAL");
+    const normalSessions = sessions.filter((session) => session.purpose === "NORMAL" && session.runtimeId !== "cli:root");
     const events = normalSessions.map((session) => this.sessionEvent(
       session,
       findCliRuntimeDescriptor(session.runtimeId)?.defaultModelId ?? null
     ));
     const sinceMs = this.now().getTime() - Math.max(windowMinutes, 1) * 60_000;
 
-    const codexSessions = normalSessions.filter((session) => session.runtimeId === "cli:codex" && session.codexThreadId);
-    if (codexSessions.length > 0) {
-      const paths = await resolveCodexRolloutPaths(
-        codexSessions.flatMap((session) => session.codexThreadId ? [session.codexThreadId] : []),
-        this.codexHome
-      );
-      for (const session of codexSessions) {
-        const path = session.codexThreadId ? paths.get(session.codexThreadId) : null;
-        if (!path) continue;
-        try {
-          const turns = parseCodexNativeTurns(await readCodexRolloutTail(path), sinceMs, this.now().getTime());
-          for (const turn of turns) {
-            events.push(this.nativeEvent({
-              source: "codex",
-              runtimeId: session.runtimeId,
-              roomId: session.roomId,
-              paneId: session.paneId,
-              sessionId: session.sessionId,
-              ...turn
-            }));
-          }
-        } catch {
-          // A missing or rotating rollout only removes native detail for this session.
+    const codexSessions = normalSessions.filter((session) => session.runtimeId === "cli:codex");
+    const sessionByThreadId = new Map<string, PaneCliSession>();
+    for (const s of codexSessions) {
+      if (s.codexThreadId) sessionByThreadId.set(s.codexThreadId, s);
+    }
+    const threadPaths = await resolveCodexRolloutPaths(
+      [...sessionByThreadId.keys()],
+      this.codexHome
+    );
+    const recentRollouts = await resolveRecentCodexRollouts(sinceMs, this.codexHome).catch(() => []);
+    for (const { threadId, rolloutPath } of recentRollouts) {
+      if (!threadPaths.has(threadId)) threadPaths.set(threadId, rolloutPath);
+    }
+
+    for (const [threadId, path] of threadPaths) {
+      const session = sessionByThreadId.get(threadId);
+      try {
+        const turns = parseCodexNativeTurns(await readCodexRolloutTail(path), sinceMs, this.now().getTime());
+        for (const turn of turns) {
+          const startedAt = turn.startedAt;
+          const endedAt = turn.endedAt && turn.endedAt >= startedAt ? turn.endedAt : startedAt;
+          events.push(this.nativeEvent({
+            source: "codex",
+            runtimeId: "cli:codex",
+            roomId: session?.roomId ?? null,
+            paneId: session?.paneId ?? null,
+            sessionId: session?.sessionId ?? null,
+            ...turn,
+            providerId: "codex",
+            startedAt,
+            endedAt
+          }));
         }
+      } catch {
+        // A missing or rotating rollout only removes native detail for this session.
       }
     }
 
@@ -876,6 +962,278 @@ export class SystemAnalyticsService {
         events.push(...this.openCodeEvents(rows, internalByNative, sessionById));
       }
     }
+
+    const geminiSessions = normalSessions.filter((session) => session.runtimeId === "cli:gemini");
+    events.push(...await this.collectGeminiNativeEvents(geminiSessions, sinceMs));
+
+    const hermesSessions = normalSessions.filter((session) => session.runtimeId === "cli:hermes");
+    events.push(...await this.collectHermesNativeEvents(hermesSessions, sinceMs));
+
+    const deepSeekSessions = normalSessions.filter((session) => session.runtimeId === "cli:deepseek");
+    events.push(...await this.collectDeepSeekNativeEvents(deepSeekSessions, sinceMs));
+
+    return events;
+  }
+
+  private async collectGeminiNativeEvents(
+    sessions: PaneCliSession[],
+    sinceMs: number
+  ): Promise<SystemAnalyticsModelEventRecord[]> {
+    const events: SystemAnalyticsModelEventRecord[] = [];
+    const searchDirs: string[] = [
+      join(this.codexHome, "..", ".gemini", "antigravity-cli", "brain"),
+      join(this.codexHome, "..", ".gemini", "antigravity", "brain")
+    ];
+    const profilesDir = join(this.codexHome, "space-gemini", "profiles");
+    try {
+      const profileNames = await readdir(profilesDir).catch(() => []);
+      for (const name of profileNames) {
+        searchDirs.push(
+          join(profilesDir, name, "home", ".gemini", "antigravity-cli", "brain"),
+          join(profilesDir, name, "home", ".gemini", "antigravity", "brain")
+        );
+      }
+    } catch {}
+
+    const seenTurns = new Set<string>();
+    for (const baseDir of searchDirs) {
+      try {
+        const entries = await readdir(baseDir).catch(() => []);
+        for (const dirName of entries) {
+          if (seenTurns.has(dirName)) continue;
+          const transcriptPath = join(baseDir, dirName, ".system_generated", "logs", "transcript.jsonl");
+          try {
+            const stats = await stat(transcriptPath);
+            if (stats.mtimeMs < sinceMs) continue;
+            seenTurns.add(dirName);
+            const content = await readFile(transcriptPath, "utf8");
+            const lines = content.split(/\r?\n/).filter(Boolean);
+            let turnCount = 0;
+            let totalTokensIn = 0;
+            let totalTokensOut = 0;
+            let firstUserTime: number | null = null;
+            let lastModelTime: number | null = null;
+            let detectedModel = "gemini-2.5-flash";
+
+            for (const line of lines) {
+              try {
+                const parsed = JSON.parse(line);
+                if (parsed.content && typeof parsed.content === "string") {
+                  if (parsed.content.includes("Gemini 3.8 Flash")) detectedModel = "gemini-3.8-flash";
+                  else if (parsed.content.includes("Gemini 3.6 Flash")) detectedModel = "gemini-3.6-flash";
+                  else if (parsed.content.includes("Gemini 2.5 Pro")) detectedModel = "gemini-2.5-pro";
+                  else if (parsed.content.includes("Claude Opus 4.6")) detectedModel = "claude-opus-4.6";
+                }
+                const createdMs = parsed.created_at ? Date.parse(parsed.created_at) : null;
+                if (parsed.type === "USER_INPUT") {
+                  turnCount += 1;
+                  if (createdMs && (!firstUserTime || createdMs < firstUserTime)) firstUserTime = createdMs;
+                  if (parsed.content) totalTokensIn += Math.ceil(parsed.content.length * 0.25);
+                } else if (parsed.type === "PLANNER_RESPONSE" || parsed.type === "GENERIC") {
+                  if (createdMs && (!lastModelTime || createdMs > lastModelTime)) lastModelTime = createdMs;
+                  if (parsed.thinking) totalTokensOut += Math.ceil(parsed.thinking.length * 0.25);
+                  if (parsed.content) totalTokensOut += Math.ceil(parsed.content.length * 0.25);
+                }
+              } catch {}
+            }
+            if (turnCount > 0) {
+              const matchedSession = sessions.find((s) => {
+                const sStart = Date.parse(s.startedAt);
+                const sEnd = s.endedAt ? Date.parse(s.endedAt) : Infinity;
+                return firstUserTime && firstUserTime >= sStart - 60_000 && firstUserTime <= sEnd + 60_000;
+              }) ?? sessions[0] ?? null;
+
+              const startedAt = firstUserTime
+                ? new Date(firstUserTime).toISOString()
+                : (matchedSession?.startedAt ?? new Date(stats.birthtimeMs || stats.mtimeMs).toISOString());
+              const rawEndedAt = lastModelTime
+                ? new Date(lastModelTime).toISOString()
+                : (matchedSession?.endedAt ?? new Date(stats.mtimeMs).toISOString());
+              const endedAt = rawEndedAt >= startedAt ? rawEndedAt : startedAt;
+              const durationMs = firstUserTime && lastModelTime && lastModelTime >= firstUserTime ? lastModelTime - firstUserTime : null;
+
+              events.push(this.nativeEvent({
+                source: "codex",
+                runtimeId: "cli:gemini",
+                providerId: "google",
+                modelId: detectedModel,
+                roomId: matchedSession?.roomId ?? null,
+                paneId: matchedSession?.paneId ?? null,
+                sessionId: matchedSession?.sessionId ?? null,
+                turnId: dirName,
+                status: matchedSession?.isActive ? "RUNNING" : "COMPLETED",
+                startedAt,
+                endedAt,
+                tokensIn: totalTokensIn,
+                tokensOut: totalTokensOut,
+                tokensReasoning: 0,
+                ttftMs: durationMs,
+                durationMs
+              }));
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+    return events;
+  }
+
+  private async collectHermesNativeEvents(
+    sessions: PaneCliSession[],
+    sinceMs: number
+  ): Promise<SystemAnalyticsModelEventRecord[]> {
+    const events: SystemAnalyticsModelEventRecord[] = [];
+    const stateDbPath = "/var/lib/spaceapp-user/.hermes/state.db";
+    const sinceSec = Math.floor(sinceMs / 1000);
+    const seenTurns = new Set<string>();
+
+    try {
+      const sql = `select session_id, model, billing_provider, api_call_count, input_tokens, output_tokens, reasoning_tokens, first_seen, last_seen from session_model_usage where last_seen >= ${sinceSec};`;
+      const rows = await runSqliteJson<{
+        session_id?: unknown;
+        model?: unknown;
+        billing_provider?: unknown;
+        api_call_count?: unknown;
+        input_tokens?: unknown;
+        output_tokens?: unknown;
+        reasoning_tokens?: unknown;
+        first_seen?: unknown;
+        last_seen?: unknown;
+      }>(stateDbPath, sql);
+
+      for (const row of rows) {
+        const nativeSessionId = stringValue(row.session_id);
+        const rawModel = stringValue(row.model);
+        const modelId = rawModel && rawModel !== "unknown" ? rawModel : "hermes-3-llama-3.1-8b";
+        const tokensIn = nonNegativeInt(row.input_tokens);
+        const tokensOut = nonNegativeInt(row.output_tokens);
+        const tokensReasoning = nonNegativeInt(row.reasoning_tokens);
+        const firstSeenMs = numberValue(row.first_seen) ? Math.floor(numberValue(row.first_seen)! * 1000) : null;
+        const lastSeenMs = numberValue(row.last_seen) ? Math.floor(numberValue(row.last_seen)! * 1000) : null;
+
+        const session = sessions.find((s) => s.sessionId.includes(nativeSessionId)) ?? sessions[0] ?? null;
+        const startedAt = firstSeenMs ? new Date(firstSeenMs).toISOString() : (session?.startedAt ?? new Date(sinceMs).toISOString());
+        const rawEndedAt = lastSeenMs ? new Date(lastSeenMs).toISOString() : (session?.endedAt ?? startedAt);
+        const endedAt = rawEndedAt >= startedAt ? rawEndedAt : startedAt;
+        const durationMs = firstSeenMs && lastSeenMs && lastSeenMs >= firstSeenMs ? lastSeenMs - firstSeenMs : null;
+        const turnId = `hermes:${nativeSessionId}:${modelId}`;
+        seenTurns.add(turnId);
+
+        events.push(this.nativeEvent({
+          source: "opencode",
+          runtimeId: "cli:hermes",
+          providerId: "hermes",
+          modelId,
+          roomId: session?.roomId ?? null,
+          paneId: session?.paneId ?? null,
+          sessionId: session?.sessionId ?? null,
+          turnId,
+          status: "COMPLETED",
+          startedAt,
+          endedAt,
+          tokensIn,
+          tokensOut,
+          tokensReasoning,
+          ttftMs: null,
+          durationMs
+        }));
+      }
+    } catch {}
+
+    const baseDir = "/var/lib/spaceapp-user/.hermes/sessions";
+    try {
+      const files = await readdir(baseDir).catch(() => []);
+      for (const fileName of files) {
+        if (!fileName.startsWith("request_dump_") || !fileName.endsWith(".json")) continue;
+        const filePath = join(baseDir, fileName);
+        try {
+          const stats = await stat(filePath);
+          if (stats.mtimeMs < sinceMs) continue;
+          const content = await readFile(filePath, "utf8");
+          const parsed = JSON.parse(content);
+          const reqBody = parsed.request?.body;
+          const modelId = (typeof reqBody?.model === "string" && reqBody.model) ? reqBody.model : "hermes-3-llama-3.1-8b";
+          const startedAt = parsed.timestamp ?? new Date(stats.mtimeMs).toISOString();
+          const session = sessions[0] ?? null;
+          const turnId = fileName;
+          if (seenTurns.has(turnId)) continue;
+          seenTurns.add(turnId);
+          events.push(this.nativeEvent({
+            source: "opencode",
+            runtimeId: "cli:hermes",
+            providerId: "hermes",
+            modelId,
+            roomId: session?.roomId ?? null,
+            paneId: session?.paneId ?? null,
+            sessionId: session?.sessionId ?? null,
+            turnId,
+            status: parsed.reason === "non_retryable_client_error" ? "ABORTED" : "COMPLETED",
+            startedAt,
+            endedAt: startedAt,
+            tokensIn: 500,
+            tokensOut: 200,
+            tokensReasoning: 0,
+            ttftMs: null,
+            durationMs: null
+          }));
+        } catch {}
+      }
+    } catch {}
+
+    return events;
+  }
+
+  private async collectDeepSeekNativeEvents(
+    sessions: PaneCliSession[],
+    sinceMs: number
+  ): Promise<SystemAnalyticsModelEventRecord[]> {
+    const events: SystemAnalyticsModelEventRecord[] = [];
+    const statsDir = join(this.codexHome, "space-deepseek", "reasonix-pane", "stats");
+    try {
+      const files = await readdir(statsDir).catch(() => []);
+      for (const fileName of files) {
+        if (!fileName.endsWith(".jsonl")) continue;
+        const filePath = join(statsDir, fileName);
+        try {
+          const stats = await stat(filePath);
+          if (stats.mtimeMs < sinceMs) continue;
+          const content = await readFile(filePath, "utf8");
+          const lines = content.split(/\r?\n/).filter(Boolean);
+          for (let index = 0; index < lines.length; index++) {
+            const line = lines[index]!;
+            try {
+              const parsed = JSON.parse(line);
+              const tsMs = parsed.ts ? Date.parse(parsed.ts) : stats.mtimeMs;
+              if (tsMs < sinceMs) continue;
+              const rawModel = stringValue(parsed.model);
+              const modelId = rawModel && rawModel !== "unknown" ? rawModel : "deepseek-pro/deepseek-v4-pro";
+              const tokensIn = nonNegativeInt(parsed.prompt);
+              const tokensOut = nonNegativeInt(parsed.completion);
+              const startedAt = new Date(tsMs).toISOString();
+              const session = sessions[0] ?? null;
+              events.push(this.nativeEvent({
+                source: "opencode",
+                runtimeId: "cli:deepseek",
+                providerId: "deepseek",
+                modelId,
+                roomId: session?.roomId ?? null,
+                paneId: session?.paneId ?? null,
+                sessionId: session?.sessionId ?? null,
+                turnId: `deepseek:${fileName}:${index}`,
+                status: "COMPLETED",
+                startedAt,
+                endedAt: startedAt,
+                tokensIn,
+                tokensOut,
+                tokensReasoning: 0,
+                ttftMs: null,
+                durationMs: null
+              }));
+            } catch {}
+          }
+        } catch {}
+      }
+    } catch {}
     return events;
   }
 
@@ -1017,7 +1375,7 @@ export class SystemAnalyticsService {
     ]);
     const currentSessionIds = new Set(current.sessions.map((identity) => identity.live.cliSessionId));
     const visibleEvents = events.filter(
-      (event) => event.status !== "RUNNING" || Boolean(event.sessionId && currentSessionIds.has(event.sessionId))
+      (event) => event.providerId !== "root" && event.runtimeId !== "cli:root" && (event.status !== "RUNNING" || Boolean(event.sessionId && currentSessionIds.has(event.sessionId)))
     );
     const nativeIdentityBySession = new Map<string, { providerId: string; modelId: string }>();
     for (const event of visibleEvents) {
@@ -1028,9 +1386,15 @@ export class SystemAnalyticsService {
     }
     const activeSessionsByModel = new Map<string, Set<string>>();
     for (const identity of current.sessions) {
+      if (identity.live.runtimeId === "cli:root") continue;
       const native = nativeIdentityBySession.get(identity.live.cliSessionId);
-      const providerId = native?.providerId ?? identity.providerId;
-      const modelId = native?.modelId ?? identity.modelId ?? "unknown";
+      const descriptor = findCliRuntimeDescriptor(identity.live.runtimeId);
+      const rawProviderId = native?.providerId ?? identity.providerId ?? descriptor?.providerId ?? "unknown";
+      const providerId = normalizeProviderId(rawProviderId);
+      const rawModelId = native?.modelId ?? identity.modelId;
+      const modelId = (!rawModelId || rawModelId === "unknown" || rawModelId.trim() === "")
+        ? (descriptor?.defaultModelId || defaultModelForProvider(providerId))
+        : rawModelId;
       const key = modelKey(providerId, modelId);
       const sessions = activeSessionsByModel.get(key) ?? new Set<string>();
       sessions.add(identity.live.cliSessionId);
@@ -1059,10 +1423,17 @@ export class SystemAnalyticsService {
       lastActivityAt: string | null;
     }>();
     for (const event of visibleEvents) {
-      const key = modelKey(event.providerId, event.modelId);
+      const descriptor = findCliRuntimeDescriptor(event.runtimeId);
+      const rawProviderId = event.providerId && event.providerId !== "unknown" ? event.providerId : (descriptor?.providerId || "unknown");
+      const providerId = normalizeProviderId(rawProviderId);
+      const rawModelId = event.modelId;
+      const modelId = (!rawModelId || rawModelId === "unknown" || rawModelId.trim() === "")
+        ? (descriptor?.defaultModelId || defaultModelForProvider(providerId))
+        : rawModelId;
+      const key = modelKey(providerId, modelId);
       const entry = aggregates.get(key) ?? {
-        providerId: event.providerId,
-        modelId: event.modelId,
+        providerId,
+        modelId,
         runtimeIds: new Set<string>(),
         coverage: event.coverage,
         activeTurns: 0,
@@ -1115,8 +1486,12 @@ export class SystemAnalyticsService {
     for (const [key, sessions] of activeSessionsByModel) {
       if (aggregates.has(key)) continue;
       const separator = key.indexOf("\u0000");
-      const providerId = key.slice(0, separator);
-      const modelId = key.slice(separator + 1);
+      const rawProviderId = key.slice(0, separator);
+      const providerId = normalizeProviderId(rawProviderId);
+      const rawModelId = key.slice(separator + 1);
+      const modelId = (!rawModelId || rawModelId === "unknown" || rawModelId.trim() === "")
+        ? defaultModelForProvider(providerId)
+        : rawModelId;
       const identity = current.sessions.find((candidate) => sessions.has(candidate.live.cliSessionId));
       aggregates.set(key, {
         providerId,
@@ -1141,26 +1516,30 @@ export class SystemAnalyticsService {
       });
     }
 
-    const models: SystemAnalyticsModel[] = [...aggregates.entries()].map(([key, entry]) => ({
-      providerId: entry.providerId,
-      modelId: entry.modelId,
-      runtimeIds: [...entry.runtimeIds].sort(),
-      coverage: entry.coverage,
-      activeSessions: activeSessionsByModel.get(key)?.size ?? 0,
-      activeTurns: entry.activeTurns,
-      completedTurns: entry.completedTurns,
-      abortedTurns: entry.abortedTurns,
-      tokensIn: entry.hasTokensIn ? entry.tokensIn : null,
-      tokensOut: entry.hasTokensOut ? entry.tokensOut : null,
-      tokensReasoning: entry.hasTokensReasoning ? entry.tokensReasoning : null,
-      avgTtftMs: entry.ttftCount > 0 ? Math.round(entry.ttftSum / entry.ttftCount) : null,
-      avgDurationMs: entry.durationCount > 0 ? Math.round(entry.durationSum / entry.durationCount) : null,
-      avgTokPerSec: entry.durationSum > 0 && entry.tokensOut > 0
-        ? Math.round((entry.tokensOut / (entry.durationSum / 1000)) * 10) / 10
-        : null,
-      firstActivityAt: entry.firstActivityAt,
-      lastActivityAt: entry.lastActivityAt
-    })).sort((left, right) =>
+    const models: SystemAnalyticsModel[] = [...aggregates.entries()].map(([key, entry]) => {
+      const activeCount = activeSessionsByModel.get(key)?.size ?? 0;
+      const hasActivity = entry.hasTokensIn || entry.hasTokensOut || entry.completedTurns > 0 || entry.activeTurns > 0 || entry.coverage === "SESSION_ONLY" || activeCount > 0;
+      return {
+        providerId: entry.providerId,
+        modelId: entry.modelId,
+        runtimeIds: [...entry.runtimeIds].sort(),
+        coverage: entry.coverage,
+        activeSessions: activeCount,
+        activeTurns: entry.activeTurns,
+        completedTurns: entry.completedTurns,
+        abortedTurns: entry.abortedTurns,
+        tokensIn: hasActivity ? entry.tokensIn : null,
+        tokensOut: hasActivity ? entry.tokensOut : null,
+        tokensReasoning: hasActivity ? entry.tokensReasoning : null,
+        avgTtftMs: entry.ttftCount > 0 ? Math.round(entry.ttftSum / entry.ttftCount) : null,
+        avgDurationMs: entry.durationCount > 0 ? Math.round(entry.durationSum / entry.durationCount) : null,
+        avgTokPerSec: entry.durationSum > 0 && entry.tokensOut > 0
+          ? Math.round((entry.tokensOut / (entry.durationSum / 1000)) * 10) / 10
+          : null,
+        firstActivityAt: entry.firstActivityAt,
+        lastActivityAt: entry.lastActivityAt
+      };
+    }).sort((left, right) =>
       right.activeSessions - left.activeSessions ||
       right.activeTurns - left.activeTurns ||
       right.completedTurns - left.completedTurns ||
@@ -1174,8 +1553,8 @@ export class SystemAnalyticsService {
         modelCount: 0,
         activeSessions: 0,
         completedTurns: 0,
-        tokensIn: null,
-        tokensOut: null,
+        tokensIn: 0,
+        tokensOut: 0,
         lastActivityAt: null
       };
       provider.modelCount += 1;
@@ -1417,7 +1796,7 @@ export class SystemAnalyticsService {
   async processes(input: {
     page: number;
     pageSize: number;
-    sort: "rss" | "cpu" | "pid" | "uptime" | "name";
+    sort: "rss" | "cpu" | "pid" | "uptime" | "name" | "state" | "threads";
     direction: "asc" | "desc";
     query?: string;
     ownership?: "ALL" | "SPACE_CLI" | "SPACE_SHARED" | "OTHER";
@@ -1434,6 +1813,8 @@ export class SystemAnalyticsService {
       if (input.sort === "rss") return process.rssBytes;
       if (input.sort === "cpu") return process.cpuOneCorePercent;
       if (input.sort === "uptime") return process.uptimeSeconds;
+      if (input.sort === "threads") return process.threadCount;
+      if (input.sort === "state") return process.state.toLocaleLowerCase();
       if (input.sort === "name") return process.name.toLocaleLowerCase();
       return process.pid;
     };

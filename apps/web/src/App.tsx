@@ -1,8 +1,21 @@
+import { useSpaceControlClient } from "./features/room-agent/space-control-client.js";
+import { useRailOrder } from "./features/ui-theme/use-rail-order.js";
+import { bindSpaceMediaVolume } from './space-audio.js';
+import { AsteroidsGate } from "./features/asteroids/AsteroidsGate.js";
+import { canPlayAsteroids } from "./features/asteroids/eligibility.js";
+import { TaskTitleDetails } from "./features/task-titles/TaskTitleDetails.js";
+import { TaskTitleSettings } from "./features/task-titles/TaskTitleSettings.js";
+import { RecoverableSurface } from "./features/SurfaceErrorBoundary.js";
+import { readDockSession, writeDockSession } from "./features/workspace-session.js";
+import { SystemHealth, useResourceIndicators } from "./features/system-health/SystemHealth.js";
+import { openSystemHealth, openSystemResources } from "./features/system-health/health-model.js";
+import type { OskCliCommand } from "./features/osk-keyboard/cli-shortcuts.js";
 import {
   AppIconProvider,
   Activity,
   ALargeSmall,
   ArrowRightLeft,
+  Archive,
   Bookmark,
   Bot,
   Boxes,
@@ -14,10 +27,14 @@ import {
   CircleHelp,
   CircleStop,
   Clipboard,
+  ClipboardList,
+  CodeXml,
+  Columns2,
   Columns3,
   Copy,
   Crosshair,
   Database,
+  Eraser,
   Eye,
   EyeOff,
   FileInput,
@@ -25,12 +42,16 @@ import {
   FolderPlus,
   Gauge,
   GitCompare,
+  Globe,
   Grid2X2,
+  GripVertical,
   HardDrive,
   History,
   Images,
   Keyboard,
+  LayoutDashboard,
   Link as LinkIcon,
+  ListFilter,
   ListTodo,
   Loader2,
   Lock,
@@ -51,6 +72,7 @@ import {
   PanelsTopLeft,
   PanelTopOpen,
   Pencil,
+  PictureInPicture2,
   Plus,
   Printer,
   Radio,
@@ -80,7 +102,7 @@ import type { LucideIcon } from "./features/ui-theme/app-icons.js";
 import { SensitiveDataMask } from "./features/sensitive-data/SensitiveDataMask.js";
 import { SpaceToggle } from "./features/ui-controls/SpaceToggle.js";
 import type { AgentPaneIdentity } from "./features/agent-pane/AgentPane.js";
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { lazy, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useAutoDismiss } from "./use-auto-dismiss.js";
 import type {
@@ -202,10 +224,7 @@ import {
   dispatchAgentPaneActionEvent,
   dispatchAgentPaneAttachmentsEvent
 } from "./features/agent-pane/events.js";
-import {
-  AdminCodexToolsDialog,
-  type AdminCodexTool
-} from "./features/admin-codex-tools/AdminCodexToolsDialog.js";
+import type { AdminCodexTool } from "./features/admin-codex-tools/AdminCodexToolsDialog.js";
 import type { AdminOperationTool } from "./features/admin-operations/AdminOperationsDialog.js";
 import { AuthenticationBootstrap } from "./features/auth/AuthenticationBootstrap.js";
 import { OwnerSetupScreen } from "./features/auth/OwnerSetupScreen.js";
@@ -215,56 +234,39 @@ import {
   parseBrowserPaneActionDetail,
   type BrowserPaneAction
 } from "./features/browser-pane/events.js";
-import { ClipboardDock } from "./features/clipboard-dock/ClipboardDock.js";
 import { AppVersionMeta, DemoVersionMeta } from "./features/app-version/AppVersionMeta.js";
 import { useAppVersion } from "./features/app-version/use-app-version.js";
-import { TaskDock } from "./features/task-dock/TaskDock.js";
 import {
   AppDiagnosticsGlobalIndicators,
   AppDiagnosticsSettingsCard
 } from "./features/app-diagnostics/AppDiagnosticsSettingsCard.js";
 import { emitAppDiagnosticsPerformance } from "./app-diagnostics/app-diagnostics-performance.js";
 import { startAppDiagnosticsBootstrap } from "./app-diagnostics/app-diagnostics-bootstrap.js";
-import { CodexCliDefaultsCard } from "./features/codex-cli-defaults/CodexCliDefaultsCard.js";
-import {
-  CLI_LAUNCHER_MENU_ID,
-  CliLauncherMenu
-} from "./features/cli-launcher/CliLauncherMenu.js";
-import { CliRuntimeSettingsCard } from "./features/cli-runtime-settings/CliRuntimeSettingsCard.js";
-import { SourceControlPublishingCard } from "./features/source-control-publishing/SourceControlPublishingCard.js";
 import { SettingsActionMenu } from "./features/settings/SettingsActionMenu.js";
+import { GitBranch } from "./features/ui-theme/app-icons.js";
+import { SettingsDisclosure, SettingsSections } from "./features/settings/SettingsDisclosure.js";
+import { DesktopNavigation } from "./features/ui-theme/DesktopNavigation.js";
+import "./features/ui-theme/workspace-chrome.css";
+import { MobilePaneSwitcher } from "./features/ui-theme/MobilePaneSwitcher.js";
+import { workspaceRoomActivity, workspaceRoomMatches, type WorkspaceRoomFilter } from "./features/ui-theme/workspace-room-filter.js";
+import { desktopActionDescriptions } from "./features/ui-theme/desktop-navigation.js";
 import {
   SPACE_CLIPBOARD_NOTICE_EVENT,
   useSpaceClipboardCapture,
   writeClipboardText
 } from "./features/clipboard-dock/clipboard-events.js";
-import { MediaDock } from "./features/media-dock/MediaDock.js";
-import { StreamingDock } from "./features/streaming/StreamingDock.js";
 import {
   StreamingOverlay,
   StreamingOverlayProvider
 } from "./features/streaming/StreamingOverlay.js";
-import { reorderPanesByTarget, setPaneDragData } from "./features/pane-drag/pane-drag.js";
-import { ActivityLogDock } from "./features/activity-log/ActivityLogDock.js";
-import { AgentFilesDock } from "./features/agent-files/AgentFilesDock.js";
-import { AgentToolsDock } from "./features/agent-tools/AgentToolsDock.js";
-import { CliDock } from "./features/cli-dock/CliDock.js";
-import { PANE_LAYOUT_MENU_ID, PaneLayoutMenu } from "./features/pane-layout/PaneLayoutMenu.js";
-import { PANE_SPAN_ALL_MENU_ID, PaneSpanAllMenu } from "./features/pane-layout/PaneSpanAllMenu.js";
-import { EmbeddedDashboardDialog } from "./features/embedded-dashboard/EmbeddedDashboardDialog.js";
+import { reorderPanesByTarget, setPaneDragData, type PaneDropPosition } from "./features/pane-drag/pane-drag.js";
 import { LinksPanel, QuickLinksPopover } from "./features/user-links/UserLinks.js";
-import { HelpPage } from "./features/help/HelpPage.js";
-import { BenchmarkPage } from "./features/benchmark/BenchmarkPage.js";
-import { RoomAgentDock } from "./features/room-agent/RoomAgentDock.js";
-import { SharedChatDock } from "./features/shared-chat/SharedChatDock.js";
-import { AgentSessionsDock } from "./features/agent-sessions/AgentSessionsDock.js";
 import {
   ROOM_THEME_MENU_ID,
   RoomThemeMenu,
   roomThemes,
   type RoomTheme
 } from "./features/room-theme/RoomThemeMenu.js";
-import { UiThemeSettingsCard } from "./features/ui-theme/UiThemeSettingsCard.js";
 import {
   groupModernRoomActions,
   modernPanePrimaryActionCapacity,
@@ -288,22 +290,25 @@ import {
   type UiTheme
 } from "./ui-theme.js";
 import { RoomPaneComposer } from "./features/room-pane-composer/RoomPaneComposer.js";
+import { MemoryWorkspaceErrorBoundary } from "./features/memory-workspace/MemoryWorkspaceErrorBoundary.js";
+import type { ServerActionCommand } from "./features/server-actions/ServerActionsMenu.js";
 import {
-  SERVER_ACTIONS_MENU_ID,
-  ServerActionsMenu,
-  type ServerActionCommand
-} from "./features/server-actions/ServerActionsMenu.js";
-import { SetupConnectionsWizard } from "./features/setup-connections/SetupConnectionsWizard.js";
-import { TelegramIntegrationCard } from "./features/telegram-integration/TelegramIntegrationCard.js";
+  CHAT_LAUNCHER_MENU_ID,
+  CLI_LAUNCHER_MENU_ID,
+  PANE_LAYOUT_MENU_ID,
+  PANE_SPAN_ALL_MENU_ID,
+  SERVER_ACTIONS_MENU_ID
+} from "./features/toolbar-menu-ids.js";
 import {
   createTerminalBootstrapBarrier,
   TerminalPane,
   type TerminalBootstrapBarrier,
   type TerminalSessionMetadata
 } from "./features/terminal-pane/index.js";
+import { registerYouTubeBrowseIntent } from "./features/browser-pane/youtube-browse-intent.js";
 import { registerCliResumeIntent } from "./features/terminal-pane/cli-resume-intent.js";
+import type { OnScreenKeyboardInput } from "./features/osk-keyboard/OnScreenKeyboard.js";
 import { VIBE_MUSIC_PANEL_ID, VibeMusicPlayer } from "./features/vibe-music/VibeMusicPlayer.js";
-import { OSK_PANEL_ID, OnScreenKeyboard, type OnScreenKeyboardInput } from "./features/osk-keyboard/OnScreenKeyboard.js";
 import {
   ToolbarMetrics,
   ToolbarMetricsSummary,
@@ -311,12 +316,18 @@ import {
 } from "./features/toolbar-metrics/ToolbarMetrics.js";
 import type { SystemAnalyticsTab } from "./features/system-analytics/SystemAnalyticsWorkspace.js";
 import { SystemAnalyticsErrorBoundary } from "./features/system-analytics/SystemAnalyticsErrorBoundary.js";
+import { shouldLoadHarnessPane } from "./features/harness-pane/harness-load-policy.js";
 import {
   MAX_WORKSPACE_TEXT_SIZE,
   MIN_WORKSPACE_TEXT_SIZE,
   WORKSPACE_TEXT_SIZE_PICKER_ID,
   WorkspaceTextSizePicker
 } from "./features/workspace-text-size-picker/WorkspaceTextSizePicker.js";
+import {
+  MINIMIZED_PANE_BAR_ID,
+  MINIMIZED_PANE_BAR_TOGGLE_ID,
+  MinimizedPaneBarToggle
+} from "./features/pane-float/MinimizedPaneBarToggle.js";
 import {
   useDismissibleToolbarLayer,
   usePersistentIconToolbar,
@@ -368,7 +379,7 @@ import {
 
 const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
   CHAT: MessageSquare,
-  CODE: Terminal,
+  CODE: CodeXml,
   BROWSER: Eye,
   REVIEW: GitCompare,
   SWARM: Boxes,
@@ -376,7 +387,8 @@ const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
   TERMINAL: Terminal,
   YOUTUBE: Youtube,
   VNC: Monitor,
-  HARNESS: Network
+  HARNESS: Network,
+  LIVE: Mic
 };
 
 const ROOM_PRESENTATION_FAILURE_TIMEOUT_MS = 8_000;
@@ -547,12 +559,102 @@ const LazyVncPane = lazy(() =>
 const LazyHarnessPane = lazy(() =>
   import("./features/harness-pane/HarnessPane.js").then((module) => ({ default: module.HarnessPane }))
 );
+const LazyLivePane = lazy(() =>
+  import("./features/live-pane/LivePane.js").then((module) => ({ default: module.LivePane }))
+);
 const LazyAdminOperationsDialog = lazy(() =>
   import("./features/admin-operations/AdminOperationsDialog.js")
     .then((module) => ({ default: module.AdminOperationsDialog }))
 );
+const LazyAdminCodexToolsDialog = lazy(() =>
+  import("./features/admin-codex-tools/AdminCodexToolsDialog.js")
+    .then((module) => ({ default: module.AdminCodexToolsDialog }))
+);
+const LazySetupConnectionsWizard = lazy(() =>
+  import("./features/setup-connections/SetupConnectionsWizard.js")
+    .then((module) => ({ default: module.SetupConnectionsWizard }))
+);
+const LazyEmbeddedDashboardDialog = lazy(() =>
+  import("./features/embedded-dashboard/EmbeddedDashboardDialog.js")
+    .then((module) => ({ default: module.EmbeddedDashboardDialog }))
+);
+const LazyHelpPage = lazy(() =>
+  import("./features/help/HelpPage.js").then((module) => ({ default: module.HelpPage }))
+);
+const LazyBenchmarkPage = lazy(() =>
+  import("./features/benchmark/BenchmarkPage.js").then((module) => ({ default: module.BenchmarkPage }))
+);
+const LazyRoomAgentDock = lazy(() =>
+  import("./features/room-agent/RoomAgentDock.js").then((module) => ({ default: module.RoomAgentDock }))
+);
+const LazyMediaDock = lazy(() =>
+  import("./features/media-dock/MediaDock.js").then((module) => ({ default: module.MediaDock }))
+);
+const LazyStreamingDock = lazy(() =>
+  import("./features/streaming/StreamingDock.js").then((module) => ({ default: module.StreamingDock }))
+);
+const LazyAgentToolsDock = lazy(() =>
+  import("./features/agent-tools/AgentToolsDock.js").then((module) => ({ default: module.AgentToolsDock }))
+);
+const LazyCliDock = lazy(() =>
+  import("./features/cli-dock/CliDock.js").then((module) => ({ default: module.CliDock }))
+);
+const LazyAgentSessionsDock = lazy(() =>
+  import("./features/agent-sessions/AgentSessionsDock.js").then((module) => ({ default: module.AgentSessionsDock }))
+);
+const LazyAgentFilesDock = lazy(() =>
+  import("./features/agent-files/AgentFilesDock.js").then((module) => ({ default: module.AgentFilesDock }))
+);
+const LazySharedChatDock = lazy(() =>
+  import("./features/shared-chat/SharedChatDock.js").then((module) => ({ default: module.SharedChatDock }))
+);
+const LazyClipboardDock = lazy(() =>
+  import("./features/clipboard-dock/ClipboardDock.js").then((module) => ({ default: module.ClipboardDock }))
+);
+const LazyTaskDock = lazy(() =>
+  import("./features/task-dock/TaskDock.js").then((module) => ({ default: module.TaskDock }))
+);
+const LazyActivityLogDock = lazy(() =>
+  import("./features/activity-log/ActivityLogDock.js").then((module) => ({ default: module.ActivityLogDock }))
+);
+const LazyUiThemeSettingsCard = lazy(() =>
+  import("./features/ui-theme/UiThemeSettingsCard.js").then((module) => ({ default: module.UiThemeSettingsCard }))
+);
+const LazySourceControlPublishingCard = lazy(() =>
+  import("./features/source-control-publishing/SourceControlPublishingCard.js")
+    .then((module) => ({ default: module.SourceControlPublishingCard }))
+);
+const LazyCodexCliDefaultsCard = lazy(() =>
+  import("./features/codex-cli-defaults/CodexCliDefaultsCard.js")
+    .then((module) => ({ default: module.CodexCliDefaultsCard }))
+);
+const LazyTelegramIntegrationCard = lazy(() =>
+  import("./features/telegram-integration/TelegramIntegrationCard.js")
+    .then((module) => ({ default: module.TelegramIntegrationCard }))
+);
+const LazyOnScreenKeyboard = lazy(() =>
+  import("./features/osk-keyboard/OnScreenKeyboard.js").then((module) => ({ default: module.OnScreenKeyboard }))
+);
+const LazyCliLauncherMenu = lazy(() =>
+  import("./features/cli-launcher/CliLauncherMenu.js").then((module) => ({ default: module.CliLauncherMenu }))
+);
+const LazyChatLauncherMenu = lazy(() =>
+  import("./features/chat-launcher/ChatLauncherMenu.js").then((module) => ({ default: module.ChatLauncherMenu }))
+);
+const LazyServerActionsMenu = lazy(() =>
+  import("./features/server-actions/ServerActionsMenu.js").then((module) => ({ default: module.ServerActionsMenu }))
+);
+const LazyPaneLayoutMenu = lazy(() =>
+  import("./features/pane-layout/PaneLayoutMenu.js").then((module) => ({ default: module.PaneLayoutMenu }))
+);
+const LazyPaneSpanAllMenu = lazy(() =>
+  import("./features/pane-layout/PaneSpanAllMenu.js").then((module) => ({ default: module.PaneSpanAllMenu }))
+);
 const agentPaneLoadingFallback = <div className="pane-copy" role="status">Loading chat pane…</div>;
 const browserPaneLoadingFallback = <div className="pane-copy" role="status">Loading browser pane…</div>;
+const sideSurfaceLoadingFallback = <div className="dock-muted-text" role="status">Loading panel…</div>;
+const settingsCardLoadingFallback = <div className="empty-mini" role="status">Loading settings…</div>;
+const toolbarMenuLoadingFallback = <span className="sr-only" role="status">Loading menu…</span>;
 
 const roomEventLimit = 50;
 const MIN_TERMINAL_FONT_SIZE = MIN_WORKSPACE_TEXT_SIZE;
@@ -567,6 +669,7 @@ const SIDE_SURFACE_HIDDEN_STORAGE_KEY = "space.roomsRailHidden";
 const ROOM_FOCUS_MODE_STORAGE_KEY = "space.roomFocusMode";
 const ROOM_TOOLBAR_HIDDEN_STORAGE_KEY = "space.roomToolbar.hidden.v1";
 const ROOM_THEME_STORAGE_KEY = "space.room.theme";
+const OSK_PANEL_ID = "space-osk-keyboard";
 const ROOM_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY = "space.roomToolbar.hiddenActionIds.v3";
 const ROOM_TOOLBAR_ACTION_ORDER_STORAGE_KEY = "space.roomToolbar.actionOrder.v3";
 const PANE_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY_PREFIX = "space.paneToolbar.hiddenActionIds";
@@ -596,10 +699,11 @@ const paneGridDensityMetrics: Record<PaneDensity, { minWidthRem: number; gapRem:
 };
 
 type TerminalPaneAction =
-  | { action: "upload" | "reconnect" | "copy" | "focus" | "cancel_login" }
+  | { action: "upload" | "reconnect" | "copy" | "focus" | "cancel_login" | "new_task" }
   | { action: "attach_clip_image"; file: File }
   | { action: "insert_text"; text: string }
   | { action: "keyboard_input"; text: string }
+  | { action: "cli_shortcut"; commandId: string }
   | { action: "insert_clipboard_text"; text: string }
   | { action: "start_task_item"; objective: string }
   | { action: "ensure_plan_mode" }
@@ -701,7 +805,7 @@ const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: string; su
   logs: { icon: History, label: "activity log", surfaceLabel: "Activity log" },
   "agent-tools": { icon: Wrench, label: "agent tools", surfaceLabel: "Agent Tools" },
   cli: { icon: Terminal, label: "cli dock", surfaceLabel: "CLI dock" },
-  "agent-sessions": { icon: History, label: "agent session history", surfaceLabel: "Agent Session History" }
+  "agent-sessions": { icon: Archive, label: "agent session history", surfaceLabel: "Agent Session History" }
 };
 
 type BlueprintStatus = "LIVE" | "GATED" | "NEXT";
@@ -805,7 +909,7 @@ function resolvePaneGridColumnCount(input: {
   forceTabletTwoColumns?: boolean;
 }) {
   if (input.containerWidth > 0 && input.containerWidth <= 768) return 1;
-  if (input.paneLayoutColumns === 0 || input.paneLayoutColumns === 5) return 1;
+  if (input.paneLayoutColumns === 0) return 1;
   const automaticColumns = Math.min(4, detectPaneGridColumnCount(input));
   const requestedColumns = input.paneLayoutColumns ?? automaticColumns;
   const responsiveColumns =
@@ -1012,7 +1116,7 @@ function detectShellMode(width: number, mobileMaxWidth = MOBILE_SHELL_MAX_WIDTH)
 }
 
 function detectUiThemeShellMode(width: number, uiTheme: UiTheme): ShellMode {
-  return detectShellMode(width, uiTheme === "modern" ? 767 : MOBILE_SHELL_MAX_WIDTH);
+  return detectShellMode(width, uiTheme !== "classic" ? 767 : MOBILE_SHELL_MAX_WIDTH);
 }
 
 function paneDensityFor(shellMode: ShellMode, paneCount: number): PaneDensity {
@@ -1037,7 +1141,8 @@ const paneModeLabels: Record<Pane["mode"], string> = {
   TERMINAL: "CLI",
   YOUTUBE: "YouTube",
   VNC: "VNC",
-  HARNESS: "Harness"
+  HARNESS: "Harness",
+  LIVE: "Live"
 };
 
 function paneModeLabel(mode: Pane["mode"]): string {
@@ -1179,7 +1284,7 @@ function MobileActionSheet({
   triggerRef: RefObject<HTMLButtonElement | null>;
 }) {
   const hiddenSet = new Set(hiddenActionIds);
-  const toolbarSections = actionSections ?? [{ id: "toolbar", label: "Toolbar buttons", actions }];
+  const toolbarSections = actionSections ?? [{ id: "toolbar", label: plainActions ? "Pane actions" : "Toolbar buttons", actions }];
   const dialogRef = useRef<HTMLElement>(null);
   const closeIntentRef = useRef<PopupCloseIntent>("auto");
 
@@ -1549,20 +1654,20 @@ function DesktopActionManager({
                 type="button"
                 role="menuitem"
                 aria-label={command.ariaLabel}
-                title={command.title}
+                title={command.title ?? command.description}
                 disabled={command.disabled}
                 onClick={() => runCommand(command)}
               >
                 <CommandIcon aria-hidden="true" />
-                <span>{command.label}</span>
+                <span>{command.label}{command.disabled && <small className="action-disabled-reason">{command.title ?? command.description}</small>}</span>
               </button>
             );
           })}
         </div>
       ) : null}
-      <div className="icon-action-manager-scroll">
-        <div className="icon-action-manager-section" role="group" aria-label="Toolbar buttons">
-          <span className="icon-action-manager-section-label">Toolbar buttons</span>
+      {actions.length ? <div className="icon-action-manager-scroll">
+        <div className="icon-action-manager-section" role="group" aria-label={plainActions ? "Pane actions" : "Toolbar buttons"}>
+          <span className="icon-action-manager-section-label">{plainActions ? "Pane actions" : "Toolbar buttons"}</span>
           {actions.map((action) => {
             const ActionIcon = action.icon;
             const isHidden = hiddenSet.has(action.id);
@@ -1581,7 +1686,7 @@ function DesktopActionManager({
                   onClick={() => runAction(action)}
                 >
                   <ActionIcon aria-hidden="true" />
-                  <span>{action.label}</span>
+                  <span>{action.label}{action.disabled && <small className="action-disabled-reason">{action.title}</small>}</span>
                 </button>
               );
             }
@@ -1602,7 +1707,7 @@ function DesktopActionManager({
             );
           })}
         </div>
-      </div>
+      </div> : null}
     </div>,
     document.body
   );
@@ -2237,19 +2342,20 @@ function buildLaunchBlockers(props: BlueprintProgressProps): LaunchBlocker[] {
 }
 
 export function App() {
+  useEffect(() => bindSpaceMediaVolume(), []);
   const runtime = getSpaceRuntime();
   const runtimeKind = getSpaceRuntimeKind();
   const { ensureServerSettings } = useVoiceInput();
   migrateLegacyCliToolbarPreferences(runtime.platform.localStorage);
   const [uiTheme] = useState<UiTheme>(() => readUiTheme(runtime.platform.localStorage));
   const [roomToolbarStorageKeys] = useState(() => {
-    const storageKeys = uiTheme === "modern"
+    const storageKeys = uiTheme !== "classic"
       ? modernRoomToolbarStorageKeys()
       : {
           hidden: ROOM_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY,
           order: ROOM_TOOLBAR_ACTION_ORDER_STORAGE_KEY
         };
-    if (uiTheme === "modern") {
+    if (uiTheme !== "classic") {
       migrateModernToolbarPreference(
         runtime.platform.localStorage,
         ROOM_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY,
@@ -2268,11 +2374,15 @@ export function App() {
   const [systemPrefersDark, setSystemPrefersDark] = useState(
     () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches
   );
-  const modernColorMode = resolveModernColorMode(modernAppearance, systemPrefersDark);
+  const modernColorMode = uiTheme === "codex" ? "dark" : resolveModernColorMode(modernAppearance, systemPrefersDark);
+  useEffect(() => {
+    document.documentElement.dataset.interfaceTheme = uiTheme;
+    return () => { delete document.documentElement.dataset.interfaceTheme; };
+  }, [uiTheme]);
   const [toolbarVpnRoute, setToolbarVpnRoute] = useState<CliEgressRouteId | null>(null);
   useEffect(() => {
     const body = document.body;
-    if (uiTheme !== "modern") {
+    if (uiTheme === "classic") {
       body.removeAttribute("data-ui-theme");
       body.removeAttribute("data-color-mode");
       body.removeAttribute("data-icon-pack");
@@ -2288,6 +2398,9 @@ export function App() {
     };
   }, [modernColorMode, modernIconPack, uiTheme]);
   const [auth, setAuth] = useState<AuthMe | null>(null);
+  const [adminModeRequested, setAdminModeRequested] = useState(false);
+  const isAdminMode = auth?.user?.role === "ADMIN" && adminModeRequested;
+  useEffect(() => setAdminModeRequested(false), [auth?.user?.id]);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const voiceSettingsAuthUserIdRef = useRef<string | null>(null);
 
@@ -2340,6 +2453,8 @@ export function App() {
   const [authBootstrapError, setAuthBootstrapError] = useState<string | null>(null);
   const [appView, setAppView] = useState<AppView>(readAppView);
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [roomSearch, setRoomSearch] = useState("");
+  const [roomFilter, setRoomFilter] = useState<WorkspaceRoomFilter>("all");
   const [roomCliActivityCounts, setRoomCliActivityCounts] = useState<Record<string, number>>({});
   const [roomCliRuntimeIds, setRoomCliRuntimeIds] = useState<Record<string, string[]>>({});
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => readStoredSessionString(SELECTED_ROOM_ID_STORAGE_KEY));
@@ -2378,12 +2493,14 @@ export function App() {
   const isCodexEnabled = codexEnvironmentSummary?.isCodexEnabled ?? true;
   const [cliRuntimeSettings, setCliRuntimeSettings] = useState<CliRuntimeSettingsResponse | null>(null);
   const anyCliEnabled = cliRuntimeSettings?.settings.some((setting) => setting.enabled) ?? true;
-  const [activeSideSurface, setActiveSideSurface] = useState<SideSurface>("rooms");
+  const isHarnessEnabled = cliRuntimeSettings?.harness?.enabled ?? true;
+  const [restoredDock] = useState(() => readDockSession(runtime.platform.sessionStorage, Object.keys(sideSurfaceMeta)));
+  const [activeSideSurface, setActiveSideSurface] = useState<SideSurface>(() => (restoredDock?.surface as SideSurface | undefined) ?? "rooms");
   const [isRoomFocusMode, setIsRoomFocusMode] = useState(() => readStoredBoolean(ROOM_FOCUS_MODE_STORAGE_KEY));
   const [isRoomToolbarHidden, setIsRoomToolbarHidden] = useState(() => readStoredBoolean(ROOM_TOOLBAR_HIDDEN_STORAGE_KEY));
   const [isMobilePaneFocusMode, setIsMobilePaneFocusMode] = useState(false);
-  const [isDesktopSideSurfaceOpen, setIsDesktopSideSurfaceOpen] = useState(() => !readStoredBoolean(SIDE_SURFACE_HIDDEN_STORAGE_KEY));
-  const [isCompactSideSurfaceOpen, setIsCompactSideSurfaceOpen] = useState(false);
+  const [isDesktopSideSurfaceOpen, setIsDesktopSideSurfaceOpen] = useState(() => restoredDock?.desktopOpen ?? !readStoredBoolean(SIDE_SURFACE_HIDDEN_STORAGE_KEY));
+  const [isCompactSideSurfaceOpen, setIsCompactSideSurfaceOpen] = useState(() => restoredDock?.compactOpen ?? false);
   const compactSideSurfaceRef = useRef<HTMLElement>(null);
   const compactSideSurfaceTriggerRef = useRef<HTMLElement | null>(null);
   const [terminalFontSize, setTerminalFontSize] = useState(readStoredTerminalFontSize);
@@ -2400,7 +2517,7 @@ export function App() {
   const [roomTheme, setRoomTheme] = useState<RoomTheme>(readStoredRoomTheme);
   useEffect(() => {
     const body = document.body;
-    if (uiTheme !== "modern") {
+    if (uiTheme === "classic") {
       body.removeAttribute("data-room-theme");
       return;
     }
@@ -2424,9 +2541,11 @@ export function App() {
   const [paneSpanAllError, setPaneSpanAllError] = useState<string | null>(null);
   const [isWorkspaceTextSizePickerOpen, setIsWorkspaceTextSizePickerOpen] = useState(false);
   const [isCliLauncherOpen, setIsCliLauncherOpen] = useState(false);
+  const [isChatLauncherOpen, setIsChatLauncherOpen] = useState(false);
   const [cliPaneCreationPending, setCliPaneCreationPending] = useState(false);
   const [isVibeMusicOpen, setIsVibeMusicOpen] = useState(false);
   const [isOskKeyboardOpen, setIsOskKeyboardOpen] = useState(false);
+  const oskKeyboardMountedRef = useRef(false);
   const [isServerActionsMenuOpen, setIsServerActionsMenuOpen] = useState(false);
   const [isSetupConnectionsOpen, setIsSetupConnectionsOpen] = useState(false);
   const [isServerRestartDialogOpen, setIsServerRestartDialogOpen] = useState(false);
@@ -2444,8 +2563,10 @@ export function App() {
   useAutoDismiss(cliRuntimeRestartAllMessage, setCliRuntimeRestartAllMessage);
   useAutoDismiss(cliRuntimeRestartAllError, setCliRuntimeRestartAllError);
   const [restoreAllPending, setRestoreAllPending] = useState(false);
+  const [minimizeAllPending, setMinimizeAllPending] = useState(false);
   const [isRoomRenameOpen, setIsRoomRenameOpen] = useState(false);
   const [isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen] = useState(false);
+  const [resourceIndicatorsVisible, toggleResourceIndicators] = useResourceIndicators(auth?.user?.id);
   const [systemAnalyticsTab, setSystemAnalyticsTab] = useState<SystemAnalyticsTab | null>(null);
   const [activeUserLink, setActiveUserLink] = useState<UserLink | null>(null);
   const [isQuickLinksOpen, setIsQuickLinksOpen] = useState(false);
@@ -2470,8 +2591,11 @@ export function App() {
   const [paneReorderPending, setPaneReorderPending] = useState(false);
   const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
   const [paneDragOverId, setPaneDragOverId] = useState<string | null>(null);
+  const [paneDragOverPosition, setPaneDragOverPosition] = useState<PaneDropPosition>("before");
+  const [dragOverSlotKey, setDragOverSlotKey] = useState<string | null>(null);
   const [lifecycleDebugSnapshot, setLifecycleDebugSnapshot] = useState<LifecycleDebugSnapshot>(() => readLifecycleDebugSnapshot());
   const [error, setError] = useState<string | null>(null);
+  const [paneCreationPendingMode, setPaneCreationPendingMode] = useState<Pane["mode"] | null>(null);
   const [roomCreationPending, setRoomCreationPending] = useState(false);
   const [deletePendingRoomId, setDeletePendingRoomId] = useState<string | null>(null);
   const [paneCompletionLifecycle, setPaneCompletionLifecycle] = useState<PaneCompletionLifecycleState>(
@@ -2523,6 +2647,10 @@ export function App() {
   const roomTurnsLoadPromisesRef = useRef(new Map<string, Promise<void>>());
   const roomSwarmLoadPromisesRef = useRef(new Map<string, Promise<void>>());
   const roomEventsLoadPromisesRef = useRef(new Map<string, Promise<void>>());
+  const settingsSurfaceDataPromiseRef = useRef<Promise<void> | null>(null);
+  const healthSurfaceDataPromiseRef = useRef<Promise<void> | null>(null);
+  const settingsSurfaceDataLoadedRef = useRef(false);
+  const healthSurfaceDataLoadedRef = useRef(false);
   const roomRuntimeLastPolledAtRef = useRef(new Map<string, number>());
   const roomRefreshQueueRef = useRef(createCoalescedRefreshQueue());
   const roomCatalogRefreshQueueRef = useRef(createCoalescedRefreshQueue());
@@ -2537,8 +2665,10 @@ export function App() {
   const roomToolbarScrollRef = useRef<HTMLDivElement | null>(null);
   const roomOverflowTriggerRef = useRef<HTMLButtonElement | null>(null);
   const cliLauncherButtonRef = useRef<HTMLButtonElement | null>(null);
+  const chatLauncherButtonRef = useRef<HTMLButtonElement | null>(null);
   const cliLauncherReturnFocusRef = useRef<HTMLButtonElement | null>(null);
   const cliPaneCreationPendingRef = useRef(false);
+  const paneCreationPendingRef = useRef(false);
   const roomCreationPendingRef = useRef(false);
   const workspaceTextSizeButtonRef = useRef<HTMLButtonElement | null>(null);
   const vibeMusicButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -3633,69 +3763,14 @@ export function App() {
       setSwarmState(await api.swarm());
     }
 
-    // Unlock admin/readiness fan-out so adjacent rooms hydrate while smokes and
-    // provider catalogs load in the background.
+    // Keep only shell-critical status reads in the startup path. Provider and
+    // health catalogs load when their dock is opened.
     setError((current) => (isTransientUpstreamErrorMessage(current) ? null : current));
 
-    void runWithConcurrency([
-      () => api.readyz(),
-      () => api.providers(),
-      () => api.providerSettings(),
-      () => api.models(),
-      () => api.skills(),
-      () => api.imports(),
-      () => api.admin(),
-      () => api.mcp(),
-      () => api.latestMcpDiscoverySmoke(),
-      () => api.latestMemoryEmbeddingSmoke(),
-      () => api.memoryVectorReadiness(),
-      () => api.codexAppServer(),
-      () => api.latestCodexAppServerHandshake(),
-      () => api.latestCodexAppServerTurnSmoke(),
-      () => api.storage(),
-      () => api.observability(),
-      () => api.worker()
-    ] as const, 4).then((
-      [
-        readyPayload,
-        providerPayload,
-        providerSettingsPayload,
-        modelPayload,
-        skillPayload,
-        importPayload,
-        admin,
-        mcpPayload,
-        mcpSmokePayload,
-        memoryEmbeddingSmokePayload,
-        memoryVectorReadinessPayload,
-        codexAppServerPayload,
-        codexHandshakePayload,
-        codexTurnSmokePayload,
-        storageReadinessPayload,
-        observabilityPayload,
-        workerReadinessPayload
-      ]
-    ) => {
+    void Promise.allSettled([api.readyz(), api.admin()]).then(([readyResult, adminResult]) => {
       if (!appMountedRef.current) return;
-      setReadiness(readyPayload);
-      setProviders(providerPayload.data);
-      setProviderSettings(providerSettingsPayload);
-      setModels(modelPayload.data);
-      setSkills(skillPayload.data);
-      setImportCandidates(importPayload.data);
-      setStorageWarning(admin.storageWarning);
-      setMcp(mcpPayload);
-      setLatestMcpSmoke(mcpSmokePayload.data);
-      setLatestMemoryEmbeddingSmoke(memoryEmbeddingSmokePayload.data);
-      setLatestMemoryVectorReadiness(memoryVectorReadinessPayload.data);
-      setCodexAppServer(codexAppServerPayload);
-      setLatestCodexHandshake(codexHandshakePayload.data);
-      setLatestCodexTurnSmoke(codexTurnSmokePayload.data);
-      setStorageReadiness(storageReadinessPayload);
-      setObservability(observabilityPayload);
-      setWorkerReadiness(workerReadinessPayload);
-    }).catch(() => {
-      // Admin/readiness cards are non-blocking after the interactive shell is ready.
+      if (readyResult.status === "fulfilled") setReadiness(readyResult.value);
+      if (adminResult.status === "fulfilled") setStorageWarning(adminResult.value.storageWarning);
     });
 
     if (me.user?.role === "ADMIN") {
@@ -3706,6 +3781,53 @@ export function App() {
         .catch(() => {
           // Onboarding discovery is best-effort and must not delay or block room hydration.
         });
+    }
+  }
+
+  async function loadSettingsSurfaceData() {
+    if (settingsSurfaceDataLoadedRef.current) return;
+    if (settingsSurfaceDataPromiseRef.current) return settingsSurfaceDataPromiseRef.current;
+    const request = Promise.all([api.providers(), api.providerSettings()]).then(([providerPayload, settings]) => {
+      if (!appMountedRef.current) return;
+      setProviders(providerPayload.data);
+      setProviderSettings(settings);
+      settingsSurfaceDataLoadedRef.current = true;
+    });
+    settingsSurfaceDataPromiseRef.current = request;
+    try {
+      await request;
+    } finally {
+      if (settingsSurfaceDataPromiseRef.current === request) settingsSurfaceDataPromiseRef.current = null;
+    }
+  }
+
+  async function loadHealthSurfaceData() {
+    if (healthSurfaceDataLoadedRef.current) return;
+    if (healthSurfaceDataPromiseRef.current) return healthSurfaceDataPromiseRef.current;
+    const request = Promise.allSettled([
+      loadSettingsSurfaceData(),
+      api.models(),
+      api.mcp(),
+      api.latestMcpDiscoverySmoke(),
+      api.storage(),
+      api.observability(),
+      api.worker()
+    ]).then((results) => {
+      if (!appMountedRef.current) return;
+      const [, modelResult, mcpResult, smokeResult, storageResult, observabilityResult, workerResult] = results;
+      if (modelResult.status === "fulfilled") setModels(modelResult.value.data);
+      if (mcpResult.status === "fulfilled") setMcp(mcpResult.value);
+      if (smokeResult.status === "fulfilled") setLatestMcpSmoke(smokeResult.value.data);
+      if (storageResult.status === "fulfilled") setStorageReadiness(storageResult.value);
+      if (observabilityResult.status === "fulfilled") setObservability(observabilityResult.value);
+      if (workerResult.status === "fulfilled") setWorkerReadiness(workerResult.value);
+      healthSurfaceDataLoadedRef.current = results.every((result) => result.status === "fulfilled");
+    });
+    healthSurfaceDataPromiseRef.current = request;
+    try {
+      await request;
+    } finally {
+      if (healthSurfaceDataPromiseRef.current === request) healthSurfaceDataPromiseRef.current = null;
     }
   }
 
@@ -3792,7 +3914,11 @@ export function App() {
     const updatePaneGridWidth = () => {
       const nextWidth = grid.clientWidth || grid.getBoundingClientRect().width || readViewportWidth();
       setPaneGridWidth((current) => (Math.abs(current - nextWidth) > 1 ? nextWidth : current));
-      const nextHeight = grid.clientHeight || grid.getBoundingClientRect().height || 0;
+      const nextHeight =
+        grid.clientHeight ||
+        (grid.parentElement ? grid.parentElement.clientHeight : 0) ||
+        grid.getBoundingClientRect().height ||
+        0;
       setPaneGridHeight((current) => (Math.abs(current - nextHeight) > 1 ? nextHeight : current));
     };
 
@@ -3807,8 +3933,8 @@ export function App() {
   }, [selectedRoomId, shellMode, panes.length, isDesktopSideSurfaceOpen, isCompactSideSurfaceOpen, isRoomFocusMode]);
 
   useEffect(() => {
-    runtime.platform.localStorage.setItem(SIDE_SURFACE_HIDDEN_STORAGE_KEY, String(!isDesktopSideSurfaceOpen));
-  }, [isDesktopSideSurfaceOpen]);
+    writeDockSession(runtime.platform.sessionStorage, { surface: activeSideSurface, desktopOpen: isDesktopSideSurfaceOpen, compactOpen: isCompactSideSurfaceOpen });
+  }, [activeSideSurface, isDesktopSideSurfaceOpen, isCompactSideSurfaceOpen]);
 
   useEffect(() => {
     try {
@@ -3874,7 +4000,7 @@ export function App() {
   }, [roomTheme]);
 
   useEffect(() => {
-    if (uiTheme !== "modern" || modernAppearance !== "system" || typeof window.matchMedia !== "function") return;
+    if (uiTheme === "classic" || modernAppearance !== "system" || typeof window.matchMedia !== "function") return;
     const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
     const update = () => setSystemPrefersDark(colorScheme.matches);
     update();
@@ -4037,6 +4163,21 @@ export function App() {
     setSelectedPaneId(created.id);
   }
 
+  function toggleCliLauncher() {
+    if (isCliLauncherOpen) {
+      setIsCliLauncherOpen(false);
+      return;
+    }
+    if (!selectedRoomId || cliPaneCreationPendingRef.current) return;
+    cliLauncherReturnFocusRef.current = cliLauncherButtonRef.current?.isConnected
+      ? cliLauncherButtonRef.current
+      : roomOverflowTriggerRef.current;
+    setIsQuickLinksOpen(false);
+    setIsVibeMusicOpen(false);
+    setIsChatLauncherOpen(false);
+    setIsCliLauncherOpen(true);
+  }
+
   function openCliLauncher() {
     if (!selectedRoomId || cliPaneCreationPendingRef.current) return;
     cliLauncherReturnFocusRef.current = cliLauncherButtonRef.current?.isConnected
@@ -4045,6 +4186,22 @@ export function App() {
     setIsQuickLinksOpen(false);
     setIsVibeMusicOpen(false);
     setIsCliLauncherOpen(true);
+  }
+
+  function toggleChatLauncher() {
+    if (isChatLauncherOpen) {
+      setIsChatLauncherOpen(false);
+      return;
+    }
+    if (!selectedRoomId || cliPaneCreationPendingRef.current) return;
+    setIsQuickLinksOpen(false);
+    setIsVibeMusicOpen(false);
+    setIsCliLauncherOpen(false);
+    setIsChatLauncherOpen(true);
+  }
+
+  function closeChatLauncher() {
+    setIsChatLauncherOpen(false);
   }
 
   async function addCliRuntimePane(runtime: AgentRuntime) {
@@ -4293,23 +4450,48 @@ export function App() {
     }
   }
 
-  async function addPane(mode: Pane["mode"]) {
-    if (!selectedRoomId || panes.length >= 16) return;
-    const prior = (await api.panes(selectedRoomId, { includeClosed: true }).catch(() => null))?.data ?? [];
-    const closedMatch = prior.find((candidate) => candidate.isClosed && candidate.mode === mode);
-    let pane: Pane;
-    if (closedMatch) {
-      pane = await api.updatePane(closedMatch.id, { isClosed: false, status: "IDLE" });
-    } else {
-      pane = await api.createPane(selectedRoomId, paneTitleForMode(mode, panes.length + 1), mode);
+  async function addPane(mode: Pane["mode"], youtubeUrl?: string) {
+    const roomId = selectedRoomIdRef.current;
+    if (
+      !roomId ||
+      panesRef.current.length >= 16 ||
+      paneCreationPendingRef.current ||
+      cliPaneCreationPendingRef.current
+    ) return;
+    paneCreationPendingRef.current = true;
+    setPaneCreationPendingMode(mode);
+    setError(null);
+    try {
+      const prior = (await api.panes(roomId, { includeClosed: true }).catch(() => null))?.data ?? [];
+      const closedMatch = prior.find((candidate) => candidate.isClosed && candidate.mode === mode);
+      let pane: Pane;
+      if (closedMatch) {
+        pane = await api.updatePane(closedMatch.id, { isClosed: false, status: "IDLE" });
+      } else {
+        pane = await api.createPane(roomId, paneTitleForMode(mode, panesRef.current.length + 1), mode);
+      }
+      if (mode === "YOUTUBE" && youtubeUrl) {
+        registerYouTubeBrowseIntent(pane.id, youtubeUrl);
+      }
+      if (selectedRoomIdRef.current === roomId) {
+        setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
+        setSelectedPaneId(pane.id);
+      }
+      await refreshRoomEvents(roomId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Pane failed to open");
+    } finally {
+      paneCreationPendingRef.current = false;
+      setPaneCreationPendingMode(null);
     }
-    setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
-    setSelectedPaneId(pane.id);
-    await refreshRoomEvents(selectedRoomId);
   }
 
   async function addHarnessPane() {
     if (!selectedRoomId || panes.length >= 16) return;
+    if (!isHarnessEnabled) {
+      setError("DeepSeek Harness is disabled. Enable it in Settings to open a Harness pane.");
+      return;
+    }
     try {
       const pane = await api.createPane(selectedRoomId, paneTitleForMode("HARNESS", panes.length + 1), "HARNESS");
       setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
@@ -4317,6 +4499,18 @@ export function App() {
       await refreshRoomEvents(selectedRoomId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Harness pane failed to open");
+    }
+  }
+
+  async function addLivePane() {
+    if (!selectedRoomId || panes.length >= 16) return;
+    try {
+      const pane = await api.createPane(selectedRoomId, paneTitleForMode("LIVE", panes.length + 1), "LIVE");
+      setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
+      setSelectedPaneId(pane.id);
+      await refreshRoomEvents(selectedRoomId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Live audio pane failed to open");
     }
   }
 
@@ -4402,7 +4596,12 @@ export function App() {
       setPanes((current) => current.map((item) => (item.id === updated.id ? updated : item)));
       setSelectedPaneId(nextPane?.id ?? null);
       setIsMobilePaneFocusMode(false);
-      window.requestAnimationFrame(() => minimizedPaneRestoreRefs.current.get(pane.id)?.focus());
+      // With the bar parked behind the float toggle, focus goes to whichever affordance is visible.
+      window.requestAnimationFrame(() => {
+        const restoreChip = minimizedPaneRestoreRefs.current.get(pane.id);
+        if (restoreChip) restoreChip.focus();
+        else document.getElementById(MINIMIZED_PANE_BAR_TOGGLE_ID)?.focus();
+      });
       await refreshRoomEvents(pane.roomId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Pane minimize failed");
@@ -4465,6 +4664,32 @@ export function App() {
     }
   }
 
+  async function minimizeAllPanes() {
+    if (!selectedRoomId || minimizeAllPending) return;
+    const candidates = panes.filter((pane) => !pane.isMinimized).slice(0, 16);
+    if (candidates.length === 0) return;
+    setMinimizeAllPending(true);
+    setError(null);
+    const results = await Promise.allSettled(
+      candidates.map((pane) => api.updatePane(pane.id, { isMinimized: true }))
+    );
+    try {
+      const reconciled = await api.panes(selectedRoomId);
+      setPanes([...reconciled.data]);
+      setSelectedPaneId(null);
+      setIsMobilePaneFocusMode(false);
+      if (results.some((result) => result.status === "rejected")) {
+        const failedCount = results.filter((result) => result.status === "rejected").length;
+        setError(`Minimize all partially failed for ${failedCount} pane${failedCount === 1 ? "" : "s"}. Room state was refreshed.`);
+      }
+      await refreshRoomEvents(selectedRoomId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Minimize all failed");
+    } finally {
+      setMinimizeAllPending(false);
+    }
+  }
+
   async function updatePaneColumnSpan(pane: Pane, columnSpan: number, anchorColumnStart?: number) {
     const nextColumnSpan = Math.max(1, Math.min(MAX_PANE_COLUMN_SPAN, columnSpan));
     if ((pane.columnSpan ?? 1) === nextColumnSpan) return;
@@ -4494,6 +4719,7 @@ export function App() {
   }
 
   const activeRoom = useMemo(() => rooms.find((room) => room.id === selectedRoomId) ?? null, [rooms, selectedRoomId]);
+  const controlLayouts = useSpaceControlClient(selectedRoomId, Boolean(auth?.isAuthenticated && auth.user?.role === "ADMIN" && !auth.user?.automationScope), selectRoom, setSelectedPaneId);
   const activeRoomCategoryFilter = useMemo(
     () => (selectedRoomId ? (activeCategoryColorByRoom[selectedRoomId] ?? null) : null),
     [selectedRoomId, activeCategoryColorByRoom]
@@ -4502,13 +4728,42 @@ export function App() {
     () => (activeRoom ? roomCategoryColors(panes.filter((pane) => pane.roomId === activeRoom.id)) : []),
     [activeRoom, panes]
   );
+  const [floatingYouTubePaneIds, setFloatingYouTubePaneIds] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem("space.youtube.floating.panes.v1");
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  const toggleYouTubeFloating = useCallback((paneId: string) => {
+    setFloatingYouTubePaneIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(paneId)) {
+        next.delete(paneId);
+      } else {
+        next.add(paneId);
+      }
+      try {
+        localStorage.setItem("space.youtube.floating.panes.v1", JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
+  }, []);
   const visiblePanes = useMemo(() => {
-    const unfiltered = panes.filter((pane) => !pane.isMinimized);
+    const unfiltered = panes.filter((pane) => !pane.isMinimized && !floatingYouTubePaneIds.has(pane.id));
     return activeRoomCategoryFilter
       ? unfiltered.filter((pane) => pane.categoryColor === activeRoomCategoryFilter)
       : unfiltered;
-  }, [panes, activeRoomCategoryFilter]);
+  }, [panes, activeRoomCategoryFilter, floatingYouTubePaneIds]);
   const minimizedPanes = useMemo(() => panes.filter((pane) => pane.isMinimized), [panes]);
+  const minimizedPaneRunningCount = useMemo(
+    () => minimizedPanes.filter((pane) => paneCompletionLifecycle.panes[pane.id]?.activeRunKey != null).length,
+    [minimizedPanes, paneCompletionLifecycle]
+  );
+  // The minimized panes bar stays parked behind one float icon until the operator asks for it.
+  const [minimizedBarExpanded, setMinimizedBarExpanded] = useState(false);
+
   const activePane = useMemo(
     () => visiblePanes.find((pane) => pane.id === selectedPaneId) ?? visiblePanes[0] ?? null,
     [selectedPaneId, visiblePanes]
@@ -4557,6 +4812,25 @@ export function App() {
     if (activePane.mode === "TERMINAL") {
       dispatchTerminalPaneAction(activePane.id, { action: "start_task_item", objective: item.objective });
     }
+  }
+
+  function routeCliShortcut(command: OskCliCommand): boolean {
+    if (activePane?.mode === "CHAT" && (command.id === "plan_progress" || command.id === "deploy")) {
+      setIsOskKeyboardOpen(false);
+      dispatchAgentPaneActionEvent({ paneId: activePane.id, action: command.id });
+      return true;
+    }
+    if (command.action) {
+      if (activePane?.mode === "CHAT") {
+        if (command.action === "permissions") setIsOskKeyboardOpen(false);
+        dispatchAgentPaneActionEvent({ paneId: activePane.id, action: command.action === "plan" ? "toggle_plan" : command.action });
+        return true;
+      }
+      if (activePane?.mode !== "TERMINAL") return true;
+    }
+    if (activePane?.mode !== "TERMINAL") return false;
+    dispatchTerminalPaneAction(activePane.id, { action: "cli_shortcut", commandId: command.id });
+    return true;
   }
 
   function routeOnScreenKeyboardInput(input: OnScreenKeyboardInput): boolean {
@@ -4651,6 +4925,9 @@ export function App() {
       if (!event || selectedRoomIdRef.current !== activeRoom.id) return;
       if (replaying && baselineReplay) replayCompletionEvents.push(event);
       appendRoomEvent(event, !replaying || !baselineReplay);
+      if (event.type === "PANE_UPDATED" && event.payload.roomPaneLayoutChanged === true) {
+        void requestRoomCatalogRefreshRef.current();
+      }
       for (const category of roomRefreshCategoriesForEvent(event.type)) {
         if (replaying) replayRefreshCategories.add(category);
         else requestRefresh(category, `sse:${event.type}`);
@@ -4887,7 +5164,7 @@ export function App() {
         containerWidth: paneGridWidth,
         paneLayoutColumns: null,
         visiblePaneCount: visiblePanes.length,
-        forceTabletTwoColumns: uiTheme === "modern"
+        forceTabletTwoColumns: uiTheme !== "classic"
       }),
     [paneDensity, paneGridWidth, shellMode, uiTheme, visiblePanes.length]
   );
@@ -4899,7 +5176,7 @@ export function App() {
         containerWidth: paneGridWidth,
         paneLayoutColumns: activeRoom?.paneLayoutColumns ?? null,
         visiblePaneCount: visiblePanes.length,
-        forceTabletTwoColumns: uiTheme === "modern"
+        forceTabletTwoColumns: uiTheme !== "classic"
       }),
     [activeRoom?.paneLayoutColumns, paneDensity, paneGridWidth, shellMode, uiTheme, visiblePanes.length]
   );
@@ -4925,6 +5202,15 @@ export function App() {
   const activeSideSurfaceCloseLabel = `Close ${sideSurfaceMeta[activeSideSurface].label}`;
   const showInlineSideSurface = !isCompactShell && isDesktopSideSurfaceOpen;
   const showOverlaySideSurface = isCompactShell && isCompactSideSurfaceOpen;
+  useRailOrder(collapsedToolbarRef, Boolean(auth?.isAuthenticated && setupStatus) && appView === "workspace" && !(shellMode === "mobile" && isMobilePaneFocusMode && activePane) && isRoomToolbarHidden && !showOverlaySideSurface && !isMemoryWorkspaceOpen && !systemAnalyticsTab);
+  useEffect(() => {
+    if (!auth?.isAuthenticated || !isSideSurfaceOpen) return;
+    if (activeSideSurface === "settings") {
+      void loadSettingsSurfaceData().catch(() => undefined);
+    } else if (activeSideSurface === "health") {
+      void loadHealthSurfaceData().catch(() => undefined);
+    }
+  }, [activeSideSurface, auth?.isAuthenticated, isSideSurfaceOpen]);
   const isRoomsSurfaceVisible = Boolean(auth?.isAuthenticated)
     && appView === "workspace"
     && !isMemoryWorkspaceOpen
@@ -5038,7 +5324,9 @@ export function App() {
   }
 
   function sideSurfaceToggleLabel(surface: SideSurface) {
-    const verb = isSideSurfaceOpen && activeSideSurface === surface ? (isCompactShell ? "Close" : "Hide") : isCompactShell ? "Open" : "Show";
+    const verb = isSideSurfaceOpen && activeSideSurface === surface
+      ? (isCompactShell ? "Close" : "Hide")
+      : (isCompactShell || surface === "agent-files" ? "Open" : "Show");
     return `${verb} ${sideSurfaceMeta[surface].label}`;
   }
 
@@ -5046,7 +5334,16 @@ export function App() {
     setIsCompactSideSurfaceOpen(false);
   }
 
+  useEffect(() => {
+    if (auth?.user?.role === "ADMIN" && activeSideSurface === "health" && isSideSurfaceOpen) {
+      setIsDesktopSideSurfaceOpen(false);
+      setIsCompactSideSurfaceOpen(false);
+      openSystemHealth();
+    }
+  }, [auth?.user?.role, activeSideSurface, isSideSurfaceOpen]);
+
   function toggleSideSurface(surface: SideSurface) {
+    if (surface === "health" && auth?.user?.role === "ADMIN") { openSystemHealth(); return; }
     if (isCompactShell) {
       if (activeSideSurface === surface && isCompactSideSurfaceOpen) {
         setIsCompactSideSurfaceOpen(false);
@@ -5223,25 +5520,40 @@ export function App() {
     }
   }
 
-  async function applyPaneLayoutPreset(paneLayoutColumns: Room["paneLayoutColumns"]) {
+  async function applyPaneLayoutPreset(
+    paneLayoutColumns?: Room["paneLayoutColumns"],
+    paneLayoutHeight?: Room["paneLayoutHeight"],
+    keepMenuOpen = false
+  ) {
     if (!activeRoom || paneLayoutPending) return;
     setPaneLayoutPending(true);
     setPaneLayoutError(null);
     const previousRoom = activeRoom;
+    const nextColumns = paneLayoutColumns !== undefined ? paneLayoutColumns : activeRoom.paneLayoutColumns;
+    const nextHeight = paneLayoutHeight !== undefined ? paneLayoutHeight : (activeRoom.paneLayoutHeight ?? 1);
     emitAppDiagnosticsPerformance({
       category: "PERFORMANCE",
       metric: "PANE_LAYOUT",
       phase: "LAYOUT_PRESET",
       roomId: activeRoom.id,
-      value: paneLayoutColumns ?? -1
+      value: nextColumns ?? -1
     });
     // Optimistic: apply the layout locally before the server round-trip so pane
     // hosts resize immediately and visible terminals refit without waiting.
     setRooms((current) =>
-      sortRoomsByOrder(current.map((room) => (room.id === activeRoom.id ? { ...room, paneLayoutColumns } : room)))
+      sortRoomsByOrder(
+        current.map((room) =>
+          room.id === activeRoom.id
+            ? { ...room, paneLayoutColumns: nextColumns, paneLayoutHeight: nextHeight }
+            : room
+        )
+      )
     );
     try {
-      const result = await api.updateRoomPaneLayout(activeRoom.id, { paneLayoutColumns });
+      const payload: { paneLayoutColumns?: Room["paneLayoutColumns"]; paneLayoutHeight?: Room["paneLayoutHeight"] } = {};
+      if (paneLayoutColumns !== undefined) payload.paneLayoutColumns = paneLayoutColumns;
+      if (paneLayoutHeight !== undefined) payload.paneLayoutHeight = paneLayoutHeight;
+      const result = await api.updateRoomPaneLayout(activeRoom.id, payload);
       paneColumnAnchorStartsRef.current = new Map();
       setRooms((current) =>
         sortRoomsByOrder(current.map((room) => (room.id === result.room.id ? result.room : room)))
@@ -5253,14 +5565,16 @@ export function App() {
           : result.panes.find((pane) => !pane.isMinimized)?.id ?? null
       );
       setPaneLayoutPending(false);
-      closePaneLayoutMenu();
-      setIsCollapsedPaneLayoutMenuOpen(false);
+      if (!keepMenuOpen) {
+        closePaneLayoutMenu();
+        setIsCollapsedPaneLayoutMenuOpen(false);
+      }
       emitAppDiagnosticsPerformance({
         category: "PERFORMANCE",
         metric: "PANE_LAYOUT",
         phase: "LAYOUT_APPLIED",
         roomId: activeRoom.id,
-        value: paneLayoutColumns ?? -1
+        value: nextColumns ?? -1
       });
       try {
         await refreshRoomEvents(activeRoom.id);
@@ -5297,14 +5611,24 @@ export function App() {
 
   async function applyPaneSpanToAll(columnSpan: number) {
     if (!activeRoom || paneSpanAllPending) return;
-    const targets = visiblePanes.filter((pane) => pane.roomId === activeRoom.id);
-    if (targets.length === 0) return;
+    const targets = visiblePanes.filter((pane) => !activeRoom || pane.roomId === activeRoom.id || !pane.roomId);
+    const resolvedTargets = targets.length > 0 ? targets : visiblePanes;
+    if (resolvedTargets.length === 0) return;
+    const nextColumnSpan = Math.max(1, Math.min(MAX_PANE_COLUMN_SPAN, columnSpan));
+    const previousPanes = panes;
+    paneColumnAnchorStartsRef.current = new Map();
+    setPanes((current) =>
+      current.map((pane) =>
+        resolvedTargets.some((target) => target.id === pane.id)
+          ? { ...pane, columnSpan: nextColumnSpan }
+          : pane
+      )
+    );
     setPaneSpanAllPending(true);
     setPaneSpanAllError(null);
     try {
-      const nextColumnSpan = Math.max(1, Math.min(MAX_PANE_COLUMN_SPAN, columnSpan));
       const results = await Promise.allSettled(
-        targets.map((pane) => {
+        resolvedTargets.map((pane) => {
           if ((pane.columnSpan ?? 1) === nextColumnSpan) return Promise.resolve(pane);
           return api.updatePane(pane.id, { columnSpan: nextColumnSpan });
         })
@@ -5312,7 +5636,7 @@ export function App() {
       const updatedPanes: Pane[] = [];
       let failed = 0;
       results.forEach((result, index) => {
-        const pane = targets[index]!;
+        const pane = resolvedTargets[index]!;
         if (result.status === "fulfilled") {
           updatedPanes.push(result.value);
         } else {
@@ -5321,7 +5645,6 @@ export function App() {
         }
       });
       setPanes((current) => current.map((item) => updatedPanes.find((pane) => pane.id === item.id) ?? item));
-      setPaneSpanAllPending(false);
       if (failed > 0) {
         setPaneSpanAllError(`${failed} pane${failed === 1 ? "" : "s"} could not be updated.`);
       } else {
@@ -5333,7 +5656,9 @@ export function App() {
         setError("Pane width applied, but room activity could not be refreshed.");
       }
     } catch (spanError) {
+      setPanes(previousPanes);
       setPaneSpanAllError(spanError instanceof Error ? spanError.message : "Pane width update failed");
+    } finally {
       setPaneSpanAllPending(false);
     }
   }
@@ -5422,7 +5747,8 @@ export function App() {
         ariaControls: PANE_SPAN_ALL_MENU_ID,
         ariaExpanded: isPaneSpanAllMenuOpen,
         ariaHasPopup: "menu",
-        disabled: !activeRoom || visiblePanes.length < 2 || paneSpanAllPending
+        disabled: !activeRoom || visiblePanes.length < 2 || paneSpanAllPending,
+        disabledReason: paneSpanAllPending ? "Applying pane widths…" : !activeRoom ? "Choose a room first" : "Requires at least two visible panes"
       },
       {
         id: "theme",
@@ -5447,7 +5773,7 @@ export function App() {
         ariaLabel: activeRoomCategoryFilter
           ? `Color filter: ${activeRoomCategoryFilter}`
           : "Color filter: off",
-        icon: Palette,
+        icon: ListFilter,
         onClick: () => {
           if (activeRoom) cycleRoomCategoryColor(activeRoom.id, 1);
         },
@@ -5457,8 +5783,18 @@ export function App() {
         },
         ariaPressed: activeRoomCategoryFilter !== null,
         hideable: true,
-        disabled: !activeRoom || activeRoomCategoryColors.length === 0
+        disabled: !activeRoom || activeRoomCategoryColors.length === 0,
+        disabledReason: !activeRoom ? "Choose a room first" : "No pane colors assigned"
       },
+      ...(auth?.user?.role === "ADMIN" ? [{
+        id: "resource-indicators",
+        label: resourceIndicatorsVisible ? "Hide resource indicators" : "Show resource indicators",
+        title: "Live resource values at the top right",
+        ariaLabel: resourceIndicatorsVisible ? "Hide resource indicators" : "Show resource indicators",
+        icon: Activity,
+        onClick: toggleResourceIndicators,
+        ariaPressed: resourceIndicatorsVisible
+      }] : []),
       {
         id: "cli-floats",
         label: cliFloatsHidden ? "Show CLI floats" : "Hide CLI floats",
@@ -5489,7 +5825,8 @@ export function App() {
         ariaControls: WORKSPACE_TEXT_SIZE_PICKER_ID,
         ariaExpanded: isWorkspaceTextSizePickerOpen,
         ariaHasPopup: "listbox",
-        disabled: !activeRoom || !panes.some((pane) => pane.mode === "TERMINAL" || pane.mode === "CHAT")
+        disabled: !activeRoom || !panes.some((pane) => pane.mode === "TERMINAL" || pane.mode === "CHAT"),
+        disabledReason: !activeRoom ? "Choose a room first" : "Open a terminal or chat pane"
       },
       {
         id: "add-chat",
@@ -5497,7 +5834,10 @@ export function App() {
         title: isCodexEnabled ? "Add chat pane" : "Enable Codex in Settings",
         ariaLabel: "Add chat pane",
         icon: MessageSquare,
-        onClick: () => addPane("CHAT"),
+        onClick: toggleChatLauncher,
+        ariaControls: CHAT_LAUNCHER_MENU_ID,
+        ariaExpanded: isChatLauncherOpen,
+        ariaHasPopup: shellMode === "mobile" ? "dialog" as const : "menu" as const,
         disabled: !isCodexEnabled || !selectedRoomId || panes.length >= 16
       },
       {
@@ -5506,7 +5846,7 @@ export function App() {
         title: "Add CLI pane",
         ariaLabel: "Add CLI pane",
         icon: Terminal,
-        onClick: openCliLauncher,
+        onClick: toggleCliLauncher,
         ariaControls: CLI_LAUNCHER_MENU_ID,
         ariaExpanded: isCliLauncherOpen,
         ariaHasPopup: shellMode === "mobile" ? "dialog" as const : "menu" as const,
@@ -5524,8 +5864,8 @@ export function App() {
           },
           {
             id: "server-restart",
-            label: "Server restart",
-            title: "Server restart",
+            label: "Server actions",
+            title: "Server actions",
             ariaLabel: "Server restart",
             icon: ServerCog,
             onClick: () => setIsServerActionsMenuOpen((current) => !current),
@@ -5542,15 +5882,6 @@ export function App() {
         ariaLabel: "Add browser pane",
         icon: Eye,
         onClick: () => addPane("BROWSER"),
-        disabled: !selectedRoomId || panes.length >= 16
-      },
-      {
-        id: "add-harness",
-        label: "Harness",
-        title: "Open DeepSeek Harness",
-        ariaLabel: "Harness",
-        icon: Network,
-        onClick: () => void addHarnessPane(),
         disabled: !selectedRoomId || panes.length >= 16
       },
       {
@@ -5572,13 +5903,22 @@ export function App() {
         disabled: !selectedRoomId || panes.length >= 16
       },
       {
-        id: "add-review",
-        label: "Add review pane",
-        title: "Add review pane",
-        ariaLabel: "Add review pane",
-        icon: GitCompare,
-        onClick: () => addPane("REVIEW"),
+        id: "add-live",
+        label: "Add Live audio pane",
+        title: "Add Live audio pane",
+        ariaLabel: "Add Live audio pane",
+        icon: Mic,
+        onClick: () => void addLivePane(),
         disabled: !selectedRoomId || panes.length >= 16
+      },
+      {
+        id: "vpn-city",
+        label: `Change ${toolbarVpnRoute === "nord" ? "NordVPN" : toolbarVpnRoute === "mullvad" ? "Mullvad" : "VPN"} city`,
+        title: `Change ${toolbarVpnRoute === "nord" ? "NordVPN" : toolbarVpnRoute === "mullvad" ? "Mullvad" : "VPN"} city`,
+        ariaLabel: `Change ${toolbarVpnRoute === "nord" ? "NordVPN" : toolbarVpnRoute === "mullvad" ? "Mullvad" : "VPN"} city`,
+        icon: Globe,
+        onClick: () => void rotateVpnCityFromToolbar(),
+        disabled: vpnCityPending || !toolbarVpnRoute
       },
       {
         id: "reload-room",
@@ -5587,7 +5927,7 @@ export function App() {
         ariaLabel: "Reload window",
         icon: RefreshCw,
         onClick: () => void reloadRoomWindow(),
-        disabled: !activeRoom
+        disabled: false
       },
       {
         id: "clip-tool",
@@ -5627,6 +5967,31 @@ export function App() {
         icon: CircleHelp,
         onClick: openHelp
       },
+      ...(auth?.user?.role === "ADMIN" ? [{
+        id: "token-usage",
+        label: "Token usage",
+        title: "Token usage history by provider and model",
+        ariaLabel: "Token usage",
+        icon: Gauge,
+        onClick: () => openSystemHealth("usage")
+      }, {
+        id: "advanced-settings",
+        label: "Advanced settings",
+        title: "All advanced settings in one place",
+        ariaLabel: "Advanced settings",
+        icon: Settings2,
+        onClick: () => {
+          setAdminModeRequested(true);
+          toggleSideSurface("settings");
+        }
+      }, {
+        id: "setup-connections",
+        label: "Setup wizard",
+        title: "Set up tools and connections",
+        ariaLabel: "Setup wizard",
+        icon: Wrench,
+        onClick: () => setIsSetupConnectionsOpen(true)
+      }] : []),
       {
         id: "benchmark",
         label: "Benchmark",
@@ -5702,7 +6067,7 @@ export function App() {
       auth?.user?.role,
       captureRoomScreen,
       cliPaneCreationPending,
-      cliFloatsHidden,
+      cliFloatsHidden, resourceIndicatorsVisible, toggleResourceIndicators,
       cycleRoomCategoryColor,
       isCompactShell,
       isCodexEnabled,
@@ -5721,61 +6086,29 @@ export function App() {
       panes,
       paneLayoutPending,
       reloadRoomWindow,
+      rotateVpnCityFromToolbar,
       runtime,
       selectedRoomId,
       shellMode,
-      terminalFontSize
+      terminalFontSize,
+      toolbarVpnRoute,
+      vpnCityPending
     ]
   );
   const serverActionCommands: ServerActionCommand[] = auth?.user?.role === "ADMIN"
     ? [
         {
           id: "setup-connections",
+          categoryHeader: "Setup & Release",
           label: "Setup & connections",
-          description: "See connected tools, verify them, and finish any remaining setup.",
+          description: "Inspect and verify live provider connections, test API credentials, and complete setup.",
           icon: LinkIcon,
           onSelect: () => setIsSetupConnectionsOpen(true)
         },
         {
-          id: "restart-server",
-          label: "Restart server",
-          description: "Restart the Space core services while protecting CLI and browser sessions.",
-          icon: ServerCog,
-          disabled: serverRestartPending,
-          onSelect: openServerRestartDialog
-        },
-        {
-          id: "restart-all-cli-runtimes",
-          label: "Restart all CLI runtimes",
-          description: "Restart sessions for every CLI type (codex, claude, gemini, opencode, kimi, ...).",
-          icon: Terminal,
-          disabled: cliRuntimeRestartAllPending,
-          onSelect: openCliRuntimeRestartAllDialog
-        },
-        {
-          id: "space-cli-maintenance",
-          label: "Space & CLI maintenance",
-          description: "Run Space health, doctor and guarded updates for every CLI app.",
-          icon: Wrench,
-          onSelect: () => {
-            adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
-            setAdminOperationTool("maintenance");
-          }
-        },
-        {
-          id: "cli-update-all",
-          label: "Update all CLI types",
-          description: "Detect all CLI types and update every managed type, including disabled ones, while preserving custom procedures.",
-          icon: Zap,
-          onSelect: () => {
-            adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
-            setAdminOperationTool("update-all");
-          }
-        },
-        {
           id: "publish-space-release",
           label: "Publish Space release",
-          description: "Preview and publish one version to Gitea and GitHub.",
+          description: "Preview git state, tag a release version, and publish commits to Gitea and GitHub.",
           icon: Rocket,
           onSelect: () => {
             adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
@@ -5783,10 +6116,38 @@ export function App() {
           }
         },
         {
+          id: "restart-server",
+          categoryHeader: "Services & Runtimes",
+          label: "Restart server",
+          description: "Restart Space web, API, and worker services while keeping active CLI and browser panes alive.",
+          icon: ServerCog,
+          disabled: serverRestartPending,
+          onSelect: openServerRestartDialog
+        },
+        {
+          id: "restart-all-cli-runtimes",
+          label: "Restart all CLI runtimes",
+          description: "Sequentially restart sessions for all CLI types (codex, claude, gemini, opencode, kimi).",
+          icon: Terminal,
+          disabled: cliRuntimeRestartAllPending,
+          onSelect: openCliRuntimeRestartAllDialog
+        },
+        {
+          id: "space-cli-maintenance",
+          categoryHeader: "Maintenance & Speed",
+          label: "Space & CLI maintenance",
+          description: "Run Space health checks, doctor diagnostics, package repairs, and guarded updates with rollback.",
+          icon: Wrench,
+          onSelect: () => {
+            adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
+            setAdminOperationTool("maintenance");
+          }
+        },
+        {
           id: "codex-lb-speed-control",
           label: "Codex-LB speed control",
           description: isCodexEnabled
-            ? "Set global speed defaults for the current provider models."
+            ? "Configure global default speed tiers (Standard or Fast) for active AI provider models."
             : "OFF · Enable Codex in Settings.",
           icon: Gauge,
           disabled: !isCodexEnabled,
@@ -5797,24 +6158,11 @@ export function App() {
           }
         },
         {
-          id: "codex-history-purge",
-          label: "Purge history",
-          description: anyCliEnabled
-            ? "Preview and remove inactive task history across all active CLIs."
-            : "OFF · Enable a CLI in Settings.",
-          icon: Trash2,
-          disabled: !anyCliEnabled,
-          title: !anyCliEnabled ? "Enable a CLI in Settings" : undefined,
-          onSelect: () => {
-            adminCodexToolTriggerRef.current = serverActionsButtonRef.current;
-            setAdminCodexTool("history");
-          }
-        },
-        {
           id: "cli-session-cleanup",
-          label: "Clean CLI sessions",
+          categoryHeader: "Cleanup & Storage",
+          label: "Clean CLI sessions & storage",
           description: anyCliEnabled
-            ? "Remove empty sessions, orphaned codex pane homes and disposable CLI store files."
+            ? "Safely remove empty tasks (0 turns/messages), orphaned pane homes, and temporary store files."
             : "OFF · Enable a CLI in Settings.",
           icon: Trash2,
           disabled: !anyCliEnabled,
@@ -5825,16 +6173,23 @@ export function App() {
           }
         },
         {
-          id: "clean-detached-cli-sessions",
-          label: "Clean detached CLI sessions",
-          description: "Clean eligible detached Space CLI sessions.",
-          icon: Terminal,
-          onSelect: () => toolbarMetricsRef.current?.openCliCleanup(serverActionsButtonRef.current)
+          id: "codex-history-purge",
+          label: "Purge inactive history",
+          description: anyCliEnabled
+            ? "Permanently remove inactive task history across CLIs not currently open in an active pane."
+            : "OFF · Enable a CLI in Settings.",
+          icon: Eraser,
+          disabled: !anyCliEnabled,
+          title: !anyCliEnabled ? "Enable a CLI in Settings" : undefined,
+          onSelect: () => {
+            adminCodexToolTriggerRef.current = serverActionsButtonRef.current;
+            setAdminCodexTool("history");
+          }
         },
         {
           id: "reclaim-safe-memory",
           label: "Reclaim safe memory",
-          description: "Run the bounded memory reclaim flow after live safety checks.",
+          description: "Free system page cache and release idle runtime memory after bounded safety verification.",
           icon: RefreshCw,
           onSelect: () => toolbarMetricsRef.current?.openMemoryReclaim(serverActionsButtonRef.current)
         }
@@ -5846,6 +6201,76 @@ export function App() {
     orderStorageKey: roomToolbarStorageKeys.order
   });
   const roomToolbarRenderedActions = roomToolbar.visibleActions;
+  const desktopToolbarActions: IconToolbarAction[] = roomToolbar.orderedActions.map(action => action.id === "add-chat" ? {
+    ...action,
+    onClick: () => void addPane("CHAT"),
+    ariaExpanded: undefined,
+    ariaControls: undefined,
+    ariaHasPopup: undefined
+  } : action).concat({
+    id: "resources", label: "Resources", title: "Resources", ariaLabel: "Resources", icon: Activity,
+    onClick: () => toolbarMetricsRef.current?.openResources()
+  }, {
+    id: "rename-room", label: "Rename room", title: "Rename room", ariaLabel: "Rename room", icon: Pencil,
+    disabled: !activeRoom, disabledReason: "Choose a room first", onClick: beginRoomRename
+  }, {
+    id: "previous-room", label: "Previous room", title: previousRoom?.name ?? "Previous room", ariaLabel: "Previous room", icon: ChevronLeft,
+    disabled: !previousRoom, disabledReason: "This is the first room", onClick: () => { if (previousRoom) void selectRoom(previousRoom.id); }
+  }, {
+    id: "next-room", label: "Next room", title: nextRoom?.name ?? "Next room", ariaLabel: "Next room", icon: ChevronRight,
+    disabled: !nextRoom, disabledReason: "This is the last room", onClick: () => { if (nextRoom) void selectRoom(nextRoom.id); }
+  }, ...(isHarnessEnabled ? [{
+    id: "add-harness", label: "DeepSeek Harness", title: "Open DeepSeek Harness",
+    ariaLabel: "Open DeepSeek Harness", icon: Network,
+    onClick: () => void addHarnessPane(), disabled: !selectedRoomId || panes.length >= 16
+  }] as IconToolbarAction[] : []));
+  useEffect(() => {
+    const dismiss = () => {
+      roomToolbar.closeMenus();
+      setIsThemeMenuOpen(false);
+      setIsPaneLayoutMenuOpen(false);
+      setIsCollapsedPaneLayoutMenuOpen(false);
+      setIsPaneSpanAllMenuOpen(false);
+      setIsWorkspaceTextSizePickerOpen(false);
+      setIsServerActionsMenuOpen(false);
+      setIsCliLauncherOpen(false);
+      setIsQuickLinksOpen(false);
+      setIsVibeMusicOpen(false);
+    };
+    window.addEventListener("space:navigation-open", dismiss);
+    return () => window.removeEventListener("space:navigation-open", dismiss);
+  }, [roomToolbar.closeMenus]);
+  function runDesktopAction(action: IconToolbarAction, anchor: HTMLButtonElement) {
+    // Submenus stay anchored to the persistent navigation trigger after the menu closes.
+    const refs = {
+      "server-restart": serverActionsButtonRef, "add-cli": cliLauncherButtonRef,
+      "add-chat": chatLauncherButtonRef, "font-down": workspaceTextSizeButtonRef,
+      theme: roomThemeButtonRef, "pane-layout": paneLayoutButtonRef,
+      "pane-span-all": paneSpanAllButtonRef, "vibe-music": vibeMusicButtonRef
+    };
+    const targetRef = refs[action.id as keyof typeof refs];
+    if (targetRef) targetRef.current = anchor;
+    roomToolbar.closeMenus();
+    if (action.id !== "theme") setIsThemeMenuOpen(false);
+    if (action.id !== "pane-layout") setIsPaneLayoutMenuOpen(false);
+    if (action.id !== "pane-span-all") setIsPaneSpanAllMenuOpen(false);
+    if (action.id !== "font-down") setIsWorkspaceTextSizePickerOpen(false);
+    if (action.id !== "server-restart") setIsServerActionsMenuOpen(false);
+    if (action.id !== "add-cli") setIsCliLauncherOpen(false);
+    if (action.id !== "add-chat") setIsChatLauncherOpen(false);
+    if (action.id === "resources") toolbarMetricsRef.current?.openResources(anchor);
+    else action.onClick();
+  }
+  function renderDesktopCreateTools({ query, onClose, triggerRef }: { query: string; onClose: () => void; triggerRef: RefObject<HTMLButtonElement | null> }) {
+    return (
+                      <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                        <LazyCliLauncherMenu embedded query={query} mobile={false}
+                          atPaneCap={panes.length >= 16} isCodexEnabled={isCodexEnabled}
+                          onClose={onClose} onCreate={addCliRuntimePane} onLogin={openCliRuntimeLogin}
+                          onOpenSettings={() => { onClose(); openSettingsSurface(); }} triggerRef={triggerRef} />
+                      </RecoverableSurface>
+    );
+  }
   const renderRoomToolbarAction = (action: IconToolbarAction) => {
     const Icon = action.icon;
     return (
@@ -5856,8 +6281,10 @@ export function App() {
             ? serverActionsButtonRef
             : action.id === "add-cli"
               ? cliLauncherButtonRef
-              : action.id === "font-down"
-                ? workspaceTextSizeButtonRef
+              : action.id === "add-chat"
+                ? chatLauncherButtonRef
+                : action.id === "font-down"
+                  ? workspaceTextSizeButtonRef
                 : action.id === "theme"
                   ? roomThemeButtonRef
                 : action.id === "pane-layout"
@@ -5882,6 +6309,7 @@ export function App() {
           if (action.id !== "font-down") setIsWorkspaceTextSizePickerOpen(false);
           if (action.id !== "server-restart") setIsServerActionsMenuOpen(false);
           if (action.id !== "add-cli") setIsCliLauncherOpen(false);
+          if (action.id !== "add-chat") setIsChatLauncherOpen(false);
           if (action.id === "more-actions") {
             roomToolbar.setIsOverflowOpen((current) => !current);
             return;
@@ -5907,6 +6335,7 @@ export function App() {
           setIsWorkspaceTextSizePickerOpen(false);
           setIsServerActionsMenuOpen(false);
           setIsCliLauncherOpen(false);
+          setIsChatLauncherOpen(false);
           roomToolbar.setActionMenu({
             actionId: action.id,
             actionLabel: action.ariaLabel,
@@ -6019,8 +6448,8 @@ export function App() {
     setIsMobilePaneFocusMode(nextFocused);
   }
   useDismissibleToolbarLayer({
-    containerRef: roomToolbarActionsRef,
-    active: isThemeMenuOpen || isPaneLayoutMenuOpen || isPaneSpanAllMenuOpen || roomToolbar.isOverflowOpen || Boolean(roomToolbar.actionMenu),
+    containerRef: boardToolbarRef,
+    active: !isRoomToolbarHidden && (isThemeMenuOpen || isPaneLayoutMenuOpen || isPaneSpanAllMenuOpen || roomToolbar.isOverflowOpen || Boolean(roomToolbar.actionMenu)),
     onDismiss: () => {
       setIsThemeMenuOpen(false);
       closePaneLayoutMenu(isPaneLayoutMenuOpen);
@@ -6031,10 +6460,11 @@ export function App() {
   });
   useDismissibleToolbarLayer({
     containerRef: collapsedToolbarRef,
-    active: isCollapsedPaneLayoutMenuOpen,
+    active: isRoomToolbarHidden && (isCollapsedPaneLayoutMenuOpen || isPaneSpanAllMenuOpen),
     onDismiss: () => {
       setIsCollapsedPaneLayoutMenuOpen(false);
-      window.requestAnimationFrame(() => paneLayoutCollapsedButtonRef.current?.focus());
+      setIsPaneSpanAllMenuOpen(false);
+      window.requestAnimationFrame(() => (paneSpanAllButtonRef.current ?? paneLayoutCollapsedButtonRef.current)?.focus());
     }
   });
   useDismissibleToolbarLayer({
@@ -6240,15 +6670,21 @@ export function App() {
   const paneCardOnTerminalPrefillReadyChange = useStableCallback(recordRoomTerminalPrefillReady);
 
   const navigateFullscreenPane = useCallback(
-    (direction: "previous" | "next") => {
-      const visible = sortPanesForGrid(panes.filter((pane) => !pane.isMinimized));
+    (direction: "previous" | "next", fromPaneId?: string) => {
+      const visible = sortPanesForGrid(visiblePanes);
       if (visible.length < 2) return;
-      const currentIndex = Math.max(0, visible.findIndex((pane) => pane.id === selectedPaneId));
+      const currentTargetId = fromPaneId ?? selectedPaneId;
+      const currentIndex = Math.max(0, visible.findIndex((pane) => pane.id === currentTargetId));
       const step = direction === "next" ? 1 : -1;
       const nextPane = visible[(currentIndex + step + visible.length) % visible.length];
-      if (nextPane) setSelectedPaneId(nextPane.id);
+      if (nextPane) {
+        setSelectedPaneId(nextPane.id);
+        commitPaneCompletionLifecycle(
+          acknowledgePaneCompletion(paneCompletionLifecycleRef.current, nextPane.id)
+        );
+      }
     },
-    [panes, selectedPaneId]
+    [visiblePanes, selectedPaneId]
   );
   const paneCardOnFullscreenNavigate = useStableCallback(navigateFullscreenPane);
 
@@ -6371,8 +6807,7 @@ export function App() {
       shellMode,
       paneId: activePane?.id ?? null
     });
-    await refresh();
-    if (activeRoom) await loadRoomRuntime(activeRoom.id);
+    runtime.platform.reloadPage();
   }
 
   function clearRoomReorderState() {
@@ -6455,6 +6890,8 @@ export function App() {
   function clearPaneReorderState() {
     setDraggedPaneId(null);
     setPaneDragOverId(null);
+    setPaneDragOverPosition("before");
+    setDragOverSlotKey(null);
   }
 
   function handlePaneDragStart(event: ReactDragEvent<HTMLElement>, pane: Pane) {
@@ -6469,7 +6906,26 @@ export function App() {
     if (event.dataTransfer) {
       event.dataTransfer.dropEffect = "move";
     }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const isMultiColumn = paneGridColumnCount > 1;
+    const clientX =
+      typeof event.clientX === "number" && !Number.isNaN(event.clientX)
+        ? event.clientX
+        : typeof (event.nativeEvent as any)?.clientX === "number"
+          ? (event.nativeEvent as any).clientX
+          : 0;
+    const clientY =
+      typeof event.clientY === "number" && !Number.isNaN(event.clientY)
+        ? event.clientY
+        : typeof (event.nativeEvent as any)?.clientY === "number"
+          ? (event.nativeEvent as any).clientY
+          : 0;
+    const isAfter = isMultiColumn
+      ? (rect.width > 0 ? clientX > rect.left + rect.width / 2 : clientX > 0)
+      : (rect.height > 0 ? clientY > rect.top + rect.height / 2 : clientY > 0);
+    const nextPosition: PaneDropPosition = isAfter ? "after" : "before";
     setPaneDragOverId(paneId);
+    setPaneDragOverPosition(nextPosition);
   }
 
   function handlePaneDragLeave(paneId: string) {
@@ -6478,13 +6934,13 @@ export function App() {
     }
   }
 
-  async function handlePaneDrop(targetPaneId: string) {
+  async function handlePaneDrop(targetPaneId: string, position: PaneDropPosition = paneDragOverPosition) {
     if (!draggedPaneId || draggedPaneId === targetPaneId || paneReorderPending) {
       clearPaneReorderState();
       return;
     }
     const previousPanes = panes;
-    const nextPanes = reorderPanesByTarget(previousPanes, draggedPaneId, targetPaneId);
+    const nextPanes = reorderPanesByTarget(previousPanes, draggedPaneId, targetPaneId, position);
     clearPaneReorderState();
     paneColumnAnchorStartsRef.current = new Map();
     setPanes(nextPanes);
@@ -6501,8 +6957,14 @@ export function App() {
     }
   }
 
+  const filteredRoomEntries = rooms.map(room => ({
+    room,
+    activity: workspaceRoomActivity(room.id === selectedRoomId ? panes : roomRuntimes[room.id]?.panes ?? [], paneCompletionLifecycle.panes, roomCliActivityCounts[room.id])
+  })).filter(({ room, activity }) => workspaceRoomMatches(room, roomSearch, roomFilter, activity));
+  const isRoomListFiltered = Boolean(roomSearch.trim()) || roomFilter !== "all";
   const roomsSurfaceContent = (
     <div className="side-surface-panel side-surface-room-panel">
+      <div className="rooms-controls">
       <div className="rail-actions">
         <button
           type="button"
@@ -6515,8 +6977,23 @@ export function App() {
           New room
         </button>
       </div>
+      <label className="rooms-search">
+        <Search aria-hidden="true" />
+        <input type="search" aria-label="Find a room" placeholder="Find a room…" value={roomSearch} onChange={event => setRoomSearch(event.target.value)} />
+      </label>
+      <div className="rooms-filter" role="group" aria-label="Filter rooms">
+        {([['all', 'All'], ['running', 'Running'], ['attention', 'Needs attention']] as const).map(([value, label]) => (
+          <button key={value} type="button" aria-pressed={roomFilter === value}
+            title={value === "running" ? "Active CLI sessions or running agent turns" : value === "attention" ? "Known blocked or failed panes and unread completions" : "All rooms"}
+            onClick={() => setRoomFilter(value)}>{label}</button>
+        ))}
+      </div>
+      {isRoomListFiltered ? <div className="rooms-filter-summary"><span role="status">{filteredRoomEntries.length} of {rooms.length} rooms</span>
+        <button type="button" onClick={() => { setRoomSearch(""); setRoomFilter("all"); }}>Clear filters</button></div> : null}
+      </div>
       <div className={`room-list${draggedRoomId ? " is-room-dragging" : ""}`}>
-        {rooms.map((room) => {
+        {filteredRoomEntries.length === 0 ? <p className="rooms-empty" role="status">{rooms.length === 0 ? "Create a room to get started." : "No rooms match these filters."}</p> : null}
+        {filteredRoomEntries.map(({ room, activity }) => {
           // "Warm" must mean truly ready: pane data loaded AND every visible
           // terminal pane bootstrapped (socket attached). Rooms whose data is
           // loaded but whose terminals are still attaching show "Warming".
@@ -6566,8 +7043,8 @@ export function App() {
             ].filter(Boolean).join(" ")}
             data-room-id={room.id}
             data-warm-presentation={warmRoomEnabled ? warmPresentation : undefined}
-            title={`Hold the right mouse button to reorder ${room.name}`}
-            onPointerDown={(event) => handleRoomRightPointerDown(event, room.id)}
+            title={isRoomListFiltered ? room.name : `Hold the right mouse button to reorder ${room.name}`}
+            onPointerDown={(event) => { if (!isRoomListFiltered) handleRoomRightPointerDown(event, room.id); }}
             onContextMenu={(event) => event.preventDefault()}
           >
             <button
@@ -6602,6 +7079,7 @@ export function App() {
                     ))}
                   </span>
                 ) : null}
+                {activity.attention ? <span className="room-attention-badge">Needs attention</span> : null}
                 {room.kind === "AGENT_PROOF" ? <span className="room-kind-badge">Agent Proof</span> : null}
                 {room.kind === "CLI_RECOVERY" ? <span className="room-kind-badge">CLI Recovery</span> : null}
               </span>
@@ -6620,6 +7098,19 @@ export function App() {
         })}
       </div>
       <div className="room-pane-composer-slot" inert={preparingRoomId ? true : undefined}>
+        <a
+          className="spaceapp-download-banner"
+          href="https://spaceapp.dev"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Download SpaceApp from SpaceApp.dev"
+        >
+          <img
+            src="/brand/spaceapp-open-source-banner.webp"
+            alt="SpaceApp is open source and free to download."
+            decoding="async"
+          />
+        </a>
         <RoomPaneComposer
           activePaneCount={presentationPanes.length}
           onApply={addRoomPanes}
@@ -6679,17 +7170,38 @@ export function App() {
     }
   }
 
+  const cliDockContent = (
+    <LazyCliDock
+      canManage={auth?.user?.role === "ADMIN"}
+      cliImagePreviewLimit={cliImagePreviewLimit}
+      warmRoomEnabled={warmRoomEnabled}
+      warmConnectedPaneLimit={warmConnectedPaneLimit}
+      onCliImagePreviewLimitChange={setCliImagePreviewLimit}
+      onWarmRoomEnabledChange={(enabled) => {
+        setWarmRoomEnabled(writeStoredWarmRoomEnabled(enabled));
+      }}
+      onWarmConnectedPaneLimitChange={(limit) => {
+        setWarmConnectedPaneLimit(writeStoredWarmRoomConnectedPaneLimit(limit));
+      }}
+      onOpenRestartAll={openCliRuntimeRestartAllDialog}
+      restartAllPending={cliRuntimeRestartAllPending}
+    />
+  );
   const sideSurfaceContent =
     activeSideSurface === "rooms" ? (
       roomsSurfaceContent
     ) : activeSideSurface === "room-agent" ? (
-      <RoomAgentDock
+      <LazyRoomAgentDock
         activeRoom={activeRoom}
+        selectedBrowserPaneId={activePane?.mode === "BROWSER" && activePane.id === selectedPaneId ? activePane.id : undefined}
         isCodexEnabled={isCodexEnabled}
         refreshKey={roomEvents.at(-1)?.id ?? null}
       />
     ) : activeSideSurface === "settings" ? (
       <AgentSettingsDock
+        cliSettingsContent={cliDockContent}
+        adminMode={shellMode !== "desktop" || isAdminMode}
+        onOpenSetup={() => setIsSetupConnectionsOpen(true)}
         activePane={activePane}
         currentAppearance={modernAppearance}
         currentIconPack={modernIconPack}
@@ -6714,49 +7226,35 @@ export function App() {
         }}
       />
     ) : activeSideSurface === "media" ? (
-      <MediaDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
+      <LazyMediaDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
     ) : activeSideSurface === "streaming" ? (
-      <StreamingDock />
+      <LazyStreamingDock />
     ) : activeSideSurface === "agent-tools" ? (
-      <AgentToolsDock
-        canManage={auth?.user?.role === "ADMIN"}
+      <LazyAgentToolsDock
+        canManage={auth?.user?.role === "ADMIN" && (shellMode !== "desktop" || isAdminMode)}
         refreshKey={roomEvents.at(-1)?.id ?? null}
       />
     ) : activeSideSurface === "cli" ? (
-      <CliDock
-        canManage={auth?.user?.role === "ADMIN"}
-        cliImagePreviewLimit={cliImagePreviewLimit}
-        warmRoomEnabled={warmRoomEnabled}
-        warmConnectedPaneLimit={warmConnectedPaneLimit}
-        onCliImagePreviewLimitChange={setCliImagePreviewLimit}
-        onWarmRoomEnabledChange={(enabled) => {
-          setWarmRoomEnabled(writeStoredWarmRoomEnabled(enabled));
-        }}
-        onWarmConnectedPaneLimitChange={(limit) => {
-          setWarmConnectedPaneLimit(writeStoredWarmRoomConnectedPaneLimit(limit));
-        }}
-        onOpenRestartAll={openCliRuntimeRestartAllDialog}
-        restartAllPending={cliRuntimeRestartAllPending}
-      />
+      cliDockContent
     ) : activeSideSurface === "agent-sessions" ? (
-      <AgentSessionsDock
+      <LazyAgentSessionsDock
         activePaneLabel={activePane ? displayPaneTitle(activePane) : null}
         canResume={Boolean(selectedRoomId)}
         codexEnabled={isCodexEnabled}
         onResume={resumeAgentSession}
       />
     ) : activeSideSurface === "agent-files" ? (
-      <AgentFilesDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
+      <LazyAgentFilesDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
     ) : activeSideSurface === "shared-chat" ? (
-      <SharedChatDock />
+      <LazySharedChatDock />
     ) : activeSideSurface === "clipboard" ? (
-      <ClipboardDock
+      <LazyClipboardDock
         canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}
         activePaneLabel={activePane ? displayPaneTitle(activePane) : null}
         onInsert={insertClipboardItem}
       />
     ) : activeSideSurface === "tasks" ? (
-      <TaskDock
+      <LazyTaskDock
         canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}
         activePaneLabel={activePane ? displayPaneTitle(activePane) : null}
         onInsert={insertTaskItem}
@@ -6764,7 +7262,7 @@ export function App() {
     ) : activeSideSurface === "links" ? (
       <LinksPanel onOpen={openUserLink} />
     ) : activeSideSurface === "logs" ? (
-      <ActivityLogDock canManage={auth?.user?.role === "ADMIN"} />
+      <LazyActivityLogDock canManage={auth?.user?.role === "ADMIN"} />
     ) : (
       <HealthDock
         readiness={readiness}
@@ -6780,7 +7278,7 @@ export function App() {
 
   if (!auth || !setupStatus) {
     return (
-      <AppIconProvider pack={uiTheme === "modern" ? modernIconPack : "lucide"}>
+      <AppIconProvider pack={modernIconPack}>
         <AuthenticationBootstrap
           error={authBootstrapError}
           onRetry={() => {
@@ -6797,7 +7295,7 @@ export function App() {
 
   if (!auth.isAuthenticated && (setupStatus.setupRequired || auth.isSetupRequired)) {
     return (
-      <AppIconProvider pack={uiTheme === "modern" ? modernIconPack : "lucide"}>
+      <AppIconProvider pack={modernIconPack}>
         <OwnerSetupScreen expiresAt={setupStatus.expiresAt} onClaim={handleOwnerClaim} />
       </AppIconProvider>
     );
@@ -6805,42 +7303,55 @@ export function App() {
 
   if (!auth.isAuthenticated) {
     return (
-      <AppIconProvider pack={uiTheme === "modern" ? modernIconPack : "lucide"}>
+      <AppIconProvider pack={modernIconPack}>
         <LoginScreen
           auth={auth}
-          colorMode={uiTheme === "modern" ? resolveModernColorMode(modernAppearance, systemPrefersDark) : null}
-          modern={uiTheme === "modern"}
+          colorMode={uiTheme !== "classic" ? modernColorMode : null}
+          modern={uiTheme !== "classic"}
           onLogin={handleLogin}
         />
       </AppIconProvider>
     );
   }
 
+  if (isOskKeyboardOpen) oskKeyboardMountedRef.current = true;
+
   const vibeMusicPlayer = (
     <VibeMusicPlayer
+      activeRoomId={activeRoom?.id}
       mobile={shellMode === "mobile"}
       open={isVibeMusicOpen}
       onOpenChange={setIsVibeMusicOpen}
+      onOpenYouTube={(url) => { void addPane("YOUTUBE", url); }}
       roomTheme={roomTheme}
       triggerRef={vibeMusicButtonRef}
     />
   );
 
-  const oskKeyboard = (
-    <OnScreenKeyboard
-      mobile={shellMode === "mobile"}
-      open={isOskKeyboardOpen}
-      onInput={routeOnScreenKeyboardInput}
-      onOpenChange={setIsOskKeyboardOpen}
-      roomTheme={roomTheme}
-    />
-  );
+  const oskKeyboard = oskKeyboardMountedRef.current ? (
+    <RecoverableSurface fallback={null}>
+      <LazyOnScreenKeyboard
+        mobile={shellMode === "mobile"}
+        open={isOskKeyboardOpen}
+        onInput={routeOnScreenKeyboardInput}
+        onShortcut={routeCliShortcut}
+        onOpenChange={setIsOskKeyboardOpen}
+        roomTheme={roomTheme}
+      />
+    </RecoverableSurface>
+  ) : null;
 
   if (auth?.isAuthenticated && appView === "benchmark") {
-    const benchmarkContent = <BenchmarkPage onBack={closeBenchmark} />;
+    const benchmarkContent = (
+      <RecoverableSurface fallback={<div className="page-loading" role="status">Loading benchmark…</div>}>
+        <LazyBenchmarkPage onBack={closeBenchmark} />
+      </RecoverableSurface>
+    );
     return (
-      <AppIconProvider pack={uiTheme === "modern" ? modernIconPack : "lucide"}>
-        {uiTheme === "modern" ? (
+      <AppIconProvider pack={modernIconPack}>
+        {vibeMusicPlayer}
+        {oskKeyboard}
+        {uiTheme !== "classic" ? (
           <div
             className="modern-theme-page"
             data-ui-theme="modern"
@@ -6856,10 +7367,16 @@ export function App() {
   }
 
   if (auth?.isAuthenticated && appView === "help") {
-    const helpContent = <>{vibeMusicPlayer}{oskKeyboard}<HelpPage onBack={closeHelp} /></>;
+    const helpContent = (
+        <RecoverableSurface fallback={<div className="page-loading" role="status">Loading Help…</div>}>
+          <LazyHelpPage onBack={closeHelp} />
+        </RecoverableSurface>
+    );
     return (
-      <AppIconProvider pack={uiTheme === "modern" ? modernIconPack : "lucide"}>
-        {uiTheme === "modern" ? (
+      <AppIconProvider pack={modernIconPack}>
+        {vibeMusicPlayer}
+        {oskKeyboard}
+        {uiTheme !== "classic" ? (
           <div
             className="modern-theme-page"
             data-ui-theme="modern"
@@ -6876,7 +7393,11 @@ export function App() {
 
   const isMobilePaneFocused = shellMode === "mobile" && isMobilePaneFocusMode && Boolean(activePane);
   const showMobilePaneSwitcher = shellMode === "mobile" && visiblePanes.length > 1 && !isMobilePaneFocused;
-  const showPaneNavigation = !isMobilePaneFocused && (minimizedPanes.length > 0 || showMobilePaneSwitcher);
+  // Mobile keeps the bar docked (its toolbar control is hidden there); everywhere else the bar is parked.
+  const showMinimizedBar = minimizedPanes.length > 0 && (minimizedBarExpanded || shellMode === "mobile");
+  /** The bar hides behind one room toolbar button, so only render it where that button can live. */
+  const showMinimizedBarToggle = minimizedPanes.length > 0 && shellMode !== "mobile";
+  const showPaneNavigation = !isMobilePaneFocused && (showMinimizedBar || showMobilePaneSwitcher);
   const shellClassName = ["space-shell", `shell-${shellMode}`, isRoomFocusMode ? "room-focus-mode" : ""].filter(Boolean).join(" ");
   const workspaceClassName = ["workspace", showInlineSideSurface ? "" : "side-surface-hidden"].filter(Boolean).join(" ");
   const boardClassName = ["board", showPaneNavigation ? "has-pane-navigation" : ""].filter(Boolean).join(" ");
@@ -6913,7 +7434,16 @@ export function App() {
     const layerRenderPanes = roomCategoryFilter
       ? layerPanes.filter((pane) => pane.categoryColor === roomCategoryFilter)
       : layerPanes;
-    const layerVisiblePanes = layerRenderPanes.filter((pane) => !pane.isMinimized);
+    const layerVisiblePanes = layerRenderPanes.filter((pane) => !pane.isMinimized && !floatingYouTubePaneIds.has(pane.id));
+    // A stored layout may outlive pane creation/closure or a shell mode change.
+    // Fall back to the existing grid until it covers the current room exactly.
+    const savedControlLayout = controlLayouts[roomId];
+    const layerControlLayout = savedControlLayout?.mode === "CUSTOM"
+      && !layerPanes.some(pane => pane.isMaximized)
+      && layerRoom?.paneLayoutColumns !== 0
+      && savedControlLayout.placements.length === layerPanes.length
+      && layerPanes.every(pane => savedControlLayout.placements.some(placement => placement.paneId === pane.id))
+      ? savedControlLayout : null;
     const layerFullscreenLayout = layerRoom?.paneLayoutColumns === 0;
     const layerShellVisiblePaneIds = new Set(
       shellVisiblePaneIds(layerPanes, layerSelectedPaneId, shellMode, layerFullscreenLayout)
@@ -6934,7 +7464,7 @@ export function App() {
           containerWidth: paneGridWidth,
           paneLayoutColumns: layerRoom?.paneLayoutColumns ?? null,
           visiblePaneCount: layerVisiblePanes.length,
-          forceTabletTwoColumns: uiTheme === "modern"
+          forceTabletTwoColumns: uiTheme !== "classic"
         });
     const layerPlacements = isActive
       ? paneGridPlacements
@@ -6967,15 +7497,67 @@ export function App() {
       : unorderedTerminalBootstrapPaneIds;
     const layerVisiblePaneCount = (shellMode === "mobile" || layerFullscreenLayout) && layerActivePane ? 1 : layerVisiblePanes.length;
     const layerHasMaximizedPane = shellMode !== "mobile" && layerVisiblePanes.some((pane) => pane.isMaximized);
-    const layerDoubleHeight =
-      layerRoom?.paneLayoutColumns === 5 && shellMode !== "mobile" && !layerHasMaximizedPane && layerVisiblePanes.length > 0;
-    const layerDoubleHeightRowCount = layerDoubleHeight ? layerVisiblePanes.length * 2 : 0;
-    const layerDoubleHeightRowPx =
-      layerDoubleHeight && paneGridHeight > 0
-        ? // The 1x5 baseline pane is max(H/N, 12rem pane-card min-height); the 2x5
-          // row must double that baseline even when the baseline is min-clamped.
-          Math.max(paneGridHeight / Math.max(layerVisiblePanes.length, 1), 192)
-        : 0;
+    const layerHeight = (layerRoom?.paneLayoutHeight ?? 1) as 1 | 2 | 3 | 4;
+    const layerActualBaseRows =
+      layerPlacements.size > 0
+        ? Math.max(1, ...Array.from(layerPlacements.values(), (placement) => placement.rowIndex + 1))
+        : Math.max(1, Math.ceil(layerVisiblePanes.length / Math.max(layerColumnCount, 1)));
+    const layerExplicitHeight =
+      layerHeight > 1 &&
+      shellMode !== "mobile" &&
+      !layerHasMaximizedPane &&
+      !layerFullscreenLayout &&
+      layerVisiblePanes.length > 0;
+    const layerGridGapPx = layerDensity === "dense" || layerDensity === "tight" ? 9.6 : 12;
+    const layerEffectiveContainerHeight =
+      paneGridHeight > 0
+        ? paneGridHeight
+        : typeof window !== "undefined" && window.innerHeight > 0
+          ? Math.max(window.innerHeight - 120, 480)
+          : 600;
+    const layerAvailableHeight = Math.max(0, layerEffectiveContainerHeight - (layerActualBaseRows - 1) * layerGridGapPx);
+    const layerBaselineRowPx = Math.max(
+      layerActualBaseRows > 0 ? layerAvailableHeight / layerActualBaseRows : 192,
+      192
+    );
+    const layerRowPx = layerExplicitHeight ? Math.round(layerBaselineRowPx * layerHeight) : 0;
+
+    const emptyGridSlots: { rowIndex: number; columnStart: number; precedingPaneId: string | null }[] = [];
+    if (draggedPaneId && shellMode !== "mobile" && layerColumnCount > 1 && !layerHasMaximizedPane && layerVisiblePanes.length > 0) {
+      const occupied = Array.from({ length: layerActualBaseRows }, () => Array(layerColumnCount).fill(false));
+      for (const pane of layerVisiblePanes) {
+        if (pane.id === draggedPaneId) continue;
+        const placement = layerPlacements.get(pane.id);
+        if (!placement) continue;
+        for (let c = 0; c < placement.effectiveSpan; c++) {
+          const colIdx = placement.columnStart - 1 + c;
+          const rowArr = occupied[placement.rowIndex];
+          if (rowArr && colIdx < layerColumnCount) {
+            rowArr[colIdx] = true;
+          }
+        }
+      }
+      for (let r = 0; r < layerActualBaseRows; r++) {
+        for (let c = 0; c < layerColumnCount; c++) {
+          if (!occupied[r]?.[c]) {
+            let precedingPaneId: string | null = null;
+            let maxPos = -1;
+            for (const pane of layerVisiblePanes) {
+              if (pane.id === draggedPaneId) continue;
+              const pl = layerPlacements.get(pane.id);
+              if (!pl) continue;
+              const pos = pl.rowIndex * layerColumnCount + (pl.columnStart - 1);
+              const currentSlotPos = r * layerColumnCount + c;
+              if (pos < currentSlotPos && pos > maxPos) {
+                maxPos = pos;
+                precedingPaneId = pane.id;
+              }
+            }
+            emptyGridSlots.push({ rowIndex: r, columnStart: c + 1, precedingPaneId });
+          }
+        }
+      }
+    }
 
     return (
       <div
@@ -7009,13 +7591,37 @@ export function App() {
             <h3>Unable to load panes</h3>
           </div>
         ) : layerPanes.length === 0 ? (
-          <div className="empty-state" role={isInteractive ? "status" : undefined}>
+          <div
+            className="empty-state"
+            role={isInteractive ? "region" : undefined}
+            aria-label={isInteractive ? "Empty room quick start" : undefined}
+          >
             <Grid2X2 aria-hidden="true" />
-            <h3>Zero panes open</h3>
-            <button onClick={() => addPane("TERMINAL")} disabled={!isInteractive || !selectedRoomId}>
-              <Plus aria-hidden="true" />
-              Open CLI
-            </button>
+            <h3>Start your workspace</h3>
+            <p>Choose a pane to begin working in this room.</p>
+            <div className="empty-state-actions" aria-label="Quick start" aria-busy={paneCreationPendingMode !== null}>
+              <button
+                onClick={() => void addPane("TERMINAL")}
+                disabled={!isInteractive || !selectedRoomId || paneCreationPendingMode !== null || cliPaneCreationPending}
+              >
+                {paneCreationPendingMode === "TERMINAL" ? <Loader2 className="spin" aria-hidden="true" /> : <Terminal aria-hidden="true" />}
+                {paneCreationPendingMode === "TERMINAL" ? "Opening CLI…" : "Open CLI"}
+              </button>
+              <button
+                onClick={() => void addPane("CHAT")}
+                disabled={!isInteractive || !selectedRoomId || paneCreationPendingMode !== null || cliPaneCreationPending}
+              >
+                {paneCreationPendingMode === "CHAT" ? <Loader2 className="spin" aria-hidden="true" /> : <MessageSquare aria-hidden="true" />}
+                {paneCreationPendingMode === "CHAT" ? "Opening Chat…" : "Open Chat"}
+              </button>
+              <button
+                onClick={() => void addPane("BROWSER")}
+                disabled={!isInteractive || !selectedRoomId || paneCreationPendingMode !== null || cliPaneCreationPending}
+              >
+                {paneCreationPendingMode === "BROWSER" ? <Loader2 className="spin" aria-hidden="true" /> : <Eye aria-hidden="true" />}
+                {paneCreationPendingMode === "BROWSER" ? "Opening Browser…" : "Open Browser"}
+              </button>
+            </div>
           </div>
         ) : layerRenderPanes.length === 0 ? (
           <div className="empty-state" role={isInteractive ? "status" : undefined}>
@@ -7034,11 +7640,16 @@ export function App() {
                 data-visible-pane-count={layerVisiblePaneCount}
                 data-column-count={layerColumnCount}
                 data-pane-layout-columns={layerRoom?.paneLayoutColumns ?? "automatic"}
+                data-pane-layout-height={layerRoom?.paneLayoutHeight ?? 1}
                 data-fullscreen-layout={layerFullscreenLayout ? "true" : undefined}
                 style={{
                   gridTemplateColumns: `repeat(${layerColumnCount}, minmax(0, 1fr))`,
-                  ...(layerDoubleHeight && layerDoubleHeightRowPx > 0
-                    ? { gridTemplateRows: `repeat(${layerDoubleHeightRowCount}, ${layerDoubleHeightRowPx}px)` }
+                  ...(layerControlLayout ? {position:"relative",display:"block",minHeight:`${Math.max(30,...layerControlLayout.placements.map(p=>p.y+p.height))*12}px`} : {}),
+                  ...(layerExplicitHeight && layerRowPx > 0
+                    ? {
+                        gridTemplateRows: `repeat(${layerActualBaseRows}, ${layerRowPx}px)`,
+                        gridAutoRows: `${layerRowPx}px`
+                      }
                     : null)
                 }}
               >
@@ -7048,6 +7659,7 @@ export function App() {
                   return (
                     <PaneCard
                       key={pane.id}
+                      controlPlacement={!pane.isMinimized ? layerControlLayout?.placements.find(p=>p.paneId===pane.id) : undefined}
                       pane={pane}
                       agentNumber={layerAgentNumberByPaneId.get(pane.id) ?? 1}
                       latestTurn={layerLatestTurnByPane.get(pane.id) ?? null}
@@ -7057,7 +7669,9 @@ export function App() {
                       )}
                       isTarget={isPresented && layerActivePane?.id === pane.id}
                       isMoveDialogOpen={isInteractive && paneMoveDialog?.pane.id === pane.id}
-                      isVisibleInShell={isPresented && layerShellVisiblePaneIds.has(pane.id)}
+                      isVisibleInShell={isPresented && (layerShellVisiblePaneIds.has(pane.id) || floatingYouTubePaneIds.has(pane.id))}
+                      isFloatingYouTube={pane.mode === "YOUTUBE" && floatingYouTubePaneIds.has(pane.id)}
+                      onToggleYouTubeFloating={pane.mode === "YOUTUBE" ? () => toggleYouTubeFloating(pane.id) : undefined}
                       maskSensitiveData={maskSensitiveData}
                       isTerminalOutputVisible={
                         acceptsTerminalOutput &&
@@ -7075,6 +7689,7 @@ export function App() {
                       canMoveToAnotherRoom={rooms.some((room) => room.id !== pane.roomId)}
                       draggedPaneId={draggedPaneId}
                       dragOverPaneId={paneDragOverId}
+                      dragOverPosition={paneDragOverPosition}
                       paneReorderPending={paneReorderPending}
                       onPaneDragStart={handlePaneDragStart}
                       onPaneDragEnd={clearPaneReorderState}
@@ -7093,11 +7708,11 @@ export function App() {
                       onToggleColumnSpan={paneCardOnToggleColumnSpan}
                       onSplit={paneCardOnSplit}
                       isFullscreenLayout={layerFullscreenLayout}
-                      fullscreenIndex={layerFullscreenLayout ? Math.max(0, layerVisiblePanes.findIndex((candidate) => candidate.id === pane.id)) : 0}
+                      fullscreenIndex={Math.max(0, layerVisiblePanes.findIndex((candidate) => candidate.id === pane.id))}
                       fullscreenCount={layerVisiblePanes.length}
                       onFullscreenNavigate={paneCardOnFullscreenNavigate}
                       effectiveColumnSpan={placement?.effectiveSpan ?? 1}
-                      rowSpan={layerDoubleHeight ? 2 : 1}
+                      rowSpan={1}
                       columnStart={placement?.columnStart ?? 1}
                       rowIndex={placement?.rowIndex ?? 0}
                       canGrowColumnSpan={placement?.canGrow ?? false}
@@ -7115,11 +7730,51 @@ export function App() {
                         (!pane.isMinimized || bootstrappedPaneIds.has(pane.id))
                       }
                       prefillInitialReplay={presentationState === "hidden" && !pane.isMinimized}
+                      shouldLoadHarness={shouldLoadHarnessPane(presentationState, layerTerminalPrefillReady)}
                       revealGeneration={roomPresentationGenerationRef.current}
                       onTerminalBootstrapped={paneCardOnTerminalBootstrapped}
                       onTerminalPrefillReadyChange={paneCardOnTerminalPrefillReadyChange}
                       onTerminalRevealReady={recordTerminalRevealReady}
                     />
+                  );
+                })}
+                {emptyGridSlots.map((slot) => {
+                  const slotKey = `slot-${slot.rowIndex}-${slot.columnStart}`;
+                  const isHovered = dragOverSlotKey === slotKey;
+                  return (
+                    <div
+                      key={slotKey}
+                      className={`pane-grid-drop-slot${isHovered ? " is-hovered" : ""}`}
+                      style={{
+                        gridRow: slot.rowIndex + 1,
+                        gridColumn: slot.columnStart
+                      }}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        if (event.dataTransfer) {
+                          event.dataTransfer.dropEffect = "move";
+                        }
+                        setDragOverSlotKey(slotKey);
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverSlotKey === slotKey) {
+                          setDragOverSlotKey(null);
+                        }
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        if (slot.precedingPaneId) {
+                          void handlePaneDrop(slot.precedingPaneId, "after");
+                        } else if (layerVisiblePanes[0]) {
+                          void handlePaneDrop(layerVisiblePanes[0].id, "before");
+                        }
+                      }}
+                    >
+                      <div className="pane-grid-drop-slot-indicator">
+                        <MoveHorizontal aria-hidden="true" />
+                        <span>Drop pane here</span>
+                      </div>
+                    </div>
                   );
                 })}
               </div>
@@ -7130,36 +7785,82 @@ export function App() {
     );
   }
 
+  const showResourceIndicatorRail = (resourceIndicatorsVisible || showMinimizedBarToggle) && (isRoomToolbarHidden || isMobilePaneFocused);
+  const renderToolbarMetrics = (hideTrigger = true) => (
+    <ToolbarMetrics
+      hideTrigger={hideTrigger}
+      ref={toolbarMetricsRef}
+      presentation="drawer"
+      onOpenResources={auth?.user?.role === "ADMIN" ? () => openSystemResources() : undefined}
+      allowChanges={shellMode !== "desktop" || isAdminMode}
+      canManage={auth?.user?.role === "ADMIN"}
+      environment={codexEnvironmentSummary}
+      roomName={presentationRoom?.name}
+      roomId={presentationRoom?.id}
+      onOpenAnalytics={(tab) => {
+        setIsMemoryWorkspaceOpen(false);
+        if (auth?.user?.role === "ADMIN") openSystemHealth(tab === "resources" ? "performance" : tab === "overview" ? "overview" : tab === "models" ? "usage" : "ai");
+        else setSystemAnalyticsTab(tab);
+      }}
+      onChanged={refreshToolbarSystemState}
+    />
+  );
+
   return (
-    <AppIconProvider pack={uiTheme === "modern" ? modernIconPack : "lucide"}>
-      <StreamingOverlayProvider active={auth.user?.role === "ADMIN"}>
+    <AppIconProvider pack={modernIconPack}>
       {vibeMusicPlayer}
       {oskKeyboard}
-      <SetupConnectionsWizard
-        checks={api}
-        open={isSetupConnectionsOpen}
-        finish={api.finishSetup}
-        loadOverview={api.setupOverview}
-        onOpenChange={setIsSetupConnectionsOpen}
-        openLogin={openSetupConnectionLogin}
-        onOpenMaintenance={() => {
-          setIsSetupConnectionsOpen(false);
-          adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
-          setAdminOperationTool("maintenance");
-        }}
-        triggerRef={serverActionsButtonRef}
-      />
+      <StreamingOverlayProvider active={auth.user?.role === "ADMIN"}>
+      {isSetupConnectionsOpen ? (
+        <RecoverableSurface
+          fallback={(
+            <div className="setup-connections-backdrop" role="status">
+              Loading setup &amp; connections…
+            </div>
+          )}
+        >
+          <LazySetupConnectionsWizard
+            guided={shellMode === "desktop"}
+            connectionsContent={auth?.user?.role === "ADMIN" ? (
+              <SettingsSections>
+                <SettingsDisclosure title="GitHub & Gitea" description="Connect repositories for publishing." scope="Installation" icon={GitBranch}>
+                  <RecoverableSurface fallback={settingsCardLoadingFallback}><LazySourceControlPublishingCard canManage /></RecoverableSurface>
+                </SettingsDisclosure>
+                <SettingsDisclosure title="Telegram notifications" description="Get updates in Telegram." scope="Installation" icon={Bell}>
+                  <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyTelegramIntegrationCard canManage isCodexEnabled={isCodexEnabled} /></RecoverableSurface>
+                </SettingsDisclosure>
+                <SettingsDisclosure title="Codex CLI defaults" description="Set defaults for future CLI sessions." scope="New sessions" icon={Terminal}>
+                  <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyCodexCliDefaultsCard client={api} isCodexEnabled={isCodexEnabled} /></RecoverableSurface>
+                </SettingsDisclosure>
+              </SettingsSections>
+            ) : undefined}
+            checks={api}
+            open
+            finish={api.finishSetup}
+            loadOverview={api.setupOverview}
+            onOpenChange={setIsSetupConnectionsOpen}
+            openLogin={openSetupConnectionLogin}
+            onOpenMaintenance={() => {
+              setIsSetupConnectionsOpen(false);
+              adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
+              setAdminOperationTool("maintenance");
+            }}
+            triggerRef={serverActionsButtonRef}
+          />
+        </RecoverableSurface>
+      ) : null}
       <AppDiagnosticsGlobalIndicators />
       <SensitiveDataMask enabled={maskSensitiveData} />
       <main
       className={shellClassName}
       data-room-theme={roomTheme}
       data-sensitive-mode={maskSensitiveData ? "hidden" : undefined}
-      data-ui-theme={uiTheme === "modern" ? "modern" : undefined}
-      data-color-mode={uiTheme === "modern" ? modernColorMode : undefined}
-      data-icon-pack={uiTheme === "modern" ? modernIconPack : undefined}
+      data-ui-theme={uiTheme !== "classic" ? "modern" : undefined}
+      data-color-mode={uiTheme !== "classic" ? modernColorMode : undefined}
+      data-icon-pack={modernIconPack}
       data-room-id={activeRoom?.id}
       data-shell-mode={shellMode}
+      data-interface-mode={isAdminMode ? "admin" : "user"}
       data-warm-room-cache-enabled={String(warmRoomEnabled)}
       data-suppress-notifications={String(suppressNotifications)}
       data-warm-room-safe-capacity={warmRoomLimitsForDevice.maxRooms}
@@ -7170,10 +7871,11 @@ export function App() {
       data-warm-room-pressure="false"
       data-warm-room-overcommit="false"
       data-cli-floats-hidden={cliFloatsHidden ? "true" : "false"}
+      data-workspace-rail={(auth?.user?.role === "ADMIN" && showResourceIndicatorRail) || (isRoomToolbarHidden && !isMobilePaneFocused) ? "true" : undefined}
       data-room-toolbar-hidden={isRoomToolbarHidden ? "true" : undefined}
       data-mobile-pane-focus={isMobilePaneFocused ? "true" : undefined}
     >
-      {!isRoomFocusMode && !isMobilePaneFocused ? <header className="topbar">
+      {!selectedRoomId && shellMode !== "desktop" && !isRoomFocusMode && !isMobilePaneFocused ? <header className="topbar">
         <div className="brand">
           <SpaceBrand />
           <div>
@@ -7210,7 +7912,7 @@ export function App() {
         }}
       />
 
-      <GlobalApiErrorAlert actionError={error} />
+      <GlobalApiErrorAlert actionError={error} onDismissActionError={() => setError(null)} />
       {storageWarning && (!isRoomFocusMode || runtimeKind === "demo") ? <div className="banner warn">{storageWarning}</div> : null}
       {clipToolNotice ? (
         <div className="banner warn" role="status">
@@ -7229,31 +7931,47 @@ export function App() {
       ) : null}
 
       {auth?.user?.role === "ADMIN" && adminCodexTool ? (
-        <AdminCodexToolsDialog
-          initialTool={adminCodexTool}
-          isCodexEnabled={isCodexEnabled}
-          anyCliEnabled={anyCliEnabled}
-          onClose={closeAdminCodexTool}
-        />
+        <RecoverableSurface fallback={<div role="status">Loading Codex tools…</div>}>
+          <LazyAdminCodexToolsDialog
+            initialTool={adminCodexTool}
+            isCodexEnabled={isCodexEnabled}
+            anyCliEnabled={anyCliEnabled}
+            onClose={closeAdminCodexTool}
+          />
+        </RecoverableSurface>
       ) : null}
 
       {auth?.user?.role === "ADMIN" && adminOperationTool ? (
-        <Suspense fallback={<div role="status">Loading admin operation…</div>}>
+        <RecoverableSurface fallback={<div role="status">Loading admin operation…</div>}>
           <LazyAdminOperationsDialog initialTool={adminOperationTool} onClose={closeAdminOperationTool} />
-        </Suspense>
+        </RecoverableSurface>
       ) : null}
 
       {isMemoryWorkspaceOpen ? (
-        <Suspense fallback={<div className="memory-workspace-loading" role="status">Loading memory workspace…</div>}>
-          <LazyMemoryWorkspace
-            shellMode={shellMode}
-            activeRoomId={activeRoom?.id ?? null}
-            onClose={() => setIsMemoryWorkspaceOpen(false)}
-          />
-        </Suspense>
+        <MemoryWorkspaceErrorBoundary onClose={() => setIsMemoryWorkspaceOpen(false)}>
+          <RecoverableSurface fallback={<div className="memory-workspace-loading" role="status">Loading memory workspace…</div>}>
+            <LazyMemoryWorkspace
+              shellMode={shellMode}
+              activeRoomId={activeRoom?.id ?? null}
+              onClose={() => setIsMemoryWorkspaceOpen(false)}
+            />
+          </RecoverableSurface>
+        </MemoryWorkspaceErrorBoundary>
       ) : null}
+      {auth.user?.role === "ADMIN" && (isRoomToolbarHidden || isMobilePaneFocused || isMemoryWorkspaceOpen || systemAnalyticsTab || !presentationRoom) ? renderToolbarMetrics(true) : null}
+      {auth.user?.role === "ADMIN" && <SystemHealth key={auth.user.id} userId={auth.user.id}
+        railVisible={showResourceIndicatorRail} environment={codexEnvironmentSummary}
+        minimizedBarToggle={showMinimizedBarToggle && (isRoomToolbarHidden || isMobilePaneFocused) ? (
+          <MinimizedPaneBarToggle
+            count={minimizedPanes.length}
+            runningCount={minimizedPaneRunningCount}
+            expanded={showMinimizedBar}
+            onToggle={() => setMinimizedBarExpanded((value) => !value)}
+          />
+        ) : undefined}
+        onManage={(panel) => toolbarMetricsRef.current?.openMetricDetails(panel)} />}
       {systemAnalyticsTab ? (
-        <Suspense fallback={<div className="system-analytics-loading" role="status">Loading system analytics…</div>}>
+        <RecoverableSurface fallback={<div className="system-analytics-loading" role="status">Loading system analytics…</div>}>
           <SystemAnalyticsErrorBoundary onClose={() => setSystemAnalyticsTab(null)}>
             <LazySystemAnalyticsWorkspace
               shellMode={shellMode}
@@ -7261,12 +7979,17 @@ export function App() {
               onClose={() => setSystemAnalyticsTab(null)}
             />
           </SystemAnalyticsErrorBoundary>
-        </Suspense>
+        </RecoverableSurface>
       ) : null}
       {!isMemoryWorkspaceOpen && !systemAnalyticsTab ? <section className={workspaceClassName}>
         {showInlineSideSurface ? (
           <aside className="side-surface side-surface-inline" aria-label={activeSideSurfaceLabel} data-surface={activeSideSurface}>
-            {sideSurfaceContent}
+            <div className="desktop-dock-header">
+              <span><strong>{activeSideSurfaceLabel}</strong><small>{desktopActionDescriptions[`surface-${activeSideSurface}`]}</small></span>
+              <button type="button" className="icon-button" aria-label={activeSideSurfaceCloseLabel}
+                onClick={() => setIsDesktopSideSurfaceOpen(false)}><X aria-hidden="true" /></button>
+            </div>
+            <RecoverableSurface resetKey={activeSideSurface} fallback={sideSurfaceLoadingFallback}>{sideSurfaceContent}</RecoverableSurface>
           </aside>
         ) : null}
         {showOverlaySideSurface ? (
@@ -7293,19 +8016,48 @@ export function App() {
                   <X aria-hidden="true" />
                 </button>
               </div>
-              {sideSurfaceContent}
+              <RecoverableSurface resetKey={activeSideSurface} fallback={sideSurfaceLoadingFallback}>{sideSurfaceContent}</RecoverableSurface>
             </aside>
           </>
         ) : null}
 
         <section className={boardClassName} aria-label="Pane board">
-          {!isMobilePaneFocused && isRoomToolbarHidden ? (
+          {!isMobilePaneFocused && isRoomToolbarHidden && !showOverlaySideSurface ? (
             <div ref={collapsedToolbarRef} className="room-toolbar-collapsed room-toolbar-floating-controls" role="region" aria-label="Room toolbar hidden">
+              {previousRoom ? (
+                <button
+                  type="button"
+                  className="room-toolbar-visibility-button room-rail-secondary"
+                  title={`Previous room: ${previousRoom.name}`}
+                  data-rail-id="previous"
+                  aria-label="Previous room"
+                  onClick={() => { void selectRoom(previousRoom.id); }}
+                >
+                  <ChevronLeft aria-hidden="true" />
+                </button>
+              ) : null}
+              {nextRoom ? (
+                <button
+                  type="button"
+                  className="room-toolbar-visibility-button room-rail-secondary"
+                  title={`Next room: ${nextRoom.name}`}
+                  data-rail-id="next"
+                  aria-label="Next room"
+                  onClick={() => { void selectRoom(nextRoom.id); }}
+                >
+                  <ChevronRight aria-hidden="true" />
+                </button>
+              ) : null}
+              <DesktopNavigation createOnly actions={desktopToolbarActions}
+                adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+                onModeChange={() => undefined} onAction={runDesktopAction}
+                renderCreateTools={renderDesktopCreateTools} />
               <button
                 ref={paneLayoutCollapsedButtonRef}
                 type="button"
                 className="room-toolbar-visibility-button"
                 title="Pane layout"
+                data-rail-id="layout"
                 aria-label="Pane layout"
                 aria-controls="pane-layout-presets-collapsed"
                 aria-expanded={isCollapsedPaneLayoutMenuOpen}
@@ -7324,8 +8076,9 @@ export function App() {
               </button>
               <button
                 type="button"
-                className="room-toolbar-visibility-button"
+                className="room-toolbar-visibility-button room-rail-secondary"
                 title="On-screen keyboard"
+                data-rail-id="keyboard"
                 aria-label="On-screen keyboard"
                 aria-controls={OSK_PANEL_ID}
                 aria-expanded={isOskKeyboardOpen}
@@ -7345,8 +8098,9 @@ export function App() {
               <button
                 ref={vibeMusicButtonRef}
                 type="button"
-                className="room-toolbar-visibility-button"
+                className="room-toolbar-visibility-button room-rail-secondary"
                 title="Vibe music with freeCodeCamp Code Radio"
+                data-rail-id="music"
                 aria-label="Music"
                 aria-controls={VIBE_MUSIC_PANEL_ID}
                 aria-expanded={isVibeMusicOpen}
@@ -7362,65 +8116,92 @@ export function App() {
               >
                 <Music2 aria-hidden="true" />
               </button>
-              <button
-                type="button"
-                className="room-toolbar-visibility-button"
-                title="Show rooms"
-                aria-label="Show rooms"
-                aria-pressed={isSideSurfaceOpen && activeSideSurface === "rooms"}
-                onClick={() => {
+              <DesktopNavigation docksOnly actions={roomToolbarActions}
+                adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+                onModeChange={() => undefined}
+                onAction={(action, anchor) => {
                   setIsThemeMenuOpen(false);
                   setIsPaneLayoutMenuOpen(false);
                   setIsCollapsedPaneLayoutMenuOpen(false);
                   setIsPaneSpanAllMenuOpen(false);
                   setIsWorkspaceTextSizePickerOpen(false);
                   setIsVibeMusicOpen(false);
-                  toggleSideSurface("rooms");
-                }}
-              >
-                <PanelRight aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="room-toolbar-visibility-button"
-                title={`Change ${toolbarVpnRoute === "nord" ? "NordVPN" : "Mullvad"} city`}
-                aria-label={`Change ${toolbarVpnRoute === "nord" ? "NordVPN" : "Mullvad"} city`}
-                disabled={vpnCityPending}
-                onClick={() => {
+                  runDesktopAction(action, anchor);
+                }} />
+              <DesktopNavigation toolsOnly actions={roomToolbarActions}
+                adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+                onModeChange={() => undefined}
+                onAction={(action, anchor) => {
                   setIsThemeMenuOpen(false);
                   setIsPaneLayoutMenuOpen(false);
                   setIsCollapsedPaneLayoutMenuOpen(false);
                   setIsPaneSpanAllMenuOpen(false);
                   setIsWorkspaceTextSizePickerOpen(false);
                   setIsVibeMusicOpen(false);
-                  void rotateVpnCityFromToolbar();
-                }}
-              >
-                <RefreshCw aria-hidden="true" />
-              </button>
+                  runDesktopAction(action, anchor);
+                }} />
+              {showMinimizedBarToggle && auth.user?.role !== "ADMIN" ? (
+                <MinimizedPaneBarToggle
+                  count={minimizedPanes.length}
+                  runningCount={minimizedPaneRunningCount}
+                  expanded={showMinimizedBar}
+                  onToggle={() => setMinimizedBarExpanded((value) => !value)}
+                />
+              ) : null}
               <button
                 type="button"
                 className="room-toolbar-visibility-button"
                 title="Show room toolbar"
+                data-rail-id="expand"
                 aria-label="Show room toolbar"
                 onClick={() => updateRoomToolbarVisibility(false)}
               >
                 <PanelTopOpen aria-hidden="true" />
               </button>
+              <div className="room-rail-more">
+                <DesktopNavigation workspaceOnly actions={desktopToolbarActions}
+                  adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+                  onModeChange={() => undefined} onAction={runDesktopAction} />
+              </div>
               {isCollapsedPaneLayoutMenuOpen && activeRoom ? (
-                <PaneLayoutMenu
-                  automaticColumns={automaticPaneGridColumnCount}
-                  currentColumns={activeRoom.paneLayoutColumns ?? null}
-                  error={paneLayoutError}
-                  maximumColumns={shellMode === "mobile" ? 1 : shellMode === "tablet" ? 2 : 4}
-                  menuId="pane-layout-presets-collapsed"
-                  onClose={() => setIsCollapsedPaneLayoutMenuOpen(false)}
-                  onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
-                  pending={paneLayoutPending}
-                  triggerRef={paneLayoutCollapsedButtonRef}
-                  visiblePaneCount={visiblePanes.length}
-                />
+                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                  <LazyPaneLayoutMenu
+                    automaticColumns={automaticPaneGridColumnCount}
+                    currentColumns={activeRoom.paneLayoutColumns ?? null}
+                    currentHeight={activeRoom.paneLayoutHeight ?? 1}
+                    error={paneLayoutError}
+                    maximumColumns={shellMode === "mobile" ? 1 : shellMode === "tablet" ? 2 : 4}
+                    menuId="pane-layout-presets-collapsed"
+                    onClose={() => setIsCollapsedPaneLayoutMenuOpen(false)}
+                    onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
+                    onSelectHeight={(paneLayoutHeight) => void applyPaneLayoutPreset(undefined, paneLayoutHeight, true)}
+                    pending={paneLayoutPending}
+                    triggerRef={paneLayoutCollapsedButtonRef}
+                    visiblePaneCount={visiblePanes.length}
+                  />
+                </RecoverableSurface>
               ) : null}
+              {isPaneSpanAllMenuOpen && activeRoom ? (
+                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                  <LazyPaneSpanAllMenu
+                    activeColumnCount={paneGridColumnCount}
+                    currentSpan={commonPaneColumnSpan(visiblePanes)}
+                    error={paneSpanAllError}
+                    onClose={() => setIsPaneSpanAllMenuOpen(false)}
+                    onSelect={(columnSpan) => void applyPaneSpanToAll(columnSpan)}
+                    pending={paneSpanAllPending}
+                    triggerRef={paneSpanAllButtonRef}
+                    visiblePaneCount={visiblePanes.length}
+                  />
+                </RecoverableSurface>
+              ) : null}
+              <WorkspaceTextSizePicker
+                anchorRef={workspaceTextSizeButtonRef}
+                open={isWorkspaceTextSizePickerOpen}
+                value={terminalFontSize}
+                onChange={setTerminalFontSize}
+                onClose={() => setIsWorkspaceTextSizePickerOpen(false)}
+              />
             </div>
           ) : null}
           {!isMobilePaneFocused && !isRoomToolbarHidden ? (
@@ -7434,7 +8215,11 @@ export function App() {
             >
             <div className="board-toolbar-main">
               <div className="board-title-row">
-                {isRoomFocusMode ? <SpaceBrand /> : null}
+                <button type="button" className="desktop-rooms-toggle"
+                  aria-label={sideSurfaceToggleLabel("rooms")} title={sideSurfaceToggleLabel("rooms")}
+                  aria-pressed={isSideSurfaceOpen && activeSideSurface === "rooms"}
+                  onClick={() => toggleSideSurface("rooms")}><PanelRight aria-hidden="true" /></button>
+                <SpaceBrand />
                 <div className="board-title-heading">
                   {isRoomRenameOpen && presentationRoom ? (
                     <form className="room-title-form" onSubmit={submitRoomRename}>
@@ -7521,43 +8306,28 @@ export function App() {
             </div>
             <div className="toolbar-actions" ref={roomToolbarActionsRef}>
               {presentationRoom ? (
-                <ToolbarMetrics
-                  ref={toolbarMetricsRef}
-                  canManage={auth?.user?.role === "ADMIN"}
-                  environment={codexEnvironmentSummary}
-                  roomName={presentationRoom.name}
-                  roomId={presentationRoom.id}
-                  onOpenAnalytics={(tab) => {
-                    setIsMemoryWorkspaceOpen(false);
-                    setSystemAnalyticsTab(tab);
-                  }}
-                  onChanged={refreshToolbarSystemState}
-                />
+                renderToolbarMetrics()
               ) : null}
               <div ref={roomToolbarScrollRef} className="toolbar-actions-scroll">
-                {uiTheme === "modern" ? (
-                  <div className="modern-action-groups">
-                    {groupModernRoomActions(roomToolbarRenderedActions).map((group) => group.actions.length ? (
-                      <div
-                        key={group.id}
-                        className="modern-action-group"
-                        data-action-group={group.id}
-                        role="group"
-                        aria-label={group.label}
-                      >
-                        <span className="modern-action-group-label">{group.label}</span>
-                        <div className="modern-action-group-buttons">
-                          {group.actions.map(renderRoomToolbarAction)}
-                        </div>
-                      </div>
-                    ) : null)}
-                  </div>
-                ) : roomToolbarRenderedActions.map(renderRoomToolbarAction)}
+                <DesktopNavigation
+                  actions={desktopToolbarActions}
+                  adminMode={isAdminMode}
+                  canAdmin={auth?.user?.role === "ADMIN"}
+                  onModeChange={() => {
+                    setAdminModeRequested(!isAdminMode);
+                    setIsServerActionsMenuOpen(false);
+                    if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
+                  }}
+                  onAction={runDesktopAction}
+                  version={runtimeKind === "demo" ? <DemoVersionMeta compact /> : <AppVersionMeta compact />}
+                  renderCreateTools={renderDesktopCreateTools}
+                  footer={runtimeKind === "demo" ? <DemoVersionMeta /> : <AppVersionMeta />}
+                />
               </div>
               {roomToolbar.isOverflowOpen ? (
                 shellMode === "mobile" ? (
                   <MobileActionSheet
-                    actionSections={uiTheme === "modern" ? groupModernRoomActions(roomToolbar.orderedActions) : undefined}
+                    actionSections={uiTheme !== "classic" ? groupModernRoomActions(roomToolbar.orderedActions) : undefined}
                     actions={roomToolbar.orderedActions}
                     hiddenActionIds={roomToolbar.hiddenActionIds}
                     label="Room actions"
@@ -7590,7 +8360,15 @@ export function App() {
                   />
                 )
               ) : null}
-              <div className="toolbar-actions-fixed room-toolbar-floating-controls" role="group" aria-label="Room utility controls">
+              <div className="toolbar-actions-fixed" role="group" aria-label="Room utility controls">
+                {showMinimizedBarToggle ? (
+                  <MinimizedPaneBarToggle
+                    count={minimizedPanes.length}
+                    runningCount={minimizedPaneRunningCount}
+                    expanded={showMinimizedBar}
+                    onToggle={() => setMinimizedBarExpanded((value) => !value)}
+                  />
+                ) : null}
                 <button
                   type="button"
                   className="room-toolbar-visibility-button"
@@ -7602,41 +8380,65 @@ export function App() {
                 </button>
               </div>
               {isPaneLayoutMenuOpen && activeRoom ? (
-                <PaneLayoutMenu
-                  automaticColumns={automaticPaneGridColumnCount}
-                  currentColumns={activeRoom.paneLayoutColumns ?? null}
-                  error={paneLayoutError}
-                  maximumColumns={shellMode === "mobile" ? 1 : shellMode === "tablet" ? 2 : 4}
-                  onClose={() => setIsPaneLayoutMenuOpen(false)}
-                  onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
-                  pending={paneLayoutPending}
-                  triggerRef={paneLayoutButtonRef}
-                  visiblePaneCount={visiblePanes.length}
-                />
+                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                  <LazyPaneLayoutMenu
+                    automaticColumns={automaticPaneGridColumnCount}
+                    currentColumns={activeRoom.paneLayoutColumns ?? null}
+                    currentHeight={activeRoom.paneLayoutHeight ?? 1}
+                    error={paneLayoutError}
+                    maximumColumns={shellMode === "mobile" ? 1 : shellMode === "tablet" ? 2 : 4}
+                    onClose={() => setIsPaneLayoutMenuOpen(false)}
+                    onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
+                    onSelectHeight={(paneLayoutHeight) => void applyPaneLayoutPreset(undefined, paneLayoutHeight, true)}
+                    pending={paneLayoutPending}
+                    triggerRef={paneLayoutButtonRef}
+                    visiblePaneCount={visiblePanes.length}
+                  />
+                </RecoverableSurface>
               ) : null}
               {isPaneSpanAllMenuOpen && activeRoom ? (
-                <PaneSpanAllMenu
-                  activeColumnCount={paneGridColumnCount}
-                  currentSpan={commonPaneColumnSpan(visiblePanes)}
-                  error={paneSpanAllError}
-                  onClose={() => setIsPaneSpanAllMenuOpen(false)}
-                  onSelect={(columnSpan) => void applyPaneSpanToAll(columnSpan)}
-                  pending={paneSpanAllPending}
-                  triggerRef={paneSpanAllButtonRef}
-                  visiblePaneCount={visiblePanes.length}
-                />
+                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                  <LazyPaneSpanAllMenu
+                    activeColumnCount={paneGridColumnCount}
+                    currentSpan={commonPaneColumnSpan(visiblePanes)}
+                    error={paneSpanAllError}
+                    onClose={() => setIsPaneSpanAllMenuOpen(false)}
+                    onSelect={(columnSpan) => void applyPaneSpanToAll(columnSpan)}
+                    pending={paneSpanAllPending}
+                    triggerRef={paneSpanAllButtonRef}
+                    visiblePaneCount={visiblePanes.length}
+                  />
+                </RecoverableSurface>
               ) : null}
               {isCliLauncherOpen ? (
-                <CliLauncherMenu
-                  atPaneCap={panes.length >= 16}
-                  isCodexEnabled={isCodexEnabled}
-                  mobile={shellMode === "mobile"}
-                  onClose={() => setIsCliLauncherOpen(false)}
-                  onCreate={addCliRuntimePane}
-                  onLogin={openCliRuntimeLogin}
-                  onOpenSettings={openSettingsSurface}
-                  triggerRef={cliLauncherReturnFocusRef}
-                />
+                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                  <LazyCliLauncherMenu
+                    atPaneCap={panes.length >= 16}
+                    isCodexEnabled={isCodexEnabled}
+                    mobile={shellMode === "mobile"}
+                    onClose={() => setIsCliLauncherOpen(false)}
+                    onCreate={addCliRuntimePane}
+                    onLogin={openCliRuntimeLogin}
+                    onOpenSettings={openSettingsSurface}
+                    triggerRef={cliLauncherReturnFocusRef}
+                  />
+                </RecoverableSurface>
+              ) : null}
+              {isChatLauncherOpen ? (
+                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                  <LazyChatLauncherMenu
+                    mobile={shellMode === "mobile"}
+                    onClose={closeChatLauncher}
+                    onSelectChat={() => void addPane("CHAT")}
+                    onSelectHarness={() => void addHarnessPane()}
+                    onSelectLive={() => void addLivePane()}
+                    triggerRef={chatLauncherButtonRef}
+                    chatDisabled={!isCodexEnabled || panes.length >= 16}
+                    harnessDisabled={panes.length >= 16}
+                    harnessHidden={!isHarnessEnabled}
+                    liveDisabled={panes.length >= 16}
+                  />
+                </RecoverableSurface>
               ) : null}
               {isThemeMenuOpen ? (
                 <RoomThemeMenu
@@ -7655,12 +8457,14 @@ export function App() {
                 onClose={() => setIsWorkspaceTextSizePickerOpen(false)}
               />
               {auth?.user?.role === "ADMIN" && isServerActionsMenuOpen ? (
-                <ServerActionsMenu
-                  actions={serverActionCommands}
-                  mobile={shellMode === "mobile"}
-                  onClose={() => setIsServerActionsMenuOpen(false)}
-                  triggerRef={serverActionsButtonRef}
-                />
+                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                  <LazyServerActionsMenu
+                    actions={serverActionCommands}
+                    mobile={shellMode === "mobile"}
+                    onClose={() => setIsServerActionsMenuOpen(false)}
+                    triggerRef={serverActionsButtonRef}
+                  />
+                </RecoverableSurface>
               ) : null}
               {isServerRestartDialogOpen ? (
                 <div
@@ -7681,11 +8485,21 @@ export function App() {
                     }}
                   >
                     <header>
-                      <ServerCog aria-hidden="true" />
+                      <span className="server-restart-modal-icon warning">
+                        <ServerCog aria-hidden="true" />
+                      </span>
                       <div>
                         <h3>Restart Space server</h3>
                         <p>Restarts space-worker.service, space-api.service, and space-web.service.</p>
                       </div>
+                      <button
+                        type="button"
+                        aria-label="Close Restart Space server"
+                        disabled={serverRestartPending}
+                        onClick={closeServerRestartDialog}
+                      >
+                        <X aria-hidden="true" />
+                      </button>
                     </header>
                     <p>CLI and browser sessions stay protected because codex-pane-host, the admin host, and the browser host are not restarted.</p>
                     {serverRestartMessage ? <p className="server-restart-status" role="status"><span>{serverRestartMessage}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setServerRestartMessage(null)}><X aria-hidden="true" /></button></p> : null}
@@ -7720,11 +8534,21 @@ export function App() {
                     }}
                   >
                     <header>
-                      <Terminal aria-hidden="true" />
+                      <span className="server-restart-modal-icon">
+                        <Terminal aria-hidden="true" />
+                      </span>
                       <div>
                         <h3>Restart all CLI runtimes</h3>
                         <p>Stops and restarts the sessions of every CLI type one after another.</p>
                       </div>
+                      <button
+                        type="button"
+                        aria-label="Close Restart all CLI runtimes"
+                        disabled={cliRuntimeRestartAllPending}
+                        onClick={closeCliRuntimeRestartAllDialog}
+                      >
+                        <X aria-hidden="true" />
+                      </button>
                     </header>
                     <p>Codex, claude, gemini, opencode, kimi, and the other CLI runtimes are restarted individually; the pane host service itself is not restarted.</p>
                     {cliRuntimeRestartAllMessage ? <p className="server-restart-status" role="status"><span>{cliRuntimeRestartAllMessage}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setCliRuntimeRestartAllMessage(null)}><X aria-hidden="true" /></button></p> : null}
@@ -7780,8 +8604,8 @@ export function App() {
           ) : null}
           {showPaneNavigation ? (
             <div className="pane-navigation">
-              {minimizedPanes.length > 0 ? (
-                <section className="minimized-pane-bar" aria-label="Minimized panes">
+              {showMinimizedBar ? (
+                <section className="minimized-pane-bar" id={MINIMIZED_PANE_BAR_ID} aria-label="Minimized panes">
                   <div className="minimized-pane-items">
                     {visiblePanes.length === 0 ? (
                       <span className="all-panes-minimized" role="status">All panes minimized</span>
@@ -7804,7 +8628,6 @@ export function App() {
                           onClick={() => void restorePane(pane)}
                         >
                           <PaneModeIcon pane={pane} />
-                          <span>{pane.title}</span>
                           {paneRunActive ? (
                             <>
                               <Loader2 className="minimized-pane-run-indicator" aria-hidden="true" />
@@ -7815,50 +8638,32 @@ export function App() {
                       );
                     })}
                   </div>
-                  <button
-                    type="button"
-                    className="restore-all-panes"
-                    aria-label="Restore all minimized panes"
-                    title="Restore all minimized panes"
-                    disabled={restoreAllPending}
-                    onClick={() => void restoreAllPanes()}
-                  >
-                    <Grid2X2 aria-hidden="true" />
-                    <span>{restoreAllPending ? "Restoring…" : "Restore all"}</span>
-                  </button>
+                  <div className="minimized-pane-bar-actions">
+                    <button
+                      type="button"
+                      className="minimize-all-panes"
+                      aria-label="Minimize all visible panes"
+                      title="Minimize all visible panes"
+                      disabled={minimizeAllPending || visiblePanes.length === 0}
+                      onClick={() => void minimizeAllPanes()}
+                    >
+                      <Minimize2 aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="restore-all-panes"
+                      aria-label="Restore all minimized panes"
+                      title="Restore all minimized panes"
+                      aria-busy={restoreAllPending}
+                      disabled={restoreAllPending}
+                      onClick={() => void restoreAllPanes()}
+                    >
+                      <LayoutDashboard aria-hidden="true" />
+                    </button>
+                  </div>
                 </section>
               ) : null}
-              {showMobilePaneSwitcher ? (
-                <div className="pane-switcher" role="tablist" aria-label="Room panes">
-                  {visiblePanes.map((pane) => {
-                    const agentNumber = agentNumberByPaneId.get(pane.id) ?? 0;
-                    const agentTone = ((agentNumber - 1 + 8) % 8) + 1;
-                    const isSelected = pane.id === activePane?.id;
-                    return (
-                      <button
-                        key={pane.id}
-                        type="button"
-                        className={isSelected ? "selected" : ""}
-                        data-agent-tone={agentTone}
-                        role="tab"
-                        aria-selected={isSelected}
-                        aria-label={`Show ${displayPaneTitle(pane)} for agent ${agentNumber}`}
-                        title={`${displayPaneTitle(pane)} / Agent ${agentNumber}`}
-                        onClick={(event) => {
-                          targetPaneFromUser(pane.id);
-                          event.currentTarget.scrollIntoView?.({ block: "nearest", inline: "center" });
-                        }}
-                      >
-                        <span className="pane-switcher-meta">
-                          <em>Agent {agentNumber}</em>
-                          <small>{paneModeLabel(pane.mode)}</small>
-                        </span>
-                        <strong>{displayPaneTitle(pane)}</strong>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : null}
+              {showMobilePaneSwitcher ? <MobilePaneSwitcher panes={visiblePanes} activePaneId={activePane?.id} onSelect={targetPaneFromUser} /> : null}
             </div>
           ) : null}
 
@@ -7868,6 +8673,11 @@ export function App() {
             data-presentation-generation={roomPresentationGenerationRef.current}
           >
             {mountedRoomRuntimeIds.map((roomId) => renderRoomRuntimeLayer(roomId))}
+            {canPlayAsteroids({ selectedRoomId, displayedRoomId, preparingRoomId,
+              loaded: Boolean(selectedRoomId && roomPaneLoadStates[selectedRoomId] === "loaded"),
+              category: selectedRoomId ? activeCategoryColorByRoom[selectedRoomId] ?? null : null, panes }) ? (
+                <AsteroidsGate key={selectedRoomId} />
+              ) : null}
           </div>
         </section>
         {paneMoveDialog ? (
@@ -7888,10 +8698,12 @@ export function App() {
       </section> : null}
       <QuickLinksPopover open={isQuickLinksOpen} onClose={() => setIsQuickLinksOpen(false)} onOpen={openUserLink} onManage={manageLinks} />
       {activeUserLink ? (
-        <EmbeddedDashboardDialog link={activeUserLink} onClose={() => setActiveUserLink(null)} />
+        <RecoverableSurface fallback={<div role="status">Loading dashboard…</div>}>
+          <LazyEmbeddedDashboardDialog link={activeUserLink} onClose={() => setActiveUserLink(null)} />
+        </RecoverableSurface>
       ) : null}
       </main>
-      <StreamingOverlay theme={uiTheme === "modern" ? "modern" : "classic"} />
+      <StreamingOverlay theme={uiTheme !== "classic" ? "modern" : "classic"} />
       </StreamingOverlayProvider>
     </AppIconProvider>
   );
@@ -8064,7 +8876,6 @@ function ProviderSettingsCard({
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [pendingProviderId, setPendingProviderId] = useState<string | null>(null);
   const [defaultPending, setDefaultPending] = useState(false);
-  const [titleGenerationPending, setTitleGenerationPending] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [form, setForm] = useState<ProviderFormState>(emptyProviderForm);
@@ -8072,19 +8883,6 @@ function ProviderSettingsCard({
   const [formError, setFormError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const defaultProvider = providers.find((provider) => provider.id === settings?.defaultProviderId) ?? null;
-  const titleGenerationModels = useMemo(
-    () => models.filter((model) => model.status === "VERIFIED").sort((left, right) => left.displayName.localeCompare(right.displayName)),
-    [models]
-  );
-  const titleGenerationReasoningOptions: ProviderSettings["titleGenerationReasoningEffort"][] = [
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "none"
-  ];
-
   function openAddProvider() {
     setEditingProvider(null);
     setForm(emptyProviderForm);
@@ -8117,38 +8915,6 @@ function ProviderSettingsCard({
       setSettingsError(err instanceof Error ? err.message : "Default provider update failed");
     } finally {
       setDefaultPending(false);
-    }
-  }
-
-  async function updateGlobalProviderSettings(input: UpdateProviderSettingsInput) {
-    const updated = await api.updateProviderSettings(input);
-    onProviderSettingsRefresh(updated);
-    dispatchAgentPaneSettingsUpdated(null);
-  }
-
-  async function selectTitleGenerationModel(modelId: string) {
-    if ((settings?.titleGenerationModelId ?? "") === modelId) return;
-    setTitleGenerationPending(true);
-    setSettingsError(null);
-    try {
-      await updateGlobalProviderSettings({ titleGenerationModelId: modelId || null });
-    } catch (err) {
-      setSettingsError(err instanceof Error ? err.message : "CLI title model update failed");
-    } finally {
-      setTitleGenerationPending(false);
-    }
-  }
-
-  async function selectTitleGenerationReasoning(value: ProviderSettings["titleGenerationReasoningEffort"]) {
-    if ((settings?.titleGenerationReasoningEffort ?? "low") === value) return;
-    setTitleGenerationPending(true);
-    setSettingsError(null);
-    try {
-      await updateGlobalProviderSettings({ titleGenerationReasoningEffort: value });
-    } catch (err) {
-      setSettingsError(err instanceof Error ? err.message : "CLI title reasoning update failed");
-    } finally {
-      setTitleGenerationPending(false);
     }
   }
 
@@ -8224,40 +8990,8 @@ function ProviderSettingsCard({
             )}
           </select>
         </label>
-        <label className="provider-default-select">
-          <span>CLI title model</span>
-          <select
-            aria-label="CLI title model"
-            value={settings?.titleGenerationModelId ?? ""}
-            onChange={(event) => void selectTitleGenerationModel(event.target.value)}
-            disabled={titleGenerationPending}
-          >
-            <option value="">Auto</option>
-            {titleGenerationModels.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.displayName}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="provider-default-select">
-          <span>CLI title reasoning</span>
-          <select
-            aria-label="CLI title reasoning"
-            value={settings?.titleGenerationReasoningEffort ?? "low"}
-            onChange={(event) =>
-              void selectTitleGenerationReasoning(event.target.value as ProviderSettings["titleGenerationReasoningEffort"])
-            }
-            disabled={titleGenerationPending}
-          >
-            {titleGenerationReasoningOptions.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
+      <TaskTitleSettings />
       {settingsError ? (
         <div className="validation-result bad" role="alert">
           <strong>PROVIDER_SETTINGS_ERROR</strong>
@@ -8463,6 +9197,27 @@ function VoiceSettingsCard() {
   }
 
   const languageOptions = serverSettings?.languageOptions ?? ["auto", "el", "en"];
+  const modelOptions = serverSettings?.modelOptions ?? [
+    "gpt-transcribe",
+    "gpt-live-transcribe",
+    "gpt-4o-transcribe",
+    "gpt-4o-mini-transcribe",
+    "gpt-live-1",
+    "gpt-live-1-mini",
+    "whisper-1",
+    "gpt-realtime-whisper"
+  ];
+  const voiceOptions = serverSettings?.voiceOptions ?? [
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "sage",
+    "shimmer",
+    "bossa",
+    "tempo"
+  ];
   const statusLabel = serverSettings?.enabled ? "READY" : "DISABLED";
   const statusToneValue = serverSettings?.enabled ? "ok" : "warn";
 
@@ -8503,6 +9258,26 @@ function VoiceSettingsCard() {
         onChange={(enabled) => updateVoiceSettings({ enabled })}
       />
       <label className="settings-flat-row">
+        <span className="settings-flat-row-copy"><strong>Voice model</strong><small>Audio and speech model.</small></span>
+        <select name="voice-input-model" value={settings.model} onChange={(event) => updateVoiceSettings({ model: event.target.value as VoiceComposerSettings["model"] })}>
+          {modelOptions.map((model) => (
+            <option key={model} value={model}>
+              {model}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="settings-flat-row">
+        <span className="settings-flat-row-copy"><strong>Voice</strong><small>Speech voice tone.</small></span>
+        <select name="voice-input-voice" value={settings.voice} onChange={(event) => updateVoiceSettings({ voice: event.target.value as VoiceComposerSettings["voice"] })}>
+          {voiceOptions.map((voice) => (
+            <option key={voice} value={voice}>
+              {voice.charAt(0).toUpperCase() + voice.slice(1)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="settings-flat-row">
         <span className="settings-flat-row-copy"><strong>Language</strong><small>Transcription language.</small></span>
         <select name="voice-input-language" value={settings.language} onChange={(event) => updateVoiceSettings({ language: event.target.value as VoiceComposerSettings["language"] })}>
           {languageOptions.map((language) => (
@@ -8527,6 +9302,79 @@ function VoiceSettingsCard() {
         checked={settings.prewarm}
         onChange={(prewarm) => updateVoiceSettings({ prewarm })}
       />
+      <div className="voice-advanced-settings" style={{ margin: "6px 0" }}>
+        <details className="settings-flat-details" style={{ cursor: "pointer" }}>
+          <summary className="settings-flat-summary" style={{ color: "var(--room-text, #f4efe5)", fontSize: "0.78rem", padding: "4px 0" }}>
+            <strong>Live model & delegation settings</strong>
+          </summary>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
+            <label className="settings-flat-row">
+              <span className="settings-flat-row-copy"><strong>Opening</strong><small>Optional first words.</small></span>
+              <input
+                type="text"
+                name="voice-input-opening"
+                value={settings.opening}
+                placeholder="Optional first words..."
+                onChange={(event) => updateVoiceSettings({ opening: event.target.value })}
+              />
+            </label>
+            <label className="settings-flat-row">
+              <span className="settings-flat-row-copy"><strong>Prompt</strong><small>Voice model system prompt.</small></span>
+              <input
+                type="text"
+                name="voice-input-prompt"
+                value={settings.prompt}
+                placeholder="Instructions for voice model..."
+                onChange={(event) => updateVoiceSettings({ prompt: event.target.value })}
+              />
+            </label>
+            <label className="settings-flat-row">
+              <span className="settings-flat-row-copy"><strong>Delegated model</strong><small>Backend model for reasoning.</small></span>
+              <select
+                name="voice-delegated-model"
+                value={settings.delegatedModel}
+                onChange={(event) => updateVoiceSettings({ delegatedModel: event.target.value })}
+              >
+                <option value="gpt-6-astra">gpt-6-astra</option>
+                <option value="gpt-4o">gpt-4o</option>
+                <option value="gpt-4o-mini">gpt-4o-mini</option>
+              </select>
+            </label>
+            <label className="settings-flat-row">
+              <span className="settings-flat-row-copy"><strong>Reasoning effort</strong><small>Delegated reasoning depth.</small></span>
+              <select
+                name="voice-reasoning-effort"
+                value={settings.delegatedReasoningEffort}
+                onChange={(event) => updateVoiceSettings({ delegatedReasoningEffort: event.target.value as VoiceComposerSettings["delegatedReasoningEffort"] })}
+              >
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
+            </label>
+            <SpaceToggle
+              className="settings-flat-row settings-flat-toggle-row voice-toggle"
+              name="voice-delegated-web-search"
+              label="Web search"
+              detail="Allow delegated model to search the web."
+              checked={settings.delegatedWebSearch}
+              onChange={(delegatedWebSearch) => updateVoiceSettings({ delegatedWebSearch })}
+            />
+            <label className="settings-flat-row">
+              <span className="settings-flat-row-copy"><strong>Delegated prompt</strong><small>Instructions for backend model.</small></span>
+              <input
+                type="text"
+                name="voice-delegated-prompt"
+                value={settings.delegatedPrompt}
+                placeholder="Add instructions for backend model..."
+                onChange={(event) => updateVoiceSettings({ delegatedPrompt: event.target.value })}
+              />
+            </label>
+          </div>
+        </details>
+      </div>
       <div className="voice-float-settings">
         <div className="settings-flat-subheading">
           <strong>Floating controls</strong>
@@ -8554,12 +9402,15 @@ function VoiceSettingsCard() {
           onChange={(terminalTurnControl) => updateVoiceSettings({ terminalTurnControl })}
         />
       </div>
-      <p className="settings-flat-note voice-settings-help">Uses OpenAI gpt-live-transcribe. Finished speech is submitted immediately.</p>
+      <p className="settings-flat-note voice-settings-help">Uses OpenAI {settings.model} ({settings.voice}). Finished speech is submitted immediately.</p>
     </section>
   );
 }
 
 function AgentSettingsDock({
+  cliSettingsContent,
+  adminMode,
+  onOpenSetup,
   activePane,
   canManageCliRuntimes,
   canManageDiagnostics,
@@ -8576,6 +9427,9 @@ function AgentSettingsDock({
   onSuppressNotificationsChange,
   onProviderSettingsRefresh
 }: {
+  cliSettingsContent: ReactNode;
+  adminMode: boolean;
+  onOpenSetup: () => void;
   activePane: Pane | null;
   canManageCliRuntimes: boolean;
   canManageDiagnostics: boolean;
@@ -8665,23 +9519,39 @@ function AgentSettingsDock({
 
   return (
     <div className="dock-panel agent-settings-dock basic-settings-dock">
+      <SettingsSections>
       <header className="settings-dock-title settings-flat-dock-title">
         <Settings2 aria-hidden="true" />
         <span>
-          <h2>Settings</h2>
-          <small>Browser and workspace controls.</small>
+          <h2>{adminMode ? "Advanced settings" : "Settings"}</h2>
+          <small>{adminMode ? "Preferences and advanced installation settings." : "Your everyday preferences. Open a section to change it."}</small>
         </span>
       </header>
 
-      <UiThemeSettingsCard
-        currentAppearance={currentAppearance}
-        currentIconPack={currentIconPack}
-        currentTheme={currentUiTheme}
-        onChange={onUiThemeApply}
-      />
+      {canManageCliRuntimes ? <div className="settings-setup-shortcut">
+        <strong>Need to set up a tool?</strong>
+        <p>The wizard guides you through tools and connections. You can return at any time.</p>
+        <button type="button" onClick={onOpenSetup}>Open setup wizard</button>
+      </div> : null}
+      <SettingsDisclosure title="Appearance" description="Theme, colors, and icon style." scope="This browser" icon={Palette}>
+      <RecoverableSurface fallback={settingsCardLoadingFallback}>
+        <LazyUiThemeSettingsCard
+          currentAppearance={currentAppearance}
+          currentIconPack={currentIconPack}
+          currentTheme={currentUiTheme}
+          onChange={onUiThemeApply}
+        />
+      </RecoverableSurface>
+      </SettingsDisclosure>
 
-      <AppDiagnosticsSettingsCard canManage={canManageDiagnostics} />
+      {canManageCliRuntimes ? <SettingsDisclosure initialOpen title="CLI runtimes & workspace" description="Installed tools, room cache, and image previews." scope="Installation" icon={Terminal}>
+        <RecoverableSurface fallback={settingsCardLoadingFallback}>{cliSettingsContent}</RecoverableSurface>
+      </SettingsDisclosure> : null}
+      {canManageDiagnostics ? <SettingsDisclosure initialOpen title="Diagnostics" description="Debug events and screen recording." scope="Installation" icon={Activity}>
+        <AppDiagnosticsSettingsCard canManage={canManageDiagnostics} />
+      </SettingsDisclosure> : null}
 
+      {canManageCliRuntimes ? <SettingsDisclosure hidden={!adminMode} title="Default provider" description="Choose the provider for new conversations." scope="New sessions" icon={ServerCog}>
       <section className="agent-settings-card settings-flat-card settings-provider-card" aria-label="Global provider settings">
         <div className="agent-settings-section-title settings-flat-heading codex-gated-settings-title">
           <ServerCog aria-hidden="true" />
@@ -8723,14 +9593,30 @@ function AgentSettingsDock({
         ) : null}
       </section>
 
-      <SourceControlPublishingCard canManage={canManageSourceControl} />
+      </SettingsDisclosure> : null}
+      {canManageSourceControl ? <SettingsDisclosure hidden={!adminMode} title="GitHub & Gitea" description="Connect repositories and manage publishing credentials." scope="Installation" icon={GitBranch}>
+      <RecoverableSurface fallback={settingsCardLoadingFallback}>
+        <LazySourceControlPublishingCard canManage={canManageSourceControl} />
+      </RecoverableSurface>
+      </SettingsDisclosure> : null}
 
-      <CodexCliDefaultsCard client={api} isCodexEnabled={isCodexEnabled} />
+      {canManageCliRuntimes ? <SettingsDisclosure hidden={!adminMode} title="Codex CLI defaults" description="Default model and behavior for new CLI sessions." scope="New sessions" icon={Terminal}>
+      <RecoverableSurface fallback={settingsCardLoadingFallback}>
+        <LazyCodexCliDefaultsCard client={api} isCodexEnabled={isCodexEnabled} />
+      </RecoverableSurface>
+      </SettingsDisclosure> : null}
 
-      <TelegramIntegrationCard canManage={canManageTelegram} isCodexEnabled={isCodexEnabled} />
+      {canManageTelegram ? <SettingsDisclosure hidden={!adminMode} title="Telegram notifications" description="Connect Telegram and choose which updates to send." scope="Installation" icon={Bell}>
+      <RecoverableSurface fallback={settingsCardLoadingFallback}>
+        <LazyTelegramIntegrationCard canManage={canManageTelegram} isCodexEnabled={isCodexEnabled} />
+      </RecoverableSurface>
+      </SettingsDisclosure> : null}
 
+      <SettingsDisclosure title="Voice input" description="Microphone and speech preferences." scope="This browser" icon={Mic}>
       <VoiceSettingsCard />
+      </SettingsDisclosure>
 
+      <SettingsDisclosure title="Notifications" description="Choose whether this browser shows notices." scope="This browser" icon={Bell}>
       <section className="agent-settings-card settings-flat-card suppress-notifications-settings-card" aria-label="Notification settings">
         <div className="agent-settings-section-title settings-flat-heading">
           <Bell aria-hidden="true" />
@@ -8749,6 +9635,8 @@ function AgentSettingsDock({
         />
       </section>
 
+      </SettingsDisclosure>
+      <SettingsDisclosure title="Selected agent" description="Tools and preferences for the selected Chat pane." scope="Selected pane" icon={MessageSquare}>
       <section className="agent-settings-card settings-flat-card basic-agent-card" aria-label={activePane?.mode === "CHAT" ? `Basic settings for ${title}` : `Selected pane ${title}`}>
         <div className="agent-settings-section-title settings-flat-heading">
           <MessageSquare aria-hidden="true" />
@@ -8822,6 +9710,8 @@ function AgentSettingsDock({
           <small>{error}</small>
         </div>
       ) : null}
+      </SettingsDisclosure>
+      </SettingsSections>
     </div>
   );
 }
@@ -8885,6 +9775,7 @@ function BrowserDock({
 
 const PaneCard = memo(function PaneCard({
   pane,
+  controlPlacement,
   agentNumber,
   latestTurn,
   latestCompletion,
@@ -8892,6 +9783,8 @@ const PaneCard = memo(function PaneCard({
   isTarget,
   isMoveDialogOpen,
   isVisibleInShell,
+  isFloatingYouTube = false,
+  onToggleYouTubeFloating,
   isTerminalOutputVisible,
   isMobilePaneFocused,
   browserObserverOnly,
@@ -8906,6 +9799,7 @@ const PaneCard = memo(function PaneCard({
   canMoveToAnotherRoom,
   draggedPaneId,
   dragOverPaneId,
+  dragOverPosition = "before",
   paneReorderPending,
   onPaneDragStart,
   onPaneDragEnd,
@@ -8943,12 +9837,14 @@ const PaneCard = memo(function PaneCard({
   terminalBootstrapBarrier,
   shouldBootstrapTerminal,
   prefillInitialReplay,
+  shouldLoadHarness,
   revealGeneration,
   onTerminalBootstrapped,
   onTerminalPrefillReadyChange,
   onTerminalRevealReady
 }: {
   pane: Pane;
+  controlPlacement?: {x:number;y:number;width:number;height:number};
   agentNumber: number;
   latestTurn: Turn | null;
   latestCompletion: SpaceEvent | null;
@@ -8956,6 +9852,8 @@ const PaneCard = memo(function PaneCard({
   isTarget: boolean;
   isMoveDialogOpen: boolean;
   isVisibleInShell: boolean;
+  isFloatingYouTube?: boolean;
+  onToggleYouTubeFloating?: () => void;
   isTerminalOutputVisible: boolean;
   isMobilePaneFocused: boolean;
   browserObserverOnly: boolean;
@@ -8970,12 +9868,13 @@ const PaneCard = memo(function PaneCard({
   canMoveToAnotherRoom: boolean;
   draggedPaneId: string | null;
   dragOverPaneId: string | null;
+  dragOverPosition?: PaneDropPosition;
   paneReorderPending: boolean;
   onPaneDragStart: (event: ReactDragEvent<HTMLElement>, pane: Pane) => void;
   onPaneDragEnd: () => void;
   onPaneDragOver: (event: ReactDragEvent<HTMLElement>, paneId: string) => void;
   onPaneDragLeave: (paneId: string) => void;
-  onPaneDrop: (paneId: string) => void | Promise<void>;
+  onPaneDrop: (paneId: string, position?: PaneDropPosition) => void | Promise<void>;
   onTarget: (paneId: string) => void;
   onMove: (pane: Pane) => void;
   onPaneUpdated: (pane: Pane) => void;
@@ -8990,7 +9889,7 @@ const PaneCard = memo(function PaneCard({
   isFullscreenLayout: boolean;
   fullscreenIndex: number;
   fullscreenCount: number;
-  onFullscreenNavigate: (direction: "previous" | "next") => void;
+  onFullscreenNavigate: (direction: "previous" | "next", fromPaneId?: string) => void;
   effectiveColumnSpan: number;
   rowSpan: number;
   columnStart: number;
@@ -9007,6 +9906,7 @@ const PaneCard = memo(function PaneCard({
   terminalBootstrapBarrier?: TerminalBootstrapBarrier;
   shouldBootstrapTerminal: boolean;
   prefillInitialReplay: boolean;
+  shouldLoadHarness: boolean;
   revealGeneration: number;
   onTerminalBootstrapped: (roomId: string, paneId: string) => void;
   onTerminalPrefillReadyChange: (roomId: string, paneId: string, ready: boolean) => void;
@@ -9022,9 +9922,144 @@ const PaneCard = memo(function PaneCard({
     : latestCompletion
       ? "acknowledged"
       : "idle";
-  const title = displayPaneTitle(pane);
+  const [youtubeVideoTitle, setYoutubeVideoTitle] = useState('');
+  const youtubeToolbarStorageKey = `space.youtube.toolbar.hidden.v1:${pane.id}`;
+  const [youtubeToolbarHidden, setYoutubeToolbarHidden] = useState(() => {
+    try { return localStorage.getItem(youtubeToolbarStorageKey) === 'true'; } catch { return false; }
+  });
+  const floatLayoutStorageKey = `space.youtube.float-layout.v1:${pane.id}`;
+  const [floatLayout, setFloatLayout] = useState<{ x: number; y: number; width: number; height: number }>(() => {
+    try {
+      const saved = localStorage.getItem(floatLayoutStorageKey);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed.x === "number" && typeof parsed.y === "number" && typeof parsed.width === "number" && typeof parsed.height === "number") {
+          return parsed;
+        }
+      }
+    } catch {}
+    const defaultWidth = 380;
+    const defaultHeight = 240;
+    const x = typeof window !== "undefined" ? Math.max(16, window.innerWidth - defaultWidth - 24) : 100;
+    const y = typeof window !== "undefined" ? Math.max(16, window.innerHeight - defaultHeight - 24) : 100;
+    return { x, y, width: defaultWidth, height: defaultHeight };
+  });
+  const [isPointerActive, setIsPointerActive] = useState(false);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    initialX: number;
+    initialY: number;
+  } | null>(null);
+  const resizeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    initialWidth: number;
+    initialHeight: number;
+  } | null>(null);
+  const paneArticleRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!isFloatingYouTube || !paneArticleRef.current || typeof ResizeObserver === "undefined") return;
+    const el = paneArticleRef.current;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width >= 200 && height >= 140) {
+          setFloatLayout((prev) => {
+            if (Math.abs(prev.width - width) < 3 && Math.abs(prev.height - height) < 3) return prev;
+            const updated = { ...prev, width: Math.round(width), height: Math.round(height) };
+            try {
+              localStorage.setItem(floatLayoutStorageKey, JSON.stringify(updated));
+            } catch {}
+            return updated;
+          });
+        }
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isFloatingYouTube, floatLayoutStorageKey]);
+
+  const handleFloatHeaderPointerDown = (e: ReactPointerEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button, input, select, textarea, a")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsPointerActive(true);
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialX: floatLayout.x,
+      initialY: floatLayout.y
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const handleFloatHeaderPointerMove = (e: ReactPointerEvent<HTMLElement>) => {
+    if (!dragRef.current || dragRef.current.pointerId !== e.pointerId) return;
+    const dx = e.clientX - dragRef.current.startX;
+    const dy = e.clientY - dragRef.current.startY;
+    const maxX = Math.max(0, window.innerWidth - 60);
+    const maxY = Math.max(0, window.innerHeight - 40);
+    const nextX = Math.min(maxX, Math.max(0, dragRef.current.initialX + dx));
+    const nextY = Math.min(maxY, Math.max(0, dragRef.current.initialY + dy));
+    setFloatLayout((prev) => ({ ...prev, x: nextX, y: nextY }));
+  };
+
+  const handleFloatHeaderPointerUp = (e: ReactPointerEvent<HTMLElement>) => {
+    if (!dragRef.current || dragRef.current.pointerId !== e.pointerId) return;
+    dragRef.current = null;
+    setIsPointerActive(false);
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {}
+    try {
+      localStorage.setItem(floatLayoutStorageKey, JSON.stringify(floatLayout));
+    } catch {}
+  };
+
+  const handleResizePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsPointerActive(true);
+    resizeRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialWidth: floatLayout.width,
+      initialHeight: floatLayout.height
+    };
+    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+  };
+
+  const handleResizePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizeRef.current || resizeRef.current.pointerId !== e.pointerId) return;
+    const dw = e.clientX - resizeRef.current.startX;
+    const dh = e.clientY - resizeRef.current.startY;
+    const nextWidth = Math.max(240, Math.min(window.innerWidth - floatLayout.x, resizeRef.current.initialWidth + dw));
+    const nextHeight = Math.max(160, Math.min(window.innerHeight - floatLayout.y, resizeRef.current.initialHeight + dh));
+    setFloatLayout((prev) => ({ ...prev, width: nextWidth, height: nextHeight }));
+  };
+
+  const handleResizePointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizeRef.current || resizeRef.current.pointerId !== e.pointerId) return;
+    resizeRef.current = null;
+    setIsPointerActive(false);
+    try {
+      (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+    } catch {}
+    try {
+      localStorage.setItem(floatLayoutStorageKey, JSON.stringify(floatLayout));
+    } catch {}
+  };
+  const title = pane.mode === "YOUTUBE" && youtubeVideoTitle ? youtubeVideoTitle : displayPaneTitle(pane);
   const isTerminalPane = pane.mode === "TERMINAL";
-  const usesCompactPaneActions = isTerminalPane || pane.mode === "CHAT" || pane.mode === "HARNESS";
+  const usesCompactPaneActions = isTerminalPane || pane.mode === "CHAT" || pane.mode === "HARNESS" || pane.mode === "LIVE";
   const isRootPane = pane.terminalRuntimeId === "cli:root";
   const maximizeLabel = shellMode === "mobile"
     ? isMobilePaneFocused
@@ -9038,6 +10073,7 @@ const PaneCard = memo(function PaneCard({
   const genericUploadInputRef = useRef<HTMLInputElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const titleTextRef = useRef<HTMLElement | null>(null);
+  const titleTouchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const paneHeaderRef = useRef<HTMLElement | null>(null);
   const paneBadgeRef = useRef<HTMLDivElement | null>(null);
   const paneFixedActionsRef = useRef<HTMLDivElement | null>(null);
@@ -9101,10 +10137,10 @@ const PaneCard = memo(function PaneCard({
       hidden: paneToolbarHiddenStorageKey(pane.mode),
       order: paneToolbarActionOrderStorageKey(pane.mode)
     };
-    const storageKeys = uiTheme === "modern"
+    const storageKeys = uiTheme !== "classic"
       ? modernPaneToolbarStorageKeys(pane.mode)
       : classicStorageKeys;
-    if (uiTheme === "modern") {
+    if (uiTheme !== "classic") {
       migrateModernToolbarPreference(
         getSpaceRuntime().platform.localStorage,
         classicStorageKeys.hidden,
@@ -9127,9 +10163,10 @@ const PaneCard = memo(function PaneCard({
     () =>
       ({
         "--pane-column-span": String(effectiveColumnSpan),
+        ...(controlPlacement ? {position:"absolute",left:`${controlPlacement.x}%`,top:`${controlPlacement.y*12}px`,width:`${controlPlacement.width}%`,height:`${controlPlacement.height*12}px`,minHeight:0} : {}),
         ...(rowSpan > 1 ? { "--pane-row-span": String(rowSpan) } : null)
       }) as CSSProperties,
-    [effectiveColumnSpan, rowSpan]
+    [effectiveColumnSpan, rowSpan, controlPlacement]
   );
   const handleTerminalBootstrapped = useCallback(
     (paneId: string) => onTerminalBootstrapped(pane.roomId, paneId),
@@ -9427,6 +10464,57 @@ const PaneCard = memo(function PaneCard({
     setTitleError(null);
   }
 
+  const canSwipeNavigate =
+    !titleEditOpen &&
+    fullscreenCount > 1 &&
+    (shellMode === "mobile" || isFullscreenLayout || isMobilePaneFocused || pane.isMaximized);
+
+  const handleTitleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (!canSwipeNavigate) return;
+    if (event.touches.length !== 1) {
+      titleTouchStartRef.current = null;
+      return;
+    }
+    const touch = event.touches[0];
+    if (!touch) {
+      titleTouchStartRef.current = null;
+      return;
+    }
+    titleTouchStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      time: Date.now()
+    };
+  };
+
+  const handleTitleTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+    const start = titleTouchStartRef.current;
+    titleTouchStartRef.current = null;
+    if (!start || !canSwipeNavigate) return;
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    const elapsed = Date.now() - start.time;
+    const SWIPE_MIN_DISTANCE = 40;
+    const SWIPE_MAX_TIME = 800;
+    if (
+      elapsed <= SWIPE_MAX_TIME &&
+      Math.abs(deltaX) >= SWIPE_MIN_DISTANCE &&
+      Math.abs(deltaX) > Math.abs(deltaY) * 1.2
+    ) {
+      if (deltaX < 0) {
+        onFullscreenNavigate("next", pane.id);
+      } else {
+        onFullscreenNavigate("previous", pane.id);
+      }
+    }
+  };
+
+  const handleTitleTouchCancel = () => {
+    titleTouchStartRef.current = null;
+  };
+
   async function applyPaneCategoryColor(color: PaneCategoryColor | null) {
     if (color === pane.categoryColor || categoryColorPending || codexMutationBlocked) return;
     setCategoryColorPending(true);
@@ -9485,6 +10573,14 @@ const PaneCard = memo(function PaneCard({
   }
 
   let rawPaneActions: IconToolbarAction[] = [
+    ...(!isTerminalLoginSession && !isRootPane && pane.mode === "TERMINAL" ? [{
+      id: "new-task",
+      label: "New task",
+      title: "Start a new CLI task",
+      ariaLabel: `New task ${title}`,
+      icon: Plus,
+      onClick: () => dispatchTerminalPaneAction(pane.id, { action: "new_task" })
+    }] : []),
     ...(!isTerminalLoginSession && !isDeepSeekTerminal ? [{
       id: "import",
       label: pane.mode === "CHAT" ? "Attach files to agent" : pane.mode === "TERMINAL" ? "Upload files to CLI" : "Import files to pane",
@@ -9494,6 +10590,10 @@ const PaneCard = memo(function PaneCard({
       onClick: openPaneImport,
       disabled: usesGenericImport && genericImportPending
     }] : []),
+    ...(pane.mode === "LIVE" ? [
+      { id: "live-camera", label: "Camera", title: "Capture from camera", ariaLabel: `Camera ${title}`, icon: Camera, onClick: () => window.dispatchEvent(new CustomEvent("space-live-pane-action", { detail: { paneId: pane.id, action: "camera" } })) },
+      { id: "live-screen", label: "Share screen", title: "Share screen", ariaLabel: `Share screen ${title}`, icon: Monitor, onClick: () => window.dispatchEvent(new CustomEvent("space-live-pane-action", { detail: { paneId: pane.id, action: "screen" } })) }
+    ] : []),
     ...(pane.mode === "CHAT"
       ? [
           {
@@ -9514,7 +10614,7 @@ const PaneCard = memo(function PaneCard({
             label: "Enable Plan mode",
             title: "Enable Plan mode",
             ariaLabel: `Enable Plan mode ${title}`,
-            icon: PanelRight,
+            icon: ClipboardList,
             onClick: () => dispatchAgentPaneAction(pane.id, "plan")
           },
           {
@@ -9586,7 +10686,7 @@ const PaneCard = memo(function PaneCard({
               label: "Enable Plan mode",
               title: "Enable Plan mode",
               ariaLabel: `Enable Plan mode ${title}`,
-              icon: PanelRight,
+              icon: ClipboardList,
               onClick: () =>
                 dispatchTerminalPaneAction(
                   pane.id,
@@ -9612,7 +10712,7 @@ const PaneCard = memo(function PaneCard({
               icon: CircleStop,
               onClick: () => dispatchTerminalPaneAction(
                 pane.id,
-                { action: "control_key", key: isDeepSeekTerminal ? "ctrl_c" : "escape" }
+                { action: "control_key", key: isTerminalPane && terminalRuntimeId === "cli:codex" ? "escape" : "ctrl_c" }
               )
             },
             {
@@ -9708,7 +10808,7 @@ const PaneCard = memo(function PaneCard({
       label: "Add pane",
       title: "Add pane",
       ariaLabel: `Add pane from ${title}`,
-      icon: PanelTopOpen,
+      icon: Columns2,
       onClick: () => onSplit(pane, "horizontal")
     }] : []),
     ...(!isTerminalLoginSession && shellMode !== "mobile"
@@ -9716,7 +10816,7 @@ const PaneCard = memo(function PaneCard({
           {
             id: "grow-width",
             label: "Grow pane width",
-            title: "Grow pane width",
+            title: canGrowColumnSpan ? "Grow pane width" : "Already uses the available columns. Choose a multi-column layout to grow this pane.",
             ariaLabel: "Grow pane width",
             icon: MoveHorizontal,
             onClick: () => void onGrowColumnSpan(pane),
@@ -9725,7 +10825,7 @@ const PaneCard = memo(function PaneCard({
           {
             id: "reset-width",
             label: "Reset pane width",
-            title: "Reset pane width",
+            title: canResetColumnSpan ? "Reset pane width" : "Pane width is already at its default.",
             ariaLabel: "Reset pane width",
             icon: Shrink,
             onClick: () => void onResetColumnSpan(pane),
@@ -9735,18 +10835,31 @@ const PaneCard = memo(function PaneCard({
       : [])
   ];
   if (pane.mode === "YOUTUBE") {
+    rawPaneActions = onToggleYouTubeFloating ? [
+      {
+        id: "youtube-float",
+        label: isFloatingYouTube ? "Restore pane" : "Float mini player",
+        title: isFloatingYouTube ? "Restore pane to grid" : "Float mini player",
+        ariaLabel: isFloatingYouTube ? `Restore ${title}` : `Float ${title}`,
+        icon: isFloatingYouTube ? Maximize2 : PictureInPicture2,
+        onClick: onToggleYouTubeFloating
+      }
+    ] : [];
+  }
+  if (pane.mode === "BROWSER") {
     rawPaneActions = [
       {
-        id: "reload",
-        label: "Reload YouTube",
-        title: "Reload YouTube",
-        ariaLabel: `Reload YouTube ${title}`,
-        icon: RefreshCw,
-        onClick: () => dispatchBrowserPaneAction(pane.id, "reload")
+        id: "add",
+        label: "Add pane",
+        title: "Add pane",
+        ariaLabel: `Add pane from ${title}`,
+        icon: Columns2,
+        onClick: () => onSplit(pane, "horizontal")
       }
     ];
   }
   const codexMutationActionIds = new Set([
+    "new-task",
     "import",
     "generate-title",
     "plan",
@@ -9816,17 +10929,47 @@ const PaneCard = memo(function PaneCard({
   });
   const modernPrimaryActionLimit = modernPanePrimaryActionCount(shellMode);
   const paneToolbarMenuActions = usesCompactPaneActions ? paneToolbar.orderedActions : paneToolbar.visibleActions;
-  const paneToolbarPrimaryActionCount = uiTheme === "modern"
+  const paneToolbarPrimaryActionCount = uiTheme !== "classic"
     ? Math.min(modernPrimaryActionLimit, modernPrimaryActionCapacity ?? modernPrimaryActionLimit)
     : paneToolbarMenuActions.length;
   const paneToolbarRenderedActions = usesCompactPaneActions
     ? []
-    : (uiTheme === "modern"
+    : (uiTheme !== "classic"
         ? paneToolbarMenuActions.slice(0, paneToolbarPrimaryActionCount)
         : paneToolbarMenuActions);
   const paneOverflowCommands: PaneOverflowCommand[] = [
     ...paneTaskCommands,
-    ...(uiTheme === "modern" && shellMode !== "mobile" && !usesCompactPaneActions
+    ...(pane.mode === "YOUTUBE" ? [
+      ...(onToggleYouTubeFloating ? [{
+        id: "youtube-float",
+        label: isFloatingYouTube ? "Restore pane" : "Float mini player",
+        ariaLabel: isFloatingYouTube ? "Restore pane" : "Float mini player",
+        description: isFloatingYouTube
+          ? "Restore YouTube player to grid"
+          : "Float YouTube player as a draggable, resizable mini window",
+        icon: isFloatingYouTube ? Maximize2 : PictureInPicture2,
+        onClick: onToggleYouTubeFloating
+      }] : []),
+      {
+        id: "youtube-toolbar",
+        label: youtubeToolbarHidden ? "Show YouTube toolbar" : "Hide YouTube toolbar",
+        ariaLabel: youtubeToolbarHidden ? "Show YouTube toolbar" : "Hide YouTube toolbar",
+        description: "Show or hide all YouTube controls without interrupting playback",
+        icon: youtubeToolbarHidden ? Eye : EyeOff,
+        onClick: () => {
+          const hidden = !youtubeToolbarHidden;
+          setYoutubeToolbarHidden(hidden);
+          try { localStorage.setItem(youtubeToolbarStorageKey, String(hidden)); } catch { /* Keep the current pane usable without storage. */ }
+        }
+      }, {
+        id: "youtube-add-pane",
+        label: "Add pane",
+        ariaLabel: `Add pane from ${title}`,
+      description: "Add a YouTube pane",
+      icon: Columns2,
+      onClick: () => onSplit(pane, "horizontal")
+    }] : []),
+    ...(uiTheme !== "classic" && shellMode !== "mobile" && !usesCompactPaneActions && pane.mode !== "YOUTUBE"
       ? paneToolbarMenuActions.slice(paneToolbarPrimaryActionCount).map((action) => ({
           id: `toolbar-action:${action.id}`,
           label: action.label,
@@ -9881,7 +11024,7 @@ const PaneCard = memo(function PaneCard({
       );
       const fixedInlineWidth = fixedControlsWidth + Math.max(0, fixedControls.length - 1) * fixedActionsGap;
       const badgeWidth = badgeElement.clientWidth || remToPx(2);
-      if (uiTheme === "modern") {
+      if (uiTheme !== "classic") {
         const nextCapacity = modernPanePrimaryActionCapacity({
           availableWidth: headerWidth,
           paddingLeft,
@@ -9957,7 +11100,8 @@ const PaneCard = memo(function PaneCard({
 
   return (
     <article
-      className={`${pane.isMaximized ? "pane-card is-maximized" : "pane-card"}${pane.isMinimized ? " is-minimized" : ""}${isTarget ? " is-target" : ""}${hasPendingCompletion ? " is-completion-pending" : ""}${pane.mode === "BROWSER" ? " browser-pane-card" : ""}${pane.mode === "YOUTUBE" ? " youtube-pane-card" : ""}${pane.mode === "CHAT" ? " chat-pane-card" : ""}${isVisibleInShell ? "" : " is-shell-hidden"}${draggedPaneId === pane.id ? " is-dragging" : ""}${dragOverPaneId === pane.id && draggedPaneId !== pane.id ? " is-drop-target" : ""}`}
+      ref={paneArticleRef}
+      className={`${pane.isMaximized ? "pane-card is-maximized" : "pane-card"}${pane.isMinimized ? " is-minimized" : ""}${isFloatingYouTube ? " is-floating-mini-player" : ""}${isPointerActive ? " is-pointer-active" : ""}${isTarget ? " is-target" : ""}${hasPendingCompletion ? " is-completion-pending" : ""}${pane.mode === "BROWSER" ? " browser-pane-card" : ""}${pane.mode === "YOUTUBE" ? " youtube-pane-card" : ""}${pane.mode === "CHAT" ? " chat-pane-card" : ""}${isVisibleInShell ? "" : " is-shell-hidden"}${draggedPaneId === pane.id ? " is-dragging" : ""}${dragOverPaneId === pane.id && draggedPaneId !== pane.id ? ` is-drop-target is-drop-target-${dragOverPosition ?? "before"}` : ""}`}
       data-agent-tone={agentTone}
       data-space-pane-id={pane.id}
       data-space-room-id={pane.roomId}
@@ -9969,18 +11113,28 @@ const PaneCard = memo(function PaneCard({
       data-stored-column-span={pane.columnSpan}
       data-grid-column-start={columnStart}
       data-grid-row-index={rowIndex}
+      data-drop-position={dragOverPaneId === pane.id && draggedPaneId !== pane.id ? (dragOverPosition ?? "before") : undefined}
       data-completion-state={completionState}
       data-minimized={pane.isMinimized ? "true" : "false"}
       data-shell-visible={isVisibleInShell ? "true" : "false"}
       aria-hidden={isVisibleInShell ? undefined : true}
       aria-label={`${title} agent ${agentNumber}`}
-      style={paneCardStyle}
+      style={isFloatingYouTube ? {
+        position: "fixed",
+        left: `${floatLayout.x}px`,
+        top: `${floatLayout.y}px`,
+        width: `${floatLayout.width}px`,
+        height: `${floatLayout.height}px`,
+        zIndex: 1200,
+        minWidth: "240px",
+        minHeight: "160px"
+      } : paneCardStyle}
       onPointerDownCapture={() => onTarget(pane.id)}
       onDragOver={(event) => onPaneDragOver(event, pane.id)}
       onDragLeave={() => onPaneDragLeave(pane.id)}
       onDrop={(event) => {
         event.preventDefault();
-        void onPaneDrop(pane.id);
+        void onPaneDrop(pane.id, dragOverPosition);
       }}
       onFocusCapture={(event) => {
         if (event.target instanceof Element && event.target.classList.contains("xterm-helper-textarea")) return;
@@ -10001,7 +11155,68 @@ const PaneCard = memo(function PaneCard({
           }}
         />
       ) : null}
-      <header ref={paneHeaderRef} className={isHeaderActionsStacked ? "is-actions-stacked" : undefined} tabIndex={-1}>
+      {isFloatingYouTube ? (
+        <header
+          className="pane-card-header youtube-mini-float-header"
+          onPointerDown={handleFloatHeaderPointerDown}
+          onPointerMove={handleFloatHeaderPointerMove}
+          onPointerUp={handleFloatHeaderPointerUp}
+          onPointerCancel={handleFloatHeaderPointerUp}
+        >
+          <GripVertical className="youtube-mini-float-drag-icon" aria-hidden="true" />
+          <Youtube className="youtube-mini-float-icon" aria-hidden="true" />
+          <span className="youtube-mini-float-title" title={title}>
+            {title}
+          </span>
+          <div className="youtube-mini-float-actions">
+            <button
+              type="button"
+              className="youtube-mini-float-btn"
+              title={youtubeToolbarHidden ? "Show YouTube toolbar" : "Hide YouTube toolbar"}
+              aria-label={youtubeToolbarHidden ? "Show YouTube toolbar" : "Hide YouTube toolbar"}
+              onClick={() => {
+                const hidden = !youtubeToolbarHidden;
+                setYoutubeToolbarHidden(hidden);
+                try { localStorage.setItem(youtubeToolbarStorageKey, String(hidden)); } catch {}
+              }}
+            >
+              {youtubeToolbarHidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+            </button>
+            <button
+              type="button"
+              className="youtube-mini-float-btn"
+              title="Restore pane to grid"
+              aria-label="Restore pane to grid"
+              onClick={onToggleYouTubeFloating}
+            >
+              <Maximize2 aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="youtube-mini-float-btn"
+              title="Close mini player"
+              aria-label="Close mini player"
+              onClick={onToggleYouTubeFloating}
+            >
+              <X aria-hidden="true" />
+            </button>
+          </div>
+        </header>
+      ) : (
+        <header
+          ref={paneHeaderRef}
+        className={isHeaderActionsStacked ? "is-actions-stacked" : undefined}
+        tabIndex={-1}
+        draggable={!paneReorderPending && !titleEditOpen}
+        onDragStart={(event) => {
+          const target = event.target as HTMLElement | null;
+          if (target?.closest('button, input, form, select, textarea, details summary, .icon-context-menu, [role="menu"]')) {
+            return;
+          }
+          onPaneDragStart(event, pane);
+        }}
+        onDragEnd={onPaneDragEnd}
+      >
         <div ref={paneBadgeRef} className="pane-header-identity">
           {isMobilePaneFocused && isTarget ? <SpaceBrand /> : (
             <div
@@ -10101,7 +11316,13 @@ const PaneCard = memo(function PaneCard({
             </div>
           ) : null}
         </div>
-        <div className="pane-title-block">
+        <div
+          className="pane-title-block"
+          data-swipe-nav={canSwipeNavigate ? "true" : undefined}
+          onTouchStart={handleTitleTouchStart}
+          onTouchEnd={handleTitleTouchEnd}
+          onTouchCancel={handleTitleTouchCancel}
+        >
           <div className="pane-title-row">
             {titleEditOpen ? (
               <form className="pane-title-form room-title-form" onSubmit={(event) => void submitPaneTitle(event)}>
@@ -10133,9 +11354,7 @@ const PaneCard = memo(function PaneCard({
                 </button>
               </form>
             ) : (
-              <strong ref={titleTextRef} className="pane-title-text" title={pane.title}>
-                {pane.title}
-              </strong>
+              <TaskTitleDetails pane={pane} displayTitle={title} titleRef={titleTextRef} disabled={codexMutationBlocked} onRename={beginTitleEdit} onUpdated={onPaneUpdated} />
             )}
           </div>
           {titleError ? (
@@ -10145,7 +11364,7 @@ const PaneCard = memo(function PaneCard({
           ) : null}
         </div>
         <div className="pane-actions" ref={paneActionsRef}>
-          {isFullscreenLayout ? (
+          {isFullscreenLayout && fullscreenCount > 1 && (shellMode !== "mobile" || isMobilePaneFocused) ? (
             <div className="pane-fullscreen-nav" role="group" aria-label={`Pane navigation, pane ${fullscreenIndex + 1} of ${fullscreenCount}`}>
               <button
                 type="button"
@@ -10153,7 +11372,7 @@ const PaneCard = memo(function PaneCard({
                 title="Previous pane"
                 aria-label="Previous pane"
                 disabled={fullscreenCount < 2}
-                onClick={() => onFullscreenNavigate("previous")}
+                onClick={() => onFullscreenNavigate("previous", pane.id)}
               >
                 <ChevronLeft aria-hidden="true" />
               </button>
@@ -10166,7 +11385,7 @@ const PaneCard = memo(function PaneCard({
                 title="Next pane"
                 aria-label="Next pane"
                 disabled={fullscreenCount < 2}
-                onClick={() => onFullscreenNavigate("next")}
+                onClick={() => onFullscreenNavigate("next", pane.id)}
               >
                 <ChevronRight aria-hidden="true" />
               </button>
@@ -10243,6 +11462,8 @@ const PaneCard = memo(function PaneCard({
             {paneToolbar.isOverflowOpen ? (
               shellMode === "mobile" ? (
                 <MobileActionSheet
+                  actionSections={pane.mode === "YOUTUBE" ? [] : undefined}
+                  commandSectionLabel={pane.mode === "YOUTUBE" ? "Quick actions" : undefined}
                   actions={paneToolbar.orderedActions}
                   commands={paneOverflowCommands}
                   hiddenActionIds={paneToolbar.hiddenActionIds}
@@ -10258,14 +11479,14 @@ const PaneCard = memo(function PaneCard({
                     paneToolbar.setIsOverflowOpen(false);
                     action.onClick();
                   }}
-                  plainActions={usesCompactPaneActions}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE"}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}
                 />
               ) : (
                 <DesktopActionManager
                   actions={paneToolbar.orderedActions}
-                  commandSectionLabel={uiTheme === "modern" ? "Quick actions" : "Task commands"}
+                  commandSectionLabel={pane.mode === "YOUTUBE" || uiTheme !== "classic" ? "Quick actions" : "Task commands"}
                   commands={paneOverflowCommands}
                   hiddenActionIds={paneToolbar.hiddenActionIds}
                   label={`Pane actions ${title}`}
@@ -10280,15 +11501,15 @@ const PaneCard = memo(function PaneCard({
                     command.onClick();
                   }}
                   onShowAction={(actionId) => {
-                    if (uiTheme === "modern") {
+                    if (uiTheme !== "classic") {
                       paneToolbar.showActionInPrimary(actionId, paneToolbarPrimaryActionCount);
                     } else {
                       paneToolbar.showAction(actionId);
                     }
                   }}
-                  plainActions={usesCompactPaneActions}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE"}
                   preferPaneInside={pane.mode === "CHAT"}
-                  primaryActionIds={uiTheme === "modern" ? paneToolbarRenderedActions.map((action) => action.id) : undefined}
+                  primaryActionIds={uiTheme !== "classic" ? paneToolbarRenderedActions.map((action) => action.id) : undefined}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}
                 />
@@ -10329,6 +11550,7 @@ const PaneCard = memo(function PaneCard({
           </button>
         </div>
       </header>
+      )}
       <div className="pane-body">
         {usesGenericImport && (genericImportPending || genericImportNotice || genericImportError) ? (
           <div className={genericImportError ? "pane-import-alert bad" : "pane-import-alert"} role={genericImportError ? "alert" : "status"}>
@@ -10339,7 +11561,7 @@ const PaneCard = memo(function PaneCard({
           </div>
         ) : null}
         {pane.mode === "CHAT" ? (
-          <Suspense fallback={agentPaneLoadingFallback}>
+          <RecoverableSurface fallback={agentPaneLoadingFallback}>
             <LazyAgentPane
               pane={pane}
               codexEnvironment={codexEnvironment}
@@ -10347,7 +11569,7 @@ const PaneCard = memo(function PaneCard({
               isVisible={isVisibleInShell && !pane.isMinimized}
               onSessionIdentityChange={setAgentPaneIdentity}
             />
-          </Suspense>
+          </RecoverableSurface>
         ) : pane.mode === "TERMINAL" ? (
           <TerminalPane
             pane={pane}
@@ -10372,31 +11594,41 @@ const PaneCard = memo(function PaneCard({
             mobile={shellMode === "mobile" || isCoarsePointer}
           />
         ) : pane.mode === "BROWSER" ? (
-          <Suspense fallback={browserPaneLoadingFallback}>
+          <RecoverableSurface fallback={browserPaneLoadingFallback}>
             <LazyBrowserPane
               pane={pane}
               agentNumber={agentNumber}
               observerOnly={browserObserverOnly}
               uiTheme={uiTheme}
             />
-          </Suspense>
+          </RecoverableSurface>
         ) : pane.mode === "YOUTUBE" ? (
-          <Suspense fallback={browserPaneLoadingFallback}>
+          <RecoverableSurface fallback={browserPaneLoadingFallback}>
             <LazyYouTubePane
+              onVideoTitleChange={setYoutubeVideoTitle}
+              toolbarHidden={youtubeToolbarHidden}
               pane={pane}
               agentNumber={agentNumber}
               observerOnly={browserObserverOnly}
               uiTheme={uiTheme}
+              isFloating={isFloatingYouTube}
+              onToggleFloat={onToggleYouTubeFloating}
             />
-          </Suspense>
+          </RecoverableSurface>
         ) : pane.mode === "VNC" ? (
-          <Suspense fallback={browserPaneLoadingFallback}>
+          <RecoverableSurface fallback={browserPaneLoadingFallback}>
             <LazyVncPane pane={pane} observerOnly={browserObserverOnly} />
-          </Suspense>
-        ) : pane.mode === "HARNESS" ? (
-          <Suspense fallback={browserPaneLoadingFallback}>
+          </RecoverableSurface>
+        ) : pane.mode === "HARNESS" && shouldLoadHarness ? (
+          <RecoverableSurface fallback={browserPaneLoadingFallback}>
             <LazyHarnessPane pane={pane} workspaceTextSize={terminalFontSize} />
-          </Suspense>
+          </RecoverableSurface>
+        ) : pane.mode === "HARNESS" ? (
+          <div className="harness-pane" data-harness-deferred="true" aria-hidden="true" />
+        ) : pane.mode === "LIVE" ? (
+          <RecoverableSurface fallback={browserPaneLoadingFallback}>
+            <LazyLivePane pane={pane} workspaceTextSize={terminalFontSize} />
+          </RecoverableSurface>
         ) : (
           <>
             <div className="pane-copy">
@@ -10459,6 +11691,17 @@ const PaneCard = memo(function PaneCard({
         <span className="pane-completion-chip" role="status" aria-label={`${title} ended`}>
           END
         </span>
+      ) : null}
+      {isFloatingYouTube ? (
+        <div
+          className="youtube-mini-float-resize-handle"
+          onPointerDown={handleResizePointerDown}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={handleResizePointerUp}
+          onPointerCancel={handleResizePointerUp}
+          title="Drag to resize mini player"
+          aria-hidden="true"
+        />
       ) : null}
     </article>
   );

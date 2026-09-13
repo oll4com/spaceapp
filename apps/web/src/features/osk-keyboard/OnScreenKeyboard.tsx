@@ -1,7 +1,11 @@
+import { railPopoverPosition, useMenuWheel } from "../rail-popover.js";
+import { OSK_CLI_COMMANDS, type OskCliCommand } from "./cli-shortcuts.js";
 import { Keyboard, X } from "../ui-theme/app-icons.js";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
+import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
+import { useOptionalVoiceInput } from "../voice-input/VoiceInputProvider.js";
 import "./osk-keyboard.css";
 
 export const OSK_PANEL_ID = "space-osk-keyboard";
@@ -38,6 +42,8 @@ export type OnScreenKeyboardInput = {
   text: string | null;
   terminalData: string;
 };
+
+export { OSK_CLI_COMMANDS, type OskCliCommand } from "./cli-shortcuts.js";
 
 const LETTER_ROWS: OskKey[][] = [
   ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"].map((value) => ({ id: value, kind: "char", label: value, value, code: `Digit${value}` })),
@@ -302,20 +308,82 @@ function sendKeyToFocusedElement(oskKey: OskKey, input: OnScreenKeyboardInput) {
   dispatchKeyEvent(target, "keyup", eventInit);
 }
 
+export function sendTextToInputOrFocused(
+  text: string,
+  onInput?: (input: OnScreenKeyboardInput) => boolean,
+  submitEnter = false
+) {
+  const input: OnScreenKeyboardInput = {
+    key: text,
+    code: "Text",
+    shiftKey: false,
+    text,
+    terminalData: text
+  };
+  const handled = onInput?.(input);
+
+  if (!handled) {
+    const target = document.activeElement;
+    if (target && target instanceof HTMLElement && isEditableElement(target)) {
+      const beforeInput = new InputEvent("beforeinput", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        inputType: "insertText",
+        data: text
+      });
+      const inputHandled = target.dispatchEvent(beforeInput);
+      if (!inputHandled || !beforeInput.defaultPrevented) {
+        let inserted = false;
+        try {
+          if (typeof document.execCommand === "function") {
+            inserted = document.execCommand("insertText", false, text);
+          }
+        } catch {
+          inserted = false;
+        }
+        if (!inserted && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+          const start = target.selectionStart ?? target.value.length;
+          const end = target.selectionEnd ?? target.value.length;
+          target.setRangeText(text, start, end, "end");
+          target.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      }
+    }
+  }
+
+  if (submitEnter) {
+    const enterInput: OnScreenKeyboardInput = {
+      key: "Enter",
+      code: "Enter",
+      shiftKey: false,
+      text: null,
+      terminalData: "\r"
+    };
+    if (onInput?.(enterInput)) return;
+    if (SPECIAL_KEYS.enter) {
+      sendKeyToFocusedElement(SPECIAL_KEYS.enter, enterInput);
+    }
+  }
+}
+
 export function OnScreenKeyboard({
   mobile,
   open,
   onInput,
+  onShortcut,
   onOpenChange,
   roomTheme
 }: {
   mobile: boolean;
   open: boolean;
   onInput?: (input: OnScreenKeyboardInput) => boolean;
+  onShortcut?: (command: OskCliCommand) => boolean;
   onOpenChange: (open: boolean) => void;
   roomTheme: "graphite" | "forest" | "copper" | "steel" | "contrast";
 }) {
   const panelRef = useRef<HTMLElement | null>(null);
+  useMenuWheel(panelRef, ".osk-chip", open);
   const dragRef = useRef<{ startX: number; startY: number; originLeft: number; originTop: number; moved: boolean } | null>(null);
   const latestPositionRef = useRef<{ left: number; top: number } | null>(null);
   const [shiftHeld, setShiftHeld] = useState(false);
@@ -323,6 +391,49 @@ export function OnScreenKeyboard({
   const [scale, setScale] = useState<number>(() => readStoredScale());
   const [lang, setLang] = useState<OskLanguage>(() => readStoredLang());
   const [position, setPosition] = useState<PanelPosition>(() => readStoredPosition() ?? { left: VIEWPORT_MARGIN_PX, top: VIEWPORT_MARGIN_PX, ready: false });
+
+  const voiceInput = useOptionalVoiceInput();
+  const voiceOwnerId = "osk-keyboard";
+  const isVoiceOwned = Boolean(voiceInput && voiceInput.ownerId === voiceOwnerId);
+  const voiceActive = Boolean(isVoiceOwned && voiceInput?.status === "recording");
+  const voiceDisabled = Boolean(voiceInput && voiceInput.status !== "idle" && !isVoiceOwned);
+
+  const toggleVoiceCapture = useCallback(() => {
+    if (!voiceInput) return;
+    if (voiceInput.ownerId === voiceOwnerId && (voiceInput.status === "recording" || voiceInput.status === "connecting")) {
+      voiceInput.stop(voiceOwnerId);
+      return;
+    }
+    void voiceInput.start({
+      id: voiceOwnerId,
+      onTranscriptComplete: (transcript) => {
+        const text = transcript.trim();
+        if (!text) return;
+        sendTextToInputOrFocused(text, onInput);
+      }
+    });
+  }, [voiceInput, onInput]);
+
+  useEffect(() => {
+    if (!open && isVoiceOwned) {
+      voiceInput?.cancel(voiceOwnerId);
+    }
+  }, [open, isVoiceOwned, voiceInput]);
+
+  const handleShortcutClick = useCallback((cmd: OskCliCommand) => {
+    if (onShortcut?.(cmd)) return;
+    if (!cmd.action) sendTextToInputOrFocused(cmd.text, onInput, Boolean(cmd.enter));
+  }, [onInput, onShortcut]);
+
+  const voiceStatusText = (() => {
+    if (!voiceInput || voiceInput.ownerId !== voiceOwnerId) return null;
+    if (voiceInput.status === "connecting") return "Connecting microphone...";
+    if (voiceInput.status === "transcribing") return "Transcribing voice...";
+    if (voiceInput.status === "recording") {
+      return voiceInput.preview ? `"${voiceInput.preview}"` : "Listening... Tap mic when done";
+    }
+    return null;
+  })();
 
   useEffect(() => {
     if (!open) return;
@@ -333,6 +444,8 @@ export function OnScreenKeyboard({
       if (current.ready) return current;
       const width = rect.width || DEFAULT_PANEL_WIDTH_PX;
       const height = rect.height || DEFAULT_PANEL_HEIGHT_PX;
+      const railPosition = !mobile ? railPopoverPosition(document.querySelector<HTMLButtonElement>('.room-toolbar-floating-controls button[aria-label="On-screen keyboard"]'), width) : null;
+      if (railPosition) return { left: railPosition.left, top: Math.max(VIEWPORT_MARGIN_PX, window.innerHeight - railPosition.bottom - height), ready: true };
       const left = Math.max(VIEWPORT_MARGIN_PX, Math.min(window.innerWidth - width - VIEWPORT_MARGIN_PX, (window.innerWidth - width) / 2));
       const top = Math.max(VIEWPORT_MARGIN_PX, Math.min(window.innerHeight - height - VIEWPORT_MARGIN_PX, window.innerHeight - height - 96));
       return { left, top, ready: true };
@@ -346,6 +459,65 @@ export function OnScreenKeyboard({
   useEffect(() => {
     persistLang(lang);
   }, [lang]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (typeof document === "undefined") return;
+
+    document.documentElement.classList.add("space-osk-open");
+
+    const metaViewport = document.querySelector('meta[name="viewport"]');
+    const originalViewportContent = metaViewport?.getAttribute("content") ?? null;
+    if (metaViewport) {
+      metaViewport.setAttribute(
+        "content",
+        "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+      );
+    }
+
+    const preventGesture = (event: Event) => {
+      event.preventDefault();
+    };
+
+    let lastNonButtonTouchEnd = 0;
+    const handleTouchEnd = (event: TouchEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.closest("button") ||
+          target.closest("input") ||
+          target.closest("textarea") ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastNonButtonTouchEnd <= 300) {
+        event.preventDefault();
+      }
+      lastNonButtonTouchEnd = now;
+    };
+
+    const preventContextMenu = (event: Event) => {
+      event.preventDefault();
+    };
+
+    window.addEventListener("gesturestart", preventGesture, { passive: false });
+    window.addEventListener("gesturechange", preventGesture, { passive: false });
+    window.addEventListener("contextmenu", preventContextMenu, { capture: true });
+    document.addEventListener("touchend", handleTouchEnd, { passive: false });
+
+    return () => {
+      document.documentElement.classList.remove("space-osk-open");
+      if (metaViewport && originalViewportContent !== null) {
+        metaViewport.setAttribute("content", originalViewportContent);
+      }
+      window.removeEventListener("gesturestart", preventGesture);
+      window.removeEventListener("gesturechange", preventGesture);
+      window.removeEventListener("contextmenu", preventContextMenu, { capture: true });
+      document.removeEventListener("touchend", handleTouchEnd);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -456,6 +628,7 @@ export function OnScreenKeyboard({
       aria-label="On-screen keyboard"
       style={panelStyle}
       onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
     >
       <div className="osk-header">
         <div
@@ -472,6 +645,13 @@ export function OnScreenKeyboard({
           <span>On-screen keyboard</span>
         </div>
         <div className="osk-controls">
+          <VoiceInputButton
+            label="on-screen keyboard"
+            active={voiceActive}
+            disabled={!voiceInput || voiceDisabled}
+            onClick={toggleVoiceCapture}
+            onPrewarm={voiceInput?.prewarm}
+          />
           <div className="osk-size-controls" role="group" aria-label="Keyboard size">
             <button
               type="button"
@@ -517,6 +697,27 @@ export function OnScreenKeyboard({
           <X aria-hidden="true" />
         </button>
       </div>
+      {voiceStatusText ? (
+        <div className="osk-voice-status" role="status" aria-live="polite">
+          <span className="osk-voice-dot" aria-hidden="true" />
+          <span className="osk-voice-text">{voiceStatusText}</span>
+        </div>
+      ) : null}
+      <div className="osk-shortcuts-bar" role="toolbar" aria-label="CLI shortcuts">
+        {OSK_CLI_COMMANDS.map((cmd) => (
+          <button
+            key={cmd.id}
+            type="button"
+            className="osk-chip"
+            data-shortcut={cmd.id}
+            data-enter={cmd.enter ? "true" : undefined}
+            onClick={() => handleShortcutClick(cmd)}
+            title={cmd.action ? `Change ${cmd.label.toLowerCase()} for the active pane` : cmd.enter ? `Run "${cmd.text}"` : `Insert ${cmd.label}`}
+          >
+            {cmd.label}
+          </button>
+        ))}
+      </div>
       <div className="osk-keys" aria-label="Keyboard keys">
         {rows.map((row, rowIndex) => (
           <div className="osk-row" role="row" aria-label={`Keyboard row ${rowIndex + 1}`} key={rowIndex}>
@@ -545,7 +746,7 @@ export function OnScreenKeyboard({
 
   return panel
     ? createPortal(
-        mobile ? <div className="osk-sheet-backdrop">{panel}</div> : panel,
+        mobile ? <div className="osk-sheet-backdrop" onContextMenu={(event) => event.preventDefault()}>{panel}</div> : panel,
         document.body
       )
     : null;

@@ -6,6 +6,7 @@ export interface MemoryGraphApiService {
   getSnapshot(): Promise<{ snapshot: MemoryGraphSnapshot; isStale: boolean }>;
   getCachedSnapshot(): Promise<MemoryGraphSnapshot | null>;
   getArchiveSnapshot(): Promise<MemoryGraphSnapshot>;
+  getArchiveSnapshotState?(): Promise<{ snapshot: MemoryGraphSnapshot; isStale: boolean }>;
   listAvailableMonths(): Promise<string[]>;
   getSourceContent(sourcePath: string): Promise<string>;
   invalidateCachedSnapshot(): Promise<void>;
@@ -107,12 +108,10 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
     async getCachedSnapshot() {
       const graph = await loadGraphModule();
       const persisted = await graph.createMemoryGraphSnapshotStore({ rootDir: options.rootDir }).read();
-      return invalidatedSourceHash === "*" || persisted?.sourceHash === invalidatedSourceHash || !isCurrentSnapshot(persisted)
-        ? null
-        : persisted;
+      if (invalidatedSourceHash === "*" || persisted?.sourceHash === invalidatedSourceHash || !isCurrentSnapshot(persisted)) return null;
+      return graph.calculateMemoryGraphSourceHash(await readSources()) === persisted.sourceHash ? persisted : null;
     },
     async getArchiveSnapshot() {
-      if (archiveSnapshot) return archiveSnapshot;
       const graph = await loadGraphModule();
       const store = graph.createMemoryGraphSnapshotStore({
         rootDir: options.rootDir,
@@ -123,9 +122,14 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
         archiveSnapshot = persisted;
         return archiveSnapshot;
       }
-      archiveBuild ??= buildAndPersistArchiveSnapshot(persisted);
+      archiveBuild ??= buildAndPersistArchiveSnapshot(persisted).finally(() => { archiveBuild = null; });
       archiveSnapshot = await archiveBuild;
       return archiveSnapshot;
+    },
+    async getArchiveSnapshotState() {
+      const snapshot = await this.getArchiveSnapshot();
+      const graph = await loadGraphModule();
+      return { snapshot, isStale: graph.calculateMemoryGraphSourceHash(await readArchiveSources()) !== snapshot.sourceHash };
     },
     async listAvailableMonths() {
       const paths = await listMonthlyPaths();
@@ -138,6 +142,7 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
       const store = graph.createMemoryGraphSnapshotStore({ rootDir: options.rootDir });
       snapshot = null;
       initialLoad = null;
+      archiveSnapshot = null;
       try {
         const persisted = await store.read();
         invalidatedSourceHash = persisted?.sourceHash ?? invalidatedSourceHash;
@@ -154,7 +159,7 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
       if (isCurrentSnapshot(persisted) && invalidatedSourceHash !== "*" && persisted.sourceHash !== invalidatedSourceHash) {
         snapshot = persisted;
       } else if (!isCurrentSnapshot(snapshot)) {
-        initialLoad ??= buildAndPersistSnapshot(sources, persisted);
+        initialLoad ??= buildAndPersistSnapshot(sources, persisted).finally(() => { initialLoad = null; });
         snapshot = await initialLoad;
       }
       return {

@@ -20,8 +20,8 @@ import {
   CLI_RUNTIME_VISIBILITY_EVENT,
   readCliRuntimeVisibilityChange
 } from "../../cli-runtime-visibility-events.js";
-
-export const CLI_LAUNCHER_MENU_ID = "cli-launcher-menu";
+import { CLI_LAUNCHER_MENU_ID } from "../toolbar-menu-ids.js";
+export { CLI_LAUNCHER_MENU_ID } from "../toolbar-menu-ids.js";
 
 const VIEWPORT_MARGIN = 8;
 const ANCHOR_GAP = 8;
@@ -35,6 +35,8 @@ export function selectCliLauncherRuntimes(runtimes: AgentRuntime[]): AgentRuntim
 }
 
 interface CliLauncherMenuProps {
+  embedded?: boolean;
+  query?: string;
   atPaneCap?: boolean;
   isCodexEnabled?: boolean;
   loadRuntimes?: () => Promise<AgentRuntimeRegistry>;
@@ -59,6 +61,8 @@ function loadDefaultCliRuntimes(): Promise<AgentRuntimeRegistry> {
 }
 
 export function CliLauncherMenu({
+  embedded = false,
+  query = "",
   atPaneCap = false,
   isCodexEnabled = true,
   loadRuntimes = loadDefaultCliRuntimes,
@@ -127,7 +131,7 @@ export function CliLauncherMenu({
   }, [refreshRuntimes]);
 
   useLayoutEffect(() => {
-    if (mobile) return;
+    if (mobile || embedded) return;
 
     function updatePosition() {
       const trigger = triggerRef.current;
@@ -155,9 +159,10 @@ export function CliLauncherMenu({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [loadError, loading, mobile, runtimes.length, triggerRef]);
+  }, [embedded, loadError, loading, mobile, runtimes.length, triggerRef]);
 
   useEffect(() => {
+    if (embedded) return;
     const focusFrame = window.requestAnimationFrame(() => {
       const popup = popupRef.current;
       const firstRuntime = popup?.querySelector<HTMLButtonElement>(".cli-launcher-option:not(:disabled)");
@@ -167,18 +172,18 @@ export function CliLauncherMenu({
       (firstRuntime ?? retry ?? settings ?? close ?? popup)?.focus();
     });
     return () => window.cancelAnimationFrame(focusFrame);
-  }, [loadError, loading, runtimes.length]);
+  }, [embedded, loadError, loading, runtimes.length]);
 
   useEffect(() => {
     return () => {
-      if (closeIntentRef.current === "dismissal" && triggerRef.current?.isConnected) {
+      if (!embedded && closeIntentRef.current === "dismissal" && triggerRef.current?.isConnected) {
         triggerRef.current.focus();
       }
     };
-  }, [triggerRef]);
+  }, [embedded, triggerRef]);
 
   useEffect(() => {
-    if (mobile) return;
+    if (mobile || embedded) return;
     function handleOutsidePointer(event: PointerEvent) {
       const target = event.target as Node;
       if (popupRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
@@ -188,7 +193,7 @@ export function CliLauncherMenu({
     }
     document.addEventListener("pointerdown", handleOutsidePointer, true);
     return () => document.removeEventListener("pointerdown", handleOutsidePointer, true);
-  }, [creatingRuntimeId, mobile, onClose, triggerRef]);
+  }, [creatingRuntimeId, embedded, mobile, onClose, triggerRef]);
 
   function dismiss() {
     if (creatingRuntimeId) return;
@@ -291,7 +296,7 @@ export function CliLauncherMenu({
     </div>
   ) : (
     <div className="cli-launcher-options">
-      {runtimes.map((runtime) => {
+      {runtimes.filter(runtime => !query.trim() || `${runtime.displayName} CLI terminal ${runtime.statusReason}`.toLowerCase().includes(query.trim().toLowerCase())).map((runtime) => {
         const presentation = cliRuntimePresentation(runtime.id);
         const isCreating = creatingRuntimeId === runtime.id;
         const launchable = isCliRuntimeTerminalLaunchable(runtime);
@@ -324,7 +329,7 @@ export function CliLauncherMenu({
           <button
             key={runtime.id}
             type="button"
-            role={mobile ? undefined : "menuitem"}
+            role={mobile || embedded ? undefined : "menuitem"}
             className="cli-launcher-option"
             data-runtime-id={runtime.id}
             aria-label={`${authAction ? runtime.authState === "SETUP_REQUIRED" ? "Setup" : "Login" : "Add"} ${runtime.displayName}`}
@@ -370,6 +375,13 @@ export function CliLauncherMenu({
       {creationError ? <p className="cli-launcher-error-message" role="alert">{creationError}</p> : null}
     </>
   );
+
+  if (embedded) {
+    return <section ref={popupRef} className="cli-launcher-embedded" aria-label="CLI tools" aria-busy={Boolean(creatingRuntimeId)}>
+      <h3 className="desktop-menu-section-label">CLI tools</h3>
+      {content}{feedback}
+    </section>;
+  }
 
   if (mobile) {
     return createPortal(

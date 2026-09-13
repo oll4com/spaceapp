@@ -1,0 +1,34 @@
+/* Codex LB shares the Modern layout; these tokens also reach body portals. */
+:root[data-interface-theme="codex"] [data-ui-theme="modern"] {
+  --modern-bg: #090909;
+  --modern-surface: #141414;
+  --modern-surface-raised: #1c1c1c;
+  --modern-surface-soft: #222222;
+  --modern-border: #303030;
+  --modern-border-strong: #494949;
+  --modern-text: #f5f5f5;
+  --modern-muted: #aaaaaa;
+  --modern-faint: #929292;
+  --modern-accent: #82aaff;
+  --modern-accent-strong: #a5c1ff;
+  --modern-accent-soft: #82aaff14;
+  --modern-on-accent: #101827;
+  --modern-terminal: #0d0d0d;
+  --modern-terminal-text: #f3f3f3;
+  --modern-terminal-muted: #a6a6a6;
+  --modern-shadow: 0 16px 48px #0006;
+  --modern-card-shadow: none;
+  --room-accent: var(--modern-accent);
+  color-scheme: dark;
+}
+:root[data-interface-theme="codex"] .space-shell .pane-card,
+:root[data-interface-theme="codex"] .space-shell .side-surface {
+  border-radius: 14px;
+}
+:root[data-interface-theme="codex"] .space-shell .pane-card > header {
+  background: var(--modern-surface);
+  border-bottom-color: var(--modern-border);
+}
+:root[data-interface-theme="codex"] .space-shell .board-toolbar {
+  background: var(--modern-bg);
+}

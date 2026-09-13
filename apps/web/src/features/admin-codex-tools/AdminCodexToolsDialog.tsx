@@ -160,6 +160,7 @@ export function AdminCodexToolsDialog({
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
   const [cleanupConfirmation, setCleanupConfirmation] = useState("");
+  const [activeTool, setActiveTool] = useState<AdminCodexTool>(initialTool);
   const busy = speedLoading || Boolean(speedUpdatingModel) || purgeBusy || cleanupBusy;
 
   const loadSpeed = useCallback(async () => {
@@ -177,10 +178,10 @@ export function AdminCodexToolsDialog({
 
   useEffect(() => {
     const focusFrame = window.requestAnimationFrame(() => closeRef.current?.focus());
-    if (initialTool === "speed" && isCodexEnabled) void loadSpeed();
+    if (activeTool === "speed" && isCodexEnabled && !speed) void loadSpeed();
     if (!isCodexEnabled) setSpeedLoading(false);
     return () => window.cancelAnimationFrame(focusFrame);
-  }, [initialTool, isCodexEnabled, loadSpeed]);
+  }, [activeTool, isCodexEnabled, loadSpeed, speed]);
 
   function close() {
     if (!busy) onClose();
@@ -220,12 +221,11 @@ export function AdminCodexToolsDialog({
     setSpeedError(null);
     setSpeedMessage(null);
     try {
-      setSpeed(await client.updateSpeedDefault(modelId, tier));
-      setSpeedMessage(getSpaceRuntimeKind() === "demo"
-        ? DEMO_LOCAL_REPLY
-        : `${displayName} now uses ${tier === "FAST" ? "Fast" : "Standard"}.`);
+      const nextSpeed = await client.updateSpeedDefault(modelId, tier);
+      setSpeed(nextSpeed);
+      setSpeedMessage(`${displayName} now uses ${tier === "FAST" ? "Fast" : "Standard"}.`);
     } catch (reason) {
-      setSpeedError(errorMessage(reason, "Codex-LB speed update failed."));
+      setSpeedError(errorMessage(reason, `Failed to update ${displayName} speed default.`));
     } finally {
       setSpeedUpdatingModel(null);
     }
@@ -235,27 +235,26 @@ export function AdminCodexToolsDialog({
     if (!anyCliEnabled || purgeBusy) return;
     setPurgeBusy(true);
     setPurgeError(null);
-    setPurgeResult(null);
-    setConfirmation("");
     try {
       setPreview(await client.previewHistoryPurge());
     } catch (reason) {
-      setPreview(null);
-      setPurgeError(errorMessage(reason, "History purge preview failed."));
+      setPurgeError(errorMessage(reason, "Failed to prepare history purge preview."));
     } finally {
       setPurgeBusy(false);
     }
   }
 
   async function executePurge() {
-    if (!anyCliEnabled || purgeBusy || preview?.status !== "READY" || confirmation !== purgeConfirmation) return;
+    if (!anyCliEnabled || !preview || purgeBusy || confirmation !== purgeConfirmation) return;
     setPurgeBusy(true);
     setPurgeError(null);
     try {
-      setPurgeResult(await client.executeHistoryPurge(preview.previewId, purgeConfirmation));
+      const result = await client.executeHistoryPurge(preview.previewId, purgeConfirmation);
+      setPurgeResult(result);
+      setPreview(null);
       setConfirmation("");
     } catch (reason) {
-      setPurgeError(errorMessage(reason, "History purge failed."));
+      setPurgeError(errorMessage(reason, "Failed to purge inactive history."));
     } finally {
       setPurgeBusy(false);
     }
@@ -265,34 +264,33 @@ export function AdminCodexToolsDialog({
     if (!anyCliEnabled || cleanupBusy) return;
     setCleanupBusy(true);
     setCleanupError(null);
-    setCleanupResult(null);
-    setCleanupConfirmation("");
     try {
       setCleanupPreview(await client.previewCliSessionCleanup());
     } catch (reason) {
-      setCleanupPreview(null);
-      setCleanupError(errorMessage(reason, "CLI session cleanup preview failed."));
+      setCleanupError(errorMessage(reason, "Failed to prepare CLI session cleanup preview."));
     } finally {
       setCleanupBusy(false);
     }
   }
 
   async function executeCleanup() {
-    if (!anyCliEnabled || cleanupBusy || cleanupPreview?.status !== "READY" || cleanupConfirmation !== cleanupConfirmText) return;
+    if (!anyCliEnabled || !cleanupPreview || cleanupBusy || cleanupConfirmation !== cleanupConfirmText) return;
     setCleanupBusy(true);
     setCleanupError(null);
     try {
-      setCleanupResult(await client.executeCliSessionCleanup(cleanupPreview.previewId, cleanupConfirmText));
+      const result = await client.executeCliSessionCleanup(cleanupPreview.previewId, cleanupConfirmText);
+      setCleanupResult(result);
+      setCleanupPreview(null);
       setCleanupConfirmation("");
     } catch (reason) {
-      setCleanupError(errorMessage(reason, "CLI session cleanup failed."));
+      setCleanupError(errorMessage(reason, "Failed to clean CLI sessions."));
     } finally {
       setCleanupBusy(false);
     }
   }
 
-  const isSpeed = initialTool === "speed";
-  const isCleanup = initialTool === "cleanup";
+  const isSpeed = activeTool === "speed";
+  const isCleanup = activeTool === "cleanup";
   const title = isSpeed ? "Codex-LB speed control" : (isCleanup ? "Clean CLI sessions" : "Purge history");
   const HeaderIcon = isSpeed ? Gauge : Trash2;
 
@@ -316,12 +314,40 @@ export function AdminCodexToolsDialog({
           <div>
             <h2>{title}</h2>
             <p>{isSpeed
-              ? "Choose the global Standard or Fast default for each supported model."
+              ? "Choose the global Standard or Fast speed tier default for each supported model."
               : isCleanup
-                ? "Remove empty CLI sessions, orphaned codex pane homes and disposable CLI store files."
-                : "Remove inactive task history only after a fresh server-side preview."}</p>
+                ? "Safely remove empty tasks (0 turns/messages), orphaned pane homes, detached CLIs, and store temp files."
+                : "Permanently remove inactive task history across CLIs not currently open in an active Space pane."}</p>
           </div>
-          {isSpeed ? (!isCodexEnabled ? <span className="status muted">OFF</span> : null) : (!anyCliEnabled ? <span className="status muted">OFF</span> : null)}
+          <div className="admin-codex-header-controls">
+            <div className="filter-tabs">
+              <button
+                type="button"
+                className={`filter-tab${activeTool === "speed" ? " active" : ""}`}
+                disabled={busy}
+                onClick={() => setActiveTool("speed")}
+              >
+                Speed
+              </button>
+              <button
+                type="button"
+                className={`filter-tab${activeTool === "cleanup" ? " active" : ""}`}
+                disabled={busy}
+                onClick={() => setActiveTool("cleanup")}
+              >
+                Cleanup
+              </button>
+              <button
+                type="button"
+                className={`filter-tab${activeTool === "history" ? " active" : ""}`}
+                disabled={busy}
+                onClick={() => setActiveTool("history")}
+              >
+                Purge
+              </button>
+            </div>
+            {isSpeed ? (!isCodexEnabled ? <span className="status muted">OFF</span> : null) : (!anyCliEnabled ? <span className="status muted">OFF</span> : null)}
+          </div>
           <button ref={closeRef} type="button" aria-label={`Close ${title}`} disabled={busy} onClick={close}>
             <X aria-hidden="true" />
           </button>
@@ -373,7 +399,7 @@ export function AdminCodexToolsDialog({
           <div className="admin-codex-tools-content">
             <div className="admin-codex-warning">
               <ShieldAlert aria-hidden="true" />
-              <p>In-use CLI sessions, active pane homes and native codex history are protected. The server rechecks usage immediately before cleanup.</p>
+              <p>Safe Cleanup: Removes only empty sessions (0 turns, 0 messages, or unused test tasks), orphaned pane homes, and detached temporary files. Substantive task history is always preserved.</p>
             </div>
             {!cleanupPreview && !cleanupResult ? (
               <button
@@ -422,7 +448,7 @@ export function AdminCodexToolsDialog({
           <div className="admin-codex-tools-content">
             <div className="admin-codex-warning">
               <ShieldAlert aria-hidden="true" />
-              <p>Active Space CLI and Chat threads stay protected. The server rechecks them again immediately before purge.</p>
+              <p>Permanent Purge: Deletes inactive task history and threads not currently open in an active Space pane. To safely remove only empty or test tasks without losing past task history, use the Cleanup tab instead.</p>
             </div>
             {!preview && !purgeResult ? (
               <button

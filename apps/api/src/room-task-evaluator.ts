@@ -43,6 +43,7 @@ export function createRoomTaskEvaluator(options: {
                 role: "user",
                 content: [
                   "Evaluate the completed task. Return only JSON matching the supplied schema.",
+                  "Score every rubric field from 0 to 100: 0 is completely unsuccessful, 50 is partial, and 100 is fully successful. Use this percentage scale, never a 0-to-1 fraction.",
                   "Rubric weights: correctness 30%, completeness 25%, instruction adherence 20%, evidence 15%, clarity 10%.",
                   `Instruction:\n${input.instruction}`,
                   `Final sanitized result:\n${input.finalResult}`,

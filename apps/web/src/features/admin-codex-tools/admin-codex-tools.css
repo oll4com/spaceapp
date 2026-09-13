@@ -48,11 +48,32 @@
   line-height: 1.45;
 }
 
+.admin-codex-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .admin-codex-tools-header > button {
   width: 2.25rem;
+  height: 2.25rem;
+  min-width: 2.25rem;
+  min-height: 2.25rem;
   padding: 0;
   display: grid;
   place-items: center;
+  border: 1px solid #3b3d3f;
+  border-radius: 6px;
+  background: #171a1b;
+  color: #f1ece2;
+  cursor: pointer;
+  justify-self: end;
+}
+
+.admin-codex-tools-header > button:hover:not(:disabled),
+.admin-codex-tools-header > button:focus-visible {
+  border-color: #6db7aa;
+  background: #1f2725;
 }
 
 .admin-codex-tools-header > button svg,
@@ -273,6 +294,15 @@
     border-left: 0;
     border-radius: 12px 12px 0 0;
     padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+
+  .admin-codex-tools-header {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .admin-codex-header-controls {
+    grid-column: 1 / -1;
+    order: 3;
   }
 
   .admin-codex-speed-row {

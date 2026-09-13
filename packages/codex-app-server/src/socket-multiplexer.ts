@@ -1,4 +1,5 @@
 import { unwatchFile, watchFile } from "node:fs";
+import { maintainSocketPath } from "./socket-path-recovery.js";
 import { readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { isAbsolute } from "node:path";
@@ -748,6 +749,7 @@ export async function startCodexAppServerSocketMultiplexer(
     server.listen(options.listenPath);
   });
 
+  const stopSocketPathMaintenance = maintainSocketPath(server, options.listenPath);
   await refreshProjection(false);
   const projectionListener = () => queueProjectionRefresh();
   if (options.defaultsProjectionPath) {
@@ -761,6 +763,7 @@ export async function startCodexAppServerSocketMultiplexer(
     async close() {
       if (closing) return;
       closing = true;
+      stopSocketPathMaintenance();
       clearPrimaryReplacementTimer();
       if (options.defaultsProjectionPath) unwatchFile(options.defaultsProjectionPath, projectionListener);
       await projectionRefreshTail;

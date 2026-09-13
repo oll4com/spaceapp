@@ -1,8 +1,11 @@
+import type { PaneBatchClaim } from "@space/contracts";
+import type { TaskTitleState } from "@space/contracts";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { nanoid } from "nanoid";
 import { z } from "zod";
+import { defaultToolRoutingState, toolRoutingStateSchema, type ToolRoutingStateV1 } from "@space/contracts";
 import {
   adminOperationRunSchema,
   agentPaneBindingSchema,
@@ -359,6 +362,7 @@ export interface QueuedTurnRecord {
 
 export interface EnqueueRoomAgentMissionInput {
   requestId: string;
+  requestFingerprint?: string;
   clientRequestId: string;
   content: string;
   supervisorWorkflowId: string;
@@ -378,6 +382,17 @@ export interface RoomAgentEnqueueRecord {
   responseMessage: SpaceAgentMessageRecord;
   run: SpaceAgentRunRecord;
   queueItem: RoomAgentSupervisorQueueItem;
+}
+
+export interface RoomAgentTurnRecord {
+  queueItem: RoomAgentSupervisorQueueItem;
+  run: SpaceAgentRunRecord;
+  roomAgentOutcome?: import("@space/contracts").RoomAgentTurnOutcome;
+}
+
+export interface RoomAgentMissionUpdateGuard {
+  expectedRunId: string;
+  expectedStatus: RoomAgentMissionRecord["status"];
 }
 
 export interface CompleteTurnInput {
@@ -408,6 +423,7 @@ export interface CompleteSpaceAgentRunInput {
   sourceType: "CHAT" | "ROOM_AGENT";
   traceId: string;
   completedAt: string;
+  roomAgentOutcome?: import("@space/contracts").RoomAgentTurnOutcome;
 }
 
 export interface CompletedSpaceAgentRunRecord {
@@ -794,6 +810,7 @@ export function updateSetupConnectionCheckRunRecord(
 
 export interface SpaceStore {
   upsertUser(user: AuthUser): MaybePromise<AuthUser>;
+  getControlActor(userId: string, verifiedEmail?: string): MaybePromise<AuthUser | null>;
   initializeOwnerSetup(input: InitializeOwnerSetupInput): MaybePromise<OwnerSetupStatus>;
   getOwnerSetupStatus(): MaybePromise<OwnerSetupStatus>;
   claimOwnerSetup(input: ClaimOwnerSetupInput): MaybePromise<OwnerSetupClaimResult>;
@@ -875,6 +892,8 @@ export interface SpaceStore {
     input: UpdateCliRuntimeVpnInput,
     updatedBy: string
   ): MaybePromise<CliRuntimeSetting>;
+  getToolRoutingState(): MaybePromise<ToolRoutingStateV1>;
+  updateToolRoutingState(state: ToolRoutingStateV1, expectedRevision: number, actorId: string): MaybePromise<ToolRoutingStateV1>;
   listAgentToolAssignments(): MaybePromise<AgentToolAssignment[]>;
   getAgentToolAssignment(toolId: string): MaybePromise<AgentToolAssignment | null>;
   updateAgentToolAssignment(
@@ -920,8 +939,10 @@ export interface SpaceStore {
   getPane(paneId: string): MaybePromise<Pane>;
   listPanes(roomId: string, includeClosed?: boolean): MaybePromise<Pane[]>;
   createPane(input: CreatePaneInput, traceId?: string): MaybePromise<Pane>;
-  createPanes(inputs: CreatePaneInput[], traceId?: string): MaybePromise<Pane[]>;
+  createPanes(inputs: CreatePaneInput[], traceId?: string, claim?: PaneBatchClaim): MaybePromise<Pane[]>;
+  getPaneBatchResult(roomId: string, claim: PaneBatchClaim): MaybePromise<Pane[] | null>;
   updatePane(paneId: string, input: UpdatePaneInput, traceId?: string): MaybePromise<Pane>;
+  applyTaskTitle(state: TaskTitleState): MaybePromise<Pane | null>;
   movePane(paneId: string, input: MovePaneInput, traceId?: string): MaybePromise<MovePaneResult>;
   getOrCreateRoomAgentPane(roomId: string, traceId?: string): MaybePromise<Pane>;
   getRoomAgentTranscriptClearedAt(roomId: string): MaybePromise<string | null>;
@@ -929,13 +950,15 @@ export interface SpaceStore {
   getRoomAgentRequest(roomId: string, clientRequestId: string): MaybePromise<RoomAgentRequestRecord | null>;
   createRoomAgentRequest(input: CreateRoomAgentRequestInput, traceId?: string): MaybePromise<RoomAgentRequestRecord>;
   enqueueRoomAgentMission(input: EnqueueRoomAgentMissionInput, traceId?: string): MaybePromise<RoomAgentEnqueueRecord>;
+  getRoomAgentTurn(missionId: string, runId?: string): MaybePromise<RoomAgentTurnRecord | null>;
   listUnsignaledRoomAgentEnqueues(limit?: number): MaybePromise<RoomAgentEnqueueRecord[]>;
   markRoomAgentMissionSignaled(roomId: string, clientRequestId: string): MaybePromise<void>;
   createRoomAgentMission(input: CreateRoomAgentMissionInput, traceId?: string): MaybePromise<RoomAgentMissionRecord>;
   updateRoomAgentMission(
     missionId: string,
     input: UpdateRoomAgentMissionInput,
-    traceId?: string
+    traceId?: string,
+    guard?: RoomAgentMissionUpdateGuard
   ): MaybePromise<RoomAgentMissionRecord>;
   getRoomAgentMission(roomId: string, missionId: string): MaybePromise<RoomAgentMissionRecord | null>;
   listRoomAgentMissions(roomId: string, limit?: number): MaybePromise<RoomAgentMissionRecord[]>;
@@ -972,7 +995,8 @@ export interface SpaceStore {
   updateSpaceAgentMessage(
     messageId: string,
     input: UpdateSpaceAgentMessageInput,
-    traceId?: string
+    traceId?: string,
+    expectedStatus?: SpaceAgentMessageRecord["status"]
   ): MaybePromise<SpaceAgentMessageRecord>;
   createSpaceAgentRun(input: CreateSpaceAgentRunInput, traceId?: string): MaybePromise<SpaceAgentRunRecord>;
   updateSpaceAgentRun(runId: string, input: UpdateSpaceAgentRunInput, traceId?: string): MaybePromise<SpaceAgentRunRecord>;
@@ -1033,6 +1057,7 @@ export interface SpaceStore {
   ): MaybePromise<PaneCliCodexThreadOwnership>;
   createPaneCliSession(input: CreatePaneCliSessionInput, traceId?: string): MaybePromise<PaneCliSession>;
   updatePaneCliSession(sessionId: string, input: UpdatePaneCliSessionInput, traceId?: string): MaybePromise<PaneCliSession>;
+  updatePaneCliTerminalGeometry(sessionId: string, geometry: NonNullable<PaneCliSession["terminalGeometry"]>): MaybePromise<void>;
   touchPaneCliSessionActivity(sessionId: string, traceId?: string): MaybePromise<void>;
   appendPaneCliTranscriptChunk(
     input: CreatePaneCliTranscriptChunkInput,
@@ -1253,7 +1278,10 @@ export const makeSpaceId = (prefix: string) => `${prefix}:${nanoid(12)}`;
 export const hashPrompt = (prompt: string) => createHash("sha256").update(prompt).digest("hex");
 
 export function redactMemoryText(value: string): string {
-  return redactPersistedTranscriptContent(value);
+  return redactPersistedTranscriptContent(value)
+    .replace(/\b((?:creds|credentials)\s*:\s*[^\s]+@[^\s]+\s*\/\s*)[^\s·;,]+/gi, "$1[REDACTED]")
+    .replace(/\b((?:Bearer|Basic)\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]")
+    .replace(/\b(space_session=)[^;\s]+/gi, "$1[REDACTED]");
 }
 
 const cliMaintenanceSensitiveKeyPattern =
@@ -2266,6 +2294,7 @@ export class InMemorySpaceStore implements SpaceStore {
   private roomAgentActions = new Map<string, RoomAgentActionRecord>();
   private roomAgentTaskRuns = new Map<string, RoomAgentTaskRunRecord>();
   private roomAgentEnqueues = new Map<string, RoomAgentEnqueueRecord>();
+  private roomAgentTurnOutcomes = new Map<string, import("@space/contracts").RoomAgentTurnOutcome>();
   private agentPaneBindings = new Map<string, AgentPaneBinding>();
   private agentPaneSessions = new Map<string, AgentPaneStoredSession>();
   private spaceAgentSessions = new Map<string, SpaceAgentSessionRecord>();
@@ -2319,6 +2348,7 @@ export class InMemorySpaceStore implements SpaceStore {
   private codexCliModeDefaults: CodexCliModeDefaults | null = null;
   private cliRuntimeSettings = new Map<CliToggleRuntimeId, CliRuntimeSetting>();
   private cliAccountProfiles = new Map<CliToggleRuntimeId, Map<string, CliAccountProfile>>();
+  private toolRoutingState = defaultToolRoutingState();
   private agentToolAssignments = new Map<string, AgentToolAssignment>();
   private adminOperationRuns = new Map<string, AdminOperationRun>();
   private cliMaintenanceEvents = new Map<string, CliMaintenanceEvent>();
@@ -2455,6 +2485,8 @@ export class InMemorySpaceStore implements SpaceStore {
       swarmReconciles: [...this.swarmReconciles]
     };
   }
+
+  getControlActor(userId: string, verifiedEmail?: string): AuthUser | null { return this.users.get(userId) ?? (verifiedEmail ? [...this.users.values()].find(user => user.email.toLowerCase() === verifiedEmail.toLowerCase()) : null) ?? null; }
 
   upsertUser(user: AuthUser): AuthUser {
     const existing = [...this.users.values()].find((candidate) => candidate.email.toLowerCase() === user.email.toLowerCase());
@@ -3183,6 +3215,16 @@ export class InMemorySpaceStore implements SpaceStore {
     return setting;
   }
 
+  getToolRoutingState(): ToolRoutingStateV1 {
+    return structuredClone(this.toolRoutingState);
+  }
+
+  updateToolRoutingState(state: ToolRoutingStateV1, expectedRevision: number, _actorId: string): ToolRoutingStateV1 {
+    if (this.toolRoutingState.revision !== expectedRevision) throw new SpaceConflictError("Routing policy changed; reload before saving.");
+    this.toolRoutingState = toolRoutingStateSchema.parse({ ...state, revision: expectedRevision + 1 });
+    return this.getToolRoutingState();
+  }
+
   listAgentToolAssignments(): AgentToolAssignment[] {
     return [...this.agentToolAssignments.values()].sort(
       (left, right) => left.toolId.localeCompare(right.toolId) || left.kind.localeCompare(right.kind)
@@ -3443,6 +3485,7 @@ export class InMemorySpaceStore implements SpaceStore {
       kind: input.kind ?? "WORKSPACE",
       order: this.rooms.size,
       paneLayoutColumns: null,
+      paneLayoutHeight: 1,
       createdAt: timestamp,
       updatedAt: timestamp,
       archivedAt: null,
@@ -3497,7 +3540,8 @@ export class InMemorySpaceStore implements SpaceStore {
     const timestamp = nowIso();
     const updatedRoom: Room = {
       ...room,
-      paneLayoutColumns: input.paneLayoutColumns,
+      paneLayoutColumns: input.paneLayoutColumns !== undefined ? input.paneLayoutColumns : room.paneLayoutColumns,
+      paneLayoutHeight: input.paneLayoutHeight !== undefined ? input.paneLayoutHeight : (room.paneLayoutHeight ?? 1),
       updatedAt: timestamp,
       traceId
     };
@@ -3510,7 +3554,8 @@ export class InMemorySpaceStore implements SpaceStore {
 
     this.rooms.set(roomId, updatedRoom);
     for (const pane of updatedPanes) this.panes.set(pane.id, pane);
-
+    this.appendEvent({ roomId, paneId: null, turnId: null, traceId, type: "PANE_UPDATED",
+      message: "Room pane layout updated.", payload: { roomPaneLayoutChanged: true } });
     return { room: updatedRoom, panes: updatedPanes };
   }
 
@@ -3550,10 +3595,13 @@ export class InMemorySpaceStore implements SpaceStore {
     if (nextIds.size !== paneIds.length || currentIds.some((paneId) => !nextIds.has(paneId))) {
       throw new SpaceConflictError("Pane reorder payload must include every active pane of the room exactly once.");
     }
+    const timestamp = nowIso();
     paneIds.forEach((paneId, index) => {
       const pane = this.getPane(paneId);
-      this.panes.set(paneId, { ...pane, order: index });
+      this.panes.set(paneId, { ...pane, order: index, updatedAt: timestamp });
     });
+    this.appendEvent({ roomId, paneId: null, turnId: null, traceId, type: "PANE_UPDATED",
+      message: "Room panes reordered.", payload: { roomPaneLayoutChanged: true } });
     return this.listPanes(roomId, false);
   }
 
@@ -3754,12 +3802,24 @@ export class InMemorySpaceStore implements SpaceStore {
     return pane;
   }
 
-  createPanes(inputs: CreatePaneInput[], traceId = makeSpaceId("trace")): Pane[] {
+  private readonly paneBatchResults = new Map<string, { payloadHash: string; panes: Pane[] }>();
+
+  getPaneBatchResult(roomId: string, claim: PaneBatchClaim): Pane[] | null {
+    this.getRoom(roomId);
+    const result = this.paneBatchResults.get(JSON.stringify([roomId, claim.actorId, claim.requestId]));
+    if (!result) return null;
+    if (result.payloadHash !== claim.payloadHash) throw new SpaceConflictError("Request ID was already used with a different payload.");
+    return structuredClone(result.panes);
+  }
+
+  createPanes(inputs: CreatePaneInput[], traceId = makeSpaceId("trace"), claim?: PaneBatchClaim): Pane[] {
     if (inputs.length === 0) return [];
     const roomId = inputs[0]!.roomId;
     if (inputs.some((input) => input.roomId !== roomId)) {
       throw new SpaceConflictError("A pane batch must target one room.");
     }
+    const previous = claim ? this.getPaneBatchResult(roomId, claim) : null;
+    if (previous) return previous;
     const room = this.getRoom(roomId);
     const existing = this.listPanes(roomId, false);
     if (existing.length + inputs.length > room.paneCap) {
@@ -3805,6 +3865,7 @@ export class InMemorySpaceStore implements SpaceStore {
       });
     }
     this.touchRoom(roomId, timestamp);
+    if (claim) this.paneBatchResults.set(JSON.stringify([roomId, claim.actorId, claim.requestId]), { payloadHash: claim.payloadHash, panes: structuredClone(panes) });
     return panes;
   }
 
@@ -3898,11 +3959,16 @@ export class InMemorySpaceStore implements SpaceStore {
   ): RoomAgentEnqueueRecord {
     const queueItem = roomAgentSupervisorQueueItemSchema.parse(input.queueItem);
     const key = `${queueItem.turn.roomId}:${input.clientRequestId}`;
+    const claimed = this.getRoomAgentRequest(queueItem.turn.roomId, input.clientRequestId);
+    if (claimed && ((!claimed.missionId) || ((input.requestFingerprint || claimed.requestFingerprint) && claimed.requestFingerprint !== input.requestFingerprint)))
+      throw new SpaceConflictError("Request ID was already used with a different actor or payload.");
     const existing = this.roomAgentEnqueues.get(key);
     if (existing) {
       return {
         ...existing,
         created: false,
+        run: this.spaceAgentRuns.get(existing.run.runId) ?? existing.run,
+        responseMessage: this.spaceAgentMessages.get(existing.responseMessage.messageId) ?? existing.responseMessage,
         mission: this.roomAgentMissions.get(existing.mission.id) ?? existing.mission
       };
     }
@@ -3928,13 +3994,18 @@ export class InMemorySpaceStore implements SpaceStore {
       messageId: input.promptMessageId,
       sessionId,
       runId: input.runId,
-      role: "user",
+      role: queueItem.turn.roomAgentContinuation ? "tool" : "user",
       content: input.content,
       status: "COMPLETED",
       createdAt: timestamp,
       updatedAt: timestamp
     });
     let linkedMission = this.roomAgentMissions.get(queueItem.missionId) ?? null;
+    const continuation = queueItem.turn.roomAgentContinuation;
+    if (continuation && (linkedMission?.status !== "RUNNING" ||
+        this.getRoomAgentTurn(queueItem.missionId)?.run.runId !== continuation.sourceRunId)) {
+      throw new SpaceConflictError("Room Agent continuation was superseded or stopped.");
+    }
     if (linkedMission && !["QUEUED", "RUNNING", "PAUSED"].includes(linkedMission.status)) {
       throw new SpaceConflictError(`Room agent mission ${linkedMission.id} no longer accepts follow-up requests.`);
     }
@@ -3963,6 +4034,7 @@ export class InMemorySpaceStore implements SpaceStore {
     });
     const request = roomAgentRequestRecordSchema.parse({
       requestId: input.requestId,
+      requestFingerprint: input.requestFingerprint,
       roomId: queueItem.turn.roomId,
       sessionId,
       missionId: queueItem.missionId,
@@ -4006,7 +4078,7 @@ export class InMemorySpaceStore implements SpaceStore {
     });
     const record: RoomAgentEnqueueRecord = {
       created: true,
-      signaledAt: null,
+      signaledAt: continuation ? timestamp : null,
       request,
       mission,
       promptMessage,
@@ -4049,9 +4121,20 @@ export class InMemorySpaceStore implements SpaceStore {
       .slice(0, boundedLimit);
   }
 
-  updateRoomAgentMission(missionId: string, input: UpdateRoomAgentMissionInput): RoomAgentMissionRecord {
+  getRoomAgentTurn(missionId: string, runId?: string): RoomAgentTurnRecord | null {
+    const enqueue = [...this.roomAgentEnqueues.values()].reverse().find((record) =>
+      record.queueItem.missionId === missionId && (!runId || record.run.runId === runId));
+    if (!enqueue) return null;
+    return { queueItem: enqueue.queueItem, run: this.spaceAgentRuns.get(enqueue.run.runId)!,
+      roomAgentOutcome: this.roomAgentTurnOutcomes.get(enqueue.run.runId) };
+  }
+
+  updateRoomAgentMission(missionId: string, input: UpdateRoomAgentMissionInput, _traceId?: string,
+    guard?: RoomAgentMissionUpdateGuard): RoomAgentMissionRecord {
     const current = this.roomAgentMissions.get(missionId);
     if (!current) throw new SpaceNotFoundError(`Room agent mission ${missionId} was not found.`);
+    if (guard && (current.status !== guard.expectedStatus ||
+        this.getRoomAgentTurn(missionId)?.run.runId !== guard.expectedRunId)) return current;
     const parsed = updateRoomAgentMissionInputSchema.parse(input);
     const updated = roomAgentMissionRecordSchema.parse({ ...current, ...parsed, updatedAt: nowIso() });
     this.roomAgentMissions.set(missionId, updated);
@@ -4144,6 +4227,18 @@ export class InMemorySpaceStore implements SpaceStore {
       .sort((left, right) => left.queuedAt.localeCompare(right.queuedAt) || left.stepId.localeCompare(right.stepId));
   }
 
+  applyTaskTitle(state: TaskTitleState): Pane | null {
+    const pane = this.panes.get(state.paneId);
+    if (!pane || pane.isClosed) return null;
+    const session = pane.mode === "HARNESS" ? {sessionId:pane.taskMetadata?.harnessSessionId??`space-pane-${pane.id.slice(5)}`} : pane.mode === "CHAT" ? this.getActiveSpaceAgentSession(pane.id) : this.getActivePaneCliSession(pane.id);
+    if (!session || session.sessionId !== state.sessionId) return null;
+    const title = pane.titleSource === "manual" ? pane.title : state.title;
+    const updated = this.updatePane(pane.id, {title, taskMetadata: state.metadata, titleSource: pane.titleSource === "manual" ? "manual" : state.metadata.source === "ai" ? "ai" : "auto"});
+    if(pane.mode==="CHAT")this.updateSpaceAgentSession(state.sessionId,{title});
+    if (state.revisionId && this.cliTaskRevisions.has(state.revisionId)) this.updateCliTaskRevision(state.revisionId, {displayTitle:title});
+    return updated;
+  }
+
   updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Pane {
     const current = this.panes.get(paneId);
     if (!current) {
@@ -4189,6 +4284,19 @@ export class InMemorySpaceStore implements SpaceStore {
     };
 
     this.panes.set(paneId, updated);
+    if (updated.isClosed && !current.isClosed) {
+      for (const [sessionId, session] of this.paneCliSessions.entries()) {
+        if (session.paneId !== paneId || session.status !== "RUNNING") continue;
+        this.paneCliSessions.set(sessionId, {
+          ...session,
+          status: "EXITED",
+          statusReason: session.statusReason ?? "Pane closed by operator.",
+          isActive: false,
+          endedAt: session.endedAt ?? timestamp,
+          updatedAt: timestamp
+        });
+      }
+    }
     this.touchRoom(updated.roomId, timestamp);
     this.appendEvent({
       roomId: updated.roomId,
@@ -4709,13 +4817,15 @@ export class InMemorySpaceStore implements SpaceStore {
   updateSpaceAgentMessage(
     messageId: string,
     input: UpdateSpaceAgentMessageInput,
-    _traceId = makeSpaceId("trace")
+    _traceId = makeSpaceId("trace"),
+    expectedStatus?: SpaceAgentMessageRecord["status"]
   ): SpaceAgentMessageRecord {
     const current = this.spaceAgentMessages.get(messageId);
     if (!current) {
       throw new SpaceNotFoundError(`Space agent message ${messageId} was not found.`);
     }
     const parsed = updateSpaceAgentMessageInputSchema.parse(input);
+    if (expectedStatus !== undefined && current.status !== expectedStatus) return current;
     const updated = spaceAgentMessageRecordSchema.parse({
       ...current,
       ...parsed,
@@ -4843,6 +4953,7 @@ export class InMemorySpaceStore implements SpaceStore {
       content: input.responseContent,
       status: "COMPLETED"
     });
+    if (input.roomAgentOutcome) this.roomAgentTurnOutcomes.set(input.runId, input.roomAgentOutcome);
     const run = this.updateSpaceAgentRun(input.runId, {
       status: "COMPLETED",
       codexThreadId: input.codexThreadId,
@@ -5461,6 +5572,12 @@ export class InMemorySpaceStore implements SpaceStore {
       });
     }
     return session;
+  }
+
+  updatePaneCliTerminalGeometry(sessionId: string, geometry: NonNullable<PaneCliSession["terminalGeometry"]>): void {
+    const current = this.paneCliSessions.get(sessionId);
+    if (!current) throw new SpaceNotFoundError(`CLI session ${sessionId} was not found.`);
+    this.paneCliSessions.set(sessionId, { ...current, terminalGeometry: paneCliSessionSchema.shape.terminalGeometry.parse(geometry) });
   }
 
   updatePaneCliSession(

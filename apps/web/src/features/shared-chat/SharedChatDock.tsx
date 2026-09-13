@@ -189,6 +189,13 @@ export function SharedChatDock() {
           placeholder="Message all agents… Deepseek only wakes with an explicit @deepseek."
           rows={3}
           maxLength={20_000}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          enterKeyHint="send"
+          data-gramm="false"
+          data-enable-grammarly="false"
         />
         <div className="shared-chat-composer-actions">
           <small>All messages stay recorded in the immutable audit file.</small>

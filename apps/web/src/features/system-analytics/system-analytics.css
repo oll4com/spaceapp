@@ -553,3 +553,18 @@
     min-height: 12rem;
   }
 }
+
+.token-usage-summary .system-analytics-stats { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+.token-usage-summary p { margin: 8px 0 0; font-size: 12px; color: #a7a59e; }
+.token-model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; padding: 12px;  }
+.token-model-card { display: flex; flex-direction: column; gap: 6px; text-align: left; padding: 12px; background: #141617; color: #ece8df; border: 1px solid #39413f; border-radius: 8px; cursor: pointer; min-width: 0; }
+.token-model-card:hover, .token-model-card[aria-pressed="true"] { border-color: #79cbbb; background: #1b2b28; }
+.token-model-card:focus-visible { outline: 2px solid #79cbbb; outline-offset: 2px; }
+.token-model-card span { overflow-wrap: anywhere; }
+.token-model-card strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.token-model-card small { color: #a7a59e; overflow-wrap: anywhere; }
+.system-analytics-provider-grid[hidden] { display: none; }
+
+.token-usage-body > * { flex-shrink: 0; }
+
+.system-analytics-workspace .model-sort-button { background: transparent; border: 0; color: inherit; font: inherit; padding: 6px 0; text-align: left; white-space: nowrap; cursor: pointer; }

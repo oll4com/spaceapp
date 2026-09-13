@@ -70,7 +70,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
       XDG_STATE_HOME: `${codexHome}/space-opencode/state`
     },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: null,
+    defaultModelId: "big-pickle",
     credentialVerifiedReason: "OpenCode CLI direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
@@ -95,7 +95,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/tmp`,
     environment: { CODEX_HOME: codexHome },
     nativeResumeArgs: null,
-    defaultModelId: null,
+    defaultModelId: "gpt-5.6-sol",
     credentialVerifiedReason: "Codex CLI direct VS Code/Codex parity wrapper, /etc cwd, and credential smoke are verified.",
     loginBootstrapReason: null
   },
@@ -103,26 +103,26 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     key: "claude",
     id: "cli:claude",
     providerId: "anthropic",
-    providerName: "Claude Code via Legacy",
+    providerName: "Claude Code",
     agentName: "Claude Code CLI",
     commandName: "claude-vscode-parity",
     commandEnv: "SPACE_CLI_CLAUDE_COMMAND",
-    credentialSmokeEnv: "SPACE_CLI_CLAUDE_LEGACY_CREDENTIAL_SMOKE",
-    authMode: "MANAGED",
-    missingAuthState: "UNAVAILABLE",
-    missingAuthReason: "Claude Code managed credentials have not been verified by the operator.",
-    loginAction: null,
+    credentialSmokeEnv: "SPACE_CLI_CLAUDE_CREDENTIAL_SMOKE",
+    authMode: "BROWSER_OAUTH",
+    missingAuthState: "LOGIN_REQUIRED",
+    missingAuthReason: "Claude Code login is required. Open its login in Space to continue.",
+    loginAction: "login",
     credentialObservationAction: "credential-observation",
     credentialSmokeMarker: "SPACE_CLAUDE_OK",
-    loginBootstrapEnv: null,
-    loginBootstrapRuntimeEnv: null,
-    stateRoot: `${codexHome}/space-claude-legacy`,
-    tempDir: `${codexHome}/space-claude-legacy/tmp`,
-    environment: { CLAUDE_CONFIG_DIR: `${codexHome}/space-claude-legacy` },
+    loginBootstrapEnv: "SPACE_CLI_CLAUDE_LOGIN_BOOTSTRAP",
+    loginBootstrapRuntimeEnv: "SPACE_CLAUDE_LOGIN_BOOTSTRAP",
+    stateRoot: `${codexHome}/space-claude`,
+    tempDir: `${codexHome}/space-claude/tmp`,
+    environment: { CLAUDE_CONFIG_DIR: `${codexHome}/space-claude` },
     nativeResumeArgs: ["--resume"],
-    defaultModelId: null,
-    credentialVerifiedReason: "Claude Code via Legacy direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
-    loginBootstrapReason: null
+    defaultModelId: "sonnet",
+    credentialVerifiedReason: "Claude Code direct Anthropic operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
+    loginBootstrapReason: "Claude Code CLI is enabled only for first-run OAuth login; credential smoke is still pending."
   },
   {
     key: "gemini",
@@ -145,7 +145,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-gemini/tmp`,
     environment: {},
     nativeResumeArgs: ["--continue"],
-    defaultModelId: null,
+    defaultModelId: "gemini-2.5-flash",
     credentialVerifiedReason: "The official Google Antigravity CLI is installed; authentication is handled natively inside the CLI.",
     loginBootstrapReason: null
   },
@@ -198,7 +198,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
       QWEN_RUNTIME_DIR: `${codexHome}/space-qwen/runtime`
     },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: null,
+    defaultModelId: "qwen-2.5-coder-32b",
     credentialVerifiedReason: "Qwen Code CLI direct operator parity wrapper, selected provider credentials, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
@@ -223,7 +223,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-kimi/tmp`,
     environment: { KIMI_CODE_HOME: `${codexHome}/space-kimi` },
     nativeResumeArgs: ["--session"],
-    defaultModelId: null,
+    defaultModelId: "kimi-k1.5",
     credentialVerifiedReason: "Kimi Code subscription direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: "Kimi Code CLI is enabled only for first-run Kimi Code OAuth login; subscription credential smoke is still pending."
   },
@@ -248,7 +248,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-grok/tmp`,
     environment: { GROK_HOME: `${codexHome}/space-grok` },
     nativeResumeArgs: ["--resume"],
-    defaultModelId: null,
+    defaultModelId: "grok-3",
     credentialVerifiedReason: "Grok Build account direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: "Grok Build CLI is enabled only for first-run xAI device-code login; account credential smoke is still pending."
   },
@@ -273,7 +273,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-deepseek/tmp`,
     environment: { DEEPSEEK_HOME: `${codexHome}/space-deepseek` },
     nativeResumeArgs: null,
-    defaultModelId: null,
+    defaultModelId: "deepseek-chat",
     credentialVerifiedReason: "DeepSeek CLI 0.1.1 text-chat wrapper, live provider model catalog, and credential smoke are verified.",
     loginBootstrapReason: null
   },
@@ -301,7 +301,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
       AGENT_CLI_CREDENTIAL_STORE: "file"
     },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: null,
+    defaultModelId: "claude-3-5-sonnet",
     credentialVerifiedReason: "Cursor CLI direct operator parity wrapper, browser OAuth, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
@@ -326,7 +326,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-copilot/tmp`,
     environment: { COPILOT_HOME: `${codexHome}/space-copilot` },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: null,
+    defaultModelId: "gpt-4o",
     credentialVerifiedReason: "GitHub Copilot CLI direct operator parity wrapper, GitHub device login, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
@@ -351,7 +351,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: "/var/lib/spaceapp-user/.codex/space-hermes/tmp",
     environment: { HERMES_HOME: "/var/lib/spaceapp-user/.hermes" },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: null,
+    defaultModelId: "hermes-3-llama-3.1-8b",
     credentialVerifiedReason: "Hermes Agent v0.20.1 installed at ~/.hermes; node-pty TUI smoke and end-to-end chat smoke verified.",
     loginBootstrapReason: null
   }

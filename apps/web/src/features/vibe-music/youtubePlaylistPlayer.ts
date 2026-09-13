@@ -12,12 +12,14 @@ export type YouTubePlayerCallbacks = {
   onStateChange?: (state: YouTubePlayerState) => void;
   onError?: (code: number) => void;
   onMixFallback?: () => void;
+  onAutoplayBlocked?: () => void;
 };
 
 export type YouTubePlaylistPlayerOptions = {
   autoplay?: boolean;
   startIndex?: number;
   startSeconds?: number;
+  startVideoId?: string;
 };
 
 export type YouTubePlaylistPlayer = {
@@ -26,6 +28,7 @@ export type YouTubePlaylistPlayer = {
   next(): void;
   previous(): void;
   setVolume(volume: number): void;
+  getVolume?(): number | null;
   getCurrent(): { title: string; index: number; total: number };
   getVideoId(): string | null;
   getPlaylistIds(): string[];
@@ -42,9 +45,12 @@ export type YouTubePlaylistPlayer = {
 type YouTubeIFramePlayerLike = {
   playVideo(): void;
   pauseVideo(): void;
+  loadVideoById(video: { videoId: string; startSeconds: number }): void;
+  cueVideoById(video: { videoId: string; startSeconds: number }): void;
   nextVideo(): void;
   previousVideo(): void;
   setVolume(percent: number): void;
+  getVolume?(): number;
   getVideoData(): { title?: string; video_id?: string };
   getPlaylist(): string[];
   getPlaylistIndex(): number;
@@ -123,6 +129,7 @@ export function parseYouTubeLink(url: string): YouTubeLinkTarget | null {
   }
   const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
   if (host !== "youtube.com" && host !== "m.youtube.com" && host !== "youtu.be") return null;
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
   const list = parsed.searchParams.get("list");
   if (list && /^[A-Za-z0-9_-]{8,}$/.test(list)) return { kind: "playlist", playlistId: list };
   if (host === "youtu.be") {
@@ -131,7 +138,7 @@ export function parseYouTubeLink(url: string): YouTubeLinkTarget | null {
     return null;
   }
   const pathSegments = parsed.pathname.split("/").filter(Boolean);
-  if (pathSegments[0] === "shorts" || pathSegments[0] === "embed" || pathSegments[0] === "v") {
+  if (pathSegments[0] === "live" || pathSegments[0] === "shorts" || pathSegments[0] === "embed" || pathSegments[0] === "v") {
     const videoId = pathSegments[1] ?? "";
     if (/^[A-Za-z0-9_-]{11}$/.test(videoId)) return { kind: "video", videoId };
     return null;
@@ -168,6 +175,8 @@ export async function createYouTubePlaylistPlayer(
   let destroyed = false;
   let playlistSyncRetryTimer: number | null = null;
   let pendingPlayback: "play" | "pause" | null = null;
+  let wantsPlayback = options.autoplay === true;
+  let iframeGeneration = 0;
   let pendingOperations: Array<(activePlayer: YouTubeIFramePlayerLike) => void> = [];
   let usedMixFallback = false;
   let lastVolumePercent: number | null = null;
@@ -204,6 +213,7 @@ export async function createYouTubePlaylistPlayer(
       // next/previous/queue controls operate on a real track list.
       playerVars.listType = "playlist";
       playerVars.list = `RD${target.videoId}`;
+      if (Number.isInteger(options.startIndex) && (options.startIndex ?? 0) >= 0) playerVars.index = options.startIndex ?? 0;
     }
     if (Number.isFinite(options.startSeconds) && (options.startSeconds ?? 0) > 0) {
       playerVars.start = Math.floor(options.startSeconds ?? 0);
@@ -243,7 +253,7 @@ export async function createYouTubePlaylistPlayer(
     const data = readSafely((activePlayer) => activePlayer.getVideoData(), {});
     if (data?.title) lastTitle = data.title;
     const playlist = readSafely((activePlayer) => activePlayer.getPlaylist(), []);
-    if (Array.isArray(playlist) && playlist.length > 0) {
+    if (isPlaylistMode() && Array.isArray(playlist) && playlist.length > 0) {
       lastTotal = playlist.length;
       const playlistIndex = readSafely((activePlayer) => activePlayer.getPlaylistIndex(), 0);
       lastIndex = Math.min(Math.max(playlistIndex + 1, 1), lastTotal);
@@ -263,72 +273,81 @@ export async function createYouTubePlaylistPlayer(
     }, 1000);
   };
 
-  const buildEvents = () => ({
-    onReady: () => {
-      if (destroyed || !player) return;
-      ready = true;
-      syncNowPlaying();
-      startPlaylistSyncRetry();
-      const operations = pendingOperations;
-      pendingOperations = [];
-      operations.forEach((operation) => runSafely(operation));
-      if (lastVolumePercent !== null) runSafely((activePlayer) => activePlayer.setVolume(lastVolumePercent!));
-      runSafely((activePlayer) => activePlayer.setLoop(lastLoopDesired));
-      const playback = pendingPlayback;
-      pendingPlayback = null;
-      if (playback === "play") runSafely((activePlayer) => activePlayer.playVideo());
-      if (playback === "pause") runSafely((activePlayer) => activePlayer.pauseVideo());
-      callbacks.onReady?.();
-    },
-    onStateChange: (event: { data?: number }) => {
-      syncNowPlaying();
-      callbacks.onStateChange?.(stateFromCode(event.data ?? -1));
-    },
-    onError: (event: { data?: number }) => {
-      const code = event.data ?? 0;
-      if (target.kind === "video" && !usedMixFallback && !destroyed) {
-        usedMixFallback = true;
-        ready = false;
-        pendingPlayback = null;
+  const buildEvents = () => {
+    const generation = ++iframeGeneration;
+    const isCurrent = () => !destroyed && generation === iframeGeneration;
+    return {
+      onReady: () => {
+        if (!isCurrent() || !player) return;
+        ready = true;
+        syncNowPlaying();
+        startPlaylistSyncRetry();
+        const operations = pendingOperations;
         pendingOperations = [];
-        if (playlistSyncRetryTimer !== null) window.clearInterval(playlistSyncRetryTimer);
-        playlistSyncRetryTimer = null;
-        lastTitle = "";
-        lastTotal = 1;
-        lastIndex = 1;
-        try {
-          player?.destroy();
-        } catch {
-          // The previous iframe may already be gone.
+        operations.forEach((operation) => runSafely(operation));
+        if (lastVolumePercent !== null) runSafely((activePlayer) => activePlayer.setVolume(lastVolumePercent!));
+        runSafely((activePlayer) => activePlayer.setLoop(lastLoopDesired));
+        const playback = pendingPlayback;
+        pendingPlayback = null;
+        if (playback === "play") runSafely((activePlayer) => activePlayer.playVideo());
+        if (playback === "pause") runSafely((activePlayer) => activePlayer.pauseVideo());
+        callbacks.onReady?.();
+      },
+      onStateChange: (event: { data?: number }) => {
+        if (!isCurrent()) return;
+        if (event.data === 1) wantsPlayback = true;
+        if (event.data === 2) wantsPlayback = false;
+        syncNowPlaying();
+        callbacks.onStateChange?.(stateFromCode(event.data ?? -1));
+      },
+      onAutoplayBlocked: () => {
+        if (!isCurrent()) return;
+        wantsPlayback = false;
+        pendingPlayback = "pause";
+        callbacks.onAutoplayBlocked?.();
+      },
+      onError: (event: { data?: number }) => {
+        if (!isCurrent()) return;
+        const code = event.data ?? 0;
+        if (target.kind === "video" && !usedMixFallback && !destroyed) {
+          usedMixFallback = true;
+          if (playlistSyncRetryTimer !== null) window.clearInterval(playlistSyncRetryTimer);
+          playlistSyncRetryTimer = null;
+          lastTitle = "";
+          lastTotal = 1;
+          lastIndex = 1;
+          callbacks.onMixFallback?.();
+          // Keep the SDK's message channel attached. Replacing its iframe inside
+          // onError can leave video playing without state or progress updates.
+          runWhenReady((activePlayer) => {
+            const video = { videoId: restoredVideoId ?? target.videoId, startSeconds: Math.max(0, options.startSeconds ?? 0) };
+            if (wantsPlayback) activePlayer.loadVideoById(video);
+            else activePlayer.cueVideoById(video);
+          });
+          return;
         }
-        player = new yt.Player(mountStage(), {
-          height: 1,
-          width: 1,
-          videoId: target.kind === "video" ? target.videoId : undefined,
-          playerVars: buildPlayerVars(false),
-          events: buildEvents()
-        });
-        callbacks.onMixFallback?.();
-        return;
+        callbacks.onError?.(code);
       }
-      callbacks.onError?.(code);
-    }
-  });
+    };
+  };
 
+  const restoredVideoId = options.startVideoId && /^[A-Za-z0-9_-]{11}$/.test(options.startVideoId) ? options.startVideoId : undefined;
   player = new yt.Player(mountStage(), {
     height: 1,
     width: 1,
-    videoId: target.kind === "video" ? target.videoId : undefined,
+    videoId: restoredVideoId ?? (target.kind === "video" ? target.videoId : undefined),
     playerVars: buildPlayerVars(true),
     events: buildEvents()
   });
 
   return {
     play() {
+      wantsPlayback = true;
       if (ready) runSafely((activePlayer) => activePlayer.playVideo());
       else pendingPlayback = "play";
     },
     pause() {
+      wantsPlayback = false;
       if (ready) runSafely((activePlayer) => activePlayer.pauseVideo());
       else pendingPlayback = "pause";
     },
@@ -343,6 +362,9 @@ export async function createYouTubePlaylistPlayer(
       lastVolumePercent = percent;
       runWhenReady((activePlayer) => activePlayer.setVolume(percent));
     },
+    getVolume() {
+      return readSafely(player=>typeof player.getVolume === "function"?player.getVolume()/100:null,null);
+    },
     getCurrent() {
       syncNowPlaying();
       return { title: lastTitle, index: lastIndex, total: lastTotal };
@@ -351,7 +373,7 @@ export async function createYouTubePlaylistPlayer(
       return readSafely((activePlayer) => activePlayer.getVideoData().video_id ?? null, null);
     },
     getPlaylistIds() {
-      return readSafely((activePlayer) => activePlayer.getPlaylist(), []);
+      return isPlaylistMode() ? readSafely((activePlayer) => activePlayer.getPlaylist(), []) : [];
     },
     getCurrentTime() {
       return readSafely((activePlayer) => activePlayer.getCurrentTime(), 0);

@@ -1,3 +1,4 @@
+import { railPopoverPosition } from "../rail-popover.js";
 import { createPortal } from "react-dom";
 import {
   useEffect,
@@ -79,15 +80,26 @@ export function WorkspaceTextSizePicker({
       const pickerHeight = pickerRect.height || FALLBACK_PICKER_HEIGHT_PX;
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
+      const railPosition = railPopoverPosition(anchor, pickerWidth);
+      if (railPosition) {
+        setPosition({ left: railPosition.left, placement: "above", top: Math.max(VIEWPORT_MARGIN_PX, viewportHeight - railPosition.bottom - pickerHeight) });
+        return;
+      }
       const fitsBelow = anchorRect.bottom + ANCHOR_GAP_PX + pickerHeight <= viewportHeight - VIEWPORT_MARGIN_PX;
       const placement = fitsBelow ? "below" : "above";
-      const desiredTop = fitsBelow
-        ? anchorRect.bottom + ANCHOR_GAP_PX
-        : anchorRect.top - ANCHOR_GAP_PX - pickerHeight;
       const maxLeft = Math.max(VIEWPORT_MARGIN_PX, viewportWidth - pickerWidth - VIEWPORT_MARGIN_PX);
       const maxTop = Math.max(VIEWPORT_MARGIN_PX, viewportHeight - pickerHeight - VIEWPORT_MARGIN_PX);
+      const isCollapsed = Boolean(anchor.closest(".room-toolbar-collapsed"));
+      const desiredLeft = isCollapsed
+        ? Math.max(VIEWPORT_MARGIN_PX, anchorRect.left - pickerWidth - ANCHOR_GAP_PX)
+        : Math.min(maxLeft, Math.max(VIEWPORT_MARGIN_PX, anchorRect.left + (anchorRect.width - pickerWidth) / 2));
+      const desiredTop = isCollapsed
+        ? Math.min(anchorRect.top, viewportHeight - pickerHeight - VIEWPORT_MARGIN_PX)
+        : fitsBelow
+        ? anchorRect.bottom + ANCHOR_GAP_PX
+        : anchorRect.top - ANCHOR_GAP_PX - pickerHeight;
       setPosition({
-        left: Math.min(maxLeft, Math.max(VIEWPORT_MARGIN_PX, anchorRect.left + (anchorRect.width - pickerWidth) / 2)),
+        left: desiredLeft,
         placement,
         top: Math.min(maxTop, Math.max(VIEWPORT_MARGIN_PX, desiredTop))
       });

@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./tool-routing": {
+      "types": "./dist/tool-routing.d.ts",
+      "import": "./dist/tool-routing.js"
     }
   },
   "scripts": {

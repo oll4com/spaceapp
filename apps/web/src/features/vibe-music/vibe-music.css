@@ -21,13 +21,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
+  gap: 0.4rem;
   border-bottom: 1px solid #2a3032;
   padding: 0.55rem 0.65rem;
 }
 
 .vibe-music-heading {
   min-width: 0;
+  flex: 1;
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
@@ -42,6 +43,7 @@
 
 .vibe-music-source {
   min-width: 0;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -260,7 +262,7 @@
 
 .vibe-music-playlist-picker {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.45rem;
 }
@@ -331,8 +333,12 @@
   color: #f1ece2;
   font-size: 1rem;
   line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .vibe-music-player-progress {
@@ -608,4 +614,8 @@
   .vibe-music-volume {
     grid-template-columns: auto minmax(4rem, 1fr) 2.35rem;
   }
+}
+
+.vibe-music-delete-link {
+  color: #e3989f;
 }

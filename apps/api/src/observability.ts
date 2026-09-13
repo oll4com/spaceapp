@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { RecentRequestWindow } from "./recent-request-window.js";
 import type {
   CliTerminalTelemetryOutcome,
   CliTerminalTelemetryReason,
@@ -76,6 +77,7 @@ function sum(values: Iterable<number>): number {
 }
 
 export function createHttpObservability(input: { serviceName: "space-api" }) {
+  const recentRequests = new RecentRequestWindow();
   const startedAt = new Date();
   const starts = new WeakMap<FastifyRequest, bigint>();
   const endpoints = new Map<string, EndpointStats>();
@@ -108,6 +110,8 @@ export function createHttpObservability(input: { serviceName: "space-api" }) {
     if (!start) return;
     starts.delete(request);
     const durationMs = Number(process.hrtime.bigint() - start) / 1_000_000;
+    const contentType = String(reply.getHeader("content-type") ?? "");
+    if (!contentType.includes("text/event-stream") && reply.statusCode !== 101) recentRequests.observe(reply.statusCode, durationMs);
     const klass = statusClass(reply.statusCode);
     const endpoint = getEndpoint(httpMethod(request.method), routeLabel(request), klass);
     endpoint.requestCount += 1;
@@ -272,6 +276,7 @@ export function createHttpObservability(input: { serviceName: "space-api" }) {
     onResponse: observe,
     observeCliTerminalEvent,
     snapshot,
+    recentSnapshot: () => recentRequests.snapshot(),
     renderPrometheus
   };
 }

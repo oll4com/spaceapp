@@ -8,8 +8,8 @@ import {
   type KeyboardEvent,
   type RefObject,
 } from "react";
-
-export const SERVER_ACTIONS_MENU_ID = "server-actions-popup";
+import { SERVER_ACTIONS_MENU_ID } from "../toolbar-menu-ids.js";
+export { SERVER_ACTIONS_MENU_ID } from "../toolbar-menu-ids.js";
 
 export interface ServerActionCommand {
   id: string;
@@ -19,6 +19,7 @@ export interface ServerActionCommand {
   onSelect: () => void;
   disabled?: boolean;
   title?: string;
+  categoryHeader?: string;
 }
 
 interface ServerActionsMenuProps {
@@ -141,9 +142,17 @@ export function ServerActionsMenu({ actions, mobile, onClose, triggerRef }: Serv
     buttons[nextIndex]?.focus();
   }
 
-  const actionButtons = actions.map((action) => {
+  const actionElements: React.ReactNode[] = [];
+  actions.forEach((action) => {
+    if (action.categoryHeader) {
+      actionElements.push(
+        <span key={`hdr-${action.id}`} className="server-actions-section-header">
+          {action.categoryHeader}
+        </span>
+      );
+    }
     const ActionIcon = action.icon;
-    return (
+    actionElements.push(
       <button
         key={action.id}
         type="button"
@@ -183,7 +192,7 @@ export function ServerActionsMenu({ actions, mobile, onClose, triggerRef }: Serv
             </button>
           </header>
           <div className="mobile-action-sheet-list">
-            <div className="mobile-action-sheet-section server-actions-sheet-list">{actionButtons}</div>
+            <div className="mobile-action-sheet-section server-actions-sheet-list">{actionElements}</div>
           </div>
         </section>
       </div>,
@@ -206,7 +215,7 @@ export function ServerActionsMenu({ actions, mobile, onClose, triggerRef }: Serv
       onKeyDown={handleKeyDown}
     >
       <span className="server-actions-menu-label">Server actions</span>
-      {actionButtons}
+      {actionElements}
     </section>,
     document.body,
   );

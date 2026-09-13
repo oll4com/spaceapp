@@ -8,6 +8,7 @@ import type {
   BrowserControlLeaseActionInput,
   BrowserFrame,
   BrowserSessionViewport,
+  BrowserViewportDimensions,
   BrowserStreamMode,
   BrowserToolActionInput,
   BrowserToolActionResult,
@@ -62,7 +63,7 @@ export class BrowserHostClient {
   startOrRestore(input: BrowserHostStartInput, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse> { return this.request("startOrRestore", { input, context }) as Promise<PaneBrowserSessionResponse>; }
   getActive(pane: Pane): Promise<PaneBrowserSessionResponse | null> { return this.request("getActive", { pane }) as Promise<PaneBrowserSessionResponse | null>; }
   navigate(pane: Pane, url: string, traceId: string, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse> { return this.request("navigate", { pane, url, traceId, context }) as Promise<PaneBrowserSessionResponse>; }
-  setViewport(pane: Pane, viewport: BrowserSessionViewport, traceId: string, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse> { return this.request("setViewport", { pane, viewport, traceId, context }) as Promise<PaneBrowserSessionResponse>; }
+  setViewport(pane: Pane, viewport: BrowserSessionViewport, traceId: string, context?: BrowserHostActorContext, dimensions?: BrowserViewportDimensions): Promise<PaneBrowserSessionResponse> { return this.request("setViewport", { pane, viewport, traceId, context, dimensions }) as Promise<PaneBrowserSessionResponse>; }
   setStreamMode(pane: Pane, mode: BrowserStreamMode, traceId: string, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse> { return this.request("setStreamMode", { pane, mode, traceId, context }) as Promise<PaneBrowserSessionResponse>; }
   action(pane: Pane, input: BrowserToolActionInput, traceId: string, context?: BrowserHostActionContext): Promise<BrowserToolActionResult> {
     const timeoutMs = input.type === "record"

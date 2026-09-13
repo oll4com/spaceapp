@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
   collectOpenCodeStatsFromRows,
   parseCodexRolloutStats,
+  resolveCodexRolloutPaths,
   runSqliteSnapshotFallback
 } from "../toolbar-model-stats.js";
 
@@ -233,6 +234,30 @@ describe("runSqliteSnapshotFallback", () => {
       expect(rows).toEqual([{ v: "x" }]);
       const dirsAfter = (await readdir(tmpdir())).filter((name) => name.startsWith("space-model-stats-"));
       expect(dirsAfter).toEqual(dirsBefore);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("batched Codex rollout resolution", () => {
+  it("preserves primary precedence, deduplicates IDs and finds missing threads in per-home databases", async () => {
+    const root = mkdtempSync(join(tmpdir(), "model-stats-batch-test-"));
+    const execFileAsync = promisify(execFile);
+    try {
+      const alternate = join(root, "space-codex-homes", "alternate");
+      await mkdir(alternate, { recursive: true });
+      await execFileAsync("sqlite3", [join(root, "state_5.sqlite"),
+        "create table threads(id text, rollout_path text); insert into threads values ('a','/primary/a'),('b','/primary/b');"]);
+      await execFileAsync("sqlite3", [join(alternate, "state_5.sqlite"),
+        "create table threads(id text, rollout_path text); insert into threads values ('a','/alternate/a'),('c','/alternate/c');"]);
+      expect(await resolveCodexRolloutPaths(["a", "b", "a"], root)).toEqual(new Map([
+        ["a", "/primary/a"], ["b", "/primary/b"]
+      ]));
+      expect(await resolveCodexRolloutPaths(["a", "c", "missing"], root)).toEqual(new Map([
+        ["a", "/primary/a"], ["c", "/alternate/c"]
+      ]));
+      expect(await resolveCodexRolloutPaths([], root)).toEqual(new Map());
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

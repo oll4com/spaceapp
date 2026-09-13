@@ -26,6 +26,7 @@ export type IconToolbarAction = {
   icon: LucideIcon;
   onClick: () => void;
   disabled?: boolean;
+  disabledReason?: string;
   ariaControls?: string;
   ariaExpanded?: boolean;
   ariaHasPopup?: AriaAttributes["aria-haspopup"];
@@ -152,11 +153,15 @@ function useStoredStringList(key: string) {
   return [value, persistValue] as const;
 }
 
-function normalizeActionOrder(actionIds: string[], storedOrder: string[], preserveUnknownActionIds = false): string[] {
+export function normalizeActionOrder(actionIds: string[], storedOrder: string[], preserveUnknownActionIds = false): string[] {
   const ordered = uniqueStringList(preserveUnknownActionIds ? storedOrder : storedOrder.filter((id) => actionIds.includes(id)));
   for (const actionId of actionIds) {
     if (!ordered.includes(actionId)) {
-      ordered.push(actionId);
+      if (actionId === "new-task") {
+        ordered.unshift(actionId);
+      } else {
+        ordered.push(actionId);
+      }
     }
   }
   return ordered;
@@ -200,6 +205,7 @@ export function useDismissibleToolbarLayer({
   useEffect(() => {
     if (!active) return;
     function handlePointerDown(event: PointerEvent) {
+      if (event.button === 1) return;
       if (containerRef.current?.contains(event.target as Node)) return;
       onDismiss();
     }

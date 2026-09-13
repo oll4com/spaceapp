@@ -9,6 +9,7 @@ export interface SpaceAgentBootstrapInput {
   agentSessionId?: string | null;
   cliSessionId?: string | null;
   runtimeId?: string | null;
+  modelId?: string | null;
 }
 
 function currentMemoryMonth(): string {
@@ -72,30 +73,30 @@ export function buildSpaceAgentBootstrapPrompt(input: SpaceAgentBootstrapInput):
     ? `${input.activeBrowserSessionCount ?? 0} active managed browser session(s) are visible in this room.`
     : "Managed browser tools are disabled until Space browser runtime gates pass.";
   const selectedLine = selectedToolsLine(input.selectedToolIds);
-  const memoryBridgeLine = webChatMemoryBridgeLine(input.channel);
-  const mcpBridgeLine = webChatMcpBridgeLine(input.channel);
-  const skillBridgeLine = webChatSkillBridgeLine(input.channel);
+  const selected = input.selectedToolIds ?? [];
+  const memoryBridgeLine = selected.some((id) => id.startsWith("memory:")) ? webChatMemoryBridgeLine(input.channel) : null;
+  const mcpBridgeLine = selected.some((id) => id.startsWith("mcp:") || id.startsWith("space-readonly:")) ? webChatMcpBridgeLine(input.channel) : null;
+  const skillBridgeLine = selected.some((id) => id.startsWith("skills:")) ? webChatSkillBridgeLine(input.channel) : null;
   const agentFilesLine = cliAgentFilesLine(input.channel);
 
   return [
     "Space Agent Bootstrap:",
     `- Channel: ${input.channel}. Match the main Codex /etc VS Code session rules where the runtime exposes them.`,
     ...identityLines(input),
-    "- Bootstrap order: read/follow /opt/spaceapp/docs/gemini.md first, then Basic Rules in /opt/spaceapp/docs/gemini_core.md, then /opt/spaceapp/docs/agent_local_workspace_hygiene.md before local project/dev-server/cleanup work.",
+    "- Read the compact /opt/spaceapp/docs/gemini.md core once. Load only task-relevant domain rules; read /opt/spaceapp/docs/agent_local_workspace_hygiene.md before local project/dev-server/cleanup work.",
     `- Canonical memory plane: /opt/spaceapp/docs/gemini_history.md plus /opt/spaceapp/docs/gemini_history_${memoryMonth}.md.`,
     "- Memory parity: read/search/save through Space memory bridge or Space API memory endpoints. Treat /opt/spaceapp/docs Gemini history as canonical operational memory; Codex ad-hoc notes are fallback only.",
-    "- Task/goal parity: Codex goals live in /var/lib/spaceapp-user/.codex/goals_1.sqlite and are exposed through GET /api/tasks?source=codex_goal plus bounded PATCH /api/tasks/codex-goals/:threadId.",
-    "- Skills parity: shared skills live under /var/lib/spaceapp-user/.codex/skills and plugin skill roots, exposed through skills:list and skills:read. Read the relevant SKILL.md before using a skill.",
-    "- MCP/tool parity: discover/use tools through Space MCP policy only.",
+    "- Tools: choose verified native tools first. MCP is on-demand fallback or Space-specific access, never a mandatory substitute for a capable native tool. Keep evidence and authorization requirements regardless of transport.",
+    "- Images: use native vision whenever available. Vision MCP is only for verified text-only input pipelines; unknown model support requires checking capability metadata first.",
+    "- Skills: load only relevant guidance when needed. Workflow skills require operator opt-in; a skill must not force an inferior tool. Do not list every skill or tool at startup.",
+    input.channel === "CLI" ? "- Space-only operations: use space-capability info <server> or space-capability call with JSON on stdin when needed. No MCP catalog or server startup is required for native tasks." : null,
     agentFilesLine,
     "- Secret policy: never write raw provider credentials, cookies, browser profile data, private keys, or unredacted tokens to docs, chat, logs, memory, or transcripts.",
-    "- Space API capability access: GET /api/memory and POST /api/memory for canonical Gemini memory; GET /api/tasks for shared Space/Codex tasks; GET /api/mcp and POST /api/mcp/tools/execute for approved MCP actions; GET /api/skills for skills.",
     skillBridgeLine,
     mcpBridgeLine,
-    "- CLI capability access: GET /api/cli/runtimes, then Space-managed CLI sessions. Default real CLI runtime is cli:codex; gated providers must stay fail-closed.",
-    `- Browser capability access: POST /api/panes/:id/browser/action through Space mediation only. ${browserState}`,
+    input.browserToolsEnabled ? `- Managed Space browser access: POST /api/panes/:id/browser/action. ${browserState}` : null,
     memoryBridgeLine,
-    "- Browser safety: no low-level browser protocol access, stream tickets, profile filesystem locations, stealth plugins, fingerprint spoofing, CAPTCHA bypass, localhost/private-IP browsing, or cookie/localStorage extraction.",
+    "- Browser safety: preserve managed Space authentication boundaries. Never extract operator cookies, credentials, stream tickets or browser profile data. General browser verification may use equivalent native tooling.",
     selectedLine,
     "- If a capability is not available in the current runtime, report the exact missing Space gate instead of simulating it."
   ]
@@ -119,7 +120,7 @@ Operational workspace:
 
 - Treat /etc as the default operational workspace for memory, infra, access, ops, and browser-facing tasks unless the user names another path.
 - This artifact folder is not the project root. If the user asks about Space, use the real target path such as /opt/spaceapp.
-- Prefer Space APIs for memory, MCP, skills, browser, artifact, and CLI capabilities when API auth is available.
+- Prefer native filesystem/search/shell tools for ordinary work. Use protected Space APIs or the on-demand entrypoint for Space-specific capabilities.
 - If a task explicitly requires /etc operational memory and the CLI has filesystem access, read/write the canonical Gemini files listed above.
 - Use GET /api/tasks?source=codex_goal to inspect shared Codex goals; bounded updates go through PATCH /api/tasks/codex-goals/:threadId when Space API auth is available.
 - Space sets non-secret identity environment variables for this process:

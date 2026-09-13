@@ -1,6 +1,7 @@
+import { SurfaceErrorBoundary } from "./features/SurfaceErrorBoundary.js";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { clearStaleBuildRecoveryGuard, handleStaleBuildLoadError } from "./entry-load-recovery.js";
+import { clearStaleBuildRecoveryGuard, handleStaleBuildLoadError, renderReloadFallback } from "./entry-load-recovery.js";
 import { resolveEntryRoute } from "./entry-route.js";
 import { enableStrictCspCompatibility } from "./strict-csp.js";
 import {
@@ -27,24 +28,27 @@ async function mount() {
   const root = createRoot(document.getElementById("root")!);
   if (route === "homepage") {
     const { Homepage } = await import("./features/homepage/Homepage.js");
-    root.render(<StrictMode><Homepage /></StrictMode>);
+    root.render(<StrictMode><SurfaceErrorBoundary><Homepage /></SurfaceErrorBoundary></StrictMode>);
     return route;
   }
 
   await import("./styles.css");
   if (route === "demo") {
+    await import("./features/ui-theme/modern-theme.css");
+    await import("./features/ui-theme/codex-theme.css");
     const { DemoSpaceApp } = await import("./demo/DemoSpaceApp.js");
-    root.render(<StrictMode><DemoSpaceApp /></StrictMode>);
+    root.render(<StrictMode><SurfaceErrorBoundary><DemoSpaceApp /></SurfaceErrorBoundary></StrictMode>);
     return route;
   }
   const [{ LiveSpaceApp }, { readUiTheme }] = await Promise.all([
     import("./live/LiveSpaceApp.js"),
     import("./ui-theme.js")
   ]);
-  if (readUiTheme(window.localStorage) === "modern") {
+  if (readUiTheme(window.localStorage) !== "classic") {
     await import("./features/ui-theme/modern-theme.css");
+    await import("./features/ui-theme/codex-theme.css");
   }
-  root.render(<StrictMode><LiveSpaceApp /></StrictMode>);
+  root.render(<StrictMode><SurfaceErrorBoundary><LiveSpaceApp /></SurfaceErrorBoundary></StrictMode>);
   return route;
 }
 
@@ -54,5 +58,7 @@ void mount()
   })
   .catch((error: unknown) => {
     const route = resolveEntryRoute(window.location.pathname, window.location.hostname);
-    if (route !== "app" || !handleStaleBuildLoadError(error)) throw error;
+    if (route !== "app" || !handleStaleBuildLoadError(error)) {
+      renderReloadFallback(null, () => window.location.reload(), "Space could not load. Check your connection and try again.");
+    }
   });

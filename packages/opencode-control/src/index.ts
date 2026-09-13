@@ -39,6 +39,7 @@ export interface OpenCodeServerControl {
 
 export interface OpenCodeModelDescriptor {
   providerId: string;
+  providerName?: string;
   modelId: string;
   displayName: string;
   variants: string[];
@@ -130,7 +131,7 @@ function openCodeServerAuthorization(control: OpenCodeServerControl): string {
   return `Basic ${Buffer.from(`${control.serverUsername}:${control.serverPassword}`).toString("base64")}`;
 }
 
-async function openCodeServerFetch(
+export async function openCodeServerFetch(
   control: OpenCodeServerControl,
   path: string,
   init: RequestInit = {},
@@ -166,6 +167,7 @@ interface OpenCodeProviderModel {
   enabled?: boolean;
   variants?: unknown;
   defaultVariant?: unknown;
+  request?: { variant?: unknown };
 }
 
 interface OpenCodeModelCatalogPayload {
@@ -174,12 +176,36 @@ interface OpenCodeModelCatalogPayload {
 
 function parseOpenCodeModelVariants(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
-  return raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+  return [...new Set(raw.flatMap((entry) => {
+    const id = typeof entry === 'string' ? entry : entry && typeof entry === 'object' ? entry.id : null;
+    return typeof id === 'string' && id.length > 0 ? [id] : [];
+  }))];
 }
 
 export async function fetchOpenCodeSessionModels(
-  control: OpenCodeServerControl
+  control: OpenCodeServerControl,
+  directory = '/etc'
 ): Promise<OpenCodeModelDescriptor[]> {
+  // The attached TUI resolves its configured catalog here. The v2 model list
+  // can contain unconfigured entries without the native reasoning variants.
+  const configured = await openCodeServerFetch(control, `/config/providers?directory=${encodeURIComponent(directory)}`);
+  if (configured.ok) {
+    const payload = await configured.json() as {providers?: Array<{id?: unknown; name?: string; models?: Record<string, {
+      id?: string; name?: string; status?: string; variants?: Record<string, unknown>
+    }>}>};
+    const models = (Array.isArray(payload.providers) ? payload.providers : []).flatMap(provider => {
+      if (typeof provider.id !== 'string' || !provider.models || typeof provider.models !== 'object') return [];
+      return Object.entries(provider.models).flatMap(([id, model]) => {
+        if (!model || model.status === 'deprecated') return [];
+        const variants = model.variants && typeof model.variants === 'object' && !Array.isArray(model.variants)
+          ? Object.keys(model.variants) : [];
+        return [{providerId:provider.id as string,providerName:provider.name ?? provider.id as string,modelId:model.id ?? id,displayName:model.name ?? id,variants,defaultVariant:null}];
+      });
+    });
+    if (models.length) return models;
+  } else if (configured.status !== 404 && configured.status !== 405) {
+    throw new Error(`OpenCode configured model catalog failed with HTTP ${configured.status}.`);
+  }
   const response = await openCodeServerFetch(control, "/api/model");
   if (!response.ok) {
     throw new Error(`OpenCode model catalog request failed with HTTP ${response.status}.`);
@@ -197,7 +223,8 @@ export async function fetchOpenCodeSessionModels(
     modelId: model.id,
     displayName: typeof model.name === "string" && model.name.length > 0 ? model.name : model.id,
     variants: parseOpenCodeModelVariants(model.variants),
-    defaultVariant: typeof model.defaultVariant === "string" && model.defaultVariant.length > 0 ? model.defaultVariant : null
+    defaultVariant: typeof model.defaultVariant === "string" && model.defaultVariant.length > 0 ? model.defaultVariant
+      : typeof model.request?.variant === 'string' && model.request.variant.length > 0 ? model.request.variant : null
   }));
 }
 
@@ -209,22 +236,29 @@ interface OpenCodeSessionModel {
 
 interface OpenCodeSessionPayload {
   model?: OpenCodeSessionModel | null;
+  data?: { model?: OpenCodeSessionModel | null };
 }
 
 export async function fetchOpenCodeCurrentModel(
   control: OpenCodeServerControl,
   nativeSessionId: string
 ): Promise<OpenCodeSessionModel | null> {
-  const response = await openCodeServerFetch(control, `/session/${encodeURIComponent(nativeSessionId)}`);
-  if (!response.ok) return null;
-  const session = (await response.json()) as OpenCodeSessionPayload;
-  const model = session?.model;
-  if (!model || typeof model.id !== "string" || model.id.length === 0) return null;
-  return {
-    id: model.id,
-    providerID: typeof model.providerID === "string" && model.providerID.length > 0 ? model.providerID : "opencode",
-    variant: typeof model.variant === "string" && model.variant.length > 0 ? model.variant : null
-  };
+  for (const prefix of ['/session/', '/api/session/']) {
+    const response = await openCodeServerFetch(control, `${prefix}${encodeURIComponent(nativeSessionId)}`);
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 405) continue;
+      return null;
+    }
+    const session = (await response.json()) as OpenCodeSessionPayload;
+    const model = session?.data?.model ?? session?.model;
+    if (!model || typeof model.id !== "string" || model.id.length === 0) continue;
+    return {
+      id: model.id,
+      providerID: typeof model.providerID === "string" && model.providerID.length > 0 ? model.providerID : "opencode",
+      variant: typeof model.variant === "string" && model.variant.length > 0 ? model.variant : null
+    };
+  }
+  return null;
 }
 
 export interface OpenCodeSessionTitleInfo {
@@ -633,7 +667,10 @@ export async function switchOpenCodeSessionModel(
 ): Promise<void> {
   const model: Record<string, string> = { id: modelId, providerID: providerId };
   const namedVariant = typeof variant === "string" && variant.length > 0 ? variant : null;
-  if (namedVariant !== null && (advertisedVariants ?? []).includes(namedVariant)) {
+  // The server accepts the pseudo-effort "default" as an explicit variant and
+  // round-trips it; omitting it instead would keep a stale variant, making a
+  // requested Default unsatisfiable once any variant was set.
+  if (namedVariant !== null && (namedVariant === "default" || (advertisedVariants ?? []).includes(namedVariant))) {
     model.variant = namedVariant;
   }
   const response = await openCodeServerFetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}/model`, {

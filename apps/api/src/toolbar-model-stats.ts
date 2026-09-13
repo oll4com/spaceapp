@@ -75,7 +75,7 @@ export async function resolveOpenCodeDbPath(stateRoot: string): Promise<string |
   return null;
 }
 
-async function runSqliteJson<T>(dbPath: string, sql: string): Promise<T[]> {
+export async function runSqliteJson<T>(dbPath: string, sql: string): Promise<T[]> {
   try {
     const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", dbPath, sql], {
       timeout: sqliteTimeoutMs,
@@ -423,7 +423,26 @@ export function parseCodexRolloutStats(
 }
 
 export async function resolveCodexRolloutPaths(threadIds: string[], codexHome: string): Promise<Map<string, string>> {
-  const candidates = [join(codexHome, "state_5.sqlite")];
+  const byThread = new Map<string, string>();
+  const requestedIds = new Set(threadIds);
+  if (requestedIds.size === 0) return byThread;
+  const placeholders = [...requestedIds].map(sqliteQuote).join(", ");
+  const sql = `select id, rollout_path from threads where id in (${placeholders});`;
+  const readPaths = async (dbPath: string) => {
+    try {
+      const rows = await runSqliteJson<{ id?: unknown; rollout_path?: unknown }>(dbPath, sql);
+      for (const row of rows) {
+        const id = stringValue(row.id);
+        const path = stringValue(row.rollout_path);
+        if (requestedIds.has(id) && path && !byThread.has(id)) byThread.set(id, path);
+      }
+    } catch {
+      // A broken state DB must not fail the whole room sample.
+    }
+  };
+  await readPaths(join(codexHome, "state_5.sqlite"));
+  if (byThread.size === requestedIds.size) return byThread;
+  const candidates: string[] = [];
   try {
     const homes = await readdir(join(codexHome, "space-codex-homes")).catch(() => []);
     for (const home of homes.slice(0, codexStateDbCandidatesMax)) {
@@ -438,10 +457,31 @@ export async function resolveCodexRolloutPaths(threadIds: string[], codexHome: s
   } catch {
     // No per-home state DBs.
   }
+  for (const dbPath of candidates) {
+    await readPaths(dbPath);
+    if (byThread.size === requestedIds.size) break;
+  }
+  return byThread;
+}
+
+export async function resolveRecentCodexRollouts(
+  sinceMs: number,
+  codexHome: string
+): Promise<Array<{ threadId: string; rolloutPath: string }>> {
+  const candidates = [join(codexHome, "state_5.sqlite")];
+  try {
+    const homes = await readdir(join(codexHome, "space-codex-homes")).catch(() => []);
+    for (const home of homes.slice(0, codexStateDbCandidatesMax)) {
+      const dbPath = join(codexHome, "space-codex-homes", home, "state_5.sqlite");
+      try {
+        const metadata = await stat(dbPath);
+        if (metadata.isFile() && metadata.size > 0) candidates.push(dbPath);
+      } catch {}
+    }
+  } catch {}
+  const sinceSec = Math.floor(sinceMs / 1000);
   const byThread = new Map<string, string>();
-  if (threadIds.length === 0) return byThread;
-  const placeholders = threadIds.map((_, index) => `$${index + 1}`).join(", ");
-  const sql = `select id, rollout_path from threads where id in (${placeholders});`;
+  const sql = `select id, rollout_path from threads where updated_at >= ${sinceSec} order by updated_at desc limit 200;`;
   for (const dbPath of candidates) {
     try {
       const rows = await runSqliteJson<{ id?: unknown; rollout_path?: unknown }>(dbPath, sql);
@@ -450,11 +490,9 @@ export async function resolveCodexRolloutPaths(threadIds: string[], codexHome: s
         const path = stringValue(row.rollout_path);
         if (id && path && !byThread.has(id)) byThread.set(id, path);
       }
-    } catch {
-      // A broken state DB must not fail the whole room sample.
-    }
+    } catch {}
   }
-  return byThread;
+  return [...byThread.entries()].map(([threadId, rolloutPath]) => ({ threadId, rolloutPath }));
 }
 
 export async function readCodexRolloutTail(path: string): Promise<string> {
@@ -494,6 +532,10 @@ export async function collectCodexModelStats(input: {
   now: () => Date;
   codexHome: string;
 }): Promise<ToolbarModelStatsModel[]> {
+  const paths = await resolveCodexRolloutPaths(
+    input.sessions.flatMap((session) => session.codexThreadId ? [session.codexThreadId] : []),
+    input.codexHome
+  );
   const merged = new Map<string, {
     modelId: string;
     providerId: string;
@@ -507,7 +549,7 @@ export async function collectCodexModelStats(input: {
   }>();
   for (const session of input.sessions) {
     try {
-      const rolloutPath = await resolveSessionRolloutPath(session, input.codexHome);
+      const rolloutPath = session.codexThreadId ? paths.get(session.codexThreadId) : undefined;
       if (!rolloutPath) continue;
       const parsed = parseCodexRolloutStats(
         await readCodexRolloutTail(rolloutPath),

@@ -227,6 +227,8 @@ export interface RunCodexAppServerStdioTurnSessionOptions {
   goalObjective?: string | null;
   serverRequestHandler?: CodexAppServerServerRequestHandler;
   signal?: AbortSignal;
+  /** Worker shutdown may detach for durable retry; operator Stop interrupts. */
+  shouldInterruptOnAbort?: (reason: unknown) => boolean;
   spawnProcess?: CodexAppServerStdioProcessFactory;
   resumeTurnId?: string | null;
   recoveryMarker?: string;
@@ -293,20 +295,24 @@ export interface CodexAppServerControlService {
 }
 
 export type CodexAppServerSocketRpcMethod =
+  | "account/rateLimits/read"
   | "initialize"
   | "model/list"
   | "thread/list"
   | "thread/read"
   | "thread/settings/update"
+  | "thread/name/set"
   | "turn/interrupt"
   | "turn/start";
 
 const allowedCodexAppServerSocketRpcMethods = new Set<CodexAppServerSocketRpcMethod>([
+  "account/rateLimits/read",
   "initialize",
   "model/list",
   "thread/list",
   "thread/read",
   "thread/settings/update",
+  "thread/name/set",
   "turn/interrupt",
   "turn/start"
 ]);
@@ -333,6 +339,8 @@ export const CODEX_IMAGE_ATTACHMENT_SEED_ACKNOWLEDGEMENT = "The attachments are 
 export type CodexReasoningEffort = string;
 
 const codexModelIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+// Hidden upstream experiments stay private unless the operator explicitly enables one for Space.
+const explicitlySelectableHiddenCodexModelIds = new Set(["gpt-6-astra"]);
 const codexReasoningIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 
 function boundedProviderText(value: unknown, maxLength: number): string | undefined {
@@ -370,6 +378,9 @@ export interface CodexAppServerSocketStartedTurn {
 }
 
 export interface CodexAppServerSocketControlService {
+  readRateLimits?(): Promise<{source:"NATIVE_ACCOUNT";checkedAt:string;windows:Array<{usedPercent:number;resetsAt:number|null}>;blocked:boolean}>;
+  getThreadName?(threadId: string): Promise<string | null>;
+  renameThread?(input: {threadId: string; name: string}): Promise<string>;
   listModels(): Promise<CodexAppServerSocketModelOption[]>;
   updateThreadSettings(input: { threadId: string; model: string; reasoningEffort: CodexReasoningEffort }): Promise<void>;
   interruptTurn(input: { threadId: string; turnId: string }): Promise<void>;
@@ -648,6 +659,7 @@ interface CodexAppServerProtocolOptions {
   clientInfo?: CodexAppServerClientInfo;
   timeoutMs?: number | null;
   signal?: AbortSignal;
+  shouldInterruptOnAbort?: (reason: unknown) => boolean;
   spawnProcess?: CodexAppServerStdioProcessFactory;
   serverRequestHandler?: CodexAppServerServerRequestHandler;
 }
@@ -715,9 +727,14 @@ function runCodexAppServerStdioProtocol<T>(
     let stdoutBuffer = "";
     let settled = false;
     let nextRequestId = 0;
+    let activeTurn: { threadId: string; turnId: string } | null = null;
+    let cancellation: Error | null = null;
+    let cancellationTimer: ReturnType<typeof setTimeout> | null = null;
+    let interruptRequestId: number | null = null;
     let pendingRequest: {
       id: number;
       method: CodexAppServerAllowedRpcMethod;
+      params?: Record<string, unknown>;
       resolve(value: unknown): void;
       reject(error: Error): void;
     } | null = null;
@@ -730,16 +747,34 @@ function runCodexAppServerStdioProtocol<T>(
       : setTimeout(() => {
           finish(new Error("Codex App Server thread and turn session timed out."));
         }, options.timeoutMs ?? 60000);
-    const abortListener = () => finish(protocolCancellationError(options.signal!));
+    function interruptActiveTurn(): void {
+      if (!cancellation || !activeTurn || interruptRequestId !== null || pendingRequest) return;
+      interruptRequestId = nextRequestId++;
+      // Cancellation is a control request, never another prompt. Keep the
+      // transport alive until the matching native terminal event is received.
+      send({ method: "turn/interrupt", id: interruptRequestId, params: activeTurn });
+    }
+    const abortListener = () => {
+      cancellation = protocolCancellationError(options.signal!);
+      if (options.shouldInterruptOnAbort?.(options.signal!.reason) === false ||
+          (!activeTurn && pendingRequest?.method !== "turn/start")) {
+        finish(cancellation, undefined, true);
+        return;
+      }
+      cancellationTimer = setTimeout(() => finish(cancellation, undefined, true), 5_000);
+      interruptActiveTurn();
+    };
 
     function send(message: unknown): void {
       child.stdin.write(`${JSON.stringify(message)}\n`);
     }
 
-    function finish(error: Error | null, value?: T): void {
+    function finish(error: Error | null, value?: T, force = false): void {
       if (settled) return;
+      if (cancellation && !force) return;
       settled = true;
       if (timeout) clearTimeout(timeout);
+      if (cancellationTimer) clearTimeout(cancellationTimer);
       options.signal?.removeEventListener("abort", abortListener);
       child.kill("SIGTERM");
       if (error) {
@@ -764,6 +799,7 @@ function runCodexAppServerStdioProtocol<T>(
         return settled;
       },
       request(method, params) {
+        if (cancellation) return Promise.reject(cancellation);
         try {
           assertCodexAppServerRpcMethodAllowed(method);
         } catch (error) {
@@ -778,6 +814,7 @@ function runCodexAppServerStdioProtocol<T>(
           pendingRequest = {
             id,
             method,
+            params,
             resolve: resolveRequest,
             reject: rejectRequest
           };
@@ -809,12 +846,27 @@ function runCodexAppServerStdioProtocol<T>(
             .catch(() => finish(new Error("Codex App Server server request handling failed.")));
           return;
         }
+        const params = asRecord(message.params);
+        const turn = asRecord(params?.turn);
+        const threadId = stringField(params, "threadId");
+        const turnId = stringField(turn, "id");
+        if (message.method === "turn/started" && threadId && turnId && !cancellation) activeTurn = { threadId, turnId };
+        const completedActiveTurn = message.method === "turn/completed" && threadId === activeTurn?.threadId && turnId === activeTurn?.turnId;
         onNotification?.(message);
         const waiters = notificationWaiters.get(message.method);
         if (waiters?.length) {
           notificationWaiters.delete(message.method);
           for (const waiter of waiters) waiter.resolve(message);
         }
+        if (completedActiveTurn) {
+          activeTurn = null;
+          if (cancellation) finish(cancellation, undefined, true);
+        }
+        return;
+      }
+      if (interruptRequestId !== null && message.id === interruptRequestId) {
+        // An acknowledgement is not a completed native interruption.
+        if (message.error) finish(cancellation, undefined, true);
         return;
       }
       if (message.id === undefined || !pendingRequest || message.id !== pendingRequest.id) {
@@ -823,10 +875,20 @@ function runCodexAppServerStdioProtocol<T>(
       }
       const request = pendingRequest;
       pendingRequest = null;
+      if (!message.error && request.method === "turn/start") {
+        const turn = asRecord(asRecord(message.result)?.turn);
+        const threadId = stringField(request.params ?? null, "threadId");
+        const turnId = stringField(turn, "id");
+        if (threadId && turnId && stringField(turn, "status") === "inProgress") activeTurn = { threadId, turnId };
+      }
       if (message.error) {
         request.reject(remoteRpcError(request.method, message.error));
       } else {
         request.resolve(message.result);
+      }
+      if (cancellation) {
+        if (activeTurn) interruptActiveTurn();
+        else finish(cancellation, undefined, true);
       }
     }
 
@@ -1201,11 +1263,24 @@ export async function runCodexAppServerStdioTurnSession(
       );
       let threadId = options.threadId ?? null;
       if (threadId) {
-        const result = asRecord(await client.request("thread/resume", {
+        const resumeParams = {
           threadId,
           ...threadRuntimeParams(options),
           ...permissionRuntimeParams(permissionMode)
-        }));
+        };
+        let resumed: unknown;
+        try {
+          resumed = await client.request("thread/resume", resumeParams);
+        } catch (error) {
+          // Stop/unload can briefly race a new operator follow-up. Retry only
+          // the rejected resume RPC, once, before any turn/input is submitted.
+          // Never replace a stored conversation for a generic resume failure.
+          if (!(error instanceof Error) || error.message !== "Codex App Server thread/resume returned an error.") throw error;
+          await new Promise(resolve => setTimeout(resolve, 500));
+          options.signal?.throwIfAborted();
+          resumed = await client.request("thread/resume", resumeParams);
+        }
+        const result = asRecord(resumed);
         threadId = stringField(asRecord(result?.thread), "id");
       } else {
         const result = asRecord(await client.request("thread/start", {
@@ -1926,7 +2001,13 @@ function parseSocketModelPage(result: unknown): { data: CodexAppServerSocketMode
     throw new Error("Codex App Server model/list response was invalid.");
   }
   return {
-    data: record.data.map(parseSocketModelOption),
+    data: record.data
+      .filter((value) => {
+        const model = asRecord(value);
+        const id = stringField(model, "model") ?? stringField(model, "id");
+        return model?.hidden !== true || (id !== null && explicitlySelectableHiddenCodexModelIds.has(id));
+      })
+      .map(parseSocketModelOption),
     nextCursor: typeof nextCursor === "string" && nextCursor.length > 0 ? nextCursor : null
   };
 }
@@ -1953,12 +2034,46 @@ export function createCodexAppServerSocketControlService(
   options: CodexAppServerSocketControlServiceOptions
 ): CodexAppServerSocketControlService {
   return {
+    getThreadName: (id) => runCodexAppServerSocketProtocol(options, async (client) => {
+      const threadId = requiredSocketIdentifier(id, "thread id");
+      const result = asRecord(await client.request("thread/read", { threadId, includeTurns: false }));
+      const thread = asRecord(result?.thread);
+      if (thread?.id !== threadId) throw new Error("Native thread identity was not confirmed");
+      if (thread.name === null || thread.name === undefined) return null;
+      if (typeof thread.name !== "string" || thread.name.length > 160) throw new Error("Invalid native thread name");
+      return thread.name.trim() || null;
+    }),
+    readRateLimits: () => runCodexAppServerSocketProtocol(options, async(client)=>{
+      const result=asRecord(await client.request("account/rateLimits/read", undefined));
+      const limits=asRecord(result?.rateLimits);
+      if(!limits)throw new Error("Native account limits are unavailable.");
+      const windows=[limits.primary,limits.secondary].flatMap(raw=>{
+        if(raw===null||raw===undefined)return [];
+        const value=asRecord(raw);
+        if(typeof value?.usedPercent!=="number"||!Number.isFinite(value.usedPercent)||value.usedPercent<0||value.usedPercent>100)
+          throw new Error("Native account limit window is invalid.");
+        const reset=value.resetsAt;
+        if(reset!==null&&(typeof reset!=="number"||!Number.isSafeInteger(reset)||reset<0))throw new Error("Native reset timestamp is invalid.");
+        return [{usedPercent:value.usedPercent,resetsAt:reset as number|null}];
+      });
+      return {source:"NATIVE_ACCOUNT" as const,checkedAt:new Date().toISOString(),windows,blocked:Boolean(limits.rateLimitReachedType)||windows.some(w=>w.usedPercent>=100)};
+    }),
+    renameThread: (input) => runCodexAppServerSocketProtocol(options, async (client) => {
+      const threadId=requiredSocketIdentifier(input.threadId,"thread id");
+      const name=input.name.trim();
+      if(!name||name.length>120||/[\u0000-\u001f]/.test(name))throw new Error("Invalid thread name");
+      await client.request("thread/name/set",{threadId,name});
+      const result=asRecord(await client.request("thread/read",{threadId,includeTurns:false}));
+      const thread=asRecord(result?.thread);
+      if(thread?.name!==name)throw new Error("Native thread name was not confirmed");
+      return name;
+    }),
     listModels: () => runCodexAppServerSocketProtocol(options, async (client) => {
       const models = new Map<string, CodexAppServerSocketModelOption>();
       let cursor: string | null = null;
       do {
         const page = parseSocketModelPage(await client.request("model/list", {
-          includeHidden: false,
+          includeHidden: true,
           cursor,
           limit: 100
         }));
@@ -2020,7 +2135,7 @@ export function createCodexAppServerControlService(
       let cursor: string | null = null;
       do {
         const page = parseSocketModelPage(await client.request("model/list", {
-          includeHidden: false,
+          includeHidden: true,
           cursor,
           limit: 100
         }));

@@ -2,7 +2,7 @@ import type {
   SourceControlConnection,
   SourceControlProvider
 } from "@space/contracts";
-import { CheckCircle2, GitBranch, Loader2, RefreshCw, Unplug } from "../ui-theme/app-icons.js";
+import { CheckCircle2, GitBranch, Loader2, RefreshCw, Unplug, Lock } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api.js";
 import { SettingsActionMenu } from "../settings/SettingsActionMenu.js";
@@ -40,6 +40,7 @@ export function SourceControlPublishingCard({
     gitea: "",
     github: ""
   });
+  const [editingProvider, setEditingProvider] = useState<SourceControlProvider | null>(null);
   const [loading, setLoading] = useState(false);
   const [pendingProvider, setPendingProvider] = useState<SourceControlProvider | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState<SourceControlProvider | null>(null);
@@ -89,6 +90,7 @@ export function SourceControlPublishingCard({
     setFeedback(null);
     try {
       updateConnection(await client.replaceSourceControlConnection(provider, token));
+      setEditingProvider(null);
       setFeedback(`${providerLabel(provider)} publishing credential was verified and stored securely.`);
     } catch (reason) {
       setError(errorMessage(reason, `${providerLabel(provider)} publishing credential was rejected.`));
@@ -174,6 +176,15 @@ export function SourceControlPublishingCard({
                       disabled={Boolean(pendingProvider)}
                       actions={[
                         {
+                          id: "replace",
+                          label: `Replace ${label} token`,
+                          icon: Lock,
+                          onSelect: () => {
+                            setTokens({ gitea: "", github: "" });
+                            setEditingProvider(provider);
+                          }
+                        },
+                        {
                           id: "verify",
                           label: `Verify ${label}`,
                           icon: RefreshCw,
@@ -198,7 +209,7 @@ export function SourceControlPublishingCard({
                 </p>
               ) : null}
 
-              <form aria-label={`Connect ${label} publishing`} onSubmit={(event) => void save(provider, event)}>
+              {editingProvider === provider ? <form aria-label={`Connect ${label} publishing`} onSubmit={(event) => void save(provider, event)}>
                 <label>
                   <span>{label} access token</span>
                   <input
@@ -207,6 +218,7 @@ export function SourceControlPublishingCard({
                     aria-label={`${label} access token`}
                     autoComplete="new-password"
                     spellCheck={false}
+                    autoFocus
                     value={tokens[provider]}
                     disabled={Boolean(pendingProvider)}
                     onChange={(event) => {
@@ -222,8 +234,17 @@ export function SourceControlPublishingCard({
                   disabled={Boolean(pendingProvider) || tokens[provider].trim().length < 20}
                 >
                   {pending ? <Loader2 className="spin" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
+                  {connected ? "Replace and verify" : "Save and verify"}
                 </button>
-              </form>
+                <button type="button" disabled={Boolean(pendingProvider)} onClick={() => {
+                  setTokens(current => ({ ...current, [provider]: "" }));
+                  setEditingProvider(null);
+                }}>Cancel</button>
+              </form> : !connection?.secretConfigured ? <button type="button" disabled={Boolean(pendingProvider)}
+                onClick={() => {
+                  setTokens({ gitea: "", github: "" });
+                  setEditingProvider(provider);
+                }}>Connect {label}</button> : null}
 
               {confirmDisconnect === provider ? (
                 <div className="source-control-disconnect-confirmation" role="alertdialog" aria-label={`Confirm ${label} disconnect`}>

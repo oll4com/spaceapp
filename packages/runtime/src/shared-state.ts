@@ -15,6 +15,7 @@ import {
   type MemoryEntry,
   type UpdateCodexGoalTaskInput
 } from "@space/contracts";
+import { createCanonicalMemoryReader } from "./canonical-memory-reader.js";
 import { nowIso, redactMemoryText } from "./store.js";
 
 const execFileAsync = promisify(execFile);
@@ -64,59 +65,12 @@ export function resolveCanonicalGeminiMemoryPaths(
   };
 }
 
-function memoryReferenceMatchesQuery(text: string, query: string): boolean {
-  const normalizedText = text.toLowerCase();
-  const normalizedQuery = query.toLowerCase();
-  if (normalizedText.includes(normalizedQuery)) return true;
-  const terms = normalizedQuery.split(/\s+/).filter((term) => term.length >= 3);
-  return terms.length > 0 && terms.every((term) => normalizedText.includes(term));
-}
-
-function canonicalMemoryId(path: string, line: string): string {
-  return `gemini_memory:${createHash("sha256").update(`${path}\n${line}`).digest("hex").slice(0, 24)}`;
-}
-
-function canonicalMemoryEntry(path: string, line: string): MemoryEntry {
-  const titleSource = line.replace(/^#+\s*/, "").replace(/^[-*]\s*/, "").trim() || basename(path, ".md");
-  return memoryEntrySchema.parse({
-    id: canonicalMemoryId(path, line),
-    scope: "SYSTEM",
-    roomId: null,
-    title: redactMemoryText(titleSource).slice(0, 160),
-    body: redactMemoryText(line).slice(0, 10000),
-    provenance: path,
-    createdAt: nowIso()
-  });
-}
-
 async function readCanonicalFile(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, "utf8");
-  } catch {
-    return null;
+  try { return await readFile(path, "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
-}
-
-async function listCanonicalGeminiMemory(paths: CanonicalGeminiMemoryPaths, query: ListMemoryQuery): Promise<MemoryEntry[]> {
-  const uniquePaths = Array.from(new Set([paths.monthlyPath, paths.indexPath]));
-  const entries: MemoryEntry[] = [];
-  for (const path of uniquePaths) {
-    const text = await readCanonicalFile(path);
-    if (!text) continue;
-    const lines = text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    const matches = lines.filter((line) => {
-      if (!query.q) return line.startsWith("## ") || line.startsWith("- ");
-      return memoryReferenceMatchesQuery(line, query.q);
-    });
-    for (const line of matches) {
-      entries.push(canonicalMemoryEntry(path, line));
-      if (entries.length >= canonicalMemoryListLimit) return entries;
-    }
-  }
-  return entries;
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -154,10 +108,10 @@ function canonicalAppendBlock(
   traceId: string | undefined,
   createdAt: string
 ): { block: string; body: string; id: string; title: string } {
-  const title = redactMemoryText(input.title).slice(0, 160);
+  const title = redactMemoryText(input.title).replace(/[\r\n]+/g, " ").slice(0, 160);
   const body = redactMemoryText(input.body).slice(0, 10000);
   const id = `gemini_memory:${createHash("sha256").update(`${path}\n${createdAt}\n${title}\n${body}`).digest("hex").slice(0, 24)}`;
-  const provenance = redactMemoryText(input.provenance).slice(0, 500);
+  const provenance = redactMemoryText(input.provenance).replace(/[\r\n]+/g, " ").slice(0, 500);
   const roomSuffix = input.roomId ? `, room=${input.roomId}` : "";
   const date = createdAt.slice(0, 10);
   const tagLine = input.tags?.length
@@ -168,8 +122,9 @@ function canonicalAppendBlock(
     `## ${date} - Space canonical memory: ${title}`,
     "",
     `- Source: Space API memory.save; original_scope=${input.scope}${roomSuffix}; provenance=${provenance}; trace=${traceId ?? "none"}.`,
+    `- created_at=${createdAt}`,
     ...tagLine,
-    `- ${body}`,
+    `- ${body.replace(/\r?\n/g, "\n  ")}`,
     ""
   ];
   return { block: lines.join("\n"), body, id, title };
@@ -192,8 +147,8 @@ async function appendCanonicalGeminiMemory(
   });
   return memoryEntrySchema.parse({
     id,
-    scope: "SYSTEM",
-    roomId: null,
+    scope: input.scope,
+    roomId: input.scope === "ROOM" ? input.roomId ?? null : null,
     title,
     body,
     provenance: paths.monthlyPath,
@@ -203,7 +158,7 @@ async function appendCanonicalGeminiMemory(
 
 export function createCanonicalGeminiMemoryBridge(paths: CanonicalGeminiMemoryPaths): CanonicalMemoryBridge {
   return {
-    list: (query) => listCanonicalGeminiMemory(paths, query),
+    list: createCanonicalMemoryReader(paths),
     save: (input, traceId) => appendCanonicalGeminiMemory(paths, input, traceId)
   };
 }

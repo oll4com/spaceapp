@@ -54,6 +54,7 @@ async function hostCall<T>(operation: () => Promise<T>): Promise<T> {
 export function createBrowserHostProxy(options: {
   config: SpaceApiConfig;
   client?: BrowserHostClient;
+  inputClient?: BrowserHostClient;
 }): BrowserSessionManagerWithHostHealth {
   const { config } = options;
   const client = options.client ?? new BrowserHostClient({
@@ -62,6 +63,11 @@ export function createBrowserHostProxy(options: {
     healthTimeoutMs: 3_000,
     closeTimeoutMs: 1_000
   });
+  // The host orders requests per socket. Keep interactive input independent
+  // from slower screenshots, navigation and diagnostics on the shared client.
+  const inputClient = options.inputClient ?? (options.client ? client : new BrowserHostClient({
+    socketPath: config.browserHostSocketPath, requestTimeoutMs: 5_000, closeTimeoutMs: 1_000
+  }));
   const tickets = new Map<string, LocalFrameTicket>();
   let lastHealth: BrowserHostHealth | null = null;
 
@@ -110,7 +116,7 @@ export function createBrowserHostProxy(options: {
       return response ? withLocalTicket(response) : null;
     },
     async navigate(pane, url, traceId, context) { return withLocalTicket(await hostCall(() => client.navigate(pane, url, traceId, context))); },
-    async setViewport(pane, viewport, traceId, context) { return withLocalTicket(await hostCall(() => client.setViewport(pane, viewport, traceId, context))); },
+    async setViewport(pane, viewport, traceId, context, dimensions) { return withLocalTicket(await hostCall(() => client.setViewport(pane, viewport, traceId, context, dimensions))); },
     async setStreamMode(pane, mode, traceId, context) { return withLocalTicket(await hostCall(() => client.setStreamMode(pane, mode, traceId, context))); },
     action(pane, input, traceId, context?: BrowserHostActorContext) { return hostCall(() => client.action(pane, input, traceId, context)); },
     captureFrame(sessionId) { return hostCall(() => client.captureFrame(sessionId)); },
@@ -123,7 +129,7 @@ export function createBrowserHostProxy(options: {
     acquireControl(pane, input, traceId, context) { return hostCall(() => client.acquireControl(pane, input, traceId, context)); },
     heartbeatControl(pane, input, traceId, context) { return hostCall(() => client.heartbeatControl(pane, input, traceId, context)); },
     releaseControl(pane, input, traceId, context) { return hostCall(() => client.releaseControl(pane, input, traceId, context)); },
-    dispatchInput(pane, input, traceId, context) { return hostCall(() => client.dispatchInput(pane, input, traceId, context)); },
+    dispatchInput(pane, input, traceId, context) { return hostCall(() => inputClient.dispatchInput(pane, input, traceId, context)); },
     input(pane, input, traceId, context) { return hostCall(() => client.input(pane, input, traceId, context)); },
     createCapture(pane, captureOptions, context) { return hostCall(() => client.createCapture(pane, captureOptions, context)); },
     getCapture(pane, jobId) { return hostCall(() => client.getCapture(pane, jobId)); },
@@ -138,6 +144,7 @@ export function createBrowserHostProxy(options: {
     },
     async closeAll() {
       await client.close();
+      if (inputClient !== client) await inputClient.close();
     },
     issueFrameTicket,
     issueAudioTicket: issueFrameTicket,

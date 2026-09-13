@@ -8,6 +8,7 @@ import type {
   AppDiagnosticsCollector,
   AppDiagnosticsCollectorStats
 } from "./app-diagnostics-collector.js";
+import { cacheAuthBootstrap } from "../auth-bootstrap-cache.js";
 
 export const APP_DIAGNOSTICS_HINT_STORAGE_KEY = "space.appDiagnostics.enabledHint.v1";
 export const APP_DIAGNOSTICS_CLIENT_ID_STORAGE_KEY = "space.appDiagnostics.clientId.v1";
@@ -328,13 +329,19 @@ let defaultBootstrap: AppDiagnosticsBootstrap | null = null;
 export async function appDiagnosticsSessionIsAuthenticated(
   fetchImpl: typeof fetch = window.fetch.bind(window)
 ): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
   try {
-    const response = await fetchImpl("/api/auth/me", { credentials: "include" });
+    const response = await fetchImpl("/api/auth/me", { credentials: "include", signal: controller.signal });
     if (!response.ok) return false;
     const parsed = authMeSchema.safeParse(await response.json());
-    return parsed.success && parsed.data.isAuthenticated;
+    if (!parsed.success) return false;
+    cacheAuthBootstrap(parsed.data);
+    return parsed.data.isAuthenticated;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

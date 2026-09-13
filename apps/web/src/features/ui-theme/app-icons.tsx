@@ -24,13 +24,17 @@ import {
   CircleHelp as LucideCircleHelp,
   CircleStop as LucideCircleStop,
   Clipboard as LucideClipboard,
+  ClipboardList as LucideClipboardList,
   Clock3 as LucideClock3,
+  CodeXml as LucideCodeXml,
+  Columns2 as LucideColumns2,
   Columns3 as LucideColumns3,
   Copy as LucideCopy,
   Cpu as LucideCpu,
   Crosshair as LucideCrosshair,
   Database as LucideDatabase,
   Download as LucideDownload,
+  Eraser as LucideEraser,
   ExternalLink as LucideExternalLink,
   Eye as LucideEye,
   EyeOff as LucideEyeOff,
@@ -48,11 +52,15 @@ import {
   Globe as LucideGlobe,
   Globe2 as LucideGlobe2,
   Grid2X2 as LucideGrid2X2,
+  Grid3X3 as LucideGrid3X3,
+  Github as LucideGithub,
   GripVertical as LucideGripVertical,
   HardDrive as LucideHardDrive,
+  Home as LucideHome,
   History as LucideHistory,
   Images as LucideImages,
   Keyboard as LucideKeyboard,
+  KeyRound as LucideKeyRound,
   LayoutDashboard as LucideLayoutDashboard,
   Link as LucideLink,
   ListFilter as LucideListFilter,
@@ -80,12 +88,15 @@ import {
   Paperclip as LucidePaperclip,
   Pause as LucidePause,
   Pencil as LucidePencil,
+  PictureInPicture as LucidePictureInPicture,
+  PictureInPicture2 as LucidePictureInPicture2,
   Pin as LucidePin,
   PinOff as LucidePinOff,
   Play as LucidePlay,
   Plus as LucidePlus,
   Printer as LucidePrinter,
   Radio as LucideRadio,
+  RectangleHorizontal as LucideRectangleHorizontal,
   Recycle as LucideRecycle,
   RefreshCw as LucideRefreshCw,
   Rocket as LucideRocket,
@@ -119,6 +130,7 @@ import {
   Users as LucideUsers,
   Video as LucideVideo,
   Volume2 as LucideVolume2,
+  VolumeX as LucideVolumeX,
   Wrench as LucideWrench,
   X as LucideX,
   Youtube as LucideYoutube,
@@ -204,13 +216,17 @@ const lucideIcons = {
   CircleHelp: LucideCircleHelp,
   CircleStop: LucideCircleStop,
   Clipboard: LucideClipboard,
+  ClipboardList: LucideClipboardList,
   Clock3: LucideClock3,
+  CodeXml: LucideCodeXml,
+  Columns2: LucideColumns2,
   Columns3: LucideColumns3,
   Copy: LucideCopy,
   Cpu: LucideCpu,
   Crosshair: LucideCrosshair,
   Database: LucideDatabase,
   Download: LucideDownload,
+  Eraser: LucideEraser,
   ExternalLink: LucideExternalLink,
   Eye: LucideEye,
   EyeOff: LucideEyeOff,
@@ -228,11 +244,14 @@ const lucideIcons = {
   Globe: LucideGlobe,
   Globe2: LucideGlobe2,
   Grid2X2: LucideGrid2X2,
+  Grid3X3: LucideGrid3X3,
   GripVertical: LucideGripVertical,
   HardDrive: LucideHardDrive,
+  Home: LucideHome,
   History: LucideHistory,
   Images: LucideImages,
   Keyboard: LucideKeyboard,
+  KeyRound: LucideKeyRound,
   LayoutDashboard: LucideLayoutDashboard,
   Link: LucideLink,
   ListFilter: LucideListFilter,
@@ -266,6 +285,7 @@ const lucideIcons = {
   Plus: LucidePlus,
   Printer: LucidePrinter,
   Radio: LucideRadio,
+  RectangleHorizontal: LucideRectangleHorizontal,
   RefreshCw: LucideRefreshCw,
   Rocket: LucideRocket,
   RotateCcw: LucideRotateCcw,
@@ -356,13 +376,17 @@ export const {
   CircleHelp,
   CircleStop,
   Clipboard,
+  ClipboardList,
   Clock3,
+  CodeXml,
+  Columns2,
   Columns3,
   Copy,
   Cpu,
   Crosshair,
   Database,
   Download,
+  Eraser,
   ExternalLink,
   Eye,
   EyeOff,
@@ -380,11 +404,14 @@ export const {
   Globe,
   Globe2,
   Grid2X2,
+  Grid3X3,
   GripVertical,
   HardDrive,
+  Home,
   History,
   Images,
   Keyboard,
+  KeyRound,
   LayoutDashboard,
   Link,
   ListFilter,
@@ -418,6 +445,7 @@ export const {
   Plus,
   Printer,
   Radio,
+  RectangleHorizontal,
   RefreshCw,
   Rocket,
   RotateCcw,
@@ -458,6 +486,9 @@ export const {
 
 // Keep the three-arrow restart glyph triangular in every icon pack.
 export const Recycle = LucideRecycle;
+export const PictureInPicture = LucidePictureInPicture;
+export const PictureInPicture2 = LucidePictureInPicture2;
+export const VolumeX = LucideVolumeX;
 
 const ChromeBrand = forwardRef<SVGSVGElement, LucideProps>(function ChromeBrand(props, ref) {
   return (
@@ -472,3 +503,17 @@ const ChromeBrand = forwardRef<SVGSVGElement, LucideProps>(function ChromeBrand(
 });
 ChromeBrand.displayName = "BrandIcon(Chrome)";
 export const Chrome = ChromeBrand as LucideIcon;
+
+const GithubBrand = forwardRef<SVGSVGElement, LucideProps>(function GithubBrand(props, ref) {
+  return (
+    <LucideGithub
+      {...props}
+      ref={ref}
+      className={["lucide-github", props.className].filter(Boolean).join(" ")}
+      data-brand-icon="github"
+      data-icon-pack="brand"
+    />
+  );
+});
+GithubBrand.displayName = "BrandIcon(Github)";
+export const Github = GithubBrand as LucideIcon;

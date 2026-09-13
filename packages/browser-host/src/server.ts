@@ -148,7 +148,8 @@ export async function createBrowserHostServer(options: {
 function handleConnection(socket: Socket, handler: BrowserHostRequestHandler, requestTimeoutMs?: number): void {
   const decoder = new BrowserHostFrameDecoder();
   const streams = new Map<string, BrowserHostAnyStreamHandle>();
-  let queue = Promise.resolve();
+  let barrier: Promise<void> = Promise.resolve();
+  const queues = new Map<string, Promise<void>>();
   socket.on("data", (chunk) => {
     let messages: unknown[];
     try {
@@ -158,7 +159,25 @@ function handleConnection(socket: Socket, handler: BrowserHostRequestHandler, re
       socket.destroy();
       return;
     }
-    for (const message of messages) queue = queue.then(() => handleRequest(socket, handler, streams, message, requestTimeoutMs)).catch(() => undefined);
+    for (const message of messages) {
+      const request = isRecord(message) ? message : {};
+      const params = isRecord(request.params) ? request.params : {};
+      const input = isRecord(params.input) ? params.input : {};
+      const pane = isRecord(params.pane) ? params.pane : isRecord(input.pane) ? input.pane : {};
+      const paneId = typeof pane.id === "string" ? pane.id : typeof params.paneId === "string" ? params.paneId : null;
+      const scope = paneId ? `pane:${paneId}` : typeof params.sessionId === "string" ? `session:${params.sessionId}` : null;
+      // Preserve ordering within a pane while unrelated browsers start in
+      // parallel. Unscoped mutations remain barriers; health never waits on
+      // a slow page load. handleRequest still validates every message.
+      const health = request.method === "health";
+      const predecessors = health ? [] : scope ? [barrier, queues.get(scope)] : [barrier, ...queues.values()];
+      const job = Promise.all(predecessors).then(() => handleRequest(socket, handler, streams, message, requestTimeoutMs)).catch(() => undefined);
+      if (health) continue;
+      if (scope) {
+        queues.set(scope, job);
+        void job.then(() => { if (queues.get(scope) === job) queues.delete(scope); });
+      } else barrier = job;
+    }
   });
   socket.once("close", () => {
     for (const stream of streams.values()) void stream.stop();

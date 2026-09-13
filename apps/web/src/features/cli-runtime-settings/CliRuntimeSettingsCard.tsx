@@ -31,6 +31,7 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { api, SpaceApiError } from "../../api.js";
 import { SettingsActionMenu, type SettingsActionMenuItem } from "../settings/SettingsActionMenu.js";
+import { SettingsDisclosure } from "../settings/SettingsDisclosure.js";
 import { useAutoDismiss, DEFAULT_NOTICE_DISMISS_MS } from "../../use-auto-dismiss.js";
 import { CLI_MAINTENANCE_PRESENTATIONS, cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import {
@@ -374,12 +375,14 @@ export function CliRuntimeSettingsCard({
   canManage,
   client = api,
   onOpenRestartAll,
-  restartAllPending = false
+  restartAllPending = false,
+  disclosures = false
 }: {
   canManage: boolean;
   client?: CliRuntimeSettingsClient;
   onOpenRestartAll?: () => void;
   restartAllPending?: boolean;
+  disclosures?: boolean;
 }) {
   const [response, setResponse] = useState<CliRuntimeSettingsResponse | null>(
     () => client.cliRuntimeSettingsSnapshot?.() ?? null
@@ -628,6 +631,7 @@ export function CliRuntimeSettingsCard({
       const result = await client.updateHarnessEnabled({ enabled });
       setResponse((current) => current ? { ...current, harness: result.status } : current);
       client.invalidateCliRuntimeSettings?.();
+      dispatchCliRuntimeVisibilityChange({ enabled: result.status.enabled, source: "settings-card" });
       publishCliVpnRoutingStatus();
       setFeedback(`DeepSeek Harness is now ${result.status.enabled ? "active" : "inactive"}.`);
     } catch (updateError) {
@@ -1061,358 +1065,346 @@ export function CliRuntimeSettingsCard({
     }
   ];
 
-  return (
-    <section className="agent-settings-card settings-flat-card cli-runtime-settings-card" aria-label="CLI runtime visibility settings" aria-busy={loading || !response}>
-      <div className="agent-settings-section-title settings-flat-heading cli-runtime-settings-title">
-        <Terminal aria-hidden="true" />
+  const vpnProfileContent = (
+    <div hidden={!response} className={`cli-vpn-profile settings-flat-vpn${selectedRouteStatus === "DIRECT" || selectedRouteStatus === "CONNECTED" ? " is-connected" : ""}`} aria-label="Global CLI network route">
+      <div className="cli-vpn-profile-heading">
+        <Shield aria-hidden="true" />
         <span>
-          <strong>CLI runtimes</strong>
-          <small>Runtime visibility, restart and VPN routing.</small>
+          <strong>CLI VPN route</strong>
+          <small>One route with independent per-runtime switches.</small>
         </span>
-        <SettingsActionMenu
-          label="CLI runtime actions"
-          actions={runtimeMenuActions}
-          disabled={!response || loading || runtimeActionsPending || restartAllPending}
-        />
+        <span className={`cli-vpn-health is-${selectedRouteStatus === "DIRECT" ? "connected" : selectedRouteStatus.toLowerCase()}`}>
+          {selectedRouteStatus}
+        </span>
       </div>
-
-      {!response ? (
-        <small className="cli-vpn-profile-note cli-runtime-settings-loading" role="status">
-          Loading CLI runtime settings…
-        </small>
-      ) : null}
-
-      <div hidden={!response} className={`cli-vpn-profile settings-flat-vpn${selectedRouteStatus === "DIRECT" || selectedRouteStatus === "CONNECTED" ? " is-connected" : ""}`} aria-label="Global CLI network route">
-        <div className="cli-vpn-profile-heading">
-          <Shield aria-hidden="true" />
-          <span>
-            <strong>CLI VPN route</strong>
-            <small>One route with independent per-runtime switches.</small>
-          </span>
-          <span className={`cli-vpn-health is-${selectedRouteStatus === "DIRECT" ? "connected" : selectedRouteStatus.toLowerCase()}`}>
-            {selectedRouteStatus}
-          </span>
-        </div>
-        {response?.vpnSupported ? (
-          <>
-            <dl className="cli-vpn-profile-details settings-flat-metrics">
-              <div><dt>Route</dt><dd>{cliEgressRouteLabel(selectedRoute)}</dd></div>
-              {selectedEgressIp ? <div><dt>IPv4</dt><dd data-sensitive-masked="manual">{selectedEgressIp}</dd></div> : null}
-              <div><dt>Leak guard</dt><dd>Protected</dd></div>
-            </dl>
-            <label className="settings-flat-row cli-egress-route-select">
-              <span className="settings-flat-row-copy">
-                <strong>Route</strong>
-                <small>{pendingEgressRoute ? `Applying ${cliEgressRouteLabel(pendingEgressRoute)}…` : "Applied to VPN-enabled CLI runtimes."}</small>
-              </span>
-              <select
-                id="cli-egress-route"
-                name="cli-egress-route"
-                aria-label="VPN route for enabled CLIs"
-                value={selectedRoute}
-                disabled={vpnControlsPending}
-                onChange={(event) => void updateGlobalRoute(event.target.value as CliEgressRouteId)}
-              >
-                {availableEgressRoutes.map(({ id, label }) => {
-                  const connection = id === "direct" ? null : response.egress?.profiles[id];
-                  return <option key={id} value={id} disabled={id !== "direct" && connection?.status !== "CONNECTED"}>{label}</option>;
-                })}
-              </select>
-            </label>
-            <div className="cli-egress-profile-manager" aria-label="VPN profile manager">
-              {availableProfileIds.length === 0 ? (
-                <small className="cli-egress-profile-helper">All VPN profiles were removed. No profile can be configured.</small>
-              ) : (
-                <>
-                  <label className="settings-flat-row cli-egress-route-select">
+      {response?.vpnSupported ? (
+        <>
+          <dl className="cli-vpn-profile-details settings-flat-metrics">
+            <div><dt>Route</dt><dd>{cliEgressRouteLabel(selectedRoute)}</dd></div>
+            {selectedEgressIp ? <div><dt>IPv4</dt><dd data-sensitive-masked="manual">{selectedEgressIp}</dd></div> : null}
+            <div><dt>Leak guard</dt><dd>Protected</dd></div>
+          </dl>
+          <label className="settings-flat-row cli-egress-route-select">
+            <span className="settings-flat-row-copy">
+              <strong>Route</strong>
+              <small>{pendingEgressRoute ? `Applying ${cliEgressRouteLabel(pendingEgressRoute)}…` : "Applied to VPN-enabled CLI runtimes."}</small>
+            </span>
+            <select
+              id="cli-egress-route"
+              name="cli-egress-route"
+              aria-label="VPN route for enabled CLIs"
+              value={selectedRoute}
+              disabled={vpnControlsPending}
+              onChange={(event) => void updateGlobalRoute(event.target.value as CliEgressRouteId)}
+            >
+              {availableEgressRoutes.map(({ id, label }) => {
+                const connection = id === "direct" ? null : response.egress?.profiles[id];
+                return <option key={id} value={id} disabled={id !== "direct" && connection?.status !== "CONNECTED"}>{label}</option>;
+              })}
+            </select>
+          </label>
+          <div className="cli-egress-profile-manager" aria-label="VPN profile manager">
+            {availableProfileIds.length === 0 ? (
+              <small className="cli-egress-profile-helper">All VPN profiles were removed. No profile can be configured.</small>
+            ) : (
+              <>
+                <label className="settings-flat-row cli-egress-route-select">
+                  <span className="settings-flat-row-copy">
+                    <strong>Profile</strong>
+                    <small>Select the WireGuard profile to inspect or manage.</small>
+                  </span>
+                  <select
+                    id="cli-egress-profile"
+                    name="cli-egress-profile"
+                    aria-label="VPN profile to manage"
+                    value={vpnProfileId}
+                    disabled={vpnControlsPending}
+                    onChange={(event) => selectVpnProfileManager(event.target.value as CliVpnProfileId)}
+                  >
+                    {availableProfileIds.map((profileId) => (
+                      <option key={profileId} value={profileId}>{cliVpnProfileLabel(profileId)}</option>
+                    ))}
+                  </select>
+                </label>
+                <div className={`cli-egress-profile${managedProfile?.status === "CONNECTED" ? " is-connected" : ""}`}>
+                  <div className="cli-egress-profile-title">
                     <span className="settings-flat-row-copy">
-                      <strong>Profile</strong>
-                      <small>Select the WireGuard profile to inspect or manage.</small>
+                      <strong>{managedProfileLabel}</strong>
+                      <small>Root-managed WireGuard configuration.</small>
                     </span>
-                    <select
-                      id="cli-egress-profile"
-                      name="cli-egress-profile"
-                      aria-label="VPN profile to manage"
-                      value={vpnProfileId}
-                      disabled={vpnControlsPending}
-                      onChange={(event) => selectVpnProfileManager(event.target.value as CliVpnProfileId)}
-                    >
-                      {availableProfileIds.map((profileId) => (
-                        <option key={profileId} value={profileId}>{cliVpnProfileLabel(profileId)}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className={`cli-egress-profile${managedProfile?.status === "CONNECTED" ? " is-connected" : ""}`}>
-                    <div className="cli-egress-profile-title">
-                      <span className="settings-flat-row-copy">
-                        <strong>{managedProfileLabel}</strong>
-                        <small>Root-managed WireGuard configuration.</small>
-                      </span>
-                      <div className="settings-flat-heading-actions">
-                        <span data-sensitive-masked={vpnProfileId === "mullvad" || vpnProfileId === "nord" ? "manual" : undefined}>{managedProfile?.status ?? "NOT_CONFIGURED"}</span>
-                        <SettingsActionMenu
-                          label={`${managedProfileLabel} actions`}
-                          actions={profileMenuActions}
-                          disabled={vpnControlsPending}
-                        />
+                    <div className="settings-flat-heading-actions">
+                      <span data-sensitive-masked={vpnProfileId === "mullvad" || vpnProfileId === "nord" ? "manual" : undefined}>{managedProfile?.status ?? "NOT_CONFIGURED"}</span>
+                      <SettingsActionMenu
+                        label={`${managedProfileLabel} actions`}
+                        actions={profileMenuActions}
+                        disabled={vpnControlsPending}
+                      />
+                    </div>
+                  </div>
+                  <input
+                    ref={vpnProfileFileInputRef}
+                    type="file"
+                    hidden
+                    name={`cli-vpn-profile-${vpnProfileId}`}
+                    accept=".conf,text/plain"
+                    aria-label={`Choose ${managedProfileLabel} configuration`}
+                    disabled={vpnControlsPending}
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0] ?? null;
+                      event.currentTarget.value = "";
+                      void selectVpnProfile(vpnProfileId, file);
+                    }}
+                  />
+                  <div data-sensitive-masked={vpnProfileId === "mullvad" || vpnProfileId === "nord" ? "block" : undefined}>
+                    <dl className="cli-vpn-profile-details settings-flat-metrics">
+                      <div><dt>Public IPv4</dt><dd data-sensitive-masked="manual">{managedProfile?.egressIpv4 ?? "Not verified"}</dd></div>
+                      {(vpnProfileId === "mullvad" || vpnProfileId === "nord") && managedProfile?.relay ? (
+                        <>
+                          <div><dt>City</dt><dd>{managedProfile.relay.cityName}</dd></div>
+                          <div><dt>Country</dt><dd>{managedProfile.relay.countryName}</dd></div>
+                          <div><dt>Relay</dt><dd>{managedProfile.relay.hostname}</dd></div>
+                        </>
+                      ) : null}
+                    </dl>
+                  </div>
+                  {managedProfileIsActive ? <small className="cli-egress-profile-helper">Select Direct before removing the currently active profile.</small> : null}
+                  {removeConfirmationProfileId === vpnProfileId ? (
+                    <div className="cli-vpn-remove-confirmation" role="alertdialog" aria-label={`Confirm ${managedProfileLabel} removal`}>
+                      <p>Remove this stored WireGuard profile?</p>
+                      <div>
+                        <button type="button" disabled={vpnProfilePending} onClick={() => setRemoveConfirmationProfileId(null)}>Cancel</button>
+                        <button type="button" className="is-danger" disabled={vpnProfilePending} onClick={() => void removeVpnProfile(vpnProfileId)}>Remove</button>
                       </div>
                     </div>
-                    <input
-                      ref={vpnProfileFileInputRef}
-                      type="file"
-                      hidden
-                      name={`cli-vpn-profile-${vpnProfileId}`}
-                      accept=".conf,text/plain"
-                      aria-label={`Choose ${managedProfileLabel} configuration`}
-                      disabled={vpnControlsPending}
-                      onChange={(event) => {
-                        const file = event.currentTarget.files?.[0] ?? null;
-                        event.currentTarget.value = "";
-                        void selectVpnProfile(vpnProfileId, file);
-                      }}
-                    />
-                    <div data-sensitive-masked={vpnProfileId === "mullvad" || vpnProfileId === "nord" ? "block" : undefined}>
-                      <dl className="cli-vpn-profile-details settings-flat-metrics">
-                        <div><dt>Public IPv4</dt><dd data-sensitive-masked="manual">{managedProfile?.egressIpv4 ?? "Not verified"}</dd></div>
-                        {(vpnProfileId === "mullvad" || vpnProfileId === "nord") && managedProfile?.relay ? (
-                          <>
-                            <div><dt>City</dt><dd>{managedProfile.relay.cityName}</dd></div>
-                            <div><dt>Country</dt><dd>{managedProfile.relay.countryName}</dd></div>
-                            <div><dt>Relay</dt><dd>{managedProfile.relay.hostname}</dd></div>
-                          </>
-                        ) : null}
-                      </dl>
-                    </div>
-                    {managedProfileIsActive ? <small className="cli-egress-profile-helper">Select Direct before removing the currently active profile.</small> : null}
-                    {removeConfirmationProfileId === vpnProfileId ? (
-                      <div className="cli-vpn-remove-confirmation" role="alertdialog" aria-label={`Confirm ${managedProfileLabel} removal`}>
-                        <p>Remove this stored WireGuard profile?</p>
-                        <div>
-                          <button type="button" disabled={vpnProfilePending} onClick={() => setRemoveConfirmationProfileId(null)}>Cancel</button>
-                          <button type="button" className="is-danger" disabled={vpnProfilePending} onClick={() => void removeVpnProfile(vpnProfileId)}>Remove</button>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </>
-              )}
-            </div>
-          </>
-        ) : (
-          <small className="cli-vpn-profile-note">CLI VPN support is disabled on this Space installation.</small>
-        )}
-      </div>
-
-      <div className="cli-account-profiles settings-flat-vpn" aria-label="Gemini account profiles">
-        <div className="cli-vpn-profile-heading">
-          <Users aria-hidden="true" />
-          <span>
-            <strong>Gemini accounts</strong>
-            <small>Add as many isolated Google account profiles as you need, then choose one inside each Gemini pane.</small>
-          </span>
-        </div>
-        {accountProfiles === null ? (
-          <small className="cli-account-profiles-note">Account profiles could not be loaded.</small>
-        ) : accountProfiles.length === 0 ? (
-          <small className="cli-account-profiles-note">No Gemini account profiles yet.</small>
-        ) : (
-          <ul className="cli-account-profiles-list">
-            {accountProfiles.map((profile) => (
-              <li className="cli-account-profile-row" key={profile.profileId}>
-                {editingAccountProfileId === profile.profileId ? (
-                  <form className="cli-account-profile-rename" onSubmit={(event) => void renameAccountProfile(event, profile)}>
-                    <input
-                      autoFocus
-                      aria-label={`New name for ${profile.displayName}`}
-                      value={editingAccountDisplayName}
-                      maxLength={80}
-                      disabled={accountProfilePending}
-                      onChange={(event) => setEditingAccountDisplayName(event.currentTarget.value)}
-                    />
-                    <button type="submit" aria-label="Save account name" title="Save name" disabled={accountProfilePending}>
-                      {accountProfilePending ? <Loader2 className="spin" aria-hidden="true" /> : <Check aria-hidden="true" />}
-                    </button>
-                    <button type="button" aria-label="Cancel account rename" title="Cancel" disabled={accountProfilePending} onClick={() => setEditingAccountProfileId(null)}>
-                      <X aria-hidden="true" />
-                    </button>
-                  </form>
-                ) : (
-                  <div className="cli-account-profile-name">
-                    <strong>{profile.displayName}</strong>
-                  </div>
-                )}
-                <div className="cli-account-profile-actions">
-                  <button
-                    type="button"
-                    className="cli-account-profile-icon"
-                    aria-label={`Rename ${profile.displayName}`}
-                    title="Rename account"
-                    disabled={accountProfilePending || editingAccountProfileId === profile.profileId}
-                    onClick={() => startRenameAccountProfile(profile)}
-                  >
-                    <Pencil aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="cli-account-profile-icon"
-                    aria-label={`Show details for ${profile.displayName}`}
-                    title="Account details"
-                    aria-expanded={accountDetailsProfileId === profile.profileId}
-                    disabled={accountDetailsLoading && accountDetailsProfileId === profile.profileId}
-                    onClick={() => void toggleAccountDetails(profile)}
-                  >
-                    {accountDetailsLoading && accountDetailsProfileId === profile.profileId ? <Loader2 className="spin" aria-hidden="true" /> : <CircleHelp aria-hidden="true" />}
-                  </button>
-                  {profile.profileId !== "main" ? (
-                    removeAccountConfirmation === profile.profileId ? (
-                      <span className="cli-account-profile-remove-confirm">
-                        <button type="button" disabled={accountProfilePending} onClick={() => setRemoveAccountConfirmation(null)}>Cancel</button>
-                        <button type="button" className="is-danger" disabled={accountProfilePending} onClick={() => void removeAccountProfile(profile)}>Remove</button>
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        className="cli-account-profile-remove"
-                        aria-label={`Remove ${profile.displayName}`}
-                        title="Remove account"
-                        disabled={accountProfilePending}
-                        onClick={() => setRemoveAccountConfirmation(profile.profileId)}
-                      >
-                        <Trash2 aria-hidden="true" />
-                      </button>
-                    )
                   ) : null}
                 </div>
-              </li>
-            ))}
-          </ul>
-        )}
-        {addAccountOpen ? (
-          <form className="cli-account-profile-add" onSubmit={(event) => void createAccountProfile(event)}>
-            <label className="settings-flat-row">
-              <span className="settings-flat-row-copy">
-                <strong>Account name</strong>
-                <small>Shown in this list, e.g. Work account.</small>
-              </span>
-              <input
-                autoFocus
-                name="cli-account-display-name"
-                value={newAccountDisplayName}
-                maxLength={80}
-                disabled={accountProfilePending}
-                onChange={(event) => setNewAccountDisplayName(event.currentTarget.value)}
-              />
-            </label>
-            <div className="cli-account-profile-add-actions">
-              <button type="button" disabled={accountProfilePending} onClick={closeAddAccount}>Cancel</button>
-              <button type="submit" disabled={accountProfilePending}>
-                {accountProfilePending ? <Loader2 className="spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
-                Add account
-              </button>
-            </div>
-          </form>
-        ) : (
-          <button type="button" className="cli-account-profile-add-button" disabled={accountProfilePending} onClick={openAddAccount}>
-            <Plus aria-hidden="true" />
-            Add account
-          </button>
-        )}
-        <small className="cli-account-profiles-note">
-          The main profile keeps the clean Antigravity account you already connected. Other profiles use separate native OAuth storage.
-        </small>
-      </div>
+              </>
+            )}
+          </div>
+        </>
+      ) : (
+        <small className="cli-vpn-profile-note">CLI VPN support is disabled on this Space installation.</small>
+      )}
+    </div>
+  );
 
-      <div hidden={!response} className="cli-runtime-settings-list">
-        {CLI_MAINTENANCE_PRESENTATIONS.map((presentation) => {
-          const runtimeId = presentation.id as MaintenanceRuntimeId;
-          const isHarness = runtimeId === "cli:harness";
-          const setting = isHarness ? response?.harness : settingById.get(runtimeId);
-          const enabled = setting?.enabled ?? true;
-          const vpnEnabled = setting?.vpnEnabled ?? false;
-          return (
-            <div className={`cli-runtime-settings-row${enabled ? "" : " is-disabled"}`} key={runtimeId} data-runtime-id={runtimeId}>
-              <img src={presentation.iconSrc} alt="" aria-hidden="true" data-terminal-runtime-brand={presentation.brand} draggable={false} />
-              <div className="cli-runtime-settings-name">
-                <strong>{presentation.displayName}</strong>
-              </div>
-              <div className="cli-runtime-settings-actions">
+  const accountProfilesContent = (
+    <div className="cli-account-profiles settings-flat-vpn" aria-label="Gemini account profiles">
+      <div className="cli-vpn-profile-heading">
+        <Users aria-hidden="true" />
+        <span>
+          <strong>Gemini accounts</strong>
+          <small>Add as many isolated Google account profiles as you need, then choose one inside each Gemini pane.</small>
+        </span>
+      </div>
+      {accountProfiles === null ? (
+        <small className="cli-account-profiles-note">Account profiles could not be loaded.</small>
+      ) : accountProfiles.length === 0 ? (
+        <small className="cli-account-profiles-note">No Gemini account profiles yet.</small>
+      ) : (
+        <ul className="cli-account-profiles-list">
+          {accountProfiles.map((profile) => (
+            <li className="cli-account-profile-row" key={profile.profileId}>
+              {editingAccountProfileId === profile.profileId ? (
+                <form className="cli-account-profile-rename" onSubmit={(event) => void renameAccountProfile(event, profile)}>
+                  <input
+                    autoFocus
+                    aria-label={`New name for ${profile.displayName}`}
+                    value={editingAccountDisplayName}
+                    maxLength={80}
+                    disabled={accountProfilePending}
+                    onChange={(event) => setEditingAccountDisplayName(event.currentTarget.value)}
+                  />
+                  <button type="submit" aria-label="Save account name" title="Save name" disabled={accountProfilePending}>
+                    {accountProfilePending ? <Loader2 className="spin" aria-hidden="true" /> : <Check aria-hidden="true" />}
+                  </button>
+                  <button type="button" aria-label="Cancel account rename" title="Cancel" disabled={accountProfilePending} onClick={() => setEditingAccountProfileId(null)}>
+                    <X aria-hidden="true" />
+                  </button>
+                </form>
+              ) : (
+                <div className="cli-account-profile-name">
+                  <strong>{profile.displayName}</strong>
+                </div>
+              )}
+              <div className="cli-account-profile-actions">
                 <button
-                  ref={(element) => {
-                    if (element) restartRefs.current.set(runtimeId, element);
-                    else restartRefs.current.delete(runtimeId);
-                  }}
-                  className="cli-runtime-restart-button"
                   type="button"
-                  aria-label={`Restart ${presentation.displayName}`}
-                  title={`Restart ${presentation.displayName}`}
-                  disabled={!response || !enabled || runtimeActionsPending || restartAllPending}
-                  onClick={() => {
-                    if (isHarness) {
-                      void restartRuntime(runtimeId, presentation.displayName);
-                    } else {
-                      setRestartDialog({ runtimeId, runtimeName: presentation.displayName });
-                    }
-                  }}
+                  className="cli-account-profile-icon"
+                  aria-label={`Rename ${profile.displayName}`}
+                  title="Rename account"
+                  disabled={accountProfilePending || editingAccountProfileId === profile.profileId}
+                  onClick={() => startRenameAccountProfile(profile)}
                 >
-                  {pendingRestartRuntimeId === runtimeId ? <Loader2 className="spin" aria-hidden="true" /> : <Recycle aria-hidden="true" />}
+                  <Pencil aria-hidden="true" />
                 </button>
-                <label
-                  className="cli-runtime-vpn-toggle"
-                  title={selectedRoute === "direct" && !vpnEnabled
-                    ? "Choose a VPN route before enabling this CLI."
-                    : `VPN ${vpnEnabled ? "on" : "off"} for ${presentation.displayName}`}
+                <button
+                  type="button"
+                  className="cli-account-profile-icon"
+                  aria-label={`Show details for ${profile.displayName}`}
+                  title="Account details"
+                  aria-expanded={accountDetailsProfileId === profile.profileId}
+                  disabled={accountDetailsLoading && accountDetailsProfileId === profile.profileId}
+                  onClick={() => void toggleAccountDetails(profile)}
                 >
-                  <span className="cli-runtime-vpn-label" aria-hidden="true">
-                    {pendingVpnRuntimeId === runtimeId ? <Loader2 className="spin" /> : "VPN"}
-                  </span>
+                  {accountDetailsLoading && accountDetailsProfileId === profile.profileId ? <Loader2 className="spin" aria-hidden="true" /> : <CircleHelp aria-hidden="true" />}
+                </button>
+                {profile.profileId !== "main" ? (
+                  removeAccountConfirmation === profile.profileId ? (
+                    <span className="cli-account-profile-remove-confirm">
+                      <button type="button" disabled={accountProfilePending} onClick={() => setRemoveAccountConfirmation(null)}>Cancel</button>
+                      <button type="button" className="is-danger" disabled={accountProfilePending} onClick={() => void removeAccountProfile(profile)}>Remove</button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="cli-account-profile-remove"
+                      aria-label={`Remove ${profile.displayName}`}
+                      title="Remove account"
+                      disabled={accountProfilePending}
+                      onClick={() => setRemoveAccountConfirmation(profile.profileId)}
+                    >
+                      <Trash2 aria-hidden="true" />
+                    </button>
+                  )
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {addAccountOpen ? (
+        <form className="cli-account-profile-add" onSubmit={(event) => void createAccountProfile(event)}>
+          <label className="settings-flat-row">
+            <span className="settings-flat-row-copy">
+              <strong>Account name</strong>
+              <small>Shown in this list, e.g. Work account.</small>
+            </span>
+            <input
+              autoFocus
+              name="cli-account-display-name"
+              value={newAccountDisplayName}
+              maxLength={80}
+              disabled={accountProfilePending}
+              onChange={(event) => setNewAccountDisplayName(event.currentTarget.value)}
+            />
+          </label>
+          <div className="cli-account-profile-add-actions">
+            <button type="button" disabled={accountProfilePending} onClick={closeAddAccount}>Cancel</button>
+            <button type="submit" disabled={accountProfilePending}>
+              {accountProfilePending ? <Loader2 className="spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
+              Add account
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button type="button" className="cli-account-profile-add-button" disabled={accountProfilePending} onClick={openAddAccount}>
+          <Plus aria-hidden="true" />
+          Add account
+        </button>
+      )}
+      <small className="cli-account-profiles-note">
+        The main profile keeps the clean Antigravity account you already connected. Other profiles use separate native OAuth storage.
+      </small>
+    </div>
+  );
+
+  const runtimeListContent = (
+    <div hidden={!response} className="cli-runtime-settings-list">
+      {CLI_MAINTENANCE_PRESENTATIONS.map((presentation) => {
+        const runtimeId = presentation.id as MaintenanceRuntimeId;
+        const isHarness = runtimeId === "cli:harness";
+        const setting = isHarness ? response?.harness : settingById.get(runtimeId);
+        const enabled = setting?.enabled ?? true;
+        const vpnEnabled = setting?.vpnEnabled ?? false;
+        return (
+          <div className={`cli-runtime-settings-row${enabled ? "" : " is-disabled"}`} key={runtimeId} data-runtime-id={runtimeId}>
+            <img src={presentation.iconSrc} alt="" aria-hidden="true" data-terminal-runtime-brand={presentation.brand} draggable={false} />
+            <div className="cli-runtime-settings-name">
+              <strong>{presentation.displayName}</strong>
+            </div>
+            <div className="cli-runtime-settings-actions">
+              <button
+                ref={(element) => {
+                  if (element) restartRefs.current.set(runtimeId, element);
+                  else restartRefs.current.delete(runtimeId);
+                }}
+                className="cli-runtime-restart-button"
+                type="button"
+                aria-label={`Restart ${presentation.displayName}`}
+                title={`Restart ${presentation.displayName}`}
+                disabled={!response || !enabled || runtimeActionsPending || restartAllPending}
+                onClick={() => {
+                  if (isHarness) {
+                    void restartRuntime(runtimeId, presentation.displayName);
+                  } else {
+                    setRestartDialog({ runtimeId, runtimeName: presentation.displayName });
+                  }
+                }}
+              >
+                {pendingRestartRuntimeId === runtimeId ? <Loader2 className="spin" aria-hidden="true" /> : <Recycle aria-hidden="true" />}
+              </button>
+              <label
+                className="cli-runtime-vpn-toggle"
+                title={selectedRoute === "direct" && !vpnEnabled
+                  ? "Choose a VPN route before enabling this CLI."
+                  : `VPN ${vpnEnabled ? "on" : "off"} for ${presentation.displayName}`}
+              >
+                <span className="cli-runtime-vpn-label" aria-hidden="true">
+                  {pendingVpnRuntimeId === runtimeId ? <Loader2 className="spin" /> : "VPN"}
+                </span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  name={`cli-runtime-vpn-${presentation.brand}`}
+                  aria-label={`Use VPN for ${presentation.displayName}`}
+                  aria-busy={pendingVpnRuntimeId === runtimeId}
+                  checked={vpnEnabled}
+                  disabled={!response || !enabled || runtimeActionsPending || restartAllPending || (selectedRoute === "direct" && !vpnEnabled)}
+                  onChange={(event) => void updateRuntimeVpn(runtimeId, event.target.checked)}
+                />
+                <span className="sr-only">VPN {vpnEnabled ? "on" : "off"}</span>
+              </label>
+              {!isHarness ? (
+                <label className="cli-runtime-visibility-toggle" title={`${presentation.displayName} ${enabled ? "on" : "off"}`}>
+                  <input
+                    ref={(element) => {
+                      if (element) toggleRefs.current.set(runtimeId, element);
+                      else toggleRefs.current.delete(runtimeId);
+                    }}
+                    type="checkbox"
+                    role="switch"
+                    name={`cli-runtime-enabled-${presentation.brand}`}
+                    aria-label={`Enable ${presentation.displayName}`}
+                    checked={enabled}
+                    disabled={!response || runtimeActionsPending || restartAllPending}
+                    onChange={(event) => void requestToggle(runtimeId, event.target.checked)}
+                  />
+                  <span className="sr-only">{enabled ? "On" : "Off"}</span>
+                </label>
+              ) : (
+                <label className="cli-runtime-visibility-toggle" title={`DeepSeek Harness ${enabled ? "active" : "inactive"}`}>
                   <input
                     type="checkbox"
                     role="switch"
-                    name={`cli-runtime-vpn-${presentation.brand}`}
-                    aria-label={`Use VPN for ${presentation.displayName}`}
-                    aria-busy={pendingVpnRuntimeId === runtimeId}
-                    checked={vpnEnabled}
-                    disabled={!response || !enabled || runtimeActionsPending || restartAllPending || (selectedRoute === "direct" && !vpnEnabled)}
-                    onChange={(event) => void updateRuntimeVpn(runtimeId, event.target.checked)}
+                    name="cli-runtime-enabled-harness"
+                    aria-label="Enable DeepSeek Harness"
+                    checked={enabled}
+                    disabled={!response || runtimeActionsPending || restartAllPending}
+                    onChange={(event) => void updateHarnessEnabled(event.target.checked)}
                   />
-                  <span className="sr-only">VPN {vpnEnabled ? "on" : "off"}</span>
+                  <span className="sr-only">{enabled ? "Active" : "Inactive"}</span>
                 </label>
-                {!isHarness ? (
-                  <label className="cli-runtime-visibility-toggle" title={`${presentation.displayName} ${enabled ? "on" : "off"}`}>
-                    <input
-                      ref={(element) => {
-                        if (element) toggleRefs.current.set(runtimeId, element);
-                        else toggleRefs.current.delete(runtimeId);
-                      }}
-                      type="checkbox"
-                      role="switch"
-                      name={`cli-runtime-enabled-${presentation.brand}`}
-                      aria-label={`Enable ${presentation.displayName}`}
-                      checked={enabled}
-                      disabled={!response || runtimeActionsPending || restartAllPending}
-                      onChange={(event) => void requestToggle(runtimeId, event.target.checked)}
-                    />
-                    <span className="sr-only">{enabled ? "On" : "Off"}</span>
-                  </label>
-                ) : (
-                  <label className="cli-runtime-visibility-toggle" title={`DeepSeek Harness ${enabled ? "active" : "inactive"}`}>
-                    <input
-                      type="checkbox"
-                      role="switch"
-                      name="cli-runtime-enabled-harness"
-                      aria-label="Enable DeepSeek Harness"
-                      checked={enabled}
-                      disabled={!response || runtimeActionsPending || restartAllPending}
-                      onChange={(event) => void updateHarnessEnabled(event.target.checked)}
-                    />
-                    <span className="sr-only">{enabled ? "Active" : "Inactive"}</span>
-                  </label>
-                )}
-              </div>
+              )}
             </div>
-          );
-        })}
-      </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const runtimeDialogsContent = (
+    <>
       {error ? (
         <p className="cli-runtime-settings-error" role="alert">{error}<button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setError(null)}><X aria-hidden="true" /></button></p>
       ) : null}
@@ -1441,52 +1433,143 @@ export function CliRuntimeSettingsCard({
           onConfirm={() => void confirmRuntimeRestart()}
         />
       ) : null}
-      {accountDetailsProfileId && accountDetails && typeof document !== "undefined" ? createPortal(
-        <div
-          className="cli-account-details-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-label={`Account details for ${accountDetails.displayName}`}
-          onClick={() => {
-            setAccountDetailsProfileId(null);
-            setAccountDetails(null);
-            setAccountDetailsError(null);
-          }}
+    </>
+  );
+
+  const accountDetailsModalPortal = accountDetailsProfileId && accountDetails && typeof document !== "undefined" ? createPortal(
+    <div
+      className="cli-account-details-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Account details for ${accountDetails.displayName}`}
+      onClick={() => {
+        setAccountDetailsProfileId(null);
+        setAccountDetails(null);
+        setAccountDetailsError(null);
+      }}
+    >
+      <div className="cli-account-details-modal-body" onClick={(event) => event.stopPropagation()}>
+        <div className="cli-account-details-modal-head">
+          <strong>Google account details</strong>
+          <button
+            type="button"
+            aria-label="Close account details"
+            onClick={() => {
+              setAccountDetailsProfileId(null);
+              setAccountDetails(null);
+              setAccountDetailsError(null);
+            }}
+          >
+            <X aria-hidden="true" />
+          </button>
+        </div>
+        <div className="cli-account-profile-details" role="status">
+          <span><strong>Name</strong> {accountDetails.displayName}</span>
+          <span><strong>Email</strong> {accountDetailsLoading ? "Loading…" : accountDetails.email ?? "Not available"}</span>
+          <span>
+            <strong>Status</strong>{" "}
+            {accountDetailsLoading
+              ? "Checking…"
+              : accountDetails.authStatus === "CONNECTED"
+                ? "Connected"
+                : accountDetails.authStatus === "NOT_CONNECTED"
+                  ? "Not connected"
+                  : "Unavailable"}
+          </span>
+          {accountDetailsError ? <span className="cli-account-details-error" role="alert">{accountDetailsError}</span> : null}
+        </div>
+      </div>
+    </div>,
+    document.body
+  ) : null;
+
+  if (disclosures) {
+    return (
+      <>
+        <SettingsDisclosure
+          title="CLI runtimes"
+          description="Runtime visibility, restart and VPN routing."
+          scope="Installation"
+          icon={Terminal}
         >
-          <div className="cli-account-details-modal-body" onClick={(event) => event.stopPropagation()}>
-            <div className="cli-account-details-modal-head">
-              <strong>Google account details</strong>
-              <button
-                type="button"
-                aria-label="Close account details"
-                onClick={() => {
-                  setAccountDetailsProfileId(null);
-                  setAccountDetails(null);
-                  setAccountDetailsError(null);
-                }}
-              >
-                <X aria-hidden="true" />
-              </button>
-            </div>
-            <div className="cli-account-profile-details" role="status">
-              <span><strong>Name</strong> {accountDetails.displayName}</span>
-              <span><strong>Email</strong> {accountDetailsLoading ? "Loading…" : accountDetails.email ?? "Not available"}</span>
+          <section className="agent-settings-card settings-flat-card cli-runtime-settings-card" aria-label="CLI runtime visibility settings" aria-busy={loading || !response}>
+            <div className="agent-settings-section-title settings-flat-heading cli-runtime-settings-title">
+              <Terminal aria-hidden="true" />
               <span>
-                <strong>Status</strong>{" "}
-                {accountDetailsLoading
-                  ? "Checking…"
-                  : accountDetails.authStatus === "CONNECTED"
-                    ? "Connected"
-                    : accountDetails.authStatus === "NOT_CONNECTED"
-                      ? "Not connected"
-                      : "Unavailable"}
+                <strong>CLI runtimes</strong>
+                <small>Runtime visibility, restart and VPN routing.</small>
               </span>
-              {accountDetailsError ? <span className="cli-account-details-error" role="alert">{accountDetailsError}</span> : null}
+              <SettingsActionMenu
+                label="CLI runtime actions"
+                actions={runtimeMenuActions}
+                disabled={!response || loading || runtimeActionsPending || restartAllPending}
+              />
             </div>
-          </div>
-        </div>,
-        document.body
+
+            {!response ? (
+              <small className="cli-vpn-profile-note cli-runtime-settings-loading" role="status">
+                Loading CLI runtime settings…
+              </small>
+            ) : null}
+
+            {runtimeListContent}
+            {runtimeDialogsContent}
+          </section>
+        </SettingsDisclosure>
+
+        <SettingsDisclosure
+          title="CLI VPN route"
+          description="One route with independent per-runtime switches."
+          scope="Installation"
+          icon={Shield}
+        >
+          <section className="agent-settings-card settings-flat-card cli-vpn-settings-card" aria-label="CLI VPN route settings">
+            {vpnProfileContent}
+          </section>
+        </SettingsDisclosure>
+
+        <SettingsDisclosure
+          title="Gemini accounts"
+          description="Add as many isolated Google account profiles as you need, then choose one inside each Gemini pane."
+          scope="Installation"
+          icon={Users}
+        >
+          <section className="agent-settings-card settings-flat-card cli-gemini-accounts-card" aria-label="Gemini account profile settings">
+            {accountProfilesContent}
+          </section>
+        </SettingsDisclosure>
+
+        {accountDetailsModalPortal}
+      </>
+    );
+  }
+
+  return (
+    <section className="agent-settings-card settings-flat-card cli-runtime-settings-card" aria-label="CLI runtime visibility settings" aria-busy={loading || !response}>
+      <div className="agent-settings-section-title settings-flat-heading cli-runtime-settings-title">
+        <Terminal aria-hidden="true" />
+        <span>
+          <strong>CLI runtimes</strong>
+          <small>Runtime visibility, restart and VPN routing.</small>
+        </span>
+        <SettingsActionMenu
+          label="CLI runtime actions"
+          actions={runtimeMenuActions}
+          disabled={!response || loading || runtimeActionsPending || restartAllPending}
+        />
+      </div>
+
+      {!response ? (
+        <small className="cli-vpn-profile-note cli-runtime-settings-loading" role="status">
+          Loading CLI runtime settings…
+        </small>
       ) : null}
+
+      {vpnProfileContent}
+      {accountProfilesContent}
+      {runtimeListContent}
+      {runtimeDialogsContent}
+      {accountDetailsModalPortal}
     </section>
   );
 }

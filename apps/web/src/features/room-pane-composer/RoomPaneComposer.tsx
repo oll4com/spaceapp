@@ -1,13 +1,15 @@
 import {
+  PANE_TYPES,
   isAgentRuntimeReady,
   type AgentRuntime,
   type AgentRuntimeRegistry,
   type CreateRoomPanesRequest,
   type Room
 } from "@space/contracts";
-import { ChevronRight, Grid2X2, Loader2, Minus, Plus, RefreshCw, RotateCcw, X } from "../ui-theme/app-icons.js";
+import { ChevronRight, Grid3X3, Loader2, Minus, Plus, RefreshCw, RotateCcw, X } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api.js";
+import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import {
   CLI_RUNTIME_PRESENTATIONS,
@@ -19,27 +21,18 @@ import {
 } from "../../cli-runtime-visibility-events.js";
 
 const runtimeDefinitions = CLI_RUNTIME_PRESENTATIONS;
+export const ROOM_PANE_COMPOSER_COLLAPSED_KEY = "space.roomPaneComposer.collapsed.v1";
 const harnessId = "harness" as const;
-const chatId = "chat" as const;
-type ComposerRuntimeId = (typeof runtimeDefinitions)[number]["id"] | typeof harnessId | typeof chatId;
+const utilityDefinitions = PANE_TYPES.filter(type => type.mode !== "TERMINAL" && type.mode !== "HARNESS");
+type UtilityTypeId = typeof utilityDefinitions[number]["typeId"];
+type ComposerRuntimeId = (typeof runtimeDefinitions)[number]["id"] | typeof harnessId | UtilityTypeId;
 type PaneCounts = Record<ComposerRuntimeId, number>;
 
-const emptyCounts = (): PaneCounts => ({
-  "cli:codex": 0,
-  "cli:claude": 0,
-  "cli:gemini": 0,
-  "cli:opencode": 0,
-  "cli:autohand": 0,
-  "cli:qwen": 0,
-  "cli:kimi": 0,
-  "cli:grok": 0,
-  "cli:deepseek": 0,
-  "cli:cursor": 0,
-  "cli:copilot": 0,
-  "cli:hermes": 0,
-  harness: 0,
-  chat: 0
-});
+const emptyCounts = (): PaneCounts => Object.fromEntries([
+  ...runtimeDefinitions.map(type => [type.id, 0]),
+  [harnessId, 0],
+  ...utilityDefinitions.map(type => [type.typeId, 0])
+]) as PaneCounts;
 
 function runtimeError(error: unknown): string {
   return error instanceof Error && error.message.trim()
@@ -70,6 +63,9 @@ export function RoomPaneComposer({
   const [initialRuntimeSnapshot] = useState(() => api.cliRuntimesSnapshot());
   const runtimeSnapshotAvailableRef = useRef(initialRuntimeSnapshot !== null);
   const [counts, setCounts] = useState<PaneCounts>(emptyCounts);
+  const [isHarnessEnabled, setIsHarnessEnabled] = useState(
+    () => api.cliRuntimeSettingsSnapshot?.()?.harness?.enabled ?? true
+  );
   const [runtimes, setRuntimes] = useState<AgentRuntime[]>(
     () => (initialRuntimeSnapshot?.data ?? [])
       .filter((runtime) => runtime.id !== "cli:root" && runtime.capabilities.includes("CLI"))
@@ -79,8 +75,11 @@ export function RoomPaneComposer({
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
-  const availableSlots = Math.max(0, (room?.paneCap ?? 0) - activePaneCount);
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return getSpaceRuntime().platform.localStorage.getItem(ROOM_PANE_COMPOSER_COLLAPSED_KEY) !== "false"; }
+    catch { return true; }
+  });
+  const availableSlots = Math.min(16, Math.max(0, (room?.paneCap ?? 0) - activePaneCount));
   const assigned = Object.values(counts).reduce((sum, count) => sum + count, 0);
   const slotsAfterAdd = Math.max(0, availableSlots - assigned);
 
@@ -108,7 +107,7 @@ export function RoomPaneComposer({
       setCounts((current) => Object.fromEntries(
         Object.entries(current).map(([id, count]) => [
           id,
-          id === harnessId || id === chatId || nextRuntimeIds.has(id) ? count : 0
+          id === harnessId || utilityDefinitions.some(type => type.typeId === id) || nextRuntimeIds.has(id) ? count : 0
         ])
       ) as PaneCounts);
     } catch (error) {
@@ -129,20 +128,42 @@ export function RoomPaneComposer({
     };
   }, [refreshRuntimes]);
 
+  const refreshHarness = useCallback(async () => {
+    try {
+      const settings = await api.cliRuntimeSettings();
+      const enabled = settings.harness?.enabled ?? true;
+      setIsHarnessEnabled(enabled);
+      if (!enabled) {
+        setCounts((current) => (current.harness === 0 ? current : { ...current, harness: 0 }));
+      }
+    } catch {
+      // Keep the last known harness visibility when settings cannot be loaded.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshHarness();
+  }, [refreshHarness]);
+
   useEffect(() => {
     const handleVisibilityChange = (event: Event) => {
       const change = readCliRuntimeVisibilityChange(event);
       if (!change) return;
       api.invalidateCliRuntimes();
+      api.invalidateCliRuntimeSettings?.();
+      if (change.enabled === false && !change.runtimeId) {
+        setCounts((current) => ({ ...current, harness: 0 }));
+      }
       if (change.runtimeId && change.enabled === false) {
         setRuntimes((current) => current.filter((runtime) => runtime.id !== change.runtimeId));
         setCounts((current) => ({ ...current, [change.runtimeId!]: 0 }));
       }
       void refreshRuntimes();
+      void refreshHarness();
     };
     window.addEventListener(CLI_RUNTIME_VISIBILITY_EVENT, handleVisibilityChange);
     return () => window.removeEventListener(CLI_RUNTIME_VISIBILITY_EVENT, handleVisibilityChange);
-  }, [refreshRuntimes]);
+  }, [refreshRuntimes, refreshHarness]);
 
   const runtimeById = useMemo(() => new Map(runtimes.map((runtime) => [runtime.id, runtime])), [runtimes]);
   const visibleRuntimeDefinitions = useMemo(
@@ -206,7 +227,9 @@ export function RoomPaneComposer({
       }
     }
     for (let index = 0; index < counts.harness; index += 1) panes.push({ mode: "HARNESS" });
-    for (let index = 0; index < counts.chat; index += 1) panes.push({ mode: "CHAT" });
+    for (const type of utilityDefinitions) {
+      for (let index = 0; index < counts[type.typeId]; index += 1) panes.push({ mode: type.mode });
+    }
 
     setApplying(true);
     setApplyError(null);
@@ -239,6 +262,7 @@ export function RoomPaneComposer({
         <div className="room-pane-composer-heading-copy">
           <strong id="room-pane-composer-title">Add panes</strong>
           <small>{room ? `Pane target: ${room.name}` : "Select a room target"}</small>
+          {collapsed ? <small className="room-pane-composer-summary" aria-live="polite">{assigned} selected · {availableSlots} slots available</small> : null}
         </div>
         <div className="room-pane-composer-heading-actions">
           {!collapsed ? (
@@ -259,7 +283,11 @@ export function RoomPaneComposer({
             aria-expanded={!collapsed}
             aria-label={collapsed ? "Expand Add panes" : "Collapse Add panes"}
             title={collapsed ? "Expand Add panes" : "Collapse Add panes"}
-            onClick={() => setCollapsed((current) => !current)}
+            onClick={() => {
+              const next = !collapsed;
+              setCollapsed(next);
+              try { getSpaceRuntime().platform.localStorage.setItem(ROOM_PANE_COMPOSER_COLLAPSED_KEY, String(next)); } catch { /* Keep the toggle usable when storage is unavailable. */ }
+            }}
           >
             <ChevronRight aria-hidden="true" />
           </button>
@@ -293,7 +321,7 @@ export function RoomPaneComposer({
                     onClick={() => fillRoomWithType(id)}
                     disabled={applying || !available || availableSlots === 0}
                   >
-                    <Grid2X2 aria-hidden="true" />
+                    <Grid3X3 aria-hidden="true" />
                   </button>
                   <button
                     type="button"
@@ -331,12 +359,13 @@ export function RoomPaneComposer({
         })}
         {!loading && !loadError && visibleRuntimeDefinitions.length === 0 ? (
           <div className="room-pane-runtime-empty" role="status">
-            <span>All CLI runtimes are disabled. Harness and Chat remain available.</span>
+            <span>All CLI runtimes are disabled. Other pane types are listed below.</span>
             {onOpenSettings ? <button type="button" onClick={onOpenSettings}>Open Settings</button> : null}
           </div>
         ) : null}
-        <div className="room-pane-mix-row">
-          <div className="room-pane-runtime-label">
+        {!isHarnessEnabled ? null : (
+          <div className="room-pane-mix-row">
+            <div className="room-pane-runtime-label">
             <img
               src={HARNESS_MAINTENANCE_PRESENTATION.iconSrc}
               alt=""
@@ -345,9 +374,9 @@ export function RoomPaneComposer({
               draggable={false}
             />
             <span>{HARNESS_MAINTENANCE_PRESENTATION.shortLabel}</span>
-          </div>
-          <div className="room-pane-controls">
-            <div className="room-pane-quick-actions">
+            </div>
+            <div className="room-pane-controls">
+              <div className="room-pane-quick-actions">
               <button
                 type="button"
                 className="room-pane-quick-action"
@@ -356,7 +385,7 @@ export function RoomPaneComposer({
                 onClick={() => fillRoomWithType(harnessId)}
                 disabled={applying || availableSlots === 0}
               >
-                <Grid2X2 aria-hidden="true" />
+                <Grid3X3 aria-hidden="true" />
               </button>
               <button
                 type="button"
@@ -389,19 +418,34 @@ export function RoomPaneComposer({
               </button>
             </div>
           </div>
-        </div>
-        <div className="room-pane-mix-row">
-          <div className="room-pane-runtime-label"><span>Chat</span></div>
-          <div className="room-pane-counter">
-            <button type="button" aria-label="Decrease Chat panes" onClick={() => adjustCount(chatId, -1)} disabled={applying || counts.chat === 0}>
-              <Minus aria-hidden="true" />
-            </button>
-            <output aria-label="Chat pane count">{counts.chat}</output>
-            <button type="button" aria-label="Increase Chat panes" onClick={() => adjustCount(chatId, 1)} disabled={applying || assigned >= availableSlots}>
-              <Plus aria-hidden="true" />
-            </button>
           </div>
-        </div>
+        )}
+        {utilityDefinitions.map(type => (
+          <div className="room-pane-mix-row" key={type.typeId}>
+            <div className="room-pane-runtime-label"><span>{type.label}</span></div>
+            <div className="room-pane-controls">
+              <div className="room-pane-quick-actions">
+                <button type="button" className="room-pane-quick-action" aria-label={`Fill all with ${type.label}`}
+                  title={`Fill the room with ${type.label} panes`} onClick={() => fillRoomWithType(type.typeId)} disabled={applying || availableSlots === 0}>
+                  <Grid3X3 aria-hidden="true" />
+                </button>
+                <button type="button" className="room-pane-quick-action" aria-label={`Clear ${type.label} count`}
+                  title={`Reset ${type.label} pane count`} onClick={() => clearRuntimeCount(type.typeId)} disabled={applying || counts[type.typeId] === 0}>
+                  <RotateCcw aria-hidden="true" />
+                </button>
+              </div>
+              <div className="room-pane-counter">
+                <button type="button" aria-label={`Decrease ${type.label} panes`} onClick={() => adjustCount(type.typeId, -1)} disabled={applying || counts[type.typeId] === 0}>
+                  <Minus aria-hidden="true" />
+                </button>
+                <output aria-label={`${type.label} pane count`}>{counts[type.typeId]}</output>
+                <button type="button" aria-label={`Increase ${type.label} panes`} onClick={() => adjustCount(type.typeId, 1)} disabled={applying || assigned >= availableSlots}>
+                  <Plus aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
       </div> : null}
 
       {!collapsed && loading ? <p className="room-pane-runtime-state" role="status"><Loader2 className="spin" aria-hidden="true" />Loading CLI runtimes…</p> : null}

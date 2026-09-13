@@ -42,6 +42,246 @@ function osc66Payload(body: string): string | null {
 }
 
 /**
+ * Some TUI renderers (observed with OpenCode/opentui run-length emission)
+ * drop the CSI introducer at run boundaries, e.g. layered backgrounds
+ * `ESC[48;2;10;10;10m48;2;20;20;20mESC[0m`, a cursor move after colors
+ * `ESC[48;2;10;10;10m10;1HESC[0m`, or a color after a cursor move
+ * `ESC[10;1H38;2;255;255;255m`. xterm.js then draws the bare params as
+ * visible text. Repair the missing `ESC[` only when a complete SGR or CUP
+ * immediately precedes the dangling run, so ordinary prose (which never
+ * contains `ESC[...m` or `ESC[...H` directly before such params) passes
+ * through byte-for-byte. The stream may also split exactly at the run
+ * boundary (`...m` | `38;2;...m`), so the parser remembers a trailing
+ * SGR/CUP across pushes; chained runs (`ESC[m ESC[H 38;2;...`) are repaired
+ * iteratively. At narrow widths the TUI may also wrap a style run across a
+ * newline (`...m38;2;25\n5;255;255m`); a newline is joined only when the
+ * pieces on both sides are incomplete on their own and together form a
+ * valid run, so prose such as `ESC[0m\n10;1H` still passes through.
+ */
+const DANGLING_TRUECOLOR_SGR_PATTERN = /(?<prefix>\x1b\[[0-9;]*[mH])(?<run>(?<tc>(?<color38>38|48|58);2;(?<r>\d{1,3});(?<g>\d{1,3});(?<b>\d{1,3})m)|(?<pal>(?:38|48|58);5;(?<n>\d{1,3})m)|(?<cup>(?<row>\d{1,4});(?<col>\d{1,4})H))/g;
+const DANGLING_SGR_NEWLINE_JOIN_PATTERN = /(?<prefix>\x1b\[[0-9;]*[mH])(?<head>[0-9;]{1,20}?)\r?\n(?<tail>[0-9;]{0,20}?[mH])/g;
+const DANGLING_SGR_OPEN_PATTERN = /^\x1b\[[0-9;]*$/;
+const DANGLING_SGR_PREFIX_PATTERN = /^\x1b\[[0-9;]*[mH](?:(?:38|48|58)(?:;[25](?:;\d{1,3}){0,2})?;?\d{0,3}|\d{1,4}(?:;\d{0,4})?)\r?\n?$/;
+// A wrapped run whose newline already arrived but whose tail params are
+// still split across pushes (`...m38;2;25\n5` | `;255;255m`): hold from the
+// SGR so the join stays contiguous. The head requires at least one param
+// char, so a bare `SGR\nCOMPLETE-RUN` (ordinary prose layout) never holds.
+const DANGLING_SGR_PREFIX_NEWLINE_PATTERN = /^\x1b\[[0-9;]*[mH][0-9;]{1,20}\r?\n[0-9;]{0,20}$/;
+const DANGLING_SGR_MAX_HOLD_CHARS = 64;
+const DANGLING_LEADING_TRUECOLOR_PATTERN = /^(38|48|58);2;(\d{1,3});(\d{1,3});(\d{1,3})m/;
+const DANGLING_LEADING_PALETTE_PATTERN = /^(38|48|58);5;(\d{1,3})m/;
+const DANGLING_LEADING_CUP_PATTERN = /^(\d{1,4});(\d{1,4})H/;
+const DANGLING_LEADING_PARTIAL_PATTERN = /^(?:(?:38|48|58)(?:;[25](?:;\d{1,3}){0,2})?;?\d{0,3}|\d{1,4}(?:;\d{0,4})?)$/;
+const DANGLING_LEADING_PARTIAL_NEWLINE_PATTERN = /^((?:38|48|58)(?:;[25](?:;\d{1,3}){0,2})?;?\d{0,3}|\d{1,4}(?:;\d{0,4})?)(\r?\n)$/;
+const DANGLING_LEADING_MAX_HOLD_CHARS = 16;
+const DANGLING_TRAILING_SGR_PATTERN = /\x1b\[[0-9;]*[mH]$/;
+
+function inTruecolorRange(value: string): boolean {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 255;
+}
+
+function isCompleteDanglingRun(params: string): boolean {
+  const truecolor = /^(38|48|58);2;(\d{1,3});(\d{1,3});(\d{1,3})m$/.exec(params);
+  if (truecolor) {
+    return (
+      inTruecolorRange(truecolor[2] ?? "") &&
+      inTruecolorRange(truecolor[3] ?? "") &&
+      inTruecolorRange(truecolor[4] ?? "")
+    );
+  }
+  const palette = /^(38|48|58);5;(\d{1,3})m$/.exec(params);
+  if (palette) return inTruecolorRange(palette[2] ?? "");
+  return /^\d{1,4};\d{1,4}H$/.test(params);
+}
+
+/**
+ * Leading run prefix with trailing text preserved: returns the run when
+ * `text` starts with a valid dangling run, so wrapped reassembly keeps
+ * whatever follows the run (prose, newlines) byte-for-byte.
+ */
+function matchLeadingRunPrefix(text: string): string | null {
+  const run = /^(?:(?:38|48|58);2;\d{1,3};\d{1,3};\d{1,3}m|(?:38|48|58);5;\d{1,3}m|\d{1,4};\d{1,4}H)/.exec(text)?.[0];
+  if (!run) return null;
+  if (run.endsWith("m") && !isCompleteDanglingRun(run)) return null;
+  return run;
+}
+
+/**
+ * Rejoin a leading run split across newline(s) (`38;2;25\n5;255;255m`).
+ * Removes only newlines strictly inside the run span — at least one run
+ * char must precede the newline — and preserves everything after the run,
+ * so a newline before a complete run (`\n10;1H`, ordinary prose layout
+ * after a reset) never repairs.
+ */
+function repairLeadingWrappedRun(input: string): string | null {
+  let candidate = input;
+  for (let step = 0; step < 2; step += 1) {
+    const nl = candidate.indexOf("\n");
+    if (nl < 0) break;
+    const cut = candidate[nl - 1] === "\r" ? 2 : 1;
+    if (nl - cut + 1 <= 0) break;
+    const without = candidate.slice(0, nl - cut + 1) + candidate.slice(nl + 1);
+    const run = matchLeadingRunPrefix(without);
+    if (run !== null && nl - cut + 1 < run.length) {
+      candidate = without;
+    } else {
+      break;
+    }
+  }
+  if (candidate === input) return null;
+  return matchLeadingRunPrefix(candidate) !== null ? `\x1b[${candidate}` : null;
+}
+
+export function repairDanglingSgrSequences(data: string): string {
+  let current = data;
+  for (let pass = 0; pass < 5; pass += 1) {
+    DANGLING_SGR_NEWLINE_JOIN_PATTERN.lastIndex = 0;
+    const joined = current.replace(
+      DANGLING_SGR_NEWLINE_JOIN_PATTERN,
+      (match: string, prefix: string, head: string, tail: string) => {
+        if (isCompleteDanglingRun(tail)) return match;
+        const run = `${head}${tail}`;
+        return isCompleteDanglingRun(run) ? `${prefix}${run}` : match;
+      }
+    );
+    DANGLING_SGR_NEWLINE_JOIN_PATTERN.lastIndex = 0;
+    DANGLING_TRUECOLOR_SGR_PATTERN.lastIndex = 0;
+    const repaired = joined.replace(
+      DANGLING_TRUECOLOR_SGR_PATTERN,
+      (...args: Array<string | Record<string, string | undefined>>) => {
+        const groups = (args.at(-1) ?? {}) as Record<string, string | undefined>;
+        const match = args[0] as string;
+        const prefix = groups["prefix"] ?? "";
+        const params = groups["run"] ?? "";
+        const r = groups["r"];
+        if (r !== undefined) {
+          return inTruecolorRange(r) &&
+            inTruecolorRange(groups["g"] ?? "") &&
+            inTruecolorRange(groups["b"] ?? "")
+            ? `${prefix}\x1b[${params}`
+            : match;
+        }
+        const n = groups["n"];
+        if (n !== undefined) return inTruecolorRange(n) ? `${prefix}\x1b[${params}` : match;
+        return `${prefix}\x1b[${params}`;
+      }
+    );
+    DANGLING_TRUECOLOR_SGR_PATTERN.lastIndex = 0;
+    if (repaired === current) return repaired;
+    current = repaired;
+  }
+  return current;
+}
+
+export function createDanglingSgrRepairParser() {
+  let pending = "";
+  let pendingNeedsIntroducer = false;
+  let prevEndsWithSgr = false;
+
+  const repairLeadingDangling = (input: string): string | null => {
+    const truecolor = DANGLING_LEADING_TRUECOLOR_PATTERN.exec(input);
+    if (truecolor) {
+      if (!inTruecolorRange(truecolor[2] ?? "") || !inTruecolorRange(truecolor[3] ?? "") || !inTruecolorRange(truecolor[4] ?? "")) {
+        return null;
+      }
+      return `\x1b[${input}`;
+    }
+    const palette = DANGLING_LEADING_PALETTE_PATTERN.exec(input);
+    if (palette) {
+      if (!inTruecolorRange(palette[2] ?? "")) return null;
+      return `\x1b[${input}`;
+    }
+    if (DANGLING_LEADING_CUP_PATTERN.test(input)) {
+      return `\x1b[${input}`;
+    }
+    return null;
+  };
+
+  return {
+    push(data: string): string {
+      let input = pending + data;
+      const heldNeedsIntroducer = pendingNeedsIntroducer;
+      const heldAfterSgr = prevEndsWithSgr && pending === "";
+      pending = "";
+      pendingNeedsIntroducer = false;
+      if ((heldNeedsIntroducer || heldAfterSgr) && input.length > 0 && !input.startsWith("\x1b")) {
+        const repairedLeading = repairLeadingDangling(input);
+        if (repairedLeading !== null) {
+          input = repairedLeading;
+        } else if (input.includes("\n")) {
+          // A style run wrapped across newline(s) (`38;2;25\n5;255;255m`):
+          // rejoin only newlines strictly inside the run span, so ordinary
+          // prose after a reset still passes through untouched.
+          const repairedWrapped = repairLeadingWrappedRun(input);
+          if (repairedWrapped !== null) {
+            input = repairedWrapped;
+          } else {
+            // Hold a partial head plus its newline (`...m38;2;25\n`) so the
+            // next push can complete the run instead of leaking both halves.
+            const wrapped = DANGLING_LEADING_PARTIAL_NEWLINE_PATTERN.exec(input);
+            if (
+              wrapped &&
+              input.length <= DANGLING_LEADING_MAX_HOLD_CHARS + 2 &&
+              !isCompleteDanglingRun(wrapped[1] ?? "")
+            ) {
+              pending = input;
+              pendingNeedsIntroducer = true;
+              prevEndsWithSgr = false;
+              return "";
+            }
+          }
+        } else if (
+          input.length <= DANGLING_LEADING_MAX_HOLD_CHARS &&
+          DANGLING_LEADING_PARTIAL_PATTERN.test(input)
+        ) {
+          pending = input;
+          pendingNeedsIntroducer = true;
+          prevEndsWithSgr = false;
+          return "";
+        }
+      }
+      const repaired = repairDanglingSgrSequences(input);
+      // Hold back only a tail that can still grow into a repair: a partial
+      // SGR open, a complete SGR followed by a partial dangling prefix, or
+      // a wrapped run whose newline arrived before its tail params.
+      // The hold stays anchored at the SGR open so the preceding SGR and the
+      // dangling params remain contiguous for the next push.
+      const escIndex = repaired.lastIndexOf("\x1b[");
+      if (escIndex >= 0) {
+        const tail = repaired.slice(escIndex);
+        if (
+          tail.length <= DANGLING_SGR_MAX_HOLD_CHARS &&
+          (DANGLING_SGR_OPEN_PATTERN.test(tail) ||
+            DANGLING_SGR_PREFIX_PATTERN.test(tail) ||
+            DANGLING_SGR_PREFIX_NEWLINE_PATTERN.test(tail))
+        ) {
+          pending = tail;
+          const emitted = repaired.slice(0, escIndex);
+          prevEndsWithSgr = DANGLING_TRAILING_SGR_PATTERN.test(emitted);
+          return emitted;
+        }
+      }
+      if (repaired.endsWith("\x1b")) {
+        pending = "\x1b";
+        const emitted = repaired.slice(0, -1);
+        prevEndsWithSgr = DANGLING_TRAILING_SGR_PATTERN.test(emitted);
+        return emitted;
+      }
+      prevEndsWithSgr = DANGLING_TRAILING_SGR_PATTERN.test(repaired);
+      return repaired;
+    },
+    flush(): string {
+      const remainder = pending;
+      pending = "";
+      pendingNeedsIntroducer = false;
+      prevEndsWithSgr = false;
+      return remainder;
+    }
+  };
+}
+
+/**
  * Newer OpenCode TUIs wrap explicit-width Unicode glyphs in OSC 66. xterm.js
  * consumes unsupported OSC payloads without drawing them, so unwrap valid text
  * while preserving every unrelated control sequence byte-for-byte.
@@ -268,6 +508,7 @@ export function createTerminalOutputCoordinator(options: {
 }) {
   const key = `${options.roomId}\u0000${options.paneId}`;
   const outputCompatibilityParser = createTerminalOutputCompatibilityParser();
+  const danglingSgrRepairParser = createDanglingSgrRepairParser();
   const perPaneLimitBytes = options.perPaneLimitBytes ?? TERMINAL_HIDDEN_PANE_BUFFER_LIMIT_BYTES;
   const totalLimitBytes = options.totalLimitBytes ?? TERMINAL_HIDDEN_TOTAL_BUFFER_LIMIT_BYTES;
   const buffer: BufferedOutput[] = [];
@@ -416,8 +657,9 @@ export function createTerminalOutputCoordinator(options: {
       };
       try {
         const compatibleData = outputCompatibilityParser.push(next.data);
-        const returned = compatibleData ? options.write(compatibleData, done, mode) : undefined;
-        if (!compatibleData) done();
+        const repairedData = danglingSgrRepairParser.push(compatibleData);
+        const returned = repairedData ? options.write(repairedData, done, mode) : undefined;
+        if (!repairedData) done();
         if (returned && typeof returned.then === "function") {
           void returned.then(() => done(), done);
         }

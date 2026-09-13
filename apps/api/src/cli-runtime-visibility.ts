@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { writeFile, rename } from "node:fs/promises";
 import {
   cliRuntimeDisablePreviewSchema,
   cliToggleRuntimeIdSchema,
@@ -115,6 +116,7 @@ export class CliRuntimeVisibilityPolicy {
     const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
     const setting = await this.options.store.updateCliRuntimeSetting(parsedRuntimeId, { enabled: true }, updatedBy);
     this.publishVisibilityEvent(parsedRuntimeId, true, traceId, null);
+    void this.syncVisibilityFile();
     return updateCliRuntimeSettingResultSchema.parse({ setting, cleanup: null });
   }
 
@@ -215,7 +217,9 @@ export class CliRuntimeVisibilityPolicy {
 
     let processSweep: RuntimeProcessSweepResult = { matchedPids: [], killedPids: [], remainingPids: [] };
     let processSweepFailed = false;
-    if (this.options.killRuntimeProcesses) {
+    // Codex shares native app-server processes with Room Agent and Chat.
+    // Its owned terminal sessions were terminated above; never sweep shared hosts.
+    if (parsedRuntimeId !== "cli:codex" && this.options.killRuntimeProcesses) {
       try {
         processSweep = await this.options.killRuntimeProcesses(parsedRuntimeId, traceId);
       } catch {
@@ -227,6 +231,19 @@ export class CliRuntimeVisibilityPolicy {
     const unresolvedPaneIds: string[] = [];
     for (const paneId of impact.paneIds) {
       try {
+        // A failed native termination must remain visible as unresolved. Closing
+        // the pane would implicitly mark its still-running session EXITED and
+        // hide the cleanup failure from the operator.
+        const activeSession = await this.options.store.getActivePaneCliSession(paneId);
+        if (
+          activeSession &&
+          activeSession.runtimeId === parsedRuntimeId &&
+          activeSession.isActive &&
+          !terminatedSessionIds.includes(activeSession.sessionId)
+        ) {
+          unresolvedPaneIds.push(paneId);
+          continue;
+        }
         const pane = await this.options.store.updatePane(
           paneId,
           { isClosed: true, status: "CLOSED" },
@@ -276,7 +293,24 @@ export class CliRuntimeVisibilityPolicy {
       processSweepFailed
     };
     this.publishVisibilityEvent(parsedRuntimeId, false, traceId, cleanup);
+    void this.syncVisibilityFile();
     return updateCliRuntimeSettingResultSchema.parse({ setting, cleanup });
+  }
+
+  async syncVisibilityFile(): Promise<void> {
+    try {
+      const settings = await this.options.store.listCliRuntimeSettings();
+      const statusMap: Record<string, boolean> = {};
+      for (const s of settings) {
+        statusMap[s.runtimeId] = s.enabled;
+      }
+      const targetPath = "/opt/spaceapp/var/cli-runtime-visibility.json";
+      const tmpPath = `${targetPath}.tmp.${Date.now()}`;
+      await writeFile(tmpPath, JSON.stringify(statusMap, null, 2), "utf8");
+      await rename(tmpPath, targetPath);
+    } catch {
+      // Best-effort file sync
+    }
   }
 
   private async collectImpact(runtimeId: CliToggleRuntimeId): Promise<CliRuntimeImpact> {
@@ -312,13 +346,8 @@ export class CliRuntimeVisibilityPolicy {
         ? { paneId: pane.id, runId: run.runId }
         : null;
     }));
-    const roomAgentMissions = runtimeId === "cli:codex"
-      ? (await Promise.all(rooms.map(async (room) =>
-          (await this.options.store.listRoomAgentMissions(room.id, 500))
-            .filter((mission) => mission.status === "QUEUED" || mission.status === "RUNNING" || mission.status === "PAUSED")
-            .map((mission) => ({ roomId: room.id, missionId: mission.id }))
-        ))).flat().sort((left, right) => left.missionId.localeCompare(right.missionId))
-      : [];
+    // Room Agent manages the CLI switch and must remain available while it is off.
+    const roomAgentMissions: CliRuntimeImpact["roomAgentMissions"] = [];
     const activeChatRuns = chatRuns.flatMap((run) => run ? [run] : []).sort((left, right) =>
       left.runId.localeCompare(right.runId)
     );
@@ -354,6 +383,7 @@ export class CliRuntimeVisibilityPolicy {
   }
 
   private async countRuntimeProcesses(runtimeId: CliToggleRuntimeId): Promise<number> {
+    if(runtimeId==="cli:codex")return 0;
     try {
       return (await this.options.countRuntimeProcesses?.(runtimeId)) ?? 0;
     } catch {

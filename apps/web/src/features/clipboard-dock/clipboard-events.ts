@@ -75,6 +75,7 @@ function notifyClipboardNotice(message: string): void {
 export async function captureClipboardText(input: {
   text: string;
   source: ClipboardOperatorSource;
+  title?: string | null;
   roomId?: string | null;
   paneId?: string | null;
   paneTitle?: string | null;
@@ -86,7 +87,14 @@ export async function captureClipboardText(input: {
     return "TOO_LARGE";
   }
   try {
-    await api.createClipboardItem(input);
+    await api.createClipboardItem({
+      text: input.text,
+      source: input.source,
+      ...(input.title ? { title: input.title } : {}),
+      ...(input.roomId !== undefined ? { roomId: input.roomId } : {}),
+      ...(input.paneId !== undefined ? { paneId: input.paneId } : {}),
+      ...(input.paneTitle !== undefined ? { paneTitle: input.paneTitle } : {})
+    });
     notifyClipboardUpdated();
     return "CAPTURED";
   } catch {

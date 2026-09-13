@@ -1,4 +1,7 @@
+import { controlToolSchemas } from "./space-control.js";
 import { z } from "zod";
+import { roomMiniRouteSchema } from "./pane-catalog.js";
+import { taskMetadataSchema } from "./task-metadata.js";
 
 export const isoDateTimeSchema = z.string().datetime({ offset: true });
 export const idSchema = z.string().min(8).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -96,7 +99,7 @@ export const paginated = <T extends z.ZodType>(item: T) =>
   });
 
 export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"]);
-export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS"]);
+export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
 export const paneTitleSourceSchema = z.enum(["auto", "manual", "ai"]);
 export const paneCategoryColors = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
@@ -164,7 +167,8 @@ export const roomSchema = z.object({
   description: z.string().max(1000).nullable(),
   kind: roomKindSchema.default("WORKSPACE"),
   order: z.number().int().min(0).default(0),
-  paneLayoutColumns: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).nullable().default(null),
+  paneLayoutColumns: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).nullable().default(null),
+  paneLayoutHeight: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).default(1),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
   archivedAt: isoDateTimeSchema.nullable(),
@@ -323,7 +327,8 @@ export const updateRoomInputSchema = z.object({
 
 export const updatePaneLayoutInputSchema = z
   .object({
-    paneLayoutColumns: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).nullable()
+    paneLayoutColumns: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).nullable().optional(),
+    paneLayoutHeight: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).optional()
   })
   .strict();
 
@@ -375,6 +380,7 @@ export const paneSchema = z.object({
   roomId: idSchema,
   title: z.string().min(1).max(120),
   titleSource: paneTitleSourceSchema.default("auto"),
+  taskMetadata: taskMetadataSchema.nullable().optional(),
   mode: paneModeSchema,
   status: paneStatusSchema,
   providerId: z.string().max(120).nullable(),
@@ -478,14 +484,17 @@ export const roomPaneBatchItemSchema = z.discriminatedUnion("mode", [
   z
     .object({
       mode: z.literal("VNC"),
-      vncTarget: vncTargetSchema
+      vncTarget: vncTargetSchema.optional()
     })
     .strict(),
+  z.object({ mode: z.literal("BROWSER") }).strict(),
+  z.object({ mode: z.literal("YOUTUBE") }).strict(),
   z
     .object({
       mode: z.literal("HARNESS")
     })
-    .strict()
+    .strict(),
+  z.object({ mode: z.literal("LIVE") }).strict()
 ]);
 
 export const createRoomPanesRequestSchema = z
@@ -541,6 +550,7 @@ export const updatePaneInputSchema = z
   .object({
     title: z.string().trim().min(1).max(120).optional(),
     titleSource: paneTitleSourceSchema.optional(),
+    taskMetadata: taskMetadataSchema.nullable().optional(),
     mode: paneModeSchema.optional(),
     status: paneStatusSchema.optional(),
     providerId: z.string().trim().max(120).nullable().optional(),
@@ -701,6 +711,8 @@ export const roomAgentRequestRecordSchema = z.object({
   clientRequestId: requestIdSchema,
   promptMessageId: idSchema,
   responseMessageId: idSchema,
+  requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
+  directAction: roomMiniRouteSchema.nullable().optional(),
   createdAt: isoDateTimeSchema
 });
 
@@ -736,6 +748,7 @@ export const updateRoomAgentMissionInputSchema = z
   .refine((input) => Object.keys(input).length > 0, "Room agent mission update must include at least one field.");
 
 export const roomAgentActionTypeSchema = z.enum([
+  "CONTROL",
   "INSPECT",
   "ORCHESTRATE",
   "SEND",
@@ -743,7 +756,8 @@ export const roomAgentActionTypeSchema = z.enum([
   "RESTART",
   "CREATE_PANE",
   "CLOSE_PANE",
-  "REOPEN_PANE"
+  "REOPEN_PANE",
+  "CATALOG", "FIND", "CONFIGURE_PANE", "LAYOUT", "CLI_COMMAND", "START", "RESUME", "OPEN_TYPES"
 ]);
 export const roomAgentActionStatusSchema = z.enum(["QUEUED", "RUNNING", "COMPLETED", "FAILED", "BLOCKED"]);
 export const roomAgentActionRecordSchema = z.object({
@@ -801,11 +815,30 @@ export const roomAgentRoomInventorySchema = z.object({
   plans: z.array(roomAgentRoomPlanSchema).max(64)
 });
 
+export const roomTaskModelUsageSchema = z.object({
+  providerId: z.string().max(160).nullable(),
+  modelId: z.string().min(1).max(160),
+  reasoningEffort: z.string().max(80).nullable(),
+  turnId: z.string().max(200).nullable(),
+  startedAt: isoDateTimeSchema.nullable(),
+  completedAt: isoDateTimeSchema.nullable(),
+  source: z.enum(["NATIVE", "OBSERVED"])
+});
+export const roomTaskTimingSchema = z.object({
+  startedAt: isoDateTimeSchema.nullable(),
+  completedAt: isoDateTimeSchema.nullable(),
+  durationMs: z.number().int().min(0).nullable(),
+  source: z.enum(["NATIVE", "OBSERVED", "UNKNOWN"]),
+  observedAt: isoDateTimeSchema
+});
+export type RoomTaskModelUsage = z.infer<typeof roomTaskModelUsageSchema>;
+export type RoomTaskTiming = z.infer<typeof roomTaskTimingSchema>;
+
 export const roomAgentTaskResultSchema = z.object({
   stepId: z.string().min(1).max(120),
   paneId: idSchema,
   label: z.string().min(1).max(160),
-  state: z.enum(["RUNNING", "VERIFYING", "COMPLETED", "LOW_QUALITY", "BLOCKED"]),
+  state: z.enum(["RUNNING", "VERIFYING", "COMPLETED", "LOW_QUALITY", "BLOCKED", "INTERRUPTED"]),
   modelId: z.string().min(1).max(160).nullable(),
   reasoningEffort: reasoningEffortSchema.nullable(),
   qualityScore: z.number().min(0).max(100).nullable(),
@@ -827,6 +860,9 @@ export const roomAgentTaskResultSchema = z.object({
   recoveries: z.number().int().min(0),
   stalls: z.number().int().min(0),
   completedAt: isoDateTimeSchema.nullable(),
+  startedAt: isoDateTimeSchema.nullable().optional(),
+  timing: roomTaskTimingSchema.nullable().optional(),
+  modelsUsed: z.array(roomTaskModelUsageSchema).max(256).optional(),
   verificationSummary: z.string().min(1).max(1000)
 });
 
@@ -893,6 +929,13 @@ export const roomAgentSessionSchema = z.object({
   roomInventory: roomAgentRoomInventorySchema.optional(),
   taskResults: z.array(roomAgentTaskResultSchema).max(64).optional(),
   missionSummary: roomAgentMissionSummarySchema.nullable().optional(),
+  directCommand: z.object({
+    requestId: requestIdSchema,
+    status: z.enum(["COMPLETED", "FAILED", "CLIENT_PENDING", "REPLAYED"]),
+    durationMs: z.number().nonnegative(),
+    operationId: z.string().optional(),
+    music: z.object({ action: z.enum(["PLAY", "PAUSE", "NEXT", "PREVIOUS"]), target: z.enum(["AUTO", "YOUTUBE"]) }).optional()
+  }).optional(),
   capabilities: z.object({
     canSend: z.boolean(),
     canPause: z.boolean().default(false),
@@ -903,6 +946,7 @@ export const roomAgentSessionSchema = z.object({
 });
 
 export const roomAgentMessageInputSchema = z.object({
+  selectedBrowserPaneId: idSchema.optional(),
   content: z.string().trim().min(1).max(4000),
   clientRequestId: requestIdSchema
 });
@@ -948,8 +992,9 @@ export const roomAgentPreparedPaneSchema = z.object({
   title: z.string().trim().min(1).max(120),
   mode: z.enum(["TERMINAL", "CHAT"]),
   terminalRuntimeId: z.string().trim().min(1).max(160).nullable().optional(),
-  modelId: z.string().trim().min(1).max(160),
-  reasoningEffort: reasoningEffortSchema
+  modelId: z.string().trim().min(1).max(160).optional(),
+  selectedModelConfigId: z.string().trim().min(1).max(240).optional(),
+  reasoningEffort: reasoningEffortSchema.optional()
 });
 
 function validateRoomAgentOrchestrationGraph(
@@ -993,6 +1038,7 @@ function validateRoomAgentOrchestrationGraph(
 }
 
 export const spaceRoomToolIdSchema = z.enum([
+  "room:control",
   "room:inspect",
   "room:orchestrate",
   "room:send",
@@ -1000,7 +1046,8 @@ export const spaceRoomToolIdSchema = z.enum([
   "room:restart",
   "room:create_pane",
   "room:close_pane",
-  "room:reopen_pane"
+  "room:reopen_pane",
+  "room:catalog", "room:find", "room:configure_pane", "room:layout", "room:cli_command", "room:start", "room:resume", "room:open_types"
 ]);
 
 const roomAgentInspectActionRequestSchema = z.object({
@@ -1074,7 +1121,70 @@ const roomAgentReopenPaneActionRequestSchema = z.object({
   action: z.object({ type: z.literal("reopen_pane"), paneId: idSchema })
 });
 
+const roomAgentCatalogActionRequestSchema = z.object({
+  toolId: z.literal("room:catalog"),
+  action: z.object({ type: z.literal("catalog"), paneId: idSchema.optional(),
+    section: z.enum(["STATE", "TASKS", "MODELS", "MODES", "COMMANDS"]).default("STATE"),
+    query: z.string().trim().min(1).max(500).optional(), offset: z.number().int().min(0).max(10000).default(0),
+    limit: z.number().int().min(1).max(50).default(20) })
+});
+const roomAgentFindActionRequestSchema = z.object({
+  toolId: z.literal("room:find"),
+  action: z.object({ type: z.literal("find"), query: z.string().trim().min(1).max(500), includeClosed: z.boolean().default(false) })
+});
+const roomAgentConfigurePaneActionRequestSchema = z.object({
+  toolId: z.literal("room:configure_pane"),
+  action: z.object({
+    type: z.literal("configure_pane"), paneId: idSchema, expectedSessionId: idSchema,
+    modelId: z.string().trim().min(1).max(160).optional(),
+    selectedModelConfigId: z.string().trim().min(1).max(240).optional(),
+    reasoningEffort: z.string().trim().min(1).max(80).optional(),
+    nativeMode: z.string().trim().min(1).max(120).optional(),
+    when: z.enum(["AFTER_TURN", "NOW"]).default("AFTER_TURN")
+  }).refine((value) => value.modelId || value.nativeMode || value.selectedModelConfigId || value.reasoningEffort, "Choose a model, reasoning effort or native mode.")
+});
+const roomAgentLayoutActionRequestSchema = z.object({
+  toolId: z.literal("room:layout"),
+  action: z.object({
+    type: z.literal("layout"), paneIds: reorderPanesInputSchema.shape.paneIds.optional(),
+    paneLayoutColumns: updatePaneLayoutInputSchema.shape.paneLayoutColumns.optional(),
+    paneId: idSchema.optional(), columnSpan: paneColumnSpanSchema.optional(),
+    isMaximized: z.boolean().optional(), isMinimized: z.boolean().optional(), focus: z.boolean().optional()
+  }).superRefine((value, context) => {
+    if ((value.columnSpan !== undefined || value.isMaximized !== undefined || value.isMinimized !== undefined || value.focus) && !value.paneId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "Pane layout changes require a paneId." });
+    }
+    if (value.isMaximized && value.isMinimized) context.addIssue({ code: z.ZodIssueCode.custom, message: "A pane cannot be minimized and maximized together." });
+  })
+});
+const roomAgentCliCommandActionRequestSchema = z.object({
+  toolId: z.literal("room:cli_command"),
+  action: z.object({
+    type: z.literal("cli_command"), paneId: idSchema, expectedSessionId: idSchema,
+    command: z.string().trim().min(2).max(2000).regex(/^\/[a-zA-Z][a-zA-Z0-9_-]*(?: [^\x00-\x1f\x7f]*)?$/).optional(),
+    key: z.enum(["UP", "DOWN", "LEFT", "RIGHT", "ENTER", "ESCAPE", "TAB", "SHIFT_TAB"]).optional(),
+    when: z.enum(["AFTER_TURN", "NOW"]).default("AFTER_TURN"),
+    selection: z.string().trim().min(1).max(500).optional()
+  }).refine((value) => value.command || value.key || value.selection, "Provide a slash command, menu key or visible selection.")
+});
+const roomAgentStartActionRequestSchema = z.object({
+  toolId: z.literal("room:start"), action: z.object({ type: z.literal("start"), paneId: idSchema })
+});
+const roomAgentResumeActionRequestSchema = z.object({
+  toolId: z.literal("room:resume"), action: z.object({ type: z.literal("resume"), paneId: idSchema, taskId: z.string().trim().min(1).max(200).optional() })
+});
+const roomAgentOpenTypesActionRequestSchema = z.object({
+  toolId: z.literal("room:open_types"),
+  action: z.object({
+    type: z.literal("open_types"),
+    kinds: z.array(z.enum(["TERMINAL", "CHAT"])).min(1).max(2).default(["TERMINAL", "CHAT"]),
+    runtimeIds: z.array(z.string().trim().min(1).max(160)).max(32).optional(),
+    input: z.string().trim().min(1).max(2000).optional()
+  })
+});
+
 export const spaceAgentRoomActionRequestSchema = z.discriminatedUnion("toolId", [
+  z.object({toolId:z.literal("room:control"),action:z.object({type:z.literal("control"),tool:z.enum(["space_capabilities","space_inspect","space_execute","space_operations","space_schedules"]),arguments:z.record(z.string(),z.unknown())}).strict()}).strict(),
   roomAgentInspectActionRequestSchema,
   roomAgentOrchestrateActionRequestSchema,
   roomAgentSendActionRequestSchema,
@@ -1082,7 +1192,11 @@ export const spaceAgentRoomActionRequestSchema = z.discriminatedUnion("toolId", 
   roomAgentRestartActionRequestSchema,
   roomAgentCreatePaneActionRequestSchema,
   roomAgentClosePaneActionRequestSchema,
-  roomAgentReopenPaneActionRequestSchema
+  roomAgentReopenPaneActionRequestSchema,
+  roomAgentCatalogActionRequestSchema, roomAgentFindActionRequestSchema,
+  roomAgentConfigurePaneActionRequestSchema, roomAgentLayoutActionRequestSchema,
+  roomAgentCliCommandActionRequestSchema, roomAgentStartActionRequestSchema,
+  roomAgentResumeActionRequestSchema, roomAgentOpenTypesActionRequestSchema
 ]);
 
 export const spaceAgentRoomActionEnvelopeSchema = z.object({
@@ -1095,6 +1209,9 @@ export const spaceAgentRoomActionBridgeRequestSchema = z.object({
   missionId: idSchema,
   agentPaneId: idSchema,
   agentSessionId: idSchema,
+  requestId: requestIdSchema.optional(),
+  backgroundExecution: z.boolean().optional(),
+  actionIndex: z.string().max(120).optional(),
   selectedToolIds: z.array(z.string().trim().min(1).max(160)).max(50),
   actions: z.array(spaceAgentRoomActionRequestSchema).min(1).max(3)
 });
@@ -1313,6 +1430,12 @@ export const paneCliTerminalControlRevocationReasonSchema = z.enum([
 ]);
 export const paneCliProofScopeSchema = z.literal("READ_ONLY");
 export const appDiagnosticsAutomationScopeSchema = z.literal("APP_DIAGNOSTICS");
+export const browserViewportDimensionsSchema = z.object({
+  width: z.number().int().min(240).max(2560),
+  height: z.number().int().min(180).max(1600)
+}).strict();
+export type BrowserViewportDimensions = z.infer<typeof browserViewportDimensionsSchema>;
+
 export const browserSessionViewportSchema = z.enum(["mobile", "tablet", "desktop", "wide"]);
 export const browserSessionStatusSchema = z.enum(["STARTING", "READY", "NAVIGATING", "ERROR", "CLOSED"]);
 export const browserStreamModeSchema = z.enum(["AUTO", "SILENT", "PREVIEW", "INTERACTIVE", "REALTIME"]);
@@ -1795,6 +1918,11 @@ export const paneCliSessionSchema = z.object({
   cliTaskId: idSchema.nullable().default(null),
   cliTaskRevisionId: idSchema.nullable().default(null),
   accountProfileId: cliAccountProfileIdSchema.nullable().default(null),
+  terminalGeometry: z.object({
+    generationId: z.string().min(1).max(160),
+    cols: z.number().int().min(2).max(400),
+    rows: z.number().int().min(2).max(200)
+  }).nullable().optional(),
   status: paneCliSessionStatusSchema,
   statusReason: z.string().min(1).max(500).nullable(),
   exitCode: z.number().int().nullable(),
@@ -1806,6 +1934,7 @@ export const paneCliSessionSchema = z.object({
 
 export const createPaneCliSessionInputSchema = paneCliSessionSchema
   .omit({
+    terminalGeometry: true,
     sessionId: true,
     status: true,
     statusReason: true,
@@ -2322,9 +2451,15 @@ export const paneCliModelSettingsSchema = z.object({
     modelId: cliModelIdentifierSchema,
     reasoningEffort: cliReasoningEffortSchema
   }).nullable(),
-  models: z.array(paneCliModelOptionSchema).min(1).max(200),
-  controlMode: z.enum(["DIRECT", "OPENCODE"]),
-  isTurnActive: z.boolean()
+  models: z.array(paneCliModelOptionSchema).min(1).max(4000),
+  controlMode: z.enum(["DIRECT", "OPENCODE", "NATIVE"]),
+  isTurnActive: z.boolean(),
+  // How `current` was derived. "session-default" is the pane's persisted
+  // session default, used only while neither the native TUI nor the runtime
+  // server reports a model: that reading is provisional and readers must keep
+  // re-reading until a native/server reading confirms it. Absent for readers
+  // without provenance (Codex direct parity, native runtimes).
+  currentSource: z.enum(["native", "server", "session-default"]).optional()
 });
 
 export const paneCliModelSettingsStatusSchema = z.discriminatedUnion("status", [
@@ -2338,7 +2473,8 @@ export const paneCliModelSettingsStatusSchema = z.discriminatedUnion("status", [
       "CODEX_SESSION_CONTROL_UNAVAILABLE",
       "CODEX_MODEL_CATALOG_UNAVAILABLE",
       "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
-      "OPENCODE_MODEL_CATALOG_UNAVAILABLE"
+      "OPENCODE_MODEL_CATALOG_UNAVAILABLE",
+      "CLI_MODEL_CATALOG_UNAVAILABLE"
     ]),
     reason: z.string().min(1).max(500)
   })
@@ -2358,7 +2494,7 @@ export const updatePaneCliModelSettingsResultSchema = z.object({
   wasActive: z.boolean(),
   interrupted: z.boolean(),
   continuation: z.enum(["NOT_NEEDED", "SENT"]),
-  transport: z.enum(["DIRECT", "OPENCODE"]),
+  transport: z.enum(["DIRECT", "OPENCODE", "NATIVE"]),
   warning: z.string().min(1).max(500).nullable()
 });
 
@@ -2918,13 +3054,10 @@ export const browserStreamTicketResponseSchema = z
   })
   .strict();
 
-export const browserStreamWebSocketClientMessageSchema = z
-  .object({
-    type: z.literal("input"),
-    requestId: requestIdSchema,
-    input: browserRuntimeInputSchema
-  })
-  .strict();
+export const browserStreamWebSocketClientMessageSchema = z.union([
+  z.object({ type: z.literal("frameAck") }).strict(),
+  z.object({ type: z.literal("input"), requestId: requestIdSchema, input: browserRuntimeInputSchema }).strict()
+]);
 
 export const browserStreamInputAckSchema = z.discriminatedUnion("ok", [
   z
@@ -2952,6 +3085,7 @@ export const browserStreamInputAckSchema = z.discriminatedUnion("ok", [
 ]);
 
 export const browserStreamWebSocketServerMessageSchema = z.union([
+  z.object({ type: z.literal("viewport"), dimensions: browserViewportDimensionsSchema }).strict(),
   z
     .object({
       type: z.literal("ready"),
@@ -2986,6 +3120,7 @@ export const browserStreamWebSocketServerMessageSchema = z.union([
 ]);
 
 export const paneBrowserSessionResponseSchema = z.object({
+  viewportDimensions: browserViewportDimensionsSchema.optional(),
   session: paneBrowserSessionSchema,
   frame: browserFrameSchema.nullable(),
   websocket: browserFrameTokenSchema.nullable()
@@ -3028,6 +3163,7 @@ export const browserNavigateInputSchema = browserActionBaseSchema.extend({
 });
 
 export const browserSetViewportInputSchema = browserActionBaseSchema.extend({
+  dimensions: browserViewportDimensionsSchema.optional(),
   viewport: browserSessionViewportSchema
 });
 
@@ -3227,6 +3363,11 @@ const spaceCliBrowserArtifactCommandSchema = (type: "PIN_ARTIFACT" | "UNPIN_ARTI
   z.object({ type: z.literal(type), artifactId: idSchema }).strict();
 
 export const spaceCliBrowserCommandSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("DEVTOOLS"),
+    includeNetwork: z.boolean().default(true),
+    limit: z.number().int().min(1).max(500).default(100)
+  }).strict(),
   z.object({ type: z.literal("LIST_PAGES") }).strict(),
   z.object({
     type: z.literal("CREATE_PAGE"),
@@ -3491,11 +3632,29 @@ export const voiceTranscriptionMaxBytes = 25 * 1024 * 1024;
 // browser tab can finish negotiating after the server upgrade. Settings only
 // advertise gpt-live-transcribe and the API normalizes every request to it.
 export const voiceTranscriptionModelSchema = z.enum([
+  "gpt-transcribe",
   "gpt-live-transcribe",
-  "gpt-realtime-whisper",
   "gpt-4o-transcribe",
   "gpt-4o-mini-transcribe",
-  "whisper-1"
+  "gpt-live-1",
+  "gpt-live-1-mini",
+  "gpt-realtime-whisper",
+  "whisper-1",
+  "local-qwen3-greek"
+]);
+export const voiceModelVoiceSchema = z.enum([
+  "alloy",
+  "ash",
+  "ballad",
+  "coral",
+  "echo",
+  "sage",
+  "shimmer",
+  "bossa",
+  "tempo",
+  "marin",
+  "cedar",
+  "gleam"
 ]);
 export const voiceTranscriptionLanguageSchema = z.enum(["auto", "el", "en"]);
 export const voiceTranscriptionDelaySchema = z.enum(["minimal", "low", "medium", "high", "xhigh"]);
@@ -3504,7 +3663,9 @@ export const voiceTranscriptionSettingsSchema = z.object({
   enabled: z.boolean(),
   statusReason: z.string().min(1).max(500),
   defaultModel: voiceTranscriptionModelSchema,
-  modelOptions: z.array(voiceTranscriptionModelSchema).min(1).max(10),
+  modelOptions: z.array(voiceTranscriptionModelSchema).min(1).max(20),
+  defaultVoice: voiceModelVoiceSchema.optional(),
+  voiceOptions: z.array(voiceModelVoiceSchema).min(1).max(20).optional(),
   defaultLanguage: voiceTranscriptionLanguageSchema,
   languageOptions: z.array(voiceTranscriptionLanguageSchema).min(1).max(10),
   defaultDelay: voiceTranscriptionDelaySchema,
@@ -3528,6 +3689,11 @@ export const voiceTranscriptionResponseSchema = z.object({
   mimeType: z.string().min(1).max(120)
 });
 
+export const openAiModelsResponseSchema = z.object({
+  models: z.array(z.string().min(1).max(120)).min(1).max(500)
+});
+
+
 const voiceSessionDescriptionSchema = z.string()
   .min(32)
   .max(100000)
@@ -3535,9 +3701,18 @@ const voiceSessionDescriptionSchema = z.string()
 
 export const voiceRealtimeSessionRequestSchema = z.object({
   offerSdp: voiceSessionDescriptionSchema,
-  model: voiceTranscriptionModelSchema.optional(),
+  model: z.string().trim().min(1).max(120).optional(),
   language: voiceTranscriptionLanguageSchema.default("auto"),
-  delay: voiceTranscriptionDelaySchema.optional()
+  delay: voiceTranscriptionDelaySchema.optional(),
+  voice: voiceModelVoiceSchema.optional(),
+  opening: z.string().max(500).optional(),
+  prompt: z.string().max(10000).optional(),
+  delegatedModel: z.string().max(120).optional(),
+  delegatedType: z.enum(["responses", "client"]).optional(),
+  delegatedReasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+  delegatedWebSearch: z.boolean().optional(),
+  delegatedPrompt: z.string().max(10000).optional(),
+  tools: z.array(z.record(z.string(), z.unknown())).optional()
 });
 
 export const voiceRealtimeSessionResponseSchema = z.object({
@@ -3916,6 +4091,7 @@ export const codexUsageAccountSchema = z
     label: z.string().min(1).max(200),
     fiveHourRemainingPercent: nullableToolbarPercentSchema,
     weeklyRemainingPercent: nullableToolbarPercentSchema,
+    fiveHourResetAt: isoDateTimeSchema.nullable().optional(),
     weeklyResetAt: isoDateTimeSchema.nullable().optional(),
     sampledAt: isoDateTimeSchema.nullable()
   })
@@ -4063,7 +4239,7 @@ export const toolbarModelStatsModelSchema = z
   .object({
     modelId: z.string().min(1),
     providerId: z.string().min(1),
-    source: z.enum(["opencode", "codex"]),
+    source: z.string().min(1),
     turns: z.number().int().min(0),
     avgTtftMs: z.number().nullable(),
     avgTokPerSec: z.number().nullable(),
@@ -4079,12 +4255,12 @@ export const toolbarModelStatsSchema = z
     windowMinutes: z.number().int().min(1).max(1440),
     sampledAt: isoDateTimeSchema,
     models: z.array(toolbarModelStatsModelSchema).max(50),
-    sources: z.array(z.enum(["opencode", "codex"])),
+    sources: z.array(z.string().min(1)),
     errors: z.array(z.string()).max(20)
   })
   .strict();
 
-export const systemAnalyticsRangeSchema = z.enum(["10m", "1h", "7d", "30d"]);
+export const systemAnalyticsRangeSchema = z.enum(["10m", "1h", "24h", "7d", "30d"]);
 
 export const systemAnalyticsCoverageSchema = z.enum(["NATIVE", "SESSION_ONLY", "UNAVAILABLE"]);
 
@@ -4453,7 +4629,7 @@ export const cliSessionCleanupCliIdSchema = z.enum([
   "autohand",
   "kimi",
   "grok",
-  "claude-legacy",
+  "claude-space",
   "claude",
   "copilot",
   "cursor",
@@ -4886,7 +5062,10 @@ export const cliUpdateAllEndpointSchema = z
     updateKind: z.string().trim().min(1).max(80),
     enabled: z.boolean(),
     hasCustom: z.boolean(),
-    custom: z.array(cliUpdateAllCustomProcedureSchema).max(64)
+    custom: z.array(cliUpdateAllCustomProcedureSchema).max(64),
+    installedVersion: z.string().trim().min(1).max(160).nullable().optional(),
+    availableVersion: z.string().trim().min(1).max(160).nullable().optional(),
+    updateAvailable: z.boolean().optional()
   })
   .strict();
 export const cliUpdateAllDetectionSchema = z
@@ -5696,6 +5875,11 @@ export const dummyTurnInputSchema = z.object({
   agentSessionId: idSchema.optional(),
   agentRunId: idSchema.optional(),
   roomAgentMissionId: idSchema.optional(),
+  roomAgentOperatorRequest: z.string().trim().min(1).max(4000).optional(),
+  roomAgentContinuation: z.object({
+    sourceRunId: idSchema,
+    generation: z.number().int().min(1).max(16)
+  }).optional(),
   agentUserMessageId: idSchema.optional(),
   agentAssistantMessageId: idSchema.optional(),
   agentThreadId: z.string().trim().min(1).max(200).nullable().optional(),
@@ -5718,6 +5902,11 @@ export const roomAgentSupervisorInputSchema = z
   .object({
     roomId: idSchema,
     pending: z.array(roomAgentSupervisorQueueItemSchema).max(100).default([]),
+    monitoringMissionIds: z.array(idSchema).max(100).default([]),
+    interrupted: z.array(z.object({
+      item: roomAgentSupervisorQueueItemSchema,
+      reason: z.string().min(1).max(500)
+    })).max(100).default([]),
     processedCount: z.number().int().min(0).default(0)
   })
   .superRefine((input, context) => {
@@ -5773,6 +5962,7 @@ export const dummyTurnResultSchema = z.object({
 export const roomAgentTurnOutcomeSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("VERIFIED"),
+    pendingActionIds: z.array(idSchema).max(64).optional(),
     executedActionCount: z.number().int().min(1).max(100),
     statusReason: z.string().min(1).max(1000)
   }),
@@ -6785,6 +6975,17 @@ export const clipboardOperatorSourceSchema = z.enum(["COPY", "PASTE", "MANUAL_NO
 export const clipboardTextMaxCharacters = 100_000;
 export const agentClipboardNoteMaxCharacters = 10_000;
 export const clipboardPlanTitleMaxCharacters = 160;
+
+export function resolveClipboardSource(
+  existingSource: z.infer<typeof clipboardSourceSchema> | undefined,
+  incomingSource: z.infer<typeof clipboardSourceSchema>
+): z.infer<typeof clipboardSourceSchema> {
+  if (!existingSource) return incomingSource;
+  if (existingSource === "PLAN" || incomingSource === "PLAN") return "PLAN";
+  if (existingSource === "MANUAL_NOTE" && (incomingSource === "COPY" || incomingSource === "PASTE" || incomingSource === "AGENT_NOTE")) return "MANUAL_NOTE";
+  if (existingSource === "AGENT_NOTE" && (incomingSource === "COPY" || incomingSource === "PASTE")) return "AGENT_NOTE";
+  return incomingSource;
+}
 
 const nonBlankExactText = (maxCharacters: number) =>
   z
@@ -8293,11 +8494,14 @@ export type Provider = z.infer<typeof providerSchema>;
 export type ProviderSettings = z.infer<typeof providerSettingsSchema>;
 export type UpdateProviderSettingsInput = z.infer<typeof updateProviderSettingsInputSchema>;
 export type VoiceTranscriptionModel = z.infer<typeof voiceTranscriptionModelSchema>;
+export type VoiceModelVoice = z.infer<typeof voiceModelVoiceSchema>;
 export type VoiceTranscriptionLanguage = z.infer<typeof voiceTranscriptionLanguageSchema>;
 export type VoiceTranscriptionDelay = z.infer<typeof voiceTranscriptionDelaySchema>;
 export type VoiceTranscriptionSettings = z.infer<typeof voiceTranscriptionSettingsSchema>;
 export type VoiceTranscriptionRequestFields = z.infer<typeof voiceTranscriptionRequestFieldsSchema>;
 export type VoiceTranscriptionResponse = z.infer<typeof voiceTranscriptionResponseSchema>;
+export type OpenAiModelsResponse = z.infer<typeof openAiModelsResponseSchema>;
+
 export type VoiceRealtimeSessionRequest = z.infer<typeof voiceRealtimeSessionRequestSchema>;
 export type VoiceRealtimeSessionResponse = z.infer<typeof voiceRealtimeSessionResponseSchema>;
 export type CreateProviderInput = z.infer<typeof createProviderInputSchema>;

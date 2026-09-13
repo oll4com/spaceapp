@@ -1,4 +1,4 @@
-import { Github, RefreshCw, Youtube } from "lucide-react";
+import { Github, RefreshCw, Youtube } from "../ui-theme/app-icons.js";
 import { readPublicHomepageConfig } from "../homepage/public-config.js";
 import { useAppVersion } from "./use-app-version.js";
 import { isUpdateAvailable, versionLabel } from "./version-check.js";
@@ -54,11 +54,11 @@ function SocialLinks({ discordUrl }: { discordUrl: string | null }) {
   );
 }
 
-export function DemoVersionMeta() {
+export function DemoVersionMeta({ compact = false }: { compact?: boolean }) {
   const { discordUrl } = readPublicHomepageConfig();
   return (
     <div className="topbar-meta" aria-label="App version (demo)">
-      <SocialLinks discordUrl={discordUrl} />
+      {!compact ? <SocialLinks discordUrl={discordUrl} /> : null}
       <a
         className="topbar-meta-version"
         href={SPACE_GITHUB_RELEASES_URL}
@@ -72,7 +72,7 @@ export function DemoVersionMeta() {
   );
 }
 
-export function AppVersionMeta() {
+export function AppVersionMeta({ compact = false }: { compact?: boolean }) {
   const status = useAppVersion();
   const { discordUrl } = readPublicHomepageConfig();
   const updateAvailable = isUpdateAvailable(status);
@@ -83,9 +83,9 @@ export function AppVersionMeta() {
       : null;
 
   return (
-    <div className="topbar-meta" aria-label="App version and community links">
-      <SocialLinks discordUrl={discordUrl} />
-      {updateAvailable ? (
+    <div className="topbar-meta" aria-label={compact ? "App version" : "App version and community links"}>
+      {!compact ? <SocialLinks discordUrl={discordUrl} /> : null}
+      {updateAvailable && !compact ? (
         <a
           className="topbar-meta-update"
           href={SPACE_GITHUB_RELEASES_URL}

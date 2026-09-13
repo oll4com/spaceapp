@@ -1,5 +1,8 @@
+import type { PaneBatchClaim } from "@space/contracts";
+import type { TaskTitleState } from "@space/contracts";
 import pg from "pg";
 import { createHash } from "node:crypto";
+import { defaultToolRoutingState, toolRoutingStateSchema, type ToolRoutingStateV1 } from "@space/contracts";
 import {
   adminOperationRunSchema,
   agentPaneBindingSchema,
@@ -109,6 +112,7 @@ import {
   roomAgentRequestRecordSchema,
   roomAgentTaskRunRecordSchema,
   roomAgentSupervisorQueueItemSchema,
+  roomAgentTurnOutcomeSchema,
   setupConnectionCheckEventSchema,
   setupConnectionCheckRunSchema,
   spaceAgentMessageRecordSchema,
@@ -394,6 +398,8 @@ import {
   type CreateReleasePreviewStoreInput,
   type ReleasePreviewRecord,
   type RoomAgentEnqueueRecord,
+  type RoomAgentTurnRecord,
+  type RoomAgentMissionUpdateGuard,
   type RecordCodexAppServerHandshakeInput,
   type RecordCodexAppServerTurnSmokeInput,
   type RecordMemoryEmbeddingSmokeInput,
@@ -494,6 +500,7 @@ type RoomRow = {
   kind: Room["kind"];
   order: number;
   paneLayoutColumns: Room["paneLayoutColumns"];
+  paneLayoutHeight?: Room["paneLayoutHeight"];
   paneCap: number;
   traceId: string;
   archivedAt: Date | string | null;
@@ -541,6 +548,7 @@ type PaneRow = {
   roomId: string;
   title: string;
   titleSource: Pane["titleSource"];
+  taskMetadata?: Pane["taskMetadata"];
   mode: Pane["mode"];
   status: Pane["status"];
   providerId: string | null;
@@ -679,7 +687,7 @@ type RoomAgentTaskRunRow = {
   label: string;
   instruction: string;
   status: RoomAgentTaskRunRecord["status"];
-  resultPayload: Omit<RoomAgentTaskRunRecord, "runId" | "missionId" | "roomId" | "stepId" | "paneId" | "label" | "instruction" | "status" | "queuedAt" | "startedAt" | "firstResponseAt" | "completedAt" | "updatedAt">;
+  resultPayload: Omit<RoomAgentTaskRunRecord, "runId" | "missionId" | "roomId" | "stepId" | "paneId" | "label" | "instruction" | "status" | "queuedAt" | "startedAt" | "firstResponseAt" | "completedAt" | "updatedAt"> & { interrupted?: boolean };
   queuedAt: Date | string;
   startedAt: Date | string | null;
   firstResponseAt: Date | string | null;
@@ -703,6 +711,7 @@ type PaneCliSessionRow = {
   cliTaskId: string | null;
   cliTaskRevisionId: string | null;
   accountProfileId: string | null;
+  terminalGeometry?: PaneCliSession["terminalGeometry"];
   status: PaneCliSession["status"];
   statusReason: string | null;
   exitCode: number | null;
@@ -1408,6 +1417,7 @@ const roomSelect = `
     kind,
     room_order AS "order",
     pane_layout_columns AS "paneLayoutColumns",
+    COALESCE(pane_layout_height, 1) AS "paneLayoutHeight",
     pane_cap AS "paneCap",
     trace_id AS "traceId",
     archived_at AS "archivedAt",
@@ -1471,6 +1481,7 @@ const paneSelect = `
     room_id AS "roomId",
     title,
     title_source AS "titleSource",
+    task_metadata AS "taskMetadata",
     mode,
     status,
     provider_id AS "providerId",
@@ -1585,6 +1596,7 @@ const paneCliSessionSelect = `
     cli_task_id AS "cliTaskId",
     cli_task_revision_id AS "cliTaskRevisionId",
     account_profile_id AS "accountProfileId",
+    terminal_geometry AS "terminalGeometry",
     status,
     status_reason AS "statusReason",
     exit_code AS "exitCode",
@@ -2511,6 +2523,7 @@ function mapRoom(row: RoomRow): Room {
     kind: row.kind,
     order: row.order,
     paneLayoutColumns: row.paneLayoutColumns,
+    paneLayoutHeight: (row.paneLayoutHeight as 1 | 2 | 3 | 4) ?? 1,
     paneCap: row.paneCap,
     traceId: row.traceId,
     archivedAt: toIso(row.archivedAt),
@@ -2545,6 +2558,7 @@ function mapPane(row: PaneRow): Pane {
     roomId: row.roomId,
     title: row.title,
     titleSource: row.titleSource ?? "auto",
+    taskMetadata: row.taskMetadata ?? null,
     mode: row.mode,
     status: row.status,
     providerId: row.providerId,
@@ -2732,6 +2746,7 @@ function mapRoomAgentTaskRun(row: RoomAgentTaskRunRow): RoomAgentTaskRunRecord {
   return roomAgentTaskRunRecordSchema.parse({
     ...row.resultPayload,
     ...row,
+    ...(row.resultPayload.interrupted === true ? { state: "INTERRUPTED" } : {}),
     resultPayload: undefined,
     queuedAt: toIso(row.queuedAt),
     startedAt: toIso(row.startedAt),
@@ -2758,6 +2773,7 @@ function mapPaneCliSession(row: PaneCliSessionRow): PaneCliSession {
     cliTaskId: row.cliTaskId,
     cliTaskRevisionId: row.cliTaskRevisionId,
     accountProfileId: row.accountProfileId,
+    terminalGeometry: row.terminalGeometry,
     status: row.status,
     statusReason: row.statusReason,
     exitCode: row.exitCode,
@@ -3606,6 +3622,11 @@ export class PostgresSpaceStore implements SpaceStore {
 
   createTelegramPersistence(): TelegramPersistence & TelegramOutboxPersistence {
     return new PostgresTelegramPersistence(this.pool);
+  }
+
+  async getControlActor(userId: string, verifiedEmail?: string): Promise<AuthUser | null> {
+    const result = await this.pool.query<AuthUser>("SELECT id,email,role FROM users WHERE id=$1 OR ($2::text IS NOT NULL AND lower(email)=lower($2)) ORDER BY (id=$1) DESC LIMIT 1", [userId, verifiedEmail ?? null]);
+    return result.rows[0] ?? null;
   }
 
   async upsertUser(user: AuthUser): Promise<AuthUser> {
@@ -4917,6 +4938,34 @@ export class PostgresSpaceStore implements SpaceStore {
     return (result.rowCount ?? 0) > 0;
   }
 
+  async getToolRoutingState(): Promise<ToolRoutingStateV1> {
+    const result = await this.pool.query<{ state: unknown }>("SELECT state FROM tool_routing_state WHERE id = true");
+    return result.rows[0] ? toolRoutingStateSchema.parse(result.rows[0].state) : defaultToolRoutingState();
+  }
+
+  async updateToolRoutingState(state: ToolRoutingStateV1, expectedRevision: number, actorId: string): Promise<ToolRoutingStateV1> {
+    const next = toolRoutingStateSchema.parse({ ...state, revision: expectedRevision + 1 });
+    const result = await this.pool.query<{ state: unknown }>(
+      `INSERT INTO tool_routing_state (id, revision, state, updated_by)
+       SELECT true, $1, $2::jsonb, $3 WHERE $4 = 0
+       ON CONFLICT (id) DO UPDATE SET revision = EXCLUDED.revision, state = EXCLUDED.state,
+         updated_by = EXCLUDED.updated_by, updated_at = now()
+       WHERE tool_routing_state.revision = $4 RETURNING state`,
+      [next.revision, JSON.stringify(next), actorId, expectedRevision]
+    );
+    // Existing rows need an UPDATE when expectedRevision is nonzero.
+    if (!result.rows[0] && expectedRevision > 0) {
+      const updated = await this.pool.query<{ state: unknown }>(
+        `UPDATE tool_routing_state SET revision = $1, state = $2::jsonb, updated_by = $3, updated_at = now()
+         WHERE id = true AND revision = $4 RETURNING state`,
+        [next.revision, JSON.stringify(next), actorId, expectedRevision]
+      );
+      if (updated.rows[0]) return toolRoutingStateSchema.parse(updated.rows[0].state);
+    }
+    if (!result.rows[0]) throw new SpaceConflictError("Routing policy changed; reload before saving.");
+    return toolRoutingStateSchema.parse(result.rows[0].state);
+  }
+
   async listAgentToolAssignments(): Promise<AgentToolAssignment[]> {
     const result = await this.pool.query<AgentToolAssignmentRow>(`${agentToolAssignmentsSelect} ORDER BY tool_id ASC`);
     return result.rows.map(mapAgentToolAssignment);
@@ -5426,6 +5475,7 @@ export class PostgresSpaceStore implements SpaceStore {
             kind,
             room_order AS "order",
             pane_layout_columns AS "paneLayoutColumns",
+            COALESCE(pane_layout_height, 1) AS "paneLayoutHeight",
             pane_cap AS "paneCap",
             trace_id AS "traceId",
             archived_at AS "archivedAt",
@@ -5483,6 +5533,7 @@ export class PostgresSpaceStore implements SpaceStore {
             kind,
             room_order AS "order",
             pane_layout_columns AS "paneLayoutColumns",
+            COALESCE(pane_layout_height, 1) AS "paneLayoutHeight",
             pane_cap AS "paneCap",
             trace_id AS "traceId",
             archived_at AS "archivedAt",
@@ -5501,13 +5552,16 @@ export class PostgresSpaceStore implements SpaceStore {
     traceId = makeSpaceId("trace")
   ): Promise<RoomPaneLayoutResult> {
     return this.withTransaction(async (client) => {
-      await this.getRoomForUpdate(client, roomId);
+      const existingRoom = await this.getRoomForUpdate(client, roomId);
       const timestamp = nowIso();
+      const nextColumns = input.paneLayoutColumns !== undefined ? input.paneLayoutColumns : existingRoom.paneLayoutColumns;
+      const nextHeight = input.paneLayoutHeight !== undefined ? input.paneLayoutHeight : (existingRoom.paneLayoutHeight ?? 1);
       const roomResult = await client.query<RoomRow>(
         `
           UPDATE rooms
           SET
             pane_layout_columns = $2,
+            pane_layout_height = $5,
             trace_id = $3,
             updated_at = $4
           WHERE id = $1
@@ -5518,29 +5572,34 @@ export class PostgresSpaceStore implements SpaceStore {
             kind,
             room_order AS "order",
             pane_layout_columns AS "paneLayoutColumns",
+            COALESCE(pane_layout_height, 1) AS "paneLayoutHeight",
             pane_cap AS "paneCap",
             trace_id AS "traceId",
             archived_at AS "archivedAt",
             created_at AS "createdAt",
             updated_at AS "updatedAt"
         `,
-        [roomId, input.paneLayoutColumns, traceId, timestamp]
+        [roomId, nextColumns, traceId, timestamp, nextHeight]
       );
-      await client.query(
-        `
-          UPDATE panes
-          SET
-            column_span = 1,
-            is_maximized = false,
-            updated_at = $2
-          WHERE room_id = $1 AND is_closed = false
-        `,
-        [roomId, timestamp]
-      );
+      if (input.paneLayoutColumns !== undefined) {
+        await client.query(
+          `
+            UPDATE panes
+            SET
+              column_span = 1,
+              is_maximized = false,
+              updated_at = $2
+            WHERE room_id = $1 AND is_closed = false
+          `,
+          [roomId, timestamp]
+        );
+      }
       const paneResult = await client.query<PaneRow>(
         `${paneSelect} WHERE room_id = $1 AND is_closed = false ORDER BY pane_order ASC, created_at ASC`,
         [roomId]
       );
+      await this.appendEvent(client, { roomId, paneId: null, turnId: null, traceId, type: "PANE_UPDATED",
+        message: "Room pane layout updated.", payload: { roomPaneLayoutChanged: true } });
       return {
         room: mapRoom(firstOrNotFound(roomResult.rows, `Room ${roomId} was not updated.`)),
         panes: paneResult.rows.map(mapPane)
@@ -5611,14 +5670,16 @@ export class PostgresSpaceStore implements SpaceStore {
         [roomId, paneIds]
       );
       await client.query(
-        "UPDATE panes SET pane_order = -pane_order - 1 WHERE room_id = $1 AND is_closed = false",
-        [roomId]
+        "UPDATE panes SET pane_order = -pane_order - 1, updated_at = $2 WHERE room_id = $1 AND is_closed = false",
+        [roomId, nowIso()]
       );
 
       const result = await client.query<PaneRow>(
         `${paneSelect} WHERE room_id = $1 AND is_closed = false ORDER BY pane_order ASC, created_at ASC`,
         [roomId]
       );
+      await this.appendEvent(client, { roomId, paneId: null, turnId: null, traceId, type: "PANE_UPDATED",
+        message: "Room panes reordered.", payload: { roomPaneLayoutChanged: true } });
       return result.rows.map(mapPane);
     });
   }
@@ -5684,7 +5745,19 @@ export class PostgresSpaceStore implements SpaceStore {
     });
   }
 
-  async createPanes(inputs: CreatePaneInput[], traceId = makeSpaceId("trace")): Promise<Pane[]> {
+  async getPaneBatchResult(roomId: string, claim: PaneBatchClaim): Promise<Pane[] | null> {
+    await this.getRoom(roomId);
+    const result = await this.pool.query<{ payloadHash: string; result: Pane[] }>(
+      'SELECT payload_hash AS "payloadHash", result FROM room_pane_commands WHERE room_id = $1 AND actor_id = $2 AND request_id = $3',
+      [roomId, claim.actorId, claim.requestId]
+    );
+    const previous = result.rows[0];
+    if (!previous) return null;
+    if (previous.payloadHash !== claim.payloadHash) throw new SpaceConflictError("Request ID was already used with a different payload.");
+    return previous.result;
+  }
+
+  async createPanes(inputs: CreatePaneInput[], traceId = makeSpaceId("trace"), claim?: PaneBatchClaim): Promise<Pane[]> {
     if (inputs.length === 0) return [];
     const roomId = inputs[0]!.roomId;
     if (inputs.some((input) => input.roomId !== roomId)) {
@@ -5693,6 +5766,22 @@ export class PostgresSpaceStore implements SpaceStore {
 
     return this.withTransaction(async (client) => {
       const room = await this.getRoomForUpdate(client, roomId);
+      // Serialize retries and capacity checks on the same room lock. Claim and panes
+      // commit together; a crash rolls both back, so no partial batch can escape.
+      if (claim) {
+        const previous = await client.query<{ payloadHash: string; result: Pane[] }>(
+          'SELECT payload_hash AS "payloadHash", result FROM room_pane_commands WHERE room_id = $1 AND actor_id = $2 AND request_id = $3',
+          [roomId, claim.actorId, claim.requestId]
+        );
+        if (previous.rows[0]) {
+          if (previous.rows[0].payloadHash !== claim.payloadHash) throw new SpaceConflictError("Request ID was already used with a different payload.");
+          return previous.rows[0].result;
+        }
+        await client.query(
+          "INSERT INTO room_pane_commands (room_id, actor_id, request_id, payload_hash) VALUES ($1, $2, $3, $4)",
+          [roomId, claim.actorId, claim.requestId, claim.payloadHash]
+        );
+      }
       const activeResult = await client.query<CountRow>(
         "SELECT count(*) AS count FROM panes WHERE room_id = $1 AND is_closed = false",
         [roomId]
@@ -5726,6 +5815,10 @@ export class PostgresSpaceStore implements SpaceStore {
         });
       }
       await client.query("UPDATE rooms SET updated_at = $2 WHERE id = $1", [roomId, timestamp]);
+      if (claim) await client.query(
+        "UPDATE room_pane_commands SET result = $4::jsonb WHERE room_id = $1 AND actor_id = $2 AND request_id = $3",
+        [roomId, claim.actorId, claim.requestId, JSON.stringify(panes)]
+      );
       return panes;
     });
   }
@@ -5833,6 +5926,8 @@ export class PostgresSpaceStore implements SpaceStore {
           client_request_id AS "clientRequestId",
           prompt_message_id AS "promptMessageId",
           response_message_id AS "responseMessageId",
+          request_fingerprint AS "requestFingerprint",
+          direct_action AS "directAction",
           created_at AS "createdAt"
         FROM room_agent_requests
         WHERE room_id = $1 AND client_request_id = $2
@@ -5883,6 +5978,8 @@ export class PostgresSpaceStore implements SpaceStore {
             client_request_id AS "clientRequestId",
             prompt_message_id AS "promptMessageId",
             response_message_id AS "responseMessageId",
+            request_fingerprint AS "requestFingerprint",
+            direct_action AS "directAction",
             created_at AS "createdAt"
           FROM room_agent_requests
           WHERE room_id = $1 AND client_request_id = $2
@@ -5904,9 +6001,11 @@ export class PostgresSpaceStore implements SpaceStore {
             request_kind,
             client_request_id,
             prompt_message_id,
-            response_message_id
+            response_message_id,
+            request_fingerprint,
+            direct_action
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
           RETURNING
             request_id AS "requestId",
             room_id AS "roomId",
@@ -5916,6 +6015,8 @@ export class PostgresSpaceStore implements SpaceStore {
             client_request_id AS "clientRequestId",
             prompt_message_id AS "promptMessageId",
             response_message_id AS "responseMessageId",
+            request_fingerprint AS "requestFingerprint",
+            direct_action AS "directAction",
             created_at AS "createdAt"
         `,
         [
@@ -5926,7 +6027,9 @@ export class PostgresSpaceStore implements SpaceStore {
           parsed.requestKind,
           parsed.clientRequestId,
           parsed.promptMessageId,
-          parsed.responseMessageId
+          parsed.responseMessageId,
+          parsed.requestFingerprint,
+          parsed.directAction ? JSON.stringify(parsed.directAction) : null
         ]
       );
       return mapRoomAgentRequest(firstOrNotFound(result.rows, `Room agent request ${parsed.requestId} was not created.`));
@@ -5953,7 +6056,7 @@ export class PostgresSpaceStore implements SpaceStore {
     const promptInput = createSpaceAgentMessageInputSchema.parse({
       messageId: input.promptMessageId,
       sessionId,
-      role: "user",
+      role: queueItem.turn.roomAgentContinuation ? "tool" : "user",
       content: input.content,
       status: "COMPLETED"
     });
@@ -5966,6 +6069,7 @@ export class PostgresSpaceStore implements SpaceStore {
             mission_id AS "missionId", request_kind AS "requestKind",
             client_request_id AS "clientRequestId", prompt_message_id AS "promptMessageId",
             response_message_id AS "responseMessageId", turn_payload AS "turnPayload", signaled_at AS "signaledAt",
+            request_fingerprint AS "requestFingerprint",
             created_at AS "createdAt"
           FROM room_agent_requests
           WHERE room_id = $1 AND client_request_id = $2
@@ -5976,6 +6080,8 @@ export class PostgresSpaceStore implements SpaceStore {
       const existingRow = existingResult.rows[0];
       if (existingRow) {
         const request = mapRoomAgentRequest(existingRow);
+        if (!request.missionId || ((input.requestFingerprint || request.requestFingerprint) && request.requestFingerprint !== input.requestFingerprint))
+          throw new SpaceConflictError("Request ID was already used with a different actor or payload.");
         const storedQueueItem = roomAgentSupervisorQueueItemSchema.parse(existingRow.turnPayload);
         const missionResult = await client.query<RoomAgentMissionRow>(
           `
@@ -6035,6 +6141,11 @@ export class PostgresSpaceStore implements SpaceStore {
         [queueItem.turn.roomId, queueItem.missionId]
       );
       let linkedMission = linkedMissionResult.rows[0] ? mapRoomAgentMission(linkedMissionResult.rows[0]) : null;
+      const continuation = queueItem.turn.roomAgentContinuation;
+      if (continuation && (linkedMission?.status !== "RUNNING" ||
+          (await this.getRoomAgentTurn(queueItem.missionId, undefined, client))?.run.runId !== continuation.sourceRunId)) {
+        throw new SpaceConflictError("Room Agent continuation was superseded or stopped.");
+      }
       if (linkedMission && !["QUEUED", "RUNNING", "PAUSED"].includes(linkedMission.status)) {
         throw new SpaceConflictError(`Room agent mission ${linkedMission.id} no longer accepts follow-up requests.`);
       }
@@ -6096,6 +6207,7 @@ export class PostgresSpaceStore implements SpaceStore {
       });
       const requestInput = createRoomAgentRequestInputSchema.parse({
         requestId: input.requestId,
+        requestFingerprint: input.requestFingerprint,
         roomId: queueItem.turn.roomId,
         sessionId,
         missionId: linkedMission?.id ?? null,
@@ -6134,18 +6246,18 @@ export class PostgresSpaceStore implements SpaceStore {
         `
           INSERT INTO room_agent_requests (
             request_id, room_id, session_id, mission_id, request_kind,
-            client_request_id, prompt_message_id, response_message_id, turn_payload
+            client_request_id, prompt_message_id, response_message_id, turn_payload, request_fingerprint
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
           RETURNING
             request_id AS "requestId", room_id AS "roomId", session_id AS "sessionId",
             mission_id AS "missionId", request_kind AS "requestKind",
             client_request_id AS "clientRequestId", prompt_message_id AS "promptMessageId",
-            response_message_id AS "responseMessageId", created_at AS "createdAt"
+            response_message_id AS "responseMessageId", request_fingerprint AS "requestFingerprint", created_at AS "createdAt"
         `,
         [requestInput.requestId, requestInput.roomId, requestInput.sessionId, requestInput.missionId,
           requestInput.requestKind, requestInput.clientRequestId, requestInput.promptMessageId,
-          requestInput.responseMessageId, JSON.stringify(queueItem)]
+          requestInput.responseMessageId, JSON.stringify(queueItem), requestInput.requestFingerprint ?? null]
       );
       let request = mapRoomAgentRequest(firstOrNotFound(requestResult.rows, `Room agent request ${requestInput.requestId} was not created.`));
       const missionResult = missionInput ? await client.query<RoomAgentMissionRow>(
@@ -6196,7 +6308,11 @@ export class PostgresSpaceStore implements SpaceStore {
         `UPDATE space_agent_sessions SET status = 'RUNNING', last_synced_at = $2, updated_at = $2 WHERE session_id = $1`,
         [sessionId, timestamp]
       );
-      return { created: true, signaledAt: null, request, mission, promptMessage, responseMessage, run, queueItem };
+      // Automatic continuations are owned by the preparing Temporal activity. Its
+      // recorded result/retry handles delivery; API startup recovery must not signal it.
+      if (continuation) await client.query(
+        `UPDATE room_agent_requests SET signaled_at = $2 WHERE request_id = $1`, [request.requestId, timestamp]);
+      return { created: true, signaledAt: continuation ? timestamp : null, request, mission, promptMessage, responseMessage, run, queueItem };
     });
   }
 
@@ -6309,62 +6425,88 @@ export class PostgresSpaceStore implements SpaceStore {
   async updateRoomAgentMission(
     missionId: string,
     input: UpdateRoomAgentMissionInput,
-    _traceId = makeSpaceId("trace")
+    _traceId = makeSpaceId("trace"),
+    guard?: RoomAgentMissionUpdateGuard
   ): Promise<RoomAgentMissionRecord> {
     const parsed = updateRoomAgentMissionInputSchema.parse(input);
-    const result = await this.pool.query<RoomAgentMissionRow>(
-      `
-        UPDATE room_agent_missions
-        SET status = COALESCE($2, status),
-            current_pane_id = CASE WHEN $3::boolean THEN $4 ELSE current_pane_id END,
-            status_reason = COALESCE($5, status_reason),
-            started_at = CASE WHEN $6::boolean THEN $7 ELSE started_at END,
-            completed_at = CASE WHEN $8::boolean THEN $9 ELSE completed_at END,
-            paused_at = CASE WHEN $10::boolean THEN $11 ELSE paused_at END,
-            total_paused_ms = COALESCE($12, total_paused_ms),
-            last_progress_at = CASE WHEN $13::boolean THEN $14 ELSE last_progress_at END,
-            execution_state = CASE WHEN $15::boolean THEN $16::jsonb ELSE execution_state END,
-            updated_at = $17
-        WHERE mission_id = $1
-        RETURNING
-          mission_id AS id,
-          request_id AS "requestId",
-          room_id AS "roomId",
-          session_id AS "sessionId",
-          workflow_id AS "workflowId",
-          status,
-          current_pane_id AS "currentPaneId",
-          status_reason AS "statusReason",
-          queued_at AS "queuedAt",
-          started_at AS "startedAt",
-          completed_at AS "completedAt",
-          paused_at AS "pausedAt",
-          total_paused_ms::float8 AS "totalPausedMs",
-          last_progress_at AS "lastProgressAt",
-          execution_state AS "executionState",
-          updated_at AS "updatedAt"
-      `,
-      [
-        missionId,
-        parsed.status ?? null,
-        "currentPaneId" in parsed,
-        parsed.currentPaneId ?? null,
-        parsed.statusReason ?? null,
-        "startedAt" in parsed,
-        parsed.startedAt ?? null,
-        "completedAt" in parsed,
-        parsed.completedAt ?? null,
-        "pausedAt" in parsed,
-        parsed.pausedAt ?? null,
-        parsed.totalPausedMs ?? null,
-        "lastProgressAt" in parsed,
-        parsed.lastProgressAt ?? null,
-        "executionState" in parsed,
-        JSON.stringify(parsed.executionState ?? {}),
-        nowIso()
-      ]
-    );
-    return mapRoomAgentMission(firstOrNotFound(result.rows, `Room agent mission ${missionId} was not found.`));
+    return this.withTransaction(async (client) => {
+      if (guard) {
+        const locked = await client.query<{ roomId: string; status: string }>(
+          `SELECT room_id AS "roomId", status FROM room_agent_missions WHERE mission_id = $1 FOR UPDATE`, [missionId]);
+        const current = firstOrNotFound(locked.rows, `Room agent mission ${missionId} was not found.`);
+        if (current.status !== guard.expectedStatus ||
+            (await this.getRoomAgentTurn(missionId, undefined, client))?.run.runId !== guard.expectedRunId) {
+          return (await this.getRoomAgentMission(current.roomId, missionId))!;
+        }
+      }
+      const result = await client.query<RoomAgentMissionRow>(
+        `
+          UPDATE room_agent_missions
+          SET status = COALESCE($2, status),
+              current_pane_id = CASE WHEN $3::boolean THEN $4 ELSE current_pane_id END,
+              status_reason = COALESCE($5, status_reason),
+              started_at = CASE WHEN $6::boolean THEN $7 ELSE started_at END,
+              completed_at = CASE WHEN $8::boolean THEN $9 ELSE completed_at END,
+              paused_at = CASE WHEN $10::boolean THEN $11 ELSE paused_at END,
+              total_paused_ms = COALESCE($12, total_paused_ms),
+              last_progress_at = CASE WHEN $13::boolean THEN $14 ELSE last_progress_at END,
+              execution_state = CASE WHEN $15::boolean THEN $16::jsonb ELSE execution_state END,
+              updated_at = $17
+          WHERE mission_id = $1
+          RETURNING
+            mission_id AS id,
+            request_id AS "requestId",
+            room_id AS "roomId",
+            session_id AS "sessionId",
+            workflow_id AS "workflowId",
+            status,
+            current_pane_id AS "currentPaneId",
+            status_reason AS "statusReason",
+            queued_at AS "queuedAt",
+            started_at AS "startedAt",
+            completed_at AS "completedAt",
+            paused_at AS "pausedAt",
+            total_paused_ms::float8 AS "totalPausedMs",
+            last_progress_at AS "lastProgressAt",
+            execution_state AS "executionState",
+            updated_at AS "updatedAt"
+        `,
+        [
+          missionId,
+          parsed.status ?? null,
+          "currentPaneId" in parsed,
+          parsed.currentPaneId ?? null,
+          parsed.statusReason ?? null,
+          "startedAt" in parsed,
+          parsed.startedAt ?? null,
+          "completedAt" in parsed,
+          parsed.completedAt ?? null,
+          "pausedAt" in parsed,
+          parsed.pausedAt ?? null,
+          parsed.totalPausedMs ?? null,
+          "lastProgressAt" in parsed,
+          parsed.lastProgressAt ?? null,
+          "executionState" in parsed,
+          JSON.stringify(parsed.executionState ?? {}),
+          nowIso()
+        ]
+      );
+      return mapRoomAgentMission(firstOrNotFound(result.rows, `Room agent mission ${missionId} was not found.`));
+    });
+  }
+
+  async getRoomAgentTurn(missionId: string, runId?: string, client: PgClientLike = this.pool): Promise<RoomAgentTurnRecord | null> {
+    const request = await client.query<{ turnPayload: unknown }>(`
+      SELECT turn_payload AS "turnPayload" FROM room_agent_requests
+      WHERE mission_id = $1 AND turn_payload IS NOT NULL
+        AND ($2::text IS NULL OR turn_payload->'turn'->>'agentRunId' = $2)
+      ORDER BY created_at DESC, request_id DESC LIMIT 1`, [missionId, runId ?? null]);
+    if (!request.rows[0]) return null;
+    const queueItem = roomAgentSupervisorQueueItemSchema.parse(request.rows[0].turnPayload);
+    const result = await client.query<SpaceAgentRunRow>(`${spaceAgentRunSelect} WHERE run_id = $1`, [queueItem.turn.agentRunId]);
+    return { queueItem, run: mapSpaceAgentRun(firstOrNotFound(result.rows, "Room Agent turn run was not found.")),
+      roomAgentOutcome: roomAgentTurnOutcomeSchema.optional().parse(
+        (request.rows[0].turnPayload as { roomAgentOutcome?: unknown }).roomAgentOutcome) };
   }
 
   async getRoomAgentMission(roomId: string, missionId: string): Promise<RoomAgentMissionRecord | null> {
@@ -6577,7 +6719,10 @@ export class PostgresSpaceStore implements SpaceStore {
   ): Promise<RoomAgentTaskRunRecord> {
     const parsed = upsertRoomAgentTaskRunInputSchema.parse(input);
     const resultPayload = {
-      state: parsed.state,
+      // Older deployed readers understand BLOCKED and ignore additive fields.
+      // Preserve safe rollback while exposing the precise state in this API.
+      state: parsed.state === "INTERRUPTED" ? "BLOCKED" : parsed.state,
+      interrupted: parsed.state === "INTERRUPTED",
       modelId: parsed.modelId,
       reasoningEffort: parsed.reasoningEffort,
       qualityScore: parsed.qualityScore,
@@ -6592,6 +6737,8 @@ export class PostgresSpaceStore implements SpaceStore {
       retries: parsed.retries,
       recoveries: parsed.recoveries,
       stalls: parsed.stalls,
+      timing: parsed.timing,
+      modelsUsed: parsed.modelsUsed,
       verificationSummary: parsed.verificationSummary
     };
     const result = await this.pool.query<RoomAgentTaskRunRow>(
@@ -6648,6 +6795,28 @@ export class PostgresSpaceStore implements SpaceStore {
       [missionId]
     );
     return result.rows.map(mapRoomAgentTaskRun);
+  }
+
+  async applyTaskTitle(state: TaskTitleState): Promise<Pane | null> {
+    return this.withTransaction(async client => {
+      const pane = await this.getPaneForUpdate(client, state.paneId);
+      if (pane.isClosed) return null;
+      if(pane.mode==="HARNESS"&&state.sessionId!==(pane.taskMetadata?.harnessSessionId??`space-pane-${pane.id.slice(5)}`))return null;
+      const sessions = pane.mode === "CHAT" ? "space_agent_sessions" : "pane_cli_sessions";
+      const active = await client.query(`SELECT session_id FROM ${sessions} WHERE pane_id=$1 AND session_id=$2 AND is_active=true FOR UPDATE`, [pane.id,state.sessionId]);
+      if (pane.mode!=="HARNESS"&&!active.rows.length) return null;
+      const canonical = await client.query("SELECT version FROM task_title_states WHERE task_key=$1 AND version=$2 FOR UPDATE", [state.key,state.version]);
+      if (!canonical.rows.length) return null;
+      const title = pane.titleSource === "manual" ? pane.title : state.title;
+      const titleSource = pane.titleSource === "manual" ? "manual" : state.metadata.source === "ai" ? "ai" : "auto";
+      const timestamp = nowIso();
+      await client.query("UPDATE panes SET title=$2,title_source=$3,task_metadata=$4::jsonb,updated_at=$5 WHERE id=$1", [pane.id,title,titleSource,JSON.stringify(state.metadata),timestamp]);
+      if(pane.mode==="CHAT")await client.query("UPDATE space_agent_sessions SET title=$2 WHERE session_id=$1",[state.sessionId,title]);
+      if (state.revisionId) await client.query("UPDATE cli_task_revisions SET display_title=$2 WHERE revision_id=$1", [state.revisionId,title]);
+      await client.query("UPDATE rooms SET updated_at=$2 WHERE id=$1", [pane.roomId,timestamp]);
+      await this.appendEvent(client,{roomId:pane.roomId,paneId:pane.id,turnId:null,traceId:makeSpaceId("trace"),type:"PANE_UPDATED",message:"Task metadata updated.",payload:{status:pane.status,mode:pane.mode}});
+      return {...pane,title,titleSource,taskMetadata:state.metadata,updatedAt:timestamp};
+    });
   }
 
   async updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Promise<Pane> {
@@ -6716,13 +6885,15 @@ export class PostgresSpaceStore implements SpaceStore {
               split = $16,
               category_color = $17,
               vnc_target = $18,
-              updated_at = $19
+              updated_at = $19,
+              task_metadata = $20
           WHERE id = $1
           RETURNING
             id,
             room_id AS "roomId",
             title,
             title_source AS "titleSource",
+    task_metadata AS "taskMetadata",
             mode,
             status,
             provider_id AS "providerId",
@@ -6760,10 +6931,23 @@ export class PostgresSpaceStore implements SpaceStore {
           JSON.stringify(updated.split),
           updated.categoryColor,
           updated.vncTarget ? JSON.stringify(updated.vncTarget) : null,
-          timestamp
+          timestamp,
+          updated.taskMetadata ? JSON.stringify(updated.taskMetadata) : null
         ]
       );
       const pane = mapPane(firstOrNotFound(result.rows, `Pane ${paneId} was not found.`));
+      if (pane.isClosed && !current.isClosed) {
+        await client.query(
+          `UPDATE pane_cli_sessions
+              SET status = 'EXITED',
+                  status_reason = COALESCE(status_reason, 'Pane closed by operator.'),
+                  is_active = false,
+                  ended_at = COALESCE(ended_at, $2::timestamptz),
+                  updated_at = $2::timestamptz
+            WHERE pane_id = $1 AND status = 'RUNNING'`,
+          [paneId, timestamp]
+        );
+      }
       await client.query("UPDATE rooms SET updated_at = $2 WHERE id = $1", [pane.roomId, timestamp]);
       await this.appendEvent(client, {
         roomId: pane.roomId,
@@ -7634,7 +7818,8 @@ export class PostgresSpaceStore implements SpaceStore {
   async updateSpaceAgentMessage(
     messageId: string,
     input: UpdateSpaceAgentMessageInput,
-    _traceId = makeSpaceId("trace")
+    _traceId = makeSpaceId("trace"),
+    expectedStatus?: SpaceAgentMessageRecord["status"]
   ): Promise<SpaceAgentMessageRecord> {
     const parsed = updateSpaceAgentMessageInputSchema.parse(input);
     const currentResult = await this.pool.query<SpaceAgentMessageRow>(`${spaceAgentMessageSelect} WHERE message_id = $1`, [messageId]);
@@ -7646,7 +7831,7 @@ export class PostgresSpaceStore implements SpaceStore {
             content = $3,
             status = $4,
             updated_at = $5
-        WHERE message_id = $1
+        WHERE message_id = $1 AND ($6::text IS NULL OR status = $6)
         RETURNING
           message_id AS "messageId",
           session_id AS "sessionId",
@@ -7662,9 +7847,14 @@ export class PostgresSpaceStore implements SpaceStore {
         parsed.runId === undefined ? current.runId : parsed.runId,
         parsed.content ?? current.content,
         parsed.status ?? current.status,
-        nowIso()
+        nowIso(),
+        expectedStatus ?? null
       ]
     );
+    if (!result.rows.length && expectedStatus !== undefined) {
+      const latest = await this.pool.query<SpaceAgentMessageRow>(`${spaceAgentMessageSelect} WHERE message_id = $1`, [messageId]);
+      return mapSpaceAgentMessage(firstOrNotFound(latest.rows, `Space agent message ${messageId} was not found.`));
+    }
     return mapSpaceAgentMessage(firstOrNotFound(result.rows, `Space agent message ${messageId} was not updated.`));
   }
 
@@ -7889,11 +8079,17 @@ export class PostgresSpaceStore implements SpaceStore {
         currentRun.responseMessageId !== input.responseMessageId ||
         currentSession.sessionId !== currentRun.sessionId ||
         currentMessage.sessionId !== currentRun.sessionId ||
-        (promptMessage && (promptMessage.sessionId !== currentRun.sessionId || promptMessage.role !== "user"))
+        (promptMessage && (promptMessage.sessionId !== currentRun.sessionId ||
+          (promptMessage.role !== "user" && !(input.sourceType === "ROOM_AGENT" && promptMessage.role === "tool"))))
       ) {
         throw new SpaceConflictError("Space agent completion records do not belong to the same run.");
       }
       const roomAgentTaskTitle = normalizeTelegramTaskTitle(promptMessage?.content ?? "", "Room Agent task");
+
+      if (input.roomAgentOutcome) await client.query(`
+        UPDATE room_agent_requests SET turn_payload = jsonb_set(turn_payload, '{roomAgentOutcome}', $2::jsonb)
+        WHERE turn_payload->'turn'->>'agentRunId' = $1 AND session_id = $3`,
+        [input.runId, JSON.stringify(input.roomAgentOutcome), input.sessionId]);
 
       const updatedMessage = await client.query<SpaceAgentMessageRow>(
         `
@@ -9018,6 +9214,7 @@ export class PostgresSpaceStore implements SpaceStore {
             cli_task_id AS "cliTaskId",
             cli_task_revision_id AS "cliTaskRevisionId",
             account_profile_id AS "accountProfileId",
+            terminal_geometry AS "terminalGeometry",
             status,
             status_reason AS "statusReason",
             exit_code AS "exitCode",
@@ -9063,6 +9260,15 @@ export class PostgresSpaceStore implements SpaceStore {
       }
       return stored;
     }, { deadlockRetries: 1 });
+  }
+
+  async updatePaneCliTerminalGeometry(sessionId: string, geometry: NonNullable<PaneCliSession["terminalGeometry"]>): Promise<void> {
+    const parsed = paneCliSessionSchema.shape.terminalGeometry.parse(geometry);
+    await this.pool.query(
+      `UPDATE pane_cli_sessions SET terminal_geometry = $2::jsonb
+       WHERE session_id = $1 AND terminal_geometry IS DISTINCT FROM $2::jsonb`,
+      [sessionId, JSON.stringify(parsed)]
+    );
   }
 
   async updatePaneCliSession(
@@ -9123,6 +9329,7 @@ export class PostgresSpaceStore implements SpaceStore {
             cli_task_id AS "cliTaskId",
             cli_task_revision_id AS "cliTaskRevisionId",
             account_profile_id AS "accountProfileId",
+            terminal_geometry AS "terminalGeometry",
             status,
             status_reason AS "statusReason",
             exit_code AS "exitCode",
@@ -14145,6 +14352,7 @@ export class PostgresSpaceStore implements SpaceStore {
           kind,
           room_order AS "order",
           pane_layout_columns AS "paneLayoutColumns",
+          COALESCE(pane_layout_height, 1) AS "paneLayoutHeight",
           pane_cap AS "paneCap",
           trace_id AS "traceId",
           archived_at AS "archivedAt",

@@ -325,7 +325,7 @@ export function registerMemoryGraphRoutes(
     requireMemoryGraph(options.config);
     const query = listMemoryGraphOverviewQuerySchema.parse(request.query);
     const snapshotData = query.month
-      ? { snapshot: await options.service.getArchiveSnapshot(), isStale: false }
+      ? await (options.service.getArchiveSnapshotState?.() ?? options.service.getArchiveSnapshot().then(snapshot => ({ snapshot, isStale: false })))
       : await options.service.getSnapshot();
     const { snapshot, isStale } = snapshotData;
     if (setSnapshotEtag(request, reply, snapshot.revisionHash ?? snapshot.sourceHash)) return reply.code(304).send();
@@ -390,7 +390,7 @@ export function registerMemoryGraphRoutes(
     requireMemoryGraph(options.config);
     const query = listMemoryGraphQuerySchema.parse(request.query);
     const snapshotData = query.month
-      ? { snapshot: await options.service.getArchiveSnapshot(), isStale: false }
+      ? await (options.service.getArchiveSnapshotState?.() ?? options.service.getArchiveSnapshot().then(snapshot => ({ snapshot, isStale: false })))
       : await options.service.getSnapshot();
     const { snapshot, isStale } = snapshotData;
     if (setSnapshotEtag(request, reply, snapshot.revisionHash ?? snapshot.sourceHash)) return reply.code(304).send();

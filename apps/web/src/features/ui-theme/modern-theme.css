@@ -605,6 +605,32 @@
   overflow: hidden;
 }
 
+/* The fullscreen pane navigation is a primary control: the capped, clipped actions
+   strip above must not cut it off. Keep the header on its single row and only lift
+   the cap/clip so the group keeps its intrinsic width and its focus ring. */
+.space-shell[data-ui-theme="modern"] .pane-card > header:has(.pane-fullscreen-nav) {
+  grid-template-columns: auto minmax(0, 1fr) max-content auto;
+}
+
+.space-shell[data-ui-theme="modern"] .pane-card > header:has(.pane-fullscreen-nav) .pane-actions {
+  width: auto;
+  max-width: none;
+  overflow: visible;
+}
+
+/* The room-toolbar scroll strip takes the slack; the fixed utility controls keep
+   their square size and are never clipped at the right edge. */
+.space-shell[data-ui-theme="modern"] .toolbar-actions-scroll {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.space-shell[data-ui-theme="modern"] .toolbar-actions-fixed {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
 .space-shell[data-ui-theme="modern"] .pane-actions > button {
   width: 2.05rem;
   min-width: 2.05rem;
@@ -724,6 +750,7 @@
   .toolbar-metric-dialog,
   .quick-links-popover,
   .pane-layout-menu,
+  .pane-span-all-menu,
   .mobile-action-sheet
 ),
 body[data-ui-theme="modern"] .terminal-upload-modal-body {
@@ -1057,6 +1084,22 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   color: var(--modern-muted);
 }
 
+.space-shell[data-ui-theme="modern"] .empty-state > p {
+  color: var(--modern-muted);
+}
+
+.space-shell[data-ui-theme="modern"] .empty-state-actions button {
+  border-color: var(--modern-border-strong);
+  background: var(--modern-surface);
+  color: var(--modern-text);
+}
+
+.space-shell[data-ui-theme="modern"] .empty-state-actions button:hover:not(:disabled) {
+  border-color: var(--modern-accent);
+  background: var(--modern-accent-soft);
+  color: var(--modern-accent);
+}
+
 .space-shell[data-ui-theme="modern"] :is(
   .attachment-modal-body,
   .admin-operations-dialog,
@@ -1066,6 +1109,7 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   .quick-links-popover,
   .theme-menu,
   .pane-layout-menu,
+  .pane-span-all-menu,
   .server-actions-menu,
   .cli-launcher-menu,
   .icon-overflow-menu,
@@ -1167,23 +1211,19 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   color: var(--modern-danger);
 }
 
-.space-shell[data-ui-theme="modern"] .room-agent-goal-metrics > span {
-  border-color: var(--modern-border);
-  background: var(--modern-surface-soft);
-  color: var(--modern-text);
+.space-shell[data-ui-theme="modern"] .room-agent-dock {
+  --agent-border: var(--modern-border);
+  --agent-muted: var(--modern-muted);
+  --agent-text: var(--modern-text);
+  --agent-accent: var(--modern-accent-strong);
+  --agent-surface: var(--modern-surface-soft);
 }
 
-.space-shell[data-ui-theme="modern"] .room-agent-goal-metrics strong {
-  color: var(--modern-text);
-}
-
-.space-shell[data-ui-theme="modern"] .room-agent-goal-metrics small {
-  color: var(--modern-muted);
-}
-
-.space-shell[data-ui-theme="modern"] .room-agent-goal-summary > strong {
-  color: var(--modern-accent);
-}
+.space-shell[data-ui-theme="modern"] .room-agent-goal,
+.space-shell[data-ui-theme="modern"] .room-agent-empty { background: transparent; }
+.space-shell[data-ui-theme="modern"] .room-agent-composer textarea { background: transparent; }
+.space-shell[data-ui-theme="modern"] .room-agent-status.is-paused,
+.space-shell[data-ui-theme="modern"] .room-agent-status.is-blocked { color: var(--modern-warning); }
 
 /* Codex and Grok ship monochrome white marks. A compact neutral chip keeps the
    official asset visible in Light without filters or a duplicate icon set. */
@@ -1207,6 +1247,7 @@ body[data-ui-theme="modern"] :is(
   .server-actions-menu,
   .cli-launcher-menu,
   .pane-layout-menu,
+  .pane-span-all-menu,
   .theme-menu,
   .toolbar-metric-panel,
   .toolbar-metric-dialog,
@@ -1305,16 +1346,21 @@ body[data-ui-theme="modern"] .cli-launcher-menu .cli-launcher-option:focus-visib
 }
 
 body[data-ui-theme="modern"] .pane-layout-menu > header strong,
-body[data-ui-theme="modern"] .pane-layout-option-copy strong {
+body[data-ui-theme="modern"] .pane-span-all-menu > header strong,
+body[data-ui-theme="modern"] .pane-layout-option-copy strong,
+body[data-ui-theme="modern"] .pane-span-all-option-copy strong {
   color: var(--modern-text);
 }
 
 body[data-ui-theme="modern"] .pane-layout-menu > header span,
-body[data-ui-theme="modern"] .pane-layout-option-copy small {
+body[data-ui-theme="modern"] .pane-span-all-menu > header span,
+body[data-ui-theme="modern"] .pane-layout-option-copy small,
+body[data-ui-theme="modern"] .pane-span-all-option-copy small {
   color: var(--modern-muted);
 }
 
-body[data-ui-theme="modern"] .pane-layout-options > button {
+body[data-ui-theme="modern"] .pane-layout-options > button,
+body[data-ui-theme="modern"] .pane-span-all-options > button {
   border-color: var(--modern-border);
   background: var(--modern-surface-raised);
   color: var(--modern-text);
@@ -1322,7 +1368,14 @@ body[data-ui-theme="modern"] .pane-layout-options > button {
 
 body[data-ui-theme="modern"] .pane-layout-options > button:hover:not(:disabled),
 body[data-ui-theme="modern"] .pane-layout-options > button:focus-visible,
-body[data-ui-theme="modern"] .pane-layout-options > button.selected {
+body[data-ui-theme="modern"] .pane-layout-options > button.selected,
+body[data-ui-theme="modern"] .pane-span-all-options > button:hover:not(:disabled),
+body[data-ui-theme="modern"] .pane-span-all-options > button:focus-visible,
+body[data-ui-theme="modern"] .pane-span-all-options > button.selected,
+body[data-ui-theme="modern"] .quick-links-list > button:hover:not(:disabled),
+body[data-ui-theme="modern"] .quick-links-list > button:focus-visible,
+body[data-ui-theme="modern"] .quick-links-manage:hover:not(:disabled),
+body[data-ui-theme="modern"] .quick-links-manage:focus-visible {
   border-color: var(--modern-accent);
   background: var(--modern-accent-soft);
 }
@@ -1613,7 +1666,7 @@ body[data-ui-theme="modern"] .vibe-music-error {
   .space-shell[data-ui-theme="modern"] .board-toolbar,
   .space-shell[data-ui-theme="modern"] .board-toolbar[data-room-actions-stacked="true"] {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "title";
+    grid-template-areas: "title" "actions";
     gap: 0.35rem;
     padding: 0.48rem;
   }
@@ -1622,8 +1675,7 @@ body[data-ui-theme="modern"] .vibe-music-error {
     font-size: 1.1rem;
   }
 
-  .space-shell[data-ui-theme="modern"] .toolbar-lb-strip,
-  .space-shell[data-ui-theme="modern"] .toolbar-actions-scroll {
+  .space-shell[data-ui-theme="modern"] .toolbar-lb-strip {
     display: none;
   }
 

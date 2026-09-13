@@ -154,9 +154,17 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     if (Date.now() < prewarmCooldownRef.current) return;
     const promise = openVoiceRealtimeSession(
       {
-        model: serverSettings.defaultModel,
+        model: settings.model || serverSettings.defaultModel,
+        voice: settings.voice || serverSettings.defaultVoice,
         language: settings.language,
-        delay: serverSettings.defaultDelay
+        delay: serverSettings.defaultDelay,
+        opening: settings.opening,
+        prompt: settings.prompt,
+        delegatedModel: settings.delegatedModel,
+        delegatedType: settings.delegatedType,
+        delegatedReasoningEffort: settings.delegatedReasoningEffort,
+        delegatedWebSearch: settings.delegatedWebSearch,
+        delegatedPrompt: settings.delegatedPrompt
       },
       warmCallbacks
     ).then((handle) => {
@@ -296,9 +304,17 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     try {
       const handle = await openVoiceRealtimeSession(
         {
-          model: serverSettings.defaultModel,
+          model: settings.model || serverSettings.defaultModel,
+          voice: settings.voice || serverSettings.defaultVoice,
           language: settings.language,
-          delay: serverSettings.defaultDelay
+          delay: serverSettings.defaultDelay,
+          opening: settings.opening,
+          prompt: settings.prompt,
+          delegatedModel: settings.delegatedModel,
+          delegatedType: settings.delegatedType,
+          delegatedReasoningEffort: settings.delegatedReasoningEffort,
+          delegatedWebSearch: settings.delegatedWebSearch,
+          delegatedPrompt: settings.delegatedPrompt
         },
         {
           onTranscriptDelta: (text) => {
@@ -380,4 +396,8 @@ export function useVoiceInput(): VoiceInputContextValue {
   const value = useContext(VoiceInputContext);
   if (!value) throw new Error("useVoiceInput must be used inside VoiceInputProvider.");
   return value;
+}
+
+export function useOptionalVoiceInput(): VoiceInputContextValue | null {
+  return useContext(VoiceInputContext);
 }

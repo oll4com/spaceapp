@@ -190,9 +190,19 @@ export function QuickLinksPopover({ open, onClose, onOpen, onManage }: { open: b
     void load();
     const refresh = () => { void load(); };
     const dismiss = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    const handleOutside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (ref.current?.contains(target)) return;
+      onClose();
+    };
     window.addEventListener(USER_LINKS_UPDATED_EVENT, refresh);
     window.addEventListener("keydown", dismiss);
-    return () => { window.removeEventListener(USER_LINKS_UPDATED_EVENT, refresh); window.removeEventListener("keydown", dismiss); };
+    document.addEventListener("pointerdown", handleOutside, true);
+    return () => {
+      window.removeEventListener(USER_LINKS_UPDATED_EVENT, refresh);
+      window.removeEventListener("keydown", dismiss);
+      document.removeEventListener("pointerdown", handleOutside, true);
+    };
   }, [open]);
   if (!open) return null;
   return <section ref={ref} className="quick-links-popover" role="dialog" aria-label="Quick Links">
@@ -201,11 +211,11 @@ export function QuickLinksPopover({ open, onClose, onOpen, onManage }: { open: b
       <p role="alert"><span>{error}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setError(null)}><X aria-hidden="true" /></button></p>
     ) : null}
     {!loading && links.length === 0 ? <p className="links-empty">No Quick Links yet. Star links in Manage Links to add them here.</p> : null}
-    <div className="quick-links-list">{links.map((link) => <button type="button" key={link.id} onClick={() => onOpen(link)}>
+    <div className="quick-links-list">{links.map((link) => <button type="button" key={link.id} onClick={() => { onOpen(link); onClose(); }}>
       <span className="link-favicon"><LinkFavicon link={link} /></span><span><strong>{link.title}</strong>{link.description ? <small>{link.description}</small> : null}</span><ExternalLink aria-hidden="true" />
     </button>)}</div>
     {loading ? <p role="status">Loading Quick Links…</p> : null}
     {links.length < total ? <button type="button" onClick={() => void load(page + 1, true)}>Load more</button> : null}
-    <button type="button" className="quick-links-manage" onClick={onManage}>Manage Links</button>
+    <button type="button" className="quick-links-manage" onClick={() => { onManage(); onClose(); }}>Manage Links</button>
   </section>;
 }

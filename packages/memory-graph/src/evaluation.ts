@@ -1,3 +1,4 @@
+import { searchMemoryDocuments } from "./retrieval.js";
 import { createHash } from "node:crypto";
 
 export interface MemoryEvaluationDocument {
@@ -47,24 +48,8 @@ const thresholds = {
   falsePositiveRate: 0.05
 } as const;
 
-function matchesQuery(document: MemoryEvaluationDocument, query: string): boolean {
-  const normalizedText = `${document.title}\n${document.body}\n${document.provenance}`.toLocaleLowerCase();
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  if (!normalizedQuery) return false;
-  if (normalizedText.includes(normalizedQuery)) return true;
-  const terms = normalizedQuery.split(/\s+/).filter((term) => term.length >= 3);
-  return terms.length > 0 && terms.every((term) => normalizedText.includes(term));
-}
-
-export function searchMemoryEvaluationDocuments(
-  documents: MemoryEvaluationDocument[],
-  query: string,
-  limit = 5
-): MemoryEvaluationDocument[] {
-  return documents
-    .filter((document) => matchesQuery(document, query))
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id))
-    .slice(0, Math.max(0, limit));
+export function searchMemoryEvaluationDocuments(documents: MemoryEvaluationDocument[], query: string, limit = 5): MemoryEvaluationDocument[] {
+  return searchMemoryDocuments(documents, query, limit);
 }
 
 export function evaluateMemoryQueries(
@@ -97,7 +82,7 @@ export function evaluateMemoryQueries(
     throw new Error("Memory evaluation requires both positive and negative queries.");
   }
 
-  const recallAt5 = positiveResults.filter((result) => result.firstRelevantRank !== null).length / positiveResults.length;
+  const recallAt5 = positiveResults.reduce((sum, result) => sum + result.expectedIds.filter(id => result.resultIds.includes(id)).length / result.expectedIds.length, 0) / positiveResults.length;
   const meanReciprocalRank = positiveResults.reduce(
     (total, result) => total + (result.firstRelevantRank === null ? 0 : 1 / result.firstRelevantRank),
     0

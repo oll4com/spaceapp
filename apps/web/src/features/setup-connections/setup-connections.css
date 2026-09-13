@@ -32,6 +32,7 @@
 
 .setup-connections-header {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
   padding: 1.25rem 1.25rem 1rem;
@@ -61,8 +62,25 @@
 
 .setup-connections-header > button {
   width: 2.25rem;
+  height: 2.25rem;
   min-width: 2.25rem;
+  min-height: 2.25rem;
+  flex: 0 0 2.25rem;
   padding: 0;
+  display: grid;
+  place-items: center;
+  align-self: flex-start;
+  border: 1px solid #3b3d3f;
+  border-radius: 6px;
+  background: #171a1b;
+  color: #f1ece2;
+  cursor: pointer;
+}
+
+.setup-connections-header > button:hover:not(:disabled),
+.setup-connections-header > button:focus-visible {
+  border-color: #6db7aa;
+  background: #1f2725;
 }
 
 .setup-connections-header svg,
@@ -496,3 +514,19 @@
     animation: none;
   }
 }
+.setup-guide-tools[hidden] { display: none; }
+.setup-guide-connections[hidden] { display: none; }
+.setup-guide-steps { display: flex; gap: .5rem; padding: 1rem 1.25rem; flex-wrap: wrap; }
+.setup-guide-steps button { display: flex; align-items: center; gap: .5rem; padding: .55rem .75rem; border-radius: 9px; }
+.setup-guide-steps button[aria-current="step"] { border-color: var(--room-accent, #79b8ff); background: var(--room-surface-soft, #202425); }
+.setup-guide-steps button span { font-size: .75rem; opacity: .75; }
+.setup-guide-intro, .setup-guide-connections { padding: 1rem 1.5rem 1.5rem; }
+.setup-guide-intro h3, .setup-guide-connections h3 { margin-top: 0; }
+.setup-guide-intro p, .setup-guide-connections > p { line-height: 1.6; color: var(--room-muted, #a2a7ad); }
+.setup-guide-intro dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+.setup-guide-intro dl div { padding: 1rem; border: 1px solid var(--room-border, #343638); border-radius: 12px; }
+.setup-guide-intro dt { font-weight: 600; margin-bottom: .5rem; }
+.setup-guide-intro dd { margin: 0; font-size: .85rem; line-height: 1.6; color: var(--room-muted, #a2a7ad); }
+.setup-guide-connections > .settings-disclosure { margin-top: .6rem; }
+.setup-guide-tool-choice { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .5rem 1.25rem; }
+.setup-guide-tool-choice p { font-size: .85rem; line-height: 1.6; }

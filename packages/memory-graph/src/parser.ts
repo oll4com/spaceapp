@@ -228,6 +228,34 @@ function indexSections(source: MemoryGraphSource): Array<{ id: string; label: st
     });
 }
 
+/** Parse retrieval records without graph layout or pairwise semantic analysis. */
+export function parseMemorySourceRecords(source: MemoryGraphSource, modifiedAt = new Date(0).toISOString()): MemoryGraphRecord[] {
+  if (source.kind === "MONTHLY") return parseMonthlySource(source).records;
+  const tree = fromMarkdown(source.content);
+  let heading = basename(source.path, ".md");
+  const records: MemoryGraphRecord[] = [];
+  for (const node of tree.children) {
+    if (node.type === "heading") { heading = textFromNode(node); continue; }
+    if (node.type === "html" || node.type === "thematicBreak") continue;
+    const blocks = node.type === "list" ? node.children : [node];
+    for (const block of blocks) {
+      const start = block.position?.start.offset ?? 0;
+      const end = block.position?.end.offset ?? source.content.length;
+      const body = source.content.slice(start, end).trim();
+      if (!body) continue;
+      const contentHash = sha256(body);
+      records.push({
+        id: `memory_ref:${sha256(`${source.path}\n${heading}\n${body}`).slice(0, 24)}`,
+        sourcePath: source.path, sectionId: `section:${sha256(`${source.path}\n${heading}`).slice(0, 24)}`,
+        title: `${heading}: ${textFromNode(block).slice(0, 120)}`, body,
+        createdAt: modifiedAt, scope: "SYSTEM", roomId: null, provenance: source.path,
+        contentHash, lifecycleStatus: "ACTIVE", sourceStart: start, sourceEnd: end, markerId: null
+      });
+    }
+  }
+  return records;
+}
+
 export function buildMemoryGraphSnapshot(input: {
   sources: MemoryGraphSource[];
   generatedAt: string;

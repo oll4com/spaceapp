@@ -26,6 +26,8 @@ import {
   type BrowserRecordingFrameSummary,
   type BrowserRuntimeInput,
   type BrowserSessionViewport,
+  type BrowserViewportDimensions,
+  browserViewportDimensionsSchema,
   type BrowserStreamMode,
   type BrowserToolActionInput,
   type BrowserToolActionResult,
@@ -37,6 +39,7 @@ import {
 import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { SpaceApiConfig } from "./config.js";
+import { youTubeAdBlockScript } from "./youtube-ad-block.js";
 
 interface ViewportSize {
   width: number;
@@ -72,9 +75,17 @@ export function resolveBrowserStreamProfile(mode: BrowserStreamMode, hints: Brow
     SILENT: { framesPerSecond: 0, quality: 45 },
     PREVIEW: { framesPerSecond: 1, quality: 55 },
     INTERACTIVE: { framesPerSecond: 10, quality: 70 },
-    REALTIME: { framesPerSecond: 24, quality: 80 }
+    REALTIME: { framesPerSecond: 35, quality: 72 }
   }[resolvedMode];
   return { requestedMode: mode, resolvedMode, ...profile, format: "jpeg" };
+}
+
+// Keep the sampling phase instead of resetting it to each compositor frame.
+// Resetting it quantizes 35 fps to 30 (and 24 fps to 20) on a 60 Hz source.
+export function nextBrowserFrameDeadline(now: number, deadline: number, fps: number): number | null {
+  if (fps <= 0 || (deadline > 0 && now + 0.5 < deadline)) return null;
+  const interval = 1000 / fps;
+  return deadline > 0 && now - deadline < interval ? deadline + interval : now + interval;
 }
 
 export class BrowserCapacityGate {
@@ -171,6 +182,7 @@ interface BrowserStreamSubscriber {
 }
 
 interface BrowserRuntime {
+  viewportDimensions?: BrowserViewportDimensions;
   process: ChildProcessWithoutNullStreams;
   xvfb?: ChildProcessWithoutNullStreams;
   display?: number;
@@ -196,6 +208,8 @@ export interface BrowserSessionStatus {
 
 export interface StartBrowserSessionInput {
   pane: Pane;
+  /** Server-derived YouTube account scope; never a client-supplied path. */
+  profileKey?: string | null;
   viewport?: BrowserSessionViewport;
   targetUrl?: string | null;
   streamMode?: BrowserStreamMode;
@@ -209,7 +223,7 @@ export interface BrowserSessionManager {
   startOrRestore(input: StartBrowserSessionInput, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse>;
   getActive(pane: Pane): Promise<PaneBrowserSessionResponse | null>;
   navigate(pane: Pane, url: string, traceId: string, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse>;
-  setViewport(pane: Pane, viewport: BrowserSessionViewport, traceId: string, context?: BrowserHostActorContext): Promise<PaneBrowserSessionResponse>;
+  setViewport(pane: Pane, viewport: BrowserSessionViewport, traceId: string, context?: BrowserHostActorContext, dimensions?: BrowserViewportDimensions): Promise<PaneBrowserSessionResponse>;
   action(pane: Pane, input: BrowserToolActionInput, traceId: string, context?: BrowserHostActorContext): Promise<BrowserToolActionResult>;
   captureFrame(sessionId: string): Promise<BrowserFrame>;
   stopPane(paneId: string, traceId?: string, context?: BrowserHostActorContext): Promise<void>;
@@ -279,21 +293,31 @@ export function releaseDisplay(display: number): void {
   usedDisplays.delete(display);
 }
 
-async function waitForDisplaySocket(display: number, timeoutMs: number): Promise<void> {
+async function waitForDisplaySocket(display: number, timeoutMs: number, child: ChildProcessWithoutNullStreams, stderr: () => string): Promise<void> {
   const socketPath = `/tmp/.X11-unix/X${display}`;
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      accessSync(socketPath);
-      return;
-    } catch {
-      await sleep(100);
+  let spawnError: Error | null = null;
+  const onError = (error: Error) => { spawnError = error; };
+  child.once("error", onError);
+  try {
+    while (Date.now() < deadline) {
+      if (spawnError) throw spawnError;
+      if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Xvfb exited before display ${display} was ready. ${stderr()}`);
+      try {
+        accessSync(socketPath);
+        return;
+      } catch {
+        await sleep(100);
+      }
     }
-  }
-  throw new Error(`Timed out waiting for Xvfb display ${display}.`);
+    throw new Error(`Timed out waiting for Xvfb display ${display}. ${stderr()}`);
+  } finally { child.off("error", onError); }
 }
 
 async function startXvfb(display: number, width: number, height: number, xvfbPath: string): Promise<ChildProcessWithoutNullStreams> {
+  // Prepare the shared socket directory before concurrent X servers launch.
+  // Xorg's unprivileged directory creation races on a fresh PrivateTmp.
+  await mkdir("/tmp/.X11-unix", { recursive: true, mode: 0o1777 });
   const xvfb = spawn(xvfbPath, [
     `:${display}`,
     "-screen",
@@ -304,20 +328,26 @@ async function startXvfb(display: number, width: number, height: number, xvfbPat
     "-ac"
   ], {});
   xvfb.stdout?.on("data", () => undefined);
-  xvfb.stderr.on("data", () => undefined);
+  let stderr = "";
+  xvfb.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString("utf8")).slice(-500); });
   try {
-    await waitForDisplaySocket(display, 8_000);
+    await waitForDisplaySocket(display, 8_000, xvfb, () => stderr);
     return xvfb;
   } catch (error) {
-    stopXvfbBestEffort(xvfb);
+    await stopXvfbBestEffort(xvfb);
     throw error;
   }
 }
 
-function stopXvfbBestEffort(process: ChildProcessWithoutNullStreams): void {
-  if (process.exitCode === null && process.signalCode === null) {
-    process.kill("SIGTERM");
-  }
+async function stopXvfbBestEffort(process: ChildProcessWithoutNullStreams): Promise<void> {
+  if (process.exitCode !== null || process.signalCode !== null) return;
+  const exited = new Promise<void>((resolve) => process.once("exit", () => resolve()));
+  process.kill("SIGTERM");
+  await withTimeout(exited, 1000, "Xvfb stop timed out.").catch(() => {
+    if (process.exitCode === null && process.signalCode === null) process.kill("SIGKILL");
+  });
+  if (process.exitCode === null && process.signalCode === null) await withTimeout(exited, 1000, "Xvfb exit timed out.").catch(() => undefined);
+  if (process.exitCode === null && process.signalCode === null) throw new Error("Xvfb did not exit; its display remains reserved.");
 }
 
 function sleep(ms: number) {
@@ -1025,6 +1055,8 @@ export class BrowserRequestGuard {
   }
 
   async assertAllowed(raw: string): Promise<string> {
+    // A new tab is a safe local document and must remain navigable/restorable.
+    if (raw === "about:blank") return raw;
     const url = new URL(raw);
     if (url.protocol !== "https:" && url.protocol !== "http:") {
       throw new SpaceFeatureDisabledError("BROWSER_TARGET_BLOCKED", "Browser navigation target must use http or https.", {
@@ -1133,12 +1165,19 @@ class CdpClient {
   }
 
   async send<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
+    if (this.ws.readyState !== WebSocket.OPEN) throw new Error("Chrome DevTools Protocol socket is not open.");
     const id = this.nextId;
     this.nextId += 1;
     const response = new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
     });
-    this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    try {
+      this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    } catch (error) {
+      const pending = this.pending.get(id);
+      this.pending.delete(id);
+      pending?.reject(error instanceof Error ? error : new Error("Chrome DevTools Protocol send failed."));
+    }
     return response;
   }
 
@@ -1198,19 +1237,50 @@ function windowsVirtualKeyCodeFor(key: string, code: string | undefined): number
   };
   const namedCode = named[key];
   if (namedCode !== undefined) return namedCode;
-  if (key.length === 1) return key.toUpperCase().charCodeAt(0);
+  // Keep layout-aware Latin shortcuts (e.g. Ctrl+A on AZERTY). Numpad
+  // digits have their own virtual keys and are resolved below.
+  if (!code?.startsWith("Numpad") && /^[a-z0-9]$/i.test(key)) return key.toUpperCase().charCodeAt(0);
+  // CDP expects Windows virtual keys, not character codes ('.' is 46 in
+  // ASCII, but VK_DELETE is 46). The physical code also handles Shift and
+  // non-Latin layouts without changing the text supplied by the client.
   if (code) {
-    if (code.length === 4 && code.startsWith("Key")) return code.charCodeAt(3);
-    if (code.length === 6 && code.startsWith("Digit")) return code.charCodeAt(5);
-    if (code.length === 7 && code.startsWith("Numpad")) return 96 + Number(code.slice(6));
+    const physical: Record<string, number> = {
+      Space: 32,
+      Semicolon: 186, Equal: 187, Comma: 188, Minus: 189,
+      Period: 190, Slash: 191, Backquote: 192,
+      BracketLeft: 219, Backslash: 220, BracketRight: 221, Quote: 222,
+      IntlBackslash: 226,
+      NumpadMultiply: 106, NumpadAdd: 107, NumpadComma: 108,
+      NumpadSubtract: 109, NumpadDecimal: 110, NumpadDivide: 111
+    };
+    if (Object.hasOwn(physical, code)) return physical[code]!;
+    if (/^Key[A-Z]$/.test(code)) return code.charCodeAt(3);
+    if (/^Digit[0-9]$/.test(code)) return code.charCodeAt(5);
+    if (/^Numpad[0-9]$/.test(code)) return 96 + Number(code.slice(6));
     const functionKey = /^F([1-9]|1[0-9]|2[0-4])$/.exec(code);
     if (functionKey) return 111 + Number(functionKey[1]);
   }
+  // Older/synthetic clients may omit code. Only ASCII letters and digits
+  // share their character code with a Windows virtual key.
+  if (/^[a-z0-9]$/i.test(key)) return key.toUpperCase().charCodeAt(0);
+  const printable: Record<string, number> = {
+    " ": 32, ";": 186, ":": 186, "=": 187, "+": 187,
+    ",": 188, "<": 188, "-": 189, "_": 189, ".": 190, ">": 190,
+    "/": 191, "?": 191, "`": 192, "~": 192,
+    "[": 219, "{": 219, "\\": 220, "|": 220, "]": 221, "}": 221,
+    "'": 222, '"': 222,
+    "!": 49, "@": 50, "#": 51, "$": 52, "%": 53,
+    "^": 54, "&": 55, "*": 56, "(": 57, ")": 48
+  };
+  if (Object.hasOwn(printable, key)) return printable[key]!;
   return 0;
 }
 
-export function browserProfilePathFor(profileRoot: string, roomId: string, paneId: string): string {
-  return join(profileRoot, sanitizeSegment(roomId), sanitizeSegment(paneId));
+export function browserProfilePathFor(profileRoot: string, roomId: string, paneId: string, profileKey?: string | null): string {
+  const root = join(profileRoot, sanitizeSegment(roomId), sanitizeSegment(paneId));
+  if (profileKey == null) return root;
+  if (!/^[a-f0-9]{64}$/.test(profileKey)) throw new Error("Invalid browser account profile scope.");
+  return join(root, "accounts", profileKey);
 }
 
 export async function dispatchBrowserRuntimeInput(
@@ -1310,13 +1380,28 @@ async function waitForChromeWebSocket(process: ChildProcessWithoutNullStreams, t
   );
 }
 
-async function stopChromeBestEffort(process: ChildProcessWithoutNullStreams): Promise<void> {
-  if (process.exitCode === null && process.signalCode === null) {
-    process.kill("SIGTERM");
-    await sleep(500);
-  }
-  if (process.exitCode === null && process.signalCode === null) {
-    process.kill("SIGKILL");
+async function stopChromeBestEffort(process: ChildProcessWithoutNullStreams, client?: Pick<CdpClient, "send" | "close">): Promise<void> {
+  const isRunning = () => process.exitCode === null && process.signalCode === null;
+  let onExit: () => void = () => undefined;
+  const exited = new Promise<void>(resolve => { onExit = resolve; process.once("exit", onExit); });
+  try {
+    if (isRunning() && client) {
+      // Chrome must flush profile storage and cookies before its process exits.
+      await withTimeout(client.send("Browser.close", {}), 1000, "Chrome close command timed out.").catch(() => undefined);
+      if (isRunning()) await withTimeout(exited, 3000, "Chrome graceful exit timed out.").catch(() => undefined);
+    }
+    if (isRunning()) {
+      process.kill("SIGTERM");
+      await withTimeout(exited, 1000, "Chrome stop timed out.").catch(() => undefined);
+    }
+    if (isRunning()) {
+      process.kill("SIGKILL");
+      await withTimeout(exited, 1000, "Chrome exit timed out.").catch(() => undefined);
+    }
+    if (isRunning()) throw new Error("Chrome did not exit; its display remains reserved.");
+  } finally {
+    process.off("exit", onExit);
+    try { client?.close(); } catch { /* The process exit is authoritative. */ }
   }
 }
 
@@ -1413,6 +1498,10 @@ export async function applyRestoreState(
 export function createBrowserSessionManager(options: { store: SpaceStore; config: SpaceApiConfig }): BrowserSessionManager {
   const { store, config } = options;
   const runtimes = new Map<string, BrowserRuntime>();
+  const closingSessions = new Set<string>();
+  let closingAll = false;
+  const runtimeStarts = new Map<string, Promise<BrowserRuntime>>();
+  const paneStarts = new Map<string, Promise<PaneBrowserSessionResponse>>();
   const tickets = new Map<string, { paneId: string; sessionId: string; expiresAt: number }>();
   const capacity = new BrowserCapacityGate(8, 4);
   const captureQueue: string[] = [];
@@ -1455,6 +1544,11 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         "window.chrome = window.chrome || { runtime: {} };"
       ].join(" ")
     }, cdpSessionId).catch(() => undefined);
+    if (config.browserSessionsYouTubeAdBlockEnabled) {
+      await client.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: youTubeAdBlockScript()
+      }, cdpSessionId).catch(() => undefined);
+    }
   }
 
   async function handlePausedRequest(runtime: BrowserRuntime, event: CdpEvent): Promise<void> {
@@ -1512,8 +1606,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
 
   async function createStoredSession(input: StartBrowserSessionInput): Promise<PaneBrowserSession> {
     const sessionId = makeSpaceId("browser_session");
-    const profileId = `profile:${sanitizeSegment(input.pane.roomId)}:${sanitizeSegment(input.pane.id)}`;
-    const profilePath = browserProfilePathFor(config.browserSessionsProfileRoot, input.pane.roomId, input.pane.id);
+    const profileId = `profile:${sanitizeSegment(input.pane.roomId)}:${sanitizeSegment(input.pane.id)}${input.profileKey ? `:${input.profileKey}` : ""}`;
+    const profilePath = browserProfilePathFor(config.browserSessionsProfileRoot, input.pane.roomId, input.pane.id, input.profileKey);
     return store.createPaneBrowserSession({
       sessionId,
       paneId: input.pane.id,
@@ -1533,8 +1627,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     });
   }
 
-  async function setViewport(runtime: BrowserRuntime, viewport: BrowserSessionViewport) {
-    const size = viewportSizes[viewport];
+  async function setViewport(runtime: BrowserRuntime, viewport: BrowserSessionViewport, dimensions?: BrowserViewportDimensions) {
+    const size = { ...viewportSizes[viewport], ...dimensions };
     await runtime.client.send(
       "Emulation.setDeviceMetricsOverride",
       {
@@ -1545,16 +1639,39 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       },
       runtime.cdpSessionId
     );
+    runtime.viewportDimensions = { width: size.width, height: size.height };
   }
 
-  async function ensureRuntime(session: PaneBrowserSession): Promise<BrowserRuntime> {
+  function ensureRuntime(session: PaneBrowserSession): Promise<BrowserRuntime> {
+    if (closingAll || closingSessions.has(session.sessionId)) return Promise.reject(new SpaceConflictError("The browser session is closing."));
     const existing = runtimes.get(session.sessionId);
-    if (existing && existing.process.exitCode === null && existing.process.signalCode === null) return existing;
+    if (existing && existing.process.exitCode === null && existing.process.signalCode === null) return Promise.resolve(existing);
+    const pending = runtimeStarts.get(session.sessionId);
+    if (pending) return pending;
+    const starting = launchRuntime(session);
+    runtimeStarts.set(session.sessionId, starting);
+    void starting.finally(() => { if (runtimeStarts.get(session.sessionId) === starting) runtimeStarts.delete(session.sessionId); }).catch(() => undefined);
+    return starting;
+  }
+
+  async function launchRuntime(session: PaneBrowserSession): Promise<BrowserRuntime> {
+    const stale = runtimes.get(session.sessionId);
+    if (stale) {
+      runtimes.delete(session.sessionId);
+      try { stale.detachDiagnostics(); stale.client.close(); } catch { /* Dead runtime cleanup. */ }
+      if (stale.xvfb) await stopXvfbBestEffort(stale.xvfb);
+      if (stale.display !== undefined) releaseDisplay(stale.display);
+      capacity.releaseSession(session.sessionId);
+      capacity.releaseLive(`stream:${session.sessionId}`);
+    }
+    const fresh = await store.getPaneBrowserSession(session.sessionId);
+    if (!fresh?.isActive || fresh.status === "CLOSED") throw new SpaceConflictError("The browser session is closed.");
     assertEnabled();
     if (!capacity.acquireSession(session.sessionId)) {
       throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "Managed browser session capacity is exhausted.", capacity.snapshot());
     }
-    await mkdir(session.profilePath, { recursive: true, mode: 0o750 });
+    try { await mkdir(session.profilePath, { recursive: true, mode: 0o750 }); }
+    catch (error) { capacity.releaseSession(session.sessionId); throw error; }
     const viewport = viewportSizes[session.viewport];
     const audioEnv = config.browserSessionsAudioEnabled
       ? {
@@ -1663,9 +1780,9 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
           const now = Date.now();
           for (const subscriber of runtime.streamSubscribers.values()) {
             if (subscriber.profile.framesPerSecond <= 0) continue;
-            const minimumInterval = 1000 / subscriber.profile.framesPerSecond;
-            if (now - subscriber.lastSentAt < minimumInterval) continue;
-            subscriber.lastSentAt = now;
+            const nextDeadline = nextBrowserFrameDeadline(now, subscriber.lastSentAt, subscriber.profile.framesPerSecond);
+            if (nextDeadline === null) continue;
+            subscriber.lastSentAt = nextDeadline;
             void Promise.resolve(
               subscriber.onFrame({
                 sessionId: session.sessionId,
@@ -1673,7 +1790,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
                 data: Buffer.from(data, "base64"),
                 mimeType: "image/jpeg",
                 capturedAt,
-                metadata: sanitizeValue(event.params?.metadata ?? {}) as Record<string, unknown>
+                metadata: { ...sanitizeValue(event.params?.metadata ?? {}) as Record<string, unknown>, viewportDimensions: runtime.viewportDimensions }
               })
             ).catch(() => undefined);
           }
@@ -1711,7 +1828,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       return runtime;
     } catch (error) {
       capacity.releaseSession(session.sessionId);
-      if (xvfb) stopXvfbBestEffort(xvfb);
+      if (xvfb) await stopXvfbBestEffort(xvfb);
       if (display !== null) releaseDisplay(display);
       await stopChromeBestEffort(chrome);
       throw error;
@@ -1741,7 +1858,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       if (!runtime.screencastActive) {
         await runtime.client.send(
           "Page.startScreencast",
-          { format: "jpeg", quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
+          { format: "jpeg", quality: 72, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
           runtime.cdpSessionId
         );
         runtime.screencastActive = true;
@@ -1911,12 +2028,12 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     runtime.cdpSessionId = attached.sessionId;
     runtime.pageSessions.set(pageId, attached.sessionId);
     await enablePageSecurity(runtime.client, attached.sessionId);
-    await setViewport(runtime, session.viewport);
+    await setViewport(runtime, session.viewport, runtime.viewportDimensions);
     await runtime.client.send("Target.activateTarget", { targetId: pageId });
     if (wasStreaming && runtime.streamSubscribers.size) {
       await runtime.client.send(
         "Page.startScreencast",
-        { format: "jpeg", quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
+        { format: "jpeg", quality: 72, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
         runtime.cdpSessionId
       );
     }
@@ -2046,6 +2163,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     const frame = includeFrame && fresh.status !== "CLOSED" ? await captureFrame(fresh.sessionId).catch(() => null) : null;
     return paneBrowserSessionResponseSchema.parse({
       session: (await store.getPaneBrowserSession(fresh.sessionId)) ?? fresh,
+      viewportDimensions: runtimes.get(fresh.sessionId)?.viewportDimensions,
       frame,
       websocket: issueFrameTicket(fresh.paneId, fresh.sessionId, config.browserSessionsTokenTtlMs)
     });
@@ -2053,7 +2171,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
 
   async function captureFrame(sessionId: string): Promise<BrowserFrame> {
     const session = await store.getPaneBrowserSession(sessionId);
-    if (!session) throw new SpaceNotFoundError(`Browser session ${sessionId} was not found.`);
+    if (!session || !session.isActive) throw new SpaceNotFoundError(`Active browser session ${sessionId} was not found.`);
     const runtime = await ensureRuntime(session);
     const screenshot = await runtime.client.send<{ data: string }>(
       "Page.captureScreenshot",
@@ -2099,16 +2217,18 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     pane: Pane,
     viewport: BrowserSessionViewport,
     _traceId?: string,
-    context?: BrowserHostActorContext
+    context?: BrowserHostActorContext,
+    dimensions?: BrowserViewportDimensions
   ): Promise<PaneBrowserSessionResponse> {
     assertEnabled();
+    const boundedDimensions = dimensions ? browserViewportDimensionsSchema.parse(dimensions) : undefined;
     const session = await store.getActivePaneBrowserSession(pane.id);
     if (!session) throw new SpaceNotFoundError(`Active browser session for pane ${pane.id} was not found.`);
     await assertCanMutate(session, context);
     const updated = await store.updatePaneBrowserSession(session.sessionId, { viewport });
     const runtime = await ensureRuntime(updated);
-    await setViewport(runtime, viewport);
-    return responseFor(updated, true);
+    await setViewport(runtime, viewport, boundedDimensions);
+    return responseFor(updated, !boundedDimensions);
   }
 
   function browserDiagnosticsText(runtime: BrowserRuntime, input: Extract<BrowserToolActionInput, { type: "diagnostics" }>): string {
@@ -2461,50 +2581,54 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     return store.updateBrowserCaptureJob(jobId, { statusReason: "Capture stop requested; finalizing recorded output." });
   }
 
-  async function stopPaneById(paneId: string, _traceId?: string, context?: BrowserHostActorContext): Promise<void> {
+  async function stopPaneById(paneId: string, _traceId?: string, context?: BrowserHostActorContext, skipStartWait = false): Promise<void> {
+    if (!skipStartWait) await paneStarts.get(paneId)?.catch(() => undefined);
     const active = await store.getActivePaneBrowserSession(paneId);
     if (!active) return;
     await assertCanMutate(active, context);
-    const runtime = runtimes.get(active.sessionId);
-    runtimes.delete(active.sessionId);
-    capacity.releaseSession(active.sessionId);
-    capacity.releaseLive(`stream:${active.sessionId}`);
-    let lastKnownUrl: string | null = active.currentUrl;
-    let restoreScrollX: number | null = null;
-    let restoreScrollY: number | null = null;
-    let restoreVideoPaused: boolean | null = null;
+    closingSessions.add(active.sessionId);
     try {
-      if (runtime && runtime.process.exitCode === null && runtime.process.signalCode === null) {
-        const meta = await readPageMetadata(runtime.client, runtime.cdpSessionId);
-        if (meta.currentUrl) lastKnownUrl = meta.currentUrl;
-        restoreScrollX = meta.scrollX ?? null;
-        restoreScrollY = meta.scrollY ?? null;
-        restoreVideoPaused = meta.videoPaused ?? null;
+      await runtimeStarts.get(active.sessionId)?.catch(() => undefined);
+      const runtime = runtimes.get(active.sessionId);
+      runtimes.delete(active.sessionId);
+      capacity.releaseSession(active.sessionId);
+      capacity.releaseLive(`stream:${active.sessionId}`);
+      let lastKnownUrl: string | null = active.currentUrl;
+      let restoreScrollX: number | null = null;
+      let restoreScrollY: number | null = null;
+      let restoreVideoPaused: boolean | null = null;
+      try {
+        if (runtime && runtime.process.exitCode === null && runtime.process.signalCode === null) {
+          const meta = await readPageMetadata(runtime.client, runtime.cdpSessionId);
+          if (meta.currentUrl) lastKnownUrl = meta.currentUrl;
+          restoreScrollX = meta.scrollX ?? null;
+          restoreScrollY = meta.scrollY ?? null;
+          restoreVideoPaused = meta.videoPaused ?? null;
+        }
+      } catch {
+        // Best effort: the stored currentUrl is the fallback restore target.
       }
-    } catch {
-      // Best effort: the stored currentUrl is the fallback restore target.
-    }
-    try {
-      runtime?.detachDiagnostics();
-      runtime?.client.close();
-    } catch {
-      // Best effort: process termination below is the authoritative cleanup.
-    }
-    if (runtime) await stopChromeBestEffort(runtime.process);
-    if (runtime?.xvfb) stopXvfbBestEffort(runtime.xvfb);
-    if (runtime?.display !== undefined) releaseDisplay(runtime.display);
-    await store.updatePaneBrowserSession(active.sessionId, {
-      status: "CLOSED",
-      statusReason: "Browser session closed.",
-      runtimeState: "STOPPED",
-      controlState: "UNCONTROLLED",
-      isActive: false,
-      endedAt: nowIso(),
-      restoreScrollX,
-      restoreScrollY,
-      restoreVideoPaused,
-      ...(lastKnownUrl ? { currentUrl: lastKnownUrl } : {})
-    });
+      try {
+        runtime?.detachDiagnostics();
+      } catch {
+        // Best effort: process termination below is the authoritative cleanup.
+      }
+      if (runtime) await stopChromeBestEffort(runtime.process, runtime.client);
+      if (runtime?.xvfb) await stopXvfbBestEffort(runtime.xvfb);
+      if (runtime?.display !== undefined) releaseDisplay(runtime.display);
+      await store.updatePaneBrowserSession(active.sessionId, {
+        status: "CLOSED",
+        statusReason: "Browser session closed.",
+        runtimeState: "STOPPED",
+        controlState: "UNCONTROLLED",
+        isActive: false,
+        endedAt: nowIso(),
+        restoreScrollX,
+        restoreScrollY,
+        restoreVideoPaused,
+        ...(lastKnownUrl ? { currentUrl: lastKnownUrl } : {})
+      });
+    } finally { closingSessions.delete(active.sessionId); }
   }
 
   function timelineEventsForRuntime(
@@ -2556,58 +2680,77 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       checkedAt: nowIso(),
       capacity: capacity.snapshot()
     }),
-    async startOrRestore(input, context) {
-      assertEnabled();
-      let session = await store.getActivePaneBrowserSession(input.pane.id);
-      if (session) await assertCanMutate(session, context);
-      let restore: { scrollX?: number | null; scrollY?: number | null; videoPaused?: boolean | null } = {};
-      if (!session) {
-        const prior = await store.getLatestPaneBrowserSession(input.pane.id);
-        const restoreUrl =
-          prior && (prior.status === "CLOSED" || prior.status === "ERROR") && input.pane.mode !== "YOUTUBE"
-            ? (prior.currentUrl ?? prior.targetUrl)
-            : null;
-        const targetUrl = await assertSafeBrowserTargetUrl(
-          restoreUrl ?? input.targetUrl ?? config.browserSessionsDefaultUrl,
-          config.browserEvidenceTargetOrigin
-        );
-        if (prior && (prior.status === "CLOSED" || prior.status === "ERROR")) {
-          restore = {
-            scrollX: prior.restoreScrollX,
-            scrollY: prior.restoreScrollY,
-            videoPaused: prior.restoreVideoPaused
-          };
+    startOrRestore(input, context) {
+      const pending = paneStarts.get(input.pane.id);
+      if (pending) return pending.then(async (response) => {
+        await assertCanMutate(response.session, context);
+        if (input.pane.mode === "YOUTUBE" && input.profileKey !== undefined && response.session.profilePath !== browserProfilePathFor(config.browserSessionsProfileRoot, input.pane.roomId, input.pane.id, input.profileKey)) {
+          throw new SpaceConflictError("The Google account is changing. Retry after the current browser start finishes.");
         }
-        session = await createStoredSession({ ...input, targetUrl });
-      } else if (input.viewport && input.viewport !== session.viewport) {
-        session = await store.updatePaneBrowserSession(session.sessionId, { viewport: input.viewport });
-      }
-      if (input.streamMode && input.streamMode !== session.streamMode) {
-        session = await store.updatePaneBrowserSession(session.sessionId, {
-          streamMode: input.streamMode,
-          resolvedStreamMode: resolveBrowserStreamProfile(input.streamMode).resolvedMode
-        });
-      }
-      if (browserSessionNeedsNavigation(session)) {
-        session = await navigateSession(session, session.targetUrl);
-        if (restore.scrollY != null || restore.scrollX != null || restore.videoPaused !== undefined) {
-          try {
-            const runtime = await ensureRuntime(session);
-            await applyRestoreState(runtime.client, runtime.cdpSessionId, restore);
-          } catch {
-            // Restoring the exact visual position is best effort after navigation.
+        return response;
+      });
+      const starting = (async () => {
+        assertEnabled();
+        let session = await store.getActivePaneBrowserSession(input.pane.id);
+        if (session) await assertCanMutate(session, context);
+        const expectedProfilePath = browserProfilePathFor(config.browserSessionsProfileRoot, input.pane.roomId, input.pane.id, input.profileKey);
+        if (input.pane.mode === "YOUTUBE" && input.profileKey !== undefined && session && session.profilePath !== expectedProfilePath) {
+          // This start owns paneStarts; stop only the previous account runtime.
+          await stopPaneById(input.pane.id, input.traceId, context, true);
+          session = null;
+        }
+        let restore: { scrollX?: number | null; scrollY?: number | null; videoPaused?: boolean | null } = {};
+        if (!session) {
+          const prior = await store.getLatestPaneBrowserSession(input.pane.id);
+          const restoreUrl =
+            prior && (prior.status === "CLOSED" || prior.status === "ERROR") && input.pane.mode !== "YOUTUBE"
+              ? (prior.currentUrl ?? prior.targetUrl)
+              : null;
+          const targetUrl = await assertSafeBrowserTargetUrl(
+            input.targetUrl ?? restoreUrl ?? config.browserSessionsDefaultUrl,
+            config.browserEvidenceTargetOrigin
+          );
+          if (prior?.profilePath === expectedProfilePath && (!input.targetUrl || targetUrl === (prior.currentUrl ?? prior.targetUrl)) && (prior.status === "CLOSED" || prior.status === "ERROR")) {
+            restore = {
+              scrollX: prior.restoreScrollX,
+              scrollY: prior.restoreScrollY,
+              videoPaused: prior.restoreVideoPaused
+            };
           }
+          session = await createStoredSession({ ...input, targetUrl });
+        } else if (input.viewport && input.viewport !== session.viewport) {
+          session = await store.updatePaneBrowserSession(session.sessionId, { viewport: input.viewport });
         }
-      } else {
-        await ensureRuntime(session);
-        session = await store.updatePaneBrowserSession(session.sessionId, {
-          status: "READY",
-          statusReason: "Browser session reconnected.",
-          runtimeState: "READY",
-          workerHeartbeatAt: nowIso()
-        });
-      }
-      return responseFor(session, input.includeInitialFrame !== false);
+        if (input.streamMode && input.streamMode !== session.streamMode) {
+          session = await store.updatePaneBrowserSession(session.sessionId, {
+            streamMode: input.streamMode,
+            resolvedStreamMode: resolveBrowserStreamProfile(input.streamMode).resolvedMode
+          });
+        }
+        if (browserSessionNeedsNavigation(session)) {
+          session = await navigateSession(session, session.targetUrl);
+          if (restore.scrollY != null || restore.scrollX != null || restore.videoPaused !== undefined) {
+            try {
+              const runtime = await ensureRuntime(session);
+              await applyRestoreState(runtime.client, runtime.cdpSessionId, restore);
+            } catch {
+              // Restoring the exact visual position is best effort after navigation.
+            }
+          }
+        } else {
+          await ensureRuntime(session);
+          session = await store.updatePaneBrowserSession(session.sessionId, {
+            status: "READY",
+            statusReason: "Browser session reconnected.",
+            runtimeState: "READY",
+            workerHeartbeatAt: nowIso()
+          });
+        }
+        return responseFor(session, input.includeInitialFrame !== false);
+      })();
+      paneStarts.set(input.pane.id, starting);
+      void starting.finally(() => { if (paneStarts.get(input.pane.id) === starting) paneStarts.delete(input.pane.id); }).catch(() => undefined);
+      return starting;
     },
     async getActive(pane) {
       const session = await store.getActivePaneBrowserSession(pane.id);
@@ -2748,25 +2891,30 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     captureMetrics,
     stopPane: stopPaneById,
     async stopDetached(session) {
-      const runtime = runtimes.get(session.sessionId);
-      runtimes.delete(session.sessionId);
-      capacity.releaseSession(session.sessionId);
-      capacity.releaseLive(`stream:${session.sessionId}`);
+      closingSessions.add(session.sessionId);
       try {
-        runtime?.detachDiagnostics();
-        runtime?.client.close();
-      } catch {
-        // Best effort: process termination below is the authoritative cleanup.
-      }
-      if (runtime) await stopChromeBestEffort(runtime.process);
-      if (runtime?.xvfb) stopXvfbBestEffort(runtime.xvfb);
-      if (runtime?.display !== undefined) releaseDisplay(runtime.display);
+        await runtimeStarts.get(session.sessionId)?.catch(() => undefined);
+        const runtime = runtimes.get(session.sessionId);
+        runtimes.delete(session.sessionId);
+        capacity.releaseSession(session.sessionId);
+        capacity.releaseLive(`stream:${session.sessionId}`);
+        try {
+          runtime?.detachDiagnostics();
+        } catch {
+          // Best effort: process termination below is the authoritative cleanup.
+        }
+        if (runtime) await stopChromeBestEffort(runtime.process, runtime.client);
+        if (runtime?.xvfb) await stopXvfbBestEffort(runtime.xvfb);
+        if (runtime?.display !== undefined) releaseDisplay(runtime.display);
+      } finally { closingSessions.delete(session.sessionId); }
     },
     async stopRoom(roomId, traceId, context) {
       const sessions = await store.listActivePaneBrowserSessions(roomId);
       await Promise.all(sessions.map((session) => stopPaneById(session.paneId, traceId, context)));
     },
     async closeAll() {
+      closingAll = true;
+      await Promise.allSettled([...paneStarts.values(), ...runtimeStarts.values()]);
       const sessions = [...runtimes.keys()];
       await Promise.all(
         sessions.map(async (sessionId) => {
@@ -2776,12 +2924,11 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
           capacity.releaseLive(`stream:${sessionId}`);
           try {
             runtime?.detachDiagnostics();
-            runtime?.client.close();
           } catch {
             // Closing the API should not hang on CDP socket state.
           }
-          if (runtime) await stopChromeBestEffort(runtime.process);
-          if (runtime?.xvfb) stopXvfbBestEffort(runtime.xvfb);
+          if (runtime) await stopChromeBestEffort(runtime.process, runtime.client);
+          if (runtime?.xvfb) await stopXvfbBestEffort(runtime.xvfb);
           if (runtime?.display !== undefined) releaseDisplay(runtime.display);
         })
       );

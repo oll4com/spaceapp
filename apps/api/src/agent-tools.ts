@@ -50,7 +50,7 @@ interface CanonicalSourceDescriptor {
 }
 
 const CANONICAL_SOURCES: Record<string, CanonicalSourceDescriptor> = {
-  "cli:claude": { fileName: "claude-legacy-space-mcp.json", format: "object", keyPath: "mcpServers" },
+  "cli:claude": { fileName: "claude-space-mcp.json", format: "object", keyPath: "mcpServers" },
   "cli:opencode": { fileName: "opencode-space.json", format: "object", keyPath: "mcp" },
   "cli:autohand": { fileName: "autohand-space-mcp.json", format: "array", keyPath: "servers" },
   "cli:grok": { fileName: "grok-space-config.toml", format: "toml", keyPath: "" },
@@ -436,12 +436,15 @@ function setByKeyPath(root: JsonObject, keyPath: string, value: unknown): void {
 }
 
 function jsonMcpEntry(value: JsonObject): AgentToolMcpDefinition {
-  const command = typeof value.command === "string" && value.command.length > 0 ? value.command : null;
+  const commandArray = Array.isArray(value.command) && value.command.every((part) => typeof part === "string")
+    ? value.command as string[] : null;
+  const command = commandArray?.[0] ?? (typeof value.command === "string" && value.command.length > 0 ? value.command : null);
   const url = typeof value.url === "string" && value.url.length > 0 ? value.url : null;
-  const args = Array.isArray(value.args) ? value.args.filter((arg): arg is string => typeof arg === "string") : [];
+  const args = commandArray ? commandArray.slice(1) : Array.isArray(value.args) ? value.args.filter((arg): arg is string => typeof arg === "string") : [];
   const env: Record<string, string> = {};
-  if (isJsonObject(value.env)) {
-    for (const [key, valueEntry] of Object.entries(value.env)) {
+  const environment = isJsonObject(value.environment) ? value.environment : value.env;
+  if (isJsonObject(environment)) {
+    for (const [key, valueEntry] of Object.entries(environment)) {
       if (typeof valueEntry === "string") env[key] = valueEntry;
     }
   }
@@ -594,7 +597,7 @@ async function rootReadJsonFile(rootWriterCommand: string | null, path: string):
   return safeJsonParse(raw) as JsonObject | null;
 }
 
-async function rootWriteBackedUpFileAtomic(
+export async function rootWriteBackedUpFileAtomic(
   rootWriterCommand: string | null,
   path: string,
   content: string
@@ -752,8 +755,8 @@ async function onDiskToolEnabled(
   return entry?.enabled ?? false;
 }
 
-export async function buildAgentToolsCatalog(store: SpaceStore, options: AgentToolsOptions = {}): Promise<AgentToolsCatalogResponse> {
-  const { layout, tools, assignments } = await discoverAgentTools(store, options);
+export async function buildAgentToolsCatalog(store: SpaceStore, options: AgentToolsOptions = {}, discovered?: DiscoveredState): Promise<AgentToolsCatalogResponse> {
+  const { layout, tools, assignments } = discovered ?? await discoverAgentTools(store, options);
 
   const runtimes: AgentToolRuntimeCatalogInfo[] = layout.map((runtime) => ({
     runtimeId: runtime.runtimeId,
@@ -872,8 +875,9 @@ export async function applyAgentTools(
     })
   );
 
-  const { layout, tools } = await discoverAgentTools(store, effective);
-  const catalog = await buildAgentToolsCatalog(store, effective);
+  const discovered = await discoverAgentTools(store, effective);
+  const { layout, tools } = discovered;
+  const catalog = await buildAgentToolsCatalog(store, effective, discovered);
   const catalogMcpByName = new Map<string, AgentToolCatalogEntry>(
     catalog.entries.filter((entry) => entry.kind === "MCP").map((entry) => [entry.name, entry])
   );
@@ -986,6 +990,12 @@ export async function applyAgentTools(
           if (applyEnabled(assignment, runtimeLayout.runtimeId) ?? onDisk) {
             const existing = isJsonObject(currentObject[name]) ? (currentObject[name] as JsonObject) : {};
             rebuiltObject[name] = { ...existing, ...(entry.mcp.command ? { command: entry.mcp.command } : {}), ...(entry.mcp.args ? { args: entry.mcp.args } : {}) };
+            if (runtimeLayout.runtimeId === "cli:opencode") {
+              const { command: _command, args: _args, env: _env, url: _url, type: _type, environment: _environment, ...preserved } = existing;
+              rebuiltObject[name] = entry.mcp.transport === "http"
+                ? { ...preserved, type: "remote", url: entry.mcp.url }
+                : { ...preserved, type: "local", command: [entry.mcp.command, ...(entry.mcp.args ?? [])], ...(entry.mcp.env ? { environment: entry.mcp.env } : {}) };
+            }
             if (applyEnabled(assignment, runtimeLayout.runtimeId) === true) enabledMcpIds.push(entry.toolId);
           }
         }

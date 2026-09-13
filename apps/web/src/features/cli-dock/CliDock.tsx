@@ -7,7 +7,7 @@ import {
 import { CliRuntimeSettingsCard } from "../cli-runtime-settings/CliRuntimeSettingsCard.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { Gauge, Images } from "../ui-theme/app-icons.js";
-import "./cli-dock.css";
+import { SettingsDisclosure, SettingsSections } from "../settings/SettingsDisclosure.js";
 
 interface CliDockProps {
   canManage: boolean;
@@ -34,28 +34,18 @@ export function CliDock({
 }: CliDockProps) {
   return (
     <div className="cli-dock">
+      <SettingsSections>
       {!canManage ? <p className="dock-muted-text">The ADMIN role can manage CLI runtimes.</p> : null}
 
       <CliRuntimeSettingsCard
         canManage={canManage}
         onOpenRestartAll={onOpenRestartAll}
         restartAllPending={restartAllPending}
+        disclosures
       />
 
-      <a
-        className="spaceapp-download-banner"
-        href="https://spaceapp.dev"
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label="Download SpaceApp from SpaceApp.dev"
-      >
-        <img
-          src="/brand/spaceapp-open-source-banner.webp"
-          alt="SpaceApp is open source and free to download."
-          decoding="async"
-        />
-      </a>
 
+      <SettingsDisclosure initialOpen title="Room cache" description="Keep recently used rooms ready in this browser." scope="This browser" icon={Gauge}>
       <section className="agent-settings-card settings-flat-card warm-room-cache-settings-card" aria-label="Warm room cache settings">
         <div className="agent-settings-section-title settings-flat-heading">
           <Gauge aria-hidden="true" />
@@ -103,6 +93,8 @@ export function CliDock({
         </p>
       </section>
 
+      </SettingsDisclosure>
+      <SettingsDisclosure title="Image previews" description="Choose how many uploaded images remain in the preview strip." scope="This browser" icon={Images}>
       <section className="agent-settings-card settings-flat-card cli-upload-settings-card" aria-label="CLI photo preview settings">
         <div className="agent-settings-section-title settings-flat-heading">
           <Images aria-hidden="true" />
@@ -130,6 +122,8 @@ export function CliDock({
         </label>
       </section>
 
+      </SettingsDisclosure>
+      </SettingsSections>
     </div>
   );
 }

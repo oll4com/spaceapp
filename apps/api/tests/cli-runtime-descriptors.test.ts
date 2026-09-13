@@ -47,7 +47,7 @@ describe("CLI runtime descriptors", () => {
     }))).toEqual([
       { id: "cli:opencode", authMode: "MANAGED", missingAuthState: "UNAVAILABLE", loginAction: null },
       { id: "cli:codex", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
-      { id: "cli:claude", authMode: "MANAGED", missingAuthState: "UNAVAILABLE", loginAction: null },
+      { id: "cli:claude", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:gemini", authMode: "NONE", missingAuthState: "UNAVAILABLE", loginAction: null },
       { id: "cli:autohand", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
       { id: "cli:qwen", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
@@ -96,7 +96,7 @@ describe("CLI runtime descriptors", () => {
         XDG_STATE_HOME: "/var/lib/spaceapp-user/.codex/space-opencode/state"
       },
       nativeResumeArgs: ["--continue"],
-      defaultModelId: null
+      defaultModelId: "big-pickle"
     });
   });
 
@@ -173,7 +173,7 @@ describe("CLI runtime descriptors", () => {
     });
   });
 
-  it("defines DeepSeek as provider-catalog text chat without a Space model default", () => {
+  it("defines DeepSeek as provider-catalog text chat with default model", () => {
     expect(findCliRuntimeDescriptor("cli:deepseek")).toMatchObject({
       key: "deepseek",
       id: "cli:deepseek",
@@ -192,7 +192,7 @@ describe("CLI runtime descriptors", () => {
         DEEPSEEK_HOME: "/var/lib/spaceapp-user/.codex/space-deepseek"
       },
       nativeResumeArgs: null,
-      defaultModelId: null
+      defaultModelId: "deepseek-chat"
     });
   });
 

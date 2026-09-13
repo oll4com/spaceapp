@@ -1,3 +1,7 @@
+import type { TaskTitleSettings, TaskTitleCandidateStatus } from "@space/contracts";
+import type { SystemHealthSnapshot, SystemHealthHistory, SystemHealthRange } from "@space/contracts";
+import type { YouTubeAccounts, YouTubeAccountSelection } from "./features/browser-pane/youtube-accounts.js";
+import type { YouTubePlayback } from "./features/browser-pane/youtube-playback.js";
 import type {
   Artifact,
   AgentPaneHistoryItem,
@@ -253,20 +257,32 @@ import type {
   UpdateProviderInput,
   UpdateProviderSettingsInput,
   UpdateStreamingOverlaySettingsInput,
+  VoiceRealtimeSessionRequest,
   VoiceRealtimeSessionResponse,
+  VoiceTranscriptionSettings,
   VoiceTranscriptionDelay,
   VoiceTranscriptionLanguage,
   VoiceTranscriptionModel,
   VoiceTranscriptionResponse,
-  VoiceTranscriptionSettings,
+  OpenAiModelsResponse,
   WorkerReadiness
 } from "@space/contracts";
 import { SpaceApiError } from "./runtime/SpaceRuntime.js";
 import { reportCoreApiFailure, reportCoreApiSuccess } from "./core-api-availability.js";
+import { consumeAuthBootstrap } from "./auth-bootstrap-cache.js";
 
 export { SpaceApiError } from "./runtime/SpaceRuntime.js";
 
 export type CodexThreadPresentation = "raw" | "chat";
+
+export interface LivePersonalMemoryItem {
+  id: string;
+  key: string;
+  value: string;
+  category?: "profile" | "preference" | "fact" | "instruction" | "note";
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface CliMaintenanceReplayPayload {
   run: AdminOperationRun;
@@ -843,12 +859,15 @@ function loadActiveCliSession(
 }
 
 export const api = {
+  healthPing: () => request<{ ok: boolean }>("/healthz", { cache: "no-store" }),
+  systemHealth: () => request<SystemHealthSnapshot>("/api/admin/system-analytics/health", { cache: "no-store" }),
+  systemHealthHistory: (range: SystemHealthRange) => request<SystemHealthHistory>(`/api/admin/system-analytics/health/history?range=${encodeURIComponent(range)}`),
   readyz: () => request<ReadyzPayload>("/readyz"),
   appVersion: () => request<AppVersionStatus>("/api/app/version"),
   harnessHealth: () => request<HarnessHealth>("/api/harness/healthz"),
   harnessUrl: "/api/harness/",
   eventStreamUrl,
-  me: () => request<AuthMe>("/api/auth/me"),
+  me: () => Promise.resolve(consumeAuthBootstrap() ?? request<AuthMe>("/api/auth/me")),
   setupStatus: () => request<SetupStatus>("/api/setup/status"),
   claimSetup: (input: SetupClaimInput) =>
     request<SetupClaimResponse>("/api/setup/claim", {
@@ -1051,10 +1070,14 @@ export const api = {
     request<Paginated<AgentPaneHistoryItem>>(`/api/rooms/${encodeURIComponent(roomId)}/agent-history`),
   roomAgent: (roomId: string) =>
     request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent`),
-  sendRoomAgentMessage: (roomId: string, content: string, clientRequestId: string) =>
+  sendRoomAgentMessage: (roomId: string, content: string, clientRequestId: string, selectedBrowserPaneId?: string) =>
     request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/messages`, {
       method: "POST",
-      body: JSON.stringify({ content, clientRequestId })
+      body: JSON.stringify({ content, clientRequestId, selectedBrowserPaneId })
+    }),
+  acknowledgeRoomAgentCommand: (roomId: string, clientRequestId: string, ok: boolean) =>
+    request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/commands/${encodeURIComponent(clientRequestId)}/ack`, {
+      method: "POST", body: JSON.stringify({ ok })
     }),
   stopRoomAgent: (roomId: string, reason: string) =>
     request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/stop`, {
@@ -1163,7 +1186,7 @@ export const api = {
   systemAnalyticsProcesses: (input: {
     page?: number;
     pageSize?: number;
-    sort?: "rss" | "cpu" | "pid" | "uptime" | "name";
+    sort?: "rss" | "cpu" | "pid" | "uptime" | "name" | "state" | "threads";
     direction?: "asc" | "desc";
     query?: string;
     ownership?: "ALL" | "SPACE_CLI" | "SPACE_SHARED" | "OTHER";
@@ -1385,6 +1408,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ targetRoomId })
     }),
+  taskTitleSettings: () => request<TaskTitleSettings>("/api/settings/task-titles"),
+  updateTaskTitleSettings: (settings: TaskTitleSettings) => request<TaskTitleSettings>("/api/settings/task-titles", {method:"PATCH",body:JSON.stringify(settings)}),
+  taskTitleAvailability: () => request<{candidates:TaskTitleCandidateStatus[]}>("/api/settings/task-titles/availability"),
+  bindHarnessTitleSession:(paneId:string,sessionId:string)=>request<Pane>(`/api/panes/${encodeURIComponent(paneId)}/title/harness-session`,{method:"POST",body:JSON.stringify({sessionId})}),
+  setPaneTitlePreference: (paneId:string,candidateId:string|null) => request<Pane>(`/api/panes/${encodeURIComponent(paneId)}/title/preference`,{method:"PATCH",body:JSON.stringify({candidateId})}),
   generatePaneTitle: (paneId: string) =>
     request<Pane>(`/api/panes/${encodeURIComponent(paneId)}/title/generate`, {
       method: "POST"
@@ -1518,6 +1546,11 @@ export const api = {
     invalidateCliRuntimeSettings();
     return result;
   },
+  modelCapabilities: () => request<{ profiles: import("@space/contracts").ModelCapabilityProfileV1[]; state: import("@space/contracts").ToolRoutingStateV1 }>("/api/model-capabilities"),
+  effectiveToolRouting: (runtimeId: string, modelId: string) => request<import("@space/contracts").EffectiveToolPlanV1>(
+    "/api/agent-tools/effective?" + new URLSearchParams({ runtimeId, modelId })),
+  saveToolRouting: (input: { expectedRevision: number; enabledRuntimeIds: string[]; overrides: import("@space/contracts").ToolRoutingOverride[] }) =>
+    request<import("@space/contracts").ToolRoutingStateV1>("/api/agent-tools/policies", { method: "PUT", body: JSON.stringify(input) }),
   agentToolsCatalog: () => request<AgentToolsCatalogResponse>("/api/agent-tools/catalog"),
   updateAgentToolAssignment: (toolId: string, input: UpdateAgentToolAssignmentInput) =>
     request<AgentToolAssignment>(`/api/agent-tools/assignments/${encodeURIComponent(toolId)}`, {
@@ -1873,6 +1906,16 @@ export const api = {
     return `${protocol}//${window.location.host}/api/panes/${encodeURIComponent(ticket.paneId)}/cli/terminal?${params.toString()}`;
   },
   browserStatus: () => request<BrowserStatusPayload>("/api/browser/status"),
+  youtubeAccounts: (paneId: string) => request<YouTubeAccounts>(`/api/panes/${encodeURIComponent(paneId)}/youtube/accounts`),
+  browserAccounts: (paneId: string) => request<YouTubeAccounts>(`/api/panes/${encodeURIComponent(paneId)}/browser/accounts`),
+  selectBrowserAccount: (paneId: string, profileId: string | null) =>
+    request<YouTubeAccountSelection>(`/api/panes/${encodeURIComponent(paneId)}/browser/accounts`, { method: "PUT", body: JSON.stringify({ profileId }) }),
+  selectYouTubeAccount: (paneId: string, profileId: string | null) =>
+    request<YouTubeAccountSelection>(`/api/panes/${encodeURIComponent(paneId)}/youtube/accounts`, { method: "PUT", body: JSON.stringify({ profileId }) }),
+  youtubePlayback: (paneId: string) => request<{ playback: YouTubePlayback | null }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/playback`),
+  saveYouTubePlayback: (paneId: string, playback: YouTubePlayback) =>
+    request<{ ok: true }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/playback`, { method: "PUT", body: JSON.stringify(playback), keepalive: true }),
+  watchYouTube: (paneId: string) => request<{ currentUrl: string | null }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/watch`, { method: "POST", body: "{}" }),
   browserSession: (paneId: string) => request<PaneBrowserSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/browser/session`),
   startBrowserSession: (
     paneId: string,
@@ -1892,10 +1935,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ url })
     }),
-  setBrowserViewport: (paneId: string, viewport: BrowserSessionViewport) =>
+  setBrowserViewport: (paneId: string, viewport: BrowserSessionViewport, dimensions?: { width: number; height: number }) =>
     request<PaneBrowserSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/browser/viewport`, {
       method: "POST",
-      body: JSON.stringify({ viewport })
+      body: JSON.stringify({ viewport, dimensions })
     }),
   browserAction: (
     paneId: string,
@@ -1954,7 +1997,7 @@ export const api = {
     return `${protocol}//${window.location.host}/api/panes/${encodeURIComponent(ticket.paneId)}/browser/frames?${params.toString()}`;
   },
   browserStreamWebSocketUrl: (ticket: BrowserFrameToken, mode: BrowserStreamMode = "AUTO") => {
-    const params = new URLSearchParams({ sessionId: ticket.sessionId, token: ticket.token, mode });
+    const params = new URLSearchParams({ sessionId: ticket.sessionId, token: ticket.token, mode, frameAck: "1" });
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     if (!window.location.host) {
       return `/api/panes/${encodeURIComponent(ticket.paneId)}/browser/stream?${params.toString()}`;
@@ -2295,15 +2338,17 @@ export const api = {
       body: JSON.stringify(input)
     }),
   voiceTranscriptionSettings: () => request<VoiceTranscriptionSettings>("/api/voice/transcription/settings"),
-  createVoiceRealtimeCall: (input: {
-    offerSdp: string;
-    model: VoiceTranscriptionModel;
-    language: VoiceTranscriptionLanguage;
-    delay: VoiceTranscriptionDelay;
-  }) =>
+  openAiModels: () => request<OpenAiModelsResponse>("/api/voice/openai-models"),
+  createVoiceRealtimeCall: (input: VoiceRealtimeSessionRequest) =>
     request<VoiceRealtimeSessionResponse>("/api/voice/realtime/calls", {
       method: "POST",
       body: JSON.stringify(input)
+    }),
+  localVoiceStatus: () => request<Record<string, unknown>>("/api/voice/local/status"),
+  createLocalVoiceSession: (input: { paneId: string; language: string; opening?: string; prompt?: string }) =>
+    request<Record<string, unknown>>("/api/voice/local/sessions", {
+      method: "POST",
+      body: JSON.stringify({ pane_id: input.paneId, user_id: "space-operator", language: input.language, opening: input.opening, prompt: input.prompt })
     }),
   transcribeVoiceAudio: (input: { audio: Blob; filename: string; model: VoiceTranscriptionModel; language: VoiceTranscriptionLanguage }) => {
     const form = new FormData();
@@ -2442,6 +2487,28 @@ export const api = {
       method: "POST",
       body: form
     });
+  },
+  liveSearch: (input: { query: string; limit?: number }) =>
+    request<{ results: Array<{ title: string; snippet: string; url?: string }> }>("/api/live/search", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  liveFetchUrl: (input: { url: string; maxChars?: number }) =>
+    request<{ url: string; title: string; text: string }>("/api/live/fetch-url", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  getLivePersonalMemory: () => request<{ items: LivePersonalMemoryItem[] }>("/api/live/personal-memory"),
+  saveLivePersonalMemory: (input: { key: string; value: string; category?: string; id?: string }) =>
+    request<{ item: LivePersonalMemoryItem }>("/api/live/personal-memory", { method: "POST", body: JSON.stringify(input) }),
+  deleteLivePersonalMemory: (id: string) =>
+    request<{ ok: boolean }>(`/api/live/personal-memory/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  analyzeLiveAttachment: (input: { file: File; model: string; prompt?: string }) => {
+    const form = new FormData();
+    form.append("file", input.file, input.file.name || "attachment");
+    form.append("model", input.model);
+    if (input.prompt) form.append("prompt", input.prompt);
+    return request<{ text: string }>("/api/voice/realtime/attachments", { method: "POST", body: form });
   },
   captureScreen: (input: { roomId: string; paneId?: string | null; viewport?: BrowserEvidenceViewport }) =>
     request<BrowserEvidenceCapture & { artifact: Artifact }>(`/api/rooms/${encodeURIComponent(input.roomId)}/screen-capture`, {

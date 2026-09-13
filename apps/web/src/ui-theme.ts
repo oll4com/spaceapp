@@ -1,4 +1,4 @@
-export type UiTheme = "classic" | "modern";
+export type UiTheme = "classic" | "modern" | "codex";
 export type ModernAppearance = "system" | "dark" | "light";
 export type ModernColorMode = "dark" | "light";
 export type ModernIconPack = "lucide" | "material-rounded";
@@ -43,7 +43,8 @@ export function migrateModernToolbarPreference(storage: Storage, classicKey: str
 }
 
 export function readUiTheme(storage: Storage): UiTheme {
-  return storage.getItem(UI_THEME_STORAGE_KEY) === "classic" ? "classic" : "modern";
+  const theme = storage.getItem(UI_THEME_STORAGE_KEY);
+  return theme === "classic" || theme === "codex" ? theme : "modern";
 }
 
 export function writeUiTheme(storage: Storage, theme: UiTheme): UiTheme {

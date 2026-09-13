@@ -14,6 +14,7 @@ import type {
   BrowserCaptureOptions,
   BrowserControlLeaseActionInput,
   BrowserSessionViewport,
+  BrowserViewportDimensions,
   BrowserStreamMode,
   BrowserToolActionInput,
   Pane
@@ -68,7 +69,7 @@ const handler: BrowserHostRequestHandler = {
       case "navigate":
         return manager.navigate(params.pane as Pane, String(params.url), String(params.traceId), params.context as BrowserHostActorContext | undefined);
       case "setViewport":
-        return manager.setViewport(params.pane as Pane, params.viewport as BrowserSessionViewport, String(params.traceId), params.context as BrowserHostActorContext | undefined);
+        return manager.setViewport(params.pane as Pane, params.viewport as BrowserSessionViewport, String(params.traceId), params.context as BrowserHostActorContext | undefined, params.dimensions as BrowserViewportDimensions | undefined);
       case "setStreamMode":
         return manager.setStreamMode?.(params.pane as Pane, params.mode as BrowserStreamMode, String(params.traceId), params.context as BrowserHostActorContext | undefined) ?? unavailable(method);
       case "action":

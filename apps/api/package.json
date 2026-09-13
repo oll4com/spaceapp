@@ -30,6 +30,7 @@
     "@space/runtime": "0.1.0",
     "@space/streaming": "0.1.0",
     "@temporalio/client": "1.21.0",
+    "@xterm/headless": "^5.5.0",
     "fastify": "^5.6.2",
     "mammoth": "^1.12.0",
     "nanoid": "^5.1.6",

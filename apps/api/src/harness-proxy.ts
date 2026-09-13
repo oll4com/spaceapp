@@ -42,6 +42,9 @@ const HARNESS_ROOT_HTTP_PATHS = new Set([
 const SPACE_PANE_ID_PATTERN = /^pane:[A-Za-z0-9_-]{6,80}$/;
 const HARNESS_CURRENT_SESSION_KEY = "dsh.sessions.current";
 const HARNESS_DEFAULT_WORKSPACE = "/opt/spaceapp/var/deepseek-harness/workspace";
+const HARNESS_IMMUTABLE_CACHE_CONTROL = "private, max-age=31536000, immutable";
+const HARNESS_FINGERPRINTED_ASSET_PATTERN = /-[A-Za-z0-9_-]{6,}\.[A-Za-z0-9]{1,8}$/;
+const HARNESS_REVISION_PATTERN = /^[a-f0-9]{8,64}$/i;
 
 export function isHarnessRootHttpPath(rawUrl: string | undefined): boolean {
   const pathname = (rawUrl ?? "").split("?", 1)[0] ?? "";
@@ -72,11 +75,38 @@ function harnessUpstreamPath(rawUrl: string): string {
   return `${url.pathname}${url.search}`;
 }
 
+export function harnessStaticCacheControl(rawUrl: string, method: string): string | null {
+  if (method !== "GET" && method !== "HEAD") return null;
+  const url = new URL(rawUrl, "http://space.local");
+  if (url.pathname.startsWith("/assets/") && HARNESS_FINGERPRINTED_ASSET_PATTERN.test(url.pathname)) {
+    return HARNESS_IMMUTABLE_CACHE_CONTROL;
+  }
+  if (url.pathname.startsWith("/plugins/") && HARNESS_REVISION_PATTERN.test(url.searchParams.get("rev") ?? "")) {
+    return HARNESS_IMMUTABLE_CACHE_CONTROL;
+  }
+  return null;
+}
+
 function harnessPaneStorageBootstrap(sessionId: string): string {
   const currentKey = JSON.stringify(HARNESS_CURRENT_SESSION_KEY);
-  const scopedKey = JSON.stringify(`${HARNESS_CURRENT_SESSION_KEY}.${sessionId}`);
+  const scopedKey = JSON.stringify(
+    `${HARNESS_CURRENT_SESSION_KEY}.${sessionId}`,
+  );
   const initialValue = JSON.stringify(JSON.stringify({ sessionId }));
-  return `<script data-space-harness-pane-session>(function(){const currentKey=${currentKey};const scopedKey=${scopedKey};const realStorage=window.localStorage;realStorage.setItem(scopedKey,${initialValue});const scopedStorage=new Proxy(realStorage,{get:function(target,property){if(property==="getItem")return function(key){return target.getItem(key===currentKey?scopedKey:key);};if(property==="setItem")return function(key,value){return target.setItem(key===currentKey?scopedKey:key,value);};if(property==="removeItem")return function(key){return target.removeItem(key===currentKey?scopedKey:key);};const value=Reflect.get(target,property,target);return typeof value==="function"?value.bind(target):value;},set:function(target,property,value){return Reflect.set(target,property,value,target);}});Object.defineProperty(window,"localStorage",{configurable:true,enumerable:true,value:scopedStorage});})();</script>`;
+  return `<script data-space-harness-pane-session>(function(){
+    const currentKey=${currentKey},scopedKey=${scopedKey},paneSessionId=${JSON.stringify(sessionId)};
+    const realStorage=window.localStorage;
+    realStorage.setItem(scopedKey,${initialValue});
+    function publish(){try{const selected=JSON.parse(realStorage.getItem(scopedKey)||"null");if(typeof selected?.sessionId==="string")window.parent.postMessage({type:"space:harness-session",paneSessionId,sessionId:selected.sessionId},window.location.origin);}catch{}}
+    const scopedStorage=new Proxy(realStorage,{get:function(target,property){
+      if(property==="getItem")return function(key){return target.getItem(key===currentKey?scopedKey:key);};
+      if(property==="setItem")return function(key,value){const result=target.setItem(key===currentKey?scopedKey:key,value);if(key===currentKey)publish();return result;};
+      if(property==="removeItem")return function(key){return target.removeItem(key===currentKey?scopedKey:key);};
+      const value=Reflect.get(target,property,target);return typeof value==="function"?value.bind(target):value;
+    },set:function(target,property,value){return Reflect.set(target,property,value,target);}});
+    Object.defineProperty(window,"localStorage",{configurable:true,enumerable:true,value:scopedStorage});
+    publish();
+  })();</script>`;
 }
 
 function rewriteHarnessHtml(body: string, paneSessionId?: string): string {
@@ -93,13 +123,18 @@ function rewriteHarnessHtml(body: string, paneSessionId?: string): string {
   return out;
 }
 
-function callHarnessRpc(target: URL, method: string, rpcPayload: unknown, timeoutMs: number): Promise<unknown> {
+function callHarnessRpc(
+  target: URL,
+  method: string,
+  rpcPayload: unknown,
+  timeoutMs: number,
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
       type: "client-request",
       rpcId: `space-pane-${randomUUID()}`,
       method,
-      payload: rpcPayload
+      payload: rpcPayload,
     });
     const upstream = http.request(
       {
@@ -111,18 +146,34 @@ function callHarnessRpc(target: URL, method: string, rpcPayload: unknown, timeou
         headers: {
           host: harnessLoopbackAuthority(target),
           "content-type": "application/json",
-          "content-length": Buffer.byteLength(payload)
+          "content-length": Buffer.byteLength(payload),
         },
-        timeout: timeoutMs
+        timeout: timeoutMs,
       },
       (response) => {
         const chunks: Buffer[] = [];
-        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        let bytes = 0;
+        response.on("data", (chunk: Buffer) => {
+          bytes += chunk.byteLength;
+          if (bytes > 512_000) {
+            response.destroy(
+              new Error("Harness metadata response exceeded its limit."),
+            );
+            return;
+          }
+          chunks.push(chunk);
+        });
         response.once("error", reject);
         response.on("end", () => {
           try {
-            const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { result?: { ok?: boolean; value?: unknown } };
-            if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300 || body.result?.ok !== true) {
+            const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+              result?: { ok?: boolean; value?: unknown };
+            };
+            if (
+              (response.statusCode ?? 500) < 200 ||
+              (response.statusCode ?? 500) >= 300 ||
+              body.result?.ok !== true
+            ) {
               reject(new Error("Harness RPC failed."));
               return;
             }
@@ -131,12 +182,85 @@ function callHarnessRpc(target: URL, method: string, rpcPayload: unknown, timeou
             reject(new Error("Harness pane session response was invalid."));
           }
         });
-      }
+      },
     );
-    upstream.once("timeout", () => upstream.destroy(new Error("Harness pane session request timed out.")));
+    upstream.once("timeout", () =>
+      upstream.destroy(new Error("Harness pane session request timed out.")),
+    );
     upstream.once("error", reject);
     upstream.end(payload);
   });
+}
+
+/** Metadata-only RPCs for the exact session assigned to this Space pane. */
+export async function readHarnessTaskTitle(
+  config: SpaceApiConfig,
+  paneId: string,
+  selectedSessionId?: string,
+): Promise<{
+  sessionId: string;
+  requests: string[];
+  title: string | null;
+} | null> {
+  if (!config.harnessEnabled || !SPACE_PANE_ID_PATTERN.test(paneId))
+    return null;
+  const sessionId = selectedSessionId ?? `space-pane-${paneId.slice(5)}`;
+  if (!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(sessionId)) return null;
+  const history = (await callHarnessRpc(
+    new URL(config.harnessOrigin),
+    "session.history",
+    { sessionId, maxMessages: 30 },
+    5000,
+  )) as {
+    events?: Array<{ event?: { type?: string; data?: any } }>;
+    projections?: { values?: { title?: unknown } };
+  };
+  const events = history.events ?? [];
+  const requests = events
+    .filter(
+      (item) =>
+        item.event?.type === "user/message" &&
+        item.event.data?.source?.kind === "user",
+    )
+    .map((item) =>
+      (Array.isArray(item.event?.data?.content) ? item.event.data.content : [])
+        .filter(
+          (part: any) => part.type === "text" && typeof part.text === "string",
+        )
+        .map((part: any) => part.text)
+        .join(" "),
+    );
+  const title = history.projections?.values?.title;
+  return {
+    sessionId,
+    requests: requests.slice(-12).map((value) => value.slice(0, 3000)),
+    title: typeof title === "string" ? title.slice(0, 160) : null,
+  };
+}
+export async function renameHarnessTaskTitle(
+  config: SpaceApiConfig,
+  paneId: string,
+  sessionId: string,
+  title: string,
+  expectedSessionId = `space-pane-${paneId.slice(5)}`,
+): Promise<void> {
+  if (
+    !config.harnessEnabled ||
+    !SPACE_PANE_ID_PATTERN.test(paneId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(sessionId) ||
+    sessionId !== expectedSessionId
+  )
+    throw new Error("Harness task identity mismatch.");
+  const result = (await callHarnessRpc(
+    new URL(config.harnessOrigin),
+    "session.rename",
+    { sessionId, title },
+    5000,
+  )) as { title?: string };
+  if (result.title !== title)
+    throw new Error("Harness title was not confirmed.");
+  if ((await readHarnessTaskTitle(config, paneId, sessionId))?.title !== title)
+    throw new Error("Harness title read-back did not match.");
 }
 
 async function ensureHarnessPaneSession(target: URL, sessionId: string, timeoutMs: number): Promise<void> {
@@ -250,6 +374,8 @@ function proxyToHarness(
         }
       }
       responseHeaders["x-frame-options"] = "SAMEORIGIN";
+      const staticCacheControl = harnessStaticCacheControl(pathname, request.method);
+      if (staticCacheControl) responseHeaders["cache-control"] = staticCacheControl;
 
       if (isHtml && (request.method === "GET" || request.method === "HEAD")) {
         responseHeaders["cache-control"] = "no-store";

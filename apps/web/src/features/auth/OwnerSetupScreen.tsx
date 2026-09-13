@@ -1,4 +1,4 @@
-import { KeyRound, Loader2, ShieldCheck } from "lucide-react";
+import { KeyRound, Loader2, ShieldCheck } from "../ui-theme/app-icons.js";
 import { useState, type FormEvent } from "react";
 import type { SetupClaimInput } from "@space/contracts";
 

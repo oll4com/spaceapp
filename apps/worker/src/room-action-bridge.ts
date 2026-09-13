@@ -10,10 +10,12 @@ import {
   type SpaceAgentRoomActionEnvelope,
   type SpaceRoomToolId
 } from "@space/contracts";
+import type { SpaceAgentRoomActionBridgeRequest } from "@space/contracts";
 import { redactMemoryText } from "@space/runtime";
 import { cancellationSignal } from "@temporalio/activity";
 import { Agent, fetch as undiciFetch } from "undici";
 import type { CodexAppServerTurnActivityConfig } from "./activities.js";
+import { roomActionSummary } from "./room-action-summary.js";
 
 const roomActionBlockPattern = /```space-room-actions\s*([\s\S]*?)```/gi;
 const roomActionBridgeTransportTimeoutMs = 24 * 60 * 60_000;
@@ -22,6 +24,20 @@ const roomActionBridgeDispatcher = new Agent({
   bodyTimeout: roomActionBridgeTransportTimeoutMs,
   pipelining: 0
 });
+
+export async function executeBackgroundRoomAction(
+  bridge: SpaceAgentRoomActionBridgeRequest,
+  config: Pick<CodexAppServerTurnActivityConfig, "internalApiBaseUrl" | "internalApiToken">
+): Promise<SpaceAgentRoomActionBridgeResponse> {
+  if (!config.internalApiToken) throw new Error("Room actions require internal API authentication.");
+  const response = await undiciFetch(`${config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/agent/room-actions`, {
+    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken },
+    body: JSON.stringify({ ...bridge, backgroundExecution: true }), dispatcher: roomActionBridgeDispatcher,
+    signal: activeActivityCancellationSignal()
+  });
+  if (!response.ok) throw new Error(`Background room action transport returned HTTP ${response.status}.`);
+  return spaceAgentRoomActionBridgeResponseSchema.parse(await response.json());
+}
 
 function activeActivityCancellationSignal(): AbortSignal | undefined {
   try {
@@ -46,6 +62,7 @@ export interface RoomActionBridgeExecution {
   actionSignature?: string;
   inspectHasActiveWork?: boolean;
   roomInventory?: RoomAgentRoomInventory;
+  pendingActionIds?: string[];
 }
 
 export class RetryableRoomActionBridgeError extends Error {
@@ -70,10 +87,17 @@ export function parseRoomActionBlock(content: string): ParsedRoomActionBlock {
   const rawJson = matches[0]?.[1]?.trim();
   if (!rawJson) return { found: true, cleanedContent, envelope: null, error: "Room action block is empty." };
   try {
+    const parsed = spaceAgentRoomActionEnvelopeSchema.safeParse(JSON.parse(rawJson));
+    if (!parsed.success) return {
+      found: true, cleanedContent, envelope: null,
+      error: "Room action validation failed: " + parsed.error.issues.slice(0, 8).map(issue =>
+        `${issue.path.join(".") || "envelope"}: ${redactMemoryText(issue.message)}`
+      ).join("; ").slice(0, 2000)
+    };
     return {
       found: true,
       cleanedContent,
-      envelope: spaceAgentRoomActionEnvelopeSchema.parse(JSON.parse(rawJson)),
+      envelope: parsed.data,
       error: null
     };
   } catch {
@@ -111,6 +135,8 @@ function inspectPaneHasActiveWork(value: unknown): boolean {
   const pane = unknownRecord(value);
   if (!pane || pane.isClosed === true) return false;
   if (isActiveWorkStatus(pane.status)) return true;
+  const observation = unknownRecord(pane.observation);
+  if (observation?.state === "RUNNING") return true;
   if (pane.mode === "TERMINAL") return false;
   const chat = unknownRecord(pane.chat);
   const chatSession = unknownRecord(chat?.session);
@@ -153,14 +179,24 @@ function inspectPaneSummary(pane: Record<string, unknown>, index: number, total:
     `id=${compactValue(pane.id, "unknown")}`,
     `title=${compactValue(pane.title, "untitled")}`,
     `mode=${compactValue(pane.mode, "unknown", 40)}`,
+    `runtime=${compactValue(unknownRecord(pane.observation)?.runtimeId, "unknown")}`,
     `status=${compactValue(pane.status, "unknown", 40)}`,
-    `closed=${compactValue(pane.isClosed, "unknown", 10)}`
+    `closed=${compactValue(pane.isClosed, "unknown", 10)}`,
+    `session=${compactValue(unknownRecord(pane.observation)?.sessionId, "unknown")}`,
+    `activity=${compactValue(unknownRecord(pane.observation)?.state, "unknown", 40)}`
   ].join("; ");
 }
 
 function inspectPaneDetail(pane: Record<string, unknown>, maxChars: number): string {
   if (maxChars < 1) return "";
   const mode = compactValue(pane.mode, "unknown", 40);
+  const observation = unknownRecord(pane.observation);
+  if (observation) {
+    const tasks = Array.isArray(observation.tasks) ? observation.tasks.slice(-1) : [];
+    const summary = { runtimeId: observation.runtimeId, nativeTaskRef: observation.nativeTaskRef, modelId: observation.modelId, nativeMode: observation.nativeMode,
+      tasks, text: observation.text, detailTool: "Use room:catalog with paneId for full task/model/mode history." };
+    return redactMemoryText(JSON.stringify(summary)).slice(0, maxChars);
+  }
   if (mode === "TERMINAL") {
     const cli = unknownRecord(pane.cli);
     const session = unknownRecord(cli?.session);
@@ -286,7 +322,8 @@ export async function executeRoomActionBridge(input: {
 }): Promise<RoomActionBridgeExecution> {
   const parsed = parseRoomActionBlock(input.assistantContent);
   if (!parsed.found) return { cleanedContent: input.assistantContent, toolMessageContent: null, executedActionCount: 0 };
-  const cleanedContent = parsed.cleanedContent || "Requested Space room actions.";
+  const cleanedContent = [parsed.cleanedContent, ...(parsed.envelope?.actions ?? []).map(request =>
+    `Requested: ${roomActionSummary(request)}`)].filter(Boolean).join("\n\n") || "Invalid room action request.";
   if (parsed.error || !parsed.envelope) {
     return { cleanedContent, toolMessageContent: bridgeMessage("FAILED", parsed.error ?? "Invalid request."), executedActionCount: 0 };
   }
@@ -317,6 +354,7 @@ export async function executeRoomActionBridge(input: {
     missionId: input.turnInput.roomAgentMissionId,
     agentPaneId: input.turnInput.paneId,
     agentSessionId: input.turnInput.agentSessionId,
+    requestId: input.turnInput.traceId,
     selectedToolIds,
     actions: parsed.envelope.actions
   });
@@ -365,7 +403,11 @@ export async function executeRoomActionBridge(input: {
     );
   }
   return {
-    cleanedContent,
+    cleanedContent: [parsed.cleanedContent, ...body.results.map(result => {
+      const state = result.status === "EXECUTED" ? result.evidence.phase === "QUEUED" ? "Queued" : "Completed"
+        : result.status === "BLOCKED" ? "Blocked" : "Failed";
+      return `${state}: ${roomActionSummary(result.request, result.evidence)}`;
+    })].filter(Boolean).join("\n\n"),
     toolMessageContent: formatResponse(body),
     executedActionCount: body.results.filter((result) => result.status === "EXECUTED").length,
     actionSignature: JSON.stringify(parsed.envelope.actions),
@@ -373,6 +415,9 @@ export async function executeRoomActionBridge(input: {
       .filter((result) => result.request.toolId === "room:inspect")
       .some((result) => evidenceHasActiveWork(result.evidence)),
     roomInventory: inspectRoomInventory(body),
+    pendingActionIds: body.results.flatMap((result) =>
+      result.status === "EXECUTED" && result.evidence.phase === "QUEUED" && typeof result.evidence.actionId === "string"
+        ? [result.evidence.actionId] : []),
     authoritativeCompletion:
       parsed.envelope.actions.length > 0 &&
       parsed.envelope.actions.every((request) => request.toolId === "room:orchestrate") &&

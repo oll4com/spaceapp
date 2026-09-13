@@ -1,3 +1,32 @@
+import { controlOperationSchema } from "@space/contracts";
+import { controlTokenHeader, verifyControlToken } from "./space-control-token.js";
+import { PANE_CATALOG_VERSION, paneCountsSchema } from "@space/contracts";
+import { controlSkills, controlResourceRoutes, controlPublishInput } from "./space-control-resources.js";
+import { parseSpaceControlQuick } from "./space-control-quick.js";
+import { createSpaceControl } from "./space-control.js";
+import { registerSpaceControlRoutes } from "./space-control-routes.js";
+import { InMemoryControlRepository, PostgresControlRepository } from "@space/db";
+import { createRoomMiniRouter } from "./room-mini-router.js";
+import { createRoomRoutedActions } from "./room-routed-actions.js";
+import { roomCommandSchema } from "@space/contracts";
+import { createRoomPaneCommands } from "./room-pane-commands.js";
+import { NativeTaskTitles } from "./task-title-native.js";
+import { taskTitleSettingsSchema } from "@space/contracts";
+import { InMemoryTaskTitleRepository, PostgresTaskTitleRepository } from "@space/db";
+import { TaskTitleProviders } from "./task-title-providers.js";
+import { TaskTitleService } from "./task-title-service.js";
+import { createRoomQuickActions } from "./room-quick-actions.js";
+import { SystemHealthMonitor } from "./system-health-service.js";
+import { InMemorySystemHealthRepository, PostgresSystemHealthRepository } from "@space/db";
+import { systemHealthSnapshotSchema, systemHealthHistorySchema, systemHealthRangeSchema } from "@space/contracts";
+import { seedYouTubeSignIn } from "./youtube-shared-signin.js";
+import { YouTubeAccountStore, selectYouTubeAccountSchema, youtubeAccountProfileKey, youtubeAccountSignInUrl, googleAccountSignInUrl } from "./youtube-accounts.js";
+import type { PaneBrowserSessionResponse } from "@space/contracts";
+import { YouTubePlaybackStore, youtubePlaybackSchema, youtubeBrowserPlayback } from "./youtube-playback-state.js";
+import { CanonicalMemorySearch } from "./canonical-memory-search.js";
+import { CanonicalMemoryEmbeddings } from "@space/db";
+import { createMemoryEmbeddings } from "./memory-embedding-smoke.js";
+import { createBrowserLiveSender } from "./browser-live-sender.js";
 import cookie from "@fastify/cookie";
 import compress from "@fastify/compress";
 import cors from "@fastify/cors";
@@ -7,6 +36,7 @@ import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { execFile, spawn } from "node:child_process";
+import { createNativeCliModelCatalog, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning } from "./cli-native-model-picker.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { chmod, mkdir, readFile, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
@@ -316,6 +346,7 @@ updateStreamingOverlaySettingsInputSchema,
   voiceTranscriptionMaxBytes,
   voiceRealtimeSessionRequestSchema,
   voiceTranscriptionSettingsSchema,
+  openAiModelsResponseSchema,
   spaceCapabilitySnapshotSchema,
   workerReadinessSchema,
   type StorageReadiness,
@@ -337,7 +368,6 @@ updateStreamingOverlaySettingsInputSchema,
   type PaneCliTranscriptChunk,
   type SpaceAgentSessionRecord,
   type Pane,
-  type RoomPaneBatchItem,
   type SpaceCapabilitySnapshot,
   type SharedTask,
   type SwarmState,
@@ -407,9 +437,12 @@ import {
 } from "./app-diagnostics.js";
 import { ActivityLogService } from "./activity-log.js";
 import { registerBenchmarkRoutes } from "./benchmark-routes.js";
-import { isHarnessRootHttpPath, registerHarnessRoutes } from "./harness-proxy.js";
+import { registerAsteroidsDirectorRoutes } from "./asteroids-director.js";
+import { isHarnessRootHttpPath, registerHarnessRoutes, readHarnessTaskTitle, renameHarnessTaskTitle } from "./harness-proxy.js";
 import { createActiveAgentCountProvider } from "./active-agent-count.js";
 import { buildCliAgentBootstrapMarkdown } from "./agent-bootstrap.js";
+import { effectiveRouting, discoverRoutingProfiles, projectRoutingState, serializeRoutingUpdate, routingStateWithLegacy, saveProjectedRouting } from "./tool-routing.js";
+import { updateToolRoutingSchema, resolveToolRoute, spaceToolPolicies } from "@space/contracts";
 import {
   AgentFileDocxNormalizationError,
   agentFileMaxBytes,
@@ -440,6 +473,7 @@ import {
   type BrowserBookmarkImportCandidate
 } from "./browser-bookmarks.js";
 import { BrowserControlHeldError } from "./browser-errors.js";
+import { withBrowserPageLifecycle } from "./browser-page-lifecycle.js";
 import {
   browserHostReadiness,
   createConfiguredBrowserSessionManager,
@@ -460,7 +494,12 @@ import {
   isOpenCodeDirectParityRuntime,
   resolveDirectOperatorParityCwd
 } from "./cli-parity.js";
-import { findCodexCliPlanState } from "./codex-rollout-diagnostics.js";
+import { createRoomPaneController, type RoomPaneObservation, type RoomCommandAction } from "./room-pane-control.js";
+import { OpenCodeNativeInputNotReadyError, openCodeComposerLine, openCodeCurrentSelectionWithSource, openCodeTuiSelection, switchOpenCodeTuiSettings } from "./cli-opencode-model-picker.js";
+import { openCodeTaskTimeline } from "./room-task-telemetry.js";
+import { roomOpenCodeTerminalState, roomTerminalCommands, roomTerminalState, roomTerminalMode, roomTerminalInterruptKey } from "./room-terminal-screen.js";
+import { openCodeServerFetch } from "@space/opencode-control";
+import { findCodexTaskTimeline, findCodexCliPlanState } from "./codex-rollout-diagnostics.js";
 import {
   createCodexResetCreditsService,
   type CodexResetCreditsService
@@ -499,7 +538,6 @@ import {
   fetchOpenCodeSessionIsTurnActive,
   fetchOpenCodeSessionModels,
   fetchOpenCodeSessionTitle,
-  openCodeDefaultReasoningEffort,
   openCodeServerIsHealthy,
   parseOpenCodeCompositeModelId,
   readOpenCodeServerControl,
@@ -563,6 +601,7 @@ import {
   type AgentToolsOptions
 } from "./agent-tools.js";
 import { getApiConfig, type SpaceApiConfig } from "./config.js";
+import { cliChatRuntimeName, cliRuntimeModelsChatProviderAdapter } from "./chat-providers.js";
 import { createOpenCodeSession, openCodeSessionExists, opencodeDirectParityRoot } from "@space/opencode-control";
 import type { OwnerSetupBootstrap } from "./owner-setup.js";
 import {
@@ -674,10 +713,15 @@ import {
 import { TurnStarterDisabledError, createCodexAppServerTurnStarter, createTurnStarter, type TurnStarter } from "./turns.js";
 import {
   createVoiceRealtimeCall,
+  createLocalVoiceSession,
+  getLocalVoiceProviderStatus,
+  createVoiceAttachmentResponse,
   voiceTranscriptionDelayOptions,
   voiceTranscriptionLanguageOptions,
   voiceTranscriptionModelOptions,
-  normalizeVoiceTranscriptionModel
+  voiceModelVoiceOptions,
+  normalizeVoiceTranscriptionModel,
+  fetchOpenAiModels
 } from "./voice-transcription.js";
 import { createWorkerReadinessChecker, type WorkerReadinessChecker } from "./worker-readiness.js";
 
@@ -713,6 +757,7 @@ export interface CreateAppOptions {
   browserSessionManager?: BrowserSessionManager;
   memoryEmbeddingGenerator?: (input: string) => Promise<number[]>;
   spaceAgentAdapter?: SpaceAgentAdapter;
+  roomMiniRouter?: Pick<ReturnType<typeof createRoomMiniRouter>, "route">;
   roomAgentWorkflow?: RoomAgentWorkflowCoordinator;
   roomActionExecutor?: RoomActionExecutor;
   roomPlanInventoryProvider?: RoomPlanInventoryProvider;
@@ -767,6 +812,7 @@ export interface CreateAppOptions {
   toolbarHostMemoryProvider?: InvalidatableProvider<HostMemoryDetails> | (() => Promise<HostMemoryDetails>);
   toolbarModelStatsCollector?: ToolbarModelStatsCollector;
   systemAnalyticsService?: SystemAnalyticsService;
+  healthMonitor?: SystemHealthMonitor;
   streamingService?: StreamingService;
   streamingBotService?: StreamingBotService;
   toolbarCliSessionReaper?: () => Promise<CliHostReapAggregate>;
@@ -1084,6 +1130,7 @@ const browserFrameQuerySchema = z.object({
   token: z.string().min(24).max(512).optional()
 });
 const browserStreamQuerySchema = browserFrameQuerySchema.required({ token: true }).extend({
+  frameAck: z.enum(["1"]).optional(),
   mode: browserStreamModeSchema.default("AUTO")
 });
 const browserAudioQuerySchema = browserFrameQuerySchema.required({ token: true });
@@ -1363,6 +1410,8 @@ function buildVoiceTranscriptionSettings(config: SpaceApiConfig) {
     statusReason,
     defaultModel: config.voiceTranscriptionModel,
     modelOptions: voiceTranscriptionModelOptions,
+    defaultVoice: config.voiceTranscriptionVoice,
+    voiceOptions: voiceModelVoiceOptions,
     defaultLanguage: "auto",
     languageOptions: voiceTranscriptionLanguageOptions,
     defaultDelay: config.voiceTranscriptionDelay,
@@ -2277,260 +2326,7 @@ async function resolvePaneCodexThreadId(input: {
   }
 }
 
-async function syncPaneTitleToCodexHistory(input: {
-  store: SpaceStore;
-  codexParity: CodexParityService;
-  pane: Pane;
-  title: string;
-  traceId: string;
-  request: FastifyRequest;
-  session?: PaneCliSession | SpaceAgentSessionRecord | null;
-  findThreadId?: CodexThreadFinder;
-}): Promise<(() => Promise<void>) | null> {
-  if (input.pane.mode !== "TERMINAL" && input.pane.mode !== "CHAT") return null;
-  const session = input.session ?? (input.pane.mode === "CHAT"
-    ? await input.store.getActiveSpaceAgentSession(input.pane.id)
-    : await input.store.getActivePaneCliSession(input.pane.id));
-  if (!session) return null;
-  if (
-    input.pane.mode === "TERMINAL" &&
-    "runtimeId" in session &&
-    (session.purpose !== "NORMAL" || !isCodexDirectParityRuntime(session.runtimeId))
-  ) return null;
-  const threadId = input.pane.mode === "CHAT"
-    ? "threadId" in session ? session.threadId : null
-    : "runtimeId" in session && isCodexDirectParityRuntime(session.runtimeId)
-      ? await resolvePaneCodexThreadId({
-          store: input.store,
-          session,
-          traceId: input.traceId,
-          findThreadId: input.findThreadId
-        })
-      : null;
-  if (!threadId) {
-    if (input.pane.mode === "CHAT") return null;
-    throw new SpaceConflictError("Start a Codex task before renaming this CLI pane so its task history can stay synchronized.");
-  }
-  let previousTitle: string;
-  try {
-    previousTitle = (await input.codexParity.getHistoryThread(threadId)).title;
-    const renamed = await input.codexParity.renameThread(threadId, input.title);
-    if (renamed.title !== input.title) {
-      throw new Error("Codex task history returned a different title after rename.");
-    }
-  } catch (error) {
-    input.request.log.warn(
-      {
-        err: error,
-        requestId: input.traceId,
-        paneId: input.pane.id,
-        sessionId: session.sessionId,
-        codexThreadId: threadId
-      },
-      "codex thread title sync failed"
-    );
-    throw new SpaceFeatureDisabledError(
-      "CODEX_TITLE_SYNC_FAILED",
-      "The pane title was not changed because the matching Codex task history could not be updated."
-    );
-  }
-  return async () => {
-    if (previousTitle === input.title) return;
-    try {
-      await input.codexParity.renameThread(threadId, previousTitle);
-    } catch (error) {
-      input.request.log.error(
-        {
-          err: error,
-          requestId: input.traceId,
-          paneId: input.pane.id,
-          sessionId: session.sessionId,
-          codexThreadId: threadId
-        },
-        "codex thread title rollback failed"
-      );
-    }
-  };
-}
-
-async function syncPaneTitleToCliTaskRevision(input: {
-  store: SpaceStore;
-  pane: Pane;
-  title: string;
-  traceId: string;
-  request: FastifyRequest;
-  session?: PaneCliSession | null;
-}): Promise<(() => Promise<void>) | null> {
-  if (input.pane.mode !== "TERMINAL") return null;
-  const session = input.session ?? await input.store.getActivePaneCliSession(input.pane.id);
-  if (!session || session.purpose !== "NORMAL" || !session.cliTaskRevisionId) return null;
-  let previousTitle: string;
-  try {
-    const revision = await input.store.getCliTaskRevision(session.cliTaskRevisionId);
-    if (!revision) {
-      throw new Error(`CLI task revision ${session.cliTaskRevisionId} was not found.`);
-    }
-    previousTitle = revision.displayTitle;
-    const updated = await input.store.updateCliTaskRevision(
-      revision.revisionId,
-      { displayTitle: input.title },
-      input.traceId
-    );
-    if (updated.displayTitle !== input.title) {
-      throw new Error("Space CLI task history returned a different title after update.");
-    }
-  } catch (error) {
-    input.request.log.warn(
-      {
-        err: error,
-        requestId: input.traceId,
-        paneId: input.pane.id,
-        sessionId: session.sessionId,
-        cliTaskRevisionId: session.cliTaskRevisionId
-      },
-      "CLI task revision title sync failed"
-    );
-    throw new SpaceFeatureDisabledError(
-      "CLI_TASK_TITLE_SYNC_FAILED",
-      "The pane title was not changed because the matching Space CLI task history could not be updated."
-    );
-  }
-  return async () => {
-    if (previousTitle === input.title) return;
-    try {
-      await input.store.updateCliTaskRevision(
-        session.cliTaskRevisionId!,
-        { displayTitle: previousTitle },
-        input.traceId
-      );
-    } catch (error) {
-      input.request.log.error(
-        {
-          err: error,
-          requestId: input.traceId,
-          paneId: input.pane.id,
-          sessionId: session.sessionId,
-          cliTaskRevisionId: session.cliTaskRevisionId
-        },
-        "CLI task revision title rollback failed"
-      );
-    }
-  };
-}
-
-async function syncPaneTitleToOpenCodeSession(input: {
-  store: SpaceStore;
-  pane: Pane;
-  title: string;
-  traceId: string;
-  request: FastifyRequest;
-  session?: PaneCliSession | null;
-  stateRoot?: string;
-}): Promise<(() => Promise<void>) | null> {
-  if (input.pane.mode !== "TERMINAL") return null;
-  const session = input.session ?? await input.store.getActivePaneCliSession(input.pane.id);
-  if (!session || session.purpose !== "NORMAL" || session.runtimeId !== "cli:opencode") return null;
-  const control = await readOpenCodeServerControl(session.sessionId, input.stateRoot);
-  if (!control) return null;
-  let previousTitle: string;
-  try {
-    const info = await fetchOpenCodeSessionTitle(control, control.nativeSessionId);
-    previousTitle = info?.title ?? "";
-    await updateOpenCodeSessionTitle(control, control.nativeSessionId, input.title);
-  } catch (error) {
-    input.request.log.warn(
-      {
-        err: error,
-        requestId: input.traceId,
-        paneId: input.pane.id,
-        sessionId: session.sessionId,
-        nativeSessionId: control.nativeSessionId
-      },
-      "OpenCode session title sync failed"
-    );
-    throw new SpaceFeatureDisabledError(
-      "OPENCODE_TITLE_SYNC_FAILED",
-      "The pane title was not changed because the matching OpenCode session title could not be updated."
-    );
-  }
-  return async () => {
-    if (previousTitle === input.title) return;
-    try {
-      await updateOpenCodeSessionTitle(control, control.nativeSessionId, previousTitle);
-    } catch (error) {
-      input.request.log.error(
-        {
-          err: error,
-          requestId: input.traceId,
-          paneId: input.pane.id,
-          sessionId: session.sessionId,
-          nativeSessionId: control.nativeSessionId
-        },
-        "OpenCode session title rollback failed"
-      );
-    }
-  };
-}
-
-const opencodeTitleSyncPollIntervalMs = 20_000;
 const opencodeTitleSyncMaxTitleLength = 120;
-
-async function runOpenCodePaneTitleSync(input: {
-  store: SpaceStore;
-  stateRoot?: string;
-  eventBus: SpaceEventBus;
-  traceIdPrefix?: string;
-}): Promise<number> {
-  const sessions = await input.store.listActivePaneCliSessions("cli:opencode");
-  let updatedCount = 0;
-  for (const session of sessions) {
-    if (session.purpose !== "NORMAL") continue;
-    const control = await readOpenCodeServerControl(session.sessionId, input.stateRoot);
-    if (!control) continue;
-    let info: Awaited<ReturnType<typeof fetchOpenCodeSessionTitle>>;
-    try {
-      info = await fetchOpenCodeSessionTitle(control, control.nativeSessionId);
-    } catch {
-      continue;
-    }
-    if (!info) continue;
-    const nativeTitle = info.title.trim().slice(0, opencodeTitleSyncMaxTitleLength);
-    if (!nativeTitle) continue;
-    const pane = await getPaneById(input.store, session.paneId).catch(() => null);
-    if (!pane || pane.title === nativeTitle) continue;
-    const traceId = `${input.traceIdPrefix ?? "req:opencode-title-sync"}:${session.sessionId}`;
-    if (pane.titleSource === "manual") {
-      try {
-        await updateOpenCodeSessionTitle(control, control.nativeSessionId, pane.title);
-      } catch {
-        // Native session may be unreachable; keep the pane title as-is.
-      }
-      if (session.cliTaskRevisionId) {
-        await input.store.updateCliTaskRevision(
-          session.cliTaskRevisionId,
-          { displayTitle: pane.title },
-          traceId
-        );
-      }
-      updatedCount += 1;
-      const latestEvent = await getLatestRoomEvent(input.store, pane.roomId);
-      if (latestEvent) input.eventBus.publish(latestEvent);
-      continue;
-    }
-    const updatedPane = await input.store.updatePane(pane.id, { title: nativeTitle }, traceId);
-    if (session.cliTaskRevisionId) {
-      await input.store.updateCliTaskRevision(
-        session.cliTaskRevisionId,
-        { displayTitle: nativeTitle },
-        traceId
-      );
-    }
-    updatedCount += 1;
-    const latestEvent = await getLatestRoomEvent(input.store, updatedPane.roomId);
-    if (latestEvent) input.eventBus.publish(latestEvent);
-  }
-  return updatedCount;
-}
 
 function closeCliSocketWithSetupError(
   socket: { readyState: number; send(data: string): void; close(code?: number, reason?: string): void },
@@ -3765,8 +3561,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       artifactRoot: config.browserEvidenceArtifactRoot,
       timeoutMs: config.browserEvidenceTimeoutMs
     });
-  const browserSessionManager: BrowserSessionManagerWithHostHealth = options.browserSessionManager ??
-    createConfiguredBrowserSessionManager({ store, config });
+  const browserSessionManager: BrowserSessionManagerWithHostHealth = withBrowserPageLifecycle(options.browserSessionManager ??
+    createConfiguredBrowserSessionManager({ store, config }), store);
   const memoryEmbeddingGenerator =
     options.memoryEmbeddingGenerator ?? ((input: string) => createMemoryEmbedding(config, input));
   const codexGoals = options.codexGoals ?? createCodexGoalsAdapter(config.codexGoalsDbPath);
@@ -3815,6 +3611,113 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       clientInfo: { name: "space", title: "Space", version: config.version },
       timeoutMs: 5_000
     }));
+  const cliChatRuntimeState = async (runtimeId: string) => {
+    const registry = await cliRuntimeRegistryCache.read();
+    const runtime = findRuntime(registry, runtimeId);
+    if (!runtime || runtime.adapterStatus !== "ENABLED" || !runtime.detectedCommandPath) {
+      return { enabled: false, reason: runtime?.statusReason ?? `${runtimeId} is not available.` };
+    }
+    const quotaExhausted = runtime.authState === "READY" && /quota|billing[- ]cycle|tokens/i.test(runtime.statusReason ?? "");
+    if (quotaExhausted) {
+      return { enabled: false, reason: runtime.statusReason ?? `${runtimeId} has no available tokens/quota.` };
+    }
+    return { enabled: true, reason: null };
+  };
+  const createCliModelsExecutor = (runtimeId: string) => {
+    const modelsFile = `/opt/spaceapp/var/${runtimeId.replace("cli:", "")}-models.last-good.json`;
+    let modelsCache: { raw: string; at: number } | null = null;
+    const readModelsFile = async (): Promise<string | null> => {
+      try {
+        const parsed = JSON.parse(await readFile(modelsFile, "utf8")) as { models?: unknown };
+        return typeof parsed.models === "string" && parsed.models.trim() ? parsed.models : null;
+      } catch {
+        return null;
+      }
+    };
+    const runModels = (): Promise<string> => new Promise((resolve, reject) => {
+      const isDeepSeek = runtimeId === "cli:deepseek";
+      const child = isDeepSeek
+        ? spawn("/usr/bin/sudo", [
+            "-n", "-u", "spaceapp-user", "--",
+            "/opt/spaceapp/bin/deepseek-vscode-parity", "--run-inner", "models"
+          ], {
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" }
+          })
+        : spawn("/usr/bin/sudo", [
+            "-n", "/opt/spaceapp/bin/space-cli-vpn-broker", "exec", runtimeId, "models"
+          ], {
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" }
+          });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill("SIGTERM");
+        reject(new Error(`${runtimeId} model catalog request timed out.`));
+      }, 60_000);
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        if (stdout.length > 512_000) child.kill("SIGTERM");
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.on("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (code !== 0 || !stdout.trim()) {
+          reject(new Error(stderr.trim() || `${runtimeId} model catalog command failed (exit ${code ?? "unknown"}).`));
+          return;
+        }
+        resolve(stdout);
+      });
+    });
+    return async (): Promise<string> => {
+      if (modelsCache && Date.now() - modelsCache.at < 10 * 60_000) return modelsCache.raw;
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const stdout = await runModels();
+          if (!stdout.trim()) throw new Error(`Empty ${runtimeId} model catalog.`);
+          modelsCache = { raw: stdout, at: Date.now() };
+          try {
+            await writeFile(modelsFile, JSON.stringify({ models: stdout, at: new Date().toISOString() }), "utf8");
+          } catch {
+            // Best-effort persistence; the live catalog remains authoritative.
+          }
+          return stdout;
+        } catch (error) {
+          lastError = error;
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+      }
+      if (modelsCache) return modelsCache.raw;
+      const persisted = await readModelsFile();
+      if (persisted) return persisted;
+      throw new Error(lastError instanceof Error ? lastError.message : `${runtimeId} model catalog is unavailable.`);
+    };
+  };
+  const cliChatProviderAdapters = config.cliChatTurnsEnabled
+    ? config.cliChatTurnRuntimeIds.map((runtimeId) =>
+        cliRuntimeModelsChatProviderAdapter({
+          runtimeId,
+          providerName: cliChatRuntimeName(runtimeId),
+          executeModels: createCliModelsExecutor(runtimeId),
+          resolveState: cliChatRuntimeState
+        })
+      )
+    : [];
   const spaceAgentAdapter =
     options.spaceAgentAdapter ??
     createSpaceAgentAdapter({
@@ -3822,12 +3725,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       config,
       codexTurnStarter,
       codexAgentControl,
+      cliChatProviderAdapters,
       openCodeControlResolver: async () => resolveChatOpenCodeCatalogControl(),
       openCodeSessionControlResolver: async (spaceAgentSessionId) =>
         resolveChatPaneOpenCodeControl(spaceAgentSessionId),
-      isChatProviderEnabled: async (providerId) => cliRuntimeVisibility.isEnabled(
-        providerId === "opencode" ? "cli:opencode" : "cli:codex"
-      ),
+      isChatProviderEnabled: async (providerId) => {
+        if (providerId === "opencode") return cliRuntimeVisibility.isEnabled("cli:opencode");
+        if (providerId === "codex") return cliRuntimeVisibility.isEnabled("cli:codex");
+        // CLI chat providers perform their own live runtime/credential check.
+        // They must not inherit Codex's global visibility switch.
+        return true;
+      },
       readGoal: async (threadId) => {
         const goal = (await codexGoals.list()).find((candidate) => candidate.threadId === threadId);
         return goal
@@ -3873,6 +3781,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       monthlyPath: config.geminiMemoryMonthlyPath,
       lockPath: config.geminiMemoryLockPath
     });
+  const canonicalSearch = config.runtimeStore === "postgres" && config.databaseUrl && config.memoryGraphEnabled &&
+    config.memoryEmbeddingProvider && config.memoryEmbeddingModel && config.memoryEmbeddingDimensions === 1536
+    ? new CanonicalMemorySearch({
+        canonical: canonicalMemory,
+        repository: CanonicalMemoryEmbeddings.fromConnectionString(config.databaseUrl),
+        provider: config.memoryEmbeddingProvider, model: config.memoryEmbeddingModel,
+        ready: async () => {
+          if (!config.memoryEmbeddingSmokeEnabled) return false;
+          const vector = await store.getMemoryVectorReadiness(config.memoryEmbeddingDimensions);
+          let smoke = await store.getLatestMemoryEmbeddingSmoke();
+          if (!smoke || Date.now() - Date.parse(smoke.checkedAt) > 24 * 60 * 60 * 1000) {
+            const result = await runMemoryEmbeddingSmoke(config, { pgvectorReady: vector.status === "VERIFIED" });
+            smoke = await store.recordMemoryEmbeddingSmoke({ ...result, actorUserId: null, traceId: "memory:canonical-index", checkedAt: result.finishedAt });
+          }
+          return isSemanticMemoryReady(smoke, vector);
+        },
+        embed: texts => createMemoryEmbeddings(config, texts)
+      })
+    : null;
   const memoryGraphService =
     options.memoryGraphService ??
     createMemoryGraphService({
@@ -3913,10 +3840,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   let cliRuntimeRegistryCache!: ReturnType<typeof createAgentRuntimeRegistryCache>;
   let setupConnections!: SetupConnectionsService;
 
+  let taskTitleInputNotifier: ((paneId: string) => void) | undefined;
   const cliTerminalManager = new CliTerminalManager({
     store,
     config,
     discoverRuntimes: () => cliRuntimeRegistryCache.read(),
+    // Reattaching an allocated session must not await probes for unrelated CLIs.
+    // Runtime visibility and session ownership are still checked on every request.
+    discoverRuntimesForAttach: () => cliRuntimeRegistryCache.readStaleWhileRefreshing(),
     findCodexCliTurnActivity: options.findCodexCliTurnActivity,
     findCurrentCodexCliTurnActivity: options.findCurrentCodexCliTurnActivity,
     findCodexThreadId: options.findCodexThreadId,
@@ -3927,6 +3858,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     loginTimeoutMs: options.cliLoginTimeoutMs,
     loginObservationIntervalMs: options.cliLoginObservationIntervalMs,
     onTelemetry: (event) => reportCliTerminalManagerTelemetry(event),
+    onTaskInput: (paneId) => taskTitleInputNotifier?.(paneId),
+    withOperatorMutation: async (paneId, work) => spaceControl.withOperatorMutation(await store.getPane(paneId), work),
     codexBuildDefaultsProvider: async () => (await codexCliModeDefaultsService.current()).build,
     onLoginSucceeded: async (loginSession, evidence) => {
       const startedAtMs = Date.parse(loginSession.startedAt);
@@ -4170,6 +4103,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     countRuntimeProcesses: options.countRuntimeProcesses ?? ((runtimeId) => countRuntimeProcessesDefault(runtimeId)),
     publishEvent: (event) => eventBus.publish(event)
   });
+  void cliRuntimeVisibility.syncVisibilityFile();
   const hostStatsProvider =
     options.hostStatsProvider ??
     createHostStatsProvider({
@@ -4190,6 +4124,31 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const toolbarUsageProvider =
     options.toolbarUsageProvider ??
     createCodexUsageAccountProvider({ readUsage: createCodexUsageRemoteReader() });
+  const taskTitleRepository = store instanceof PostgresSpaceStore && config.databaseUrl
+    ? PostgresTaskTitleRepository.fromConnectionString(config.databaseUrl)
+    : new InMemoryTaskTitleRepository();
+  const taskTitleProviders = new TaskTitleProviders({store,config,repository:taskTitleRepository,opencodeStateRoot:options.opencodeStateRoot,usage:toolbarUsageProvider});
+  const taskTitles = new TaskTitleService({nativeTitles:new NativeTaskTitles(async session=>(await cliTerminalManager.activeSessionPids([session])).get(session.sessionId)??null),store,repository:taskTitleRepository,providers:taskTitleProviders,codex:codexParity,eventBus,opencodeStateRoot:options.opencodeStateRoot,
+    harness:{read:(paneId,sessionId)=>readHarnessTaskTitle(config,paneId,sessionId),rename:async(paneId,sessionId,title)=>renameHarnessTaskTitle(config,paneId,sessionId,title,(await store.getPane(paneId)).taskMetadata?.harnessSessionId)},
+    resolveCodexThread:session=>resolvePaneCodexThreadId({store,session,traceId:makeSpaceId("trace"),findThreadId:options.findCodexThreadId}),
+    readCodexName:async(sessionId,threadId)=>{
+      const session=await store.getPaneCliSession(sessionId);
+      return session ? (await codexSocketControlFactory(codexPrivateAppServerSocketPath(session)).getThreadName?.(threadId))??null : null;
+    },
+    renameCodex:async(sessionId,threadId,title)=>{
+      const session=await store.getPaneCliSession(sessionId);
+      if(session){
+        const control=codexSocketControlFactory(codexPrivateAppServerSocketPath(session));
+        if(control.renameThread){await control.renameThread({threadId,name:title});return;}
+      }
+      const renamed=await codexParity.renameThread(threadId,title);
+      if(renamed.title!==title)throw new Error("Native title not confirmed");
+    },
+    onError:()=>app.log.warn({event:"task_titles.background_failed"},"Task metadata refresh deferred.")});
+  taskTitleInputNotifier = (paneId) => taskTitles.notify(paneId);
+  const stopTaskTitleEvents = eventBus.subscribe(event => {
+    if(event.paneId && !["PANE_UPDATED","PANE_CLOSED"].includes(event.type))taskTitles.notify(event.paneId);
+  });
   const codexResetCreditsService = options.codexResetCreditsService ?? createCodexResetCreditsService();
   const toolbarCliSessionStatsProvider =
     options.toolbarCliSessionStatsProvider ??
@@ -4274,6 +4233,63 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
       return [...unique.values()];
     }
+  });
+  const healthRepository = store instanceof PostgresSpaceStore && config.databaseUrl
+    ? PostgresSystemHealthRepository.fromConnectionString(config.databaseUrl)
+    : new InMemorySystemHealthRepository();
+  const healthMonitor = options.healthMonitor ?? new SystemHealthMonitor({
+    repository: healthRepository,
+    requests: () => observability.recentSnapshot(),
+    onError: () => app.log.warn("System health history sample could not be retained."),
+    checks: [
+      { id: "api", label: "Space API", collect: async () => ({ status: "healthy", detail: "API is responding", values: [
+        { label: "Uptime", value: `${Math.round(process.uptime())} s` },
+        { label: "Node.js", value: process.version },
+        { label: "Heap", value: `${Math.round(process.memoryUsage().heapUsed / 1024 ** 2)} MiB` },
+      ] }) },
+      { id: "database", label: "Database", collect: async () => {
+        await healthRepository.probe();
+        return { status: "healthy", detail: config.runtimeStore === "postgres" ? "PostgreSQL query succeeded" : "In-memory store", values: [] };
+      } },
+      { id: "worker", label: "Temporal & worker", collect: async () => {
+        const w = await workerReadinessChecker();
+        return { status: w.status === "RUNNING" ? "healthy" : "critical",
+          detail: w.status === "RUNNING" ? "Temporal reachable with workflow and activity pollers" : "Worker is not ready",
+          values: [ { label: "Workflow pollers", value: String(w.workflowPollerCount) }, { label: "Activity pollers", value: String(w.activityPollerCount) },
+            { label: "Workflow backlog", value: w.workflowBacklogCount === null ? "Unavailable" : String(w.workflowBacklogCount) },
+            { label: "Activity backlog", value: w.activityBacklogCount === null ? "Unavailable" : String(w.activityBacklogCount) } ] };
+      } },
+      ...[{ id: "cli-host", label: "CLI host", enabled: config.cliEnabled, runtime: "cli:codex" },
+        { id: "admin-host", label: "Admin CLI host", enabled: config.cliRootEnabled, runtime: "cli:root" }].map(h => ({
+          id: h.id, label: h.label, collect: async () => {
+            if (!h.enabled) return { status: "disabled" as const, detail: "Not enabled", values: [] };
+            const result = await cliTerminalManager.hostHealth(h.runtime).catch(() => null);
+            return { status: result ? "healthy" as const : "critical" as const, detail: result ? "Host is responding" : "Host is unreachable", values: [] };
+          }
+        })),
+      { id: "browser-host", label: "Browser host", collect: async () => {
+        if (!config.browserSessionsEnabled) return { status: "disabled", detail: "Not enabled", values: [] };
+        if (config.browserHostTransport !== "unix") return { status: "healthy", detail: "In-process browser runtime", values: [] };
+        const result = await browserSessionManager.browserHostHealth?.().catch(() => null);
+        return { status: result ? "healthy" : "critical", detail: result ? "Browser host is responding" : "Browser host is unreachable", values: [] };
+      } },
+      { id: "storage", label: "Storage readiness", collect: async () => {
+        const st = await storageReadinessChecker();
+        return { status: st.status === "VERIFIED" ? "healthy" : st.status === "WARN" ? "warning" : "critical",
+          detail: st.statusReason.slice(0, 500), values: [{ label: "Dedicated volume", value: st.dedicatedAppVolume ? "Yes" : "No" },
+          { label: "Minimum free space", value: `${Math.round(st.minimumRecommendedFreeBytes / 1024 ** 3)} GiB` }] };
+      } },
+      { id: "mcp", label: "MCP gateway", collect: async () => {
+        const g = await store.getMcpGatewayStatus();
+        return { status: g.status === "VERIFIED" ? "healthy" : g.status === "ERROR" ? "critical" : "unavailable",
+          detail: "Latest gateway verification", values: [{ label: "Servers", value: String(g.serverCount) }, { label: "Tools", value: String(g.toolCount) }, { label: "Last discovery", value: g.lastDiscoveryAt ?? "Unavailable" }] };
+      } },
+      { id: "provider", label: "Active provider", collect: async () => {
+        const targets = await readToolbarProviderTargets(); const current = targets.data.find(p => p.isCurrent);
+        return { status: current?.health === "HEALTHY" ? "healthy" : current?.health === "UNAVAILABLE" ? "critical" : current?.health === "DEGRADED" ? "warning" : "unavailable",
+          detail: current ? `${current.displayName} · Latest provider verification` : "No active provider", values: [] };
+      } },
+    ]
   });
   const streamingBotService = options.streamingBotService ?? new StreamingBotService({
     botRepository: store instanceof PostgresSpaceStore
@@ -4418,6 +4434,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       observed,
       attempts: codexThreadSettingsConfirmationAttempts
     });
+  };
+  const loadNativeCliModels = createNativeCliModelCatalog();
+  const readPaneNativeModelSettings = async (session: PaneCliSession): Promise<PaneCliModelSettings> => {
+    const runtime = findRuntime(await cliRuntimeRegistryCache.read(), session.runtimeId);
+    if (!runtime?.detectedCommandPath || !isDirectOperatorParityRuntime(session.runtimeId)) {
+      throw new SpaceConflictError("This CLI does not expose a model catalog.");
+    }
+    const [models, screen] = await Promise.all([
+      loadNativeCliModels(runtime.detectedCommandPath, session.runtimeId === "cli:gemini" ? session.accountProfileId : null),
+      cliTerminalManager.observeRoomScreen(session.sessionId, true)
+    ]);
+    const modelId = nativeCliConfirmedModel(screen.text, models, session.runtimeId)
+      ?? (models.some(model => model.id === session.modelId) ? session.modelId : null);
+    const model = models.find(entry => entry.id === modelId);
+    return {
+      sessionId: session.sessionId, threadId: null, models, controlMode: "NATIVE",
+      current: modelId ? { modelId, reasoningEffort: nativeCliConfirmedReasoning(screen.text, session.runtimeId, model)
+        ?? (session.modelId === modelId && model?.supportedReasoningEfforts.includes(session.reasoningEffort ?? '') ? session.reasoningEffort! : model?.reasoningOptions?.length ? 'unknown' : 'none') } : null,
+      isTurnActive: roomTerminalState(screen.text) === "RUNNING"
+    };
   };
   const readPaneCliModelSettings = async (pane: Pane, session: PaneCliSession, traceId: string) => {
     if (!isCodexDirectParityRuntime(session.runtimeId)) {
@@ -4572,7 +4608,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const refreshedSession = (await store.getPaneCliSession(session.sessionId)) ?? session;
     let models: PaneCliModelSettings["models"];
     try {
-      const descriptors = await fetchOpenCodeSessionModels(control);
+      const descriptors = await fetchOpenCodeSessionModels(control, session.cwd ?? '/etc');
       const currentModel = await fetchOpenCodeCurrentModel(control, control.nativeSessionId);
       const currentModelId = currentModel ? `${currentModel.providerID}/${currentModel.id}` : null;
       models = descriptors.map((descriptor) => {
@@ -4581,11 +4617,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         return {
           id: optionId,
           displayName: descriptor.displayName,
+          description: descriptor.providerName ?? descriptor.providerId,
           isDefault: optionId === currentModelId,
           defaultReasoningEffort:
-            descriptor.defaultVariant ?? listedVariants[0] ?? openCodeDefaultReasoningEffort,
-          supportedReasoningEfforts: [...listedVariants],
-          reasoningOptions: listedVariants.map((reasoningEffort) => ({ reasoningEffort }))
+            descriptor.defaultVariant ?? listedVariants[0] ?? "default",
+          supportedReasoningEfforts: ["default", ...listedVariants.filter(variant => variant !== "default")],
+          reasoningOptions: (listedVariants.length ? ["default", ...listedVariants.filter(variant => variant !== "default")] : []).map((reasoningEffort) => ({ reasoningEffort }))
         };
       });
     } catch {
@@ -4603,16 +4640,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           (model) => model.id === `${currentModel.providerID}/${currentModel.id}`
         ) ?? null
       : null;
-    const current = currentModel
+    const nativeScreen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => null);
+    const nativeCurrent = nativeScreen ? openCodeTuiSelection(nativeScreen.text, models) : null;
+    const serverCurrent = currentModel
       ? {
           modelId: `${currentModel.providerID}/${currentModel.id}`,
           reasoningEffort: currentModelOption && currentModel.variant
             ? (currentModelOption.supportedReasoningEfforts.includes(currentModel.variant)
               ? currentModel.variant
               : currentModelOption.defaultReasoningEffort)
-            : openCodeDefaultReasoningEffort
+            : "default"
         }
       : null;
+    const currentSelection = openCodeCurrentSelectionWithSource(refreshedSession.modelId, serverCurrent, nativeCurrent, models, refreshedSession.reasoningEffort);
+    const current = currentSelection.current;
     const isTurnActive = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId);
     return {
       settings: {
@@ -4621,18 +4662,109 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         current,
         models,
         controlMode: "OPENCODE" as const,
-        isTurnActive
+        isTurnActive,
+        // A session-default reading means the picker can only show the pane's
+        // persisted default: the CLI's real model was not readable yet.
+        ...(currentSelection.source ? { currentSource: currentSelection.source } : {})
       },
       session: refreshedSession
     };
   };
+  const applyOpenCodePaneSelection = async (
+    pane: Pane, session: PaneCliSession, model: PaneCliModelSettings["models"][number], effort: string,
+    traceId: string, assertControl?: (current: PaneCliSession) => Promise<void>,
+    allModels?: PaneCliModelSettings["models"]
+  ) => cliTerminalManager.runSerializedTerminalMutation(session.sessionId, async () => {
+    if (!model.supportedReasoningEfforts.includes(effort)) throw new SpaceConflictError("This reasoning level is not advertised by OpenCode.");
+    const control = await resolveOpenCodeServerControl(session);
+    if (await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId)) {
+      throw new SpaceConflictError("Wait for the OpenCode turn to finish before changing model settings.");
+    }
+    const assertCurrent = async () => {
+      const current = await store.getActivePaneCliSession(pane.id);
+      if (!current?.isActive || current.sessionId !== session.sessionId || current.status === "EXITED" || current.status === "ERROR") {
+        throw new SpaceConflictError("The OpenCode session changed during model selection.");
+      }
+      await assertControl?.(current);
+    };
+    let step = 0;
+    // Nudge the fullscreen TUI into repainting before scraping it: a fresh
+    // frame survives bounded host replays that otherwise hold deltas only.
+    // Best effort; the gate below still decides whether keys are safe.
+    const preScreen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => null);
+    if (!preScreen || !openCodeComposerLine(preScreen.text)) {
+      await cliTerminalManager.refreshRoomScreen(session.sessionId);
+    }
+    // The native TUI keeps its own selection in sync, but its screen scrape
+    // can miss the composer (unknown geometry, wrapped footer, slow attach)
+    // even when the session control is healthy. Only an unreadable screen
+    // falls through to the reliable server-side switch; every other guard
+    // (turn active, approval, session change, unconfirmed menu) still aborts.
+    // Reasoning-only change: the requested model is already active on the
+    // server, so skip the native model menu and switch just the variant.
+    // Re-selecting the same model flashes an extra model switch in the TUI
+    // without changing anything.
+    const settledBeforeSwitch = await fetchOpenCodeCurrentModel(control, control.nativeSessionId).catch(() => null);
+    const skipModelStep = Boolean(settledBeforeSwitch && `${settledBeforeSwitch.providerID}/${settledBeforeSwitch.id}` === model.id);
+    let nativeTuiConfirmed = false;
+    try {
+      await switchOpenCodeTuiSettings({ model, effort, skipModelStep, assertCurrent,
+        models: allModels ?? [model],
+        read: () => cliTerminalManager.observeRoomScreen(session.sessionId),
+        write: data => cliTerminalManager.sendInput(session.sessionId, data, traceId, null, `opencode-picker:${traceId}:${step++}`)
+      });
+      nativeTuiConfirmed = true;
+    } catch (error) {
+      if (!(error instanceof OpenCodeNativeInputNotReadyError)) throw error;
+      // Never switch a booting session blind: its TUI applies defaults on
+      // first render and would overwrite a mid-boot server-side change.
+      const settled = await fetchOpenCodeCurrentModel(control, control.nativeSessionId).catch(() => null);
+      if (!settled) throw error;
+    }
+    await assertCurrent();
+    // Legacy OpenCode attach maintains its own selection. Persist server metadata
+    // only after the same native TUI has independently confirmed both settings.
+    const ref = parseOpenCodeCompositeModelId(model.id)!;
+    try {
+      await switchOpenCodeSessionModel(control, control.nativeSessionId, ref.providerId, ref.modelId, effort,
+        model.supportedReasoningEfforts.filter(value => value !== "default"));
+    } catch {
+      if (!nativeTuiConfirmed) throw new SpaceConflictError("OpenCode server rejected the model switch. Reopen the picker to refresh its current settings.");
+      throw new SpaceConflictError("OpenCode applied its native selection but could not synchronize the session metadata. Reopen the picker to refresh its current settings.");
+    }
+    // The server applies selections asynchronously and the TUI menu markers
+    // can be graphics-wrapped: confirm the settled server model AND effort
+    // with retries before persisting anything.
+    const serverSelectionMatches = async (): Promise<boolean> => {
+      const confirmed = await fetchOpenCodeCurrentModel(control, control.nativeSessionId).catch(() => null);
+      if (!confirmed || `${confirmed.providerID}/${confirmed.id}` !== model.id) return false;
+      const serverEffort = !confirmed.variant ? "default"
+        : (model.supportedReasoningEfforts.includes(confirmed.variant) ? confirmed.variant : model.defaultReasoningEffort);
+      return serverEffort === effort;
+    };
+    let serverConfirmed = await serverSelectionMatches();
+    for (let i = 0; i < 30 && !serverConfirmed; i++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      serverConfirmed = await serverSelectionMatches();
+    }
+    if (!serverConfirmed) {
+      throw new SpaceConflictError(nativeTuiConfirmed
+        ? "OpenCode did not apply the selected model. Reopen the picker to refresh its current settings."
+        : "OpenCode server did not confirm the selected model. Reopen the picker to refresh its current settings.");
+    }
+    await store.updatePaneCliSession(session.sessionId, {modelId:model.id,reasoningEffort:effort}, traceId);
+    if (!nativeTuiConfirmed) {
+      await store.updatePaneCliSession(session.sessionId, {statusReason:"OpenCode model applied on the server without native TUI confirmation."}, traceId);
+    }
+    return { nativeTuiConfirmed };
+  });
   const roomPlanInventoryProvider = options.roomPlanInventoryProvider ?? createRoomPlanInventoryProvider({
     store,
     findPlanState: (threadId) => findCodexCliPlanState({ codexHome: codexDirectParityCodexHome, threadId }),
     isCliRuntimeEnabled: (runtimeId) => cliRuntimeVisibility.isEnabled(runtimeId)
   });
   let roomTaskEvaluatorKey: string | null = null;
-  if (!options.roomTaskEvaluator && config.codexLbKeyFile) {
+  if ((!options.roomTaskEvaluator || config.roomMiniRouterEnabled) && config.codexLbKeyFile) {
     try {
       roomTaskEvaluatorKey = (await readFile(config.codexLbKeyFile, "utf8")).trim() || null;
     } catch {
@@ -4644,10 +4776,472 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     apiKey: roomTaskEvaluatorKey,
     model: "gpt-5.6-sol"
   });
+  async function resumePaneCliTask(pane: Pane, input: { taskId?: string; threadId?: string }, traceId: string, request?: FastifyRequest, requireNative = false) {
+    const active = await store.getActivePaneCliSession(pane.id);
+    const targetRuntimeId = pane.terminalRuntimeId ?? "cli:codex";
+    await cliRuntimeVisibility.assertEnabled(targetRuntimeId);
+    const sourceTaskReference = input.taskId ?? input.threadId;
+    if (!sourceTaskReference) throw new SpaceNotFoundError("Space CLI task reference was not provided.");
+    const sourceTask = await unifiedCliTaskRegistry.getTask(sourceTaskReference, await visibleCliRuntimeIds());
+    if (requireNative && sourceTask.session.roomId !== pane.roomId) throw new SpaceConflictError("Room Agent can resume only tasks belonging to this room.");
+    const paneTitle = paneTitleFromCliTaskTitle(sourceTask.title);
+    const registry = await discoverAgentRuntimes(config);
+    const runtime = findRuntime(registry, targetRuntimeId);
+    if (!runtime) {
+      throw new SpaceNotFoundError(`CLI runtime ${targetRuntimeId} was not found.`);
+    }
+    if (!runtime.capabilities.includes("CLI")) {
+      throw new SpaceConflictError(`Runtime ${runtime.id} does not support CLI sessions.`);
+    }
+    if (!isCliRuntimeTerminalLaunchable(runtime)) {
+      throw new SpaceFeatureDisabledError("CLI_RUNTIME_DISABLED", runtime.statusReason, {
+        runtimeId: runtime.id,
+        status: runtime.status
+      });
+    }
+    if (active?.purpose === "LOGIN") {
+      throw new SpaceConflictError("Cancel or complete CLI login before resuming a CLI task in this pane.");
+    }
+    const parsedNativeThreadId = codexThreadIdSchema.safeParse(sourceTask.revision.nativeTaskRef);
+    const nativeThreadId = await availableNativeCodexThreadId(
+      codexParity,
+      runtime.id === "cli:codex" && sourceTask.runtimeId === "cli:codex" && parsedNativeThreadId.success
+        ? parsedNativeThreadId.data
+        : null
+    );
+    const opencodeNativeSessionId = await availableOpenCodeNativeSessionId({
+      sourceTask,
+      runtimeId: runtime.id,
+      sourceRuntimeId: sourceTask.runtimeId
+    });
+    const exactNativeResume = Boolean(nativeThreadId || opencodeNativeSessionId);
+    if (requireNative && !exactNativeResume) throw new SpaceConflictError("Exact native resume is unavailable; the existing pane was preserved.");
+    const mode = exactNativeResume
+      ? "NATIVE_RESUME" as const
+      : sourceTask.runtimeId === runtime.id
+        ? "SPACE_FALLBACK" as const
+        : "CROSS_RUNTIME_SHARE" as const;
+
+    const resumeOperation = async () => {
+      const stoppedSessionIds = new Set<string>();
+      const stopSession = async (sessionId: string, statusReason: string) => {
+        if (stoppedSessionIds.has(sessionId)) return;
+        stoppedSessionIds.add(sessionId);
+        await cliTerminalManager.interrupt(sessionId);
+        await store.updatePaneCliSession(
+          sessionId,
+          { status: "EXITED", statusReason, isActive: false, endedAt: nowIso() },
+          traceId
+        );
+      };
+
+      if (nativeThreadId) {
+        const threadOwner = await store.getActivePaneCliSessionByCodexThreadId(nativeThreadId);
+        if (requireNative && threadOwner && threadOwner.roomId !== pane.roomId) throw new SpaceConflictError("The native task is currently owned by another room.");
+        if (threadOwner && threadOwner.sessionId !== active?.sessionId) {
+          await stopSession(threadOwner.sessionId, "Codex thread transferred by explicit Task History Resume.");
+        }
+      }
+      if (active) {
+        await stopSession(active.sessionId, "CLI session replaced to continue a selected Space CLI task.");
+      }
+
+      const nextSessionId = makeSpaceId("cli_session");
+      const allocatedAtNs = process.hrtime.bigint();
+      const sameRuntime = sourceTask.runtimeId === runtime.id;
+      const allocatedSession = await store.createPaneCliSession(
+        {
+          sessionId: nextSessionId,
+          paneId: pane.id,
+          roomId: pane.roomId,
+          runtimeId: runtime.id,
+          providerId: runtime.providerId,
+          agentId: runtime.agentId,
+          modelId: sameRuntime
+            ? sourceTask.revision.modelId ?? pane.modelId ?? runtime.defaultModelId
+            : pane.modelId ?? runtime.defaultModelId,
+          reasoningEffort: sameRuntime ? sourceTask.revision.reasoningEffort : pane.reasoningEffort,
+          launchMode: exactNativeResume ? "RESUME" : "FRESH",
+          cwd: sameRuntime ? sourceTask.revision.cwd ?? pane.cwd ?? "/etc" : pane.cwd ?? "/etc",
+          codexThreadId: null,
+          cliTaskId: sourceTask.taskId,
+          status: "IDLE",
+          statusReason: "CLI session allocated; waiting for terminal transport attach."
+        },
+        traceId
+      );
+      cliTerminalManager.recordSessionAllocation(allocatedSession.sessionId, allocatedAtNs);
+
+      if (nativeThreadId) {
+        await store.claimPaneCliCodexThread(
+          allocatedSession.sessionId,
+          nativeThreadId,
+          "HISTORY_TRANSFER",
+          traceId
+        );
+      }
+      let session = (await store.getPaneCliSession(allocatedSession.sessionId)) ?? allocatedSession;
+      if (session.cliTaskRevisionId) {
+        await store.updateCliTaskRevision(
+          session.cliTaskRevisionId,
+          {
+            displayTitle: paneTitle,
+            firstUserMessage: sourceTask.firstUserMessage,
+            preview: sourceTask.preview,
+            cwd: session.cwd,
+            modelId: session.modelId,
+            reasoningEffort: session.reasoningEffort,
+            ...(nativeThreadId
+              ? { nativeTaskRef: nativeThreadId }
+              : opencodeNativeSessionId
+                ? { nativeTaskRef: opencodeNativeSessionId }
+                : {})
+          },
+          traceId
+        );
+      }
+      await store.appendPaneCliTranscriptChunk(
+        {
+          sessionId: session.sessionId,
+          paneId: pane.id,
+          roomId: pane.roomId,
+          sequence: 0,
+          stream: "system",
+          content: exactNativeResume
+            ? `Resuming ${sourceTask.title} from exact ${runtime.displayName} task history.`
+            : `Loaded bounded untrusted context from Space CLI task ${sourceTask.title} into a fresh ${runtime.displayName} session.`
+        },
+        traceId
+      );
+      if (!exactNativeResume) {
+        const sharedContext = buildSharedCliTaskContext({
+          sourceTaskId: sourceTask.taskId,
+          sourceRuntimeLabel: sourceTask.providerLabel,
+          sourceTitle: sourceTask.title,
+          sourceFirstUserMessage: sourceTask.firstUserMessage,
+          targetRuntimeLabel: runtime.displayName,
+          transcript: sourceTask.transcript
+        });
+        await cliTerminalManager.sendInput(
+          session.sessionId,
+          sharedContext,
+          traceId,
+          null,
+          `shared-history:${sourceTask.taskId}:${session.sessionId}`
+        );
+        session = (await store.getPaneCliSession(session.sessionId)) ?? session;
+      }
+      const updatedPane = await store.updatePane(
+        pane.id,
+        { title: paneTitle, cwd: session.cwd, terminalRuntimeId: runtime.id },
+        traceId
+      );
+      const latestEvent = await getLatestRoomEvent(store, updatedPane.roomId);
+      if (latestEvent) eventBus.publish(latestEvent);
+
+      if (request) await recordAudit(store, request, {
+        action: "pane.cli.resume",
+        targetType: "pane",
+        targetId: pane.id,
+        metadata: {
+          roomId: pane.roomId,
+          runtimeId: runtime.id,
+          sessionId: session.sessionId,
+          mode,
+          sourceTaskId: sourceTask.taskId,
+          sourceRevisionId: sourceTask.revision.revisionId,
+          targetRevisionId: session.cliTaskRevisionId,
+          sourceRuntimeId: sourceTask.runtimeId,
+          codexThreadId: nativeThreadId,
+          opencodeNativeSessionId: opencodeNativeSessionId ?? undefined
+        }
+      });
+      return resumePaneCliSessionResponseSchema.parse({
+        ...(await buildPaneCliSessionResponse({
+          store,
+          runtime,
+          sessionId: session.sessionId,
+          includeWebsocket: Boolean(request),
+          tokenTtlMs: config.cliTokenTtlMs,
+          issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
+        })),
+        pane: updatedPane,
+        mode
+      });
+    };
+
+    return nativeThreadId
+      ? codexHistoryAccessCoordinator.withHistoryAttachment(resumeOperation)
+      : resumeOperation();
+  }
+
+  async function roomCliSession(pane: Pane, expectedSessionId?: string) {
+    await assertPaneCliRuntimeEnabled(pane);
+    if (pane.mode !== "TERMINAL" || pane.terminalRuntimeId === "cli:root") throw new SpaceConflictError("Room CLI controls require an AI terminal.");
+    if ((await store.getPane(pane.id)).isClosed) throw new SpaceConflictError("Reopen the pane before controlling its CLI.");
+    const session = await store.getActivePaneCliSession(pane.id);
+    if (!session || session.purpose !== "NORMAL" || (expectedSessionId && session.sessionId !== expectedSessionId)) throw new SpaceConflictError("The target CLI session is unavailable or changed.");
+    return session;
+  }
+  async function roomOpenCodeTasks(control: OpenCodeServerControl) {
+    const [response, busy] = await Promise.all([
+      openCodeServerFetch(control, `/session/${encodeURIComponent(control.nativeSessionId)}/message?limit=512`),
+      fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId)
+    ]);
+    if (!response.ok) throw new SpaceConflictError("OpenCode task history is unavailable.");
+    const data: unknown = await response.json();
+    return openCodeTaskTimeline(Array.isArray(data) ? data : [], busy, nowIso());
+  }
+  async function inspectRoomCli(pane: Pane): Promise<RoomPaneObservation> {
+    const session = await store.getActivePaneCliSession(pane.id)??(await store.listPaneCliSessions(pane.id,1))[0]??null;
+    const base: RoomPaneObservation = { paneId: pane.id, title: pane.title, runtimeId: pane.terminalRuntimeId ?? null,
+      sessionId: session?.sessionId ?? null, state: "UNKNOWN", nativeTaskRef: session?.codexThreadId ?? null,
+      modelId: session?.modelId ?? null, nativeMode: null, checkedAt: nowIso(), tasks: [] };
+    if (!session || session.purpose !== "NORMAL") return base;
+    const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(error=>{if(pane.isClosed||["EXITED","ERROR"].includes(session.status))return {text:""};throw error;});
+    base.text = redactMemoryText(screen.text);
+    base.commands = roomTerminalCommands(screen.text);
+    base.state = pane.isClosed || session.status === "EXITED" ? "EXITED" : session.status === "ERROR" ? "ERROR" : roomTerminalState(screen.text);
+    if (isCodexDirectParityRuntime(session.runtimeId)) {
+      base.tasks = session.codexThreadId ? await findCodexTaskTimeline({ codexHome: codexDirectParityCodexHome,
+        threadId: session.codexThreadId }) : [];
+      const settings = await readPaneCliModelSettings(pane, session, "room-observation").catch(() => null);
+      if (settings) { base.models = settings.settings.models; base.modelId = settings.settings.current?.modelId ?? null;
+        if (base.state !== "EXITED" && base.state !== "ERROR") base.state = settings.settings.isTurnActive ? "RUNNING" : base.state === "WAITING_FOR_INPUT" ? base.state : "IDLE"; }
+      base.modes = ["default", "plan"];
+    } else if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
+      const control = await resolveOpenCodeServerControl(session).catch(() => null);
+      if (control) {
+        base.nativeTaskRef = control.nativeSessionId;
+        base.tasks = await roomOpenCodeTasks(control);
+        const settings = await readPaneOpenCodeModelSettings(pane, session, "room-observation");
+        base.models = settings.settings.models; base.modelId = settings.settings.current?.modelId ?? null;
+        const agents = await openCodeServerFetch(control, "/agent");
+        if (agents.ok) { const data = await agents.json() as Array<{ name?: string; mode?: string; hidden?: boolean }>;
+          if (Array.isArray(data)) base.modes = data.filter((agent) => !agent.hidden && agent.mode !== "subagent" && agent.name).map((agent) => agent.name!); }
+        if (base.state !== "EXITED" && base.state !== "ERROR") {
+          base.state = roomOpenCodeTerminalState(screen.text, settings.settings.isTurnActive, base.modes ?? []);
+        }
+      }
+    }
+    if (session.runtimeId === "cli:claude") base.modes = ["default", "plan", "accept edits", "bypass permissions", "auto"];
+    base.nativeMode = roomTerminalMode(session.runtimeId, screen.text, base.modes);
+    return base;
+  }
+  async function commandRoomCli(pane: Pane, action: RoomCommandAction, traceId: string): Promise<Record<string, unknown>> {
+    const session = await roomCliSession(pane, action.expectedSessionId);
+    return cliTerminalManager.runSerializedTerminalMutation(session.sessionId, async () => {
+      await roomCliSession(pane, action.expectedSessionId);
+      const before = await cliTerminalManager.observeRoomScreen(session.sessionId);
+      if (action.command) {
+        await cliTerminalManager.sendInput(session.sessionId, action.command, traceId, null, `${traceId}:command`);
+        // Let native paste/burst detection finish before Enter. Otherwise
+        // Codex retains even a short slash command as an unsubmitted line.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await roomCliSession(pane, action.expectedSessionId);
+        await cliTerminalManager.sendInput(session.sessionId, "\r", traceId, null, `${traceId}:submit-command`);
+      }
+      if (action.key) {
+        const keys = { UP: "\u001b[A", DOWN: "\u001b[B", LEFT: "\u001b[D", RIGHT: "\u001b[C", ENTER: "\r", ESCAPE: "\u001b", TAB: "\t", SHIFT_TAB: "\u001b[Z" };
+        await cliTerminalManager.sendInput(session.sessionId, keys[action.key], traceId, null, `${traceId}:key`);
+      }
+      let screen = before;
+      for (let attempt = 0; (action.command || action.key) && attempt < 20; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        await roomCliSession(pane, action.expectedSessionId);
+        screen = await cliTerminalManager.observeRoomScreen(session.sessionId);
+        if (screen.revision !== before.revision) break;
+      }
+      if ((action.command || action.key) && screen.revision === before.revision) throw new SpaceConflictError("CLI command produced no observable response.");
+      if (/unknown command|unrecognized command|invalid slash command/i.test(screen.text)) throw new SpaceConflictError("The CLI rejected the command.");
+      if (action.selection) {
+        let selected = false;
+        for (let attempt = 0; attempt < 32; attempt++) {
+          const highlighted = screen.text.split("\n").filter((line) => /^\s*[❯›>●]/u.test(line));
+          if (highlighted.some((line) => line.includes(action.selection!))) {
+            const revision = screen.revision;
+            await cliTerminalManager.sendInput(session.sessionId, "\r", traceId, null, `${traceId}:select`);
+            for (let poll = 0; poll < 20; poll++) {
+              await new Promise((resolve) => setTimeout(resolve, 100));
+              await roomCliSession(pane, action.expectedSessionId);
+              screen = await cliTerminalManager.observeRoomScreen(session.sessionId);
+              if (screen.revision !== revision) break;
+            }
+            if (screen.revision === revision) throw new SpaceConflictError("The CLI did not acknowledge the menu selection.");
+            selected = true; break;
+          }
+          if (!screen.text.includes(action.selection)) break;
+          await cliTerminalManager.sendInput(session.sessionId, "\u001b[B", traceId, null, `${traceId}:selection:${attempt}`);
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          await roomCliSession(pane, action.expectedSessionId);
+          screen = await cliTerminalManager.observeRoomScreen(session.sessionId);
+        }
+        if (!selected) throw new SpaceConflictError("The requested menu selection could not be verified; inspect the pane's current menu.");
+      }
+      return { sessionId: session.sessionId, command: action.command, selection: action.selection ?? null,
+        key: action.key ?? null, state: roomTerminalState(screen.text), text: redactMemoryText(screen.text), checkedAt: nowIso() };
+    });
+  }
+  const roomPaneController = createRoomPaneController({
+    store, chat: spaceAgentAdapter, listRuntimes: () => cliTerminalManager.listRuntimes(),
+    isEnabled: (runtimeId) => cliRuntimeVisibility.isEnabled(runtimeId),
+    chatTypes: () => spaceAgentAdapter.listRoomChatTypes?.() ?? Promise.resolve([]),
+    async chatTasks(pane) {
+      const session = await store.getActiveSpaceAgentSession(pane.id);
+      if (!session) return [];
+      if (session.selectedProviderId?.includes("opencode")) {
+        const control = await readOpenCodeServerControl(session.sessionId, openCodeSpaceChatStateRoot);
+        return control ? roomOpenCodeTasks(control) : [];
+      }
+      return session.threadId ? findCodexTaskTimeline({ codexHome: config.codexAppServerHome ?? "/var/lib/spaceapp-user/.codex", threadId: session.threadId }) : [];
+    },
+    inspectCli: inspectRoomCli, commandCli: commandRoomCli,
+    async configureCli(pane, action, traceId) {
+      const session = await roomCliSession(pane, action.expectedSessionId);
+      if (action.modelId || action.reasoningEffort) {
+        if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
+          const control = await resolveOpenCodeServerControl(session);
+          const before = await readPaneOpenCodeModelSettings(pane, session, traceId);
+          const modelId = action.modelId ?? before.settings.current?.modelId;
+          const model = before.settings.models.find((entry) => entry.id === modelId);
+          const ref = modelId ? parseOpenCodeCompositeModelId(modelId) : null;
+          if (!model || !ref) throw new SpaceConflictError("The model is not advertised by this CLI.");
+          const reasoning = action.reasoningEffort ?? model.defaultReasoningEffort;
+          await applyOpenCodePaneSelection(pane, session, model, reasoning, traceId, undefined, before.settings.models);
+          const after = await readPaneOpenCodeModelSettings(pane, session, traceId);
+          if (after.settings.current?.modelId !== model.id) throw new SpaceConflictError("OpenCode model readback did not confirm the requested model.");
+          await store.updatePaneCliSession(session.sessionId, { modelId: model.id, reasoningEffort: reasoning }, traceId);
+        } else if (isCodexDirectParityRuntime(session.runtimeId)) {
+          const before = await readPaneCliModelSettings(pane, session, traceId);
+          const modelId = action.modelId ?? before.settings.current?.modelId;
+          const model = before.settings.models.find((entry) => entry.id === modelId);
+          const reasoning = action.reasoningEffort ?? before.settings.current?.reasoningEffort ?? model?.defaultReasoningEffort;
+          if (!model || !reasoning || !model.supportedReasoningEfforts.includes(reasoning)) throw new SpaceConflictError("The model/reasoning combination is not advertised by this CLI.");
+          // Register the explicit selection with the existing defaults router.
+          // Otherwise the TUI's collaboration-mode update restores its preset.
+          if ((await roomCliSession(pane, action.expectedSessionId)).codexThreadId !== before.settings.threadId) {
+            throw new SpaceConflictError("The native Codex thread changed before model control.");
+          }
+          if (before.settings.threadId) await before.directControl.updateThreadSettings({
+            threadId: before.settings.threadId, model: model.id, reasoningEffort: reasoning });
+          await cliTerminalManager.updateCodexNativeModelSettings({ sessionId: session.sessionId,
+            expectedThreadId: before.settings.threadId, models: before.settings.models, modelId: model.id, reasoningEffort: reasoning, traceId });
+          if (before.settings.threadId) await waitForCodexThreadSettings({ threadId: before.settings.threadId, cwd: session.cwd, sessionId: session.sessionId, modelId: model.id, reasoningEffort: reasoning, models: before.settings.models });
+          await store.updatePaneCliSession(session.sessionId, { modelId: model.id, reasoningEffort: reasoning }, traceId);
+        } else await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId,
+          command: "/model", selection: action.modelId ?? action.reasoningEffort, when: action.when }, traceId);
+      }
+      if (action.nativeMode) {
+        const mode = action.nativeMode.toLowerCase() === "build" && session.runtimeId === "cli:codex" ? "default" : action.nativeMode.toLowerCase();
+        const codexSettings = isCodexDirectParityRuntime(session.runtimeId)
+          ? await readPaneCliModelSettings(pane, session, traceId) : null;
+        const before = await inspectRoomCli(pane);
+        if (before.nativeMode !== mode) {
+          if (before.modes && !before.modes.includes(mode)) throw new SpaceConflictError("The requested mode is not advertised by this CLI.");
+          if (mode === "plan" && ["cli:codex", "cli:gemini", "cli:qwen"].includes(session.runtimeId)) {
+            await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId, command: "/plan", when: action.when }, traceId);
+          } else {
+            if (!before.nativeMode) throw new SpaceConflictError("The current native mode is not visible; inspect the CLI menu before switching.");
+            let previous = before.nativeMode;
+            for (let attempt = 0; attempt < 8; attempt++) {
+              await roomCliSession(pane, action.expectedSessionId);
+              await cliTerminalManager.sendInput(session.sessionId, "\u001b[Z", traceId, null, `${traceId}:mode:${attempt}`);
+              let changed: string | null = null;
+              for (let poll = 0; poll < 15; poll++) {
+                await new Promise((resolve) => setTimeout(resolve, 100));
+                await roomCliSession(pane, action.expectedSessionId);
+                const screen = await cliTerminalManager.observeRoomScreen(session.sessionId);
+                changed = roomTerminalMode(session.runtimeId, screen.text, before.modes);
+                if (changed && changed !== previous) break;
+              }
+              if (!changed || changed === previous) throw new SpaceConflictError("The CLI did not confirm a mode change; no further cycle keys were sent.");
+              if (changed === mode || changed === before.nativeMode) break;
+              previous = changed;
+            }
+          }
+          let after = await inspectRoomCli(pane);
+          for (let poll = 0; after.nativeMode !== mode && poll < 20; poll++) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            await roomCliSession(pane, action.expectedSessionId);
+            after = await inspectRoomCli(pane);
+          }
+          if (after.nativeMode !== mode) throw new SpaceConflictError("CLI mode readback is unconfirmed; inspect the current pane before retrying.");
+          // Native collaboration presets can restore a different model/effort
+          // when cycling. A mode-only request must retain the user's selection.
+          if (codexSettings?.settings.current) {
+            await roomCliSession(pane, action.expectedSessionId);
+            const { modelId, reasoningEffort } = codexSettings.settings.current;
+            const threadId = codexSettings.settings.threadId;
+            if (threadId) await codexSettings.directControl.updateThreadSettings({ threadId, model: modelId, reasoningEffort });
+            if (threadId && mode === "plan") {
+              // The model picker can emit Default collaboration settings. Keep
+              // the router's manual pair and refresh the native Plan composer
+              // through its own command instead of cycling back through Default.
+              await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId,
+                command: "/plan", when: action.when }, traceId);
+            } else {
+              await cliTerminalManager.updateCodexNativeModelSettings({ sessionId: session.sessionId,
+                expectedThreadId: threadId, modelId, reasoningEffort, models: codexSettings.settings.models, traceId });
+            }
+            if (threadId) {
+              await waitForCodexThreadSettings({ threadId, cwd: session.cwd, sessionId: session.sessionId,
+                modelId, reasoningEffort, models: codexSettings.settings.models });
+            }
+            if ((await inspectRoomCli(pane)).nativeMode !== mode) throw new SpaceConflictError("Restoring model settings changed the requested native mode.");
+          }
+        }
+      }
+      return { observation: await inspectRoomCli(pane) };
+    },
+    async startCli(pane, traceId) {
+      const session = await cliTerminalManager.ensurePaneControlReady(pane, traceId);
+      return { sessionId: session.sessionId, state: session.status };
+    },
+    async resumeCli(pane, taskId, traceId) {
+      if (pane.terminalRuntimeId && !isCodexDirectParityRuntime(pane.terminalRuntimeId) && !isOpenCodeDirectParityRuntime(pane.terminalRuntimeId)) {
+        const source = taskId ? await unifiedCliTaskRegistry.getTask(taskId, [pane.terminalRuntimeId]) : null;
+        if (source && source.session.roomId !== pane.roomId) throw new SpaceConflictError("Room Agent can resume only tasks belonging to this room.");
+        const ready = await cliTerminalManager.ensurePaneControlReady(pane, traceId);
+        const result = await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: ready.sessionId,
+          command: "/resume", ...(source ? { selection: source.title } : {}), when: "AFTER_TURN" }, traceId);
+        return { ...result, phase: "NATIVE_RESUME_MENU", verification: "Inspect the selected native task before reporting resume complete." };
+      }
+      const session = await store.getActivePaneCliSession(pane.id) ?? (await store.listPaneCliSessions(pane.id,1))[0];
+      const ref = taskId ?? session?.cliTaskId;
+      if (!ref) throw new SpaceConflictError("Inspect task history and choose an existing native task to resume.");
+      const result = await resumePaneCliTask(pane, { taskId: ref }, traceId, undefined, true);
+      const ready = await cliTerminalManager.ensurePaneControlReady(result.pane, traceId);
+      return { paneId: pane.id, sessionId: ready.sessionId, mode: result.mode, state: ready.status };
+    },
+    async interruptCli(pane, traceId) {
+      const active = await store.getActivePaneCliSession(pane.id);
+      if (!active || active.status === "EXITED" || pane.isClosed) return { interrupted: false, state: "EXITED" };
+      const session = await roomCliSession(pane);
+      if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
+        const control = await resolveOpenCodeServerControl(session);
+        await abortOpenCodeSession(control, control.nativeSessionId);
+      } else if (isCodexDirectParityRuntime(session.runtimeId)) {
+        const before = await readPaneCliModelSettings(pane, session, traceId);
+        if (before.settings.threadId && before.activity.turnId && before.settings.isTurnActive)
+          await before.directControl.interruptTurn({ threadId: before.settings.threadId, turnId: before.activity.turnId });
+      } else await cliTerminalManager.sendInput(session.sessionId, roomTerminalInterruptKey(session.runtimeId), traceId, null, `${traceId}:interrupt`);
+      return { sessionId: session.sessionId, observation: await inspectRoomCli(pane) };
+    }
+  });
+
   const roomActionExecutor =
     options.roomActionExecutor ??
     createRoomActionExecutor({
       store,
+      paneController: roomPaneController,
+      control:async(roomId,tool,args)=>{
+        const grant=await controlRepository.get("grant","shared",`room-agent:${roomId}`);
+        const actorId=(grant?.value as {actorId?:string}|undefined)?.actorId;
+        if(!actorId)throw new SpaceConflictError("Room Agent has no authenticated operator context.");
+        if(typeof args.roomId!=="string")throw new SpaceConflictError("A target room is required.");
+        return spaceControlRoutes.call(await controlUser(actorId),tool,args);
+      },
+      enqueueAction: roomAgentWorkflow.enqueueAction?.bind(roomAgentWorkflow),
       cliTerminalManager,
       spaceAgentAdapter,
       browserSessionManager,
@@ -4656,12 +5250,251 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       isCliRuntimeEnabled: (runtimeId) => cliRuntimeVisibility.isEnabled(runtimeId),
       assertCliRuntimeEnabled: (runtimeId) => cliRuntimeVisibility.assertEnabled(runtimeId)
     });
+  const roomPaneCommands = createRoomPaneCommands({
+    store,
+    discover: () => discoverAgentRuntimes(config),
+    enabledRuntimeIds: () => cliRuntimeVisibility.enabledRuntimeIds(),
+    harnessAvailable: async () => {
+      const status = await readDeepSeekHarnessMaintenanceStatus();
+      return status.enabled && status.effectiveMode !== "BLOCKED";
+    }
+  });
+
+  const roomQuickActions = createRoomQuickActions({ store,
+      assertRuntimeEnabled: (runtimeId) => cliRuntimeVisibility.assertEnabled(runtimeId),
+      navigate: async (pane, url, traceId, actor) => {
+        if (!(await browserSessionManager.getActive(pane))) {
+          const owner = await youtubeAccountOwner(actor?.holderId ?? "operator:unknown", pane);
+          const profileId = await browserAccountStore.get(owner, pane.id);
+          const opened = await browserSessionManager.startOrRestore({ pane, targetUrl: url, traceId, includeInitialFrame: false,
+            profileKey: youtubeAccountProfileKey(owner, profileId) }, actor);
+          if (opened.session.currentUrl === url) return;
+        }
+        await browserSessionManager.navigate(pane, url, traceId, actor);
+      },
+      publish: async (roomId) => { const event = await getLatestRoomEvent(store, roomId); if (event) eventBus.publish(event); }
+    });
+  const miniRouter = options.roomMiniRouter ?? createRoomMiniRouter({
+    baseUrl: config.codexLbBaseUrl,
+    apiKey: roomTaskEvaluatorKey
+  });
+  const controlRepository = store instanceof PostgresSpaceStore && config.databaseUrl
+    ? PostgresControlRepository.fromConnectionString(config.databaseUrl) : new InMemoryControlRepository();
+  async function controlUser(id: string, verifiedEmail?: string) {
+    const user = await store.getControlActor(id, verifiedEmail);
+    if (!user || user.role !== "ADMIN" || user.automationScope) throw new SpaceConflictError("Control actor is no longer an authorized operator.");
+    return user;
+  }
+  async function controlInvoke(actorId: string, method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", url: string, payload?: unknown) {
+    const user = await controlUser(actorId);
+    const token = signSession(user, auth.sessionSecret);
+    const response = await app.inject({method,url,headers:{cookie:`${cookieName}=${token}`,
+      [csrfHeaderName]:createCsrfToken(token,auth.sessionSecret)!,...(payload===undefined?{}:{"content-type":"application/json"})},
+      ...(payload===undefined?{}:{payload:JSON.stringify(payload)})});
+    const body = response.headers["content-type"]?.includes("application/json") ? response.json() : {content:response.body.slice(0,100_000),mimeType:response.headers["content-type"]};
+    if(response.statusCode>=400)throw new SpaceConflictError(body.error?.message??"Protected control failed.");
+    return body;
+  }
+  const controlCliRooms = new WeakMap<FastifyRequest,string>();
+  async function controlQuota(pane:Pane){
+    if(pane.mode!=="TERMINAL"||pane.terminalRuntimeId!=="cli:codex")throw new SpaceConflictError("Native quota requires a Codex CLI pane.");
+    const session=await store.getActivePaneCliSession(pane.id)??(await store.listPaneCliSessions(pane.id,1))[0];
+    if(!session)throw new SpaceConflictError("Codex session identity is unavailable.");
+    const observed=await readPaneCliModelSettings(pane,session,"control-quota");
+    const quota=await observed.directControl.readRateLimits?.();
+    if(!quota)throw new SpaceConflictError("Native quota source is unavailable for this runtime.");
+    return {...quota,paneId:pane.id,sessionId:session.sessionId,nativeTaskRef:observed.settings.threadId,
+      allowed:quota.windows.length>0&&!quota.blocked,reason:quota.blocked?"Native account quota is exhausted.":quota.windows.length?"Native account quota is available.":"Native quota windows are unknown."};
+  }
+  const spaceControl = createSpaceControl({store,repository:controlRepository,controller:roomPaneController,
+    publish:async roomId=>{const event=await getLatestRoomEvent(store,roomId);if(event)eventBus.publish(event);},
+    resolveActor: controlUser,
+    checkQuota:controlQuota,
+    requireClientAcknowledgement:true,
+    closePane: async(actor,pane,traceId)=>{
+      if(pane.mode==="CHAT")await roomPaneController.interrupt(pane,traceId);
+      return controlInvoke(actor.id,"DELETE",`/api/panes/${encodeURIComponent(pane.id)}`);
+    },
+    send:async(pane,text,traceId)=>{
+      if(pane.mode==="CHAT"){
+        const result=await spaceAgentAdapter.sendMessage({pane,content:text,traceId});
+        return {sessionId:result.session.binding.sessionId,state:result.session.runStatus,submitted:true};
+      }
+      if(text.length>20_000)throw new SpaceConflictError("Codex prompts support at most 20,000 characters per turn.");
+      const session=await roomCliSession(pane);
+      return cliTerminalManager.runSerializedTerminalMutation(session.sessionId,async()=>{
+        const before=await readPaneCliModelSettings(pane,session,traceId);
+        if(before.settings.isTurnActive)throw new SpaceConflictError("Codex already has an active turn.");
+        if(before.settings.threadId){
+          const turn=await before.directControl.startTurn({threadId:before.settings.threadId,prompt:text,
+            ...(before.settings.current?{model:before.settings.current.modelId,reasoningEffort:before.settings.current.reasoningEffort}:{}),
+            clientUserMessageId:`space-control:${traceId}:${pane.id}`.slice(0,200)});
+          return {sessionId:session.sessionId,nativeTaskRef:before.settings.threadId,turnId:turn.turnId,state:turn.status,submitted:true};
+        }
+        // The first prompt creates the native thread through the existing TUI.
+        await cliTerminalManager.sendInput(session.sessionId,text,traceId,null,`${traceId}:${pane.id}:prompt`);
+        await new Promise(resolve=>setTimeout(resolve,200));
+        await cliTerminalManager.sendInput(session.sessionId,"\r",traceId,null,`${traceId}:${pane.id}:submit`);
+        for(let attempt=0;attempt<30;attempt++){
+          await new Promise(resolve=>setTimeout(resolve,100));
+          const after=await inspectRoomCli(pane);
+          if(after.nativeTaskRef&&after.state==="RUNNING")return {sessionId:session.sessionId,nativeTaskRef:after.nativeTaskRef,submitted:true};
+        }
+        return {status:"UNKNOWN",submitted:true,reason:"Prompt sent, but a native turn was not confirmed. Inspect before retrying."};
+      });
+    },
+    integration:async(actor,roomId,action)=>{
+      await controlUser(actor.id);
+      if(action.kind==="resource"){
+        if(action.operation==="access.cli")return controlInvoke(actor.id,"POST","/api/control/v1/grant",{roomId,enabled:z.boolean().parse(action.input.enabled)});
+        if(action.operation==="panes.split"){
+          const pane=await store.getPane(z.string().min(1).parse(action.id));
+          if(pane.roomId!==roomId)throw new SpaceConflictError("Pane is outside this room.");
+          if(pane.mode==="TERMINAL"&&pane.terminalRuntimeId!=="cli:codex")throw new SpaceConflictError("Phase one supports Codex CLI only.");
+          const input=z.object({direction:z.enum(["horizontal","vertical"])}).strict().parse(action.input);
+          return controlInvoke(actor.id,"POST","/api/panes",{roomId,title:pane.title,mode:pane.mode,
+            terminalRuntimeId:pane.terminalRuntimeId,providerId:pane.providerId,modelId:pane.modelId,vncTarget:pane.vncTarget,
+            split:{parentId:pane.id,direction:input.direction,size:50}});
+        }
+        if(["browser.back","browser.forward","browser.reload","browser.content"].includes(action.operation)){
+          const pane=await store.getPane(z.string().min(1).parse(action.id));
+          if(pane.roomId!==roomId)throw new SpaceConflictError("Pane is outside this room.");
+          assertBrowserPaneCompatible(pane);
+          const context={holderType:"OPERATOR" as const,holderId:actor.id};
+          if(action.operation==="browser.content"){
+            const result=await browserSessionManager.action(pane,{type:"extract_text"},makeSpaceId("trace"),context);
+            return {paneId:pane.id,text:safeBrowserObservationText(result.text),currentUrl:safeBrowserObservationUrl(result.session.currentUrl)};
+          }
+          if(!browserSessionManager.acquireControl||!browserSessionManager.input||!browserSessionManager.releaseControl)throw new SpaceConflictError("Browser navigation control is unavailable.");
+          const session=await store.getActivePaneBrowserSession(pane.id);
+          const existing=session?await store.getActiveBrowserControlLease(session.sessionId):null;
+          const traceId=makeSpaceId("trace");
+          const lease=await browserSessionManager.acquireControl(pane,{...context,ttlSeconds:30,reason:"Operator Space control"},traceId,context);
+          try{
+            const result=await browserSessionManager.input(pane,{type:"NAVIGATION",leaseId:lease.leaseId,action:action.operation.slice(8).toUpperCase() as "BACK"|"FORWARD"|"RELOAD"},traceId,context);
+            return {paneId:pane.id,currentUrl:safeBrowserObservationUrl(result.session.currentUrl),state:result.session.status};
+          }finally{if(existing?.leaseId!==lease.leaseId)await browserSessionManager.releaseControl(pane,{leaseId:lease.leaseId},traceId,context);}
+        }
+        if(action.operation==="skills.read")return controlSkills(action.id);
+        if(action.operation==="panes.open"){
+          const counts=paneCountsSchema.parse(action.input.counts);
+          for(const [id,count] of Object.entries(counts))if(count>0&&!["codex","chat","youtube","browser","vnc","harness"].includes(id))throw new SpaceConflictError("Phase one opens Codex CLI only; other CLI adapters are deferred.");
+          return roomPaneCommands.execute(roomId,actor.id,{requestId:makeSpaceId("control_open"),catalogVersion:PANE_CATALOG_VERSION,action:{type:"OPEN_PANES",counts}},makeSpaceId("trace"));
+        }
+        if(action.operation==="media.publish"){
+          const input=controlPublishInput.parse(action.input);
+          const buffer=input.text!==undefined?Buffer.from(input.text):Buffer.from(input.base64!,"base64");
+          if(!buffer.length)throw new SpaceConflictError("Media contents must not be empty.");
+          const mimeType=sniffImageMime(buffer)??inferUploadMimeType(input.filename,input.mimeType);
+          const storage=buildGenericUserUploadStorage({artifactRoot:config.browserEvidenceArtifactRoot,roomId,originalFilename:input.filename});
+          await mkdir(dirname(storage.filePath),{recursive:true});await writeFile(storage.filePath,buffer,{flag:"wx"});
+          try{
+            const result=await store.createArtifact({roomId,paneId:null,kind:mimeType.startsWith("image/")?"IMAGE":isVideoMimeType(mimeType)?"VIDEO":"EXPORT",mimeType,
+              storageUri:storage.storageUri,sha256:createHash("sha256").update(buffer).digest("hex"),byteSize:buffer.length,
+              metadata:{source:"USER_UPLOAD",originalFilename:input.filename,storedFilename:storage.storedFilename,uploadedBy:actor.id}},makeSpaceId("trace"));
+            eventBus.publish(result.event);return {id:result.artifact.id,mimeType:result.artifact.mimeType};
+          }catch(error){await unlink(storage.filePath).catch(()=>{});throw error;}
+        }
+        if(action.operation==="files.publish"){
+          const input=controlPublishInput.parse(action.input);
+          const artifact=await persistAgentFile({store,artifactRoot:config.browserEvidenceArtifactRoot,roomId,paneId:null,cliSessionId:null,runtimeId:"space-control",originalFilename:input.filename,
+            declaredMimeType:input.mimeType,buffer:input.text!==undefined?Buffer.from(input.text):Buffer.from(input.base64!,"base64"),traceId:makeSpaceId("trace")});
+          eventBus.publish(artifact.event); return {id:artifact.artifact.id,mimeType:artifact.artifact.mimeType};
+        }
+        if(action.operation.startsWith("ops.")){
+          const toolNames={"ops.status":"space_status","ops.logs":"space_logs","ops.test":"space_scoped_test","ops.verify":"space_live_verify","ops.deploy":"space_deploy_commit","ops.proof":"space_authenticated_ui_proof"} as const;
+          const tool=toolNames[action.operation as keyof typeof toolNames];
+          if(!tool)throw new SpaceConflictError("Unknown protected operation.");
+          return controlInvoke(actor.id,"POST","/api/mcp/tools/execute",{roomId,toolId:`space_ops:${tool}`,arguments:action.input,
+            ...(action.approvalReason?{approvalReason:action.approvalReason}:{})});
+        }
+        const route=controlResourceRoutes[action.operation];
+        if(!route)throw new SpaceConflictError("Resource operation has no available adapter.");
+        if(route.scope==="pane"){
+          const pane=await store.getPane(z.string().min(1).parse(action.id));
+          if(pane.roomId!==roomId)throw new SpaceConflictError("Pane is outside this room.");
+          if(pane.mode==="TERMINAL"&&pane.terminalRuntimeId!=="cli:codex")throw new SpaceConflictError("This CLI adapter is deferred to phase two.");
+          if(typeof action.input.terminalRuntimeId==="string"&&action.input.terminalRuntimeId!=="cli:codex")throw new SpaceConflictError("Phase one supports Codex CLI only.");
+        }
+        if(route.scope==="artifact"){
+          const item=await store.getArtifact(z.string().min(1).parse(action.id));
+          if(item.roomId!==roomId)throw new SpaceConflictError("Artifact is outside this room.");
+        }
+        if(route.path.includes(":id")&&!action.id)throw new SpaceConflictError("Resource ID is required.");
+        return controlInvoke(actor.id,route.method,route.path.replace(":id",encodeURIComponent(action.id??"")),route.method==="GET"?undefined:action.input);
+      }
+      if(action.kind==="cli"){
+        const runtimeId=cliToggleRuntimeIdSchema.parse(action.runtimeId);
+        const preview=action.enabled?null:await cliRuntimeVisibility.createDisablePreview(runtimeId);
+        return controlInvoke(actor.id,"PATCH",`/api/cli/runtime-settings/${encodeURIComponent(runtimeId)}`,
+          {enabled:action.enabled,...(preview?{confirmationToken:preview.confirmationToken}:{})});
+      }
+      if(action.kind==="vpn"){
+        if(action.operation==="rotate"){
+          if(!action.profile)throw new SpaceConflictError("Choose an available VPN profile.");
+          return controlInvoke(actor.id,"POST",`/api/cli/egress/profiles/${action.profile}/random-city`);
+        }
+        const runtimeId=cliToggleRuntimeIdSchema.parse(action.runtimeId);
+        return controlInvoke(actor.id,"PATCH",`/api/cli/runtime-settings/${encodeURIComponent(runtimeId)}/vpn`,{enabled:action.enabled});
+      }
+      throw new SpaceConflictError("Unsupported integration action.");
+    },
+    inspectExtra:async(actor,input)=>{
+      await controlUser(actor.id);
+      if(input.section==="ROOMS")return store.listRooms();
+      if(input.section==="SKILLS")return {installed:await controlSkills(input.query),registered:input.query?undefined:await store.listSkills()};
+      if(input.section==="QUOTA"){
+        if(input.paneId){const pane=await store.getPane(input.paneId);if(pane.roomId!==input.roomId)throw new SpaceConflictError("Pane is outside this room.");return controlQuota(pane);}
+        return {accounts:await toolbarUsageProvider(),paneBinding:"Inspect QUOTA with paneId for native per-session limits. Account totals alone do not authorize automatic continuation."};
+      }
+      if(input.section==="RUNTIMES")return {settings:await store.listCliRuntimeSettings(),runtimes:await discoverAgentRuntimes(config)};
+      if(input.section==="VPN")return (await readCliVpnApplications(await store.listCliRuntimeSettings())).egress;
+      if(input.section==="FILES"||input.section==="MEDIA")return (await store.listArtifacts({roomId:input.roomId,page:Math.floor(input.offset/input.limit)+1,pageSize:input.limit,sortOrder:"desc"}))
+        .filter(item=>input.section==="FILES"?isAgentFileArtifact(item):isRoomMediaArtifact(item))
+        .map(item=>({id:item.id,kind:item.kind,mimeType:item.mimeType,createdAt:item.createdAt}));
+      if(input.section==="SETTINGS")return {cli:await store.listCliRuntimeSettings()};
+      return {supported:false,section:input.section};
+    }
+  });
   const roomAgentService = createRoomAgentService({
     store,
     workflow: roomAgentWorkflow,
     missionStopper: roomActionExecutor,
-    roomPlanInventoryProvider
+    roomPlanInventoryProvider,
+    refreshControlReceipts:async(roomId)=>{
+      for(const record of await controlRepository.list("operation",null,roomId)){
+        const operation=controlOperationSchema.parse(record.value);
+        if(operation.status==="RUNNING")continue;
+        const request=await store.getRoomAgentRequest(roomId,operation.requestId);
+        if(!request||request.missionId)continue;
+        const ok=operation.status==="COMPLETED";
+        await store.updateSpaceAgentMessage(request.responseMessageId,{status:ok?"COMPLETED":"FAILED",
+          content:ok?`Completed ${operation.results.length} controls.`:operation.results.map(r=>r.detail).join("\n").slice(0,4000)},undefined,"RUNNING");
+      }
+    },
+    executeQuickCommand: roomQuickActions,
+    executeRoutedCommand: createRoomRoutedActions({
+      panes: roomPaneCommands, quick: roomQuickActions,
+      control:async(roomId,command,requestId,actor)=>{
+        if(actor?.holderType!=="OPERATOR")throw new SpaceConflictError("Authenticated operator required.");
+        const user=await controlUser(actor.holderId);
+        const operation=await spaceControl.execute(user,{roomId,requestId,actions:command.actions});
+        const complete=operation.status==="COMPLETED";
+        return {summary:complete?`Completed ${operation.results.length} controls.`:operation.status==="RUNNING"?"Control is running. Waiting for confirmation.":operation.results.map(r=>r.detail).join("\n"),
+          operationId:operation.id,pending:operation.status==="RUNNING",failed:!["COMPLETED","RUNNING"].includes(operation.status)};
+      },
+      publish: async (roomId) => { const event = await getLatestRoomEvent(store, roomId); if (event) eventBus.publish(event); }
+    }),
+    ...(config.roomMiniRouterEnabled ? {
+      routeCommand: async (roomId: string, content: string) => {
+        if (!config.roomPaneCommandsEnabled) throw new SpaceFeatureDisabledError("ROOM_COMMANDS_REQUIRED", "Enable room pane commands before enabling the mini router.");
+        const direct = parseSpaceControlQuick(content); if(direct)return direct;
+        const [room, panes, catalog] = await Promise.all([store.getRoom(roomId), store.listPanes(roomId), roomPaneCommands.catalog()]);
+        return (await miniRouter.route(content, catalog, Math.max(0, room.paneCap - panes.filter(pane => !pane.isClosed).length), await spaceControl.state(roomId))).action;
+      }
+    } : {})
   });
+
   if (!options.codexMasterRoomAgentStopper) {
     codexMasterRoomAgentStopper = async (roomId, missionId, reason, traceId) => {
       await roomAgentService.stop(roomId, reason, traceId);
@@ -4874,74 +5707,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   let appDiagnosticsRetentionTimer: ReturnType<typeof setInterval> | null = null;
   let appDiagnosticsRetentionSweepRunning = false;
   let durableEventPollTimer: ReturnType<typeof setInterval> | null = null;
-  let opencodeTitleSyncTimer: ReturnType<typeof setInterval> | null = null;
-  let opencodeTitleSyncRunning = false;
-  let codexTitleSyncTimer: ReturnType<typeof setInterval> | null = null;
-  let codexTitleSyncRunning = false;
-  let genericTitleSyncTimer: ReturnType<typeof setInterval> | null = null;
-  let genericTitleSyncRunning = false;
   let systemAnalyticsSampleTimer: ReturnType<typeof setInterval> | null = null;
   let systemAnalyticsRollupTimer: ReturnType<typeof setInterval> | null = null;
-
-  async function runCodexPaneTitleSyncSweep() {
-    if (codexTitleSyncRunning) return;
-    codexTitleSyncRunning = true;
-    try {
-      const updated = await runCodexPaneTitleSync({
-        store,
-        codexParity,
-        findThreadId: options.findCodexThreadId,
-        eventBus,
-        traceIdPrefix: "req:codex-title-sync"
-      });
-      if (updated > 0) {
-        app.log.info({ updated }, "Codex pane title sync updated panes from native threads.");
-      }
-    } catch (error) {
-      app.log.error({ err: error }, "Codex pane title sync sweep failed.");
-    } finally {
-      codexTitleSyncRunning = false;
-    }
-  }
-
-  async function runOpenCodePaneTitleSyncSweep() {
-    if (opencodeTitleSyncRunning) return;
-    opencodeTitleSyncRunning = true;
-    try {
-      const updated = await runOpenCodePaneTitleSync({
-        store,
-        stateRoot: options.opencodeStateRoot,
-        eventBus,
-        traceIdPrefix: "req:opencode-title-sync"
-      });
-      if (updated > 0) {
-        app.log.info({ updated }, "OpenCode pane title sync updated panes from native sessions.");
-      }
-    } catch (error) {
-      app.log.error({ err: error }, "OpenCode pane title sync sweep failed.");
-    } finally {
-      opencodeTitleSyncRunning = false;
-    }
-  }
-
-  async function runGenericCliPaneTitleSyncSweep() {
-    if (genericTitleSyncRunning) return;
-    genericTitleSyncRunning = true;
-    try {
-      const updated = await runGenericCliPaneTitleSync({
-        store,
-        eventBus,
-        traceIdPrefix: "req:generic-title-sync"
-      });
-      if (updated > 0) {
-        app.log.info({ updated }, "Generic CLI pane title sync updated panes from task requests.");
-      }
-    } catch (error) {
-      app.log.error({ err: error }, "Generic CLI pane title sync sweep failed.");
-    } finally {
-      genericTitleSyncRunning = false;
-    }
-  }
 
   async function runDurableEventPoll() {
     try {
@@ -5061,23 +5828,29 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.addHook("onClose", async () => {
+    await spaceControl.close();
+    stopTaskTitleEvents();
+    await taskTitles.close();
+    await canonicalSearch?.close();
     if (artifactRetentionTimer) clearInterval(artifactRetentionTimer);
     if (appDiagnosticsRetentionTimer) clearInterval(appDiagnosticsRetentionTimer);
     if (durableEventPollTimer) clearInterval(durableEventPollTimer);
-    if (opencodeTitleSyncTimer) clearInterval(opencodeTitleSyncTimer);
-    if (codexTitleSyncTimer) clearInterval(codexTitleSyncTimer);
-    if (genericTitleSyncTimer) clearInterval(genericTitleSyncTimer);
     if (systemAnalyticsSampleTimer) clearInterval(systemAnalyticsSampleTimer);
     if (systemAnalyticsRollupTimer) clearInterval(systemAnalyticsRollupTimer);
     stopTrackingPublishedEvents();
     await cliTerminalManager.closeAll();
     await browserSessionManager.closeAll();
     await appDiagnosticsService.dispose();
+    await healthMonitor.dispose();
     await systemAnalyticsService.dispose();
     await streamingService.dispose();
   });
 
   app.addHook("onReady", async () => {
+    await spaceControl.start();
+    canonicalSearch?.start();
+    healthMonitor.start();
+    if (options.agentToolsOptions?.rootWriterCommand) await projectRoutingState(store, options.agentToolsOptions);
     await appDiagnosticsService.initialize();
     await streamingService.initialize();
     appDiagnosticsRetentionTimer = setInterval(
@@ -5110,12 +5883,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await seedDurableEventRelay();
     durableEventPollTimer = setInterval(() => void runDurableEventPoll(), 1000);
     durableEventPollTimer.unref();
-    opencodeTitleSyncTimer = setInterval(() => void runOpenCodePaneTitleSyncSweep(), opencodeTitleSyncPollIntervalMs);
-    opencodeTitleSyncTimer.unref();
-    codexTitleSyncTimer = setInterval(() => void runCodexPaneTitleSyncSweep(), opencodeTitleSyncPollIntervalMs);
-    codexTitleSyncTimer.unref();
-    genericTitleSyncTimer = setInterval(() => void runGenericCliPaneTitleSyncSweep(), opencodeTitleSyncPollIntervalMs);
-    genericTitleSyncTimer.unref();
+    if (store instanceof PostgresSpaceStore) {
+      void taskTitles.start().catch(() => app.log.warn({event:"task_titles.start_failed"},"Task metadata startup deferred."));
+    }
     try {
       await systemAnalyticsService.sample();
     } catch (error) {
@@ -5151,6 +5921,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         disabled ? "NOT_FOUND" : "INTERNAL_AUTH_REQUIRED",
         disabled ? "Internal API route is not available." : "Internal API authentication is required."
       );
+    }
+    if (requestPathname(request)==="/api/cli/control/mcp") {
+      const claims=verifyControlToken(config.internalApiToken,request.headers[controlTokenHeader]);
+      if(!claims)return sendApiError(reply,401,"CONTROL_TOKEN_INVALID","An active Space control token is required.");
+      const session=await store.getPaneCliSession(claims.cliSessionId);
+      if(!session||session.runtimeId!=="cli:codex"||!session.isActive||session.purpose!=="NORMAL"||session.roomId!==claims.roomId||session.paneId!==claims.paneId||["EXITED","ERROR"].includes(session.status))
+        return sendApiError(reply,403,"CONTROL_SESSION_INACTIVE","CLI session is no longer eligible for control.");
+      const grant=await controlRepository.get("grant","shared",claims.roomId);
+      const actorId=(grant?.value as {actorId?:string}|undefined)?.actorId;
+      if(!actorId)return sendApiError(reply,403,"CONTROL_NOT_GRANTED","The operator has not enabled room control access.");
+      request.user=await controlUser(actorId);controlCliRooms.set(request,claims.roomId);return;
     }
     if (isCliBrowserBridgeRequest(request)) {
       return;
@@ -5772,6 +6553,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   registerBenchmarkRoutes(app, defaultRouteRateLimitOptions);
 
+  registerAsteroidsDirectorRoutes(app, defaultRouteRateLimitOptions);
+
   registerHarnessRoutes(app, config);
 
   app.post(
@@ -6198,7 +6981,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.patch("/api/links/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updateUserLinkRequestSchema, request.body);
-    const link = await store.updateUserLink(request.user!.id, params.id, input);
+    const owner = await store.upsertUser(request.user!);
+    const link = await store.updateUserLink(owner.id, params.id, input);
     await recordAudit(store, request, {
       action: "link.update",
       targetType: "user_link",
@@ -6210,7 +6994,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   app.delete("/api/links/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
-    const link = await store.deleteUserLink(request.user!.id, params.id);
+    const owner = await store.upsertUser(request.user!);
+    const link = await store.deleteUserLink(owner.id, params.id);
     await recordAudit(store, request, {
       action: "link.delete",
       targetType: "user_link",
@@ -6743,7 +7528,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       action: "room.pane-layout.update",
       targetType: "room",
       targetId: result.room.id,
-      metadata: { paneLayoutColumns: input.paneLayoutColumns, paneCount: result.panes.length }
+      metadata: {
+        paneLayoutColumns: input.paneLayoutColumns,
+        paneLayoutHeight: input.paneLayoutHeight,
+        paneCount: result.panes.length
+      }
     });
     return result;
   });
@@ -6763,7 +7552,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if (active) browserSessions.push(active);
       }
     }
+    // The Unix host resolves stopPane against the stored active session. Stop
+    // browsers before cascading room deletion removes that identity; otherwise
+    // their Chrome processes keep consuming capacity until the host restarts.
+    await Promise.all(browserSessions.map((session) =>
+      browserSessionManager.stopPane(session.paneId, request.requestIdForSpace, operatorBrowserActor(request))
+    ));
     const room = await store.deleteRoom(params.id);
+    if (room.kind === "AGENT_PROOF") {
+      await youtubePlaybackStore.removeProofState(`${request.user!.id}:proof:${room.id}`);
+      await youtubeAccountStore.removeProofState(`${request.user!.id}:proof:${room.id}`);
+      await browserAccountStore.removeProofState(`${request.user!.id}:proof:${room.id}`);
+    }
     await recordAudit(store, request, {
       action: "room.delete",
       targetType: "room",
@@ -6773,19 +7573,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         paneCap: room.paneCap,
         interruptedCliSessions: cliSessions.length,
         closedBrowserSessions: browserSessions.length,
-        deferredTeardown: cliSessions.length + browserSessions.length
+        deferredTeardown: cliSessions.length
       }
     });
     void (async () => {
       try {
-        const browserTeardowns = browserSessions.flatMap((session) => {
-          const stopDetached = browserSessionManager.stopDetached;
-          return stopDetached ? [stopDetached(session)] : [];
-        });
-        const settled = await Promise.allSettled([
-          ...cliSessions.map((session) => cliTerminalManager.detachSession(session)),
-          ...browserTeardowns
-        ]);
+        const settled = await Promise.allSettled(
+          cliSessions.map((session) => cliTerminalManager.detachSession(session))
+        );
         const failed = settled.filter((entry) => entry.status === "rejected").length;
         request.log.info(
           {
@@ -7165,6 +7960,65 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   const agentToolsOptions = options.agentToolsOptions;
+  const routingQuery = z.object({ runtimeId: z.string().min(1).max(160), modelId: z.string().min(1).max(160) }).strict();
+
+  app.get("/api/model-capabilities", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Routing settings require ADMIN.");
+    return { profiles: await discoverRoutingProfiles(agentToolsOptions), state: await store.getToolRoutingState() };
+  });
+
+  app.get("/api/agent-tools/effective", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Routing settings require ADMIN.");
+    const input = parseQuery(routingQuery, request.query);
+    return effectiveRouting(store, input.runtimeId, input.modelId, agentToolsOptions);
+  });
+
+  app.post("/api/agent-tools/route-preview", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Routing settings require ADMIN.");
+    const input = parseBody(routingQuery.extend({ toolId: z.string().max(160), taskNeedsTool: z.boolean().default(true) }), request.body);
+    const plan = await effectiveRouting(store, input.runtimeId, input.modelId, agentToolsOptions);
+    const policy = spaceToolPolicies.find((entry) => entry.toolId === input.toolId);
+    if (!policy) return sendApiError(reply, 404, "TOOL_NOT_FOUND", "No routing policy exists for this tool.");
+    const state = await routingStateWithLegacy(store);
+    return resolveToolRoute(policy, plan.profile, state.overrides, { taskNeedsTool: input.taskNeedsTool });
+  });
+
+  app.put("/api/agent-tools/policies", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Routing settings require ADMIN.");
+    const input = parseBody(updateToolRoutingSchema, request.body);
+    return serializeRoutingUpdate(async () => {
+      const previous = await store.getToolRoutingState();
+      const state = await saveProjectedRouting(store, { ...previous, enabledRuntimeIds: input.enabledRuntimeIds, overrides: input.overrides }, input.expectedRevision, request.user!.id, agentToolsOptions);
+      await recordAudit(store, request, {
+        action: "agent_tools.routing_updated", targetType: "agent_tools", targetId: "routing",
+        metadata: { revision: state.revision, enabledRuntimeIds: state.enabledRuntimeIds }
+      });
+      return state;
+    });
+  });
+
+  app.post("/api/agent-tools/vision-exceptions", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "A per-turn vision exception requires an explicit ADMIN request.");
+    const input = parseBody(routingQuery.extend({
+      sessionId: idSchema, turnId: idSchema, expectedRevision: z.number().int().nonnegative()
+    }), request.body);
+    return serializeRoutingUpdate(async () => {
+      const session = await store.getPaneCliSession(input.sessionId);
+      if (!session || session.runtimeId !== input.runtimeId || session.status !== "RUNNING") {
+        throw new SpaceConflictError("A vision exception requires a running session of the selected runtime.");
+      }
+      const previous = await store.getToolRoutingState();
+      const visionExceptions = previous.visionExceptions.filter((entry) => Date.parse(entry.expiresAt) > Date.now());
+      visionExceptions.push({
+        runtimeId: input.runtimeId, modelId: input.modelId, sessionId: input.sessionId, turnId: input.turnId,
+        actorId: request.user!.id, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString()
+      });
+      const state = await saveProjectedRouting(store, { ...previous, visionExceptions }, input.expectedRevision, request.user!.id, agentToolsOptions);
+      await recordAudit(store, request, { action: "agent_tools.vision_exception", targetType: "cli_session",
+        targetId: input.sessionId, metadata: { modelId: input.modelId, turnId: input.turnId, expiresInSeconds: 300 } });
+      return { revision: state.revision, expiresInSeconds: 300 };
+    });
+  });
   const agentToolIdParamSchema = z.object({ toolId: idSchema });
 
   app.get("/api/agent-tools/catalog", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -7180,8 +8034,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     const params = parseQuery(agentToolIdParamSchema, request.params);
     const input = parseBody(updateAgentToolAssignmentInputSchema, request.body ?? {});
-    const assignment = await store.updateAgentToolAssignment(params.toolId, input, request.user?.id ?? "operator:unknown");
-    return agentToolAssignmentSchema.parse(assignment);
+    return serializeRoutingUpdate(async () => {
+      const assignment = await store.updateAgentToolAssignment(params.toolId, input, request.user?.id ?? "operator:unknown");
+      await projectRoutingState(store, agentToolsOptions);
+      return agentToolAssignmentSchema.parse(assignment);
+    });
   });
 
   app.delete("/api/agent-tools/assignments/:toolId", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -7189,11 +8046,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Agent tool assignments require the ADMIN role.");
     }
     const params = parseQuery(agentToolIdParamSchema, request.params);
+    return serializeRoutingUpdate(async () => {
     const deleted = await store.deleteAgentToolAssignment(params.toolId);
     if (!deleted) {
       throw new SpaceNotFoundError(`Agent tool assignment ${params.toolId} was not found.`);
     }
+    await projectRoutingState(store, agentToolsOptions);
     return { toolId: params.toolId, deleted: true };
+    });
   });
 
   app.post("/api/agent-tools/apply", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -7201,7 +8061,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Applying agent tools requires the ADMIN role.");
     }
     const input = parseBody(applyAgentToolsInputSchema, request.body ?? {});
-    return await applyAgentTools(store, input.assignments, agentToolsOptions);
+    return serializeRoutingUpdate(async () => {
+      const result = await applyAgentTools(store, input.assignments, agentToolsOptions);
+      for (const assignment of input.assignments) {
+        await store.updateAgentToolAssignment(assignment.toolId, assignment, request.user!.id);
+      }
+      await projectRoutingState(store, agentToolsOptions);
+      return result;
+    });
   });
 
   app.post("/api/agent-tools/launch", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -8314,7 +9181,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await cliRuntimeVisibility.assertEnabled(active.runtimeId);
     const runtime = request.user?.automationScope === "APP_DIAGNOSTICS"
       ? activeCliSessionObserverRuntime(config, active.runtimeId)
-      : findRuntime(await cliRuntimeRegistryCache.read(), active.runtimeId);
+      : findRuntime(await cliRuntimeRegistryCache.readStaleWhileRefreshing(), active.runtimeId);
     if (!runtime) {
       throw new SpaceNotFoundError(`CLI runtime ${active.runtimeId} was not found.`);
     }
@@ -8348,6 +9215,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     assertNormalCliSession(active);
     assertRootAdmin(request, active.runtimeId);
+    if (!isCodexDirectParityRuntime(active.runtimeId) && !isOpenCodeDirectParityRuntime(active.runtimeId)) {
+      return readPaneNativeModelSettings(active);
+    }
     return isOpenCodeDirectParityRuntime(active.runtimeId)
       ? (await readPaneOpenCodeModelSettings(pane, active, request.requestIdForSpace)).settings
       : (await readPaneCliModelSettings(pane, active, request.requestIdForSpace)).settings;
@@ -8365,7 +9235,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     assertNormalCliSession(active);
     assertRootAdmin(request, active.runtimeId);
     try {
-      const settings = isOpenCodeDirectParityRuntime(active.runtimeId)
+      const settings = !isCodexDirectParityRuntime(active.runtimeId) && !isOpenCodeDirectParityRuntime(active.runtimeId)
+        ? await readPaneNativeModelSettings(active)
+        : isOpenCodeDirectParityRuntime(active.runtimeId)
         ? (await readPaneOpenCodeModelSettings(pane, active, request.requestIdForSpace)).settings
         : (await readPaneCliModelSettings(pane, active, request.requestIdForSpace)).settings;
       return paneCliModelSettingsStatusSchema.parse({ status: "AVAILABLE", settings });
@@ -8375,7 +9247,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         (error.errorCode === "CODEX_SESSION_CONTROL_UNAVAILABLE" ||
           error.errorCode === "CODEX_MODEL_CATALOG_UNAVAILABLE" ||
           error.errorCode === "OPENCODE_SESSION_CONTROL_UNAVAILABLE" ||
-          error.errorCode === "OPENCODE_MODEL_CATALOG_UNAVAILABLE")
+          error.errorCode === "OPENCODE_MODEL_CATALOG_UNAVAILABLE" ||
+          error.errorCode === "CLI_MODEL_CATALOG_UNAVAILABLE")
       ) {
         return paneCliModelSettingsStatusSchema.parse({
           status: "UNAVAILABLE",
@@ -8404,8 +9277,55 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       throw new SpaceConflictError("The CLI session changed before the model switch could be applied.");
     }
 
+    if (!isCodexDirectParityRuntime(active.runtimeId) && !isOpenCodeDirectParityRuntime(active.runtimeId)) {
+      return cliTerminalManager.runSerializedTerminalMutation(active.sessionId, async () => {
+        const before = await readPaneNativeModelSettings(active);
+        let model = before.models.find((entry) => entry.id === input.modelId);
+        if (!model || !model.supportedReasoningEfforts.includes(input.reasoningEffort)) {
+          throw new SpaceConflictError("The selected model settings are not advertised by this CLI.");
+        }
+        if (active.runtimeId === 'cli:gemini' && model.reasoningOptions?.length) {
+          const variantId = model.id.replace(/-(low|medium|high)$/, `-${input.reasoningEffort}`);
+          model = before.models.find(entry => entry.id === variantId)!;
+          if (!model) throw new SpaceConflictError('This Gemini reasoning variant is unavailable.');
+        }
+        if (before.isTurnActive) throw new SpaceConflictError("Wait for this CLI turn to finish before changing models.");
+        const assertCurrent = async () => {
+          const current = await store.getActivePaneCliSession(pane.id);
+          if (!current?.isActive || current.sessionId !== active.sessionId || current.status === "EXITED" || current.status === "ERROR") {
+            throw new SpaceConflictError("The CLI session changed during the model switch.");
+          }
+          await assertCliHttpMutationControl(request, current);
+        };
+        let step = 0;
+        await switchNativeCliModel({ model, runtimeId: active.runtimeId, assertCurrent,
+          read: () => cliTerminalManager.observeRoomScreen(active.sessionId, true),
+          write: (data) => cliTerminalManager.sendInput(active.sessionId, data, request.requestIdForSpace, null,
+            `model-picker:${request.requestIdForSpace}:${step++}`)
+        });
+        // Preserve the confirmed model even if its separate effort command fails.
+        await store.updatePaneCliSession(active.sessionId, { modelId: model.id, reasoningEffort: "unknown" }, request.requestIdForSpace);
+        if (active.runtimeId !== 'cli:gemini') await switchNativeCliReasoning({ model, effort: input.reasoningEffort, runtimeId: active.runtimeId, assertCurrent,
+          read: () => cliTerminalManager.observeRoomScreen(active.sessionId, true),
+          write: data => cliTerminalManager.sendInput(active.sessionId, data, request.requestIdForSpace, null, `reasoning-picker:${request.requestIdForSpace}:${step++}`)
+        });
+        await assertCurrent();
+        const current = { modelId: model.id, reasoningEffort: input.reasoningEffort };
+        const updated = await store.updatePaneCliSession(active.sessionId, current, request.requestIdForSpace);
+        const runtime = findRuntime(await cliRuntimeRegistryCache.read(), updated.runtimeId);
+        if (!runtime) throw new SpaceNotFoundError("The CLI runtime is unavailable.");
+        await recordAudit(store, request, { action: "pane.cli.model-settings", targetType: "pane", targetId: pane.id,
+          metadata: { roomId: pane.roomId, sessionId: active.sessionId, ...current, transport: "NATIVE" } });
+        return { settings: { ...before, current },
+          session: await buildPaneCliSessionResponse({ store, runtime, sessionId: updated.sessionId,
+            includeWebsocket: true, tokenTtlMs: config.cliTokenTtlMs,
+            issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs) }),
+          appliedScope: "MODEL_AND_REASONING", wasActive: false, interrupted: false,
+          continuation: "NOT_NEEDED", transport: "NATIVE", warning: null };
+      });
+    }
+
     if (isOpenCodeDirectParityRuntime(active.runtimeId)) {
-      const control = await resolveOpenCodeServerControl(active);
       const before = await readPaneOpenCodeModelSettings(pane, active, request.requestIdForSpace);
       const parsedRef = parseOpenCodeCompositeModelId(input.modelId);
       const advertised = before.settings.models.some((model) => model.id === input.modelId);
@@ -8413,19 +9333,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         throw new SpaceConflictError("The selected model is not advertised by this OpenCode runtime.");
       }
       const wasActive = before.settings.isTurnActive;
-      try {
-        const advertisedModel = before.settings.models.find((model) => model.id === input.modelId) ?? null;
-        await switchOpenCodeSessionModel(
-          control,
-          control.nativeSessionId,
-          parsedRef.providerId,
-          parsedRef.modelId,
-          input.reasoningEffort,
-          advertisedModel?.supportedReasoningEfforts ?? []
-        );
-      } catch (error) {
-        throw new SpaceConflictError("OpenCode rejected the model switch; the current session was left unchanged.");
-      }
+      const advertisedModel = before.settings.models.find(model => model.id === input.modelId)!;
+      const applied = await applyOpenCodePaneSelection(pane, active, advertisedModel, input.reasoningEffort, request.requestIdForSpace,
+        current => assertCliHttpMutationControl(request, current), before.settings.models);
+      const nativeSkippedWarning = applied.nativeTuiConfirmed
+        ? null
+        : "Applied on the OpenCode server; the attached TUI did not confirm because its screen was unreadable. The new model applies to subsequent turns.";
       const updatedSession = await store.updatePaneCliSession(
         active.sessionId,
         {
@@ -8435,10 +9348,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         },
         request.requestIdForSpace
       );
-      const registry = await discoverAgentRuntimes(config);
+      const registry = await cliRuntimeRegistryCache.read();
       const runtime = findRuntime(registry, updatedSession.runtimeId);
       if (!runtime) throw new SpaceNotFoundError(`CLI runtime ${updatedSession.runtimeId} was not found.`);
-      const after = await readPaneOpenCodeModelSettings(pane, updatedSession, request.requestIdForSpace);
+      const afterSettings: PaneCliModelSettings = {
+        ...before.settings,
+        current: { modelId: input.modelId, reasoningEffort: input.reasoningEffort },
+        currentSource: applied.nativeTuiConfirmed ? "native" : "server"
+      };
       await recordAudit(store, request, {
         action: "pane.cli.model-settings",
         targetType: "pane",
@@ -8454,7 +9371,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
       });
       return {
-        settings: after.settings,
+        settings: afterSettings,
         session: await buildPaneCliSessionResponse({
           store,
           runtime,
@@ -8468,7 +9385,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         interrupted: false,
         continuation: "NOT_NEEDED",
         transport: "OPENCODE",
-        warning: null
+        warning: nativeSkippedWarning
       };
     }
 
@@ -8565,6 +9482,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       },
       request.requestIdForSpace
     );
+    let rememberedDefaultWarning: string | null = null;
+    try {
+      await codexCliModeDefaultsService.update({
+        mode: "build",
+        modelId: appliedModelId,
+        reasoningEffort: input.reasoningEffort
+      });
+    } catch {
+      rememberedDefaultWarning =
+        "The model changed for this session, but Space could not remember it as the next Codex Build default.";
+    }
     const registry = await discoverAgentRuntimes(config);
     const runtime = findRuntime(registry, updatedSession.runtimeId);
     if (!runtime) throw new SpaceNotFoundError(`CLI runtime ${updatedSession.runtimeId} was not found.`);
@@ -8598,7 +9526,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       interrupted,
       continuation,
       transport: "DIRECT",
-      warning
+      warning: [warning, rememberedDefaultWarning].filter(Boolean).join(" ") || null
     };
   });
 
@@ -8694,10 +9622,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (!startFrameStream || !dispatchInput) {
         throw new SpaceFeatureDisabledError("BROWSER_STREAM_UNAVAILABLE", "Realtime browser streaming is unavailable on this runtime.");
       }
+      const sender = createBrowserLiveSender(socket, query.frameAck === "1");
+      socket.once("close", () => sender.stop());
       const stream = await startFrameStream(session.sessionId, query.mode, (frame) => {
-        if (socket.readyState !== 1 || socket.bufferedAmount > 8 * 1024 * 1024) return;
-        socket.send(frame.data, { binary: true, compress: false });
-      });
+        sender.present(frame.data, frame.metadata.viewportDimensions as { width: number; height: number } | undefined);
+      }, { focused: true });
       if (socket.readyState !== 1) {
         await stream.stop();
         return;
@@ -8733,6 +9662,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             code: "BROWSER_STREAM_INPUT_INVALID",
             message: "Browser stream input did not match the required contract."
           });
+          return;
+        }
+        if (parsed.data.type === "frameAck") {
+          if (query.frameAck === "1") sender.acknowledge();
           return;
         }
         if (queuedInputs >= browserStreamMaxQueuedInputs) {
@@ -8897,55 +9830,39 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
+
+  app.get("/api/rooms/:id/pane-catalog", defaultRouteRateLimitOptions, async (request) => {
+    if (!config.roomPaneCommandsEnabled) throw new SpaceFeatureDisabledError("ROOM_PANE_COMMANDS_DISABLED", "Room pane commands are disabled.");
+    const params = parseQuery(idParamSchema, request.params);
+    const room = await store.getRoom(params.id);
+    const panes = await store.listPanes(params.id);
+    return { version: roomPaneCommands.version, availableSlots: Math.max(0, room.paneCap - panes.filter(pane => !pane.isClosed).length),
+      data: await roomPaneCommands.catalog() };
+  });
+
+  app.post("/api/rooms/:id/commands", defaultRouteRateLimitOptions, async (request) => {
+    if (!config.roomPaneCommandsEnabled) throw new SpaceFeatureDisabledError("ROOM_PANE_COMMANDS_DISABLED", "Room pane commands are disabled.");
+    const params = parseQuery(idParamSchema, request.params);
+    const input = parseBody(roomCommandSchema, request.body);
+    const session = await roomAgentService.executeCommand(params.id, input, request.requestIdForSpace, operatorBrowserActor(request));
+    // Preserve the existing complete OPEN_PANES response. This read uses the same
+    // durable pane transaction and can never create another batch on replay.
+    if (input.action.type === "OPEN_PANES") return roomPaneCommands.execute(params.id, request.user!.id,
+      { ...input, action: input.action }, request.requestIdForSpace);
+    return session;
+  });
+
+  app.post("/api/rooms/:id/commands/:clientRequestId/ack", defaultRouteRateLimitOptions, async (request) => {
+    if (!config.roomPaneCommandsEnabled) throw new SpaceFeatureDisabledError("ROOM_PANE_COMMANDS_DISABLED", "Room pane commands are disabled.");
+    const params = parseQuery(z.object({ id: z.string().min(1), clientRequestId: z.string().min(8).max(128) }), request.params);
+    const input = parseBody(z.object({ ok: z.boolean() }).strict(), request.body);
+    return roomAgentService.acknowledgeCommand(params.id, params.clientRequestId, input.ok, operatorBrowserActor(request));
+  });
+
   app.post("/api/rooms/:id/panes", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createRoomPanesRequestSchema, request.body);
-    const registry = await discoverAgentRuntimes(config);
-    const runtimeById = new Map(registry.data.map((runtime) => [runtime.id, runtime]));
-
-    await Promise.all(input.panes.map((item) =>
-      item.mode === "TERMINAL"
-        ? cliRuntimeVisibility.assertEnabled(item.terminalRuntimeId)
-        : cliRuntimeVisibility.assertEnabled("cli:codex")
-    ));
-
-    const paneInputs = input.panes.map((item: RoomPaneBatchItem) => {
-      if (item.mode === "CHAT") {
-        return { roomId: params.id, title: "Chat", mode: "CHAT" as const };
-      }
-      if (item.mode === "VNC") {
-        return { roomId: params.id, title: "VNC", mode: "VNC" as const, vncTarget: item.vncTarget };
-      }
-      if (item.mode === "HARNESS") {
-        return { roomId: params.id, title: "Harness", mode: "HARNESS" as const };
-      }
-      if (item.terminalRuntimeId === "cli:root") {
-        throw new SpaceConflictError("CLI ROOT cannot be created through room pane batches.");
-      }
-      const runtime = runtimeById.get(item.terminalRuntimeId);
-      if (!runtime) {
-        throw new SpaceConflictError(`CLI runtime ${item.terminalRuntimeId} was not found.`);
-      }
-      if (!runtime.capabilities.includes("CLI")) {
-        throw new SpaceConflictError(`Runtime ${runtime.id} does not support CLI panes.`);
-      }
-      if (!isCliRuntimeTerminalLaunchable(runtime)) {
-        throw new SpaceConflictError(runtime.statusReason || `CLI runtime ${runtime.id} is unavailable.`);
-      }
-      return {
-        roomId: params.id,
-        title: runtime.displayName,
-        mode: "TERMINAL" as const,
-        terminalRuntimeId: runtime.id,
-        cwd: "/etc"
-      };
-    });
-
-    await Promise.all(paneInputs.flatMap((item) =>
-      item.mode === "TERMINAL" && item.terminalRuntimeId
-        ? [cliRuntimeVisibility.assertEnabled(item.terminalRuntimeId)]
-        : []
-    ));
+    const paneInputs = await roomPaneCommands.resolve(params.id, input.panes);
     const panes = await store.createPanes(paneInputs, request.requestIdForSpace);
     await recordAudit(store, request, {
       action: "room.panes.create",
@@ -8968,10 +9885,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.post("/api/panes", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createPaneInputSchema, request.body);
     assertRootAdmin(request, input.terminalRuntimeId);
+    if (input.mode === "TERMINAL" && input.terminalRuntimeId) {
+      await cliRuntimeVisibility.assertEnabled(input.terminalRuntimeId);
+    }
     if (input.mode === "CHAT") {
       await cliRuntimeVisibility.assertEnabled("cli:codex");
-    } else if (input.mode === "TERMINAL" && input.terminalRuntimeId) {
-      await cliRuntimeVisibility.assertEnabled(input.terminalRuntimeId);
+    }
+    if (input.mode === "HARNESS") {
+      const harnessStatus = await readDeepSeekHarnessMaintenanceStatus();
+      if (!harnessStatus.enabled || harnessStatus.effectiveMode === "BLOCKED") {
+        throw new SpaceFeatureDisabledError("HARNESS_DISABLED", "DeepSeek Harness is disabled. Enable it in Settings to open a Harness pane.");
+      }
     }
     const pane = await store.createPane(input, request.requestIdForSpace);
     await recordAudit(store, request, {
@@ -8994,66 +9918,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     assertRootAdmin(request, input.terminalRuntimeId ?? existingPane.terminalRuntimeId);
     const targetRuntimeId = input.terminalRuntimeId ?? existingPane.terminalRuntimeId;
     const targetMode = input.mode ?? existingPane.mode;
-    if (targetMode === "CHAT" && input.isClosed !== true) {
-      await cliRuntimeVisibility.assertEnabled("cli:codex");
-    } else if (targetMode === "TERMINAL" && targetRuntimeId && input.isClosed !== true) {
+    if (targetMode === "TERMINAL" && targetRuntimeId && input.isClosed !== true) {
       await cliRuntimeVisibility.assertEnabled(targetRuntimeId);
     }
-    const current = input.title === undefined ? null : existingPane;
-    let rollbackCodexTitle: (() => Promise<void>) | null = null;
-    let rollbackCliTaskTitle: (() => Promise<void>) | null = null;
-    let rollbackOpenCodeTitle: (() => Promise<void>) | null = null;
-    if (typeof input.title === "string" && current && input.title !== current.title) {
-      rollbackCodexTitle = await syncPaneTitleToCodexHistory({
-        store,
-        codexParity,
-        pane: current,
-        title: input.title,
-        traceId: request.requestIdForSpace,
-        request,
-        findThreadId: options.findCodexThreadId
-      });
-      try {
-        rollbackCliTaskTitle = await syncPaneTitleToCliTaskRevision({
-          store,
-          pane: current,
-          title: input.title,
-          traceId: request.requestIdForSpace,
-          request
-        });
-      } catch (error) {
-        await rollbackCodexTitle?.();
-        throw error;
-      }
-      try {
-        rollbackOpenCodeTitle = await syncPaneTitleToOpenCodeSession({
-          store,
-          pane: current,
-          title: input.title,
-          traceId: request.requestIdForSpace,
-          request,
-          stateRoot: options.opencodeStateRoot
-        });
-      } catch (error) {
-        await rollbackCliTaskTitle?.();
-        await rollbackCodexTitle?.();
-        throw error;
+    if (targetMode === "CHAT" && input.isClosed !== true) {
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
+    }
+    if (targetMode === "HARNESS" && input.isClosed !== true) {
+      const harnessStatus = await readDeepSeekHarnessMaintenanceStatus();
+      if (!harnessStatus.enabled || harnessStatus.effectiveMode === "BLOCKED") {
+        throw new SpaceFeatureDisabledError("HARNESS_DISABLED", "DeepSeek Harness is disabled. Enable it in Settings to open a Harness pane.");
       }
     }
-    let pane: Pane;
-    try {
-      pane = await store.updatePane(
-        params.id,
-        typeof input.title === "string" && input.title !== existingPane.title
-          ? { ...input, titleSource: "manual" }
-          : input,
-        request.requestIdForSpace
-      );
-    } catch (error) {
-      await rollbackOpenCodeTitle?.();
-      await rollbackCliTaskTitle?.();
-      await rollbackCodexTitle?.();
-      throw error;
+    // Task metadata is server-owned. Manual naming remains available while a CLI is offline.
+    const { taskMetadata: _ignoredMetadata, ...editable } = input;
+    const pane = await store.updatePane(params.id,
+      typeof editable.title === "string" ? {...editable,titleSource:"manual"} : editable,
+      request.requestIdForSpace);
+    if (typeof editable.title === "string" || editable.titleSource === "auto") {
+      await taskTitles.requestSync(pane.id,editable.titleSource==="auto");
     }
     await recordAudit(store, request, {
       action: "pane.update",
@@ -9099,267 +9982,30 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.post("/api/panes/:id/title/generate", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
-    if (pane.mode === "HARNESS") {
-      const [providers, providerSettings, models] = await Promise.all([
-        store.listProviders(),
-        store.getProviderSettings(),
-        store.listModels()
-      ]);
-      const selection = selectTerminalPaneTitleGeneration(providers, models, providerSettings);
-      const generated = await generateTerminalPaneTitle({
-        config,
-        provider: selection.provider,
-        model: selection.model,
-        currentTitle: pane.title,
-        cwd: pane.cwd,
-        primaryTaskRequest: `DeepSeek Harness workspace: ${pane.title}`,
-        trustPrimaryTaskRequest: true,
-        reasoningEffort: selection.reasoningEffort,
-        transcript: []
-      });
-      const updated = await store.updatePane(
-        pane.id,
-        { title: generated.title, titleSource: "ai" },
-        request.requestIdForSpace
-      );
-      const latestEvent = await getLatestRoomEvent(store, updated.roomId);
-      if (latestEvent) eventBus.publish(latestEvent);
-      await recordAudit(store, request, {
-        action: "pane.title_generate",
-        targetType: "pane",
-        targetId: updated.id,
-        metadata: {
-          roomId: updated.roomId,
-          providerId: generated.providerId,
-          modelId: generated.modelId,
-          paneMode: "HARNESS"
-        }
-      });
-      return updated;
-    }
-    if (pane.mode !== "TERMINAL" && pane.mode !== "CHAT") {
-      throw new SpaceConflictError("AI title generation is only available for Chat, CLI, and Harness panes.");
-    }
-    const session = pane.mode === "CHAT"
-      ? await store.getActiveSpaceAgentSession(pane.id)
-      : await store.getActivePaneCliSession(pane.id);
-    if (!session) {
-      throw new SpaceConflictError(pane.mode === "CHAT" ? "Start a Chat task before generating a title." : "Attach a CLI session before generating a title.");
-    }
-    if (pane.mode === "TERMINAL" && "purpose" in session) {
-      assertNormalCliSession(session);
-    }
-
-    const [providers, providerSettings, models, transcript, cliTaskRevision] = await Promise.all([
-      store.listProviders(),
-      store.getProviderSettings(),
-      store.listModels(),
-      pane.mode === "TERMINAL" ? store.listPaneCliTranscriptChunks(session.sessionId, 48) : Promise.resolve([]),
-      pane.mode === "TERMINAL" && "cliTaskRevisionId" in session && session.cliTaskRevisionId
-        ? store.getCliTaskRevision(session.cliTaskRevisionId)
-        : Promise.resolve(null)
-    ]);
-    const codexThreadId = pane.mode === "CHAT"
-      ? "threadId" in session ? session.threadId : null
-      : "runtimeId" in session
-        ? await resolvePaneCodexThreadId({
-            store,
-            session,
-            traceId: request.requestIdForSpace,
-            findThreadId: options.findCodexThreadId
-          })
-        : null;
-    if (pane.mode === "CHAT" && !codexThreadId) {
-      throw new SpaceConflictError("Start a Chat task before generating a title.");
-    }
-    let primaryTaskRequest = cliTaskRevision?.firstUserMessage.trim() || null;
-    if (codexThreadId) {
-      try {
-        primaryTaskRequest =
-          (await loadCodexPrimaryTaskRequest(codexParity, codexThreadId)) ??
-          primaryTaskRequest;
-      } catch (error) {
-        if (pane.mode === "CHAT") {
-          throw new SpaceFeatureDisabledError(
-            "CODEX_THREAD_LOOKUP_FAILED",
-            "The active Chat task could not be loaded for title generation."
-          );
-        }
-        request.log.info(
-          { err: error, requestId: request.requestIdForSpace, paneId: pane.id, codexThreadId },
-          "codex thread lookup failed during pane title generation"
-        );
-      }
-    }
-    if (pane.mode === "CHAT" && !primaryTaskRequest) {
-      throw new SpaceConflictError("Start a Chat task with a user request before generating a title.");
-    }
-    let selection: TerminalPaneTitleGenerationSelection | undefined;
-    let opencodeResult: GenerateTerminalPaneTitleResult | null = null;
-    if (pane.mode === "TERMINAL" && "runtimeId" in session && session.runtimeId === "cli:opencode") {
-      const opencodeControl = await readOpenCodeServerControl(session.sessionId, options.opencodeStateRoot);
-      if (opencodeControl) {
-        try {
-          opencodeResult = await generateOpenCodePaneTitle({
-            control: opencodeControl,
-            currentTitle: pane.title,
-            cwd: pane.cwd ?? ("cwd" in session ? session.cwd : null),
-            primaryTaskRequest,
-            transcript
-          });
-        } catch (error) {
-          request.log.info(
-            { err: error, requestId: request.requestIdForSpace, paneId: pane.id },
-            "opencode title generation failed; falling back to codex"
-          );
-        }
-      }
-    }
-    let codexGenerationError: unknown = null;
-    if (!opencodeResult) {
-      // OpenCode first: shared server using its last-used model (no hardcoded
-      // default), 45s timeout + one retry. Codex is now the fallback.
-      const sharedControl = await resolveOpenCodeTitleFallbackControl(options.opencodeStateRoot);
-      if (sharedControl) {
-        const sharedInput = {
-          control: sharedControl,
-          currentTitle: pane.title,
-          cwd: pane.cwd ?? ("cwd" in session ? session.cwd : null),
-          primaryTaskRequest,
-          transcript,
-          skipNativeContext: true,
-          promptTimeoutMs: 45_000
-        };
-        try {
-          opencodeResult = await generateOpenCodePaneTitle(sharedInput);
-        } catch (opencodeError) {
-          request.log.info(
-            { err: opencodeError, requestId: request.requestIdForSpace, paneId: pane.id },
-            "opencode title generation attempt failed; retrying once before codex"
-          );
-          try {
-            opencodeResult = await generateOpenCodePaneTitle(sharedInput);
-          } catch (retryError) {
-            request.log.info(
-              { err: retryError, requestId: request.requestIdForSpace, paneId: pane.id },
-              "opencode title generation failed; falling back to codex"
-            );
-          }
-        }
-      }
-    }
-    let generated: GenerateTerminalPaneTitleResult | null = null;
-    if (opencodeResult) {
-      generated = opencodeResult;
-    } else {
-      try {
-        selection = selectTerminalPaneTitleGeneration(providers, models, providerSettings);
-      } catch (error) {
-        codexGenerationError = error;
-        request.log.info(
-          { err: error, requestId: request.requestIdForSpace, paneId: pane.id },
-          "codex title generation selection unavailable"
-        );
-      }
-      if (selection) {
-        try {
-          generated = await generateTerminalPaneTitle({
-            config,
-            provider: selection.provider,
-            model: selection.model,
-            currentTitle: pane.title,
-            cwd: pane.cwd ?? ("cwd" in session ? session.cwd : null),
-            primaryTaskRequest,
-            trustPrimaryTaskRequest: pane.mode === "CHAT",
-            reasoningEffort: selection.reasoningEffort,
-            transcript
-          });
-        } catch (error) {
-          codexGenerationError = error;
-          request.log.info(
-            { err: error, requestId: request.requestIdForSpace, paneId: pane.id },
-            "codex title generation failed"
-          );
-        }
-      }
-    }
-    if (!generated) {
-      const message = codexGenerationError instanceof Error
-        ? codexGenerationError.message
-        : "CLI title generation is unavailable.";
-      throw new SpaceFeatureDisabledError("PANE_TITLE_GENERATION_FAILED", message);
-    }
-    const rollbackCodexTitle = codexThreadId
-      ? await syncPaneTitleToCodexHistory({
-          store,
-          codexParity,
-          pane,
-          title: generated.title,
-          traceId: request.requestIdForSpace,
-          request,
-          session: { ...session, codexThreadId },
-          findThreadId: options.findCodexThreadId
-        })
-      : null;
-    let rollbackCliTaskTitle: (() => Promise<void>) | null = null;
-    try {
-      rollbackCliTaskTitle = await syncPaneTitleToCliTaskRevision({
-        store,
-        pane,
-        title: generated.title,
-        traceId: request.requestIdForSpace,
-        request,
-        session: pane.mode === "TERMINAL" && "runtimeId" in session ? session : null
-      });
-    } catch (error) {
-      await rollbackCodexTitle?.();
-      throw error;
-    }
-    let rollbackOpenCodeTitle: (() => Promise<void>) | null = null;
-    if (opencodeResult) {
-      try {
-        rollbackOpenCodeTitle = await syncPaneTitleToOpenCodeSession({
-          store,
-          pane,
-          title: generated.title,
-          traceId: request.requestIdForSpace,
-          request,
-          stateRoot: options.opencodeStateRoot
-        });
-      } catch (error) {
-        await rollbackCliTaskTitle?.();
-        await rollbackCodexTitle?.();
-        throw error;
-      }
-    }
-    let updated: Pane;
-    try {
-      updated = await store.updatePane(
-        pane.id,
-        { title: generated.title, titleSource: "ai" },
-        request.requestIdForSpace
-      );
-    } catch (error) {
-      await rollbackOpenCodeTitle?.();
-      await rollbackCliTaskTitle?.();
-      await rollbackCodexTitle?.();
-      throw error;
-    }
-    const latestEvent = await getLatestRoomEvent(store, updated.roomId);
-    if (latestEvent) {
-      eventBus.publish(latestEvent);
-    }
-    await recordAudit(store, request, {
-      action: "pane.title_generate",
-      targetType: "pane",
-      targetId: updated.id,
-      metadata: {
-        roomId: updated.roomId,
-        providerId: generated.providerId,
-        modelId: generated.modelId
-      }
-    });
+    if (!["CHAT", "TERMINAL", "HARNESS"].includes(pane.mode)) throw new SpaceConflictError("Task titles require an AI task pane.");
+    return taskTitles.observe(pane.id, true);
+  });
+  app.get("/api/settings/task-titles", defaultRouteRateLimitOptions, async () => taskTitleRepository.getSettings());
+  app.patch("/api/settings/task-titles", defaultRouteRateLimitOptions, async (request, reply) => {
+    if(request.user?.role!=="ADMIN")return sendApiError(reply,403,"ADMIN_REQUIRED","Task title settings require the ADMIN role.");
+    const settings = parseBody(taskTitleSettingsSchema, request.body);
+    const updated = await taskTitleRepository.setSettings(settings);
+    await taskTitles.policyChanged();
+    void taskTitleProviders.refresh(true).catch(()=>app.log.warn({event:"task_titles.availability_failed"},"Title model availability deferred."));
     return updated;
+  });
+  app.get("/api/settings/task-titles/availability", defaultRouteRateLimitOptions, async () => ({candidates:await taskTitleProviders.status()}));
+  app.patch("/api/panes/:id/title/preference", defaultRouteRateLimitOptions, async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const body = parseBody(z.object({candidateId:z.string().min(1).max(320).nullable()}), request.body);
+    return taskTitles.setPreference(params.id, body.candidateId);
+  });
+  app.post("/api/panes/:id/title/harness-session", defaultRouteRateLimitOptions, async(request)=>{
+    const params=parseQuery(idParamSchema,request.params);
+    const {sessionId}=parseBody(z.object({sessionId:z.string().regex(/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/)}),request.body);
+    const pane=await getPaneById(store,params.id);
+    if(pane.mode!=="HARNESS"||pane.isClosed)throw new SpaceConflictError("A running Harness pane is required.");
+    return taskTitles.bindHarnessSession(pane.id,sessionId);
   });
 
   app.get("/api/panes/:id/capabilities", defaultRouteRateLimitOptions, async (request) => {
@@ -9371,31 +10017,40 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.delete("/api/panes/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = request.params as { id: string };
     const current = await getPaneById(store, params.id);
+    await spaceControl.rememberStop(current);
     let interruptedCliSessionId: string | null = null;
     if (current.mode === "TERMINAL") {
-      const active = await store.getActivePaneCliSession(current.id);
-      if (active) {
-        await cliTerminalManager.interrupt(active.sessionId);
-        await store.updatePaneCliSession(
-          active.sessionId,
-          {
-            status: "EXITED",
-            statusReason: "Pane closed by operator.",
-            exitCode: null,
-            isActive: false,
-            endedAt: nowIso()
-          },
-          request.requestIdForSpace
-        );
-        interruptedCliSessionId = active.sessionId;
+      const runningSessions = (await store.listPaneCliSessions(current.id, 100)).filter(
+        (session) => session.status === "RUNNING"
+      );
+      for (const session of runningSessions) {
+        try {
+          await cliTerminalManager.interrupt(session.sessionId);
+        } catch (error) {
+          request.log.warn({ err: error, paneId: current.id, sessionId: session.sessionId }, "CLI session interrupt failed during pane close; closing pane anyway");
+        }
+        if (session.isActive) interruptedCliSessionId = session.sessionId;
       }
     }
     if (current.mode === "BROWSER" || current.mode === "YOUTUBE") {
+      if (current.mode === "YOUTUBE") {
+        await youtubeAccountOperations.get(current.id)?.catch(() => undefined);
+        await youtubeSessionStarts.get(current.id)?.catch(() => undefined);
+      }
       const active = await store.getActivePaneBrowserSession(current.id);
       if (active) {
         try {
           await browserSessionManager.stopPane(current.id, request.requestIdForSpace, operatorBrowserActor(request));
+          if (current.mode === "YOUTUBE") {
+            const stopped = await store.getLatestPaneBrowserSession(current.id);
+            const playback = youtubeBrowserPlayback(stopped?.currentUrl ?? null, stopped?.title ?? null);
+            if (playback) {
+              const room = await store.getRoom(current.roomId);
+              await youtubePlaybackStore.save(room.kind === "AGENT_PROOF" ? `${request.user!.id}:proof:${room.id}` : request.user!.id, current.id, playback);
+            }
+          }
         } catch (error) {
+          if (current.mode === "YOUTUBE") throw error;
           request.log.warn({ err: error, paneId: current.id }, "browser session stop failed during pane close; closing pane anyway");
         }
       }
@@ -9667,6 +10322,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     let result: unknown;
 
     switch (input.command.type) {
+      case "DEVTOOLS":
+        if (!browserSessionManager.diagnostics) {
+          throw new SpaceFeatureDisabledError("BROWSER_DIAGNOSTICS_UNAVAILABLE", "Browser DevTools are unavailable on this runtime.");
+        }
+        // Read-only inspection stays available during an exclusive operator lease.
+        result = browserDiagnosticsResponseSchema.parse(await browserSessionManager.diagnostics(
+          pane, input.command.includeNetwork, input.command.limit
+        ));
+        break;
       case "LIST_PAGES":
         if (!browserSessionManager.listPages) {
           throw new SpaceFeatureDisabledError("BROWSER_PAGES_UNAVAILABLE", "Browser page management is unavailable on this runtime.");
@@ -9824,10 +10488,116 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result;
   });
 
+  const youtubeSessionStarts = new Map<string, Promise<PaneBrowserSessionResponse>>();
+  const youtubePlaybackStore = new YouTubePlaybackStore(join(dirname(config.browserEvidenceArtifactRoot), "youtube-playback"));
+  const youtubeAccountStore = new YouTubeAccountStore(join(dirname(config.browserEvidenceArtifactRoot), "youtube-accounts"));
+  const browserAccountStore = new YouTubeAccountStore(join(dirname(config.browserEvidenceArtifactRoot), "browser-accounts"));
+  const youtubeAccountOperations = new Map<string, Promise<unknown>>();
+  async function withYouTubeAccountLock<T>(paneId: string, operation: () => Promise<T>): Promise<T> {
+    const next = (youtubeAccountOperations.get(paneId) ?? Promise.resolve()).catch(() => undefined).then(operation);
+    youtubeAccountOperations.set(paneId, next);
+    try { return await next; } finally { if (youtubeAccountOperations.get(paneId) === next) youtubeAccountOperations.delete(paneId); }
+  }
+  async function youtubeAccountOwner(userId: string, pane: Pane) {
+    return (await store.getRoom(pane.roomId)).kind === "AGENT_PROOF" ? `${userId}:proof:${pane.roomId}` : userId;
+  }
+
+  app.get("/api/panes/:id/browser/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
+    const { id } = parseQuery(idParamSchema, request.params);
+    const pane = await getPaneById(store, id);
+    if (pane.mode !== "BROWSER") throw new SpaceConflictError("Google account selection requires a Browser pane.");
+    const profiles = await store.listCliAccountProfiles("cli:gemini");
+    const selectedProfileId = await browserAccountStore.get(await youtubeAccountOwner(request.user.id, pane), pane.id);
+    return { selectedProfileId, profiles: profiles.map(({ profileId, displayName }) => ({ profileId, displayName })) };
+  });
+
+  app.put("/api/panes/:id/browser/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
+    const { id } = parseQuery(idParamSchema, request.params);
+    const { profileId } = parseBody(selectYouTubeAccountSchema, request.body);
+    const pane = await getPaneById(store, id);
+    if (pane.mode !== "BROWSER") throw new SpaceConflictError("Google account selection requires a Browser pane.");
+    if (profileId !== null && !await store.getCliAccountProfile("cli:gemini", profileId)) throw new SpaceNotFoundError("The selected Google account is no longer available.");
+    // Use metadata from the existing broker; Google credentials never leave Chrome.
+    const details = profileId === null ? null : await readGeminiAccountProfileDetails(profileId).catch(() => null);
+    return withYouTubeAccountLock(pane.id, async () => {
+      await youtubeSessionStarts.get(pane.id)?.catch(() => undefined);
+      await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
+      await browserAccountStore.save(await youtubeAccountOwner(request.user!.id, pane), pane.id, profileId);
+      return { selectedProfileId: profileId, targetUrl: profileId === null ? config.browserSessionsDefaultUrl : googleAccountSignInUrl(details?.email ?? null) };
+    });
+  });
+
+  app.get("/api/panes/:id/youtube/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
+    const { id } = parseQuery(idParamSchema, request.params);
+    const pane = await getPaneById(store, id);
+    if (pane.mode !== "YOUTUBE") throw new SpaceConflictError("Google account selection requires a YouTube pane.");
+    const profiles = await store.listCliAccountProfiles("cli:gemini");
+    const selectedProfileId = await youtubeAccountStore.get(await youtubeAccountOwner(request.user.id, pane), pane.id);
+    return { selectedProfileId, profiles: profiles.map(({ profileId, displayName }) => ({ profileId, displayName })) };
+  });
+
+  app.put("/api/panes/:id/youtube/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
+    const { id } = parseQuery(idParamSchema, request.params);
+    const { profileId } = parseBody(selectYouTubeAccountSchema, request.body);
+    const pane = await getPaneById(store, id);
+    if (pane.mode !== "YOUTUBE") throw new SpaceConflictError("Google account selection requires a YouTube pane.");
+    if (profileId !== null && !await store.getCliAccountProfile("cli:gemini", profileId)) throw new SpaceNotFoundError("The selected Google account is no longer available.");
+    // The native helper returns only account metadata, never OAuth credentials.
+    const details = profileId === null ? null : await readGeminiAccountProfileDetails(profileId).catch(() => null);
+    return withYouTubeAccountLock(pane.id, async () => {
+      await youtubeSessionStarts.get(pane.id)?.catch(() => undefined);
+      await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
+      await youtubeAccountStore.save(await youtubeAccountOwner(request.user!.id, pane), pane.id, profileId);
+      return { selectedProfileId: profileId, targetUrl: profileId === null ? "https://www.youtube.com/" : youtubeAccountSignInUrl(details?.email ?? null) };
+    });
+  });
+
+
+  app.get("/api/panes/:id/youtube/playback", defaultRouteRateLimitOptions, async (request) => {
+    const { id } = parseQuery(idParamSchema, request.params);
+    const pane = await getPaneById(store, id);
+    if (pane.mode !== "YOUTUBE") throw new SpaceConflictError("Playback requires a YouTube pane.");
+    return { playback: await youtubePlaybackStore.get((await store.getRoom(pane.roomId)).kind === "AGENT_PROOF" ? `${request.user!.id}:proof:${pane.roomId}` : request.user!.id, pane.id) };
+  });
+
+  app.put("/api/panes/:id/youtube/playback", defaultRouteRateLimitOptions, async (request) => {
+    const { id } = parseQuery(idParamSchema, request.params);
+    const pane = await getPaneById(store, id);
+    if (pane.mode !== "YOUTUBE") throw new SpaceConflictError("Playback requires a YouTube pane.");
+    const playback = parseBody(youtubePlaybackSchema, request.body);
+    await youtubePlaybackStore.save((await store.getRoom(pane.roomId)).kind === "AGENT_PROOF" ? `${request.user!.id}:proof:${pane.roomId}` : request.user!.id, pane.id, playback);
+    return { ok: true };
+  });
+
+  app.post("/api/panes/:id/youtube/watch", defaultRouteRateLimitOptions, async (request) => {
+    const { id } = parseQuery(idParamSchema, request.params);
+    const pane = await getPaneById(store, id);
+    assertBrowserPaneCompatible(pane);
+    if (pane.mode !== "YOUTUBE") throw new SpaceConflictError("Playback requires a YouTube pane.");
+    await youtubeAccountOperations.get(pane.id)?.catch(() => undefined);
+    await youtubeSessionStarts.get(pane.id)?.catch(() => undefined);
+    // Stop captures the current video time and flushes the persistent Chrome profile.
+    await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
+    const prior = await store.getLatestPaneBrowserSession(pane.id);
+    return { currentUrl: prior?.currentUrl ?? prior?.targetUrl ?? null };
+  });
+
   app.get("/api/panes/:id/browser/session", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
+    // A stopped browser (including closing its last tab) stays empty across
+    // reloads and viewers. Starting Chrome requires an explicit +/navigation.
+    if (pane.mode === "BROWSER") {
+      const prior = await store.getLatestPaneBrowserSession(pane.id);
+      if (prior?.status === "CLOSED" && !prior.isActive) {
+        return { session: { ...prior, pages: [], activePageId: null }, frame: null, websocket: null };
+      }
+    }
     const session = await browserSessionManager.getActive(pane);
     if (!session) {
       throw new SpaceNotFoundError(`Active browser session for pane ${pane.id} was not found.`);
@@ -9853,15 +10623,52 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const input = parseBody(createPaneBrowserSessionRequestSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
-    const session = await browserSessionManager.startOrRestore({
-      pane,
-      viewport: input.viewport,
-      targetUrl: input.targetUrl,
-      streamMode: input.streamMode,
-      includeInitialFrame: input.includeInitialFrame,
-      ownerAgentId: input.ownerAgentId ?? null,
-      traceId: request.requestIdForSpace
-    }, operatorBrowserActor(request));
+    const startSession = async () => {
+      const priorYouTube = pane.mode === "YOUTUBE" ? await store.getLatestPaneBrowserSession(pane.id) : null;
+      const selectedProfileId = await (pane.mode === "YOUTUBE" ? youtubeAccountStore : browserAccountStore).get(await youtubeAccountOwner(request.user!.id, pane), pane.id);
+      if (selectedProfileId !== null && !await store.getCliAccountProfile("cli:gemini", selectedProfileId)) {
+        throw new SpaceConflictError("The selected Google account is no longer available. Choose another account.");
+      }
+      const profileKey = youtubeAccountProfileKey(await youtubeAccountOwner(request.user!.id, pane), selectedProfileId);
+      if (pane.mode === "YOUTUBE" && selectedProfileId && profileKey && !await store.getActivePaneBrowserSession(pane.id)) {
+        const owner = await youtubeAccountOwner(request.user!.id, pane);
+        const peerIds = await youtubeAccountStore.knownPanes(owner);
+        const peers = await Promise.all(peerIds.filter(id => id !== pane.id).map(async (id) => {
+          const peer = await getPaneById(store, id).catch(() => null);
+          return peer?.mode === "YOUTUBE" && await youtubeAccountOwner(request.user!.id, peer) === owner
+            ? { roomId: peer.roomId, paneId: peer.id } : null;
+        }));
+        try {
+          await seedYouTubeSignIn({
+            profileRoot: config.browserSessionsProfileRoot, profileKey,
+            destination: { roomId: pane.roomId, paneId: pane.id },
+            peers: peers.filter((peer): peer is { roomId: string; paneId: string } => peer !== null)
+          });
+        } catch {
+          throw new SpaceConflictError("Saved Google sign-in could not be loaded. Retry opening this YouTube pane.");
+        }
+      }
+      const matchesPriorProfile = selectedProfileId === null ? !priorYouTube?.profilePath.includes("/accounts/") : priorYouTube?.profilePath.endsWith(`/accounts/${profileKey}`);
+      const starting = youtubeSessionStarts.get(pane.id) ?? browserSessionManager.startOrRestore({
+        pane,
+        viewport: input.viewport,
+        targetUrl: priorYouTube && matchesPriorProfile && !priorYouTube.isActive && (!input.targetUrl || input.targetUrl === "https://www.youtube.com/") ? (priorYouTube.currentUrl ?? priorYouTube.targetUrl) : input.targetUrl,
+        profileKey: profileKey ?? null,
+        streamMode: input.streamMode,
+        includeInitialFrame: input.includeInitialFrame,
+        ownerAgentId: input.ownerAgentId ?? null,
+        traceId: request.requestIdForSpace
+      }, operatorBrowserActor(request));
+      youtubeSessionStarts.set(pane.id, starting);
+      try { return await starting; }
+      finally { if (youtubeSessionStarts.get(pane.id) === starting) youtubeSessionStarts.delete(pane.id); }
+    };
+    const session = await withYouTubeAccountLock(pane.id, startSession);
+    // Closing while Chrome starts must not leave an orphan browser behind.
+    if ((await getPaneById(store, pane.id)).isClosed) {
+      await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
+      throw new SpaceConflictError("The pane was closed while its browser was starting.");
+    }
     await recordAudit(store, request, {
       action: "pane.browser.session",
       targetType: "pane",
@@ -10330,7 +11137,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const input = parseBody(browserSetViewportInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
-    const response = await browserSessionManager.setViewport(pane, input.viewport, request.requestIdForSpace, operatorBrowserActor(request));
+    const response = await browserSessionManager.setViewport(pane, input.viewport, request.requestIdForSpace, operatorBrowserActor(request), input.dimensions);
     await recordAudit(store, request, {
       action: "pane.browser.viewport",
       targetType: "pane",
@@ -10495,7 +11302,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.post("/api/internal/agent/room-actions", defaultRouteRateLimitOptions, async (request) => {
-    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(spaceAgentRoomActionBridgeRequestSchema, request.body ?? {});
     const roomAgentPane = await store.getOrCreateRoomAgentPane(input.roomId, request.requestIdForSpace);
     if (roomAgentPane.id !== input.agentPaneId) {
@@ -10551,7 +11357,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
-    await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
+    if (pane.mode === "YOUTUBE") {
+      await youtubeAccountOperations.get(pane.id)?.catch(() => undefined);
+      await youtubeSessionStarts.get(pane.id)?.catch(() => undefined);
+    }
+    if (pane.mode !== "YOUTUBE" || await store.getActivePaneBrowserSession(pane.id)) {
+      await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
+    }
     await recordAudit(store, request, {
       action: "pane.browser.stop",
       targetType: "pane",
@@ -10595,7 +11407,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (pane.terminalRuntimeId && input.runtimeId !== pane.terminalRuntimeId) {
       throw new SpaceConflictError(`Terminal pane requires runtime ${pane.terminalRuntimeId}.`);
     }
-    const registry = await discoverAgentRuntimes(config);
+    const active = await store.getActivePaneCliSession(pane.id);
+    const requestedProfileForAttach = input.runtimeId === "cli:gemini" && input.accountProfileId !== "main"
+      ? input.accountProfileId ?? null : null;
+    const attachingExisting = active?.purpose === "NORMAL" && active.isActive &&
+      !input.forceRestart && !input.resume && active.runtimeId === input.runtimeId &&
+      active.accountProfileId === requestedProfileForAttach &&
+      active.status !== "EXITED" && active.status !== "ERROR";
+    const registry = attachingExisting
+      ? await cliRuntimeRegistryCache.readStaleWhileRefreshing()
+      : await discoverAgentRuntimes(config);
     const runtime = findRuntime(registry, input.runtimeId);
     if (!runtime) {
       throw new SpaceNotFoundError(`CLI runtime ${input.runtimeId} was not found.`);
@@ -10630,7 +11451,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       );
     }
 
-    const active = await store.getActivePaneCliSession(pane.id);
     if (active?.purpose === "LOGIN") {
       throw new SpaceConflictError("Cancel or complete CLI login before starting a normal CLI session in this pane.");
     }
@@ -10760,7 +11580,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
               ? directCodexParity
                 ? "CLI session replaced with direct VS Code/Codex parity workspace."
                 : directClaudeParity
-                  ? "CLI session replaced with direct Claude Code via Legacy operator parity workspace."
+                  ? "CLI session replaced with direct Claude Code operator parity workspace."
                   : directKimiParity
                     ? "CLI session replaced with direct Kimi Code subscription operator parity workspace."
                     : directGrokParity
@@ -10771,7 +11591,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
                 : directCodexParity
                   ? "CLI session replaced to apply updated Codex CLI session settings."
                   : directClaudeParity
-                    ? "CLI session replaced to apply updated Claude Code via Legacy CLI session settings."
+                    ? "CLI session replaced to apply updated Claude Code CLI session settings."
                     : directKimiParity
                       ? "CLI session replaced to apply updated Kimi Code CLI session settings."
                       : directGrokParity
@@ -10913,198 +11733,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     assertCliPaneCompatible(pane);
     const active = await store.getActivePaneCliSession(pane.id);
     if (active) await assertCliHttpMutationControl(request, active);
-    const targetRuntimeId = pane.terminalRuntimeId ?? "cli:codex";
-    await cliRuntimeVisibility.assertEnabled(targetRuntimeId);
-    const sourceTaskReference = input.taskId ?? input.threadId;
-    if (!sourceTaskReference) throw new SpaceNotFoundError("Space CLI task reference was not provided.");
-    const sourceTask = await unifiedCliTaskRegistry.getTask(sourceTaskReference, await visibleCliRuntimeIds());
-    const paneTitle = paneTitleFromCliTaskTitle(sourceTask.title);
-    const registry = await discoverAgentRuntimes(config);
-    const runtime = findRuntime(registry, targetRuntimeId);
-    if (!runtime) {
-      throw new SpaceNotFoundError(`CLI runtime ${targetRuntimeId} was not found.`);
-    }
-    if (!runtime.capabilities.includes("CLI")) {
-      throw new SpaceConflictError(`Runtime ${runtime.id} does not support CLI sessions.`);
-    }
-    if (!isCliRuntimeTerminalLaunchable(runtime)) {
-      throw new SpaceFeatureDisabledError("CLI_RUNTIME_DISABLED", runtime.statusReason, {
-        runtimeId: runtime.id,
-        status: runtime.status
-      });
-    }
-    if (active?.purpose === "LOGIN") {
-      throw new SpaceConflictError("Cancel or complete CLI login before resuming a CLI task in this pane.");
-    }
-    const parsedNativeThreadId = codexThreadIdSchema.safeParse(sourceTask.revision.nativeTaskRef);
-    const nativeThreadId = await availableNativeCodexThreadId(
-      codexParity,
-      runtime.id === "cli:codex" && sourceTask.runtimeId === "cli:codex" && parsedNativeThreadId.success
-        ? parsedNativeThreadId.data
-        : null
-    );
-    const opencodeNativeSessionId = await availableOpenCodeNativeSessionId({
-      sourceTask,
-      runtimeId: runtime.id,
-      sourceRuntimeId: sourceTask.runtimeId
-    });
-    const exactNativeResume = Boolean(nativeThreadId || opencodeNativeSessionId);
-    const mode = exactNativeResume
-      ? "NATIVE_RESUME" as const
-      : sourceTask.runtimeId === runtime.id
-        ? "SPACE_FALLBACK" as const
-        : "CROSS_RUNTIME_SHARE" as const;
-
-    const resumeOperation = async () => {
-      const stoppedSessionIds = new Set<string>();
-      const stopSession = async (sessionId: string, statusReason: string) => {
-        if (stoppedSessionIds.has(sessionId)) return;
-        stoppedSessionIds.add(sessionId);
-        await cliTerminalManager.interrupt(sessionId);
-        await store.updatePaneCliSession(
-          sessionId,
-          { status: "EXITED", statusReason, isActive: false, endedAt: nowIso() },
-          request.requestIdForSpace
-        );
-      };
-
-      if (nativeThreadId) {
-        const threadOwner = await store.getActivePaneCliSessionByCodexThreadId(nativeThreadId);
-        if (threadOwner && threadOwner.sessionId !== active?.sessionId) {
-          await stopSession(threadOwner.sessionId, "Codex thread transferred by explicit Task History Resume.");
-        }
-      }
-      if (active) {
-        await stopSession(active.sessionId, "CLI session replaced to continue a selected Space CLI task.");
-      }
-
-      const nextSessionId = makeSpaceId("cli_session");
-      const allocatedAtNs = process.hrtime.bigint();
-      const sameRuntime = sourceTask.runtimeId === runtime.id;
-      const allocatedSession = await store.createPaneCliSession(
-        {
-          sessionId: nextSessionId,
-          paneId: pane.id,
-          roomId: pane.roomId,
-          runtimeId: runtime.id,
-          providerId: runtime.providerId,
-          agentId: runtime.agentId,
-          modelId: sameRuntime
-            ? sourceTask.revision.modelId ?? pane.modelId ?? runtime.defaultModelId
-            : pane.modelId ?? runtime.defaultModelId,
-          reasoningEffort: sameRuntime ? sourceTask.revision.reasoningEffort : pane.reasoningEffort,
-          launchMode: exactNativeResume ? "RESUME" : "FRESH",
-          cwd: sameRuntime ? sourceTask.revision.cwd ?? pane.cwd ?? "/etc" : pane.cwd ?? "/etc",
-          codexThreadId: null,
-          cliTaskId: sourceTask.taskId,
-          status: "IDLE",
-          statusReason: "CLI session allocated; waiting for terminal transport attach."
-        },
-        request.requestIdForSpace
-      );
-      cliTerminalManager.recordSessionAllocation(allocatedSession.sessionId, allocatedAtNs);
-
-      if (nativeThreadId) {
-        await store.claimPaneCliCodexThread(
-          allocatedSession.sessionId,
-          nativeThreadId,
-          "HISTORY_TRANSFER",
-          request.requestIdForSpace
-        );
-      }
-      let session = (await store.getPaneCliSession(allocatedSession.sessionId)) ?? allocatedSession;
-      if (session.cliTaskRevisionId) {
-        await store.updateCliTaskRevision(
-          session.cliTaskRevisionId,
-          {
-            displayTitle: paneTitle,
-            firstUserMessage: sourceTask.firstUserMessage,
-            preview: sourceTask.preview,
-            cwd: session.cwd,
-            modelId: session.modelId,
-            reasoningEffort: session.reasoningEffort,
-            ...(nativeThreadId
-              ? { nativeTaskRef: nativeThreadId }
-              : opencodeNativeSessionId
-                ? { nativeTaskRef: opencodeNativeSessionId }
-                : {})
-          },
-          request.requestIdForSpace
-        );
-      }
-      await store.appendPaneCliTranscriptChunk(
-        {
-          sessionId: session.sessionId,
-          paneId: pane.id,
-          roomId: pane.roomId,
-          sequence: 0,
-          stream: "system",
-          content: exactNativeResume
-            ? `Resuming ${sourceTask.title} from exact ${runtime.displayName} task history.`
-            : `Loaded bounded untrusted context from Space CLI task ${sourceTask.title} into a fresh ${runtime.displayName} session.`
-        },
-        request.requestIdForSpace
-      );
-      if (!exactNativeResume) {
-        const sharedContext = buildSharedCliTaskContext({
-          sourceTaskId: sourceTask.taskId,
-          sourceRuntimeLabel: sourceTask.providerLabel,
-          sourceTitle: sourceTask.title,
-          sourceFirstUserMessage: sourceTask.firstUserMessage,
-          targetRuntimeLabel: runtime.displayName,
-          transcript: sourceTask.transcript
-        });
-        await cliTerminalManager.sendInput(
-          session.sessionId,
-          sharedContext,
-          request.requestIdForSpace,
-          null,
-          `shared-history:${sourceTask.taskId}:${session.sessionId}`
-        );
-        session = (await store.getPaneCliSession(session.sessionId)) ?? session;
-      }
-      const updatedPane = await store.updatePane(
-        pane.id,
-        { title: paneTitle, cwd: session.cwd, terminalRuntimeId: runtime.id },
-        request.requestIdForSpace
-      );
-      const latestEvent = await getLatestRoomEvent(store, updatedPane.roomId);
-      if (latestEvent) eventBus.publish(latestEvent);
-
-      await recordAudit(store, request, {
-        action: "pane.cli.resume",
-        targetType: "pane",
-        targetId: pane.id,
-        metadata: {
-          roomId: pane.roomId,
-          runtimeId: runtime.id,
-          sessionId: session.sessionId,
-          mode,
-          sourceTaskId: sourceTask.taskId,
-          sourceRevisionId: sourceTask.revision.revisionId,
-          targetRevisionId: session.cliTaskRevisionId,
-          sourceRuntimeId: sourceTask.runtimeId,
-          codexThreadId: nativeThreadId,
-          opencodeNativeSessionId: opencodeNativeSessionId ?? undefined
-        }
-      });
-      return resumePaneCliSessionResponseSchema.parse({
-        ...(await buildPaneCliSessionResponse({
-          store,
-          runtime,
-          sessionId: session.sessionId,
-          includeWebsocket: true,
-          tokenTtlMs: config.cliTokenTtlMs,
-          issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
-        })),
-        pane: updatedPane,
-        mode
-      });
-    };
-
-    return nativeThreadId
-      ? codexHistoryAccessCoordinator.withHistoryAttachment(resumeOperation)
-      : resumeOperation();
+    return resumePaneCliTask(pane, input, request.requestIdForSpace, request);
   });
 
   app.post("/api/panes/:id/cli/uploads", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -11336,10 +11965,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const interruptReason = loginSession
       ? "CLI login cancelled by operator."
       : input.reason ? redactMemoryText(input.reason) : "Interrupted by operator.";
-    await cliTerminalManager.interrupt(active.sessionId, {
+    await spaceControl.withOperatorMutation(pane,()=>cliTerminalManager.interrupt(active.sessionId, {
       content: "Interrupt requested by operator.",
       traceId: request.requestIdForSpace
-    });
+    }));
     if (loginSession) {
       // LOGIN lifecycle status and its minimal audit are owned by the terminal manager.
     } else {
@@ -11410,16 +12039,30 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return spaceAgentAdapter.loadSession({ pane });
   });
 
+  const spaceControlRoutes = registerSpaceControlRoutes(app,spaceControl,{cliRoom:request=>controlCliRooms.get(request)??null,resolveActor:controlUser});
+  app.post("/api/control/v1/grant",async request=>{
+    if(!request.user||request.user.role!=="ADMIN"||request.user.automationScope)throw new SpaceConflictError("Only the operator may grant control access.");
+    const input=z.object({roomId:z.string().min(1),enabled:z.boolean()}).strict().parse(request.body);
+    await store.getRoom(input.roomId);const actor=await controlUser(request.user.id,request.user.email);
+    const previous=await controlRepository.get("grant","shared",input.roomId);
+    if(!await controlRepository.write({kind:"grant",actorId:"shared",key:input.roomId,roomId:input.roomId,version:(previous?.version??0)+1,value:{actorId:input.enabled?actor.id:null}},previous?.version??0))throw new SpaceConflictError("Control grant changed.");
+    return {roomId:input.roomId,enabled:input.enabled};
+  });
+
   app.get("/api/rooms/:id/room-agent", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     return roomAgentService.load(params.id);
   });
 
   app.post("/api/rooms/:id/room-agent/messages", defaultRouteRateLimitOptions, async (request, reply) => {
-    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
+    if(request.user?.role==="ADMIN"&&!request.user.automationScope){
+      const actor=await controlUser(request.user.id,request.user.email);
+      const key=`room-agent:${params.id}`,previous=await controlRepository.get("grant","shared",key);
+      await controlRepository.write({kind:"grant",actorId:"shared",key,roomId:params.id,version:(previous?.version??0)+1,value:{actorId:actor.id}},previous?.version??0);
+    }
     const input = parseBody(roomAgentMessageInputSchema, request.body);
-    const session = await roomAgentService.send(params.id, input.content, input.clientRequestId, request.requestIdForSpace);
+    const session = await roomAgentService.send(params.id, input.content, input.clientRequestId, request.requestIdForSpace, operatorBrowserActor(request), input.selectedBrowserPaneId);
     await recordAudit(store, request, {
       action: "room.agent.message",
       targetType: "room",
@@ -11427,6 +12070,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       metadata: { sessionId: session.sessionId, queuedMissionCount: session.queuedMissionCount }
     });
     return reply.code(202).send(session);
+  });
+
+  app.post("/api/rooms/:id/room-agent/commands/:clientRequestId/ack", defaultRouteRateLimitOptions, async (request) => {
+    const params = parseQuery(z.object({ id: z.string().min(1), clientRequestId: z.string().min(1).max(200) }), request.params);
+    const input = parseBody(z.object({ ok: z.boolean() }).strict(), request.body);
+    return roomAgentService.acknowledgeCommand(params.id, params.clientRequestId, input.ok, operatorBrowserActor(request));
   });
 
   app.post("/api/rooms/:id/room-agent/stop", defaultRouteRateLimitOptions, async (request) => {
@@ -11445,7 +12094,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.post("/api/rooms/:id/room-agent/control", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(roomAgentControlInputSchema, request.body ?? {});
-    if (input.action !== "STOP") await cliRuntimeVisibility.assertEnabled("cli:codex");
     const session = await roomAgentService.control(params.id, input.action, "reason" in input ? input.reason : undefined, request.requestIdForSpace);
     await recordAudit(store, request, {
       action: `room.agent.${input.action.toLowerCase()}`,
@@ -11457,7 +12105,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.delete("/api/rooms/:id/room-agent/transcript", defaultRouteRateLimitOptions, async (request) => {
-    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const session = await roomAgentService.clearTranscript(params.id, request.requestIdForSpace);
     await recordAudit(store, request, {
@@ -11470,6 +12117,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.post("/api/panes/:id/agent-session", defaultRouteRateLimitOptions, async (request) => codexHistoryAccessCoordinator.withHistoryAttachment(async () => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createAgentPaneSessionInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -11485,6 +12133,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   }));
 
   app.post("/api/panes/:id/agent/messages", defaultRouteRateLimitOptions, async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneSendMessageInputSchema, request.body);
     const pane = await getPaneById(store, params.id);
@@ -11523,6 +12172,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.patch("/api/panes/:id/agent/settings", defaultRouteRateLimitOptions, async (request) => {
+    await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(agentPaneSettingsInputSchema, request.body);
     const pane = await getPaneById(store, params.id);
@@ -11592,6 +12242,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.get("/api/voice/transcription/settings", defaultRouteRateLimitOptions, async () => buildVoiceTranscriptionSettings(config));
+  app.get("/api/voice/local/status", defaultRouteRateLimitOptions, async () => getLocalVoiceProviderStatus(config));
+  app.post("/api/voice/local/sessions", defaultRouteRateLimitOptions, async (request, reply) => {
+    try {
+      return await createLocalVoiceSession(config, (request.body as Record<string, unknown>) || {});
+    } catch (error) {
+      return sendApiError(reply, 502, "LOCAL_VOICE_PROVIDER_FAILED", error instanceof Error ? error.message : "Local voice provider failed.");
+    }
+  });
+  app.get("/api/voice/openai-models", defaultRouteRateLimitOptions, async () => {
+    const models = await fetchOpenAiModels(config);
+    return openAiModelsResponseSchema.parse({ models });
+  });
 
   app.post("/api/voice/realtime/calls", defaultRouteRateLimitOptions, async (request, reply) => {
     const settings = buildVoiceTranscriptionSettings(config);
@@ -11599,13 +12261,22 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       throw new SpaceFeatureDisabledError("VOICE_TRANSCRIPTION_DISABLED", settings.statusReason);
     }
     const input = parseBody(voiceRealtimeSessionRequestSchema, request.body);
-    const model = normalizeVoiceTranscriptionModel(input.model ?? config.voiceTranscriptionModel);
+    const model = input.model?.trim() || config.voiceTranscriptionModel || "gpt-live-1";
     try {
       const result = await createVoiceRealtimeCall(config, {
         offerSdp: input.offerSdp,
         model,
         language: input.language,
         delay: input.delay ?? config.voiceTranscriptionDelay,
+        voice: input.voice ?? config.voiceTranscriptionVoice,
+        opening: input.opening,
+        prompt: input.prompt,
+        delegatedModel: input.delegatedModel,
+        delegatedType: input.delegatedType,
+        delegatedReasoningEffort: input.delegatedReasoningEffort,
+        delegatedWebSearch: input.delegatedWebSearch,
+        delegatedPrompt: input.delegatedPrompt,
+        tools: input.tools,
         safetyIdentifier: request.user ? createHash("sha256").update(`space:${request.user.id}`).digest("hex") : null
       });
       await recordAudit(store, request, {
@@ -11615,7 +12286,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         metadata: {
           model,
           language: input.language,
-          delay: input.delay ?? config.voiceTranscriptionDelay
+          delay: input.delay ?? config.voiceTranscriptionDelay,
+          voice: input.voice ?? config.voiceTranscriptionVoice
         }
       });
       return result;
@@ -11623,6 +12295,287 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const message = err instanceof Error ? err.message : "Voice Realtime call failed.";
       request.log.warn({ err, requestId: request.requestIdForSpace }, "voice realtime call failed");
       return sendApiError(reply, 502, "VOICE_REALTIME_CALL_FAILED", message);
+    }
+  });
+
+  app.post("/api/live/search", defaultRouteRateLimitOptions, async (request) => {
+    const body = (request.body as { query?: string; limit?: number }) || {};
+    const query = typeof body.query === "string" ? body.query.trim() : "";
+    const limit = typeof body.limit === "number" && body.limit > 0 ? Math.min(body.limit, 10) : 5;
+    if (!query) {
+      return { results: [] };
+    }
+
+    const results: Array<{ title: string; snippet: string; url?: string }> = [];
+
+    // 1. If query contains a domain or URL-like term (e.g. "ola.gr"), fetch summary of that domain
+    const domainMatch = query.match(/(?:https?:\/\/)?([a-zA-Z0-9-]+\.(?:gr|com|org|net|io|co|app|ai)(?:\/[^\s]*)?)/i);
+    if (domainMatch && domainMatch[1]) {
+      try {
+        const targetUrl = domainMatch[1].startsWith("http") ? domainMatch[1] : `https://${domainMatch[1]}`;
+        const siteResp = await fetch(targetUrl, {
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)" },
+          signal: AbortSignal.timeout(4000)
+        });
+        if (siteResp.ok) {
+          const html = await siteResp.text();
+          const title = html.match(/<title>([^<]+)<\/title>/i)?.[1]?.trim() || domainMatch[1];
+          const metaDesc = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i)?.[1]?.trim() || "";
+          const bodySnippet = html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+          results.push({
+            title: `Website: ${title}`,
+            snippet: metaDesc || bodySnippet || `Active website at ${targetUrl}`,
+            url: targetUrl
+          });
+        }
+      } catch {}
+    }
+
+    // 2. If query mentions weather or temperature, query Open-Meteo for real-time weather
+    if (/weather|temperature|καιρ/i.test(query)) {
+      try {
+        let lat = 13.7563; // Bangkok default
+        let lon = 100.5018;
+        let locName = "Bangkok, Thailand";
+        if (/athens|greece|αθην/i.test(query)) {
+          lat = 37.9838;
+          lon = 23.7275;
+          locName = "Athens, Greece";
+        }
+        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&timezone=auto`;
+        const weatherResp = await fetch(weatherUrl, { signal: AbortSignal.timeout(4000) });
+        if (weatherResp.ok) {
+          const wData = (await weatherResp.json()) as { current?: { temperature_2m?: number; apparent_temperature?: number; relative_humidity_2m?: number; wind_speed_10m?: number } };
+          if (wData?.current) {
+            results.push({
+              title: `Live Weather in ${locName}`,
+              snippet: `Temperature: ${wData.current.temperature_2m}°C (feels like ${wData.current.apparent_temperature}°C), Humidity: ${wData.current.relative_humidity_2m}%, Wind: ${wData.current.wind_speed_10m} km/h`,
+              url: `https://open-meteo.com/`
+            });
+          }
+        }
+      } catch {}
+    }
+
+    // 3. Wikipedia search for factual knowledge, definitions, history, people, geography
+    try {
+      const wikiUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&utf8=1`;
+      const wikiResp = await fetch(wikiUrl, {
+        headers: { "User-Agent": "SpaceApp/1.0 (LiveAssistant; contact@space.local)" },
+        signal: AbortSignal.timeout(4000)
+      });
+      if (wikiResp.ok) {
+        const data = (await wikiResp.json()) as { query?: { search?: Array<{ title?: string; snippet?: string }> } };
+        if (Array.isArray(data?.query?.search)) {
+          for (const item of data.query.search.slice(0, 3)) {
+            const cleanTitle = item.title?.trim() || "";
+            const cleanSnippet = (item.snippet || "").replace(/<[^>]+>/g, "").trim();
+            if (cleanTitle && cleanSnippet) {
+              results.push({
+                title: cleanTitle,
+                snippet: cleanSnippet,
+                url: `https://en.wikipedia.org/wiki/${encodeURIComponent(cleanTitle.replace(/\s+/g, "_"))}`
+              });
+            }
+          }
+        }
+      }
+    } catch {}
+
+    return { results: results.slice(0, limit) };
+  });
+
+  app.post("/api/live/fetch-url", defaultRouteRateLimitOptions, async (request, reply) => {
+    const body = (request.body as { url?: string; maxChars?: number }) || {};
+    let rawUrl = typeof body.url === "string" ? body.url.trim() : "";
+    const maxChars = typeof body.maxChars === "number" && body.maxChars > 0 ? Math.min(body.maxChars, 8000) : 3000;
+    if (!rawUrl) {
+      return sendApiError(reply, 400, "MISSING_URL", "Target URL is required.");
+    }
+    if (!/^https?:\/\//i.test(rawUrl)) {
+      rawUrl = `https://${rawUrl}`;
+    }
+
+    try {
+      const resp = await fetch(rawUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        },
+        signal: AbortSignal.timeout(6000)
+      });
+      if (!resp.ok) {
+        return {
+          url: rawUrl,
+          title: "",
+          text: `HTTP error ${resp.status} fetching ${rawUrl}: ${resp.statusText}`
+        };
+      }
+      const html = await resp.text();
+      const title = html.match(/<title>([^<]+)<\/title>/i)?.[1]?.trim() || rawUrl;
+      const cleanText = html
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/\s+/g, " ")
+        .trim();
+
+      return {
+        url: rawUrl,
+        title,
+        text: cleanText.slice(0, maxChars)
+      };
+    } catch (err) {
+      return {
+        url: rawUrl,
+        title: "",
+        text: `Error fetching URL ${rawUrl}: ${err instanceof Error ? err.message : String(err)}`
+      };
+    }
+  });
+
+  interface LivePersonalMemoryItem {
+    id: string;
+    key: string;
+    value: string;
+    category?: "profile" | "preference" | "fact" | "instruction" | "note";
+    createdAt: string;
+    updatedAt: string;
+  }
+
+  const LIVE_MEMORY_FILE = "/opt/spaceapp/var/live-personal-memory.json";
+  const DEFAULT_PERSONAL_MEMORIES: LivePersonalMemoryItem[] = [
+    {
+      id: "mem_user_name",
+      key: "userName",
+      value: "Νικόλας",
+      category: "profile",
+      createdAt: "2026-09-12T00:00:00.000Z",
+      updatedAt: "2026-09-12T00:00:00.000Z"
+    }
+  ];
+
+  async function readLivePersonalMemories(): Promise<LivePersonalMemoryItem[]> {
+    try {
+      const content = await readFile(LIVE_MEMORY_FILE, "utf-8");
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    } catch {}
+    try {
+      await writeFile(LIVE_MEMORY_FILE, JSON.stringify(DEFAULT_PERSONAL_MEMORIES, null, 2), "utf-8");
+    } catch {}
+    return [...DEFAULT_PERSONAL_MEMORIES];
+  }
+
+  async function writeLivePersonalMemories(items: LivePersonalMemoryItem[]): Promise<void> {
+    await writeFile(LIVE_MEMORY_FILE, JSON.stringify(items, null, 2), "utf-8");
+  }
+
+  app.get("/api/live/personal-memory", defaultRouteRateLimitOptions, async () => {
+    const items = await readLivePersonalMemories();
+    return { items };
+  });
+
+  app.post("/api/live/personal-memory", defaultRouteRateLimitOptions, async (request, reply) => {
+    const body = (request.body as { key?: string; value?: string; category?: string; id?: string }) || {};
+    const key = typeof body.key === "string" ? body.key.trim() : "";
+    const value = typeof body.value === "string" ? body.value.trim() : "";
+    if (!key || !value) {
+      return sendApiError(reply, 400, "INVALID_INPUT", "Both key and value are required for personal memory.");
+    }
+    const category = (body.category as LivePersonalMemoryItem["category"]) || "profile";
+    const items = await readLivePersonalMemories();
+    const now = new Date().toISOString();
+
+    let targetItem: LivePersonalMemoryItem | undefined;
+    if (body.id) {
+      targetItem = items.find((i) => i.id === body.id);
+    }
+    if (!targetItem) {
+      targetItem = items.find((i) => i.key.toLowerCase() === key.toLowerCase());
+    }
+
+    if (targetItem) {
+      targetItem.key = key;
+      targetItem.value = value;
+      targetItem.category = category;
+      targetItem.updatedAt = now;
+    } else {
+      targetItem = {
+        id: body.id || `mem_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        key,
+        value,
+        category,
+        createdAt: now,
+        updatedAt: now
+      };
+      items.push(targetItem);
+    }
+
+    await writeLivePersonalMemories(items);
+    return { item: targetItem };
+  });
+
+  app.delete("/api/live/personal-memory/:id", defaultRouteRateLimitOptions, async (request) => {
+    const { id } = request.params as { id: string };
+    const items = await readLivePersonalMemories();
+    const filtered = items.filter((i) => i.id !== id);
+    if (filtered.length !== items.length) {
+      await writeLivePersonalMemories(filtered);
+    }
+    return { ok: true };
+  });
+
+
+  app.post("/api/voice/realtime/attachments", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.isMultipart()) {
+      return sendApiError(reply, 400, "BAD_REQUEST", "Live attachments must use multipart/form-data.");
+    }
+    let model = "gpt-4o-mini";
+    let prompt = "";
+    let file: { buffer: Buffer; mimeType: string; filename: string } | null = null;
+    for await (const part of request.parts()) {
+      if (part.type === "field") {
+        if (part.fieldname === "model" && typeof part.value === "string") model = part.value.trim().slice(0, 120) || model;
+        if (part.fieldname === "prompt" && typeof part.value === "string") prompt = part.value.slice(0, 10000);
+        continue;
+      }
+      if (file) return sendApiError(reply, 422, "UPLOAD_LIMIT_EXCEEDED", "Send one attachment at a time.");
+      const supportedImage = part.mimetype === "image/png" || part.mimetype === "image/jpeg" || part.mimetype === "image/webp";
+      if (!part.mimetype || (!supportedImage && part.mimetype !== "application/pdf" && part.mimetype !== "text/plain")) {
+        return sendApiError(reply, 422, "UNSUPPORTED_MEDIA_TYPE", "Only images, PDF, and plain text attachments are supported.");
+      }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of part.file) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += buffer.byteLength;
+        if (size > 10 * 1024 * 1024) return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "Live attachments must be 10MB or smaller.");
+        chunks.push(buffer);
+      }
+      if (!size) return sendApiError(reply, 422, "EMPTY_UPLOAD", "Attachment must not be empty.");
+      file = { buffer: Buffer.concat(chunks), mimeType: part.mimetype, filename: part.filename || "attachment" };
+    }
+    if (!file) return sendApiError(reply, 422, "EMPTY_UPLOAD", "Attach an image or file.");
+    try {
+      const result = await createVoiceAttachmentResponse(config, { ...file, model, prompt });
+      await recordAudit(store, request, {
+        action: "voice.realtime.attachment",
+        targetType: "voice_realtime_attachment",
+        targetId: request.requestIdForSpace,
+        metadata: { mimeType: file.mimeType, byteSize: file.buffer.byteLength, model }
+      });
+      return result;
+    } catch (err) {
+      return sendApiError(reply, 502, "VOICE_ATTACHMENT_FAILED", err instanceof Error ? err.message : "Attachment analysis failed.");
     }
   });
 
@@ -12318,7 +13271,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const input = z.object({
         page: z.coerce.number().int().min(1).default(1),
         pageSize: z.coerce.number().int().min(10).max(200).default(100),
-        sort: z.enum(["rss", "cpu", "pid", "uptime", "name"]).default("rss"),
+        sort: z.enum(["rss", "cpu", "pid", "uptime", "name", "state", "threads"]).default("rss"),
         direction: z.enum(["asc", "desc"]).default("desc"),
         query: z.string().trim().max(160).optional(),
         ownership: z.enum(["ALL", "SPACE_CLI", "SPACE_SHARED", "OTHER"]).default("ALL")
@@ -13905,31 +14858,29 @@ app.post(
         );
       }
     }
-    let cachedSnapshot: MemoryGraphSnapshot | null = null;
-    if (page.searchMode === "keyword" && config.memoryGraphEnabled) {
-      try {
-        cachedSnapshot = await memoryGraphService.getCachedSnapshot();
-      } catch {
-        cachedSnapshot = null;
-      }
-    }
+    // Canonical retrieval is shared with native agents and checks source fingerprints.
+    // The graph is a visualization projection, never the authority for search freshness.
     const entries = page.searchMode === "semantic"
-      ? await store.listMemoryEntries(page, {
-          semanticReady,
-          queryEmbedding
-        })
-      : cachedSnapshot
-        ? projectMemoryGraphEntries(cachedSnapshot, page)
-        : memoryEntrySchema.array().max(1000).parse(await canonicalMemory.list(page));
-    const geminiEntries =
-      page.searchMode === "keyword" && !cachedSnapshot && page.q && entries.length === 0
-        ? memoryEntrySchema.array().max(10).parse(await geminiMemorySearcher(page))
-        : [];
+      ? canonicalSearch
+        ? await canonicalSearch.search(page, queryEmbedding!)
+        : await store.listMemoryEntries(page, { semanticReady, queryEmbedding })
+      : await canonicalMemory.list(page);
+    const geminiEntries: MemoryEntry[] = [];
     const entriesById = new Map<string, MemoryEntry>();
     for (const entry of [...entries, ...geminiEntries]) {
       if (!entriesById.has(entry.id)) entriesById.set(entry.id, entry);
     }
     const mergedEntries = [...entriesById.values()];
+    const search = buildMemorySearchStatus(page.searchMode, latestEmbeddingSmoke, vectorReadiness, geminiEntries.length);
+    if (canonicalSearch) {
+      try {
+        const coverage = await canonicalSearch.coverage();
+        search.semantic.statusReason = `Canonical coverage: ${coverage.indexed}/${coverage.total}. ${coverage.error ?? search.semantic.statusReason}`.slice(0, 500);
+      } catch {
+        search.semantic.status = "ERROR";
+        search.semantic.statusReason = "Canonical embedding coverage is unavailable; keyword search remains active.";
+      }
+    }
     const start = (page.page - 1) * page.pageSize;
     return {
       data: mergedEntries.slice(start, start + page.pageSize),
@@ -13939,7 +14890,7 @@ app.post(
         totalItems: mergedEntries.length,
         totalPages: Math.ceil(mergedEntries.length / page.pageSize)
       },
-      search: buildMemorySearchStatus(page.searchMode, latestEmbeddingSmoke, vectorReadiness, geminiEntries.length)
+      search
     };
   });
   app.post("/api/memory", defaultRouteRateLimitOptions, async (request) => {
@@ -15281,6 +16232,17 @@ app.post(
           ? storageReadiness.statusReason
           : ""
     };
+  });
+  app.get("/api/admin/system-analytics/health", { config: { rateLimit: { max: 180, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "System health requires the ADMIN role.");
+    reply.header("Cache-Control", "no-store");
+    return systemHealthSnapshotSchema.parse(await healthMonitor.snapshot());
+  });
+  app.get("/api/admin/system-analytics/health/history", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "System health requires the ADMIN role.");
+    const { range } = z.object({ range: systemHealthRangeSchema.default("10m") }).strict().parse(request.query);
+    reply.header("Cache-Control", "no-store");
+    return systemHealthHistorySchema.parse(await healthMonitor.history(range));
   });
   app.get("/api/admin/storage", defaultRouteRateLimitOptions, async () => storageReadinessSchema.parse(await storageReadinessChecker()));
   app.get("/api/admin/observability", defaultRouteRateLimitOptions, async () => observabilitySnapshotSchema.parse(observability.snapshot()));

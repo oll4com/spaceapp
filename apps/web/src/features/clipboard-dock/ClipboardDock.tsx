@@ -129,7 +129,8 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
       window.setTimeout(() => setCopiedId((current) => (current === item.id ? null : current)), 1_500);
       await captureClipboardText({
         text: item.text,
-        source: "COPY",
+        source: item.source === "AGENT_NOTE" ? "COPY" : item.source,
+        title: item.source === "PLAN" ? (item.title ?? undefined) : undefined,
         roomId: item.roomId,
         paneId: item.paneId,
         paneTitle: item.paneTitle
@@ -183,6 +184,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert }: Clipboar
     <section
       className={`clipboard-dock-shell${isFullscreen ? " is-fullscreen" : ""}`}
       aria-label="Clipboard history"
+      data-space-clipboard-capture="off"
     >
       <div className="clipboard-dock">
         <header className="clipboard-dock-head">

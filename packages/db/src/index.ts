@@ -1,5 +1,7 @@
 export { loadMigrations, migrationDirectory } from "./migrations.js";
+export * from "./system-health-repository.js";
 export { PostgresSpaceStore, type PgClientLike, type PgPoolLike } from "./space-store.js";
+export { CanonicalMemoryEmbeddings, type CanonicalEmbeddingRow } from "./canonical-memory-embeddings.js";
 export { PostgresTelegramPersistence } from "./telegram-persistence.js";
 export {
   AppDiagnosticsRepositoryConflictError,
@@ -65,3 +67,7 @@ export type {
   StreamingBotQuotaRecord,
   StreamingBotRepository
 } from "./streaming-bot-repository.js";
+
+export * from "./task-title-repository.js";
+
+export * from "./space-control-repository.js";

@@ -54,17 +54,19 @@ export function AdminOperationsDialog({
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
-  const title = initialTool === "maintenance"
+  const [activeTool, setActiveTool] = useState<AdminOperationTool>(initialTool);
+
+  const title = activeTool === "maintenance"
     ? "Space & CLI maintenance"
-    : initialTool === "update-all"
+    : activeTool === "update-all"
       ? "Update all CLI types"
       : "Publish Space release";
-  const description = initialTool === "maintenance"
+  const description = activeTool === "maintenance"
     ? "Repair Space and every managed CLI with live stages, durable history, safe rollback and provider-login handoff."
-    : initialTool === "update-all"
+    : activeTool === "update-all"
       ? "Detect every Space CLI type and update all managed types, including disabled ones, while preserving each custom procedure."
       : "Preview and publish the clean live Space version to the fixed Gitea and GitHub repositories.";
-  const HeaderIcon = initialTool === "maintenance" ? Wrench : initialTool === "update-all" ? Zap : Rocket;
+  const HeaderIcon = activeTool === "maintenance" ? Wrench : activeTool === "update-all" ? Zap : Rocket;
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => closeRef.current?.focus());
@@ -118,13 +120,39 @@ export function AdminOperationsDialog({
             <h2>{title}</h2>
             <p>{description}</p>
           </div>
+          <div className="filter-tabs">
+            <button
+              type="button"
+              className={`filter-tab${activeTool === "maintenance" ? " active" : ""}`}
+              disabled={busy}
+              onClick={() => setActiveTool("maintenance")}
+            >
+              Maintenance
+            </button>
+            <button
+              type="button"
+              className={`filter-tab${activeTool === "update-all" ? " active" : ""}`}
+              disabled={busy}
+              onClick={() => setActiveTool("update-all")}
+            >
+              Update All
+            </button>
+            <button
+              type="button"
+              className={`filter-tab${activeTool === "release" ? " active" : ""}`}
+              disabled={busy}
+              onClick={() => setActiveTool("release")}
+            >
+              Release
+            </button>
+          </div>
           <button ref={closeRef} type="button" aria-label={`Close ${title}`} disabled={busy} onClick={close}>
             <X aria-hidden="true" />
           </button>
         </header>
-        {initialTool === "maintenance"
+        {activeTool === "maintenance"
           ? <MaintenancePanel client={client} onBusyChange={setBusy} />
-          : initialTool === "update-all"
+          : activeTool === "update-all"
             ? <CliUpdateAllPanel client={client} onBusyChange={setBusy} />
             : <ReleasePanel client={client} onBusyChange={setBusy} />}
       </section>

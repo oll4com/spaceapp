@@ -1,784 +1,567 @@
-import { Loader2, MousePointer2, RefreshCw, X } from "../ui-theme/app-icons.js";
-import { useEffect, useRef, useState } from "react";
-import {
-  browserStreamWebSocketServerMessageSchema,
-  type BrowserFrame,
-  type BrowserSessionViewport,
-  type Pane,
-  type PaneBrowserSessionResponse
-} from "@space/contracts";
-import {
-  api,
-  type BrowserControlLeasePayload,
-  type BrowserInputPayload,
-  type BrowserStatusPayload
-} from "../../api.js";
-import { browserGateway } from "../../runtime/SpaceRuntime.js";
-import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
-import { BrowserCanvas, type BrowserCanvasHandle, type BrowserCanvasInput } from "./BrowserCanvas.js";
-import {
-  BROWSER_PANE_ACTION_EVENT,
-  parseBrowserPaneActionDetail,
-  registerBrowserPaneEventTarget
-} from "./events.js";
-import type { UiTheme } from "../../ui-theme.js";
+import { registerRoomPlaybackTarget } from "../room-agent/room-playback-control.js";
+import { Check, ChevronLeft, ChevronRight, Home, Maximize2, Music2, Pause, PictureInPicture2, Play, Plus, Users, Youtube } from "../ui-theme/app-icons.js";
+import type { YouTubeAccounts } from "./youtube-accounts.js";
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import type { Pane, UserLink } from '@space/contracts';
+import { api } from '../../api.js';
+import type { UiTheme } from '../../ui-theme.js';
+import { takeYouTubeBrowseIntent } from "./youtube-browse-intent.js";
+import { ManagedYouTubeBrowser } from './ManagedYouTubeBrowser.js';
+import { YouTubeNativePlayer, type YouTubeNativePlayerHandle } from './YouTubeNativePlayer.js';
+import { parseYouTubePlayback, validYouTubePlayback, youtubePlaybackUrl, type YouTubePlayback } from './youtube-playback.js';
+import { USER_LINKS_UPDATED_EVENT } from "../user-links/UserLinks.js";
 
 interface YouTubePaneProps {
   pane: Pane;
   agentNumber: number;
   observerOnly?: boolean;
   uiTheme?: UiTheme;
+  toolbarHidden?: boolean;
+  onVideoTitleChange?: (title: string) => void;
+  isFloating?: boolean;
+  onToggleFloat?: () => void;
 }
 
-type BrowserSessionV2 = PaneBrowserSessionResponse["session"];
+export function YouTubePane(props: YouTubePaneProps) {
+  const { pane, observerOnly = false, toolbarHidden = false, onVideoTitleChange, isFloating = false, onToggleFloat } = props;
+  const [accounts, setAccounts] = useState<YouTubeAccounts | null>(null);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [accountSwitching, setAccountSwitching] = useState(false);
+  const [accountRevision, setAccountRevision] = useState(0);
+  const accountButton = useRef<HTMLButtonElement | null>(null);
+  const accountMenu = useRef<HTMLDivElement | null>(null);
+  const [accountPosition, setAccountPosition] = useState({ left: 8, top: 8, maxHeight: 320 });
 
-const YOUTUBE_URL = "https://www.youtube.com/";
-const YOUTUBE_VIEWPORT: BrowserSessionViewport = "wide";
-const YOUTUBE_VIEWPORT_SIZE = { width: 1280, height: 720 };
-const DEFAULT_AUDIO_SAMPLE_RATE = 48000;
-const DEFAULT_AUDIO_CHANNELS = 2;
-const AUDIO_BUFFER_MIN_MS = 60;
-const AUDIO_BUFFER_MAX_MS = 160;
-const AUDIO_CHUNK_MS = 40;
-const browserInputAckTimeoutMs = 2_000;
-const browserStreamReconnectMessage = "Live stream disconnected; reconnecting.";
+  useEffect(() => {
+    if (toolbarHidden || pane.isMinimized || pane.isClosed) setAccountMenuOpen(false);
+  }, [toolbarHidden, pane.isMinimized, pane.isClosed]);
 
-type YouTubeStreamState = "idle" | "connecting" | "open" | "ready" | "reconnecting" | "error" | "closed" | "silent";
-
-interface PendingBrowserInputAck {
-  sentAt: number;
-  timeoutId: number;
-}
-
-function isUnavailableV2Feature(error: unknown): boolean {
-  if (typeof error === "object" && error !== null && "status" in error) {
-    const status = (error as { status?: unknown }).status;
-    if (status === 404 || status === 405 || status === 501) return true;
-  }
-  return error instanceof Error && error.message.toLowerCase().includes("legacy browser host");
-}
-
-type BrowserFrameMessage =
-  | { type: "ready"; paneId: string; sessionId: string }
-  | { type: "frame"; frame: BrowserFrame }
-  | { type: "status"; status: string; statusReason?: string | null }
-  | { type: "error"; code: string; message: string };
-
-function isBrowserFrameMessage(value: unknown): value is BrowserFrameMessage {
-  return typeof value === "object" && value !== null && "type" in value;
-}
-
-export function YouTubePane({ pane, agentNumber, observerOnly = false }: YouTubePaneProps) {
-  const [status, setStatus] = useState<BrowserStatusPayload | null>(null);
-  const [response, setResponse] = useState<PaneBrowserSessionResponse | null>(null);
-  const [frame, setFrame] = useState<BrowserFrame | null>(null);
-  const [handoff, setHandoff] = useState(false);
-  const [controlLease, setControlLease] = useState<BrowserControlLeasePayload | null>(null);
-  const [streamState, setStreamState] = useState<YouTubeStreamState>("idle");
-  const [streamFps, setStreamFps] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!accountMenuOpen) return;
+    const place = () => {
+      const button = accountButton.current;
+      if (!button) { setAccountMenuOpen(false); return; }
+      const box = button.getBoundingClientRect();
+      const width = Math.min(230, window.innerWidth - 16);
+      const height = Math.min(accountMenu.current?.scrollHeight || 320, window.innerHeight - 16);
+      const below = window.innerHeight - box.bottom - 14;
+      const top = below >= height || below >= box.top - 14 ? box.bottom + 6 : Math.max(8, box.top - height - 6);
+      setAccountPosition({ left: Math.max(8, Math.min(box.left, window.innerWidth - width - 8)), top,
+        maxHeight: Math.max(60, window.innerHeight - top - 8) });
+    };
+    const dismissOutside = (event: Event) => {
+      if (event.target instanceof Node && !accountMenu.current?.contains(event.target) && !accountButton.current?.contains(event.target)) setAccountMenuOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault(); event.stopPropagation();
+      setAccountMenuOpen(false); accountButton.current?.focus();
+    };
+    const scroll = (event: Event) => {
+      if (!(event.target instanceof Node) || !accountMenu.current?.contains(event.target)) setAccountMenuOpen(false);
+    };
+    place();
+    accountMenu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
+    document.addEventListener('pointerdown', dismissOutside, true);
+    document.addEventListener('focusin', dismissOutside);
+    document.addEventListener('keydown', escape, true);
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', scroll, true);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      if (!accountButton.current?.getClientRects().length) setAccountMenuOpen(false);
+      else place();
+    });
+    if (accountButton.current) observer?.observe(accountButton.current);
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside, true);
+      document.removeEventListener('focusin', dismissOutside);
+      document.removeEventListener('keydown', escape, true);
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', scroll, true);
+      observer?.disconnect();
+    };
+  }, [accountMenuOpen]);
+  const [mode, setMode] = useState<'loading' | 'browse' | 'player'>('loading');
+  const [initial, setInitial] = useState<YouTubePlayback | null>(null);
+  const [playerRevision, setPlayerRevision] = useState(0);
+  const [autoPlay, setAutoPlay] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const playerRef = useRef<YouTubeNativePlayerHandle | null>(null);
+  const [targetUrl, setTargetUrl] = useState<string | undefined>();
+  const [url, setUrl] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [transportPaused, setTransportPaused] = useState(false);
-  const canvasRef = useRef<BrowserCanvasHandle | null>(null);
-  const paneRef = useRef<HTMLElement | null>(null);
-  const controlLeaseRef = useRef<BrowserControlLeasePayload | null>(null);
-  const controlAcquirePromiseRef = useRef<Promise<BrowserControlLeasePayload | null> | null>(null);
-  const legacyControlRef = useRef(false);
-  const legacyPointerDownRef = useRef<{ x: number; y: number; button: string } | null>(null);
-  const browserStreamSocketRef = useRef<WebSocket | null>(null);
-  const browserStreamAttemptedSessionsRef = useRef(new Set<string>());
-  const browserInputSequenceRef = useRef(0);
-  const pendingBrowserInputAcksRef = useRef(new Map<string, PendingBrowserInputAck>());
-  const coalescedBrowserInputRef = useRef<BrowserInputPayload | null>(null);
-  const coalescedBrowserInputFrameRef = useRef<number | null>(null);
-  const audioSocketRef = useRef<WebSocket | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const audioNextTimeRef = useRef<number | null>(null);
-  const audioQueueRef = useRef<Int16Array[]>([]);
-  const audioSampleRateRef = useRef(DEFAULT_AUDIO_SAMPLE_RATE);
-  const audioChannelsRef = useRef(DEFAULT_AUDIO_CHANNELS);
-  const transportPausedRef = useRef(false);
-  const reloadRef = useRef<() => void>(() => undefined);
+  const [saveState, setSaveState] = useState('');
+  const [reload, setReload] = useState(0);
+  const latest = useRef<YouTubePlayback | null>(null);
+  const localKey = useRef<string | null>(null);
+  const queuedSave = useRef<YouTubePlayback | null>(null);
+  const saving = useRef(false);
+  const saveGeneration = useRef(0);
+  const mounted = useRef(true);
 
-  const session = (response?.session as BrowserSessionV2 | undefined) ?? null;
-  const activeFrame = frame ?? response?.frame ?? null;
+  const [playlists, setPlaylists] = useState<UserLink[]>([]);
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string>('');
+  const [currentVideo, setCurrentVideo] = useState<{ videoId: string; title: string } | null>(null);
+  const [addingToPlaylist, setAddingToPlaylist] = useState(false);
+  const addingToPlaylistRef = useRef(false);
+  const [addedVideoId, setAddedVideoId] = useState<string | null>(null);
 
-  function appendFrame(nextFrame: BrowserFrame | null) {
-    if (!nextFrame) return;
-    setFrame(nextFrame);
-  }
+  useEffect(() => {
+    onVideoTitleChange?.(mode === 'player' ? currentVideo?.title ?? '' : '');
+  }, [mode, currentVideo?.title, onVideoTitleChange]);
 
-  function updateBrowserStreamTelemetry(state: YouTubeStreamState, input: { fps?: number } = {}) {
-    const element = paneRef.current;
-    if (!element) return;
-    element.dataset.browserStreamState = state;
-    if (input.fps !== undefined) element.dataset.browserStreamFps = String(input.fps);
-    element.dataset.browserStreamMode = "REALTIME";
-    setStreamState(state);
-    if (input.fps !== undefined) setStreamFps(input.fps);
-  }
-
-  function updateBrowserInputTelemetry(lastAck?: "ok" | "failed" | "timeout") {
-    const element = paneRef.current;
-    if (!element) return;
-    element.dataset.browserInputPending = String(pendingBrowserInputAcksRef.current.size);
-    if (lastAck) element.dataset.browserInputLastAck = lastAck;
-  }
-
-  function clearPendingBrowserInputAcks(lastAck?: "timeout") {
-    for (const pendingAck of pendingBrowserInputAcksRef.current.values()) {
-      window.clearTimeout(pendingAck.timeoutId);
-    }
-    pendingBrowserInputAcksRef.current.clear();
-    updateBrowserInputTelemetry(lastAck);
-  }
-
-  function sendBrowserInputNow(input: BrowserInputPayload): boolean {
-    const socket = browserStreamSocketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-    browserInputSequenceRef.current += 1;
-    const requestId = `browser-input:${Date.now().toString(36)}:${browserInputSequenceRef.current.toString(36)}`;
-    const sentAt = performance.now();
-    const timeoutId = window.setTimeout(() => {
-      const pendingAck = pendingBrowserInputAcksRef.current.get(requestId);
-      if (!pendingAck) return;
-      pendingBrowserInputAcksRef.current.delete(requestId);
-      updateBrowserInputTelemetry("timeout");
-    }, browserInputAckTimeoutMs);
-    pendingBrowserInputAcksRef.current.set(requestId, { sentAt, timeoutId });
-    updateBrowserInputTelemetry();
-    try {
-      socket.send(JSON.stringify({ type: "input", requestId, input }));
-      return true;
-    } catch {
-      window.clearTimeout(timeoutId);
-      pendingBrowserInputAcksRef.current.delete(requestId);
-      updateBrowserInputTelemetry();
-      return false;
-    }
-  }
-
-  function flushCoalescedBrowserInput(): void {
-    if (coalescedBrowserInputFrameRef.current !== null) {
-      window.cancelAnimationFrame(coalescedBrowserInputFrameRef.current);
-      coalescedBrowserInputFrameRef.current = null;
-    }
-    const pendingInput = coalescedBrowserInputRef.current;
-    coalescedBrowserInputRef.current = null;
-    if (pendingInput) sendBrowserInputNow(pendingInput);
-  }
-
-  function discardCoalescedBrowserInput(): void {
-    if (coalescedBrowserInputFrameRef.current !== null) {
-      window.cancelAnimationFrame(coalescedBrowserInputFrameRef.current);
-      coalescedBrowserInputFrameRef.current = null;
-    }
-    coalescedBrowserInputRef.current = null;
-  }
-
-  function sendRealtimeBrowserInput(input: BrowserInputPayload): boolean {
-    const socket = browserStreamSocketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-    const coalescible =
-      (input.type === "POINTER" && input.eventType === "mouseMoved") ||
-      (input.type === "TOUCH" && input.eventType === "touchMove");
-    if (!coalescible) {
-      flushCoalescedBrowserInput();
-      return sendBrowserInputNow(input);
-    }
-    coalescedBrowserInputRef.current = input;
-    if (coalescedBrowserInputFrameRef.current === null) {
-      coalescedBrowserInputFrameRef.current = window.requestAnimationFrame(() => {
-        coalescedBrowserInputFrameRef.current = null;
-        const pendingInput = coalescedBrowserInputRef.current;
-        coalescedBrowserInputRef.current = null;
-        if (pendingInput) sendBrowserInputNow(pendingInput);
-      });
-    }
-    return true;
-  }
-
-  function applyResponse(next: PaneBrowserSessionResponse) {
-    setResponse(next);
-    appendFrame(next.frame);
-  }
-
-  async function loadOrStart() {
-    setPending(true);
+  async function addToPlaylist() {
+    if (observerOnly || mode !== 'player' || addingToPlaylistRef.current) return;
+    // Read the player at click time: autoplay may have just advanced the video.
+    const video = playerRef.current?.currentVideo() ?? currentVideo;
+    if (!video?.videoId) return;
+    setCurrentVideo(video);
+    addingToPlaylistRef.current = true;
+    setAddingToPlaylist(true);
     setError(null);
     try {
-      const nextStatus = await api.browserStatus();
-      setStatus(nextStatus);
-      if (!nextStatus.enabled) {
-        setResponse(null);
-        setFrame(null);
-        updateBrowserStreamTelemetry("closed");
-        return;
+      const videoUrl = `https://www.youtube.com/watch?v=${video.videoId}`;
+      const existing = playlists.some(link => link.category === 'MUSIC_LIBRARY'
+        && !parseYouTubePlayback(link.url)?.playlistId
+        && parseYouTubePlayback(link.url)?.videoId === video.videoId);
+      if (!existing) {
+        const link = await api.createLink({ title: (video.title.trim() || `YouTube ${video.videoId}`).slice(0, 160),
+          url: videoUrl, description: '', openMode: 'EMBEDDED', category: 'MUSIC_LIBRARY', isQuick: false });
+        if (mounted.current) setPlaylists(items => [...items.filter(item => item.id !== link.id), link]);
+        window.dispatchEvent(new Event(USER_LINKS_UPDATED_EVENT));
       }
-      try {
-        if (observerOnly) {
-          const nextResponse = await api.browserSession(pane.id);
-          applyResponse(nextResponse);
-          recordLifecycleDebugEvent({
-            type: "session_sync",
-            scope: "YouTubePane",
-            detail: `observer status=${nextResponse.session.status} viewport=${nextResponse.session.viewport}`,
-            paneId: pane.id,
-            paneMode: pane.mode
-          });
-          return;
-        }
-        const nextResponse = await api.startBrowserSession(pane.id, {
-          viewport: YOUTUBE_VIEWPORT,
-          targetUrl: YOUTUBE_URL,
-          ownerAgentId: `agent:${agentNumber}`,
-          streamMode: "REALTIME",
-          includeInitialFrame: false
-        });
-        applyResponse(nextResponse);
-        recordLifecycleDebugEvent({
-          type: "session_sync",
-          scope: "YouTubePane",
-          detail: `started viewport=${nextResponse.session.viewport} status=${nextResponse.session.status} mode=${nextResponse.session.streamMode}`,
-          paneId: pane.id,
-          paneMode: pane.mode
-        });
-      } catch (err) {
-        if (observerOnly) {
-          setResponse(null);
-          setFrame(null);
-          recordLifecycleDebugEvent({
-            type: "session_sync",
-            scope: "YouTubePane",
-            detail: "observer session unavailable",
-            paneId: pane.id,
-            paneMode: pane.mode
-          });
-          return;
-        }
-        setError(err instanceof Error ? err.message : "YouTube session failed to load");
-        updateBrowserStreamTelemetry("error");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "YouTube session failed to load");
-      updateBrowserStreamTelemetry("error");
+      if (mounted.current) setAddedVideoId(video.videoId);
+    } catch (cause) {
+      if (mounted.current) setError(cause instanceof Error ? cause.message : 'The video could not be added to the playlist. Try again.');
     } finally {
-      setPending(false);
+      addingToPlaylistRef.current = false;
+      if (mounted.current) setAddingToPlaylist(false);
     }
   }
 
   useEffect(() => {
-    void loadOrStart();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id]);
-
-  useEffect(() => {
-    const unregister = registerBrowserPaneEventTarget(pane.id);
-    const handleBrowserPaneAction = (event: Event) => {
-      const detail = parseBrowserPaneActionDetail((event as CustomEvent<unknown>).detail);
-      if (!detail || detail.paneId !== pane.id) return;
-      if (detail.action === "reload") reloadRef.current();
-    };
-    window.addEventListener(BROWSER_PANE_ACTION_EVENT, handleBrowserPaneAction);
-    return () => {
-      window.removeEventListener(BROWSER_PANE_ACTION_EVENT, handleBrowserPaneAction);
-      unregister();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id]);
-
-  useEffect(() => {
-    const updatePaused = () => {
-      const paused = pane.isMinimized || document.hidden;
-      transportPausedRef.current = paused;
-      setTransportPaused(paused);
-    };
-    updatePaused();
-    document.addEventListener("visibilitychange", updatePaused);
-    return () => document.removeEventListener("visibilitychange", updatePaused);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id, pane.isMinimized]);
-
-  useEffect(() => {
-    recordLifecycleDebugEvent({
-      type: "component_mounted",
-      scope: "YouTubePane",
-      detail: `pane=${pane.title}`,
-      paneId: pane.id,
-      paneMode: pane.mode
-    });
-    return () => {
-      recordLifecycleDebugEvent({
-        type: "component_unmounted",
-        scope: "YouTubePane",
-        detail: `pane=${pane.title}`,
-        paneId: pane.id,
-        paneMode: pane.mode
-      });
-    };
-  }, [pane.id, pane.mode, pane.title]);
-
-  useEffect(() => {
-    const fallbackTicket = response?.websocket ?? null;
-    const sessionId = session?.sessionId ?? null;
-    if (!fallbackTicket || !sessionId) {
-      updateBrowserStreamTelemetry("idle");
-      return;
-    }
+    if (observerOnly || typeof api.youtubeAccounts !== 'function') return;
     let disposed = false;
-    let activeSocket: WebSocket | null = null;
-    let reconnectTimer: number | null = null;
-    let reconnectAttempt = 0;
-    let connectionAttempt = 0;
-    const isFirstConnectionForSession = !browserStreamAttemptedSessionsRef.current.has(sessionId);
-    browserStreamAttemptedSessionsRef.current.add(sessionId);
+    void api.youtubeAccounts(pane.id).then(value => { if (!disposed) setAccounts(value); }).catch(() => { if (!disposed) setAccounts(null); });
+    return () => { disposed = true; };
+  }, [pane.id, observerOnly]);
 
-    const scheduleReconnect = () => {
-      if (disposed || reconnectTimer !== null || transportPausedRef.current) return;
-      const delayMs = Math.min(2_000, 250 * (2 ** Math.min(reconnectAttempt, 3)));
-      reconnectAttempt += 1;
-      updateBrowserStreamTelemetry("reconnecting");
-      setError((current) => current ?? browserStreamReconnectMessage);
-      reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = null;
-        void connect();
-      }, delayMs);
-    };
-
-    const connect = async () => {
-      if (disposed || transportPausedRef.current) return;
-      const isInitialAttempt = connectionAttempt === 0;
-      connectionAttempt += 1;
-      updateBrowserStreamTelemetry("connecting");
-      let ticket = observerOnly ? fallbackTicket : null;
+  useEffect(() => {
+    if (observerOnly || typeof api.links !== 'function') return;
+    let disposed = false;
+    async function loadPlaylists() {
       try {
-        if (!ticket) ticket = (await api.browserStreamTicket(pane.id)).websocket;
-      } catch {
-        if (isInitialAttempt && isFirstConnectionForSession) ticket = fallbackTicket;
-        else {
-          scheduleReconnect();
-          return;
-        }
-      }
-      if (disposed) return;
-      if (ticket.paneId !== pane.id || ticket.sessionId !== sessionId) {
-        setError("Live stream returned a ticket for a different session.");
-        scheduleReconnect();
-        return;
-      }
-      const realtimeUrl = api.browserStreamWebSocketUrl?.(ticket, "REALTIME") ?? null;
-      const socketUrl = realtimeUrl ?? api.browserFrameWebSocketUrl(ticket);
-      if (!socketUrl) {
-        scheduleReconnect();
-        return;
-      }
-      const realtime = Boolean(realtimeUrl);
-      const socket = browserGateway.connect(socketUrl);
-      activeSocket = socket;
-      socket.binaryType = "blob";
-      socket.addEventListener("open", () => {
-        if (!disposed) updateBrowserStreamTelemetry("open");
-      });
-      socket.addEventListener("message", (event) => {
-        if (event.data instanceof Blob) {
-          canvasRef.current?.present(event.data, new Date().toISOString());
-          return;
-        }
-        try {
-          const decoded = JSON.parse(String(event.data)) as unknown;
-          const realtimeMessage = browserStreamWebSocketServerMessageSchema.safeParse(decoded);
-          if (realtimeMessage.success) {
-            const message = realtimeMessage.data;
-            if (message.type === "ready") {
-              if (message.paneId !== pane.id || message.sessionId !== sessionId) {
-                setError("Live stream connected to a different session.");
-                socket.close(1008, "Live stream identity mismatch");
-                return;
-              }
-              if (realtime) browserStreamSocketRef.current = socket;
-              reconnectAttempt = 0;
-              updateBrowserStreamTelemetry("ready", { fps: message.framesPerSecond });
-              setError((current) => current === browserStreamReconnectMessage ? null : current);
-              return;
-            }
-            if (message.type === "inputAck") {
-              const pendingAck = pendingBrowserInputAcksRef.current.get(message.requestId);
-              if (pendingAck) {
-                window.clearTimeout(pendingAck.timeoutId);
-                pendingBrowserInputAcksRef.current.delete(message.requestId);
-                const roundTripMs = Math.max(0, Math.round(performance.now() - pendingAck.sentAt));
-                if (paneRef.current) paneRef.current.dataset.browserInputRttMs = String(roundTripMs);
-                updateBrowserInputTelemetry(message.ok ? "ok" : "failed");
-              }
-              if (!message.ok) setError(message.error.message);
-              return;
-            }
-            if (message.type !== "error") return;
-            setError(message.message);
-            return;
-          }
-          if (!isBrowserFrameMessage(decoded)) throw new Error("invalid live stream message");
-          if (decoded.type === "ready") {
-            if (decoded.paneId !== pane.id || decoded.sessionId !== sessionId) {
-              socket.close(1008, "Live frame identity mismatch");
-              return;
-            }
-            reconnectAttempt = 0;
-            updateBrowserStreamTelemetry("ready");
-          } else if (decoded.type === "frame") {
-            appendFrame(decoded.frame);
-          } else if (decoded.type === "error") {
-            setError(decoded.message);
-          }
-        } catch {
-          setError("Live stream returned invalid data.");
-        }
-      });
-      socket.addEventListener("error", () => {
+        const result = await api.links({ page: 1, pageSize: 100 });
         if (disposed) return;
-        updateBrowserStreamTelemetry("error");
-        socket.close();
-      });
-      socket.addEventListener("close", () => {
-        if (browserStreamSocketRef.current === socket) browserStreamSocketRef.current = null;
-        discardCoalescedBrowserInput();
-        if (pendingBrowserInputAcksRef.current.size > 0) clearPendingBrowserInputAcks("timeout");
-        if (!disposed && !transportPausedRef.current) scheduleReconnect();
-      });
-    };
-
-    void connect();
-    return () => {
-      disposed = true;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      if (browserStreamSocketRef.current === activeSocket) browserStreamSocketRef.current = null;
-      discardCoalescedBrowserInput();
-      clearPendingBrowserInputAcks();
-      activeSocket?.close();
-      updateBrowserStreamTelemetry("closed");
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id, response?.websocket?.token, session?.sessionId, transportPaused]);
-
-  useEffect(() => {
-    controlLeaseRef.current = controlLease?.status === "ACTIVE" ? controlLease : null;
-  }, [controlLease]);
-
-  useEffect(() => {
-    if (!session) return;
-    const interval = window.setInterval(() => {
-      if (transportPausedRef.current) return;
-      if (browserStreamSocketRef.current?.readyState === WebSocket.OPEN) return;
-      api.browserFrame(pane.id, session.sessionId).then(appendFrame).catch(() => undefined);
-    }, 5_000);
-    return () => window.clearInterval(interval);
-  }, [pane.id, session?.sessionId]);
-
-  useEffect(() => {
-    if (!controlLease) return;
-    const interval = window.setInterval(() => {
-      api.heartbeatBrowserControl(pane.id, { leaseId: controlLease.leaseId, ttlSeconds: 60 })
-        .then((next) => {
-          if (next.lease.status === "ACTIVE") {
-            setControlLease(next.lease);
-          } else {
-            setControlLease(null);
-            setHandoff(false);
-          }
-        })
-        .catch(() => undefined);
-    }, 15_000);
-    return () => window.clearInterval(interval);
-  }, [controlLease?.leaseId, pane.id]);
-
-  async function acquireControlForInput(): Promise<BrowserControlLeasePayload | null> {
-    if (!session) return null;
-    if (controlLeaseRef.current?.status === "ACTIVE") return controlLeaseRef.current;
-    if (controlAcquirePromiseRef.current) return controlAcquirePromiseRef.current;
-    const acquisition = api.acquireBrowserControl(pane.id, {
-      holderType: "OPERATOR",
-      holderId: "space-user",
-      reason: "Direct YouTube interaction",
-      ttlSeconds: 60
-    }).then((next) => {
-      legacyControlRef.current = false;
-      controlLeaseRef.current = next.lease;
-      setControlLease(next.lease);
-      setHandoff(true);
-      return next.lease;
-    }).catch((err: unknown) => {
-      if (isUnavailableV2Feature(err)) {
-        legacyControlRef.current = true;
-        setHandoff(true);
-        return null;
-      }
-      legacyControlRef.current = false;
-      setError(err instanceof Error ? err.message : "Live control could not be acquired");
-      return null;
-    }).finally(() => {
-      controlAcquirePromiseRef.current = null;
-    });
-    controlAcquirePromiseRef.current = acquisition;
-    return acquisition;
-  }
-
-  async function sendCanvasInput(input: BrowserCanvasInput) {
-    if (!session) return;
-    const lease = await acquireControlForInput();
-    if (lease) {
-      const payload = { ...input, leaseId: lease.leaseId } as BrowserInputPayload;
-      if (sendRealtimeBrowserInput(payload)) return;
-      try {
-        const result = await api.browserInput(pane.id, payload);
-        appendFrame(result.frame);
-        return;
-      } catch (err) {
-        if (!isUnavailableV2Feature(err)) {
-          setError(err instanceof Error ? err.message : "Live input failed");
-          return;
-        }
-        legacyControlRef.current = true;
-      }
-    }
-    if (!legacyControlRef.current) return;
-    if (input.type === "POINTER" && input.eventType === "mousePressed") {
-      legacyPointerDownRef.current = { x: input.x, y: input.y, button: input.button };
-      return;
-    }
-    if (input.type === "POINTER" && input.eventType === "mouseReleased") {
-      const pressed = legacyPointerDownRef.current;
-      legacyPointerDownRef.current = null;
-      if (!pressed || pressed.button !== "left" || input.button !== "left") return;
-      appendFrame((await api.browserAction(pane.id, { type: "click", x: input.x, y: input.y, sessionId: session.sessionId })).frame);
-      return;
-    }
-    if (input.type === "POINTER" && input.eventType === "mouseWheel") {
-      appendFrame((await api.browserAction(pane.id, {
-        type: "scroll",
-        deltaX: input.deltaX ?? 0,
-        deltaY: input.deltaY ?? 0,
-        sessionId: session.sessionId
-      })).frame);
-      return;
-    }
-    if (input.type === "TOUCH" && input.eventType !== "touchEnd" && input.touchPoints[0]) {
-      legacyPointerDownRef.current = { x: input.touchPoints[0].x, y: input.touchPoints[0].y, button: "left" };
-      return;
-    }
-    if (input.type === "TOUCH" && input.eventType === "touchEnd") {
-      const pressed = legacyPointerDownRef.current;
-      legacyPointerDownRef.current = null;
-      if (pressed) appendFrame((await api.browserAction(pane.id, { type: "click", x: pressed.x, y: pressed.y, sessionId: session.sessionId })).frame);
-      return;
-    }
-    if (input.type === "KEY" && (input.eventType === "keyDown" || input.eventType === "char") && input.text) {
-      appendFrame((await api.browserAction(pane.id, { type: "type", text: input.text, sessionId: session.sessionId })).frame);
-    }
-  }
-
-  function retry() {
-    setError(null);
-    void loadOrStart();
-  }
-
-  reloadRef.current = () => { void reload(); };
-
-  async function reload() {
-    if (!session) return;
-    const lease = await acquireControlForInput();
-    if (lease) {
-      const payload: BrowserInputPayload = { type: "NAVIGATION", action: "RELOAD", leaseId: lease.leaseId };
-      if (sendRealtimeBrowserInput(payload)) return;
-      try {
-        const result = await api.browserInput(pane.id, payload);
-        appendFrame(result.frame);
-        return;
-      } catch (err) {
-        if (!isUnavailableV2Feature(err)) {
-          setError(err instanceof Error ? err.message : "YouTube reload failed");
-          return;
-        }
-        legacyControlRef.current = true;
-      }
-    }
-    if (!legacyControlRef.current) return;
-    appendFrame((await api.browserAction(pane.id, { type: "navigate", url: YOUTUBE_URL, sessionId: session.sessionId })).frame);
-  }
-
-  function stopAudioStream() {
-    const socket = audioSocketRef.current;
-    if (socket) {
-      socket.onmessage = null;
-      socket.onerror = null;
-      socket.onclose = null;
-      socket.close();
-      audioSocketRef.current = null;
-    }
-    audioQueueRef.current = [];
-    audioNextTimeRef.current = null;
-    const audioContext = audioContextRef.current;
-    if (audioContext && audioContext.state !== "closed") {
-      void audioContext.close().catch(() => undefined);
-    }
-    audioContextRef.current = null;
-  }
-
-  function scheduleAudioChunk(int16: Int16Array, sampleRate: number, channels: number) {
-    const audioContext = audioContextRef.current;
-    if (!audioContext) return;
-    const framesPerChunk = Math.max(1, Math.round((sampleRate * AUDIO_CHUNK_MS) / 1000));
-    const totalFrames = Math.floor(int16.length / channels);
-    for (let offset = 0; offset < totalFrames; offset += framesPerChunk) {
-      const frameCount = Math.min(framesPerChunk, totalFrames - offset);
-      const buffer = audioContext.createBuffer(channels, frameCount, sampleRate);
-      for (let channel = 0; channel < channels; channel += 1) {
-        const output = buffer.getChannelData(channel);
-        for (let i = 0; i < frameCount; i += 1) {
-          output[i] = (int16[(offset + i) * channels + channel] ?? 0) / 32768;
-        }
-      }
-      let startTime = audioNextTimeRef.current;
-      const now = audioContext.currentTime;
-      const bufferMin = AUDIO_BUFFER_MIN_MS / 1000;
-      const bufferMax = AUDIO_BUFFER_MAX_MS / 1000;
-      if (startTime === null || startTime < now + bufferMin || startTime > now + bufferMax) {
-        startTime = now + bufferMin;
-      }
-      audioNextTimeRef.current = startTime + buffer.duration;
-      const source = audioContext.createBufferSource();
-      source.buffer = buffer;
-      source.connect(audioContext.destination);
-      source.start(startTime);
-    }
-  }
-
-  useEffect(() => {
-    if (!session) {
-      stopAudioStream();
-      return;
-    }
-    let disposed = false;
-    let reconnectTimer: number | null = null;
-    let reconnectAttempt = 0;
-
-    const connectAudio = async () => {
-      if (disposed || transportPausedRef.current) return;
-      try {
-        const ticket = await api.browserAudioStreamTicket(pane.id);
-        if (disposed || ticket.websocket.sessionId !== session.sessionId) return;
-        const socketUrl = api.browserAudioWebSocketUrl(ticket.websocket);
-        if (!socketUrl) return;
-        const socket = new WebSocket(socketUrl);
-        socket.binaryType = "arraybuffer";
-        audioSocketRef.current = socket;
-        socket.addEventListener("open", () => {
-          reconnectAttempt = 0;
-          audioNextTimeRef.current = null;
-        });
-        socket.addEventListener("message", (event) => {
-          if (typeof event.data === "string") {
-            try {
-              const decoded = JSON.parse(event.data) as unknown;
-              const parsed = browserStreamWebSocketServerMessageSchema.safeParse(decoded);
-              if (!parsed.success) return;
-              const message = parsed.data;
-              if (message.type === "audioReady") {
-                audioSampleRateRef.current = message.sampleRate;
-                audioChannelsRef.current = message.channels;
-                audioNextTimeRef.current = null;
-                if (!audioContextRef.current) {
-                  const AudioContextCtor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-                  audioContextRef.current = new AudioContextCtor({ sampleRate: message.sampleRate });
-                  if (audioContextRef.current.state === "suspended") {
-                    void audioContextRef.current.resume().catch(() => undefined);
-                  }
-                }
-              }
-            } catch {
-              // Ignore malformed audio control messages.
-            }
-            return;
-          }
-          const raw = event.data;
-          const int16 = new Int16Array(raw);
-          if (!audioContextRef.current) {
-            const AudioContextCtor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-            audioContextRef.current = new AudioContextCtor({ sampleRate: audioSampleRateRef.current });
-            if (audioContextRef.current.state === "suspended") {
-              void audioContextRef.current.resume().catch(() => undefined);
-            }
-          }
-          scheduleAudioChunk(int16, audioSampleRateRef.current, audioChannelsRef.current);
-        });
-        socket.addEventListener("error", () => {
-          if (disposed) return;
-          socket.close();
-        });
-        socket.addEventListener("close", () => {
-          if (audioSocketRef.current === socket) audioSocketRef.current = null;
-          if (disposed || transportPausedRef.current) return;
-          if (reconnectTimer !== null) return;
-          const delayMs = Math.min(4_000, 500 * (2 ** Math.min(reconnectAttempt, 3)));
-          reconnectAttempt += 1;
-          reconnectTimer = window.setTimeout(() => {
-            reconnectTimer = null;
-            void connectAudio();
-          }, delayMs);
-        });
+        const list = Array.isArray(result?.data) ? result.data : [];
+        const links = list.filter((link) =>
+          (link.category === 'MUSIC_LIBRARY' || Boolean(parseYouTubePlayback(link.url)?.playlistId))
+          && parseYouTubePlayback(link.url) !== null
+        );
+        setPlaylists(links);
       } catch {
-        if (disposed || reconnectTimer !== null || transportPausedRef.current) return;
-        reconnectTimer = window.setTimeout(() => {
-          reconnectTimer = null;
-          void connectAudio();
-        }, 2_000);
+        if (!disposed) setPlaylists([]);
       }
-    };
-
-    void connectAudio();
+    }
+    void loadPlaylists();
+    window.addEventListener(USER_LINKS_UPDATED_EVENT, loadPlaylists);
     return () => {
       disposed = true;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      stopAudioStream();
+      window.removeEventListener(USER_LINKS_UPDATED_EVENT, loadPlaylists);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id, session?.sessionId, transportPaused]);
+  }, [observerOnly]);
 
-  return (
-    <section
-      ref={paneRef}
-      className="youtube-pane"
-      aria-label={`${pane.title} YouTube session`}
-      data-browser-agent={agentNumber}
-    >
-      <div className="youtube-frame-shell">
-        <BrowserCanvas
-          ref={canvasRef}
-          ariaLabel={`${pane.title} browser frame`}
-          viewportSize={YOUTUBE_VIEWPORT_SIZE}
-          interactive={Boolean(session)}
-          source={activeFrame?.screenshotDataUrl}
-          capturedAt={activeFrame?.capturedAt}
-          historyLimit={1}
-          onInput={(input) => void sendCanvasInput(input)}
-        />
-        {!activeFrame?.screenshotDataUrl ? (
-          <div className="youtube-frame-empty" role="status">
-            {pending ? <Loader2 aria-hidden="true" /> : <MousePointer2 aria-hidden="true" />}
-          </div>
-        ) : null}
+  async function selectAccount(profileId: string | null) {
+    if (pending || accountSwitching) return;
+    const previousMode = mode;
+    setAccountMenuOpen(false); setAccountSwitching(true); setPending(true); setError(null); setMode('loading');
+    try {
+      const result = await api.selectYouTubeAccount(pane.id, profileId);
+      if (!mounted.current) return;
+      setAccounts(current => current ? { ...current, selectedProfileId: result.selectedProfileId } : current);
+      setTargetUrl(result.targetUrl);
+      setAccountRevision(value => value + 1);
+      setMode('browse');
+    } catch (cause) {
+      if (mounted.current) { setError(cause instanceof Error ? cause.message : 'The Google account could not be selected.'); setMode(previousMode); }
+    } finally { if (mounted.current) { setPending(false); setAccountSwitching(false); } }
+  }
+  const selectedAccountName = accounts?.selectedProfileId
+    ? accounts.profiles.find(profile => profile.profileId === accounts.selectedProfileId)?.displayName ?? 'Unavailable account'
+    : 'Saved pane account';
+
+  function save(value: YouTubePlayback) {
+    if (observerOnly || !validYouTubePlayback(value)) return;
+    if (latest.current?.videoId !== value.videoId) {
+      setUrl(youtubePlaybackUrl(value));
+    }
+    latest.current = value;
+    setCurrentVideo(current => current?.videoId === value.videoId && current.title === value.title
+      ? current : { videoId: value.videoId, title: value.title });
+    let cached = false;
+    try {
+      if (localKey.current) { localStorage.setItem(localKey.current, JSON.stringify(value)); cached = true; }
+    } catch { /* Server persistence still works when local storage is unavailable. */ }
+    ++saveGeneration.current;
+    queuedSave.current = value;
+    if (saving.current) return;
+    saving.current = true;
+    void (async () => {
+      try {
+        while (queuedSave.current) {
+          const next = queuedSave.current;
+          queuedSave.current = null;
+          const generation = saveGeneration.current;
+          try {
+            await api.saveYouTubePlayback(pane.id, next);
+            if (mounted.current && generation === saveGeneration.current) setSaveState('Progress saved');
+          } catch {
+            if (mounted.current && generation === saveGeneration.current) setSaveState(cached ? 'Saved on this device · sync pending' : 'Progress could not be saved');
+          }
+        }
+      } finally { saving.current = false; }
+    })();
+  }
+
+  useEffect(() => {
+    mounted.current = true;
+    let disposed = false;
+    setMode('loading');
+    setError(null);
+    const load = async () => {
+      if (observerOnly) { setMode('browse'); return; }
+      try {
+        const me = await api.me();
+        if (disposed) return;
+        if (!me.user?.id) throw new Error('Sign in to Space to restore YouTube.');
+        localKey.current = `space.youtube.playback.v1:${me.user.id}:${pane.id}`;
+        const browseUrl = takeYouTubeBrowseIntent(pane.id);
+        if (browseUrl) {
+          setTargetUrl(browseUrl);
+          setUrl(browseUrl);
+          setMode('browse');
+          return;
+        }
+        let cached: YouTubePlayback | null = null;
+        try {
+          const parsed: unknown = JSON.parse(localStorage.getItem(localKey.current) ?? 'null');
+          if (validYouTubePlayback(parsed)) cached = parsed;
+        } catch { /* Missing or invalid cache is ignored. */ }
+        const { playback } = await api.youtubePlayback(pane.id);
+        if (disposed) return;
+        const stored = validYouTubePlayback(playback) ? playback : null;
+        const restored = cached && (!stored || cached.updatedAt > stored.updatedAt) ? cached : stored;
+        if (restored) {
+          // A restored player owns no managed Chrome process, even after a tab crash.
+          await api.stopBrowserSession(pane.id);
+          if (disposed) return;
+          latest.current = restored;
+          setInitial(restored);
+          setUrl(youtubePlaybackUrl(restored));
+          setMode('player');
+          save(restored);
+        } else setMode('browse');
+      } catch (cause) {
+        if (!disposed) setError(cause instanceof Error ? cause.message : 'YouTube could not restore.');
+      }
+    };
+    void load();
+    return () => { disposed = true; mounted.current = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.id, observerOnly, reload]);
+
+  useEffect(() => {
+    if (mode !== 'loading' || !error || !/UPSTREAM_UNAVAILABLE|BROWSER_HOST_UNAVAILABLE|network|fetch|502|503/i.test(error)) return;
+    const timer = window.setTimeout(() => setReload((value) => value + 1), 5000);
+    return () => window.clearTimeout(timer);
+  }, [mode, error]);
+
+  async function playLink(targetUrl?: string) {
+    const nextUrl = (typeof targetUrl === 'string' ? targetUrl : url).trim();
+    const parsed = parseYouTubePlayback(nextUrl);
+    if (!parsed) { setError('Enter a YouTube video or playlist link.'); return; }
+    setUrl(nextUrl);
+    setPending(true); setError(null);
+    try {
+      await api.stopBrowserSession(pane.id);
+      latest.current = parsed;
+      setInitial(parsed);
+      setAutoPlay(true);
+      setIsPlaying(true);
+      setPlayerRevision(r => r + 1);
+      setMode('player');
+      save(parsed);
+    } catch { setError('The YouTube browser could not stop. Retry to release its resources before playing.'); }
+    finally { setPending(false); }
+  }
+
+  async function selectPlaylist(linkId: string) {
+    if (pending || mode === 'loading') return;
+    setSelectedPlaylistId(linkId);
+    const chosen = playlists.find(item => item.id === linkId);
+    if (!chosen) return;
+    await playLink(chosen.url);
+  }
+
+  const currentPlaylistId = playlists.find(p => p.id === selectedPlaylistId && p.url === url)?.id
+    ?? playlists.find(p => p.url === url || (Boolean(url) && Boolean(parseYouTubePlayback(p.url)?.playlistId) && parseYouTubePlayback(p.url)?.playlistId === parseYouTubePlayback(url)?.playlistId))?.id
+    ?? '';
+
+  async function watchCurrent() {
+    setPending(true); setError(null);
+    try {
+      const pages = await api.browserPages(pane.id);
+      const current = pages.pages.find((page) => page.isActive);
+      if (!current?.url || !parseYouTubePlayback(current.url)) {
+        setError('Select a video in YouTube first, then choose Play current video.'); return;
+      }
+      const stopped = await api.watchYouTube(pane.id);
+      const parsed = parseYouTubePlayback(stopped.currentUrl ?? current.url);
+      if (!parsed) throw new Error('The selected video could not be opened.');
+      latest.current = parsed; setInitial(parsed); setAutoPlay(true); setIsPlaying(true); setPlayerRevision(r => r + 1); setUrl(youtubePlaybackUrl(parsed)); setMode('player'); save(parsed);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'The selected video could not be opened.'); }
+    finally { setPending(false); }
+  }
+
+  function browse() {
+    if (latest.current) setTargetUrl(youtubePlaybackUrl(latest.current));
+    setIsPlaying(false);
+    setMode('browse'); setError(null);
+  }
+
+  async function goHome() {
+    if (pending || mode === 'loading') return;
+    const previousMode = mode;
+    setPending(true); setError(null); setAccountMenuOpen(false);
+    setIsPlaying(false);
+    if (mode !== 'browse') setMode('loading');
+    try {
+      if (previousMode !== 'browse') {
+        await api.startBrowserSession(pane.id, { viewport: 'wide', targetUrl: 'https://www.youtube.com/', includeInitialFrame: false });
+      }
+      await api.navigateBrowser(pane.id, 'https://www.youtube.com/');
+      setTargetUrl('https://www.youtube.com/');
+      setUrl('');
+      setMode('browse');
+    } catch {
+      setMode(previousMode);
+      setError('YouTube Home could not open. Try again.');
+    } finally { setPending(false); }
+  }
+
+  const lastControlVolume = useRef(50);
+  const directState = useRef({ mode, pending, isPlaying });
+  directState.current = { mode, pending, isPlaying };
+  useEffect(() => {
+    if (observerOnly) return;
+    return registerRoomPlaybackTarget(pane.id, { roomId: pane.roomId, kind: "YOUTUBE", playing: isPlaying,
+      async control(command) {
+        const player=playerRef.current;if(pending||mode!=="player"||!player)return false;
+        if(["volume","mute","unmute"].includes(command.operation)){
+          const prior=player.volumeLevel();if(prior===null)return false;
+          if(command.operation==="mute"&&prior>0)lastControlVolume.current=prior;
+          const next=command.operation==="mute"?0:command.operation==="unmute"?lastControlVolume.current:command.value??50;
+          if(!player.volume(next))return false;
+          const until=Date.now()+2000;
+          while(Date.now()<until){if(Math.abs((player.volumeLevel()??-100)-next)<1)return true;await new Promise(r=>setTimeout(r,50));}return false;
+        }
+        if(command.operation==="seek"){
+          const seconds=command.value??0;if(!player.seek(seconds))return false;
+          const until=Date.now()+3000;
+          while(Date.now()<until){if(Math.abs((player.position()??-100)-seconds)<3)return true;await new Promise(r=>setTimeout(r,100));}return false;
+        }
+        const before=player.currentVideo()?.videoId;
+        const ok=await this.run({type:"MUSIC",action:command.operation.toUpperCase() as "PLAY"|"PAUSE"|"NEXT"|"PREVIOUS",target:"YOUTUBE"});
+        if(!ok||!["next","previous"].includes(command.operation))return ok;
+        const until=Date.now()+5000;
+        while(Date.now()<until){const after=playerRef.current?.currentVideo()?.videoId;if(after&&after!==before)return true;await new Promise(r=>setTimeout(r,100));}return false;
+      },
+      async run(command) {
+        if (pending || mode !== "player" || !playerRef.current) return false;
+        if (command.action === "NEXT" || command.action === "PREVIOUS") {
+          if (!playerRef.current.hasPlaylist() && playlists.length < 2) return false;
+          if (command.action === "NEXT") handleNext(); else handlePrevious();
+          return true;
+        }
+        if (command.action === "PLAY") playerRef.current.play(); else playerRef.current.pause();
+        const until = Date.now() + 8000;
+        while (Date.now() < until) {
+          if (directState.current.isPlaying === (command.action === "PLAY")) return true;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        return false;
+      }
+    });
+  }, [pane.id, pane.roomId, observerOnly, mode, pending, isPlaying, playlists, currentPlaylistId]);
+
+  const isPlayerPlaying = mode === 'player' && isPlaying;
+  const canNavigate = (mode === 'player' && (playerRef.current?.hasPlaylist() ?? Boolean(initial?.playlistId))) || playlists.length > 1;
+
+  function handleTogglePlay() {
+    if (pending || mode === 'loading') return;
+    if (mode === 'player' && playerRef.current) {
+      const trimmed = url.trim();
+      const currentUrl = latest.current ? youtubePlaybackUrl(latest.current) : '';
+      const isSameUrl = !trimmed || (latest.current && (
+        trimmed === currentUrl ||
+        (Boolean(latest.current.videoId) && trimmed.includes(latest.current.videoId)) ||
+        (latest.current.playlistId !== null && trimmed.includes(latest.current.playlistId))
+      ));
+      if (isSameUrl) {
+        playerRef.current.togglePlay();
+        return;
+      }
+    }
+    void playLink();
+  }
+
+  function handlePrevious() {
+    if (pending || mode === 'loading') return;
+    if (mode === 'player' && playerRef.current?.hasPlaylist()) {
+      playerRef.current.previous();
+      return;
+    }
+    if (playlists.length > 0) {
+      const currentIndex = playlists.findIndex(p => p.id === currentPlaylistId);
+      const prevIndex = currentIndex <= 0 ? playlists.length - 1 : currentIndex - 1;
+      void selectPlaylist(playlists[prevIndex]!.id);
+    }
+  }
+
+  function handleNext() {
+    if (pending || mode === 'loading') return;
+    if (mode === 'player' && playerRef.current?.hasPlaylist()) {
+      playerRef.current.next();
+      return;
+    }
+    if (playlists.length > 0) {
+      const currentIndex = playlists.findIndex(p => p.id === currentPlaylistId);
+      const nextIndex = (currentIndex + 1) % playlists.length;
+      void selectPlaylist(playlists[nextIndex]!.id);
+    }
+  }
+
+  return <section className="youtube-experience" aria-label={`${pane.title} YouTube`} data-youtube-mode={mode}>
+    {!observerOnly && !toolbarHidden ? <div className="youtube-toolbar">
+      {accounts ? <div className="youtube-account-picker">
+        <button ref={accountButton} type="button" className="youtube-account-trigger youtube-tool-btn" aria-label={`Google account for ${pane.title}`}
+          title={`Browser account: ${selectedAccountName}`} aria-haspopup="menu" aria-expanded={accountMenuOpen}
+          disabled={pending || mode === 'loading'} onClick={() => setAccountMenuOpen(value => !value)}><Users aria-hidden="true" /></button>
+        {accountMenuOpen ? createPortal(<div ref={accountMenu} className="youtube-account-menu" role="menu" aria-label="YouTube Google accounts" style={accountPosition}>
+          <strong>Google account</strong>
+          {[{ profileId: null, displayName: 'Saved pane account' }, ...accounts.profiles].map(profile => <button key={profile.profileId ?? 'pane-account'}
+            type="button" role="menuitemradio" aria-checked={accounts.selectedProfileId === profile.profileId}
+            onClick={() => void selectAccount(profile.profileId)}>
+            <span>{profile.displayName}</span>{accounts.selectedProfileId === profile.profileId ? <Check aria-hidden="true" /> : null}
+          </button>)}
+          <small>Sign in once for each Google account. Your saved sign-in is reused when opening it in another YouTube pane.</small>
+        </div>, document.body) : null}
+      </div> : null}
+      <button type="button" className="youtube-tool-btn" title="YouTube Home" aria-label="YouTube Home" disabled={pending || mode === 'loading'} onClick={() => void goHome()}>
+        <Home aria-hidden="true" />
+        <span className="youtube-btn-label">Home</span>
+      </button>
+      <div className="youtube-playlist-picker">
+        <Music2 aria-hidden="true" className="youtube-playlist-icon" />
+        <select
+          className="youtube-playlist-select"
+          aria-label="YouTube playlist"
+          title={playlists.length === 0 ? "No playlists" : "Select a playlist"}
+          value={currentPlaylistId}
+          disabled={pending || mode === 'loading' || playlists.length === 0}
+          onChange={(event) => void selectPlaylist(event.target.value)}
+        >
+          <option value="">{playlists.length === 0 ? 'No playlists' : 'Playlists…'}</option>
+          {playlists.map((link) => (
+            <option key={link.id} value={link.id}>{link.title}</option>
+          ))}
+        </select>
       </div>
-      {error ? (
-        <div className="youtube-pane-error" role="alert">
-          <span>{error}</span>
-          <button type="button" className="youtube-pane-reconnect" aria-label={`Reconnect live stream ${pane.title}`} onClick={() => retry()}>
-            <RefreshCw aria-hidden="true" />
-            Reconnect
-          </button>
-          <button type="button" className="youtube-pane-notice-close" aria-label="Dismiss message" onClick={() => setError(null)}>
-            <X aria-hidden="true" />
-          </button>
-        </div>
+      <form className="youtube-link-form" onSubmit={(event) => { event.preventDefault(); void playLink(); }}>
+        <input aria-label="YouTube video or playlist link" placeholder="Paste a YouTube link" value={url} onChange={(event) => setUrl(event.target.value)} />
+      </form>
+      <button
+        type="button"
+        className="youtube-tool-btn youtube-nav-btn"
+        title="Previous track"
+        aria-label="Previous track"
+        disabled={pending || mode === 'loading' || !canNavigate}
+        onClick={handlePrevious}
+      >
+        <ChevronLeft aria-hidden="true" />
+      </button>
+      <button
+        type="button"
+        className="youtube-tool-btn youtube-play-btn"
+        title={isPlayerPlaying ? "Pause" : "Play"}
+        aria-label={isPlayerPlaying ? "Pause" : "Play"}
+        disabled={pending || mode === 'loading'}
+        onClick={handleTogglePlay}
+      >
+        {isPlayerPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
+        <span className="youtube-btn-label">{isPlayerPlaying ? 'Pause' : 'Play'}</span>
+      </button>
+      <button
+        type="button"
+        className="youtube-tool-btn youtube-nav-btn"
+        title="Next track"
+        aria-label="Next track"
+        disabled={pending || mode === 'loading' || !canNavigate}
+        onClick={handleNext}
+      >
+        <ChevronRight aria-hidden="true" />
+      </button>
+      <button type="button" className="youtube-tool-btn" title="Add current video to Space playlist"
+        aria-label={addedVideoId === currentVideo?.videoId ? 'Added to Playlist' : 'Add to Playlist'}
+        disabled={pending || mode !== 'player' || !currentVideo?.videoId || addingToPlaylist || addedVideoId === currentVideo?.videoId}
+        onClick={() => void addToPlaylist()}>
+        {addedVideoId === currentVideo?.videoId ? <Check aria-hidden="true" /> : <Plus aria-hidden="true" />}
+        <span className="youtube-btn-label">{addingToPlaylist ? 'Adding…' : addedVideoId === currentVideo?.videoId ? 'Added to Playlist' : 'Add to Playlist'}</span>
+      </button>
+      {mode === 'browse' ? (
+        <button type="button" className="youtube-tool-btn" title="Play current video" aria-label="Play current video" disabled={pending} onClick={() => void watchCurrent()}>
+          <Play aria-hidden="true" />
+          <span className="youtube-btn-label">Play current</span>
+        </button>
+      ) : (
+        <button type="button" className="youtube-tool-btn" title="Browse YouTube" aria-label="Browse YouTube" disabled={pending || mode === 'loading'} onClick={browse}>
+          <Youtube aria-hidden="true" />
+          <span className="youtube-btn-label">Browse YouTube</span>
+        </button>
+      )}
+      {onToggleFloat ? (
+        <button
+          type="button"
+          className="youtube-tool-btn youtube-float-btn"
+          title={isFloating ? "Restore pane to grid" : "Float mini player"}
+          aria-label={isFloating ? "Restore pane to grid" : "Float mini player"}
+          disabled={pending || mode === 'loading'}
+          onClick={onToggleFloat}
+        >
+          {isFloating ? <Maximize2 aria-hidden="true" /> : <PictureInPicture2 aria-hidden="true" />}
+          <span className="youtube-btn-label">{isFloating ? "Restore" : "Float"}</span>
+        </button>
       ) : null}
-    </section>
-  );
+    </div> : null}
+    {error ? <div className="youtube-player-message" role="alert"><span>{error}</span>
+      <button type="button" onClick={() => { setError(null); if (mode === 'loading') setReload((value) => value + 1); }}> {mode === 'loading' ? 'Retry' : 'Dismiss'} </button>
+    </div> : null}
+    <div className="youtube-content">
+      {mode === 'loading' ? <p role="status">{accountSwitching ? 'Switching Google account…' : 'Restoring YouTube…'}</p> : null}
+      {mode === 'browse' ? <ManagedYouTubeBrowser key={accountRevision} {...props} targetUrl={targetUrl} /> : null}
+      {mode === 'player' && initial && !pane.isClosed ? (
+        <YouTubeNativePlayer
+          key={`player-${playerRevision}`}
+          playbackKey={localKey.current ?? undefined}
+          initial={initial}
+          autoPlay={autoPlay}
+          onProgress={save}
+          onPlayingChange={setIsPlaying}
+          playerRef={playerRef}
+        />
+      ) : null}
+    </div>
+  </section>;
 }
