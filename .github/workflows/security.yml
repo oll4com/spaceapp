@@ -92,7 +92,7 @@ jobs:
           exit-code: "1"
 
       - name: Upload blocking filesystem scan
-        if: always()
+        if: always() && hashFiles('trivy-filesystem.sarif') != ''
         uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
         with:
           sarif_file: trivy-filesystem.sarif
@@ -118,7 +118,7 @@ jobs:
           >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload full filesystem report
-        if: always()
+        if: always() && hashFiles('trivy-full-filesystem.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: trivy-full-filesystem
@@ -214,7 +214,7 @@ jobs:
           exit-code: "1"
 
       - name: Upload blocking image scan
-        if: always()
+        if: always() && hashFiles(format('trivy-{0}.sarif', matrix.target)) != ''
         uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
         with:
           sarif_file: trivy-${{ matrix.target }}.sarif
@@ -239,7 +239,7 @@ jobs:
           >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload full image report
-        if: always()
+        if: always() && hashFiles(format('trivy-full-{0}.json', matrix.target)) != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: trivy-full-${{ matrix.target }}
