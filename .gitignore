@@ -23,4 +23,5 @@ var/
 *.pem
 *.key
 *.log
+*.tgz
 .DS_Store
