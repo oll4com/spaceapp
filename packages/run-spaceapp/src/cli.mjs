@@ -881,6 +881,31 @@ async function installCommand(args, {
         );
         return await failAfterRuntimeMutation(1);
       }
+
+      if (typeof request === "function") {
+        const ownerEmail = env.SPACEAPP_OWNER_EMAIL || "pirniramon7@gmail.com";
+        const ownerPassword = randomBytes(24).toString("base64url");
+        try {
+          const claimRes = await request(`${url}/api/setup/claim`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              token: setupToken,
+              email: ownerEmail,
+              password: ownerPassword
+            })
+          });
+          const claimData = claimRes && typeof claimRes.json === "function"
+            ? await claimRes.json().catch(() => null)
+            : null;
+          if (claimRes && (claimRes.status === 200 || claimRes.status === 201) && claimData?.user?.id) {
+            stdout.write(`Initial SpaceApp owner pre-installed: ${ownerEmail}\n`);
+            setupToken = null;
+            const credsPath = join(root, "secrets", "owner-credentials.json");
+            await atomicWrite(credsPath, JSON.stringify({ email: ownerEmail, password: ownerPassword }, null, 2), 0o600);
+          }
+        } catch {}
+      }
     }
 
     await commitInstallation(root, result.config);
