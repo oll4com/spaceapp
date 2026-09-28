@@ -1808,3 +1808,64 @@ test("restore leaves app writers stopped when the data restore fails", async () 
     "--confirm", "RESTORE"
   ]);
 });
+
+test("install succeeds on 8 GiB disk for light profile and automatically starts inactive Docker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-8gib-install-"));
+  const stdout = capture();
+  const stderr = capture();
+  let ensureDockerCalled = false;
+  let autoConfirmPassed = false;
+  const eightGiBResources = {
+    cpuCount: 16,
+    totalMemoryBytes: 24 * 1024 ** 3,
+    freeDiskBytes: 8 * 1024 ** 3
+  };
+
+  assert.equal(await run(["install", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "win32",
+    arch: "x64",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: ttyStdin(...FRESH_APPROVALS_WINDOWS),
+    inspectResources: async () => eightGiBResources,
+    request: readyUnclaimedRequest,
+    sleep: async () => {},
+    ensureDocker: async (options) => {
+      ensureDockerCalled = true;
+      autoConfirmPassed = Boolean(options.installArgs?.autoConfirm);
+      return { code: 0, reexecuted: false };
+    },
+    execute: async () => 0
+  }), 0);
+
+  assert.ok(ensureDockerCalled);
+  assert.ok(autoConfirmPassed);
+  assert.match(stdout.value(), /PASS Free disk: 8 GiB available; 7 GiB required/);
+  assert.match(stdout.value(), /SpaceApp is ready at http:\/\/127\.0\.0\.1:4911/);
+});
+
+test("doctor reports PASS for 8 GiB disk when light profile is selected", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-8gib-doctor-"));
+  const stdout = capture();
+  const stderr = capture();
+  const eightGiBResources = {
+    cpuCount: 16,
+    totalMemoryBytes: 24 * 1024 ** 3,
+    freeDiskBytes: 8 * 1024 ** 3
+  };
+  const options = {
+    env: { SPACEAPP_HOME: root },
+    platform: "win32",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    inspectResources: async () => eightGiBResources,
+    execute: async () => 0
+  };
+  await run(["init"], { ...options, stdin: ttyStdin("y") });
+
+  assert.equal(await run(["doctor"], options), 0);
+
+  assert.match(stdout.value(), /PASS Free disk: 8 GiB available; 7 GiB required/);
+});
+

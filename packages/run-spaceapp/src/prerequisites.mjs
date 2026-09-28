@@ -73,6 +73,8 @@ export function windowsPowerShellArgs(operation) {
       "exit $process.ExitCode"
     ].join("; "),
     "start-docker-desktop": [
+      "Set-Service -Name 'com.docker.service' -StartupType Automatic -ErrorAction SilentlyContinue",
+      "Start-Service -Name 'com.docker.service' -ErrorAction SilentlyContinue",
       "$path = $env:SPACEAPP_DOCKER_DESKTOP_PATH",
       "if ([string]::IsNullOrWhiteSpace($path)) { exit 1 }",
       "Start-Process -FilePath $path"
@@ -164,7 +166,8 @@ export async function ensureDockerAvailable({
       launch,
       download,
       pathExists,
-      sleep
+      sleep,
+      installArgs
     });
   }
   return ensureLinuxDocker({
@@ -201,7 +204,12 @@ async function ensureWindowsDocker({
 
   if (!application) {
     stdout.write("Docker Desktop is required and is not installed.\n");
-    const accepted = await confirmDesktopInstall({ platformName: "Windows", stdin, stdout });
+    const accepted = await confirmDesktopInstall({
+      platformName: "Windows",
+      stdin,
+      stdout,
+      autoConfirm: Boolean(installArgs?.autoConfirm)
+    });
     if (!accepted) {
       stderr.write("Docker Desktop installation was cancelled.\n");
       return { code: 1, reexecuted: false };
@@ -404,7 +412,8 @@ async function ensureMacDocker({
   launch,
   download,
   pathExists,
-  sleep
+  sleep,
+  installArgs
 }) {
   const application = "/Applications/Docker.app";
   const cliDirectory = posix.join(application, "Contents", "Resources", "bin");
@@ -412,7 +421,12 @@ async function ensureMacDocker({
 
   if (!installed) {
     stdout.write("Docker Desktop is required and is not installed.\n");
-    const accepted = await confirmDesktopInstall({ platformName: "macOS", stdin, stdout });
+    const accepted = await confirmDesktopInstall({
+      platformName: "macOS",
+      stdin,
+      stdout,
+      autoConfirm: Boolean(installArgs?.autoConfirm)
+    });
     if (!accepted) {
       stderr.write("Docker Desktop installation was cancelled.\n");
       return { code: 1, reexecuted: false };
@@ -596,7 +610,11 @@ async function ensureLinuxDocker({
   return { code: reentryCode, reexecuted: true };
 }
 
-async function confirmDesktopInstall({ platformName, stdin, stdout }) {
+async function confirmDesktopInstall({ platformName, stdin, stdout, autoConfirm = false }) {
+  if (autoConfirm) {
+    stdout.write(`Installing Docker Desktop for ${platformName} automatically as approved in setup plan...\n`);
+    return true;
+  }
   return confirmQuestion({
     stdin,
     stdout,

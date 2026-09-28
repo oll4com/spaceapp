@@ -24,7 +24,9 @@ const MIN_INSTALL_CPU_COUNT = 4;
 const MIN_INSTALL_MEMORY_BYTES = 7 * 1024 ** 3;
 const MIN_INSTALL_MEMORY_LABEL = "7 GiB usable (8 GB-class system)";
 const CONTAINER_SECRET_MODE = 0o644;
-const MIN_INSTALL_FREE_DISK_BYTES = 15 * 1024 ** 3;
+export const MIN_INSTALL_FREE_DISK_BYTES_STANDARD = 15 * 1024 ** 3;
+export const MIN_INSTALL_FREE_DISK_BYTES_LIGHT = 7 * 1024 ** 3;
+export const MIN_INSTALL_FREE_DISK_BYTES = MIN_INSTALL_FREE_DISK_BYTES_STANDARD;
 const PROFILE_RUNTIME_SETTINGS = Object.freeze({
   light: Object.freeze({
     browserEnabled: false,
@@ -198,13 +200,16 @@ export async function inspectSystemResources(root) {
   };
 }
 
-export function installResourceChecks(resources) {
+export function installResourceChecks(resources, profile = "light") {
   const cpuCount = Number(resources?.cpuCount);
   const totalMemoryBytes = Number(resources?.totalMemoryBytes);
   const freeDiskBytes = Number(resources?.freeDiskBytes);
   if (![cpuCount, totalMemoryBytes, freeDiskBytes].every((value) => Number.isFinite(value) && value >= 0)) {
     throw new Error("System CPU, memory, and free-disk information is required.");
   }
+  const minFreeDisk = profile === "standard"
+    ? MIN_INSTALL_FREE_DISK_BYTES_STANDARD
+    : MIN_INSTALL_FREE_DISK_BYTES_LIGHT;
   return [
     {
       name: "CPU",
@@ -218,8 +223,8 @@ export function installResourceChecks(resources) {
     },
     {
       name: "Free disk",
-      ok: freeDiskBytes >= MIN_INSTALL_FREE_DISK_BYTES,
-      detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(MIN_INSTALL_FREE_DISK_BYTES)} GiB required`
+      ok: freeDiskBytes >= minFreeDisk,
+      detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(minFreeDisk)} GiB required`
     }
   ];
 }

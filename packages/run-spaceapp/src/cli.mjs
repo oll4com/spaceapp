@@ -26,6 +26,7 @@ import {
   inspectSystemResources,
   installResourceChecks,
   loadConfig,
+  MIN_INSTALL_FREE_DISK_BYTES_STANDARD,
   planConfigRepairs,
   prepareInstallation,
   removeCredential,
@@ -648,7 +649,7 @@ async function installCommand(args, {
     `Selected profile: ${profile} (${formatGibibytes(resources.totalMemoryBytes)} GiB system memory detected).\n`
   );
   stdout.write(`SpaceApp installation root: ${root}\n`);
-  if (installResourceChecks(resources).some((check) => !check.ok)) {
+  if (installResourceChecks(resources, profile).some((check) => !check.ok)) {
     const doctorCode = await doctor({
       root,
       platform,
@@ -657,7 +658,8 @@ async function installCommand(args, {
       execute,
       stdin,
       inspectResources,
-      resources
+      resources,
+      profile
     });
     stderr.write(
       `Installation stopped before downloading images. Fix the failed checks and run "${UNIVERSAL_COMMAND} install" again.\n`
@@ -673,7 +675,7 @@ async function installCommand(args, {
     stdout,
     stderr,
     execute,
-    installArgs: { root, requestedProfile, requestedAccessMode, noOpen }
+    installArgs: { root, requestedProfile, requestedAccessMode, noOpen, autoConfirm: true }
   });
   if (prerequisiteResult.reexecuted) {
     return prerequisiteResult.code;
@@ -694,6 +696,7 @@ async function installCommand(args, {
     stdin,
     inspectResources,
     resources,
+    profile,
     dockerReady: true
   });
   if (doctorCode !== 0) {
@@ -2015,13 +2018,27 @@ async function doctor({
   stdin,
   inspectResources,
   resources,
+  profile,
   dockerReady = false
 }) {
   const detectedResources = resources ?? await inspectResources(root);
+  let resolvedProfile = profile;
+  if (!resolvedProfile) {
+    const existingConfig = await loadConfig(root).catch(() => null);
+    if (existingConfig?.profile) {
+      resolvedProfile = existingConfig.profile;
+    } else if (detectedResources?.freeDiskBytes < MIN_INSTALL_FREE_DISK_BYTES_STANDARD) {
+      resolvedProfile = "light";
+    } else if (detectedResources?.totalMemoryBytes) {
+      resolvedProfile = resolveInstallProfile("auto", detectedResources.totalMemoryBytes);
+    } else {
+      resolvedProfile = "light";
+    }
+  }
   const checks = [
     { name: "Node.js", ok: Number(process.versions.node.split(".")[0]) >= 20, detail: process.version },
     { name: "Configuration", ok: true, detail: root },
-    ...installResourceChecks(detectedResources)
+    ...installResourceChecks(detectedResources, resolvedProfile)
   ];
   const dockerResults = [];
   for (const probe of [
