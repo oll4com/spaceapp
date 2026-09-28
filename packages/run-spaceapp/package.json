@@ -1,6 +1,6 @@
 {
   "name": "run-spaceapp",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "spaceappRuntimeVersion": "1.0.2",
   "spaceappHostRootRuntimeCompatible": true,
   "description": "Cross-platform Docker launcher for the SpaceApp self-hosted agent workspace",

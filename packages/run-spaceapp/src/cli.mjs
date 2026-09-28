@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { createInterface } from "node:readline";
+import { PromptController } from "./prompt-controller.mjs";
 import {
   copyFile,
   mkdir,
@@ -265,7 +266,50 @@ export async function run(argv, {
   runtimeVersion = RUNTIME_VERSION,
   hostRootRuntimeCompatible = HOST_ROOT_RUNTIME_COMPATIBLE
 } = {}) {
-  const [command = "help", ...args] = argv;
+  const globalFlags = {
+    json: false,
+    plan: false,
+    nonInteractive: false,
+    logFile: null,
+    answersFile: null
+  };
+  const filteredArgv = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--json") {
+      globalFlags.json = true;
+    } else if (arg === "--plan") {
+      globalFlags.plan = true;
+    } else if (arg === "--non-interactive") {
+      globalFlags.nonInteractive = true;
+    } else if (arg === "--log-file" && i + 1 < argv.length) {
+      globalFlags.logFile = argv[++i];
+    } else if (arg.startsWith("--log-file=")) {
+      globalFlags.logFile = arg.slice("--log-file=".length);
+    } else if (arg === "--answers" && i + 1 < argv.length) {
+      globalFlags.answersFile = argv[++i];
+    } else if (arg.startsWith("--answers=")) {
+      globalFlags.answersFile = arg.slice("--answers=".length);
+    } else {
+      filteredArgv.push(arg);
+    }
+  }
+
+  const promptController = new PromptController({
+    stdin,
+    stdout,
+    stderr,
+    logFile: globalFlags.logFile,
+    nonInteractive: globalFlags.nonInteractive,
+    answersFile: globalFlags.answersFile,
+    planMode: globalFlags.plan,
+    jsonMode: globalFlags.json
+  });
+  if (stdin) {
+    stdin._spaceappPromptController = promptController;
+  }
+
+  const [command = "help", ...args] = filteredArgv;
   const root = resolveSpaceAppHome({ env, platform });
 
   if (command !== "install") {
@@ -277,6 +321,10 @@ export async function run(argv, {
   }
   if (command === "--version" || command === "-v") {
     stdout.write(`${launcherVersion}\n`);
+    return 0;
+  }
+  if (globalFlags.plan) {
+    stdout.write(`[PLAN] Preview execution for "${command}" at ${root} (no changes applied).\n`);
     return 0;
   }
   if (command === "install") {
@@ -349,6 +397,26 @@ export async function run(argv, {
     assertNoArgs(args, "doctor");
     return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources });
   }
+  if (command === "support-bundle") {
+    let outPath = null;
+    const outIdx = args.indexOf("--out");
+    if (outIdx !== -1 && args[outIdx + 1]) {
+      outPath = args[outIdx + 1];
+    }
+    return supportBundleCommand({ root, config, platform, arch, stdout, stderr, execute: runtimeExecute, request, outPath });
+  }
+  if (command === "repair") {
+    const dryRun = args.includes("--dry-run");
+    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute: runtimeExecute, request, sleep, dryRun });
+  }
+  if (command === "reinstall") {
+    const keepData = !args.includes("--purge-data");
+    return reinstallCommand({ root, config, platform, stdin, stdout, stderr, execute: runtimeExecute, request, sleep, keepData });
+  }
+  if (command === "factory-reset") {
+    assertNoArgs(args, "factory-reset");
+    return factoryResetCommand({ root, config, platform, stdin, stdout, stderr, execute: runtimeExecute, runtimeVersion, persistSetupToken });
+  }
   if (command === "workspace") {
     return workspaceCommand(args, { root, config, stdout });
   }
@@ -370,7 +438,9 @@ export async function run(argv, {
       stdin,
       stdout,
       stderr,
-      execute: runtimeExecute
+      execute: runtimeExecute,
+      request,
+      sleep
     });
   }
   if (command === "rollback") {
@@ -1083,7 +1153,17 @@ async function offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, 
   }
 }
 
-async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute }) {
+async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, dryRun = false }) {
+  const plan = await planConfigRepairs(root);
+  if (dryRun) {
+    stdout.write(`Config repairs planned: ${JSON.stringify(plan)}\n`);
+    return 0;
+  }
+  if (plan.length > 0) {
+    await applyConfigRepairs(root, plan);
+    stdout.write(`Applied ${plan.length} config repair(s).\n`);
+  }
+  await writeRuntimeFiles(root, config);
   const pullCode = await withHeadlessDockerConfig(
     platform,
     composeCommand("pull", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
@@ -1100,6 +1180,21 @@ async function repairRuntime({ root, config, platform, stdin, stdout, stderr, ex
   if (upCode !== 0) {
     return upCode;
   }
+  if (typeof request === "function") {
+    const url = `http://${config.bindHost}:${config.port}`;
+    const ready = await waitForReadiness({
+      url,
+      request,
+      sleep: sleep || wait,
+      onProgress: async ({ elapsedSeconds }) => {
+        stdout.write(`Waiting for SpaceApp readiness after repair (${elapsedSeconds}s)...\n`);
+      }
+    });
+    if (!ready) {
+      stderr.write("SpaceApp runtime repair completed, but readiness check timed out.\n");
+      return 1;
+    }
+  }
   stdout.write(`SpaceApp ${config.version} runtime repaired.\n`);
   return 0;
 }
@@ -1113,7 +1208,9 @@ async function performUpdate({
   stdout,
   stderr,
   execute,
-  preserveRecreate
+  preserveRecreate,
+  request,
+  sleep
 }) {
   const updated = targetVersion === config.version
     ? config
@@ -1150,6 +1247,20 @@ async function performUpdate({
     if (upCode !== 0) {
       throw new Error(`Runtime start failed with Docker exit ${upCode}.`);
     }
+    if (typeof request === "function") {
+      const url = `http://${updated.bindHost}:${updated.port}`;
+      const ready = await waitForReadiness({
+        url,
+        request,
+        sleep: sleep || wait,
+        onProgress: async ({ elapsedSeconds }) => {
+          stdout.write(`Waiting for SpaceApp readiness after update (${elapsedSeconds}s)...\n`);
+        }
+      });
+      if (!ready) {
+        throw new Error("Updated runtime started, but readiness check timed out.");
+      }
+    }
     await saveConfig(root, updated);
     await markCheckpointVerified(checkpoint);
     stdout.write(`Updated to SpaceApp ${targetVersion}.\n`);
@@ -1159,7 +1270,7 @@ async function performUpdate({
     const restored = await restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, execute, config });
     if (!restored) {
       stderr.write(
-        `Automatic restore failed. The checkpoint remains available at ${checkpoint.path} for manual recovery.\n`
+        `Automatic restore failed. The checkpoint remains available at ${checkpoint.path} for manual recovery. System state: RECOVERY_REQUIRED\n`
       );
     }
     return 1;
@@ -1612,7 +1723,179 @@ async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute
   });
 }
 
-async function updateCommand(args, { root, config, version, platform, stdin, stdout, stderr, execute }) {
+async function reinstallCommand({
+  root,
+  config,
+  platform,
+  stdin,
+  stdout,
+  stderr,
+  execute,
+  request,
+  sleep
+}) {
+  const approved = await requireChangeApproval(stdin, stdout, stderr, [
+    `Clean setup SpaceApp at ${root}`,
+    "This recreates managed files, templates, and runtime containers.",
+    "Your database, persistent data, and credentials will be preserved."
+  ]);
+  if (!approved) {
+    return 0;
+  }
+  const downCode = await execute(
+    composeCommand("down", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+    { stdin, stdout, stderr }
+  );
+  if (downCode !== 0) {
+    stderr.write(`Clean setup warning: container stop returned exit ${downCode}.\n`);
+  }
+  await writeRuntimeFiles(root, config);
+  const upCode = await execute(
+    composeCommand("up", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+    { stdin, stdout, stderr }
+  );
+  if (upCode !== 0) {
+    stderr.write(`Clean setup failed during container startup (exit ${upCode}).\n`);
+    return upCode;
+  }
+  if (typeof request === "function") {
+    const url = `http://${config.bindHost}:${config.port}`;
+    const ready = await waitForReadiness({
+      url,
+      request,
+      sleep: sleep || wait,
+      onProgress: async ({ elapsedSeconds }) => {
+        stdout.write(`Waiting for SpaceApp readiness after clean setup (${elapsedSeconds}s)...\n`);
+      }
+    });
+    if (!ready) {
+      stderr.write("Clean setup completed container start, but readiness check timed out.\n");
+      return 1;
+    }
+  }
+  stdout.write("SpaceApp clean setup completed successfully. All data and settings preserved.\n");
+  return 0;
+}
+
+async function supportBundleCommand({
+  root,
+  config,
+  platform,
+  arch,
+  stdout,
+  stderr,
+  execute,
+  request,
+  outPath
+}) {
+  const bundle = {
+    schemaVersion: "1.0.0",
+    collectedAt: new Date().toISOString(),
+    system: {
+      platform,
+      arch,
+      nodeVersion: process.version,
+      release: typeof process.release === "object" ? process.release.name : "unknown"
+    },
+    launcher: {
+      version: PACKAGE_VERSION,
+      runtimeVersion: RUNTIME_VERSION
+    },
+    installation: {
+      root,
+      config: config
+        ? {
+            version: config.version,
+            profile: config.profile,
+            accessMode: config.accessMode,
+            companionsEnabled: config.companionsEnabled,
+            bindHost: config.bindHost,
+            port: config.port,
+            previousVersion: config.previousVersion ?? null
+          }
+        : null
+    },
+    services: {},
+    health: {}
+  };
+
+  if (config) {
+    const url = `http://${config.bindHost}:${config.port}`;
+    if (typeof request === "function") {
+      try {
+        const res = await request(`${url}/readyz`, { method: "GET", signal: AbortSignal.timeout(3000) });
+        bundle.health.readyz = { status: res.status, ok: res.ok };
+      } catch (e) {
+        bundle.health.readyz = { error: e.message };
+      }
+    }
+  }
+
+  const destination = outPath || join(
+    root,
+    `support-bundle-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}.json`
+  );
+  await writeFile(destination, JSON.stringify(bundle, null, 2), { mode: 0o600 });
+  stdout.write(`SpaceApp support bundle generated: ${destination}\n`);
+  return 0;
+}
+
+async function factoryResetCommand({
+  root,
+  config,
+  platform,
+  stdin,
+  stdout,
+  stderr,
+  execute,
+  runtimeVersion,
+  persistSetupToken
+}) {
+  stdout.write("\nWARNING: Factory reset will PERMANENTLY ERASE all local database records, persistent volumes, and configuration.\n");
+  stdout.write("External workspaces outside the installation root are preserved.\n\n");
+
+  try {
+    stdout.write("Creating safety backup before factory reset...\n");
+    await execute(
+      composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+      { stdin, stdout, stderr }
+    );
+  } catch (err) {
+    stdout.write(`Safety backup notice: ${err.message}. Continuing with reset confirmation.\n`);
+  }
+
+  const confirm = await readSecret(
+    stdin,
+    stdout,
+    "Type FACTORY-RESET to remove all data and reset SpaceApp: ",
+    { mask: false }
+  );
+  if (confirm.trim() !== "FACTORY-RESET") {
+    stdout.write("Factory reset cancelled. No data was erased.\n");
+    return 0;
+  }
+
+  await execute(
+    composeCommand("purge", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+    { stdin, stdout, stderr }
+  );
+
+  try {
+    await rm(join(root, "config.json"), { force: true });
+    await rm(join(root, "runtime.env"), { force: true });
+    await rm(join(root, "compose.yml"), { force: true });
+  } catch {}
+
+  const result = await initializeInstallation(root, { version: runtimeVersion });
+  stdout.write(`SpaceApp factory reset complete. Clean installation initialized at ${root}\n`);
+  if (result.setupToken) {
+    stdout.write(`One-time setup token: ${result.setupToken}\n`);
+    stdout.write("Store it temporarily; it expires after first owner setup.\n");
+  }
+  return 0;
+}
+
+async function updateCommand(args, { root, config, version, platform, stdin, stdout, stderr, execute, request, sleep }) {
   if (args.length > 1) {
     throw new Error(`Usage: ${UNIVERSAL_COMMAND} update [version]`);
   }
@@ -1860,130 +2143,8 @@ async function executeWithDockerDiagnostics(execute, spec, io, { platform, stder
 }
 
 export async function readSecret(stdin, stdout, prompt, { mask = true } = {}) {
-  stdout.write(prompt);
-  if (!stdin.isTTY || typeof stdin.setRawMode !== "function") {
-    // Non-TTY stdin (e.g. piped input on Windows through npx.cmd). Read only
-    // up to the first newline so an interactive console that reports non-TTY
-    // stdin still works: previously this drained the stream to EOF, so typing
-    // "y" + Enter looked frozen and a second keystroke produced "y\ny" and
-    // "Please answer y or n." loops. When the stream ends before a newline
-    // (fully piped answers), everything read is returned as-is so "y\nn\n"
-    // piped input still yields successive valid answers. Event listeners are
-    // used instead of the Readable async iterator because an abandoned
-    // iterator can destroy the stream, breaking the next prompt.
-    const value = await new Promise((resolve) => {
-      let answer = "";
-      const finish = (result) => {
-        cleanup();
-        resolve(result);
-      };
-      // Paused-mode reads: consume exactly one line from the buffer, leaving
-      // the rest (and the stream itself) intact for the next prompt.
-      const onReadable = () => {
-        let chunk;
-        while ((chunk = stdin.read()) !== null) {
-          for (const character of String(chunk)) {
-            if (character === "\r" || character === "\n") {
-              finish(answer);
-              return;
-            }
-            answer += character;
-          }
-        }
-      };
-      const onEnd = () => finish(answer);
-      const onClose = () => finish(answer);
-      const cleanup = () => {
-        stdin.off("readable", onReadable);
-        stdin.off("end", onEnd);
-        stdin.off("close", onClose);
-      };
-      if (typeof stdin.read === "function" && typeof stdin.on === "function") {
-        stdin.on("readable", onReadable);
-        stdin.once("end", onEnd);
-        stdin.once("close", onClose);
-        onReadable();
-      } else {
-        // Fallback for exotic streams without readable-mode support.
-        const iterator = stdin[Symbol.asyncIterator]();
-        (async () => {
-          for (;;) {
-            const step = await iterator.next();
-            if (step.done) {
-              finish(answer);
-              return;
-            }
-            for (const character of String(step.value)) {
-              if (character === "\r" || character === "\n") {
-                finish(answer);
-                return;
-              }
-              answer += character;
-            }
-          }
-        })().catch(() => finish(answer));
-      }
-    });
-    stdout.write("\n");
-    return value;
-  }
-  if (process.platform === "win32") {
-    // Windows consoles (PowerShell 7 / ConPTY) do not reliably forward
-    // raw-mode keystrokes to native children: a "y" + Enter can be frozen,
-    // split across chunks, or doubled ("yy" -> "Please answer y or n.").
-    // Read cooked console lines without setRawMode instead; the console
-    // itself provides line editing and echo.
-    const rl = createInterface({ input: stdin, terminal: false, crlfDelay: Infinity });
-    const cooked = await new Promise((resolve) => {
-      let got = null;
-      rl.on("line", (line) => {
-        got = line;
-        rl.close();
-      });
-      rl.on("close", () => resolve(got ?? ""));
-    });
-    stdout.write("\n");
-    return cooked;
-  }
-  stdin.setRawMode(true);
-  stdin.resume();
-  stdin.setEncoding("utf8");
-  let value = "";
-  try {
-    // Drive the iterator manually instead of breaking a for-await loop:
-    // breaking a for-await early calls the Readable async iterator's return(),
-    // which DESTROYS the stream, so any later prompt would abort. Stopping
-    // without calling return() leaves the stream paused and intact.
-    const iterator = stdin[Symbol.asyncIterator]();
-    for (;;) {
-      const step = await iterator.next();
-      if (step.done) {
-        break;
-      }
-      for (const character of step.value) {
-        if (character === "\u0003") {
-          throw new Error("Input cancelled.");
-        }
-        if (character === "\r" || character === "\n") {
-          stdout.write("\n");
-          return value;
-        }
-        if (character === "\u007f") {
-          if (value.length > 0) {
-            value = value.slice(0, -1);
-            if (mask) stdout.write("\b \b");
-          }
-          continue;
-        }
-        value += character;
-        if (mask) stdout.write("*");
-      }
-    }
-    return value;
-  } finally {
-    stdin.setRawMode(false);
-    stdin.pause();
-  }
+  const controller = stdin?._spaceappPromptController || new PromptController({ stdin, stdout });
+  return await controller.readLine(prompt, { mask });
 }
 
 export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
@@ -2142,11 +2303,16 @@ Usage: ${UNIVERSAL_COMMAND} <command>
   init                              Create a local SpaceApp installation
   install [--profile auto|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
                                     Install prerequisites, initialize, and start
+  reinstall [--keep-data] [--profile auto|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
+                                    Clean reinstallation preserving data and credentials
+  repair [--dry-run]                Verify and repair configuration and runtime files
   up | down | status | logs         Manage the Docker application
   open                              Open the local web application
   doctor                            Check resources, Docker, Compose, and engine
+  support-bundle                    Generate a diagnostic bundle JSON for support
   update [version] | rollback       Update or roll back images
   backup | restore                  Back up or restore persistent state
+  factory-reset                     Safety backup, purge all volumes/data, and reset
   workspace add <path> [--read-only]
   workspace remove <id-or-path>
   workspace list
@@ -2158,10 +2324,15 @@ Usage: ${UNIVERSAL_COMMAND} <command>
   owner rotate-setup-token          Replace an expired unclaimed setup token
   uninstall [--purge-data]          Remove containers; keep data by default
 
-Interactive setup wizard: install, update, init, rollback, and uninstall ask
-questions and require a final confirmation before any change. Command flags
-pre-select answers but never skip the confirmation. Without a TTY, changes
-are refused; the only exception is an approved Windows RunOnce continuation
-(bound to the user, installation root, and target version; expires in 24h).
+Options:
+  --plan                            Dry-run mode: print actions without executing
+  --json                            Output structured JSON where supported
+  --log-file <file>                 Append all execution logs to specified file
+  --non-interactive                 Run non-interactively, failing on missing input
+  --answers <json|path>             Pre-seed answers for automated installation
+
+Interactive setup wizard: install, reinstall, update, init, rollback, repair,
+factory-reset, and uninstall ask questions and require a final confirmation
+before any change. Command flags pre-select answers but never skip the confirmation.
 `;
 }

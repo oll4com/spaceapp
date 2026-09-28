@@ -120,11 +120,15 @@ test("help and version aliases expose the complete stable command surface", asyn
     for (const command of [
       "init",
       "install",
+      "reinstall",
+      "repair",
       "up | down | status | logs",
       "open",
       "doctor",
+      "support-bundle",
       "update [version] | rollback",
       "backup | restore",
+      "factory-reset",
       "workspace add",
       "workspace remove",
       "workspace list",
@@ -356,3 +360,45 @@ test("invalid and cancelled command paths fail closed with actionable usage", as
     /Purge cancelled/
   );
 });
+
+test("support-bundle command generates a diagnostic bundle", async () => {
+  const { root, options, stdout } = await installation();
+  const exitCode = await run(["support-bundle"], options);
+  assert.equal(exitCode, 0);
+  assert.match(stdout.value(), /SpaceApp support bundle generated:/);
+});
+
+test("repair command verifies and reports runtime health", async () => {
+  const { root, options, stdout } = await installation();
+  const exitCode = await run(["repair", "--dry-run"], options);
+  assert.equal(exitCode, 0);
+  assert.match(stdout.value(), /Config repairs planned/);
+});
+
+test("factory-reset command cancels when confirmation differs from FACTORY-RESET", async () => {
+  const { root, options, stdout } = await installation();
+  const exitCode = await run(["factory-reset"], {
+    ...options,
+    stdin: ttyStdin("CANCEL")
+  });
+  assert.equal(exitCode, 0);
+  assert.match(stdout.value(), /Factory reset cancelled/);
+});
+
+test("factory-reset command reinitializes installation on valid confirmation", async () => {
+  const calls = [];
+  const { root, options, stdout } = await installation({
+    execute: async (spec) => {
+      calls.push(spec);
+      return 0;
+    }
+  });
+  const exitCode = await run(["factory-reset"], {
+    ...options,
+    stdin: ttyStdin("FACTORY-RESET")
+  });
+  assert.equal(exitCode, 0);
+  assert.match(stdout.value(), /SpaceApp factory reset complete/);
+  assert.ok(calls.some((spec) => spec.args?.includes("down") || spec.args?.includes("-v")));
+});
+
