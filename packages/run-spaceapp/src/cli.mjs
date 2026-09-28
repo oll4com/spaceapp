@@ -2099,6 +2099,8 @@ async function waitForApplicationReady({
   }
 }
 
+const waitForReadiness = waitForApplicationReady;
+
 async function requestSetupStatus({ url, request }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SETUP_STATUS_TIMEOUT_MS);
