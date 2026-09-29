@@ -247,15 +247,15 @@ export class PromptController {
           if (character === "\u007f" || character === "\u0008") {
             if (value.length > 0) {
               value = value.slice(0, -1);
-              if (mask) {
-                this.stdout.write("\b \b");
-              }
+              this.stdout.write("\b \b");
             }
             continue;
           }
           value += character;
           if (mask) {
             this.stdout.write("*");
+          } else {
+            this.stdout.write(character);
           }
         }
       }
