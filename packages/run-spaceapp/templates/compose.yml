@@ -3,12 +3,19 @@ services:
     image: ghcr.io/oll4com/spaceapp-core:${SPACEAPP_IMAGE_TAG}
     restart: unless-stopped
     init: true
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        sed -i 's/agentToolsWriterCommand: env.SPACE_AGENT_TOOLS_WRITER || [^,]*/agentToolsWriterCommand: null/g' /app/apps/api/dist/config.js 2>/dev/null || true
+        exec /app/deploy/docker/core-entrypoint.sh
     security_opt:
       - no-new-privileges:true
     mem_limit: "${SPACEAPP_CORE_MEMORY_LIMIT}"
     cpus: "${SPACEAPP_CORE_CPU_LIMIT}"
     environment:
       SPACE_PUBLIC_DISTRIBUTION: "true"
+      SPACE_AGENT_TOOLS_WRITER: "disabled"
       SPACE_DEV_LOGIN: "false"
       SPACE_APP_VERSION: "${SPACEAPP_IMAGE_TAG}"
       SPACE_TELEMETRY_ENABLED: "${SPACEAPP_TELEMETRY}"
