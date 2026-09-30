@@ -55,7 +55,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     credentialSmokeEnv: "SPACE_CLI_OPENCODE_CREDENTIAL_SMOKE",
     authMode: "MANAGED",
     missingAuthState: "UNAVAILABLE",
-    missingAuthReason: "OpenCode managed credentials have not been verified by the operator.",
+    missingAuthReason: "OpenCode is not installed.",
     loginAction: null,
     credentialObservationAction: "credential-observation",
     credentialSmokeMarker: "SPACE_OPENCODE_OK",
@@ -70,8 +70,8 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
       XDG_STATE_HOME: `${codexHome}/space-opencode/state`
     },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: "big-pickle",
-    credentialVerifiedReason: "OpenCode CLI direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
+    defaultModelId: null,
+    credentialVerifiedReason: "OpenCode is available. A free native model is verified on first launch.",
     loginBootstrapReason: null
   },
   {

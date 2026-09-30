@@ -59,8 +59,8 @@ const SECRET_FIELD = /password|secret|token|api.?key|credential/i;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const BACKUP_ID_PATTERN = /^spaceapp-backup-\d{8}T\d{9}Z$/;
 const PROVIDERS = Object.freeze({
-  bundled: Object.freeze(["opencode", "codex", "gemini", "qwen", "kimi", "grok", "autohand", "cursor", "copilot"]),
-  ownerInstalled: Object.freeze(["claude"]),
+  bundled: Object.freeze(["opencode"]),
+  ownerInstalled: Object.freeze(["codex", "gemini", "qwen", "kimi", "grok", "autohand", "cursor", "copilot", "claude"]),
   experimental: Object.freeze(["deepseek"])
 });
 const ALL_PROVIDERS = new Set(Object.values(PROVIDERS).flat());
@@ -627,6 +627,10 @@ export function composeCommand(action, root, options = {}) {
     checkpointDump: ["exec", "-T", "postgres", "pg_dump", "-c", "--if-exists", "-U", "spaceapp", "-d", "spaceapp"],
     checkpointRestore: ["exec", "-T", "postgres", "psql", "-v", "ON_ERROR_STOP=1", "-U", "spaceapp", "-d", "spaceapp"]
   };
+  if (action === "installProvider") {
+    assertProvider(options.provider);
+    actions.installProvider = ["exec", "-T", "--user", "10001:10001", "spaceapp-cli", "node", "/app/deploy/docker/provider-install.mjs", options.provider];
+  }
   let selected = actions[action];
   if (action === "restore") {
     if (typeof options.backupId !== "string" || !BACKUP_ID_PATTERN.test(options.backupId)) {

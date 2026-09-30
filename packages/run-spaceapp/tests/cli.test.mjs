@@ -1576,8 +1576,9 @@ test("Claude installation is explicit, owner-initiated, and fixed to the reviewe
     "--prefix", "/var/lib/spaceapp-cli/vendor/claude",
     "--no-audit", "--no-fund", "@anthropic-ai/claude-code@2.1.206"
   ]);
-  assert.match(stdout.value(), /Installing Claude Code from Anthropic/);
-  await assert.rejects(() => run(["provider", "install", "gemini"], options), /provider install claude/i);
+  assert.match(stdout.value(), /Installing optional provider claude/);
+  assert.equal(await run(["provider", "install", "gemini"], options), 0);
+  await assert.rejects(() => run(["provider", "install", "../escape"], options), /provider/i);
 });
 
 test("runtime management delegates only fixed Docker argument arrays", async () => {

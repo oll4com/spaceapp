@@ -91,28 +91,11 @@ ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
 FROM runtime-base AS cli
 COPY --chown=root:root starter-memory/AGENTS.md /etc/AGENTS.md
+COPY --chown=root:root starter-memory/installation-guide.md /etc/spaceapp-installation-guide.md
 RUN chmod 0644 /etc/AGENTS.md
 ARG TARGETARCH
 RUN npm install --global --no-audit --no-fund opencode-ai@1.18.4 \
-    && npm install --global --ignore-scripts --no-audit --no-fund \
-      @openai/codex@0.145.0 \
-      @google/gemini-cli@0.52.0 \
-      @qwen-code/qwen-code@0.20.1 \
-      @moonshot-ai/kimi-code@0.29.0 \
-      @xai-official/grok@0.2.111 \
-      autohand-cli@0.9.3 \
-      @github/copilot@1.0.78 \
-    && npm install --global --ignore-scripts --no-audit --no-fund \
-      run-deepseek-cli@0.1.1 \
-    && install -d -o spaceapp -g spaceapp -m 0700 \
-      /var/lib/spaceapp-cli/vendor \
-      /var/lib/spaceapp-cli/vendor/cursor \
-    && cursor_arch="$(if [ "$TARGETARCH" = "amd64" ]; then printf 'x64'; else printf 'arm64'; fi)" \
-    && curl -fsSL --retry 3 "https://downloads.cursor.com/lab/2026.07.23-e383d2b/linux/${cursor_arch}/agent-cli-package.tar.gz" -o /tmp/cursor-agent.tar.gz \
-    && tar -xzf /tmp/cursor-agent.tar.gz -C /var/lib/spaceapp-cli/vendor/cursor --strip-components=1 \
-    && rm -f /tmp/cursor-agent.tar.gz \
-    && ln -s /var/lib/spaceapp-cli/vendor/cursor/cursor-agent /usr/local/bin/cursor-agent \
-    && chown -R spaceapp:spaceapp /var/lib/spaceapp-cli/vendor/cursor \
+    && install -d -o spaceapp -g spaceapp -m 0700 /var/lib/spaceapp-cli/vendor \
     && npm cache clean --force \
     && install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp-cli \

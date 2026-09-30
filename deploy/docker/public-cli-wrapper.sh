@@ -92,7 +92,7 @@ credential_ready() {
   case "$runtime_name" in
     codex) [ -s "$state_root/auth.json" ] ;;
     gemini) [ -s "$state_root/.gemini/oauth_creds.json" ] ;;
-    opencode) [ -s "$state_root/data/opencode/auth.json" ] ;;
+    opencode) command -v opencode >/dev/null 2>&1 ;;
     qwen) [ -s "$state_root/.qwen/oauth_creds.json" ] ;;
     kimi) [ -s "$state_root/.kimi/credentials.json" ] ;;
     grok) [ -s "$state_root/.grok/credentials.json" ] ;;
@@ -102,6 +102,13 @@ credential_ready() {
     cursor) [ -s "$state_root/.config/cursor/auth.json" ] ;;
     copilot) [ -s "$state_root/config.json" ] ;;
   esac
+}
+
+ensure_optional_provider() {
+  export PATH="/var/lib/spaceapp-cli/vendor/$runtime_name/node_modules/.bin:/var/lib/spaceapp-cli/vendor/$runtime_name:$PATH"
+  if [ "$runtime_name" != "opencode" ] && ! command -v "$command_name" >/dev/null 2>&1; then
+    node /app/deploy/docker/provider-install.mjs "$runtime_name"
+  fi
 }
 
 case "${1:-}" in
@@ -121,6 +128,10 @@ case "${1:-}" in
     ;;
   credential-smoke)
     credential_ready || exit 1
+    if [ "$runtime_name" = "opencode" ]; then
+      ensure_runtime_dirs
+      node /app/deploy/docker/opencode-first-run.mjs
+    fi
     printf '%s\n' "SPACE_$(printf '%s' "$runtime_name" | tr '[:lower:]' '[:upper:]')_OK"
     exit 0
     ;;
@@ -130,6 +141,7 @@ case "${1:-}" in
     exit 0
     ;;
   login)
+    ensure_optional_provider
     ensure_runtime_dirs
     shift
     case "$runtime_name" in
@@ -157,8 +169,15 @@ case "${1:-}" in
 esac
 
 ensure_runtime_dirs
+ensure_optional_provider
+if [ "$runtime_name" = "opencode" ]; then
+  case "${1:-}" in
+    models|auth|--help|--version|version) ;;
+    *) node /app/deploy/docker/opencode-first-run.mjs ;;
+  esac
+fi
 if ! command -v "$command_name" >/dev/null 2>&1; then
-  echo "$runtime_name is not installed in this image." >&2
+  echo "$runtime_name could not be installed. Run spaceapp doctor for help." >&2
   exit 69
 fi
 

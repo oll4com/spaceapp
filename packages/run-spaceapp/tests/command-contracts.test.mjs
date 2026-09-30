@@ -135,7 +135,7 @@ test("help and version aliases expose the complete stable command surface", asyn
       "credentials set",
       "credentials remove",
       "credentials list",
-      "provider install claude",
+      "provider install <provider>",
       "owner reset-password",
       "owner rotate-setup-token",
       "uninstall [--purge-data]"
@@ -331,7 +331,7 @@ test("invalid and cancelled command paths fail closed with actionable usage", as
     [["workspace", "add"], /workspace add/],
     [["credentials"], /credentials <set\|remove\|list>/],
     [["credentials", "set", "gemini", "argv-secret"], /read from stdin/],
-    [["provider", "install", "gemini"], /provider install claude/],
+    [["provider", "install", "unknown"], /provider/i],
     [["owner", "unknown"], /owner <reset-password\|rotate-setup-token>/],
     [["update", "0.1.6", "extra"], /Usage: npx --yes run-spaceapp@latest update/],
     [["uninstall", "--unknown"], /Usage: npx --yes run-spaceapp@latest uninstall/]

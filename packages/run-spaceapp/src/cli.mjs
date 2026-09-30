@@ -1715,11 +1715,14 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
 }
 
 async function providerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
-  if (args.length !== 2 || args[0] !== "install" || args[1] !== "claude") {
-    throw new Error(`Usage: ${UNIVERSAL_COMMAND} provider install claude`);
+  if (args.length !== 2 || args[0] !== "install") {
+    throw new Error(`Usage: ${UNIVERSAL_COMMAND} provider install <provider>`);
   }
-  stdout.write("Installing Claude Code from Anthropic into this installation's private provider volume.\n");
-  return execute(composeCommand("installClaude", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+  const provider=args[1];
+  stdout.write(`Installing optional provider ${provider} into this installation's private provider volume.\n`);
+  // Keep the existing Claude path compatible with older runtime images.
+  const action=provider === "claude" ? "installClaude" : "installProvider";
+  return execute(composeCommand(action, root, { profile: config.profile, companionsEnabled: config.companionsEnabled, provider }), { stdin, stdout, stderr });
 }
 
 async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
@@ -2378,7 +2381,9 @@ Usage: ${UNIVERSAL_COMMAND} <command>
   credentials set <provider>        Read a credential from masked stdin
   credentials remove <provider>
   credentials list
-  provider install claude           Owner-initiated Anthropic package install
+  provider install <provider>       Install an optional CLI in its persistent volume
+                                    codex, gemini, qwen, kimi, grok, claude, deepseek,
+                                    autohand, cursor, copilot (also installed on first use)
   owner reset-password              Read the new password from masked stdin
   owner rotate-setup-token          Replace an expired unclaimed setup token
   uninstall [--purge-data]          Remove containers; keep data by default

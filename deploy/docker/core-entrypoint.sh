@@ -63,5 +63,9 @@ if [ ! -e "$SPACE_GEMINI_MEMORY_MONTHLY_PATH" ]; then
     "$SPACE_GEMINI_MEMORY_MONTHLY_PATH"
 fi
 
+if [ ! -e "$SPACE_MEMORY_ROOT/installation-guide.md" ]; then
+  install -o spaceapp -g spaceapp -m 0600 "$SPACE_STARTER_MEMORY_ROOT/installation-guide.md" "$SPACE_MEMORY_ROOT/installation-guide.md"
+fi
+
 gosu spaceapp node packages/db/dist/migrate.js
 exec gosu spaceapp node deploy/docker/core-supervisor.mjs
