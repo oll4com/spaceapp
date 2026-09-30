@@ -61,3 +61,11 @@ test('doctor --fix repairs legacy configuration and requires runtime readiness',
   assert.ok(f.urls.some(x=>x.endsWith('/readyz')));
   assert.ok(!f.calls.some(x=>x.args.includes('--volumes')));
 });
+
+test('an empty database checkpoint prevents upgrade even when pg_dump exits zero',async(t)=>{
+  const f=await fixture(t);await initializeInstallation(f.root,{version:'0.1.29'});
+  const before=await readFile(join(f.root,'config.json'),'utf8');
+  await assert.rejects(run(['install','--non-interactive','--answers','{"confirm":true,"open":false}'],f.options),/dump failed or was empty/);
+  assert.equal(await readFile(join(f.root,'config.json'),'utf8'),before);
+  assert.ok(!f.calls.some(x=>x.args.includes('up')));
+});

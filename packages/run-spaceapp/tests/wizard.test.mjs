@@ -157,7 +157,7 @@ test("fresh install cancelled at final confirmation creates no installation stat
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 0);
   assert.match(stdout.value(), /Cancelled\. No changes were made/);
   await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
@@ -172,7 +172,7 @@ test("install and update refuse changes without a TTY unless an approved Windows
     stdout: capture().stream,
     stderr: stderr.stream,
     stdin: Readable.from([]),
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 1);
   assert.match(stderr.value(), /interactive terminal \(TTY\)/i);
   await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
@@ -186,7 +186,7 @@ test("install and update refuse changes without a TTY unless an approved Windows
     stderr: updateStderr.stream,
     stdin: Readable.from([]),
     prepareDockerPath: async () => null,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 1);
   assert.match(updateStderr.value(), /interactive terminal \(TTY\)/i);
 });
@@ -219,7 +219,7 @@ test("an approved Windows RunOnce continuation runs the install unattended and i
       ? jsonResponse({ ok: true })
       : jsonResponse({ setupRequired: false, expiresAt: null }),
     sleep: async () => {},
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 0);
 
   assert.equal(
@@ -251,7 +251,7 @@ test("an expired or foreign RunOnce continuation is discarded and the TTY gate a
     stdout: capture().stream,
     stderr: stderr.stream,
     stdin: Readable.from([]),
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 1);
   assert.match(stderr.value(), /interactive terminal \(TTY\)/i);
   await assert.rejects(() => readFile(join(root, "var", "runonce-continuation.json"), "utf8"));
@@ -270,7 +270,7 @@ test("same-version install offers doctor, repair, and cancel without changing st
     stdin: ttyStdin("3"),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     prepareDockerPath: async () => null,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 0);
   assert.match(stdout.value(), /already installed/i);
   assert.match(stdout.value(), /Cancelled\. No changes were made/);
@@ -290,7 +290,7 @@ test("a downgrade update requires the typed DOWNGRADE confirmation", async () =>
     stderr: stderr.stream,
     stdin: ttyStdin("CANCEL"),
     prepareDockerPath: async () => null,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 0);
   assert.match(stderr.value(), /OLDER than the installed/i);
   assert.match(stdout.value(), /Cancelled\. No changes were made/);
@@ -311,7 +311,8 @@ test("update creates a verified checkpoint before cutover and restores it when t
     stderr: stderr.stream,
     stdin: ttyStdin("y"),
     prepareDockerPath: async () => null,
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec.args.at(-1));
       if (spec.args.includes("--remove-orphans")) return 42;
       return 0;
@@ -368,7 +369,7 @@ test("a successful update marks the checkpoint verified and prunes older checkpo
     stderr: capture().stream,
     stdin: ttyStdin("y"),
     prepareDockerPath: async () => null,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 0);
   assert.equal(
     (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).version,

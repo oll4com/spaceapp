@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { createInterface } from "node:readline";
+import { once } from "node:events";
 import { PromptController } from "./prompt-controller.mjs";
 import {
   copyFile,
@@ -727,6 +728,7 @@ async function installCommand(args, {
   }
   const stagedStateRoot = await mkdtemp(join(tmpdir(), "run-spaceapp-install-"));
   let runtimeMutationAttempted = false;
+  let upgradeCheckpoint = null;
   const failAfterRuntimeMutation = async (code) => {
     if (runtimeMutationAttempted) {
       await reportInstallDiagnostics({
@@ -739,7 +741,11 @@ async function installCommand(args, {
         stderr,
         execute
       });
-      await restoreRuntimeAfterFailedInstall({
+      if (upgradeCheckpoint) {
+        const restored = await restoreCheckpoint(root, upgradeCheckpoint, {stdin,stdout,stderr,execute,config:existingConfig});
+        if(!restored) stderr.write(`RECOVERY_REQUIRED: checkpoint retained at ${upgradeCheckpoint.path}\n`);
+        else stderr.write("The previous SpaceApp runtime and access mode were restored from the verified checkpoint.\n");
+      } else await restoreRuntimeAfterFailedInstall({
         root,
         stagedStateRoot,
         existingConfig,
@@ -775,6 +781,9 @@ async function installCommand(args, {
       )
     );
     if (pullCode !== 0) return pullCode;
+    if(existingConfig && existingConfig.version !== result.config.version) {
+      upgradeCheckpoint = await createCheckpoint(root, existingConfig, {stdin,stdout,stderr,execute,platform});
+    }
     runtimeMutationAttempted = true;
     const upCode = await executeWithDockerDiagnostics(
       execute,
@@ -910,6 +919,7 @@ async function installCommand(args, {
     }
 
     await commitInstallation(root, result.config);
+    if(upgradeCheckpoint) await markCheckpointVerified(upgradeCheckpoint);
     runtimeMutationAttempted = false;
     try {
       await reportFirstInstallPing({
@@ -1382,18 +1392,22 @@ async function createCheckpoint(root, config, { stdin, stdout, stderr, execute, 
   }
   stdout.write("Creating checkpoint (configuration, secrets, and database dump)...\n");
   const dumpPath = join(path, "postgres.dump");
-  const dumpCode = await execute(
-    composeCommand("checkpointDump", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
-    { stdin: null, stdout: createWriteStream(dumpPath), stderr }
-  );
-  if (dumpCode !== 0) {
-    await rm(path, { recursive: true, force: true });
-    throw new Error(`Checkpoint database dump failed with Docker exit ${dumpCode}. No changes were made.`);
-  }
+  const dumpStream=createWriteStream(dumpPath,{mode:0o600});
+  await once(dumpStream,"open");
+  let dumpCode;
   try {
-    await stat(dumpPath);
-  } catch {
-    await writeFile(dumpPath, "");
+    dumpCode = await execute(
+      composeCommand("checkpointDump", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+      { stdin: null, stdout: dumpStream, stderr }
+    );
+  } finally {
+    dumpStream.end();
+    await once(dumpStream,"close");
+  }
+  const dumpSize=(await stat(dumpPath)).size;
+  if (dumpCode !== 0 || dumpSize === 0) {
+    await rm(path, { recursive: true, force: true });
+    throw new Error(`Checkpoint database dump failed or was empty (exit ${dumpCode}). No runtime changes were made.`);
   }
   manifest.files.push(await manifestEntry(dumpPath, "postgres.dump"));
   await writeFile(join(path, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
@@ -1446,13 +1460,14 @@ async function restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, exec
   }
   stdout.write(`Restoring checkpoint ${checkpoint.id}...\n`);
   await execute(
-    composeCommand("down", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+    composeCommand("stopForRestore", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
     { stdin: null, stdout: null, stderr: null }
   ).catch(() => {});
   const fileNames = ["config.json", "runtime.env", "compose.yml", "compose.workspaces.yml", "compose.host-access.yml"];
   for (const fileName of fileNames) {
     await copyFile(join(checkpoint.path, fileName), join(root, fileName));
   }
+  await cpDirectory(join(checkpoint.path, "secrets"), join(root, "secrets"));
   const restored = await loadConfig(root);
   const dumpPath = join(checkpoint.path, "postgres.dump");
   const dbCode = await execute(

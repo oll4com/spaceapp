@@ -80,7 +80,8 @@ test("the package exposes stable global and universal npx command names", async 
 test("init and the default update target the pinned runtime image version", async () => {
   const calls = [];
   const { root, options } = await installation({
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec);
       return 0;
     }
@@ -165,7 +166,8 @@ test("help and version aliases expose the complete stable command surface", asyn
 test("up, down, status, logs, backup, and open delegate to their fixed native contracts", async () => {
   const calls = [];
   const { root, options } = await installation({
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec);
       return 0;
     }
@@ -200,7 +202,8 @@ test("up, down, status, logs, backup, and open delegate to their fixed native co
     const opened = [];
     const fixture = await installation({
       platform,
-      execute: async (spec) => {
+      execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
         opened.push(spec);
         return 0;
       }
@@ -259,8 +262,9 @@ test("workspace and credential list contracts persist only the requested local s
 test("update and rollback persist version state only after both Docker operations succeed", async () => {
   const calls = [];
   const { root, stdout, options } = await installation({
-    execute: async (spec) => {
+    execute: async (spec, io) => {
       calls.push(spec);
+      if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n");
       return 0;
     }
   });
@@ -389,7 +393,8 @@ test("factory-reset command cancels when confirmation differs from FACTORY-RESET
 test("factory-reset command reinitializes installation on valid confirmation", async () => {
   const calls = [];
   const { root, options, stdout } = await installation({
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec);
       return 0;
     }

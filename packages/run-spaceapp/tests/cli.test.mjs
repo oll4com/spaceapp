@@ -224,7 +224,7 @@ test("init emits a one-time setup token without placing it in config", async () 
     stdout: stdout.stream,
     stderr: stderr.stream,
     stdin: ttyStdin("y"),
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 0);
 
   assert.match(stdout.value(), /One-time setup token: [A-Za-z0-9_-]{40,}/);
@@ -241,7 +241,7 @@ test("init emits a one-time setup token without placing it in config", async () 
     stdout: second.stream,
     stderr: stderr.stream,
     stdin: ttyStdin("y"),
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   });
   assert.doesNotMatch(second.value(), /One-time setup token:/);
 });
@@ -269,7 +269,7 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
     platform: "linux",
     stdout: initialOutput.stream,
     stderr: capture().stream,
-    execute: async () => 0,
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; },
     prepareDockerPath: async () => null
   };
   await initializeInstallation(root, { version: "0.1.23", profile: "light" });
@@ -300,6 +300,7 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
     },
     sleep: async () => {},
     execute: async (spec, io) => {
+      if (spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n");
       const action = spec.args.at(-1) === "pull"
         ? "pull"
         : spec.args.includes("--remove-orphans")
@@ -355,7 +356,7 @@ test("install recovers when an initial readiness HTTP request times out", async 
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
     sleep: async () => {},
-    execute: async () => 0,
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; },
     request: async (url, options = {}) => {
       if (url.endsWith("/readyz")) {
         readinessAttempts += 1;
@@ -401,10 +402,10 @@ test("install retains the host token and prints no secret when database rotation
     prepareDockerPath: async () => null,
     request: readyUnclaimedRequest,
     sleep: async () => {},
-    execute: async (spec) =>
-      spec.args.some((argument) => argument.endsWith("rotate-owner-setup-token.mjs"))
-        ? 41
-        : 0
+    execute: async (spec, io) => {
+      if (spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n");
+      return spec.args.some((argument) => argument.endsWith("rotate-owner-setup-token.mjs")) ? 41 : 0;
+    }
   }), 41);
 
   assert.equal(
@@ -433,7 +434,7 @@ test("install explains recovery when the database accepts a token that cannot be
     prepareDockerPath: async () => null,
     request: readyUnclaimedRequest,
     sleep: async () => {},
-    execute: async () => 0,
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; },
     persistSetupToken: async () => {
       throw new Error("read-only filesystem");
     }
@@ -468,7 +469,8 @@ test("install does not rotate or print a setup token after the owner is already 
       ? jsonResponse({ ok: true })
       : jsonResponse({ setupRequired: false, expiresAt: null }),
     sleep: async () => {},
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec);
       return 0;
     }
@@ -558,7 +560,8 @@ test("readiness progress diagnostics cannot abort an otherwise successful instal
         : jsonResponse({ ok: false }, 503);
     },
     sleep: async () => {},
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       if (spec.args.at(-1) === "ps") {
         statusCalls += 1;
         if (statusCalls === 1) throw new Error("status transport closed");
@@ -599,7 +602,7 @@ test("install accepts 7.4 GiB usable memory on an 8 GB-class CachyOS laptop and 
     prepareDockerPath: async () => null,
     request: readyUnclaimedRequest,
     sleep: async () => {},
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 0);
 
   assert.match(stdout.value(), /Selected profile: light \(7\.4 GiB system memory detected\)/i);
@@ -622,7 +625,8 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     request: readyUnclaimedRequest,
     sleep: async () => {},
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec);
       return 0;
     }
@@ -855,7 +859,7 @@ test("install enables, preserves, and removes Linux host-root access without del
       ? jsonResponse({ ok: true })
       : jsonResponse({ setupRequired: false, expiresAt: null }),
     sleep: async () => {},
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   };
 
   const enableOutput = capture();
@@ -947,7 +951,8 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
       ? jsonResponse({ ok: true })
       : jsonResponse({ setupRequired: false, expiresAt: null }),
     sleep: async () => {},
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec);
       const envFileIndex = spec.args.indexOf("--env-file");
       if (envFileIndex !== -1) {
@@ -1061,7 +1066,7 @@ test("a failed upgrade preserves the committed installation state", async () => 
       cpuCount: 1
     }),
     prepareDockerPath: async () => null,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 1);
 
   for (const [path, content] of committedState) {
@@ -1105,7 +1110,8 @@ test("Docker, readiness, and browser-cleanup failures preserve the committed ins
           expiresAt: failure === "browser-cleanup" ? "2099-07-23T12:15:00.000Z" : null
         }),
       sleep: async () => {},
-      execute: async (spec) => {
+      execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
         const envFileIndex = spec.args.indexOf("--env-file");
         if (envFileIndex !== -1) {
           stagedStateRoots.add(dirname(spec.args[envFileIndex + 1]));
@@ -1160,7 +1166,8 @@ test("a failed host-root activation restores the previous isolated runtime", asy
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,
     sleep: async () => {},
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       if (spec.args.includes("--remove-orphans")) {
         const envFileIndex = spec.args.indexOf("--env-file");
         const stateRoot = dirname(spec.args[envFileIndex + 1]);
@@ -1202,7 +1209,8 @@ test("a failed clean host-root install stops the partially started runtime", asy
       ? jsonResponse({ ok: false }, 503)
       : jsonResponse({ setupRequired: false, expiresAt: null }),
     sleep: async () => {},
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       if (spec.args.includes("--remove-orphans")) composeActions.push("up");
       if (spec.args.at(-1) === "down") composeActions.push("down");
       return 0;
@@ -1231,7 +1239,8 @@ test("install --with-companions activates the companions compose profile and run
     prepareDockerPath: async () => null,
     request: async () => jsonResponse({ ok: false }, 503),
     sleep: async () => {},
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       if (spec.args.includes("--remove-orphans")) {
         composeArgs.push(spec.args);
         runtimeEnvText = await readFile(
@@ -1271,7 +1280,8 @@ test("diagnostic command errors never prevent failed-install rollback", async ()
     prepareDockerPath: async () => null,
     request: async () => jsonResponse({ ok: false }, 503),
     sleep: async () => {},
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       if (spec.args.includes("--remove-orphans")) {
         composeActions.push("up");
       }
@@ -1312,7 +1322,8 @@ test("install honors an explicit standard profile and uses the native browser op
       inspectResources: async () => eightGigabyteClassLinuxGuest,
       request: readyUnclaimedRequest,
       sleep: async () => {},
-      execute: async (spec) => {
+      execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
         calls.push(spec.operation
           ? [spec.command, spec.operation, spec.env?.SPACEAPP_OPEN_URL]
           : [spec.command, ...spec.args]);
@@ -1374,7 +1385,8 @@ test("install bootstraps missing Docker before running doctor and pulling images
       ensureCalls += 1;
       return { code: 0, reexecuted: false };
     },
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec);
       return 0;
     }
@@ -1449,7 +1461,7 @@ test("install does not misreport a failed Docker group re-entry as a pre-downloa
       return { code: 1, reexecuted: true };
     },
     prepareDockerPath: async () => null,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 1);
 
   assert.match(stderr.value(), /real runtime failure/i);
@@ -1473,7 +1485,8 @@ test("install stops before image pulls when usable memory is below 7 GiB", async
       totalMemoryBytes: 6.9 * 1024 ** 3,
       freeDiskBytes: 20 * 1024 ** 3
     }),
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec);
       return 0;
     }
@@ -1496,7 +1509,7 @@ test("credentials reject argv values and accept only stdin", async () => {
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   };
   await run(["init"], { ...options, stdin: ttyStdin("y") });
 
@@ -1527,7 +1540,8 @@ test("credential changes recreate only the isolated CLI service", async () => {
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec.args);
       return 0;
     }
@@ -1562,7 +1576,8 @@ test("Claude installation is explicit, owner-initiated, and fixed to the reviewe
     stdout: stdout.stream,
     stderr: stderr.stream,
     stdin: ttyStdin("y"),
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec.args);
       return 0;
     }
@@ -1592,7 +1607,8 @@ test("runtime management delegates only fixed Docker argument arrays", async () 
     stdout: stdout.stream,
     stderr: stderr.stream,
     stdin: ttyStdin("y"),
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec);
       return 0;
     }
@@ -1615,7 +1631,7 @@ test("Docker-backed commands explain exit 127 instead of failing silently", asyn
     stderr: stderr.stream,
     stdin: ttyStdin("y"),
     prepareDockerPath: async () => null,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   };
   await run(["init"], options);
 
@@ -1640,12 +1656,13 @@ test("doctor probes Docker CLI, Compose, and Engine once and distinguishes a sto
     stdin: ttyStdin("y"),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     prepareDockerPath: async () => null,
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec);
       return spec.args[0] === "info" ? 1 : 0;
     }
   };
-  await run(["init"], { ...options, execute: async () => 0 });
+  await run(["init"], { ...options, execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; } });
 
   assert.equal(await run(["doctor"], options), 1);
   assert.deepEqual(calls.map((spec) => spec.args), [
@@ -1670,7 +1687,7 @@ test("uninstall reports progress, retained state, global CLI removal, and idempo
     stderr: stderr.stream,
     stdin: ttyStdin("y"),
     prepareDockerPath: async () => null,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   };
   await run(["init"], options);
 
@@ -1693,7 +1710,7 @@ test("uninstall reports Docker failures and confirms what was not removed", asyn
     stderr: stderr.stream,
     stdin: ttyStdin("y"),
     prepareDockerPath: async () => null,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   };
   await run(["init"], options);
 
@@ -1717,7 +1734,7 @@ test("confirmed purge reports removed volumes and retained host files", async ()
     stderr: capture().stream,
     stdin: ttyStdin("y"),
     prepareDockerPath: async () => null,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   };
   await run(["init"], options);
 
@@ -1796,7 +1813,8 @@ test("restore creates a safety backup, stops app writers, restores offline, and 
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec.args);
       return 0;
     }
@@ -1837,7 +1855,8 @@ test("restore leaves app writers stopped when the data restore fails", async () 
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    execute: async (spec) => {
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec.args);
       return calls.length === 3 ? 47 : 0;
     }
@@ -1885,7 +1904,7 @@ test("install succeeds on 8 GiB disk for light profile and automatically starts 
       autoConfirmPassed = Boolean(options.installArgs?.autoConfirm);
       return { code: 0, reexecuted: false };
     },
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 0);
 
   assert.ok(ensureDockerCalled);
@@ -1909,7 +1928,7 @@ test("doctor reports PASS for 8 GiB disk when light profile is selected", async 
     stdout: stdout.stream,
     stderr: stderr.stream,
     inspectResources: async () => eightGiBResources,
-    execute: async () => 0
+    execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   };
   await run(["init"], { ...options, stdin: ttyStdin("y") });
 
