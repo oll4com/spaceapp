@@ -120,7 +120,7 @@ test("public test command uses a portable one-file suite that imports every publ
   assert.deepEqual(importedModules, publicTestModules);
 });
 
-test("public repository metadata declares Apache-2.0 with only the launcher publishable", async () => {
+test("public repository preserves application and launcher licenses with only the launcher publishable", async () => {
   const rootPackage = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   const workspaceFiles = [
     ...(await packageFiles("apps")),
@@ -128,13 +128,13 @@ test("public repository metadata declares Apache-2.0 with only the launcher publ
   ];
 
   assert.equal(rootPackage.private, true);
-  assert.equal(rootPackage.license, "Apache-2.0");
+  assert.equal(rootPackage.license, "BUSL-1.1");
   assert.equal(rootPackage.repository.url, "git+https://github.com/oll4com/spaceapp.git");
 
   const publishable = [];
   for (const file of workspaceFiles) {
     const manifest = JSON.parse(await readFile(file, "utf8"));
-    assert.equal(manifest.license, "Apache-2.0", `${file} must declare the repository license`);
+    assert.equal(manifest.license, manifest.name === "run-spaceapp" ? "Apache-2.0" : "BUSL-1.1", `${file} must preserve its declared license`);
     if (manifest.private !== true) {
       publishable.push({
         name: manifest.name,
@@ -267,7 +267,7 @@ test("public policy files are present and point security reports to a private ch
     await readFile(join(root, "packages", "run-spaceapp", "package.json"), "utf8")
   );
 
-  assert.match(license, /Apache License\s+Version 2\.0/);
+  assert.match(license, /Business Source License 1\.1/);
   assert.match(security, /security\/advisories\/new/);
   assert.match(security, /Do not open a public issue for a suspected vulnerability/i);
   for (const file of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]) {

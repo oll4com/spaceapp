@@ -262,7 +262,7 @@ export function applyPublicOverlay(path, text) {
   if (path === ".gitignore" && !text.includes("run-spaceapp-*.tgz")) return `${text}\nrun-spaceapp-*.tgz\n`;
   if (path === "apps/api/src/cli-runtime-descriptors.ts") {
     // First-run native discovery selects an available free model; never pin a retired default.
-    return text.replace(/defaultModelId: "opencode\/big-pickle"/g, 'defaultModelId: null');
+    return text.replace(/defaultModelId: "(?:opencode\/)?big-pickle"/g, 'defaultModelId: null');
   }
   return text;
 }
@@ -382,7 +382,7 @@ export async function createPublicExport({
 
       let exported = original;
       if (isText(original)) {
-        if (!byteStablePublicFiles.has(normalized)) {
+        if (normalized !== "LICENSE" && !byteStablePublicFiles.has(normalized)) {
           const sanitized = applyPublicOverlay(normalized, sanitizePublicText(original.toString("utf8")));
           exported = Buffer.from(sanitized, "utf8");
           if (!exported.equals(original)) transformations += 1;

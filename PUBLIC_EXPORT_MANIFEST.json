@@ -2,14 +2,14 @@
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
   "sourceCommit": "3fc3d387787a3366bad906439b5a00b063f8af41",
-  "fileCount": 880,
-  "transformations": 93,
+  "fileCount": 913,
+  "transformations": 94,
   "files": [
     {
       "path": ".gitignore",
       "sourceObjectId": "59b8645026aaf63911efe3d09e9e41ea10fb2200",
-      "sha256": "e6818a01f83b18fc4319901edd717efedd7f0fa6af44f586bf95e605ea5aa7f0",
-      "size": 877
+      "sha256": "4bf151c7407f2935976600623269631d6e2a85bc82ad7c2232f478dfcf25792d",
+      "size": 897
     },
     {
       "path": ".nvmrc",
@@ -3774,6 +3774,198 @@
       "size": 198
     },
     {
+      "path": "demos/README.md",
+      "sourceObjectId": "7002feeea5e5249f067c94be730cef546df38f66",
+      "sha256": "ce051dff952aacc4d6df7583dd87aa5e9cadb010146d869dc2a180d2e4b891eb",
+      "size": 2829
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/javascript-react-node/server/index.mjs",
+      "sourceObjectId": "c4b2892fc15f8cccbc5f429a43112641e53d3988",
+      "sha256": "8f9b22e188e3b180200aa74da66655bdd0556d00942cb9d6dd4404ecf2872ba8",
+      "size": 18077
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/javascript-react-node/web/index.html",
+      "sourceObjectId": "c0e734d9ba04e38056f250c065206029dcf23d50",
+      "sha256": "1bf01ae040e6ce005f6df5b17d48d05c111d4042710294361cd90474810604d2",
+      "size": 324
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/javascript-react-node/web/src/App.jsx",
+      "sourceObjectId": "edc4837fc6ee20334c175fe97fdaf980f69b4a76",
+      "sha256": "aa672c92da2c8b548e77778ca35a1dc61dcd75e784d653815c7a70eb286a41d7",
+      "size": 14809
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/javascript-react-node/web/src/main.jsx",
+      "sourceObjectId": "3be634b0d8a73e5c1d779a71ce680e6b5b75cd57",
+      "sha256": "4e476bcc3eae833b00894474153997c0baf132211862a0880da329f4ec3735f2",
+      "size": 238
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/javascript-react-node/web/src/styles.css",
+      "sourceObjectId": "5d6ecc8582f0a5e8333be276a8d6f2108a7f19f5",
+      "sha256": "751fc1f3f11c1899895d343b417470f5a0dd84d7fba988de76a0a1c7f81f6d85",
+      "size": 4104
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/javascript-react-node/web/vite.config.mjs",
+      "sourceObjectId": "81e4936284f5b85cbbc2e78153a027b628424788",
+      "sha256": "1e34c19f2bfe3089092a72f3a402ea37b34e862b4a48acaa66fce52129eebcdc",
+      "size": 432
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/typescript-react-node/server/index.ts",
+      "sourceObjectId": "5ab6b0eab7cbc8010eb46a3321317ebc676fff32",
+      "sha256": "e7326939c0f82d12eb22616baaf3ff5edefde9840a69a3a8544bfb720c67ff58",
+      "size": 18536
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/typescript-react-node/server/tsconfig.json",
+      "sourceObjectId": "daa1900bfe77dbb4deb05d980292cd1f1b7fc6c8",
+      "sha256": "3dfd2e277fd0af377c208d5612344ea46086132cf42e43bcecb31a1a08cf33af",
+      "size": 380
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/typescript-react-node/server/types.ts",
+      "sourceObjectId": "c51689928daab13afc5b2c1091f36425fc533f19",
+      "sha256": "99c8f5eb2db2e141d028d1c0ece66b78dc82886be5c6e1317d7006b8f7496350",
+      "size": 2343
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/typescript-react-node/web/index.html",
+      "sourceObjectId": "c5708f102bd3cc8249b98758437b32094badf2e9",
+      "sha256": "c0b46b7344017a5a920098fc360087c4375181d195b7581524f51d0cb5d404d8",
+      "size": 324
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/typescript-react-node/web/src/App.tsx",
+      "sourceObjectId": "1be53f266c06f3705f049ab1fa0dc6200de3a7e0",
+      "sha256": "1424ccf72d9889331061d69cfb7cebc8c0b6523390867f4005451697c1bf9115",
+      "size": 8842
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/typescript-react-node/web/src/api.ts",
+      "sourceObjectId": "cf58e1a680bf0c2e0dc648f6d7607792be9f7bcc",
+      "sha256": "d0b97dc7da1ba2fede9b62322b5c6e037870e5e3e5d91dd46987392906fa27b7",
+      "size": 6816
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/typescript-react-node/web/src/main.tsx",
+      "sourceObjectId": "e7feee2015b613713dd5fd0d634cdcb7fe82c58a",
+      "sha256": "f601984c9f74975e35e5c10ee179f6ec3f6675c136ca3e9fc77f328e4b6d9a41",
+      "size": 334
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/typescript-react-node/web/src/styles.css",
+      "sourceObjectId": "f30d718775ab3f75acd35d79c31d1f75bcb732b6",
+      "sha256": "f2815854e705b42dece2827e2700f6fe5601c35c850f45712eebf0a53707fe86",
+      "size": 4003
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/typescript-react-node/web/tsconfig.json",
+      "sourceObjectId": "4c91aac4785dbb4e3bfeb31e5dfb577a49a05c43",
+      "sha256": "8ac5bf9cef3d15578fd400864cf3fe5e626472e9a30cfc9f2043c66ceb147cf0",
+      "size": 411
+    },
+    {
+      "path": "demos/project-1-salesforce-crm/typescript-react-node/web/vite.config.mjs",
+      "sourceObjectId": "81e4936284f5b85cbbc2e78153a027b628424788",
+      "sha256": "1e34c19f2bfe3089092a72f3a402ea37b34e862b4a48acaa66fce52129eebcdc",
+      "size": 432
+    },
+    {
+      "path": "demos/project-2-crud-playground/javascript-react-node/server/index.mjs",
+      "sourceObjectId": "93b48b2937c5350e58951a4f134052cca7a607c9",
+      "sha256": "1d7dd496823c804ef1c3d69a2132f6548145174c3053275d3353d198073d98bd",
+      "size": 10207
+    },
+    {
+      "path": "demos/project-2-crud-playground/javascript-react-node/web/index.html",
+      "sourceObjectId": "d91adc8b9ab8c9fe5d61541d656bb2aac87a31c4",
+      "sha256": "1edad40eb5fbe0e0852ae0a69bdce008d69fb62babdda2d618847c4f7e29a0df",
+      "size": 325
+    },
+    {
+      "path": "demos/project-2-crud-playground/javascript-react-node/web/src/App.jsx",
+      "sourceObjectId": "aca59b161828dd039e4bd6d90367377319886e27",
+      "sha256": "1ef736bdbe7a1963b8863ad8da7ad052b81f64a5665a14e55c8de3e586f67f23",
+      "size": 7373
+    },
+    {
+      "path": "demos/project-2-crud-playground/javascript-react-node/web/src/main.jsx",
+      "sourceObjectId": "3be634b0d8a73e5c1d779a71ce680e6b5b75cd57",
+      "sha256": "4e476bcc3eae833b00894474153997c0baf132211862a0880da329f4ec3735f2",
+      "size": 238
+    },
+    {
+      "path": "demos/project-2-crud-playground/javascript-react-node/web/src/styles.css",
+      "sourceObjectId": "93bad4c6a59615690ae7a6b9e4c4ab87b5e851e6",
+      "sha256": "fba67815fc4ca05a061d17d98cab07ef7499a3aeae891efe291739d63fbae27a",
+      "size": 3270
+    },
+    {
+      "path": "demos/project-2-crud-playground/javascript-react-node/web/vite.config.mjs",
+      "sourceObjectId": "81e4936284f5b85cbbc2e78153a027b628424788",
+      "sha256": "1e34c19f2bfe3089092a72f3a402ea37b34e862b4a48acaa66fce52129eebcdc",
+      "size": 432
+    },
+    {
+      "path": "demos/project-2-crud-playground/typescript-react-node/server/index.ts",
+      "sourceObjectId": "3bdf1531c9c6096e392e0b77ef181fffe6432c4e",
+      "sha256": "922a0b2f6acd4f780b73c0ad260a3c7f0dd9343bdaa2382727e27232578d5acb",
+      "size": 11147
+    },
+    {
+      "path": "demos/project-2-crud-playground/typescript-react-node/server/tsconfig.json",
+      "sourceObjectId": "daa1900bfe77dbb4deb05d980292cd1f1b7fc6c8",
+      "sha256": "3dfd2e277fd0af377c208d5612344ea46086132cf42e43bcecb31a1a08cf33af",
+      "size": 380
+    },
+    {
+      "path": "demos/project-2-crud-playground/typescript-react-node/server/types.ts",
+      "sourceObjectId": "a085fe493800d378481783bb6fccad557eb4ed8a",
+      "sha256": "15187136b86c5db3e41525080d91e68d36eb278da64b37a7032787dc723fa3d5",
+      "size": 924
+    },
+    {
+      "path": "demos/project-2-crud-playground/typescript-react-node/web/index.html",
+      "sourceObjectId": "183e726c0c6f4794fbb1d6ad0cf8effd46d98405",
+      "sha256": "cb94676f3bf16b2e99672375139b116c6e0d7bb2b8822be637039ac5b0a6a782",
+      "size": 325
+    },
+    {
+      "path": "demos/project-2-crud-playground/typescript-react-node/web/src/App.tsx",
+      "sourceObjectId": "63d236a3f0a0d8e92ff43bc07f388314e8dcc163",
+      "sha256": "422d107dc69b73edcf8f711d4fc7d2cdf3f882022560c618573cac8c023d4e3a",
+      "size": 8020
+    },
+    {
+      "path": "demos/project-2-crud-playground/typescript-react-node/web/src/main.tsx",
+      "sourceObjectId": "e7feee2015b613713dd5fd0d634cdcb7fe82c58a",
+      "sha256": "f601984c9f74975e35e5c10ee179f6ec3f6675c136ca3e9fc77f328e4b6d9a41",
+      "size": 334
+    },
+    {
+      "path": "demos/project-2-crud-playground/typescript-react-node/web/src/styles.css",
+      "sourceObjectId": "93bad4c6a59615690ae7a6b9e4c4ab87b5e851e6",
+      "sha256": "fba67815fc4ca05a061d17d98cab07ef7499a3aeae891efe291739d63fbae27a",
+      "size": 3270
+    },
+    {
+      "path": "demos/project-2-crud-playground/typescript-react-node/web/tsconfig.json",
+      "sourceObjectId": "4c91aac4785dbb4e3bfeb31e5dfb577a49a05c43",
+      "sha256": "8ac5bf9cef3d15578fd400864cf3fe5e626472e9a30cfc9f2043c66ceb147cf0",
+      "size": 411
+    },
+    {
+      "path": "demos/project-2-crud-playground/typescript-react-node/web/vite.config.mjs",
+      "sourceObjectId": "81e4936284f5b85cbbc2e78153a027b628424788",
+      "sha256": "1e34c19f2bfe3089092a72f3a402ea37b34e862b4a48acaa66fce52129eebcdc",
+      "size": 432
+    },
+    {
       "path": "package-lock.json",
       "sourceObjectId": "33fd469bd6f052ed5d3f2c4548674fc139a303ce",
       "sha256": "69a4475c6546e385e4d33db7fb74bbce7247c80a5de75b02a0d879c3b361eb6a",
@@ -5266,6 +5458,12 @@
       "sourceObjectId": "9461a55246f95b57eebdf273ceb36aec0f565854",
       "sha256": "7e4d3575dd85640a0951f0baf69813cb264d75a3435fd72e62960968e6de8b3f",
       "size": 197
+    },
+    {
+      "path": "scripts/build-demo-projects.mjs",
+      "sourceObjectId": "3d1498906e1ee83732aa612f885636afc838e014",
+      "sha256": "bef30ca0bcf1c204053c39343c91ab19e397ed628a3a1285c95143fc24334a24",
+      "size": 3943
     },
     {
       "path": "scripts/fix-build-permissions.mjs",

@@ -185,7 +185,7 @@ require a real browser check with clean console and network results.
 
 ## License
 
-SpaceApp source code is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE) by [example.invalid](https://example.invalid).
+SpaceApp source code is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE) by the licensor named in LICENSE.
 
 - **Free and Allowed Use:** You are free to copy, modify, test, self-host, and use SpaceApp for personal and internal business operations.
 - **Use Limitation:** You may not make the functionality of SpaceApp available to third parties as a hosted or managed service, application service provider (ASP), or software-as-a-service (SaaS) that competes with example.invalid products or services.

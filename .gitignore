@@ -42,5 +42,4 @@ projects/
 .cache/
 .autohand/
 
-# Local installer pack artifacts are never source.
 run-spaceapp-*.tgz
