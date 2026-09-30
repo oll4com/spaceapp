@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.19] - 2026-09-30
+
+- Describe verified checkpoints and data-preserving recovery accurately in install and update confirmations.
+
 ## [1.0.18] - 2026-09-30
 
 - Finish Linux setup promptly when its browser stays running; keep the opened browser alive and report immediate launch failures.

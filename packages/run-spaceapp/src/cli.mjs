@@ -1132,7 +1132,7 @@ async function planInteractiveSetup({
     ...repairLines,
     path === "preserve-recreate"
       ? "Runtime: preserve/recreate (containers are recreated without touching data volumes)."
-      : "Runtime: standard staged upgrade; previous runtime is restored automatically on failure.",
+      : "Runtime: staged upgrade with a verified checkpoint; a failure after cutover preserves current data for recovery with doctor --fix.",
     "Preserved: data, workspaces, credentials, secrets, and persistent Docker volumes."
   ]);
   if (!approved) {
@@ -2016,10 +2016,10 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
   if (!continuation) {
     const approved = await finalConfirmation(stdin, stdout, [
       `Runtime image version: ${config.version} -> ${targetVersion}`,
-      "Checkpoint: configuration, secrets, and a database dump are saved before the change and restored automatically on failure.",
+      "Checkpoint: configuration, secrets, and a verified database dump are saved before the change; current data is preserved if cutover fails.",
       "Downtime: containers restart during the cutover.",
       SPACEAPP_UPGRADE_POLICY.rollbackCapable
-        ? "Rollback: the previous runtime is restored automatically on failure; the previous version stays recorded for manual rollback."
+        ? "Recovery: use doctor --fix after a failed cutover; the previous version and verified checkpoint remain available for explicit rollback."
         : "Rollback: not supported for this target version."
     ]);
     if (!approved) {
