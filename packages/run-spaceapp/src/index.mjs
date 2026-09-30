@@ -32,7 +32,7 @@ const PROFILE_RUNTIME_SETTINGS = Object.freeze({
     browserEnabled: false,
     coreMemoryLimit: "2g",
     coreCpuLimit: "2.0",
-    cliMemoryLimit: "1536m",
+    cliMemoryLimit: "2g",
     cliCpuLimit: "1.5",
     browserMemoryLimit: "1536m",
     browserCpuLimit: "1.5",

@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.25] - 2026-09-30
+
+- Allow 2 GiB for the light CLI service so two native OpenCode panes can initialize without exhausting the previous 1536 MiB limit.
+
 ## [1.0.24] - 2026-09-30
 
 - Update Temporal SDK to remove the vulnerable native HTTP/3 dependency found by the container scan.

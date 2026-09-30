@@ -102,7 +102,7 @@ npx --yes run-spaceapp@latest install --profile light
 npx --yes run-spaceapp@latest install --profile standard
 ```
 
-The light limits are 2 GiB for core, 1536 MiB for the CLI service, and 768 MiB
+The light limits are 2 GiB each for core and the CLI service, and 768 MiB
 each for PostgreSQL and Temporal. These are upper bounds, not memory reserved
 at startup.
 
