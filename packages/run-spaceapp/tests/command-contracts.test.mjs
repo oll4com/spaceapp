@@ -187,7 +187,8 @@ test("up, down, status, logs, backup, and open delegate to their fixed native co
   for (const [platform, expectedSpec] of [
     ["linux", {
       command: "xdg-open",
-      args: ["http://127.0.0.1:4911"]
+      args: ["http://127.0.0.1:4911"],
+      background: true
     }],
     ["darwin", {
       command: "open",
@@ -408,4 +409,3 @@ test("factory-reset command reinitializes installation on valid confirmation", a
   assert.match(stdout.value(), /SpaceApp factory reset complete/);
   assert.ok(calls.some((spec) => spec.args?.includes("down") || spec.args?.includes("-v")));
 });
-

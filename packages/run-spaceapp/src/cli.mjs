@@ -2256,12 +2256,16 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
     const commandEnv = spec.env === undefined
       ? process.env
       : validateCommandEnvironment(spec.env);
+    const background = spec.command === 'xdg-open' && spec.background === true;
+    let launchTimer;
     const child = spawnTrustedCommand(spec, {
       env: commandEnv,
       shell: false,
-      stdio: [input === undefined ? (stdin || "inherit") : "pipe", stdout || "ignore", stderr || "ignore"]
+      detached: background,
+      stdio: background ? ['ignore','ignore','ignore'] : [input === undefined ? (stdin || "inherit") : "pipe", stdout || "ignore", stderr || "ignore"]
     });
     child.once("error", (error) => {
+      clearTimeout(launchTimer);
       if (error?.code === "ENOENT") {
         resolve(127);
       } else {
@@ -2269,9 +2273,11 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
       }
     });
     child.once("exit", (code, signal) => {
+      clearTimeout(launchTimer);
       resolve(code ?? (signal ? 1 : 0));
     });
-    if (input !== undefined) {
+    if(background)launchTimer=setTimeout(()=>{child.unref();resolve(0);},750);
+    if (input !== undefined && !background) {
       child.stdin.end(input);
     }
   });
@@ -2322,7 +2328,7 @@ function openBrowser(url, platform, execute, io) {
       env: { SPACEAPP_OPEN_URL: url }
     }, io);
   }
-  return execute({ command: "xdg-open", args: [url] }, io);
+  return execute({ command: "xdg-open", args: [url], background: true }, io);
 }
 
 function assertNoArgs(args, command) {

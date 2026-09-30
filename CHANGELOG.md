@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.18] - 2026-09-30
+
+- Finish Linux setup promptly when its browser stays running; keep the opened browser alive and report immediate launch failures.
+
 ## [1.0.17] - 2026-09-30
 
 - Load installation instructions and durable memory into OpenCode automatically; authorize only the private memory directory while preserving owner permission policies.
