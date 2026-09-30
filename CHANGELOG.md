@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.22] - 2026-09-30
+
+- Reject real Google OAuth credentials while allowing short example placeholders in the settings form.
+
 ## [1.0.21] - 2026-09-30
 
 - Require owner-supplied Antigravity OAuth client settings and reject embedded Google OAuth clients in public exports.

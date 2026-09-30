@@ -246,7 +246,7 @@ const contentRules = [
   },
   {
     rule: "google-oauth-client-secret",
-    pattern: new RegExp(joined("GO", "CSPX-[A-Za-z0-9_-]{10,}"))
+    pattern: new RegExp(joined("GO", "CSPX-[A-Za-z0-9_-]{20,}"))
   },
   {
     rule: "aws-access-key",
