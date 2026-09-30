@@ -60,6 +60,8 @@ async function installation({ platform = "linux", execute = async () => 0 } = {}
     stdout: stdout.stream,
     stderr: stderr.stream,
     prepareDockerPath: async () => null,
+    request: async () => ({ ok: true, json: async () => ({ ok: true }) }),
+    sleep: async () => {},
     execute
   };
   await run(["init"], options);

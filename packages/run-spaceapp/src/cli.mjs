@@ -2035,6 +2035,8 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
     stdout,
     stderr,
     execute,
+    request,
+    sleep,
     preserveRecreate: path === "preserve-recreate"
   });
 }

@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.27] - 2026-09-30
+
+- Wait for the upgraded application to become ready before verifying its checkpoint and reporting success; preserve current data and recovery information if readiness fails.
+
 ## [1.0.26] - 2026-09-30
 
 - Make the mocked update contract test independent of any real SpaceApp listener on the test machine.

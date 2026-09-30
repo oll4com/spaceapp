@@ -372,6 +372,8 @@ test("a successful update marks the checkpoint verified and prunes older checkpo
     stderr: capture().stream,
     stdin: ttyStdin("y"),
     prepareDockerPath: async () => null,
+    request: async () => jsonResponse({ ok: true }),
+    sleep: async () => {},
     execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 0);
   assert.equal(
@@ -430,4 +432,67 @@ test("readSecret on non-TTY stdin returns piped input without a trailing newline
   });
   const answer = await readSecret(stream, stdout.stream, "Q? ", { mask: false });
   assert.equal(answer, "y");
+});
+
+
+test("update waits for application readiness before reporting success and verifying its checkpoint", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-update-ready-"));
+  await initializeInstallation(root, { version: "0.1.14", profile: "light" });
+  const stdout = capture();
+  let started = false;
+  let checks = 0;
+  let sleeps = 0;
+  assert.equal(await run(["update"], {
+    env: { SPACEAPP_HOME: root }, platform: "linux",
+    stdin: ttyStdin("y"), stdout: stdout.stream, stderr: capture().stream,
+    prepareDockerPath: async () => null,
+    execute: async (spec, io) => {
+      if (spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n");
+      if (spec.args.includes("--remove-orphans")) started = true;
+      return 0;
+    },
+    request: async (url) => {
+      assert.equal(started, true);
+      assert.equal(url, "http://127.0.0.1:4911/readyz");
+      assert.doesNotMatch(stdout.value(), /Updated to SpaceApp/);
+      checks += 1;
+      const id = (await readdir(join(root, "checkpoints")))[0];
+      await assert.rejects(readFile(join(root, "checkpoints", id, "verified.json")));
+      return jsonResponse({ ok: checks > 1 }, checks > 1 ? 200 : 503);
+    },
+    sleep: async () => { sleeps += 1; }
+  }), 0);
+  assert.equal(checks, 2);
+  assert.equal(sleeps, 1);
+  assert.match(stdout.value(), /Updated to SpaceApp/);
+  const id = (await readdir(join(root, "checkpoints")))[0];
+  assert.ok(JSON.parse(await readFile(join(root, "checkpoints", id, "verified.json"))).verifiedAt);
+});
+
+test("update preserves recovery data and fails when the new application never becomes ready", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-update-unready-"));
+  await initializeInstallation(root, { version: "0.1.14", profile: "light" });
+  const stderr = capture();
+  let checks = 0;
+  const calls = [];
+  assert.equal(await run(["update"], {
+    env: { SPACEAPP_HOME: root }, platform: "linux", stdin: ttyStdin("y"),
+    stdout: capture().stream, stderr: stderr.stream,
+    prepareDockerPath: async () => null,
+    execute: async (spec, io) => {
+      calls.push(spec.args);
+      if (spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n");
+      return 0;
+    },
+    request: async () => { checks += 1; return jsonResponse({ ok: false }, 503); },
+    sleep: async () => {}
+  }), 1);
+  assert.equal(checks, 301);
+  assert.match(stderr.value(), /readiness check timed out/);
+  assert.match(stderr.value(), /RECOVERY_REQUIRED/);
+  assert.equal(calls.some(args => args.includes("psql")), false);
+  const id = (await readdir(join(root, "checkpoints")))[0];
+  const recovery = JSON.parse(await readFile(join(root, "checkpoints", id, "recovery.json")));
+  assert.equal(recovery.databasePreserved, true);
+  await assert.rejects(readFile(join(root, "checkpoints", id, "verified.json")));
 });
