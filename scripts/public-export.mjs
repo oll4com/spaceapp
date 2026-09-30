@@ -485,15 +485,15 @@ function formatAuditFailure(findings) {
   ].join("\n");
 }
 
-function git(args) {
-  return execFileSync("git", ["-C", repoRoot, ...args], {
+function git(args, sourceRoot = repoRoot) {
+  return execFileSync("git", ["-C", sourceRoot, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"]
   }).trim();
 }
 
-function trackedTree(sourceCommit) {
-  const value = execFileSync("git", ["-C", repoRoot, "ls-tree", "-r", "-z", sourceCommit], {
+function trackedTree(sourceCommit, sourceRoot = repoRoot) {
+  const value = execFileSync("git", ["-C", sourceRoot, "ls-tree", "-r", "-z", sourceCommit], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -522,6 +522,8 @@ function parseArgs(argv) {
     if (argument === "--output" && argv[index + 1]) {
       options.output = argv[index + 1];
       index += 1;
+    } else if (argument === "--source" && argv[index + 1]) {
+      options.source = resolve(argv[++index]);
     } else if (argument === "--verify") {
       options.verify = true;
     } else {
@@ -536,19 +538,20 @@ function parseArgs(argv) {
 
 export async function runCli(argv) {
   const options = parseArgs(argv);
-  const status = git(["status", "--porcelain=v1", "--untracked-files=all"]);
+  const sourceRoot = options.source ?? repoRoot;
+  const status = git(["status", "--porcelain=v1", "--untracked-files=all"], sourceRoot);
   if (status) {
     throw new Error("Public export requires a clean source worktree.");
   }
-  const sourceCommit = git(["rev-parse", "HEAD"]);
-  const tree = trackedTree(sourceCommit);
+  const sourceCommit = git(["rev-parse", "HEAD"], sourceRoot);
+  const tree = trackedTree(sourceCommit, sourceRoot);
   let temporaryRoot = null;
   const outputRoot = options.verify
     ? join(temporaryRoot = await mkdtemp(join(tmpdir(), "spaceapp-public-export-")), "tree")
     : resolve(options.output);
   try {
     const result = await createPublicExport({
-      sourceRoot: repoRoot,
+      sourceRoot,
       outputRoot,
       trackedPaths: tree.paths,
       sourceCommit,
