@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.24] - 2026-09-30
+
+- Update Temporal SDK to remove the vulnerable native HTTP/3 dependency found by the container scan.
+
 ## [1.0.23] - 2026-09-30
 
 - Update the server and bundled npm dependencies to fix the vulnerabilities rejected by the release pipeline.

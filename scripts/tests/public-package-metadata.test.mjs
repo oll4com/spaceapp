@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -179,19 +180,9 @@ test("Temporal dependencies use SDK releases with patched transitive packages", 
   const lockfile = JSON.parse(
     await readFile(join(root, "package-lock.json"), "utf8")
   );
-  const cargoLock = await readFile(
-    join(
-      root,
-      "apps",
-      "worker",
-      "node_modules",
-      "@temporalio",
-      "core-bridge",
-      "Cargo.lock"
-    ),
-    "utf8"
-  );
-  const expectedVersion = "1.21.0";
+  const workerRequire = createRequire(join(root, "apps", "worker", "package.json"));
+  const cargoLock = await readFile(join(dirname(workerRequire.resolve("@temporalio/core-bridge/package.json")), "Cargo.lock"), "utf8");
+  const expectedVersion = "1.24.0";
 
   assert.equal(apiPackage.dependencies["@temporalio/client"], expectedVersion);
   for (const name of [
@@ -203,7 +194,7 @@ test("Temporal dependencies use SDK releases with patched transitive packages", 
     assert.equal(workerPackage.dependencies[name], expectedVersion);
   }
   const lockedTemporalPackages = Object.entries(lockfile.packages)
-    .filter(([path]) => path.includes("node_modules/@temporalio/"));
+    .filter(([path]) => /node_modules\/@temporalio\/[^/]+$/.test(path));
   assert.ok(
     lockedTemporalPackages.some(([path]) => path.endsWith("/@temporalio/core-bridge"))
   );
@@ -222,8 +213,9 @@ test("Temporal dependencies use SDK releases with patched transitive packages", 
       .sort();
 
   assert.deepEqual(crateVersions("opentelemetry_sdk"), ["0.32.1"]);
-  assert.deepEqual(crateVersions("rand"), ["0.10.1", "0.8.6", "0.9.3"]);
+  assert.deepEqual(crateVersions("rand"), ["0.10.1", "0.9.3"]);
   assert.deepEqual(crateVersions("tar"), ["0.4.46"]);
+  assert.deepEqual(crateVersions("quinn-proto"), [], "Reviewed SDK removes the vulnerable HTTP/3 implementation");
 });
 
 test("MCP Node transport is forced to the reviewed Hono security release", async () => {

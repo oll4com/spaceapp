@@ -30,7 +30,7 @@
     "@space/opencode-control": "0.1.0",
     "@space/runtime": "0.1.0",
     "@space/streaming": "0.1.0",
-    "@temporalio/client": "1.21.0",
+    "@temporalio/client": "1.24.0",
     "@xterm/headless": "^5.5.0",
     "fastify": "5.12.5",
     "mammoth": "^1.12.0",
