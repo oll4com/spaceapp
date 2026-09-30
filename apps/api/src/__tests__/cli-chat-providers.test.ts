@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  cliChatProviderEnabledByRuntimeToggle,
+  cliChatProviderRuntimeId,
   cliChatRuntimeName,
   cliRuntimeModelsChatProviderAdapter,
   opencodeChatProviderAdapter
@@ -171,5 +173,29 @@ describe("cliRuntimeModelsChatProviderAdapter", () => {
     const result = await adapter.loadCatalog();
     expect(result.models).toEqual([]);
     expect(result.error).toBe("cli:cursor model catalog is unavailable.");
+  });
+});
+
+describe("Chat provider CLI runtime gating", () => {
+  it("maps every Chat provider id to the CLI runtime toggle that owns it", () => {
+    expect(cliChatProviderRuntimeId("codex")).toBe("cli:codex");
+    expect(cliChatProviderRuntimeId("opencode")).toBe("cli:opencode");
+    expect(cliChatProviderRuntimeId("cli:claude")).toBe("cli:claude");
+    expect(cliChatProviderRuntimeId("cli:hermes")).toBe("cli:hermes");
+    expect(cliChatProviderRuntimeId("web:codex-app-server")).toBeNull();
+  });
+
+  it("hides CLI providers whose runtime toggle is off and restores them when it is on", async () => {
+    const enabledRuntimes = new Set<string>();
+    const isProviderEnabled = cliChatProviderEnabledByRuntimeToggle(async (runtimeId) =>
+      enabledRuntimes.has(runtimeId)
+    );
+
+    expect(await isProviderEnabled("cli:claude")).toBe(false);
+    // Non-CLI providers are never blocked by a CLI toggle.
+    expect(await isProviderEnabled("web:codex-app-server")).toBe(true);
+
+    enabledRuntimes.add("cli:claude");
+    expect(await isProviderEnabled("cli:claude")).toBe(true);
   });
 });

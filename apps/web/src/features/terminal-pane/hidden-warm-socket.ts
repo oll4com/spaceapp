@@ -7,8 +7,20 @@ export const HIDDEN_WARM_SOCKET_PARK_MS = 30_000;
 // The bounded room cache still disposes terminals when a room is evicted.
 export const HIDDEN_WARM_SOCKET_PARK_ENABLED = false;
 
-/** Controller heartbeats run less often while the pane is not interactive. */
-export const HIDDEN_TERMINAL_CONTROL_HEARTBEAT_MIN_MS = 30_000;
+/**
+ * Controller heartbeats run less often while the pane is not interactive.
+ *
+ * This floor must stay strictly below the API control lease TTL
+ * (`cliTerminalControlLeaseTtlSeconds` = 30s in apps/api/src/cli-terminal.ts).
+ * At 30s a hidden controller pane renewed its lease right as it expired, so the
+ * lease lapsed between renewals and the next keystroke/paste was rejected with
+ * `CLI_CONTROL_REQUIRED` / `CLI_LEASE_STALE` (live incident 2026-09-20 on the
+ * DeepSeek protected setup pane). Half the TTL leaves room for a late timer.
+ */
+export const HIDDEN_TERMINAL_CONTROL_HEARTBEAT_MIN_MS = 15_000;
+
+/** Hard upper bound for a controller heartbeat: half of the 30s API lease TTL. */
+export const MAX_TERMINAL_CONTROL_HEARTBEAT_INTERVAL_MS = 15_000;
 
 export function shouldParkHiddenWarmSocket(input: {
   prefillEnabled: boolean;
@@ -37,8 +49,8 @@ export function resolveTerminalControlHeartbeatIntervalMs(
 ): number {
   const base = Math.max(1_000, Math.floor(configuredIntervalMs) || 10_000);
   if (!input.isController) return base;
-  if (input.isVisible) return base;
-  return Math.max(base, HIDDEN_TERMINAL_CONTROL_HEARTBEAT_MIN_MS);
+  const interval = input.isVisible ? base : Math.max(base, HIDDEN_TERMINAL_CONTROL_HEARTBEAT_MIN_MS);
+  return Math.min(interval, MAX_TERMINAL_CONTROL_HEARTBEAT_INTERVAL_MS);
 }
 
 export function shouldRefreshModelSettingsFromOutput(input: {

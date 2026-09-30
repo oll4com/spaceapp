@@ -15,6 +15,7 @@ export interface CodexAppServerJsonRpcMessage {
 }
 
 export interface CodexAppServerTurnSessionState {
+  runtimeModelAtStart?: string | null;
   threadId: string | null;
   turnId: string | null;
   turnStatus: CodexAppServerTurnSmokeResult["turnStatus"];
@@ -378,6 +379,7 @@ export interface CodexAppServerSocketStartedTurn {
 }
 
 export interface CodexAppServerSocketControlService {
+  readThreadSettings?(threadId: string): Promise<{ modelId: string; reasoningEffort: string; cwd: string; isTurnActive: boolean }>;
   readRateLimits?(): Promise<{source:"NATIVE_ACCOUNT";checkedAt:string;windows:Array<{usedPercent:number;resetsAt:number|null}>;blocked:boolean}>;
   getThreadName?(threadId: string): Promise<string | null>;
   renameThread?(input: {threadId: string; name: string}): Promise<string>;
@@ -1145,10 +1147,11 @@ function promptWithRecoveryMarker(prompt: string, marker: string | undefined): s
 
 function recoveredAgentMessageText(turn: Record<string, unknown>): string {
   const items = Array.isArray(turn.items) ? turn.items : [];
+  const messages = items.map((item) => asRecord(item))
+    .filter((item) => stringField(item, "type") === "agentMessage");
+  const finalMessages = messages.filter((item) => stringField(item, "phase") === "final_answer" && stringField(item, "text"));
   return cappedAgentMessageText(
-    items
-      .map((item) => asRecord(item))
-      .filter((item) => stringField(item, "type") === "agentMessage")
+    (finalMessages.length ? finalMessages : messages)
       .map((item) => stringField(item, "text") ?? "")
       .filter(Boolean)
       .join("\n")
@@ -1179,6 +1182,7 @@ export async function runCodexAppServerStdioTurnSession(
   options: RunCodexAppServerStdioTurnSessionOptions
 ): Promise<CodexAppServerTurnSessionState> {
   let session = initialCodexAppServerTurnSessionState();
+  let runtimeModelAtStart: string | null = null;
   const normalizedObjective = normalizedGoalObjective(options.goalObjective);
   const goalObjective = normalizedObjective
     ? promptWithRecoveryMarker(normalizedObjective, options.recoveryMarker)
@@ -1214,7 +1218,8 @@ export async function runCodexAppServerStdioTurnSession(
   const registerGoalTurn = (turnId: string | null) => {
     if (!goalGeneration || !turnId || nonGoalTurnIds.has(turnId)) return false;
     goalGeneration.turnIds.add(turnId);
-    if (goalGeneration.completedTurnIds.has(turnId)) {
+    if (goalGeneration.completedTurnIds.has(turnId) &&
+      (session.turnId === turnId || !goalGeneration.turnIds.has(session.turnId ?? ""))) {
       session = {
         ...session,
         turnId,
@@ -1235,6 +1240,10 @@ export async function runCodexAppServerStdioTurnSession(
       resolveGoalCompletion &&
       goalGeneration?.terminalStatus &&
       terminalThreadGoalStatuses.has(goalGeneration.terminalStatus) &&
+      // A Goal update can omit turnId or refer to an earlier turn. Its
+      // terminal status must not close the transport while the current turn
+      // is still producing the user's final response.
+      session.turnStatus !== "inProgress" &&
       (
         goalGeneration.durableTerminalEvidence ||
         (goalGeneration.terminalTurnId
@@ -1282,6 +1291,8 @@ export async function runCodexAppServerStdioTurnSession(
         }
         const result = asRecord(resumed);
         threadId = stringField(asRecord(result?.thread), "id");
+        const model = stringField(result, "model");
+        runtimeModelAtStart = model && model.length <= 200 ? model : null;
       } else {
         const result = asRecord(await client.request("thread/start", {
           ephemeral: options.ephemeral ?? true,
@@ -1290,6 +1301,8 @@ export async function runCodexAppServerStdioTurnSession(
           ...permissionRuntimeParams(permissionMode)
         }));
         threadId = stringField(asRecord(result?.thread), "id");
+        const model = stringField(result, "model");
+        runtimeModelAtStart = model && model.length <= 200 ? model : null;
       }
       if (!threadId) {
         throw new Error("Codex App Server thread response did not include a thread id.");
@@ -1358,9 +1371,23 @@ export async function runCodexAppServerStdioTurnSession(
         const goalProgressObservedDuringRead = session.notificationCount > notificationCountBeforeGoalRead;
         const samePersistedGoal = Boolean(goal && goal.objective === goalObjective);
         if (samePersistedGoal && goal && terminalThreadGoalStatuses.has(goal.status)) {
+          const notificationsBeforeRead = session.notificationCount;
           const result = await client.request("thread/read", { threadId, includeTurns: true });
+          const activeTurn = latestRecoveredInProgressTurn(result);
           const latestCompletedTurn = latestRecoveredCompletedTurn(result);
-          if (latestCompletedTurn) {
+          const snapshotTurnId = stringField(activeTurn ?? latestCompletedTurn, "id");
+          const observedNewerTurn = session.notificationCount > notificationsBeforeRead && session.turnId &&
+            goalGeneration?.turnIds.has(session.turnId) &&
+            ((session.completedNotificationSeen && session.turnId === snapshotTurnId) || !recoveredTurn(result, session.turnId));
+          if (observedNewerTurn && goalGeneration) {
+            // Notifications received while thread/read was in flight are
+            // newer than a snapshot of the same (or an earlier) turn.
+            goalGeneration.terminalTurnId = session.turnId;
+          } else if (activeTurn) {
+            session = recoveredTurnState(threadId, activeTurn, false);
+            registerGoalTurn(session.turnId);
+            if (goalGeneration) goalGeneration.terminalTurnId = session.turnId;
+          } else if (latestCompletedTurn) {
             session = recoveredTurnState(threadId, latestCompletedTurn, true);
           } else {
             session = {
@@ -1383,7 +1410,7 @@ export async function runCodexAppServerStdioTurnSession(
         );
         if (recoverTerminalGoal && goalGeneration && goal) {
           goalGeneration.terminalStatus = goal.status;
-          goalGeneration.durableTerminalEvidence = true;
+          goalGeneration.durableTerminalEvidence = session.turnStatus !== "inProgress";
         }
         if (reattachActiveGoal && !goalProgressObservedDuringRead) {
           session = {
@@ -1581,6 +1608,20 @@ export async function runCodexAppServerStdioTurnSession(
         await Promise.all([goalCompletion, driveGoalProgress()]);
         await checkpointTail;
         if (checkpointFailure) throw checkpointFailure;
+        // Completion can precede delivery of the final item notification.
+        // Read only this completed turn before closing the transport; this
+        // neither starts a new turn nor repeats an action.
+        if (session.turnId && session.turnStatus === "completed") {
+          const completedSession = session;
+          const completedTurnId = session.turnId;
+          const result = await client.request("thread/read", { threadId, includeTurns: true });
+          const completedTurn = recoveredTurn(result, completedTurnId);
+          session = completedSession;
+          if (completedTurn && turnStatusField(completedTurn) === "completed") {
+            const text = recoveredAgentMessageText(completedTurn);
+            if (text) session = { ...session, agentMessageText: text };
+          }
+        }
         return session;
       }
 
@@ -1618,6 +1659,10 @@ export async function runCodexAppServerStdioTurnSession(
       const params = asRecord(message.params);
       const notificationTurnId = stringField(asRecord(params?.turn), "id") ?? stringField(params, "turnId");
       const notificationGoal = asRecord(params?.goal);
+      const notificationThreadId = stringField(params, "threadId") ?? stringField(notificationGoal, "threadId");
+      if (notificationThreadId && session.threadId && notificationThreadId !== session.threadId) return;
+      if (message.method === "turn/started" && notificationTurnId &&
+        goalGeneration?.turnIds.has(notificationTurnId) && goalGeneration.completedTurnIds.has(notificationTurnId)) return;
       let relevantGoalProgress = false;
       session = reduceCodexAppServerTurnSessionState(session, message, {
         threadStartRequestId: -1,
@@ -1642,6 +1687,10 @@ export async function runCodexAppServerStdioTurnSession(
         }
         if (notificationTurnId && goalGeneration.turnIds.has(notificationTurnId)) {
           relevantGoalProgress = true;
+          if (previousSession.turnId && previousSession.turnId !== notificationTurnId) {
+            session = { ...previousSession, notificationCount: session.notificationCount };
+            relevantGoalProgress = false;
+          }
         } else {
           session = {
             ...session,
@@ -1661,7 +1710,9 @@ export async function runCodexAppServerStdioTurnSession(
         ) {
           const isTerminal = terminalThreadGoalStatuses.has(status);
           goalGeneration.terminalStatus = isTerminal ? status : null;
-          goalGeneration.terminalTurnId = isTerminal ? notificationTurnId : null;
+          goalGeneration.terminalTurnId = isTerminal
+            ? notificationTurnId ?? (goalGeneration.turnIds.has(session.turnId ?? "") ? session.turnId : null)
+            : null;
           if (isTerminal) registerGoalTurn(notificationTurnId);
           session = { ...session, goalStatus: status };
           relevantGoalProgress = true;
@@ -1673,7 +1724,7 @@ export async function runCodexAppServerStdioTurnSession(
         goalGeneration &&
         (message.method === "item/agentMessage/delta" || message.method === "item/completed")
       ) {
-        if (notificationTurnId && goalGeneration.turnIds.has(notificationTurnId)) {
+        if (notificationTurnId && goalGeneration.turnIds.has(notificationTurnId) && notificationTurnId === session.turnId) {
           relevantGoalProgress = true;
         } else if (notificationTurnId) {
           session = { ...session, agentMessageText: previousSession.agentMessageText };
@@ -1700,7 +1751,7 @@ export async function runCodexAppServerStdioTurnSession(
       }
       maybeCompleteGoalSession();
     }
-  );
+  ).then(result => ({ ...result, runtimeModelAtStart }));
 }
 
 const threadGoalStatuses = new Set<CodexThreadGoalStatus>([
@@ -2034,6 +2085,18 @@ export function createCodexAppServerSocketControlService(
   options: CodexAppServerSocketControlServiceOptions
 ): CodexAppServerSocketControlService {
   return {
+    readThreadSettings: (id) => runCodexAppServerSocketProtocol(options, async (client) => {
+      const threadId = requiredSocketIdentifier(id, "thread id");
+      const result = asRecord(await client.request("thread/read", { threadId, includeTurns: false }));
+      const thread = asRecord(result?.thread);
+      const modelId = stringField(thread, "model");
+      const reasoningEffort = stringField(thread, "reasoningEffort");
+      const cwd = stringField(thread, "cwd");
+      if (thread?.id !== threadId || !modelId || !reasoningEffort || !cwd) {
+        throw new Error("Codex did not confirm its native thread settings.");
+      }
+      return { modelId, reasoningEffort, cwd, isTurnActive: stringField(asRecord(thread.status), "type") === "active" };
+    }),
     getThreadName: (id) => runCodexAppServerSocketProtocol(options, async (client) => {
       const threadId = requiredSocketIdentifier(id, "thread id");
       const result = asRecord(await client.request("thread/read", { threadId, includeTurns: false }));

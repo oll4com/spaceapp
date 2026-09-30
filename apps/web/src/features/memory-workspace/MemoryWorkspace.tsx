@@ -139,6 +139,17 @@ export function MemoryWorkspace({
   const issueRequestRef = useRef(0);
   const handleError = useCallback((caught: unknown) => setError(errorMessage(caught)), []);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
   const graphFiltersActive = Boolean(
     query || nodeType || scope || sourcePath || lifecycleStatus || currentRoomOnly || month
   );

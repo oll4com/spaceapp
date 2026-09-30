@@ -7,7 +7,7 @@ import { cliRunLifecycleAdapters } from "../src/cli-run-lifecycle-adapters.js";
 
 describe("CLI runtime descriptors", () => {
   it("requires verified credential observation and smoke support for Space-managed setup connections", () => {
-    expect(cliRuntimeDescriptors).toHaveLength(12);
+    expect(cliRuntimeDescriptors).toHaveLength(16);
     for (const descriptor of cliRuntimeDescriptors) {
       if (descriptor.id === "cli:gemini") {
         expect(descriptor.credentialObservationAction).toBeNull();
@@ -17,6 +17,16 @@ describe("CLI runtime descriptors", () => {
       if (descriptor.id === "cli:hermes") {
         expect(descriptor.credentialObservationAction).toBeNull();
         expect(descriptor.credentialSmokeMarker).toBe("SPACE_HERMES_OK");
+        continue;
+      }
+      if (descriptor.id === "cli:omp") {
+        expect(descriptor.credentialObservationAction).toBeNull();
+        expect(descriptor.credentialSmokeMarker).toBeNull();
+        continue;
+      }
+      if (["cli:qoder", "cli:muse", "cli:droid"].includes(descriptor.id)) {
+        expect(descriptor.credentialObservationAction).toBeNull();
+        expect(descriptor.credentialSmokeMarker).toBeNull();
         continue;
       }
       expect(descriptor.credentialObservationAction, descriptor.id).toBe("credential-observation");
@@ -37,7 +47,11 @@ describe("CLI runtime descriptors", () => {
       "cli:deepseek",
       "cli:cursor",
       "cli:copilot",
-      "cli:hermes"
+      "cli:hermes",
+      "cli:omp",
+      "cli:qoder",
+      "cli:muse",
+      "cli:droid"
     ]);
     expect(cliRuntimeDescriptors.map(({ id, authMode, missingAuthState, loginAction }) => ({
       id,
@@ -56,7 +70,11 @@ describe("CLI runtime descriptors", () => {
       { id: "cli:deepseek", authMode: "API_KEY", missingAuthState: "SETUP_REQUIRED", loginAction: "login" },
       { id: "cli:cursor", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:copilot", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
-      { id: "cli:hermes", authMode: "NONE", missingAuthState: "UNAVAILABLE", loginAction: null }
+      { id: "cli:hermes", authMode: "NONE", missingAuthState: "UNAVAILABLE", loginAction: null },
+      { id: "cli:omp", authMode: "NONE", missingAuthState: "UNAVAILABLE", loginAction: null },
+      { id: "cli:qoder", authMode: "NONE", missingAuthState: "UNAVAILABLE", loginAction: null },
+      { id: "cli:muse", authMode: "NONE", missingAuthState: "UNAVAILABLE", loginAction: null },
+      { id: "cli:droid", authMode: "NONE", missingAuthState: "UNAVAILABLE", loginAction: null }
     ]);
   });
 

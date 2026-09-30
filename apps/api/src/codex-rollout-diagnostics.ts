@@ -629,6 +629,46 @@ export async function findRecentCodexCliTurnActivity(
   }
 }
 
+// Quality evaluation must consume the completed native turn, never terminal
+// redraws or a neighbouring assistant message. Session scoping is verified by
+// the same incremental reader used for completion, including after restart.
+function finalResultReducer(turnId: string): RolloutReducer<string | null> {
+  let result: string | null = null;
+  return {
+    accept(content) {
+      for (const line of content.split(/\r?\n/)) {
+        let record: Record<string, unknown> | null;
+        try { record = asRecord(JSON.parse(line)); } catch { continue; }
+        if (record?.type !== "event_msg") continue;
+        const payload = asRecord(record.payload);
+        if (payload?.turn_id !== turnId) continue;
+        if (payload.type === "turn_aborted") result = null;
+        if (payload.type === "task_complete") {
+          const text = payload.last_agent_message;
+          result = typeof text === "string" && text.trim() ? text.slice(-12_000) : null;
+        }
+      }
+    },
+    result: () => result,
+    checkpoint: () => result,
+    restore: checkpoint => { result = typeof checkpoint === "string" ? checkpoint : null; }
+  };
+}
+
+export async function findCodexCliTurnFinalResult(
+  options: FindCurrentCodexCliTurnActivityOptions & { turnId: string }
+): Promise<string | null> {
+  if (!options.turnId) return null;
+  const path = await resolveDiagnosticRollout({ ...options, sinceMs: 0 });
+  if (!path) return null;
+  try {
+    const sample = await incrementalRollouts.read({ home: options.codexHome, path,
+      key: JSON.stringify(["final-result", options.threadId, options.turnId]),
+      create: () => scopedReducer(options.threadId, finalResultReducer(options.turnId), null) });
+    return sample.value;
+  } catch { forgetDiagnosticRollout(options.codexHome, options.threadId); return null; }
+}
+
 // Verify session_meta again when a file is replaced/truncated between polls.
 function scopedReducer<T>(threadId: string, inner: RolloutReducer<T>, empty: T): RolloutReducer<T> {
   let sessionId: string | null = null;

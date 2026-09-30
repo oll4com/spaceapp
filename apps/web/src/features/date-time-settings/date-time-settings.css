@@ -1,0 +1,59 @@
+.date-time-settings-card {
+  gap: 0;
+}
+
+.date-time-settings-card .settings-flat-heading strong {
+  overflow: hidden;
+  overflow-wrap: normal;
+  word-break: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.date-time-settings-card .settings-flat-heading-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.date-time-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 6px;
+  border: 1px solid var(--room-border, #343638);
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.05));
+  color: var(--room-muted, #a7a59e);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.date-time-reset-btn:hover {
+  color: var(--room-text, #f4efe5);
+  background: var(--room-surface-hover, rgba(255, 255, 255, 0.1));
+  border-color: var(--room-accent, #6db7aa);
+}
+
+.date-time-reset-btn svg {
+  width: 0.88rem;
+  height: 0.88rem;
+}
+
+.date-time-preview-row {
+  align-items: center;
+}
+
+.date-time-preview-value {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: 4px;
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.06));
+  color: var(--room-accent, #6db7aa);
+  border: 1px solid var(--room-border, rgba(255, 255, 255, 0.08));
+}

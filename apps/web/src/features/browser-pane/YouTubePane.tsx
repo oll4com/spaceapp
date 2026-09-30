@@ -110,7 +110,13 @@ export function YouTubePane(props: YouTubePaneProps) {
 
   useEffect(() => {
     onVideoTitleChange?.(mode === 'player' ? currentVideo?.title ?? '' : '');
-  }, [mode, currentVideo?.title, onVideoTitleChange]);
+    if (mode === 'player' && currentVideo?.title && currentVideo.title.trim()) {
+      const newTitle = currentVideo.title.trim();
+      if (newTitle !== pane.title && typeof api.updatePane === 'function') {
+        api.updatePane(pane.id, { title: newTitle.slice(0, 100) }).catch(() => {});
+      }
+    }
+  }, [mode, currentVideo?.title, onVideoTitleChange, pane.id, pane.title]);
 
   async function addToPlaylist() {
     if (observerOnly || mode !== 'player' || addingToPlaylistRef.current) return;
@@ -296,6 +302,23 @@ export function YouTubePane(props: YouTubePaneProps) {
     } catch { setError('The YouTube browser could not stop. Retry to release its resources before playing.'); }
     finally { setPending(false); }
   }
+
+  const playLinkRef = useRef(playLink);
+  playLinkRef.current = playLink;
+
+  useEffect(() => {
+    const handlePlayUrl = (e: Event) => {
+      const customEvent = e as CustomEvent<{ paneId?: string; url?: string; title?: string }>;
+      if (!customEvent.detail?.url) return;
+      if (!customEvent.detail.paneId || customEvent.detail.paneId === pane.id) {
+        void playLinkRef.current(customEvent.detail.url);
+      }
+    };
+    window.addEventListener("space-play-youtube-url", handlePlayUrl);
+    return () => {
+      window.removeEventListener("space-play-youtube-url", handlePlayUrl);
+    };
+  }, [pane.id]);
 
   async function selectPlaylist(linkId: string) {
     if (pending || mode === 'loading') return;

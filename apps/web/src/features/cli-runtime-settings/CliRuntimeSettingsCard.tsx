@@ -42,6 +42,7 @@ import {
 import { publishCliVpnRoutingStatus } from "../../cli-vpn-routing.js";
 import { dispatchCliAccountProfilesChange } from "../../cli-account-profile-events.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
+import { readStoredSuppressNotifications } from "../../notifications-settings.js";
 
 const VPN_PROFILE_MANAGER_STORAGE_KEY = "space.cliVpnProfileManager.profileId";
 const VPN_PROFILE_IDS = ["greece", "thailand", "mullvad", "nord"] as const;
@@ -101,7 +102,7 @@ export interface CliRuntimeSettingsClient {
   updateCliAccountProfile?: (runtimeId: string, profileId: string, input: UpdateCliAccountProfileInput) => Promise<UpdateCliAccountProfileResponse>;
   getCliAccountProfileDetails?: (runtimeId: string, profileId: string) => Promise<CliAccountProfileDetailsResponse>;
   removeCliAccountProfile?: (runtimeId: string, profileId: string) => Promise<RemoveCliAccountProfileResponse>;
-  invalidateCliRuntimes: () => void;
+  invalidateCliRuntimes: (change?: { runtimeId?: string; enabled?: boolean }) => void;
   invalidateCliRuntimeSettings?: () => void;
 }
 
@@ -397,6 +398,7 @@ export function CliRuntimeSettingsCard({
   const [vpnProfileId, setVpnProfileId] = useState<CliVpnProfileId>(readManagedVpnProfileId);
   const [removeConfirmationProfileId, setRemoveConfirmationProfileId] = useState<CliVpnProfileId | null>(null);
   const [accountProfiles, setAccountProfiles] = useState<CliAccountProfile[] | null>(null);
+  const [accountProfileRuntimeId, setAccountProfileRuntimeId] = useState<"cli:gemini" | "cli:copilot" | "cli:cursor">("cli:gemini");
   const [accountProfilePending, setAccountProfilePending] = useState(false);
   const [addAccountOpen, setAddAccountOpen] = useState(false);
   const [newAccountDisplayName, setNewAccountDisplayName] = useState("");
@@ -445,12 +447,12 @@ export function CliRuntimeSettingsCard({
     if (!canManage) return;
     if (!client.listCliAccountProfiles) return;
     try {
-      const result = await client.listCliAccountProfiles("cli:gemini");
+      const result = await client.listCliAccountProfiles(accountProfileRuntimeId);
       if (mountedRef.current) setAccountProfiles(result.profiles);
     } catch {
       setAccountProfiles(null);
     }
-  }, [canManage, client]);
+  }, [accountProfileRuntimeId, canManage, client]);
 
   const loadSettings = useCallback(async (options: { forceRefresh?: boolean } = {}) => {
     const requestId = ++loadRequestIdRef.current;
@@ -571,7 +573,7 @@ export function CliRuntimeSettingsCard({
       ...current,
       settings: current.settings.map((setting) => setting.runtimeId === runtimeId ? result.setting : setting)
     } : current);
-    client.invalidateCliRuntimes();
+    client.invalidateCliRuntimes({ runtimeId, enabled: result.setting.enabled });
     client.invalidateCliRuntimeSettings?.();
     dispatchCliRuntimeVisibilityChange({ runtimeId, enabled: result.setting.enabled, source: "settings-card" });
     const unresolvedSessions = result.cleanup?.unresolvedSessionIds.length ?? 0;
@@ -583,11 +585,13 @@ export function CliRuntimeSettingsCard({
       + unresolvedPanes
       + unresolvedChatRuns
       + unresolvedRoomAgentMissions > 0;
-    setFeedback(hasUnresolvedCleanup && runtimeId === "cli:codex"
-      ? `${displayName} is disabled, but cleanup remains unresolved: ${unresolvedSessions} CLI sessions, ${unresolvedPanes} panes, ${unresolvedChatRuns} Chat runs/panes, and ${unresolvedRoomAgentMissions} Room Agent missions.`
-      : hasUnresolvedCleanup
-        ? `${displayName} is disabled, but ${unresolvedSessions} sessions and ${unresolvedPanes} panes remain unresolved.`
-        : `${displayName} is now ${result.setting.enabled ? "enabled" : "disabled"}.`);
+    if (!readStoredSuppressNotifications()) {
+      setFeedback(hasUnresolvedCleanup && runtimeId === "cli:codex"
+        ? `${displayName} is disabled, but cleanup remains unresolved: ${unresolvedSessions} CLI sessions, ${unresolvedPanes} panes, ${unresolvedChatRuns} Chat runs/panes, and ${unresolvedRoomAgentMissions} Room Agent missions.`
+        : hasUnresolvedCleanup
+          ? `${displayName} is disabled, but ${unresolvedSessions} sessions and ${unresolvedPanes} panes remain unresolved.`
+          : `${displayName} is now ${result.setting.enabled ? "enabled" : "disabled"}.`);
+    }
   }
 
   async function requestToggle(runtimeId: CliToggleRuntimeId, enabled: boolean) {
@@ -630,10 +634,13 @@ export function CliRuntimeSettingsCard({
       if (!client.updateHarnessEnabled) throw new Error("Harness service controls are unavailable.");
       const result = await client.updateHarnessEnabled({ enabled });
       setResponse((current) => current ? { ...current, harness: result.status } : current);
+      client.invalidateCliRuntimes({ enabled: result.status.enabled });
       client.invalidateCliRuntimeSettings?.();
       dispatchCliRuntimeVisibilityChange({ enabled: result.status.enabled, source: "settings-card" });
       publishCliVpnRoutingStatus();
-      setFeedback(`DeepSeek Harness is now ${result.status.enabled ? "active" : "inactive"}.`);
+      if (!readStoredSuppressNotifications()) {
+        setFeedback(`DeepSeek Harness is now ${result.status.enabled ? "active" : "inactive"}.`);
+      }
     } catch (updateError) {
       setError(errorMessage(updateError, "Harness service state could not be changed."));
     } finally {
@@ -785,14 +792,15 @@ export function CliRuntimeSettingsCard({
     setError(null);
     setFeedback(null);
     try {
-      const result = await client.createCliAccountProfile({ runtimeId: "cli:gemini", profileId, displayName });
+      const result = await client.createCliAccountProfile({ runtimeId: accountProfileRuntimeId, profileId, displayName });
       setAccountProfiles((current) => current
         ? [...current.filter((profile) => profile.profileId !== profileId), result.profile]
         : [result.profile]);
       setAddAccountOpen(false);
       setNewAccountDisplayName("");
       dispatchCliAccountProfilesChange();
-      setFeedback(`${displayName} added. Select it in a Gemini pane to complete native Google sign-in.`);
+      const runtimeLabel = accountProfileRuntimeId === "cli:copilot" ? "GitHub Copilot" : accountProfileRuntimeId === "cli:cursor" ? "Cursor" : "Gemini";
+      setFeedback(`${displayName} added. Select it in a ${runtimeLabel} pane to complete sign-in.`);
     } catch (createError) {
       setError(errorMessage(createError, "Account profile could not be added."));
     } finally {
@@ -810,7 +818,7 @@ export function CliRuntimeSettingsCard({
     setError(null);
     setFeedback(null);
     try {
-      const result = await client.removeCliAccountProfile("cli:gemini", profile.profileId);
+      const result = await client.removeCliAccountProfile(accountProfileRuntimeId, profile.profileId);
       setRemoveAccountConfirmation(null);
       if (result.removed) {
         setAccountProfiles((current) => current?.filter((candidate) => candidate.profileId !== profile.profileId) ?? null);
@@ -849,7 +857,7 @@ export function CliRuntimeSettingsCard({
     setError(null);
     setFeedback(null);
     try {
-      const result = await client.updateCliAccountProfile("cli:gemini", profile.profileId, { displayName });
+      const result = await client.updateCliAccountProfile(accountProfileRuntimeId, profile.profileId, { displayName });
       setAccountProfiles((current) => current?.map((candidate) => candidate.profileId === profile.profileId ? result.profile : candidate) ?? null);
       setEditingAccountProfileId(null);
       dispatchCliAccountProfilesChange();
@@ -870,7 +878,7 @@ export function CliRuntimeSettingsCard({
     }
     setAccountDetailsProfileId(profile.profileId);
     setAccountDetails({
-      runtimeId: "cli:gemini",
+      runtimeId: accountProfileRuntimeId,
       profileId: profile.profileId,
       displayName: profile.displayName,
       email: null,
@@ -881,7 +889,7 @@ export function CliRuntimeSettingsCard({
     setError(null);
     try {
       const detailsReader = client.getCliAccountProfileDetails ?? api.getCliAccountProfileDetails;
-      const result = await detailsReader("cli:gemini", profile.profileId);
+      const result = await detailsReader(accountProfileRuntimeId, profile.profileId);
       setAccountDetails(result.details);
     } catch (detailsError) {
       setAccountDetailsError(errorMessage(detailsError, "Account details could not be loaded."));
@@ -1188,19 +1196,25 @@ export function CliRuntimeSettingsCard({
     </div>
   );
 
+  const accountProviderLabel = accountProfileRuntimeId === "cli:copilot" ? "GitHub" : accountProfileRuntimeId === "cli:cursor" ? "Cursor" : "Gemini";
   const accountProfilesContent = (
-    <div className="cli-account-profiles settings-flat-vpn" aria-label="Gemini account profiles">
+    <div className="cli-account-profiles settings-flat-vpn" aria-label={`${accountProviderLabel} account profiles`}>
       <div className="cli-vpn-profile-heading">
         <Users aria-hidden="true" />
         <span>
-          <strong>Gemini accounts</strong>
-          <small>Add as many isolated Google account profiles as you need, then choose one inside each Gemini pane.</small>
+          <strong>{accountProviderLabel} accounts</strong>
+          <small>Add isolated {accountProviderLabel} account profiles, then choose one inside each {accountProviderLabel} pane.</small>
         </span>
+      </div>
+      <div className="cli-account-profile-runtime-switch" role="tablist" aria-label="CLI account provider">
+        <button type="button" role="tab" aria-selected={accountProfileRuntimeId === "cli:gemini"} onClick={() => setAccountProfileRuntimeId("cli:gemini")}>Gemini</button>
+        <button type="button" role="tab" aria-selected={accountProfileRuntimeId === "cli:copilot"} onClick={() => setAccountProfileRuntimeId("cli:copilot")}>GitHub Copilot</button>
+        <button type="button" role="tab" aria-selected={accountProfileRuntimeId === "cli:cursor"} onClick={() => setAccountProfileRuntimeId("cli:cursor")}>Cursor</button>
       </div>
       {accountProfiles === null ? (
         <small className="cli-account-profiles-note">Account profiles could not be loaded.</small>
       ) : accountProfiles.length === 0 ? (
-        <small className="cli-account-profiles-note">No Gemini account profiles yet.</small>
+        <small className="cli-account-profiles-note">No {accountProviderLabel} account profiles yet.</small>
       ) : (
         <ul className="cli-account-profiles-list">
           {accountProfiles.map((profile) => (
@@ -1304,7 +1318,7 @@ export function CliRuntimeSettingsCard({
         </button>
       )}
       <small className="cli-account-profiles-note">
-        The main profile keeps the clean Antigravity account you already connected. Other profiles use separate native OAuth storage.
+        The main profile is the default account. Other profiles use separate native OAuth storage.
       </small>
     </div>
   );
@@ -1408,7 +1422,7 @@ export function CliRuntimeSettingsCard({
       {error ? (
         <p className="cli-runtime-settings-error" role="alert">{error}<button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setError(null)}><X aria-hidden="true" /></button></p>
       ) : null}
-      {feedback ? (
+      {!readStoredSuppressNotifications() && feedback ? (
         <p
           className="cli-runtime-settings-feedback"
           role="status"
@@ -1529,12 +1543,12 @@ export function CliRuntimeSettingsCard({
         </SettingsDisclosure>
 
         <SettingsDisclosure
-          title="Gemini accounts"
-          description="Add as many isolated Google account profiles as you need, then choose one inside each Gemini pane."
+          title="CLI accounts"
+          description="Manage isolated Gemini, GitHub Copilot, and Cursor account profiles."
           scope="Installation"
           icon={Users}
         >
-          <section className="agent-settings-card settings-flat-card cli-gemini-accounts-card" aria-label="Gemini account profile settings">
+          <section className="agent-settings-card settings-flat-card cli-gemini-accounts-card" aria-label="CLI account profile settings">
             {accountProfilesContent}
           </section>
         </SettingsDisclosure>

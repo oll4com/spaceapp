@@ -217,7 +217,7 @@ export function MediaDock({ activeRoom, refreshKey = null }: MediaDockProps) {
           <h2>Media</h2>
           <div className="media-dock-actions">
             <button
-              className="icon-action"
+              className={`icon-action dock-fullscreen-toggle${isFullscreen ? " is-active" : ""}`}
               onClick={() => setIsFullscreen((current) => !current)}
               aria-label={isFullscreen ? "Exit media fullscreen" : "Maximize media"}
               title={isFullscreen ? "Exit media fullscreen" : "Maximize media"}

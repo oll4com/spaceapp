@@ -1,10 +1,25 @@
 import { runRoomPlaybackCommand } from "./room-playback-control.js";
-import { Bot, CircleStop, MessageSquareX, Pause, Play, Send } from "../ui-theme/app-icons.js";
+import { Bot, CircleStop, Keyboard, MessageSquareX, Pause, Play, Send, X } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { Room, RoomAgentSession } from "@space/contracts";
 import { api } from "../../api.js";
 import { useOptionalVoiceInput } from "../voice-input/VoiceInputProvider.js";
 import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
+import {
+  convertTextRange,
+  createGreekInputState,
+  detectKeyboardLayoutMismatch,
+  handleEnglishKeyInput,
+  handleGreekKeyInput,
+  insertTextAtCursor,
+  type LayoutMismatchDetection
+} from "../agent-pane/greek-layout-converter.js";
+import {
+  isComposerLayoutIconVisible,
+  isComposerSuggestionBarVisible,
+  playLayoutSuggestionBeep,
+  useKeyboardAutocorrectSettings
+} from "../keyboard-autocorrect/keyboard-autocorrect-settings.js";
 
 interface RoomAgentDockProps {
   activeRoom: Room | null;
@@ -50,6 +65,40 @@ export function RoomAgentDock({
   const [controlling, setControlling] = useState<"PAUSE" | "RESUME" | null>(null);
   const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [layoutSuggestion, setLayoutSuggestion] = useState<LayoutMismatchDetection | null>(null);
+  const [typingLayoutMode, setTypingLayoutMode] = useState<"el" | "en" | null>(null);
+  const greekTypingMode = typingLayoutMode === "el";
+  const greekInputStateRef = useRef(createGreekInputState(false));
+
+  const setTypingMode = useCallback((mode: "el" | "en" | null) => {
+    setTypingLayoutMode(mode);
+    greekInputStateRef.current.enabled = mode === "el";
+    if (mode) {
+      try {
+        const desktop = (window as any).spaceDesktop;
+        if (typeof desktop?.switchKeyboardLayout === "function") {
+          desktop.switchKeyboardLayout(mode).catch(() => {});
+        }
+      } catch {}
+    }
+  }, []);
+  const { settings: autocorrectSettings } = useKeyboardAutocorrectSettings();
+  const prevLayoutSuggestionRef = useRef(false);
+
+  useEffect(() => {
+    if (layoutSuggestion && !prevLayoutSuggestionRef.current) {
+      if (autocorrectSettings.enabled && autocorrectSettings.soundEnabled) {
+        playLayoutSuggestionBeep();
+      }
+    }
+    prevLayoutSuggestionRef.current = Boolean(layoutSuggestion);
+  }, [layoutSuggestion, autocorrectSettings.enabled, autocorrectSettings.soundEnabled]);
+
+  useEffect(() => {
+    if (!autocorrectSettings.enabled) {
+      setLayoutSuggestion(null);
+    }
+  }, [autocorrectSettings.enabled]);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const activeRoomIdRef = useRef<string | null>(activeRoom?.id ?? null);
@@ -134,7 +183,12 @@ export function RoomAgentDock({
 
   async function submit(event?: FormEvent, contentOverride?: string): Promise<boolean> {
     event?.preventDefault();
-    const content = (contentOverride ?? draft).trim();
+    let rawContent = (contentOverride ?? draft).trim();
+    const layoutCheck = detectKeyboardLayoutMismatch(rawContent);
+    if (layoutCheck.hasMismatch && layoutCheck.confidence >= 0.90 && layoutCheck.direction === "toGreek") {
+      rawContent = layoutCheck.convertedText.trim();
+    }
+    const content = rawContent;
     if (!activeRoom || session?.capabilities.canSend === false || !content) return false;
     const roomId = activeRoom.id;
     const generation = roomGenerationRef.current;
@@ -278,7 +332,50 @@ export function RoomAgentDock({
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+    const isGKey = event.code === "KeyG" || event.key.toLowerCase() === "g" || event.key === "γ" || event.key === "Γ" || event.key === "©";
+    if (autocorrectSettings.enabled && (event.altKey || (event.ctrlKey && event.shiftKey)) && isGKey) {
+      event.preventDefault();
+      const textarea = composerRef.current;
+      if (textarea && (layoutSuggestion || draft.trim())) {
+        const selStart = textarea.selectionStart ?? 0;
+        const selEnd = textarea.selectionEnd ?? 0;
+        const converted = layoutSuggestion
+          ? layoutSuggestion.convertedText
+          : convertTextRange(draft, selStart, selEnd, "toggle").newText;
+        const changed = converted !== draft;
+        setDraft(converted);
+        setLayoutSuggestion(null);
+        if (changed) {
+          const isGreekTarget = /[\u0370-\u03FF]/.test(converted);
+          setTypingMode(isGreekTarget ? "el" : "en");
+        } else {
+          const nextMode = typingLayoutMode === "el" ? "en" : "el";
+          setTypingMode(nextMode);
+        }
+      } else {
+        const nextMode = typingLayoutMode === "el" ? "en" : "el";
+        setTypingMode(nextMode);
+      }
+      return;
+    }
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+      if (typingLayoutMode === "el" && greekInputStateRef.current.enabled && composerRef.current) {
+        const textarea = composerRef.current;
+        const handled = handleGreekKeyInput(event, greekInputStateRef.current, (char) => {
+          insertTextAtCursor(textarea, char);
+          setDraft(textarea.value);
+        });
+        if (handled) return;
+      } else if (typingLayoutMode === "en" && composerRef.current) {
+        const textarea = composerRef.current;
+        const handled = handleEnglishKeyInput(event, (char) => {
+          insertTextAtCursor(textarea, char);
+          setDraft(textarea.value);
+        });
+        if (handled) return;
+      }
+      return;
+    }
     event.preventDefault();
     voiceInput?.cancel(voiceOwnerId);
     void submit();
@@ -420,11 +517,58 @@ export function RoomAgentDock({
 
       <form className="room-agent-composer" onSubmit={(event) => void submit(event)}>
         <label className="room-agent-composer-label" htmlFor="room-agent-message">Message Room Agent</label>
+        {layoutSuggestion && isComposerSuggestionBarVisible(autocorrectSettings) ? (
+          <div className="codex-layout-suggestion" role="status" aria-live="polite" style={{ marginBottom: 6 }}>
+            <Keyboard aria-hidden="true" style={{ width: 14, height: 14, flexShrink: 0 }} />
+            <span className="codex-layout-suggestion-label">
+              Wrong layout? Convert to: <strong>{layoutSuggestion.convertedText.length > 36 ? layoutSuggestion.convertedText.slice(0, 36) + "…" : layoutSuggestion.convertedText}</strong>
+            </span>
+            <button
+              type="button"
+              className="codex-layout-apply-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setDraft(layoutSuggestion.convertedText);
+                setLayoutSuggestion(null);
+                const isGreekTarget = /[\u0370-\u03FF]/.test(layoutSuggestion.convertedText);
+                setTypingMode(isGreekTarget ? "el" : "en");
+                composerRef.current?.focus();
+              }}
+              title="Apply layout conversion (Alt+G)"
+            >
+              Fix (Alt+G)
+            </button>
+            <button
+              type="button"
+              className="codex-layout-dismiss-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setLayoutSuggestion(null)}
+              aria-label="Dismiss layout suggestion"
+            >
+              <X aria-hidden="true" style={{ width: 14, height: 14 }} />
+            </button>
+          </div>
+        ) : null}
         <textarea
           id="room-agent-message"
           ref={composerRef}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            const val = event.target.value;
+            setDraft(val);
+            if (!autocorrectSettings.enabled) {
+              setLayoutSuggestion(null);
+              return;
+            }
+            const detection = detectKeyboardLayoutMismatch(val);
+            const isLangSupported = (detection.direction === "toGreek" && autocorrectSettings.supportedLanguages.includes("el")) ||
+              (detection.direction === "toQwerty" && autocorrectSettings.supportedLanguages.includes("en"));
+            if (detection.hasMismatch && detection.confidence >= 0.85 && isLangSupported) {
+              setLayoutSuggestion(detection);
+            } else {
+              setLayoutSuggestion(null);
+            }
+          }}
           onKeyDown={handleComposerKeyDown}
           placeholder={activeRoom ? "What would you like to do?" : "Select a room first"}
           disabled={!activeRoom}
@@ -439,7 +583,54 @@ export function RoomAgentDock({
         />
         <div className="room-agent-composer-actions">
           {voiceInput ? <VoiceInputButton label="Room Agent" active={Boolean(voiceOwned && voiceInput.status === "recording")} disabled={Boolean(voiceDisabled)} onClick={toggleVoiceCapture} onPrewarm={voiceInput.prewarm} /> : null}
-
+          {isComposerLayoutIconVisible(autocorrectSettings) ? (
+            <button
+              type="button"
+              className={`codex-layout-toggle ${layoutSuggestion ? "has-suggestion" : ""} ${typingLayoutMode === "el" ? "is-greek-active" : ""} ${typingLayoutMode === "en" ? "is-english-active" : ""}`}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                const textarea = composerRef.current;
+                const selStart = textarea?.selectionStart ?? 0;
+                const selEnd = textarea?.selectionEnd ?? 0;
+                if (layoutSuggestion || draft.trim()) {
+                  const converted = layoutSuggestion
+                    ? layoutSuggestion.convertedText
+                    : convertTextRange(draft, selStart, selEnd, "toggle").newText;
+                  const changed = converted !== draft;
+                  setDraft(converted);
+                  setLayoutSuggestion(null);
+                  if (changed) {
+                    const isGreekTarget = /[\u0370-\u03FF]/.test(converted);
+                    setTypingMode(isGreekTarget ? "el" : "en");
+                  } else {
+                    const nextMode = typingLayoutMode === "el" ? "en" : "el";
+                    setTypingMode(nextMode);
+                  }
+                } else {
+                  const nextMode = typingLayoutMode === "el" ? "en" : "el";
+                  setTypingMode(nextMode);
+                }
+                textarea?.focus();
+              }}
+              title={
+                layoutSuggestion
+                  ? `Fix layout: "${layoutSuggestion.convertedText}" (Alt+G)`
+                  : typingLayoutMode === "el"
+                    ? "Keyboard layout: Greek (EL) active · Press Alt+G to switch to English"
+                    : typingLayoutMode === "en"
+                      ? "Keyboard layout: English (EN) active · Press Alt+G to switch to Greek"
+                      : "Fix keyboard layout (Alt+G) · Convert EN ⇄ EL"
+              }
+              aria-label="Fix keyboard layout (Alt+G)"
+            >
+              <Keyboard aria-hidden="true" />
+              {typingLayoutMode === "el" ? (
+                <span className="codex-layout-badge" aria-label="Greek layout active">EL</span>
+              ) : typingLayoutMode === "en" ? (
+                <span className="codex-layout-badge is-en" aria-label="English layout active">EN</span>
+              ) : null}
+            </button>
+          ) : null}
           <span className="room-agent-composer-hint">Enter to send</span>
           <button
             type="submit"

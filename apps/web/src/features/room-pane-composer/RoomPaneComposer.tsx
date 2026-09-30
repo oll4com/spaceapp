@@ -6,8 +6,20 @@ import {
   type CreateRoomPanesRequest,
   type Room
 } from "@space/contracts";
-import { ChevronRight, Grid3X3, Loader2, Minus, Plus, RefreshCw, RotateCcw, X } from "../ui-theme/app-icons.js";
+import {
+  ChevronRight,
+  Grid3X3,
+  Loader2,
+  MessageSquare,
+  Minus,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  X,
+  type LucideIcon
+} from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { api } from "../../api.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
@@ -23,8 +35,13 @@ import {
 const runtimeDefinitions = CLI_RUNTIME_PRESENTATIONS;
 export const ROOM_PANE_COMPOSER_COLLAPSED_KEY = "space.roomPaneComposer.collapsed.v1";
 const harnessId = "harness" as const;
-const utilityDefinitions = PANE_TYPES.filter(type => type.mode !== "TERMINAL" && type.mode !== "HARNESS");
+const utilityDefinitions = PANE_TYPES.filter(
+  (type): type is Extract<(typeof PANE_TYPES)[number], { mode: "CHAT" }> => type.typeId === "chat"
+);
 type UtilityTypeId = typeof utilityDefinitions[number]["typeId"];
+const utilityIcons: Record<UtilityTypeId, LucideIcon> = {
+  chat: MessageSquare
+};
 type ComposerRuntimeId = (typeof runtimeDefinitions)[number]["id"] | typeof harnessId | UtilityTypeId;
 type PaneCounts = Record<ComposerRuntimeId, number>;
 
@@ -46,6 +63,7 @@ function loadDefaultRuntimes(): Promise<AgentRuntimeRegistry> {
 
 export interface RoomPaneComposerProps {
   activePaneCount: number;
+  mobile?: boolean;
   loadRuntimes?: () => Promise<AgentRuntimeRegistry>;
   onApply: (roomId: string, input: CreateRoomPanesRequest) => Promise<void>;
   onOpenSettings?: () => void;
@@ -54,6 +72,7 @@ export interface RoomPaneComposerProps {
 
 export function RoomPaneComposer({
   activePaneCount,
+  mobile = false,
   loadRuntimes = loadDefaultRuntimes,
   onApply,
   onOpenSettings,
@@ -149,7 +168,7 @@ export function RoomPaneComposer({
     const handleVisibilityChange = (event: Event) => {
       const change = readCliRuntimeVisibilityChange(event);
       if (!change) return;
-      api.invalidateCliRuntimes();
+      api.invalidateCliRuntimes(change);
       api.invalidateCliRuntimeSettings?.();
       if (change.enabled === false && !change.runtimeId) {
         setCounts((current) => ({ ...current, harness: 0 }));
@@ -262,7 +281,7 @@ export function RoomPaneComposer({
         <div className="room-pane-composer-heading-copy">
           <strong id="room-pane-composer-title">Add panes</strong>
           <small>{room ? `Pane target: ${room.name}` : "Select a room target"}</small>
-          {collapsed ? <small className="room-pane-composer-summary" aria-live="polite">{assigned} selected · {availableSlots} slots available</small> : null}
+          {collapsed ? <small className="room-pane-composer-summary" aria-live="polite">{assigned} selected{mobile ? "" : ` · ${availableSlots} slots available`}</small> : null}
         </div>
         <div className="room-pane-composer-heading-actions">
           {!collapsed ? (
@@ -294,7 +313,16 @@ export function RoomPaneComposer({
         </div>
       </div>
 
-      {!collapsed ? <div className="room-pane-mix" aria-label="Pane mix">
+      <AnimatePresence initial={false}>
+        {!collapsed ? (
+          <motion.div
+            className="room-pane-composer-body"
+            initial={{ opacity: 0, height: 0, overflow: "hidden" }}
+            animate={{ opacity: 1, height: "auto", overflow: "hidden" }}
+            exit={{ opacity: 0, height: 0, overflow: "hidden" }}
+            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+          >
+            <div className="room-pane-mix" aria-label="Pane mix">
         {visibleRuntimeDefinitions.map(({ brand, iconSrc, id, shortLabel: label }) => {
           const runtime = runtimeById.get(id);
           const available = !loading && !loadError && Boolean(runtime && isAgentRuntimeReady(runtime));
@@ -420,81 +448,93 @@ export function RoomPaneComposer({
           </div>
           </div>
         )}
-        {utilityDefinitions.map(type => (
-          <div className="room-pane-mix-row" key={type.typeId}>
-            <div className="room-pane-runtime-label"><span>{type.label}</span></div>
-            <div className="room-pane-controls">
-              <div className="room-pane-quick-actions">
-                <button type="button" className="room-pane-quick-action" aria-label={`Fill all with ${type.label}`}
-                  title={`Fill the room with ${type.label} panes`} onClick={() => fillRoomWithType(type.typeId)} disabled={applying || availableSlots === 0}>
-                  <Grid3X3 aria-hidden="true" />
-                </button>
-                <button type="button" className="room-pane-quick-action" aria-label={`Clear ${type.label} count`}
-                  title={`Reset ${type.label} pane count`} onClick={() => clearRuntimeCount(type.typeId)} disabled={applying || counts[type.typeId] === 0}>
-                  <RotateCcw aria-hidden="true" />
-                </button>
+        {utilityDefinitions.map(type => {
+          const Icon = utilityIcons[type.typeId];
+          return (
+            <div className="room-pane-mix-row" key={type.typeId}>
+              <div className="room-pane-runtime-label">
+                {Icon ? <Icon className="room-pane-utility-icon" aria-hidden="true" data-pane-utility-icon={type.typeId} /> : null}
+                <span>{type.label}</span>
               </div>
-              <div className="room-pane-counter">
-                <button type="button" aria-label={`Decrease ${type.label} panes`} onClick={() => adjustCount(type.typeId, -1)} disabled={applying || counts[type.typeId] === 0}>
-                  <Minus aria-hidden="true" />
-                </button>
-                <output aria-label={`${type.label} pane count`}>{counts[type.typeId]}</output>
-                <button type="button" aria-label={`Increase ${type.label} panes`} onClick={() => adjustCount(type.typeId, 1)} disabled={applying || assigned >= availableSlots}>
-                  <Plus aria-hidden="true" />
-                </button>
+              <div className="room-pane-controls">
+                <div className="room-pane-quick-actions">
+                  <button type="button" className="room-pane-quick-action" aria-label={`Fill all with ${type.label}`}
+                    title={`Fill the room with ${type.label} panes`} onClick={() => fillRoomWithType(type.typeId)} disabled={applying || availableSlots === 0}>
+                    <Grid3X3 aria-hidden="true" />
+                  </button>
+                  <button type="button" className="room-pane-quick-action" aria-label={`Clear ${type.label} count`}
+                    title={`Reset ${type.label} pane count`} onClick={() => clearRuntimeCount(type.typeId)} disabled={applying || counts[type.typeId] === 0}>
+                    <RotateCcw aria-hidden="true" />
+                  </button>
+                </div>
+                <div className="room-pane-counter">
+                  <button type="button" aria-label={`Decrease ${type.label} panes`} onClick={() => adjustCount(type.typeId, -1)} disabled={applying || counts[type.typeId] === 0}>
+                    <Minus aria-hidden="true" />
+                  </button>
+                  <output aria-label={`${type.label} pane count`}>{counts[type.typeId]}</output>
+                  <button type="button" aria-label={`Increase ${type.label} panes`} onClick={() => adjustCount(type.typeId, 1)} disabled={applying || assigned >= availableSlots}>
+                    <Plus aria-hidden="true" />
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
-      </div> : null}
+          );
+        })}
+            </div>
+            <div className="room-pane-composer-footer">
+          {loading ? <p className="room-pane-runtime-state" role="status"><Loader2 className="spin" aria-hidden="true" />Loading CLI runtimes…</p> : null}
+          {loadError ? (
+            <div className="room-pane-runtime-error" role="alert">
+              <span>{loadError}</span>
+              <button type="button" onClick={() => void refreshRuntimes()} disabled={loading} aria-label="Retry CLI runtimes">
+                <RefreshCw aria-hidden="true" /> Retry
+              </button>
+              <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setLoadError(null)}>
+                <X aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
 
-      {!collapsed && loading ? <p className="room-pane-runtime-state" role="status"><Loader2 className="spin" aria-hidden="true" />Loading CLI runtimes…</p> : null}
-      {!collapsed && loadError ? (
-        <div className="room-pane-runtime-error" role="alert">
-          <span>{loadError}</span>
-          <button type="button" onClick={() => void refreshRuntimes()} disabled={loading} aria-label="Retry CLI runtimes">
-            <RefreshCw aria-hidden="true" /> Retry
+          <p className="room-pane-assignment" aria-live="polite">
+            {mobile ? (
+              <><strong>{assigned}</strong> {assigned === 1 ? "pane" : "panes"} selected</>
+            ) : assigned === 0 ? (
+              <><strong>0</strong> panes selected · <strong>{availableSlots}</strong> {availableSlots === 1 ? "room slot" : "room slots"} available</>
+            ) : (
+              <><strong>{assigned}</strong> {assigned === 1 ? "pane" : "panes"} selected · <strong>{slotsAfterAdd}</strong> {slotsAfterAdd === 1 ? "slot" : "slots"} left after add</>
+            )}
+          </p>
+          {room && (availableSlots === 0 || assigned > availableSlots) ? (
+            <p className="room-pane-capacity-warning">
+              {availableSlots === 0
+                ? "This room has no available pane slots."
+                : `This room has only ${availableSlots} available pane ${availableSlots === 1 ? "slot" : "slots"}.`}
+            </p>
+          ) : null}
+          {applyError ? (
+            <div className="room-pane-apply-message is-error">
+              <span role="alert">{applyError}</span>
+              <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setApplyError(null)}>
+                <X aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
+          {notice ? (
+            <div className="room-pane-apply-message">
+              <span role="status">{notice}</span>
+              <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setNotice(null)}>
+                <X aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
+          <button type="submit" className="room-pane-apply" disabled={!canApply}>
+            {applying ? <Loader2 className="spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
+            {applyLabel}
           </button>
-          <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setLoadError(null)}>
-            <X aria-hidden="true" />
-          </button>
-        </div>
-      ) : null}
-
-      {!collapsed ? <p className="room-pane-assignment" aria-live="polite">
-        {assigned === 0 ? (
-          <><strong>0</strong> panes selected · <strong>{availableSlots}</strong> {availableSlots === 1 ? "room slot" : "room slots"} available</>
-        ) : (
-          <><strong>{assigned}</strong> {assigned === 1 ? "pane" : "panes"} selected · <strong>{slotsAfterAdd}</strong> {slotsAfterAdd === 1 ? "slot" : "slots"} left after add</>
-        )}
-      </p> : null}
-      {!collapsed && room && (availableSlots === 0 || assigned > availableSlots) ? (
-        <p className="room-pane-capacity-warning">
-          {availableSlots === 0
-            ? "This room has no available pane slots."
-            : `This room has only ${availableSlots} available pane ${availableSlots === 1 ? "slot" : "slots"}.`}
-        </p>
-      ) : null}
-      {!collapsed && applyError ? (
-        <div className="room-pane-apply-message is-error">
-          <span role="alert">{applyError}</span>
-          <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setApplyError(null)}>
-            <X aria-hidden="true" />
-          </button>
-        </div>
-      ) : null}
-      {!collapsed && notice ? (
-        <div className="room-pane-apply-message">
-          <span role="status">{notice}</span>
-          <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setNotice(null)}>
-            <X aria-hidden="true" />
-          </button>
-        </div>
-      ) : null}
-      {!collapsed ? <button type="submit" className="room-pane-apply" disabled={!canApply}>
-        {applying ? <Loader2 className="spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
-        {applyLabel}
-      </button> : null}
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </form>
   );
 }

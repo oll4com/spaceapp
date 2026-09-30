@@ -55,7 +55,7 @@ export const defaultHealthThresholds: HealthThresholds = {
   disk: { warning: 80, critical: 90 },
   diskBusy: { warning: 85, critical: 95 },
   network: { warning: 80, critical: 95 },
-  accounts: { warning: 20, critical: 10 },
+  accounts: { warning: 35, critical: 10 },
   rtt: { warning: 300, critical: 425 },
   p95: { warning: 1000, critical: 2500 },
   errors: { warning: 1, critical: 5 },
@@ -201,7 +201,7 @@ export const toneLabels: Record<HealthTone, string> = {
 };
 
 export type HealthSection =
-  "overview" | "performance" | "processes" | "services" | "ai" | "alerts" | "usage";
+  "overview" | "performance" | "processes" | "services" | "topology" | "ai" | "alerts" | "usage" | "sessions" | "connection" | "analytics" | "provider" | "models";
 export function openSystemHealth(
   section: HealthSection = "overview",
   metric?: string,
@@ -230,6 +230,21 @@ export interface CodexCooldownState {
 }
 
 export const CODEX_EXHAUSTION_THRESHOLD_PERCENT = 3;
+export const QUOTA_EXHAUSTION_THRESHOLD_PERCENT = 0;
+export const QUOTA_WARNING_THRESHOLD_PERCENT = 30;
+
+export type QuotaTone = "critical" | "warning" | "healthy" | null;
+
+export function quotaTone(
+  percent: number | null | undefined,
+  warningThreshold: number = QUOTA_WARNING_THRESHOLD_PERCENT,
+  criticalThreshold: number = QUOTA_EXHAUSTION_THRESHOLD_PERCENT,
+): QuotaTone {
+  if (typeof percent !== "number" || !Number.isFinite(percent)) return null;
+  if (percent <= criticalThreshold) return "critical";
+  if (percent <= warningThreshold) return "warning";
+  return "healthy";
+}
 
 export function isCodexAccountActive(
   account: { fiveHourRemainingPercent?: number | null; weeklyRemainingPercent?: number | null },
@@ -294,10 +309,10 @@ export function computeCodexCooldown(
   let formatted = "";
   if (totalSeconds >= 3600) {
     const hours = Math.floor(totalSeconds / 3600);
-    const mins = Math.floor((totalSeconds % 3600) / 60);
-    formatted = `${hours}h ${mins}m`;
+    formatted = `${hours}h`;
   } else if (totalSeconds >= 60) {
-    formatted = `${totalMinutes}m`;
+    const mins = Math.min(59, Math.max(1, totalMinutes));
+    formatted = `${mins}m`;
   } else if (totalSeconds > 0) {
     formatted = `${totalSeconds}s`;
   } else {
@@ -312,5 +327,43 @@ export function computeCodexCooldown(
     accountLabel: soonestAccount?.label ?? null,
     resetAt: soonestResetIso,
   };
+}
+
+export function getReactivationCountdown(
+  quota: {
+    fiveHourRemainingPercent?: number | null;
+    weeklyRemainingPercent?: number | null;
+    fiveHourResetAt?: string | null;
+    weeklyResetAt?: string | null;
+  } | null | undefined,
+  clock: number,
+  threshold: number = CODEX_EXHAUSTION_THRESHOLD_PERCENT,
+): string | null {
+  if (!quota) return null;
+  const fiveHour = quota.fiveHourRemainingPercent ?? 100;
+  const weekly = quota.weeklyRemainingPercent ?? 100;
+
+  if (fiveHour >= threshold && weekly >= threshold) return null;
+
+  let targetIso: string | null = null;
+  let label = "5h";
+  if (fiveHour < threshold && quota.fiveHourResetAt) {
+    targetIso = quota.fiveHourResetAt;
+    label = "5h";
+  } else if (weekly < threshold && quota.weeklyResetAt) {
+    targetIso = quota.weeklyResetAt;
+    label = "week";
+  }
+
+  if (!targetIso) return null;
+  const targetMs = Date.parse(targetIso);
+  if (!Number.isFinite(targetMs)) return null;
+  const diffMs = targetMs - clock;
+  if (diffMs <= 0 || diffMs >= 3 * 3600 * 1000) return null;
+
+  const totalSeconds = Math.max(0, Math.round(diffMs / 1000));
+  if (totalSeconds < 60) return `${label} resets in <1m`;
+  const mins = Math.max(1, Math.round(totalSeconds / 60));
+  return `${label} resets in ${mins}m`;
 }
 

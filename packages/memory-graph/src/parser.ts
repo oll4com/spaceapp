@@ -113,6 +113,28 @@ function addNode(nodes: Map<string, MemoryGraphNode>, node: MemoryGraphNode): vo
   if (!nodes.has(node.id)) nodes.set(node.id, node);
 }
 
+// Canonical record ids come from the marker, or from the source path, timestamp and title, so two
+// distinct entries can share one id (a heading repeated in the source, or a duplicated block). The
+// snapshot contract requires unique ids, so the first entry keeps its canonical id and any further
+// entry is re-keyed deterministically from its content hash; an exact repeat of an already claimed
+// entry is dropped.
+function claimCanonicalRecord(
+  record: MemoryGraphRecord,
+  claimed: Map<string, MemoryGraphRecord>
+): MemoryGraphRecord | null {
+  const existing = claimed.get(record.id);
+  if (!existing) {
+    claimed.set(record.id, record);
+    return record;
+  }
+  if (existing.contentHash === record.contentHash) return null;
+  const derivedId = `memory:${sha256(`${record.sourcePath}\n${record.createdAt}\n${record.title}\n${record.contentHash}`).slice(0, 24)}`;
+  if (claimed.has(derivedId)) return null;
+  const derived = { ...record, id: derivedId };
+  claimed.set(derivedId, derived);
+  return derived;
+}
+
 function makeEdge(
   type: MemoryGraphEdge["type"],
   source: string,
@@ -143,15 +165,18 @@ function parseMonthlySource(source: MemoryGraphSource): { records: MemoryGraphRe
   const records: MemoryGraphRecord[] = [];
   const sections: Array<{ id: string; label: string }> = [];
   const issues: MemoryGraphIssue[] = [];
+  const headingIndices: number[] = [];
+  for (let i = 0; i < tree.children.length; i += 1) {
+    const candidate = tree.children[i];
+    if (candidate && isMemoryBlockHeading(candidate)) headingIndices.push(i);
+  }
 
-  for (let index = 0; index < tree.children.length; index += 1) {
-    const node = tree.children[index];
-    if (!node || !isMemoryBlockHeading(node)) continue;
-    const heading = node;
+  for (let headingListIndex = 0; headingListIndex < headingIndices.length; headingListIndex += 1) {
+    const index = headingIndices[headingListIndex]!;
+    const node = tree.children[index]!;
+    const heading = node as Heading;
     const headingText = textFromNode(heading).trim();
-    const nextHeadingIndex = tree.children.findIndex((candidate, candidateIndex) =>
-      candidateIndex > index && isMemoryBlockHeading(candidate)
-    );
+    const nextHeadingIndex = headingListIndex + 1 < headingIndices.length ? headingIndices[headingListIndex + 1]! : -1;
     const nextHeading = nextHeadingIndex === -1 ? null : tree.children[nextHeadingIndex];
     const nodeBeforeNextHeading = nextHeadingIndex > 0 ? tree.children[nextHeadingIndex - 1] : undefined;
     const nextMarker = nodeBeforeNextHeading?.type === "html" && markerCandidatePattern.test(nodeBeforeNextHeading.value)
@@ -267,19 +292,33 @@ export function buildMemoryGraphSnapshot(input: {
   const issues: MemoryGraphIssue[] = [];
   const nodes = new Map<string, MemoryGraphNode>();
   const edges: MemoryGraphEdge[] = [];
+  const claimedRecords = new Map<string, MemoryGraphRecord>();
+  const claimedIssueIds = new Set<string>();
 
   for (const source of includedSources) {
     const sourceId = `source:${sha256(source.path).slice(0, 24)}`;
     addNode(nodes, { id: sourceId, type: "SOURCE", label: basename(source.path), sourcePath: source.path, recordId: null });
     const parsed = source.kind === "MONTHLY" ? parseMonthlySource(source) : { records: [], sections: indexSections(source), issues: [] };
-    records.push(...parsed.records);
-    issues.push(...parsed.issues);
-
-    for (const section of parsed.sections) {
-      addNode(nodes, { id: section.id, type: "SECTION", label: section.label, sourcePath: source.path, recordId: null });
-      edges.push(makeEdge("CONTAINS", sourceId, section.id));
-    }
+    const sourceRecords: MemoryGraphRecord[] = [];
     for (const record of parsed.records) {
+      const claimed = claimCanonicalRecord(record, claimedRecords);
+      if (claimed) sourceRecords.push(claimed);
+    }
+    records.push(...sourceRecords);
+    for (const issue of parsed.issues) {
+      if (claimedIssueIds.has(issue.id)) continue;
+      claimedIssueIds.add(issue.id);
+      issues.push(issue);
+    }
+
+    const seenSectionIds = new Set<string>();
+    for (const section of parsed.sections) {
+      const isFirstSection = !seenSectionIds.has(section.id);
+      seenSectionIds.add(section.id);
+      addNode(nodes, { id: section.id, type: "SECTION", label: section.label, sourcePath: source.path, recordId: null });
+      if (isFirstSection) edges.push(makeEdge("CONTAINS", sourceId, section.id));
+    }
+    for (const record of sourceRecords) {
       addNode(nodes, { id: record.id, type: "MEMORY", label: record.title, sourcePath: source.path, recordId: record.id });
       edges.push(makeEdge("CONTAINS", record.sectionId, record.id));
       const provenanceId = `provenance:${sha256(record.provenance).slice(0, 24)}`;

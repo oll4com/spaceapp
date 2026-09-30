@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { X } from "../ui-theme/app-icons.js";
+import { dispatchRailMenuChange } from "../rail-popover.js";
 
 export function MetricPopover({
   anchor,
@@ -28,6 +29,13 @@ export function MetricPopover({
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
 
   useLayoutEffect(() => {
+    dispatchRailMenuChange();
+    return () => {
+      dispatchRailMenuChange();
+    };
+  }, []);
+
+  useLayoutEffect(() => {
     if (!anchor || !panelRef.current) return;
     const update = () => {
       if (!panelRef.current) return;
@@ -42,6 +50,7 @@ export function MetricPopover({
         ? below
         : Math.max(margin, anchorRect.top - height - margin);
       setPosition((current) => current?.left === left && current.top === top ? current : { left, top });
+      dispatchRailMenuChange();
     };
     update();
     window.addEventListener("resize", update);
@@ -49,6 +58,7 @@ export function MetricPopover({
     return () => {
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
+      dispatchRailMenuChange();
     };
   });
 

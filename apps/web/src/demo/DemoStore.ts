@@ -1,6 +1,6 @@
 import { taskTitleSettingsSchema, shortTaskTitle } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
-import { canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema } from "@space/contracts";
+import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema } from "@space/contracts";
 import type {
   AgentRuntime,
   AgentRuntimeRegistry,
@@ -40,7 +40,9 @@ import type {
   UpdateStreamingOverlaySettingsInput,
   UpdateTelegramIntegrationInput,
   UpdateUserLinkRequest,
-  UserLink
+  UserLink,
+  UserLinkCategory,
+  UserSettings
 } from "@space/contracts";
 import type { SpaceApiClient } from "../runtime/SpaceRuntime.js";
 import { DEMO_LOCAL_REPLY, SpaceApiError } from "../runtime/SpaceRuntime.js";
@@ -101,7 +103,11 @@ function initialStreamingBotSettings(): StreamingBotSettings {
     faq: [{ question: "What is Space?", answer: "Space is a local-first agent platform." }],
     instructions: "",
     guardrails: { cooldownSeconds: 15, maxRepliesPerMinute: 5, replyToQuestionsOnly: true },
+    modelSelection: null,
+    fallbackModelSelection: null,
     memoryEnabled: true,
+    moderationEnabled: false,
+    jevEnabled: false,
     overlayTickerEnabled: false,
     updatedAt: DEMO_FIXED_AT,
     updatedBy: "user:demo-admin"
@@ -163,7 +169,11 @@ const demoProviderNames: Readonly<Record<string, string>> = {
   "cli:deepseek": "DeepSeek",
   "cli:cursor": "Cursor",
   "cli:copilot": "GitHub Copilot",
-  "cli:hermes": "Hermes Agent"
+  "cli:hermes": "Hermes Agent",
+  "cli:omp": "Oh My Pi",
+  "cli:qoder": "Qoder",
+  "cli:muse": "Muse Code",
+  "cli:droid": "Droid"
 };
 
 function initialSetupConnectionResults(): Map<string, DemoSetupConnectionResult> {
@@ -582,7 +592,11 @@ export class DemoStore {
           faq: structuredClone(input.faq),
           instructions: input.instructions,
           guardrails: structuredClone(input.guardrails),
+          modelSelection: input.modelSelection,
+          fallbackModelSelection: input.fallbackModelSelection,
           memoryEnabled: input.memoryEnabled,
+          moderationEnabled: input.moderationEnabled,
+          jevEnabled: input.jevEnabled,
           overlayTickerEnabled: input.overlayTickerEnabled,
           updatedAt: DEMO_FIXED_AT,
           updatedBy: "user:demo-admin"
@@ -609,6 +623,11 @@ export class DemoStore {
           {
             id: "activity:demo-001",
             platform: "YOUTUBE",
+            accountId: "demo-youtube",
+            channelId: "demo-chat",
+            authorId: "demo-viewer",
+            messageId: "demo-message-001",
+            protectedAccount: false,
             direction: "IN",
             author: "Viewer 1",
             message: "What stack does Space run on?",
@@ -619,6 +638,11 @@ export class DemoStore {
           {
             id: "activity:demo-002",
             platform: "TWITCH",
+            accountId: "demo-twitch",
+            channelId: "demo-chat",
+            authorId: null,
+            messageId: "demo-message-002",
+            protectedAccount: false,
             direction: "OUT",
             author: "Live Assistant",
             message: "Space runs on Node.js with a local-first architecture.",
@@ -682,6 +706,14 @@ export class DemoStore {
         return structuredClone(this.toolRoutingState);
       }
       case "me": return Promise.resolve(structuredClone(this.fixture.auth));
+      case "userSettings": return Promise.resolve(structuredClone(this.fixture.auth.settings ?? defaultUserSettings));
+      case "updateUserSettings": {
+        const patch = (args[0] ?? {}) as Partial<UserSettings>;
+        const current = this.fixture.auth.settings ?? defaultUserSettings;
+        const updated: UserSettings = { ...current, ...patch };
+        this.fixture.auth.settings = updated;
+        return Promise.resolve(structuredClone(updated));
+      }
       case "setupStatus": return Promise.resolve({ setupRequired: false, expiresAt: null });
       case "claimSetup": {
         const onboarding = this.setupOverview();
@@ -785,6 +817,7 @@ export class DemoStore {
         }),
         sampledAt: DEMO_FIXED_AT
       });
+      case "dashboardAgents": return Promise.resolve({ data: structuredClone(this.fixture.panes.filter((pane) => pane.roomId === roomId && !pane.isClosed)), activity: {} });
       case "panes": return Promise.resolve(paginated(structuredClone(this.fixture.panes.filter((pane) => pane.roomId === roomId && !pane.isClosed))));
       case "turns": {
         const query = args[0] as { roomId?: string } | undefined;
@@ -901,6 +934,21 @@ export class DemoStore {
         isCodexEnabled: this.cliRuntimeEnabled.get("cli:codex") !== false
       }));
       case "toolbarUsageAccounts": return Promise.resolve(structuredClone({ ...this.fixture.codexUsageAccounts, checkedAt: new Date().toISOString(), data: this.fixture.codexUsageAccounts.data.map(account => ({ ...account, sampledAt: new Date().toISOString() })) }));
+      case "toolbarAntigravityUsageAccounts": return Promise.resolve(structuredClone({ ...this.fixture.antigravityUsageAccounts, checkedAt: new Date().toISOString(), data: this.fixture.antigravityUsageAccounts.data.map(account => ({ ...account, sampledAt: new Date().toISOString() })) }));
+      case "toolbarApiProviderAccounts": return Promise.resolve({
+        data: [
+          { id: "deepseek", providerId: "deepseek", label: "DeepSeek", status: "CONNECTED" as const, balance: "$0.19", currency: "USD", detail: "Topped up: $0.19", sampledAt: new Date().toISOString() },
+          { id: "openrouter", providerId: "openrouter", label: "OpenRouter", status: "CONNECTED" as const, balance: "$0.00", currency: "USD", usage: "$15.23", limit: "$15.00", detail: "Credits: $15.00 · Used: $15.23 · Free: 907/1000 daily", sampledAt: new Date().toISOString() },
+          { id: "vercel-gateway", providerId: "vercel-gateway", label: "Vercel AI Gateway", status: "CONNECTED" as const, balance: "$0.20", currency: "USD", usage: "$4.80", limit: "$5.00", remainingPercent: 4, detail: "Credits: $5.00 · Used: $4.80 · Account: pirniramon7@gmail.com", sampledAt: new Date().toISOString() },
+          { id: "google-gemini", providerId: "google", label: "Google Gemini (WebSocket / API)", status: "CONNECTED" as const, balance: "Pay-as-you-go", currency: "USD", usage: "Gemini 3.8 Live · Aoede", limit: "Standard Tier", remainingPercent: 100, detail: "Gemini 3.8 Live (Aoede) · Realtime WebSocket & Generative API (50 models · Pay-as-you-go)", sampledAt: new Date().toISOString() },
+          { id: "openai", providerId: "openai", label: "OpenAI", status: "CONNECTED" as const, balance: "Configured", currency: null, usage: "gpt-4o-realtime-preview", limit: "Pay-as-you-go", detail: "Voice & Realtime API key configured", sampledAt: new Date().toISOString() }
+        ],
+        pagination: { page: 1, pageSize: 5, totalItems: 5, totalPages: 1 },
+        source: "demo-fixture",
+        isStale: false,
+        error: null,
+        checkedAt: new Date().toISOString()
+      });
       case "toolbarResetCredits": return Promise.resolve(structuredClone(this.fixture.codexResetCredits));
       case "redeemToolbarResetCredit": {
         const accountId = String(args[0] ?? "");
@@ -1283,6 +1331,7 @@ export class DemoStore {
         }
         return Promise.resolve(this.agentSession(paneId));
       }
+      case "prepareAgentRetry": throw new SpaceApiError("Review the demo conversation and compose a new request.", { status: 409, code: "CONFLICT" });
       case "sendAgentMessage": {
         const paneId = roomId ?? "pane:demo-chat";
         const content = String(args[1] ?? "");
@@ -1540,13 +1589,31 @@ export class DemoStore {
         failedArtifactIds: []
       });
       case "links": {
-        const query = (args[0] ?? {}) as { q?: string; isQuick?: boolean; page?: number; pageSize?: number };
+        const query = (args[0] ?? {}) as { q?: string; category?: UserLinkCategory; isQuick?: boolean; page?: number; pageSize?: number };
         const needle = query.q?.trim().toLowerCase();
         const links = this.fixture.links.filter((link) =>
+          (query.category === undefined || link.category === query.category) &&
           (query.isQuick === undefined || link.isQuick === query.isQuick) &&
           (!needle || [link.title, link.description, link.url].some((value) => value.toLowerCase().includes(needle)))
         );
         return Promise.resolve(structuredClone(requestedPage(links, query)));
+      }
+      case "inspectLink": {
+        const arg = args[0] as { url?: string } | string | undefined;
+        const rawUrl = String((typeof arg === "object" ? arg?.url : arg) || "");
+        let normalized = rawUrl.trim();
+        if (!/^https?:\/\//i.test(normalized)) {
+          normalized = `https://${normalized}`;
+        }
+        let hostname = "";
+        try { hostname = new URL(normalized).hostname; } catch {}
+        const isHttp = /^http:\/\//i.test(normalized);
+        return Promise.resolve({
+          url: normalized,
+          title: hostname || "Link",
+          openMode: isHttp ? "NEW_TAB" : "EMBEDDED",
+          canEmbed: !isHttp
+        });
       }
       case "createLink": {
         const input = args[0] as CreateUserLinkRequest;
@@ -1555,9 +1622,11 @@ export class DemoStore {
         if (url.startsWith("http:") && openMode !== "NEW_TAB") {
           throw new SpaceApiError("HTTP links can only open in a new tab.", { status: 400, code: "INVALID_LINK" });
         }
+        let defaultTitle = "Link";
+        try { defaultTitle = new URL(url).hostname; } catch {}
         const link: UserLink = {
           id: this.nextId("link"),
-          title: input.title.trim(),
+          title: (input.title?.trim() || defaultTitle),
           description: input.description?.trim() ?? "",
           url,
           openMode,
@@ -1601,6 +1670,11 @@ export class DemoStore {
           source: input.source,
           title: null,
           isCompleted: false,
+          executionStatus: "PLANNED",
+          progressPercentage: 0,
+          activeAgent: null,
+          steps: [],
+          lastProgressAt: null,
           roomId: input.roomId ?? null,
           paneId: input.paneId ?? null,
           paneTitle: input.paneTitle ?? null,
@@ -1616,6 +1690,21 @@ export class DemoStore {
         const item = this.fixture.clipboardItems.find((candidate) => candidate.id === roomId);
         if (!item) throw new SpaceApiError("Clipboard item not found.", { status: 404, code: "NOT_FOUND" });
         item.isCompleted = args[1] as boolean;
+        if (item.isCompleted) {
+          item.executionStatus = "COMPLETED";
+          item.progressPercentage = 100;
+        }
+        return Promise.resolve(structuredClone(item));
+      }
+      case "updatePlanProgress": {
+        const item = this.fixture.clipboardItems.find((candidate) => candidate.id === roomId);
+        if (!item) throw new SpaceApiError("Clipboard item not found.", { status: 404, code: "NOT_FOUND" });
+        const input = (args[1] ?? {}) as { executionStatus?: string; progressPercentage?: number; activeAgent?: string; steps?: unknown[] };
+        if (input.executionStatus) item.executionStatus = input.executionStatus as any;
+        if (input.progressPercentage !== undefined) item.progressPercentage = input.progressPercentage;
+        if (input.activeAgent !== undefined) item.activeAgent = input.activeAgent;
+        if (input.steps) item.steps = input.steps as any;
+        if (item.progressPercentage === 100) item.isCompleted = true;
         return Promise.resolve(structuredClone(item));
       }
       case "deleteClipboardItem": return Promise.resolve({ id: roomId!, deleted: true as const });
@@ -1729,10 +1818,13 @@ export class DemoStore {
           if (item.mode === "LIVE") {
             return this.addPane(targetRoomId, `Live ${finalNumber}`, "LIVE", {});
           }
-          const runtimeName = cliRuntimeLabel(item.terminalRuntimeId)!;
+          if (item.mode === "FILES") {
+            return this.addPane(targetRoomId, `Files ${finalNumber}`, "FILES", {});
+          }
+          const runtimeName = item.mode === "TERMINAL" ? cliRuntimeLabel(item.terminalRuntimeId)! : "Terminal";
           return this.addPane(targetRoomId, `${runtimeName} ${finalNumber}`, "TERMINAL", {
             cwd: "/etc",
-            terminalRuntimeId: item.terminalRuntimeId
+            terminalRuntimeId: item.mode === "TERMINAL" ? item.terminalRuntimeId : undefined
           });
         });
         return Promise.resolve({ roomId: targetRoomId, data });

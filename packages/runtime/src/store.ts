@@ -1,6 +1,8 @@
+import { splitCliHostTranscriptContent } from "@space/contracts";
 import type { PaneBatchClaim } from "@space/contracts";
 import type { TaskTitleState } from "@space/contracts";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { nanoid } from "nanoid";
@@ -138,10 +140,14 @@ import {
   upsertAgentPaneBindingInputSchema,
   upsertClipboardItemInputSchema,
   updateUserLinkRequestSchema,
-  userLinkSchema
+  userLinkSchema,
+  defaultUserSettings,
+  userSettingsSchema,
+  updateUserSettingsInputSchema
 } from "@space/contracts";
 import type {
   AdminOperationRun,
+  AdminUserItem,
   AgentPaneBinding,
   AgentPaneHistoryItem,
   AgentPaneStoredSession,
@@ -298,6 +304,7 @@ import type {
   UpdatePaneCliSessionInput,
   UpdatePaneCliTerminalControlLeaseInput,
   UpdatePaneLayoutInput,
+  UpdatePlanProgressRequest,
   UpdateRoomInput,
   UpdateProviderInput,
   UpdateProviderSettingsInput,
@@ -320,7 +327,9 @@ import type {
   AuthUser,
   TaskItem,
   UserLink,
-  WorkflowRun
+  WorkflowRun,
+  UserSettings,
+  UpdateUserSettingsInput
 } from "@space/contracts";
 import type {
   ClaimMemoryCommandInput,
@@ -362,6 +371,8 @@ export interface QueuedTurnRecord {
 
 export interface EnqueueRoomAgentMissionInput {
   requestId: string;
+  requireNewMission?: boolean;
+  initialExecutionState?: Record<string, unknown>;
   requestFingerprint?: string;
   clientRequestId: string;
   content: string;
@@ -390,9 +401,27 @@ export interface RoomAgentTurnRecord {
   roomAgentOutcome?: import("@space/contracts").RoomAgentTurnOutcome;
 }
 
-export interface RoomAgentMissionUpdateGuard {
+export type RoomAgentMissionUpdateGuard = {
   expectedRunId: string;
   expectedStatus: RoomAgentMissionRecord["status"];
+} | {
+  expectedStatus: RoomAgentMissionRecord["status"];
+  expectedUpdatedAt: string;
+  expectedOwnerId: string | null;
+  expectedExecutionState: Record<string, unknown>;
+  rejectOnConflict: true;
+};
+
+export function roomAgentMissionGuardMatches(
+  current: Pick<RoomAgentMissionRecord, "status" | "updatedAt" | "executionState">,
+  guard: RoomAgentMissionUpdateGuard,
+  currentRunId?: string
+): boolean {
+  if (current.status !== guard.expectedStatus) return false;
+  if ("expectedRunId" in guard) return currentRunId === guard.expectedRunId;
+  return current.updatedAt === guard.expectedUpdatedAt &&
+    (current.executionState.ownerId ?? null) === guard.expectedOwnerId &&
+    isDeepStrictEqual(current.executionState, guard.expectedExecutionState);
 }
 
 export interface CompleteTurnInput {
@@ -810,6 +839,8 @@ export function updateSetupConnectionCheckRunRecord(
 
 export interface SpaceStore {
   upsertUser(user: AuthUser): MaybePromise<AuthUser>;
+  getUserSettings(userId: string): MaybePromise<UserSettings>;
+  updateUserSettings(userId: string, input: UpdateUserSettingsInput): MaybePromise<UserSettings>;
   getControlActor(userId: string, verifiedEmail?: string): MaybePromise<AuthUser | null>;
   initializeOwnerSetup(input: InitializeOwnerSetupInput): MaybePromise<OwnerSetupStatus>;
   getOwnerSetupStatus(): MaybePromise<OwnerSetupStatus>;
@@ -866,6 +897,11 @@ export interface SpaceStore {
     clipboardItemId: string,
     completed: boolean
   ): MaybePromise<ClipboardItem>;
+  updateClipboardItemProgress(
+    ownerUserId: string,
+    clipboardItemId: string,
+    input: UpdatePlanProgressRequest
+  ): MaybePromise<ClipboardItem>;
   deleteClipboardItem(ownerUserId: string, clipboardItemId: string): MaybePromise<ClipboardItem>;
   clearClipboardItems(ownerUserId: string): MaybePromise<number>;
   upsertTaskItem(input: UpsertTaskItemInput): MaybePromise<TaskItem>;
@@ -878,7 +914,13 @@ export interface SpaceStore {
   createUserLink(input: CreateUserLinkInput): MaybePromise<UserLink>;
   updateUserLink(ownerUserId: string, linkId: string, input: UpdateUserLinkRequest): MaybePromise<UserLink>;
   deleteUserLink(ownerUserId: string, linkId: string): MaybePromise<UserLink>;
-  listRooms(): MaybePromise<Room[]>;
+  listRooms(ownerUserId?: string | null): MaybePromise<Room[]>;
+  listUsersWithRoomCounts?(): MaybePromise<AdminUserItem[]>;
+  updateUserRole?(userId: string, role: "ADMIN" | "USER"): MaybePromise<AuthUser>;
+  ensureUserStarterRoom?(userId: string, email: string, traceId?: string): MaybePromise<Room | null>;
+  updateUserGoogleInfo?(userId: string, googleId: string, avatarUrl?: string, email?: string): MaybePromise<void>;
+  unlinkGoogleAccount?(userId: string): MaybePromise<void>;
+  getUserByGoogleId?(googleId: string): MaybePromise<AuthUser | null>;
   listRunningCliSessionCountsByRoom(runtimeIds?: string[]): MaybePromise<RoomCliActivity[]>;
   listCliRuntimeSettings(): MaybePromise<CliRuntimeSetting[]>;
   getCliRuntimeSetting(runtimeId: CliToggleRuntimeId): MaybePromise<CliRuntimeSetting>;
@@ -926,7 +968,7 @@ export interface SpaceStore {
   createReleasePreview(input: CreateReleasePreviewStoreInput, actorUserId: string | null): MaybePromise<ReleasePreviewRecord>;
   getReleasePreview(previewId: string): MaybePromise<ReleasePreviewRecord | null>;
   getRoom(roomId: string): MaybePromise<Room>;
-  createRoom(input: CreateRoomStoreInput, traceId?: string): MaybePromise<Room>;
+  createRoom(input: CreateRoomStoreInput, traceId?: string, ownerUserId?: string | null): MaybePromise<Room>;
   updateRoom(roomId: string, input: UpdateRoomInput, traceId?: string): MaybePromise<Room>;
   updateRoomPaneLayout(
     roomId: string,
@@ -979,6 +1021,7 @@ export interface SpaceStore {
   upsertAgentPaneBinding(input: UpsertAgentPaneBindingInput, traceId?: string): MaybePromise<AgentPaneBinding>;
   updateAgentPaneBinding(paneId: string, input: UpdateAgentPaneBindingInput, traceId?: string): MaybePromise<AgentPaneBinding>;
   getActiveSpaceAgentSession(paneId: string): MaybePromise<SpaceAgentSessionRecord | null>;
+  getLatestSpaceAgentSessionForPane(paneId: string): MaybePromise<SpaceAgentSessionRecord | null>;
   countActiveSpaceAgentSessions(): MaybePromise<number>;
   reconcileStaleSpaceAgentSessions(): MaybePromise<number>;
   getSpaceAgentSession(sessionId: string): MaybePromise<SpaceAgentSessionRecord | null>;
@@ -999,6 +1042,9 @@ export interface SpaceStore {
     expectedStatus?: SpaceAgentMessageRecord["status"]
   ): MaybePromise<SpaceAgentMessageRecord>;
   createSpaceAgentRun(input: CreateSpaceAgentRunInput, traceId?: string): MaybePromise<SpaceAgentRunRecord>;
+  getSpaceAgentSubmission(paneId: string, clientRequestId: string): MaybePromise<SpaceAgentRunRecord | null>;
+  createSpaceAgentSubmission(input: { run: CreateSpaceAgentRunInput; content: string }, traceId?: string):
+    MaybePromise<{ created: boolean; run: SpaceAgentRunRecord }>;
   updateSpaceAgentRun(runId: string, input: UpdateSpaceAgentRunInput, traceId?: string): MaybePromise<SpaceAgentRunRecord>;
   updateSpaceAgentRunByWorkflowId(
     workflowId: string,
@@ -1139,6 +1185,7 @@ export interface SpaceStore {
   listEvents(roomId?: string): MaybePromise<Event[]>;
   getLatestEvent(roomId: string): MaybePromise<Event | null>;
   listEventsPage(input: ListStorePageInput): MaybePromise<StorePageResult<Event>>;
+  recordRoomEvent(input: Omit<Event, "id" | "createdAt" | "workflowId"> & { workflowId?: string | null }): MaybePromise<Event>;
   listEventChanges(input: ListEventChangesInput): MaybePromise<EventChange[]>;
   recordAuditEvent(input: CreateAuditEventInput): MaybePromise<AuditEvent>;
   listAuditEvents(): MaybePromise<AuditEvent[]>;
@@ -2323,6 +2370,7 @@ export class InMemorySpaceStore implements SpaceStore {
   private codexAppServerTurnSmokeChecks: CodexAppServerTurnSmokeCheck[] = [];
   private users = new Map<string, AuthUser>();
   private userPasswordHashes = new Map<string, string>();
+  private userSettings = new Map<string, UserSettings>();
   private ownerSetup: {
     tokenHash: string | null;
     expiresAt: string | null;
@@ -2343,6 +2391,7 @@ export class InMemorySpaceStore implements SpaceStore {
   private taskSequence = 0;
   private userLinks = new Map<string, InMemoryUserLinkRecord>();
   private initializedUserLinkLibraries = new Set<string>();
+  private userStarterRoomInitialized = new Set<string>();
   private providers: Provider[];
   private providerSettings: ProviderSettings;
   private codexCliModeDefaults: CodexCliModeDefaults | null = null;
@@ -2495,6 +2544,33 @@ export class InMemorySpaceStore implements SpaceStore {
     return persisted;
   }
 
+  getUserSettings(userId: string): UserSettings {
+    return this.userSettings.get(userId) ?? defaultUserSettings;
+  }
+
+  updateUserSettings(userId: string, input: UpdateUserSettingsInput): UserSettings {
+    const current = this.getUserSettings(userId);
+    const updated: UserSettings = userSettingsSchema.parse({
+      ...current,
+      ...input,
+      dateTime: {
+        ...current.dateTime,
+        ...(input.dateTime ?? {})
+      },
+      voice: {
+        ...current.voice,
+        ...(input.voice ?? {})
+      },
+      keyboardAutocorrect: {
+        ...current.keyboardAutocorrect,
+        ...(input.keyboardAutocorrect ?? {})
+      },
+      updatedAt: nowIso()
+    });
+    this.userSettings.set(userId, updated);
+    return updated;
+  }
+
   initializeOwnerSetup(input: InitializeOwnerSetupInput): OwnerSetupStatus {
     if (!/^[a-f0-9]{64}$/.test(input.tokenHash)) {
       throw new Error("Owner setup token hash must be a SHA-256 hex digest.");
@@ -2537,11 +2613,16 @@ export class InMemorySpaceStore implements SpaceStore {
       email: input.email,
       role: "ADMIN"
     });
-    const starterRoom = this.createRoom({
-      name: "Getting Started",
-      description: "SpaceApp setup and connection workspace.",
-      initialPaneCount: 0
-    });
+    const starterRoom = this.createRoom(
+      {
+        name: "Getting Started",
+        description: "SpaceApp setup and connection workspace.",
+        initialPaneCount: 0
+      },
+      makeSpaceId("trace"),
+      owner.id
+    );
+    this.userStarterRoomInitialized.add(owner.id);
     // The starter room opens with the OpenCode CLI pane already in place so the
     // owner's first visit lands on a working free-model agent immediately.
     this.createPanes(
@@ -2967,6 +3048,81 @@ export class InMemorySpaceStore implements SpaceStore {
     return record.item;
   }
 
+  updateClipboardItemProgress(
+    ownerUserId: string,
+    clipboardItemId: string,
+    input: UpdatePlanProgressRequest
+  ): ClipboardItem {
+    const record = this.clipboardItems.get(clipboardItemId);
+    if (!record || record.ownerUserId !== ownerUserId) {
+      throw new SpaceNotFoundError(`Clipboard item ${clipboardItemId} was not found.`);
+    }
+    let steps = [...(record.item.steps ?? [])];
+    if (input.steps) {
+      steps = input.steps;
+    } else if (input.stepUpdate) {
+      const { stepIdOrOrder, status, progress, agent, notes, proof } = input.stepUpdate;
+      const targetIndex = steps.findIndex(
+        (s) => s.id === String(stepIdOrOrder) || s.order === Number(stepIdOrOrder)
+      );
+      if (targetIndex >= 0) {
+        const current = steps[targetIndex]!;
+        const updatedStatus = status ?? current.status;
+        const updatedProgress = progress !== undefined ? progress : (updatedStatus === "COMPLETED" ? 100 : current.progress);
+        steps[targetIndex] = {
+          ...current,
+          status: updatedStatus,
+          progress: updatedProgress,
+          agent: agent !== undefined ? agent : current.agent,
+          notes: notes !== undefined ? notes : current.notes,
+          proof: proof !== undefined ? proof : current.proof,
+          startedAt: (updatedStatus === "IN_PROGRESS" && !current.startedAt) ? new Date().toISOString() : current.startedAt,
+          completedAt: updatedStatus === "COMPLETED" ? new Date().toISOString() : (status && status !== "COMPLETED" ? null : current.completedAt)
+        };
+      } else {
+        const newOrder = typeof stepIdOrOrder === "number" ? stepIdOrOrder : steps.length + 1;
+        steps.push({
+          id: String(stepIdOrOrder),
+          order: newOrder,
+          title: `Step ${newOrder}`,
+          status: status ?? "PENDING",
+          progress: progress ?? (status === "COMPLETED" ? 100 : 0),
+          agent: agent ?? null,
+          notes: notes ?? null,
+          proof: proof ?? null,
+          startedAt: status === "IN_PROGRESS" ? new Date().toISOString() : null,
+          completedAt: status === "COMPLETED" ? new Date().toISOString() : null
+        });
+      }
+    }
+    let calculatedPercentage = input.progressPercentage;
+    if (calculatedPercentage === undefined && steps.length > 0) {
+      const sum = steps.reduce((acc, step) => acc + (step.status === "COMPLETED" ? 100 : step.progress), 0);
+      calculatedPercentage = Math.round(sum / steps.length);
+    }
+    const finalPercentage = Math.max(0, Math.min(100, calculatedPercentage ?? record.item.progressPercentage ?? 0));
+    let executionStatus = input.executionStatus ?? record.item.executionStatus ?? "PLANNED";
+    if (finalPercentage === 100 || (steps.length > 0 && steps.every((s) => s.status === "COMPLETED"))) {
+      executionStatus = "COMPLETED";
+    } else if (finalPercentage > 0 && executionStatus === "PLANNED") {
+      executionStatus = "IN_PROGRESS";
+    }
+    const isCompleted = executionStatus === "COMPLETED" || finalPercentage === 100;
+    const activeAgent = input.activeAgent !== undefined ? input.activeAgent : record.item.activeAgent;
+
+    record.item = {
+      ...record.item,
+      executionStatus,
+      progressPercentage: finalPercentage,
+      activeAgent,
+      steps,
+      isCompleted,
+      lastProgressAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString()
+    };
+    return record.item;
+  }
+
   deleteClipboardItem(ownerUserId: string, clipboardItemId: string): ClipboardItem {
     const record = this.clipboardItems.get(clipboardItemId);
     if (!record || record.ownerUserId !== ownerUserId) {
@@ -3104,6 +3260,7 @@ export class InMemorySpaceStore implements SpaceStore {
     const search = parsed.q?.toLocaleLowerCase();
     const matching = [...this.userLinks.values()]
       .filter((record) => record.ownerUserId === ownerUserId)
+      .filter((record) => parsed.category === undefined || record.item.category === parsed.category)
       .filter((record) => parsed.isQuick === undefined || record.item.isQuick === parsed.isQuick)
       .filter((record) => !search || `${record.item.title}\n${record.item.description}`.toLocaleLowerCase().includes(search))
       .sort((left, right) => left.item.sortOrder - right.item.sortOrder || left.item.createdAt.localeCompare(right.item.createdAt));
@@ -3141,8 +3298,52 @@ export class InMemorySpaceStore implements SpaceStore {
     return record.item;
   }
 
-  listRooms(): Room[] {
-    return [...this.rooms.values()].sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt));
+  listRooms(ownerUserId?: string | null): Room[] {
+    const all = [...this.rooms.values()].sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt));
+    if (ownerUserId) {
+      return all.filter((r) => r.ownerUserId === ownerUserId || (!r.ownerUserId && ownerUserId === "user:operator"));
+    }
+    return all;
+  }
+
+  listUsersWithRoomCounts(): AdminUserItem[] {
+    const counts = new Map<string, number>();
+    for (const r of this.rooms.values()) {
+      if (r.ownerUserId) counts.set(r.ownerUserId, (counts.get(r.ownerUserId) ?? 0) + 1);
+    }
+    return [
+      {
+        id: "user:operator",
+        email: "space@space.local",
+        role: "ADMIN",
+        roomCount: counts.get("user:operator") ?? this.rooms.size,
+        createdAt: nowIso(),
+        updatedAt: nowIso()
+      }
+    ];
+  }
+
+  updateUserRole(userId: string, role: "ADMIN" | "USER"): AuthUser {
+    const existing = this.users.get(userId);
+    const updated: AuthUser = {
+      id: userId,
+      email: existing?.email ?? "user@example.com",
+      role,
+      googleId: existing?.googleId,
+      avatarUrl: existing?.avatarUrl
+    };
+    this.users.set(userId, updated);
+    return updated;
+  }
+
+  ensureUserStarterRoom(userId: string, email: string, traceId = makeSpaceId("trace")): Room | null {
+    if (this.userStarterRoomInitialized.has(userId)) {
+      return null;
+    }
+    this.userStarterRoomInitialized.add(userId);
+    const existing = [...this.rooms.values()].find((r) => r.ownerUserId === userId);
+    if (existing) return existing;
+    return this.createRoom({ name: "Getting Started", initialPaneCount: 0 }, traceId, userId);
   }
 
   listRunningCliSessionCountsByRoom(runtimeIds?: string[]): RoomCliActivity[] {
@@ -3476,12 +3677,13 @@ export class InMemorySpaceStore implements SpaceStore {
     return room;
   }
 
-  createRoom(input: CreateRoomStoreInput, traceId = makeSpaceId("trace")): Room {
+  createRoom(input: CreateRoomStoreInput, traceId = makeSpaceId("trace"), ownerUserId?: string | null): Room {
     const timestamp = nowIso();
     const room: Room = {
       id: makeSpaceId("room"),
       name: input.name,
       description: input.description ?? null,
+      projectPath: input.projectPath ?? null,
       kind: input.kind ?? "WORKSPACE",
       order: this.rooms.size,
       paneLayoutColumns: null,
@@ -3490,7 +3692,8 @@ export class InMemorySpaceStore implements SpaceStore {
       updatedAt: timestamp,
       archivedAt: null,
       paneCap: ACTIVE_PANE_CAP,
-      traceId
+      traceId,
+      ownerUserId: ownerUserId ?? null
     };
 
     this.rooms.set(room.id, room);
@@ -3524,6 +3727,7 @@ export class InMemorySpaceStore implements SpaceStore {
       ...room,
       name: input.name,
       description: input.description ?? room.description,
+      projectPath: input.projectPath !== undefined ? input.projectPath : (room.projectPath ?? null),
       updatedAt: nowIso(),
       traceId
     };
@@ -3972,6 +4176,10 @@ export class InMemorySpaceStore implements SpaceStore {
         mission: this.roomAgentMissions.get(existing.mission.id) ?? existing.mission
       };
     }
+    if (input.requireNewMission && this.listRoomAgentMissions(queueItem.turn.roomId).some(mission =>
+      ["QUEUED", "RUNNING", "PAUSED"].includes(mission.status))) {
+      throw new SpaceConflictError("A mission is already active in this room. Inspect, resume or stop it before starting another goal.");
+    }
 
     const sessionId = queueItem.turn.agentSessionId;
     const agentRunId = queueItem.turn.agentRunId;
@@ -4051,6 +4259,7 @@ export class InMemorySpaceStore implements SpaceStore {
       sessionId,
       workflowId: input.supervisorWorkflowId,
       status: "QUEUED",
+      executionState: input.initialExecutionState ?? {},
       currentPaneId: null,
       statusReason: "Mission queued behind any active room work.",
       queuedAt: timestamp,
@@ -4133,8 +4342,11 @@ export class InMemorySpaceStore implements SpaceStore {
     guard?: RoomAgentMissionUpdateGuard): RoomAgentMissionRecord {
     const current = this.roomAgentMissions.get(missionId);
     if (!current) throw new SpaceNotFoundError(`Room agent mission ${missionId} was not found.`);
-    if (guard && (current.status !== guard.expectedStatus ||
-        this.getRoomAgentTurn(missionId)?.run.runId !== guard.expectedRunId)) return current;
+    if (guard && !roomAgentMissionGuardMatches(current, guard,
+      "expectedRunId" in guard ? this.getRoomAgentTurn(missionId)?.run.runId : undefined)) {
+      if ("rejectOnConflict" in guard) throw new SpaceConflictError("Mission state or owner changed. Refresh before controlling it.");
+      return current;
+    }
     const parsed = updateRoomAgentMissionInputSchema.parse(input);
     const updated = roomAgentMissionRecordSchema.parse({ ...current, ...parsed, updatedAt: nowIso() });
     this.roomAgentMissions.set(missionId, updated);
@@ -4619,6 +4831,12 @@ export class InMemorySpaceStore implements SpaceStore {
     return [...this.spaceAgentSessions.values()].find((session) => session.paneId === paneId && session.isActive) ?? null;
   }
 
+  getLatestSpaceAgentSessionForPane(paneId: string): SpaceAgentSessionRecord | null {
+    return [...this.spaceAgentSessions.values()]
+      .filter((session) => session.paneId === paneId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null;
+  }
+
   countActiveSpaceAgentSessions(): number {
     const runningSessionIds = new Set(
       [...this.spaceAgentRuns.values()].filter((run) => run.status === "RUNNING").map((run) => run.sessionId)
@@ -4630,6 +4848,7 @@ export class InMemorySpaceStore implements SpaceStore {
     let deactivated = 0;
     for (const session of this.spaceAgentSessions.values()) {
       if (!session.isActive) continue;
+      if (this.roomAgentPaneIds.get(session.roomId) === session.paneId) continue;
       const hasRunningRun = [...this.spaceAgentRuns.values()].some(
         (run) => run.sessionId === session.sessionId && run.status === "RUNNING"
       );
@@ -4836,6 +5055,42 @@ export class InMemorySpaceStore implements SpaceStore {
     return updated;
   }
 
+  getSpaceAgentSubmission(paneId: string, clientRequestId: string): SpaceAgentRunRecord | null {
+    return [...this.spaceAgentRuns.values()].find(run => run.paneId === paneId && run.clientRequestId === clientRequestId) ?? null;
+  }
+
+  createSpaceAgentSubmission(input: { run: CreateSpaceAgentRunInput; content: string }, traceId = makeSpaceId("trace")) {
+    const parsed = createSpaceAgentRunInputSchema.parse(input.run);
+    if (Boolean(parsed.clientRequestId) !== Boolean(parsed.requestFingerprint)) {
+      throw new SpaceConflictError("A submission key requires its request fingerprint.");
+    }
+    const existing = parsed.clientRequestId ? this.getSpaceAgentSubmission(parsed.paneId, parsed.clientRequestId) : null;
+    if (existing) {
+      if (existing.requestFingerprint !== parsed.requestFingerprint) throw new SpaceConflictError("This submission key was already used for a different request.");
+      return { created: false, run: existing };
+    }
+    const session = this.spaceAgentSessions.get(parsed.sessionId);
+    if (!session || session.paneId !== parsed.paneId || session.roomId !== parsed.roomId || !session.isActive) {
+      throw new SpaceConflictError("The Chat session changed. Reload it before sending.");
+    }
+    if ([...this.spaceAgentRuns.values()].some(run => run.paneId === parsed.paneId && (run.status === "QUEUED" || run.status === "RUNNING"))) {
+      throw new SpaceConflictError("This Chat pane already has an active task.");
+    }
+    const prompt = createSpaceAgentMessageInputSchema.parse({ messageId: parsed.promptMessageId, sessionId: parsed.sessionId,
+      role: "user", content: input.content, status: "COMPLETED" });
+    const response = createSpaceAgentMessageInputSchema.parse({ messageId: parsed.responseMessageId, sessionId: parsed.sessionId,
+      role: "assistant", content: "", status: "RUNNING" });
+    if ((parsed.runId && this.spaceAgentRuns.has(parsed.runId)) || prompt.messageId === response.messageId ||
+        this.spaceAgentMessages.has(parsed.promptMessageId) || this.spaceAgentMessages.has(parsed.responseMessageId)) {
+      throw new SpaceConflictError("Submission message IDs must be new and distinct.");
+    }
+    this.createSpaceAgentMessage(prompt);
+    this.createSpaceAgentMessage(response);
+    const run = this.createSpaceAgentRun(parsed, traceId);
+    this.updateSpaceAgentSession(session.sessionId, { status: "RUNNING", lastSyncedAt: nowIso() });
+    return { created: true, run };
+  }
+
   createSpaceAgentRun(input: CreateSpaceAgentRunInput, traceId = makeSpaceId("trace")): SpaceAgentRunRecord {
     const parsed = createSpaceAgentRunInputSchema.parse(input);
     const session = this.spaceAgentSessions.get(parsed.sessionId);
@@ -4854,6 +5109,8 @@ export class InMemorySpaceStore implements SpaceStore {
       codexTurnId: parsed.codexTurnId ?? null,
       errorCode: parsed.errorCode ?? null,
       errorMessage: parsed.errorMessage ?? null,
+      startedAt: parsed.status === "RUNNING" ? timestamp : null,
+      runtimeModelAtStart: null,
       createdAt: timestamp,
       updatedAt: timestamp,
       completedAt: parsed.completedAt ?? null
@@ -4891,6 +5148,7 @@ export class InMemorySpaceStore implements SpaceStore {
     const updated = spaceAgentRunRecordSchema.parse({
       ...current,
       ...parsed,
+      startedAt: current.startedAt ?? (parsed.status === "RUNNING" ? nowIso() : null),
       temporalRunId: parsed.temporalRunId === undefined ? current.temporalRunId : parsed.temporalRunId,
       codexThreadId: parsed.codexThreadId === undefined ? current.codexThreadId : parsed.codexThreadId,
       codexTurnId: parsed.codexTurnId === undefined ? current.codexTurnId : parsed.codexTurnId,
@@ -4971,7 +5229,7 @@ export class InMemorySpaceStore implements SpaceStore {
       status: "READY",
       threadId: input.codexThreadId,
       lastSyncedAt: input.completedAt,
-      isActive: currentSession.isActive && (!paneClosed || hasOtherRunningRun)
+      isActive: currentSession.isActive && (!paneClosed || this.roomAgentPaneIds.get(currentSession.roomId) === currentSession.paneId || hasOtherRunningRun)
     });
     const event = this.appendEvent({
       roomId: run.roomId,
@@ -5067,9 +5325,6 @@ export class InMemorySpaceStore implements SpaceStore {
     }
     if (input.nativeTaskRef) {
       const nativeOwner = this.getCliTaskRevisionByNativeRef(input.runtimeId, input.nativeTaskRef);
-      if (nativeOwner && nativeOwner.taskId !== taskId) {
-        throw new SpaceConflictError(`CLI native task reference is already registered for ${input.runtimeId}.`);
-      }
       if (nativeOwner) {
         this.cliTaskRevisions.set(nativeOwner.revisionId, {
           ...nativeOwner,
@@ -5112,9 +5367,6 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!current) throw new SpaceNotFoundError(`CLI task revision ${revisionId} was not found.`);
     if (input.nativeTaskRef) {
       const owner = this.getCliTaskRevisionByNativeRef(current.runtimeId, input.nativeTaskRef);
-      if (owner && owner.revisionId !== revisionId && owner.taskId !== current.taskId) {
-        throw new SpaceConflictError(`CLI native task reference is already registered for ${current.runtimeId}.`);
-      }
       if (owner && owner.revisionId !== revisionId) {
         this.cliTaskRevisions.set(owner.revisionId, { ...owner, nativeTaskRef: null, updatedAt: nowIso() });
       }
@@ -5708,20 +5960,26 @@ export class InMemorySpaceStore implements SpaceStore {
       (maximum, chunk) => Math.max(maximum, chunk.sequence),
       -1
     ) + 1;
-    return this.appendPaneCliTranscriptChunk(
-      {
-        sessionId: parsed.sessionId,
-        paneId: parsed.paneId,
-        roomId: parsed.roomId,
-        sequence,
-        stream: parsed.stream,
-        content: parsed.content,
-        byteLength: parsed.byteLength,
-        hostGenerationId: parsed.generationId,
-        hostOutputSequence: parsed.outputSequence
-      },
-      traceId
-    );
+    const contents = splitCliHostTranscriptContent(parsed.content);
+    let last!: PaneCliTranscriptChunk;
+    for (const [index, content] of contents.entries()) {
+      const final = index === contents.length - 1;
+      last = this.appendPaneCliTranscriptChunk(
+        {
+          sessionId: parsed.sessionId,
+          paneId: parsed.paneId,
+          roomId: parsed.roomId,
+          sequence: sequence + index,
+          stream: parsed.stream,
+          content,
+          byteLength: new TextEncoder().encode(content).byteLength,
+          hostGenerationId: final ? parsed.generationId : null,
+          hostOutputSequence: final ? parsed.outputSequence : null
+        },
+        traceId
+      );
+    }
+    return last;
   }
 
   getPaneCliHostOutputCursor(sessionId: string, generationId: string): number {
@@ -6605,6 +6863,23 @@ export class InMemorySpaceStore implements SpaceStore {
       );
     const start = (input.page - 1) * input.pageSize;
     return { items: events.slice(start, start + input.pageSize), total: events.length };
+  }
+
+  recordRoomEvent(input: Omit<Event, "id" | "createdAt" | "workflowId"> & { workflowId?: string | null }): Event {
+    const event: Event = {
+      id: makeSpaceId("event"),
+      roomId: input.roomId,
+      paneId: input.paneId,
+      turnId: input.turnId,
+      workflowId: input.workflowId ?? null,
+      traceId: input.traceId,
+      type: input.type,
+      message: input.message,
+      payload: input.payload ?? {},
+      createdAt: nowIso()
+    };
+    this.events.push(event);
+    return event;
   }
 
   listEventChanges(input: ListEventChangesInput): EventChange[] {

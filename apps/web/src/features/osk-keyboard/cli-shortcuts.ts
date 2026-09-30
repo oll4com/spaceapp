@@ -4,23 +4,38 @@ export type OskCliCommand = {
   text: string;
   enter?: boolean;
   action?: "plan" | "build" | "permissions";
+  icon?: string;
 };
 
+export const OSK_ESC_COMMAND: OskCliCommand = { id: "esc", label: "Esc", text: "\u001b" };
+export const OSK_ENTER_COMMAND: OskCliCommand = { id: "enter", label: "Enter", text: "\r" };
+
 export const OSK_CLI_COMMANDS: readonly OskCliCommand[] = [
-  { id: "continue", label: "continue", text: "continue", enter: true },
-  { id: "memory", label: "Save to memory", text: "save to memory", enter: true },
-  { id: "plan", label: "Plan mode", text: "", action: "plan" },
-  { id: "build", label: "Build mode", text: "", action: "build" },
-  { id: "plan_progress", label: "Plan completion percentage", text: "Plan completion percentage", enter: true },
-  { id: "deploy", label: "Deploy", text: "Deploy the project to Gitea and GitHub.", enter: true },
-  { id: "permissions", label: "Permissions", text: "", action: "permissions" },
-  { id: "model", label: "/model", text: "/model", enter: true },
-  { id: "resume", label: "/resume", text: "/resume", enter: true },
-  { id: "usage", label: "/usage", text: "/usage", enter: true },
-  { id: "clear", label: "/clear", text: "/clear", enter: true },
-  { id: "help", label: "/help", text: "/help", enter: true },
-  { id: "status", label: "/status", text: "/status", enter: true }
+  { id: "continue", label: "continue", text: "continue", enter: true, icon: "Play" },
+  { id: "memory", label: "Save to memory", text: "save to memory", enter: true, icon: "Save" },
+  { id: "plan", label: "Plan mode", text: "", action: "plan", icon: "ClipboardList" },
+  { id: "build", label: "Build mode", text: "", action: "build", icon: "Wrench" },
+  { id: "plan_progress", label: "Plan completion percentage", text: "Plan completion percentage", enter: true, icon: "Gauge" },
+  { id: "deploy", label: "Deploy", text: "Deploy the project to Gitea and GitHub.", enter: true, icon: "Rocket" },
+  { id: "permissions", label: "Permissions", text: "", action: "permissions", icon: "Shield" },
+  { id: "model", label: "/model", text: "/model", enter: true, icon: "BrainCircuit" },
+  { id: "resume", label: "/resume", text: "/resume", enter: true, icon: "History" },
+  { id: "usage", label: "/usage", text: "/usage", enter: true, icon: "Activity" },
+  { id: "clear", label: "/clear", text: "/clear", enter: true, icon: "Eraser" },
+  { id: "help", label: "/help", text: "/help", enter: true, icon: "CircleHelp" },
+  { id: "status", label: "/status", text: "/status", enter: true, icon: "Radio" },
+  { id: "test", label: "test", text: "test", enter: true, icon: "Terminal" },
+  {
+    id: "clean_worktree",
+    label: "Clean worktree",
+    text: "Inspect the worktree and workspace: check what changes have already landed in live/production versus unmerged work, safely archive or clean up leftover junk, temporary artifacts, and completed task directories, and keep only folders with active unfinished projects.",
+    enter: true,
+    icon: "Archive"
+  }
 ] as const;
+
+export const CLEAN_WORKTREE_PROMPT = OSK_CLI_COMMANDS.find((c) => c.id === "clean_worktree")!.text;
+
 
 
 export type CliModeShortcut = { text: string; enter: boolean; prefix?: string } | { unavailable: string };

@@ -1,11 +1,24 @@
-import { controlOperationSchema } from "@space/contracts";
+import { readDashboardActivity } from "./agents-dashboard.js";
+import { routeLiveDelegation } from "./live-jev-delegation.js";
+import { registerLiveHistoryRoutes } from "./live-history-routes.js";
+import { InMemoryLiveHistoryRepository, PostgresLiveHistoryRepository } from "@space/db";
+import { buildLiveRoomContext } from "./live-room-context.js";
+import { maintenancePlanRequestSchema, maintenanceApplyRequestSchema } from "@space/contracts";
+import { findCodexWriterThreads } from "./codex-thread-writer.js";
+import { cliRenderAiDescription, createCliRenderAiRepository, cleanupCliRenderAiRepository, createCliRenderAiController } from "./cli-render-ai-proof.js";
+import { warmCapacityProofDescription, cliRenderProofDescription, cliRenderProofRuntimeIds, createCliRenderProofFixture, startCliRenderProofFixture } from "./cli-render-proof-fixture.js";
+import { controlOperationSchema, SPACE_CONTROL_VERSION } from "@space/contracts";
 import { controlTokenHeader, verifyControlToken } from "./space-control-token.js";
-import { PANE_CATALOG_VERSION, paneCountsSchema } from "@space/contracts";
+import { PANE_CATALOG_VERSION, paneCountsSchema, PANE_TYPES, isAgentRuntimeReady } from "@space/contracts";
 import { controlSkills, controlResourceRoutes, controlPublishInput } from "./space-control-resources.js";
+import { captureControlSettingsSnapshot } from "./space-control-settings.js";
 import { parseSpaceControlQuick } from "./space-control-quick.js";
-import { createSpaceControl } from "./space-control.js";
+import { createSpaceControl, supportsControlRuntime } from "./space-control.js";
 import { registerSpaceControlRoutes } from "./space-control-routes.js";
+import { pluginsService } from "./plugins-service.js";
 import { InMemoryControlRepository, PostgresControlRepository } from "@space/db";
+import { InMemoryLiveMemoryRepository, PostgresLiveMemoryRepository } from "@space/db";
+import { createLivePersonalMemory } from "./live-personal-memory.js";
 import { createRoomMiniRouter } from "./room-mini-router.js";
 import { createRoomRoutedActions } from "./room-routed-actions.js";
 import { roomCommandSchema } from "@space/contracts";
@@ -14,11 +27,12 @@ import { NativeTaskTitles } from "./task-title-native.js";
 import { taskTitleSettingsSchema } from "@space/contracts";
 import { InMemoryTaskTitleRepository, PostgresTaskTitleRepository } from "@space/db";
 import { TaskTitleProviders } from "./task-title-providers.js";
-import { TaskTitleService } from "./task-title-service.js";
+import { TaskTitleService, taskTitleFailureCode } from "./task-title-service.js";
 import { createRoomQuickActions } from "./room-quick-actions.js";
 import { SystemHealthMonitor } from "./system-health-service.js";
+import { SystemTopologyService } from "./system-topology-service.js";
 import { InMemorySystemHealthRepository, PostgresSystemHealthRepository } from "@space/db";
-import { systemHealthSnapshotSchema, systemHealthHistorySchema, systemHealthRangeSchema } from "@space/contracts";
+import { systemHealthSnapshotSchema, systemHealthHistorySchema, systemHealthRangeSchema, systemTopologySnapshotSchema } from "@space/contracts";
 import { seedYouTubeSignIn } from "./youtube-shared-signin.js";
 import { YouTubeAccountStore, selectYouTubeAccountSchema, youtubeAccountProfileKey, youtubeAccountSignInUrl, googleAccountSignInUrl } from "./youtube-accounts.js";
 import type { PaneBrowserSessionResponse } from "@space/contracts";
@@ -34,12 +48,14 @@ import helmet from "@fastify/helmet";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
+import { WebSocket as WsClient } from "ws";
+import { VoiceProxyTickets, relayVoiceSockets, voiceProxyLimits } from "./voice-ws-proxy.js";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { execFile, spawn } from "node:child_process";
-import { createNativeCliModelCatalog, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning } from "./cli-native-model-picker.js";
-import { createHash, timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { chmod, mkdir, readFile, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
+import { createNativeCliModelCatalog, nativeCliCatalogBufferBytes, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning } from "./cli-native-model-picker.js";
+import { createHash, timingSafeEqual, randomBytes } from "node:crypto";
+import { createReadStream, existsSync } from "node:fs";
+import { appendFile, chmod, mkdir, readFile, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -135,6 +151,7 @@ import {
   clearSharedChatResponseSchema,
 
   setClipboardItemCompletedRequestSchema,
+  updatePlanProgressRequestSchema,
   taskItemListResponseSchema,
   codexEnvironmentSchema,
   codexLbSpeedDefaultUpdateRequestSchema,
@@ -150,6 +167,9 @@ import {
   codexResetCreditAvailabilitySchema,
   codexResetCreditRedemptionInputSchema,
   codexResetCreditRedemptionResponseSchema,
+  antigravityUsageAccountListSchema,
+  apiProviderAccountListSchema,
+  type ApiProviderAccountList,
   codexUsageAccountListSchema,
   codexHistoryResponseSchema,
   codexHistoryItemSchema,
@@ -211,6 +231,7 @@ import {
   cliUpdateAllRequestSchema,
   cliTerminalClientEventInputSchema,
   cliTerminalClientEventResponseSchema,
+  cliModelIdentifierSchema,
   idSchema,
   imageArtifactMaxBytes,
   imageArtifactMimeTypeSchema,
@@ -224,6 +245,7 @@ import {
   importCandidateDecisionInputSchema,
   importCandidateDecisionResultSchema,
   hostMemoryDetailsSchema,
+  opencodeBenchResponseSchema,
   systemAnalyticsCliSessionsResponseSchema,
   systemAnalyticsModelsResponseSchema,
   systemAnalyticsOverviewResponseSchema,
@@ -242,6 +264,9 @@ updateStreamingOverlaySettingsInputSchema,
   streamingBotStatusSchema,
   streamingBotActivitySchema,
   streamingBotTestInputSchema,
+  createStreamingBotMemoryInputSchema,
+  updateStreamingBotMemoryInputSchema,
+  streamingBotReviewedMemorySchema,
   streamingBotMcpExecuteInputSchema,
   toolbarModelStatsSchema,
   launchReadinessSchema,
@@ -272,6 +297,7 @@ updateStreamingOverlaySettingsInputSchema,
   releaseSwarmLockInputSchema,
   reasoningEffortSchema,
   roomAgentMessageInputSchema,
+  roomAgentStartMissionInputSchema,
   roomAgentControlInputSchema,
   roomAgentStopInputSchema,
   roomCliActivityResponseSchema,
@@ -310,6 +336,7 @@ updateStreamingOverlaySettingsInputSchema,
   type CodexEnvironment,
   type CodexLbSpeedDefaultsResponse,
   type CodexLbSpeedTier,
+  type AntigravityUsageAccountList,
   type CodexUsageAccountList,
   type CodexHistoryItem,
   type Event,
@@ -343,8 +370,12 @@ updateStreamingOverlaySettingsInputSchema,
   deleteRoomMediaResponseSchema,
   updateProviderInputSchema,
   updateProviderSettingsInputSchema,
+  updateUserSettingsInputSchema,
+  userSettingsSchema,
   voiceTranscriptionMaxBytes,
   voiceRealtimeSessionRequestSchema,
+  voiceRealtimeDelegateRequestSchema,
+  voiceRealtimeDelegateResponseSchema,
   voiceTranscriptionSettingsSchema,
   openAiModelsResponseSchema,
   spaceCapabilitySnapshotSchema,
@@ -380,7 +411,15 @@ updateStreamingOverlaySettingsInputSchema,
   sourceControlProviderSchema,
   turnArtifactMaxCount,
   updateSourceControlConnectionInputSchema,
-  userUploadArtifactSourceSchema
+  userUploadArtifactSourceSchema,
+  inferProviderFromModel,
+  eventSchema,
+  type LiveAudioProviderId,
+  type VoiceRealtimeHistoryItem,
+  adminUserListResponseSchema,
+  updateUserRoleInputSchema,
+  type AuthUser,
+  type Room
 } from "@space/contracts";
 import {
   InMemoryActivityLogRepository,
@@ -393,7 +432,9 @@ import {
   PostgresSystemAnalyticsRepository,
   PostgresStreamingRepository,
   PostgresStreamingBotRepository,
-  PostgresSpaceStore
+  PostgresSpaceStore,
+  InMemoryDemoProjectsRepository,
+  PostgresDemoProjectsRepository
 } from "@space/db";
 import {
   InMemorySpaceStore,
@@ -429,6 +470,9 @@ import {
   verifyCsrfToken,
   verifyAgentPostToken,
   verifySession,
+  buildGoogleAuthUrl,
+  exchangeGoogleCode,
+  verifyGoogleIdToken,
   type AuthConfig
 } from "./auth.js";
 import {
@@ -438,6 +482,11 @@ import {
 import { ActivityLogService } from "./activity-log.js";
 import { registerBenchmarkRoutes } from "./benchmark-routes.js";
 import { registerAsteroidsDirectorRoutes } from "./asteroids-director.js";
+import { registerPluginRoutes } from "./plugins-routes.js";
+import { registerFilesRoutes } from "./files-routes.js";
+import { registerDemoProjectsRoutes } from "./demo-projects/routes.js";
+import { DemoProjectsService } from "./demo-projects/service.js";
+import { DemoCredentialStore } from "./demo-projects/credentials.js";
 import { isHarnessRootHttpPath, registerHarnessRoutes, readHarnessTaskTitle, renameHarnessTaskTitle } from "./harness-proxy.js";
 import { createActiveAgentCountProvider } from "./active-agent-count.js";
 import { buildCliAgentBootstrapMarkdown } from "./agent-bootstrap.js";
@@ -488,6 +537,7 @@ import {
   isClaudeDirectParityRuntime,
   isDirectOperatorParityRuntime,
   isCodexDirectParityRuntime,
+  isDeepSeekDirectParityRuntime,
   isGrokDirectParityRuntime,
   isKimiDirectParityRuntime,
   isLegacyCodexCliCwd,
@@ -533,6 +583,17 @@ import {
   readOpenCodeNativeSessionIdFromProcessTree
 } from "./opencode-native-session.js";
 import {
+  clearGeminiPaneConversation,
+  geminiNativeConversationIdPattern,
+  normalizeGeminiPaneId,
+  readGeminiNativeConversationIdFromProcessTree,
+  readGeminiPaneConversation,
+  writeGeminiPaneConversation
+} from "./gemini-native-session.js";
+import { resolveReasonixNativeSessionRef } from "./reasonix-native-session.js";
+import { verifyGeminiPaneSession } from "./gemini-session-verification.js";
+import { loadGeminiNativeTurns } from "./gemini-native-turns.js";
+import {
   abortOpenCodeSession,
   fetchOpenCodeCurrentModel,
   fetchOpenCodeSessionIsTurnActive,
@@ -568,6 +629,7 @@ import {
   CliTerminalManager,
   codexPrivateAppServerSocketPath,
   findAvailableCodexThreadId,
+  findSafeCodexThreadId,
   findSafeCodexThreadResumeSettings,
   resolveCodexCliLaunchSettings,
   resolveCodexThreadRuntimeSettings,
@@ -601,7 +663,11 @@ import {
   type AgentToolsOptions
 } from "./agent-tools.js";
 import { getApiConfig, type SpaceApiConfig } from "./config.js";
-import { cliChatRuntimeName, cliRuntimeModelsChatProviderAdapter } from "./chat-providers.js";
+import {
+  cliChatProviderEnabledByRuntimeToggle,
+  cliChatRuntimeName,
+  cliRuntimeModelsChatProviderAdapter
+} from "./chat-providers.js";
 import { createOpenCodeSession, openCodeSessionExists, opencodeDirectParityRoot } from "@space/opencode-control";
 import type { OwnerSetupBootstrap } from "./owner-setup.js";
 import {
@@ -615,6 +681,7 @@ import {
 import { createHostStatsProvider, type HostStatsProvider } from "./host-stats.js";
 import {
   createSystemServicesProvider,
+  resetFailedSystemUnits,
   runSystemServicesCollector,
   type SystemServicesRunner
 } from "./service-services.js";
@@ -628,6 +695,8 @@ import {
   type InvalidatableProvider,
   type KernelCacheReclaimResult
 } from "./toolbar-system-services.js";
+import { createAntigravityUsageAccountProvider, discoverAntigravityProfiles } from "./antigravity-usage-services.js";
+import { createApiProviderAccountProvider } from "./api-provider-balance-services.js";
 import {
   createToolbarModelStatsCollector,
   type ToolbarModelStatsCollector
@@ -636,7 +705,9 @@ import {
   SystemAnalyticsService,
   type SystemAnalyticsLiveSession
 } from "./system-analytics-service.js";
+import { OpencodeModelBenchService } from "./opencode-model-bench.js";
 import { StreamingCredentialStore } from "./streaming-credential-store.js";
+import { PUBLIC_SPACEAPP_KNOWLEDGE, asksForOperatorPrivateData, containsSensitiveDisclosure, formatStreamingBotLiveMetrics } from "@space/streaming";
 import {
   StreamingService,
   StreamingServiceError,
@@ -708,7 +779,8 @@ import {
   formatReplayEvents,
   formatSseMessage,
   loadEventStreamReplay,
-  startSseHeartbeat
+  startSseHeartbeat,
+  trackSeenEventId
 } from "./sse.js";
 import { TurnStarterDisabledError, createCodexAppServerTurnStarter, createTurnStarter, type TurnStarter } from "./turns.js";
 import {
@@ -716,14 +788,18 @@ import {
   createLocalVoiceSession,
   getLocalVoiceProviderStatus,
   createVoiceAttachmentResponse,
+  createVoiceDelegateResponse,
   voiceTranscriptionDelayOptions,
   voiceTranscriptionLanguageOptions,
   voiceTranscriptionModelOptions,
   voiceModelVoiceOptions,
   normalizeVoiceTranscriptionModel,
-  fetchOpenAiModels
+  fetchOpenAiModels,
+  getLiveAudioProvidersStatus
 } from "./voice-transcription.js";
 import { createWorkerReadinessChecker, type WorkerReadinessChecker } from "./worker-readiness.js";
+import { createDecisionsService, type DecisionsService } from "./decisions-service.js";
+import { isVoiceDailyBudgetExceeded, summarizeVoiceDelegationCosts } from "./live-cost-accounting.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -731,7 +807,9 @@ declare module "fastify" {
     user: {
       id: string;
       email: string;
-      role: "OPERATOR" | "ADMIN";
+      role: "OPERATOR" | "ADMIN" | "USER";
+      googleId?: string | null;
+      avatarUrl?: string | null;
       proofScope?: "READ_ONLY";
       automationScope?: "APP_DIAGNOSTICS";
     } | null;
@@ -746,6 +824,7 @@ export type SpaceCapabilityInventoryCollector = (context: {
 export type GeminiMemorySearcher = (query: ListMemoryQuery) => Promise<MemoryEntry[]> | MemoryEntry[];
 
 export interface CreateAppOptions {
+  decisionsService?: DecisionsService;
   store?: SpaceStore;
   agentFileDocxNormalizer?: AgentFileDocxNormalizer;
   appDiagnosticsService?: AppDiagnosticsService;
@@ -801,10 +880,15 @@ export interface CreateAppOptions {
   findCodexCliTurnActivity?: CodexCliTurnActivityFinder;
   findCurrentCodexCliTurnActivity?: CodexCliCurrentTurnActivityFinder;
   findCodexThreadId?: CodexThreadFinder;
+  findCodexModelControlThreads?: typeof findCodexWriterThreads;
   findCodexThreadResumeSettings?: CodexThreadResumeSettingsFinder;
   codexSessionSocketProbe?: (socketPath: string) => Promise<boolean>;
   codexSocketControlFactory?: (socketPath: string) => CodexAppServerSocketControlService;
   hostStatsProvider?: HostStatsProvider;
+  requirementsCacheTtlMs?: number;
+  cancelWorkflow?: (workflowId: string) => Promise<void>;
+  antigravityUsageProvider?: () => Promise<AntigravityUsageAccountList>;
+  apiProviderAccountsProvider?: () => Promise<ApiProviderAccountList>;
   toolbarUsageProvider?: () => Promise<CodexUsageAccountList>;
   codexResetCreditsService?: CodexResetCreditsService;
   toolbarCliSessionStatsProvider?: InvalidatableProvider<CliSessionStats> | (() => Promise<CliSessionStats>);
@@ -812,7 +896,9 @@ export interface CreateAppOptions {
   toolbarHostMemoryProvider?: InvalidatableProvider<HostMemoryDetails> | (() => Promise<HostMemoryDetails>);
   toolbarModelStatsCollector?: ToolbarModelStatsCollector;
   systemAnalyticsService?: SystemAnalyticsService;
+  opencodeModelBenchService?: OpencodeModelBenchService | null;
   healthMonitor?: SystemHealthMonitor;
+  systemTopologyService?: SystemTopologyService;
   streamingService?: StreamingService;
   streamingBotService?: StreamingBotService;
   toolbarCliSessionReaper?: () => Promise<CliHostReapAggregate>;
@@ -837,6 +923,10 @@ export interface CreateAppOptions {
   }) => Promise<{ paneId: string }>;
   removeGeminiAccountProfileState?: (profileId: string) => Promise<void>;
   readGeminiAccountProfileDetails?: (profileId: string) => Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null }>;
+  removeCopilotAccountProfileState?: (profileId: string) => Promise<void>;
+  readCopilotAccountProfileDetails?: (profileId: string) => Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null }>;
+  removeCursorAccountProfileState?: (profileId: string) => Promise<void>;
+  readCursorAccountProfileDetails?: (profileId: string) => Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null }>;
   releasePublishingManager?: ReleasePublishingManager;
   auth?: AuthConfig;
   config?: SpaceApiConfig;
@@ -854,9 +944,30 @@ const publicPaths = new Set([
   "/version",
   "/api/auth/login",
   "/api/auth/me",
+  "/api/auth/google/start",
+  "/api/auth/google/callback",
+  "/api/auth/google/credential",
+  "/api/auth/desktop-handoff",
+  "/api/auth/logout",
+  "/logout",
   "/api/setup/status",
   "/api/setup/claim",
-  "/api/public/waitlist"
+  "/api/public/waitlist",
+  "/api/demo-projects/preview/:runId/:token",
+  "/api/demo-projects/preview/:runId/:token/*",
+  // Demo connector routes: authenticated via x-demo-run-token header inside the route handler
+  "/api/demo-projects/runs/:runId/connector/status",
+  "/api/demo-projects/runs/:runId/connector/accounts",
+  "/api/demo-projects/runs/:runId/connector/accounts/:accountId",
+  "/api/demo-projects/runs/:runId/connector/operations",
+  "/api/demo-projects/runs/:runId/connector/operations/:id/retry",
+  // Desktop client release and auto-update routes
+  "/api/desktop/latest",
+  "/api/desktop/update.ps1",
+  "/api/desktop/update.bat",
+  "/api/desktop/update.sh",
+  "/api/desktop/install.sh",
+  "/api/desktop/download/:filename"
 ]);
 const internalApiPrefix = "/api/internal/";
 const internalTokenHeader = "x-space-internal-token";
@@ -937,6 +1048,11 @@ function requestIpForLog(request: FastifyRequest): string | undefined {
   }
 }
 
+function isLoopbackRequest(request: FastifyRequest): boolean {
+  const ip = requestIpForLog(request);
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+}
+
 const idParamSchema = z.object({ id: idSchema });
 const proofRoomPaneParamSchema = z
   .object({
@@ -982,12 +1098,10 @@ const cliHttpControlAuthoritySchema = z.object({
 const cliModelReasoningEffortSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
 const updateCliModelSettingsBodySchema = z.object({
   expectedSessionId: idSchema,
-  modelId: z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:\/-]*$/),
+  modelId: cliModelIdentifierSchema,
   reasoningEffort: cliModelReasoningEffortSchema,
-  continueActiveTurn: z.boolean().default(true)
+  continueActiveTurn: z.boolean().default(false)
 });
-const cliModelSwitchContinuationPrompt =
-  "Continue exactly from the interrupted turn. Preserve the original task and constraints, do not repeat completed work, and verify unfinished work.";
 const codexThreadSettingsConfirmationAttempts = 12;
 const codexThreadSettingsConfirmationIntervalMs = 250;
 
@@ -995,6 +1109,13 @@ type CodexRuntimeModelSettings = {
   modelId: string;
   reasoningEffort: string | null;
 };
+
+const cliAccountProfileRuntimeIds = ["cli:gemini", "cli:copilot", "cli:cursor"] as const;
+type CliAccountProfileRuntimeId = typeof cliAccountProfileRuntimeIds[number];
+
+function isCliAccountProfileRuntimeId(runtimeId: string): runtimeId is CliAccountProfileRuntimeId {
+  return cliAccountProfileRuntimeIds.includes(runtimeId as CliAccountProfileRuntimeId);
+}
 
 type CodexRuntimeModelSettingsConfirmationDetails = {
   stage: "THREAD_CONFIRMATION";
@@ -1391,7 +1512,11 @@ function streamingOAuthPopupHtml(provider: z.infer<typeof streamingOAuthProvider
   const payload = JSON.stringify({ type: "space.streaming.oauth", provider, ok }).replaceAll("<", "\\u003c");
   const heading = ok ? "Connection complete" : "Connection failed";
   const detail = ok ? "You can close this window and return to Space." : "Return to Space for safe provider details.";
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${heading}</title></head><body><main><h1>${heading}</h1><p>${detail}</p></main><script>window.opener?.postMessage(${payload}, window.location.origin);window.close();</script></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${heading}</title></head><body><main><h1>${heading}</h1><p>${detail}</p></main><script>
+try { localStorage.setItem("space.streaming.oauth", JSON.stringify({ type: "space.streaming.oauth", provider: ${JSON.stringify(provider)}, ok: ${ok}, at: Date.now() })); } catch (e) {}
+try { window.opener?.postMessage(${payload}, window.location.origin); } catch (e) {}
+window.close();
+</script></body></html>`;
 }
 
 function isAllowedImageMime(mimeType: string): mimeType is ImageArtifactMimeType {
@@ -1399,18 +1524,42 @@ function isAllowedImageMime(mimeType: string): mimeType is ImageArtifactMimeType
 }
 
 function buildVoiceTranscriptionSettings(config: SpaceApiConfig) {
-  const enabled = config.voiceTranscriptionEnabled && Boolean(config.voiceTranscriptionKeyFile);
+  const googleConfigured = Boolean(config.googleVoiceKeyFile || config.googleVoiceApiKey);
+  const openaiConfigured = Boolean(config.voiceTranscriptionKeyFile);
+  const localConfigured = Boolean(config.localVoiceProviderToken);
+  const vercelConfigured = Boolean(config.vercelVoiceKeyFile || config.vercelVoiceApiKey);
+  const enabled = config.voiceTranscriptionEnabled && (googleConfigured || openaiConfigured || localConfigured || vercelConfigured);
+
+  const providerOptions: LiveAudioProviderId[] = [];
+  if (googleConfigured) providerOptions.push("google");
+  if (openaiConfigured) providerOptions.push("openai");
+  if (localConfigured) providerOptions.push("local");
+  if (vercelConfigured) providerOptions.push("vercel");
+
+  const defaultProvider: LiveAudioProviderId = googleConfigured ? "google" : openaiConfigured ? "openai" : localConfigured ? "local" : "google";
+
+  const configuredNames = providerOptions.map(p => p === "google" ? "Google Gemini Live" : p === "openai" ? "OpenAI Realtime" : p === "local" ? "Local PC (Qwen3 Greek)" : "Vercel AI Gateway");
   const statusReason = !config.voiceTranscriptionEnabled
     ? "Voice transcription is disabled by SPACE_VOICE_TRANSCRIPTION_ENABLED."
-    : config.voiceTranscriptionKeyFile
-      ? "OpenAI Realtime transcription is configured."
-      : "SPACE_VOICE_TRANSCRIPTION_KEY_FILE is not configured.";
+    : enabled
+      ? `${configuredNames.join(", ")} configured.`
+      : "No voice transcription provider credentials configured on Space.";
+
+  const defaultModel = defaultProvider === "google"
+    ? "gemini-3.8-live"
+    : (config.voiceTranscriptionModel || "gpt-live-1");
+  const defaultVoice = defaultProvider === "google"
+    ? "Aoede"
+    : config.voiceTranscriptionVoice;
+
   return voiceTranscriptionSettingsSchema.parse({
     enabled,
     statusReason,
-    defaultModel: config.voiceTranscriptionModel,
+    defaultProvider,
+    providerOptions,
+    defaultModel,
     modelOptions: voiceTranscriptionModelOptions,
-    defaultVoice: config.voiceTranscriptionVoice,
+    defaultVoice,
     voiceOptions: voiceModelVoiceOptions,
     defaultLanguage: "auto",
     languageOptions: voiceTranscriptionLanguageOptions,
@@ -1823,7 +1972,7 @@ async function writeCliWorkspaceBootstrap(
 function shouldUseManagedCliWorkspace(cwd: string | null | undefined, workspaceRoot: string): boolean {
   if (!cwd) return true;
   const resolved = resolve(cwd);
-  return resolved === "/opt/spaceapp" || pathInside(workspaceRoot, resolved);
+  return resolved === "/opt/spaceapp" || resolved === resolve(workspaceRoot);
 }
 
 function isLegacyCliWorkspace(cwd: string | null | undefined, workspaceRoot: string, runtimeId: string): boolean {
@@ -2772,12 +2921,11 @@ function projectMemoryGraphEntries(snapshot: MemoryGraphSnapshot, query: ListMem
   return entries.sort((left, right) => direction * (left[sortBy].localeCompare(right[sortBy]) || left.id.localeCompare(right.id)));
 }
 
-async function searchDefaultGeminiMemory(query: ListMemoryQuery): Promise<MemoryEntry[]> {
+async function searchDefaultGeminiMemory(query: ListMemoryQuery, decisionsService?: DecisionsService): Promise<MemoryEntry[]> {
   if (!query.q) return [];
   const paths = [geminiMemoryIndexPath, currentGeminiMonthlyPath()];
-  const entries: MemoryEntry[] = [];
+  const candidates: Array<{ id: string; text: string; path: string; line: string }> = [];
   for (const path of paths) {
-    if (entries.length >= 5) break;
     let text: string;
     try {
       text = await readFile(path, "utf8");
@@ -2788,17 +2936,40 @@ async function searchDefaultGeminiMemory(query: ListMemoryQuery): Promise<Memory
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
-    const matchedLine = lines.find((line) => memoryReferenceMatchesQuery(line, query.q ?? ""));
-    if (!matchedLine) continue;
-    const hash = createHash("sha256").update(`${path}\n${query.q}\n${matchedLine}`).digest("hex").slice(0, 24);
+    const matchingLines = lines.filter((line) => memoryReferenceMatchesQuery(line, query.q ?? ""));
+    for (const matchedLine of matchingLines.slice(0, 8)) {
+      const hash = createHash("sha256").update(`${path}\n${query.q}\n${matchedLine}`).digest("hex").slice(0, 24);
+      candidates.push({
+        id: `gemini_memory:${hash}`,
+        text: matchedLine,
+        path,
+        line: matchedLine
+      });
+    }
+  }
+  if (!candidates.length) return [];
+
+  let selected = candidates;
+  if (decisionsService && candidates.length > 2) {
+    try {
+      const rankedResult = await decisionsService.rankMemoryRelevance(query.q, candidates);
+      const topIds = new Set(rankedResult.ranked.slice(0, 5).map((r) => r.id));
+      selected = candidates.filter((c) => topIds.has(c.id));
+    } catch {
+      // fallback
+    }
+  }
+
+  const entries: MemoryEntry[] = [];
+  for (const item of selected.slice(0, 5)) {
     entries.push(
       memoryEntrySchema.parse({
-        id: `gemini_memory:${hash}`,
+        id: item.id,
         scope: "SYSTEM",
         roomId: null,
-        title: redactMemoryText(`Gemini memory reference: ${basename(path, ".md")}`).slice(0, 160),
-        body: redactMemoryText(matchedLine).slice(0, 1000),
-        provenance: path,
+        title: redactMemoryText(`Gemini memory reference: ${basename(item.path, ".md")}`).slice(0, 160),
+        body: redactMemoryText(item.line).slice(0, 1000),
+        provenance: item.path,
         createdAt: nowIso()
       })
     );
@@ -3283,11 +3454,59 @@ function requiresCsrf(request: FastifyRequest): boolean {
     return false;
   }
   const routeUrl = request.routeOptions.url ?? request.url.split("?")[0];
-  return request.url.startsWith("/api/") && routeUrl !== "/api/auth/login";
+  return (
+    request.url.startsWith("/api/") &&
+    routeUrl !== "/api/auth/login" &&
+    routeUrl !== "/api/auth/google/credential" &&
+    routeUrl !== "/api/auth/google/configure" &&
+    routeUrl !== "/api/voice/realtime/history/search" &&
+    routeUrl !== "/api/voice/realtime/logs" &&
+    routeUrl !== "/api/voice/client-error" &&
+    !request.url.startsWith("/api/asteroids/benchmark/")
+  );
 }
 
 function operatorBrowserActor(request: FastifyRequest): BrowserHostActorContext {
   return { holderType: "OPERATOR", holderId: request.user?.id ?? "operator:unknown" };
+}
+
+function resolveDemoPublicOrigin(request: { headers: Record<string, unknown> }, config: SpaceApiConfig): string {
+  if (config.demoProjectsPublicOrigin) return config.demoProjectsPublicOrigin;
+  const forwardedProto = request.headers["x-forwarded-proto"];
+  const forwardedHost = request.headers["x-forwarded-host"];
+  const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"];
+  const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? "https";
+  if (typeof host === "string" && host.length > 0) return `${String(proto).split(",")[0]!.trim()}://${host.split(",")[0]!.trim()}`;
+  return `http://127.0.0.1:${config.port}`;
+}
+
+function createDemoProjectsService(input: {
+  config: SpaceApiConfig;
+  log?: (event: string, detail?: Record<string, unknown>) => void;
+}): DemoProjectsService {
+  const { config } = input;
+  const repository =
+    config.runtimeStore === "postgres" && config.databaseUrl
+      ? PostgresDemoProjectsRepository.fromConnectionString(config.databaseUrl, {
+          max: Math.min(config.databasePoolMax, 4),
+          idleTimeoutMillis: config.databasePoolIdleTimeoutMs,
+          connectionTimeoutMillis: config.databasePoolConnectionTimeoutMs
+        })
+      : new InMemoryDemoProjectsRepository();
+  const portStart = Math.min(config.demoProjectsPortStart, 65_500);
+  const portEnd = Math.max(portStart + 1, Math.min(config.demoProjectsPortEnd, 65_535));
+  return new DemoProjectsService({
+    repository,
+    demoRoot: config.demoProjectsRoot,
+    varRoot: config.demoProjectsVarRoot,
+    apiPort: config.port,
+    publicOrigin: config.demoProjectsPublicOrigin,
+    portRangeStart: portStart,
+    portRangeEnd: portEnd,
+    healthTimeoutMs: config.demoProjectsHealthTimeoutMs,
+    credentialStore: new DemoCredentialStore(`${config.demoProjectsVarRoot.replace(/\/+$/, "")}/secrets`),
+    log: input.log
+  });
 }
 
 function createDefaultStore(config: SpaceApiConfig): SpaceStore {
@@ -3478,6 +3697,7 @@ function sharedChatBroadcastClear(): void {
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
   const apiStartedAt = new Date().toISOString();
   const config = options.config ?? getApiConfig(process.env);
+  const decisionsService = options.decisionsService ?? createDecisionsService();
   const removeGeminiAccountProfileState = options.removeGeminiAccountProfileState ?? (async (profileId: string) => {
     const commandRoot = config.cliCommandPath ?? "/opt/spaceapp/bin";
     await execFileAsync(join(commandRoot, "gemini-vscode-parity"), ["remove-profile", profileId], {
@@ -3496,7 +3716,44 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       email: z.string().email().nullable()
     }).strict().parse(JSON.parse(stdout));
   });
-  const deletingGeminiAccountProfileIds = new Set<string>();
+  const removeCopilotAccountProfileState = options.removeCopilotAccountProfileState ?? (async (profileId: string) => {
+    const commandRoot = config.cliCommandPath ?? "/opt/spaceapp/bin";
+    await execFileAsync(join(commandRoot, "copilot-vscode-parity"), ["remove-profile", profileId], {
+      timeout: 15_000,
+      maxBuffer: 64 * 1024
+    });
+  });
+  const readCopilotAccountProfileDetails = options.readCopilotAccountProfileDetails ?? (async (profileId: string) => {
+    const commandRoot = config.cliCommandPath ?? "/opt/spaceapp/bin";
+    const { stdout } = await execFileAsync(join(commandRoot, "copilot-vscode-parity"), ["profile-info", profileId], {
+      timeout: 12_000,
+      maxBuffer: 16 * 1024
+    });
+    return z.object({
+      authStatus: z.enum(["CONNECTED", "NOT_CONNECTED", "UNAVAILABLE"]),
+      email: z.string().email().nullable()
+    }).strict().parse(JSON.parse(stdout));
+  });
+  const removeCursorAccountProfileState = options.removeCursorAccountProfileState ?? (async (profileId: string) => {
+    const commandRoot = config.cliCommandPath ?? "/opt/spaceapp/bin";
+    await execFileAsync(join(commandRoot, "cursor-vscode-parity"), ["remove-profile", profileId], {
+      timeout: 15_000,
+      maxBuffer: 64 * 1024
+    });
+  });
+  const readCursorAccountProfileDetails = options.readCursorAccountProfileDetails ?? (async (profileId: string) => {
+    const commandRoot = config.cliCommandPath ?? "/opt/spaceapp/bin";
+    const { stdout } = await execFileAsync(join(commandRoot, "cursor-vscode-parity"), ["profile-info", profileId], {
+      timeout: 12_000,
+      maxBuffer: 16 * 1024
+    });
+    return z.object({
+      authStatus: z.enum(["CONNECTED", "NOT_CONNECTED", "UNAVAILABLE"]),
+      email: z.string().email().nullable()
+    }).strict().parse(JSON.parse(stdout));
+  });
+  const deletingCliAccountProfileKeys = new Set<string>();
+  const cliAccountProfileKey = (runtimeId: string, profileId: string) => `${runtimeId}/${profileId}`;
   const appVersionReader = createAppVersionReader({
     appVersionEnv: process.env.SPACE_APP_VERSION
   });
@@ -3661,7 +3918,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }, 60_000);
       child.stdout.on("data", (chunk) => {
         stdout += chunk;
-        if (stdout.length > 512_000) child.kill("SIGTERM");
+        // A CLI advertises its whole catalog here (Reasonix returns 300+ rows);
+        // the bound only guards against an unbounded stream, not against size.
+        if (stdout.length > nativeCliCatalogBufferBytes) child.kill("SIGTERM");
       });
       child.stderr.on("data", (chunk) => {
         stderr += chunk;
@@ -3729,13 +3988,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       openCodeControlResolver: async () => resolveChatOpenCodeCatalogControl(),
       openCodeSessionControlResolver: async (spaceAgentSessionId) =>
         resolveChatPaneOpenCodeControl(spaceAgentSessionId),
-      isChatProviderEnabled: async (providerId) => {
-        if (providerId === "opencode") return cliRuntimeVisibility.isEnabled("cli:opencode");
-        if (providerId === "codex") return cliRuntimeVisibility.isEnabled("cli:codex");
-        // CLI chat providers perform their own live runtime/credential check.
-        // They must not inherit Codex's global visibility switch.
-        return true;
-      },
+      // Every Chat provider follows its OWN CLI runtime toggle: a CLI disabled in
+      // Settings is never offered in Chat panes, and re-enabling it restores the
+      // provider on the next session read. CLI providers still perform their own
+      // live runtime/credential check on top of that (they must not inherit
+      // Codex's global visibility switch).
+      isChatProviderEnabled: cliChatProviderEnabledByRuntimeToggle(
+        (runtimeId) => cliRuntimeVisibility.isEnabled(runtimeId)
+      ),
       readGoal: async (threadId) => {
         const goal = (await codexGoals.list()).find((candidate) => candidate.threadId === threadId);
         return goal
@@ -3751,7 +4011,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
               updatedAt: goal.updatedAt
             })
           : null;
-      }
+      },
+      requirementsCacheTtlMs: options.requirementsCacheTtlMs,
+      cancelWorkflow: options.cancelWorkflow,
+      decisionsService
     });
   const roomAgentWorkflow =
     options.roomAgentWorkflow ??
@@ -3773,7 +4036,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const workerReadinessChecker = options.workerReadinessChecker ?? createWorkerReadinessChecker(config);
   const storageReadinessChecker = options.storageReadinessChecker ?? collectStorageReadiness;
   const spaceCapabilityInventoryCollector = options.spaceCapabilityInventoryCollector ?? collectDefaultSpaceCapabilityInventory;
-  const geminiMemorySearcher = options.geminiMemorySearcher ?? searchDefaultGeminiMemory;
+  const geminiMemorySearcher = options.geminiMemorySearcher ?? ((q) => searchDefaultGeminiMemory(q, decisionsService));
   const canonicalMemory =
     options.canonicalMemory ??
     createCanonicalGeminiMemoryBridge({
@@ -3832,9 +4095,27 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
 
   const unifiedCliTaskRegistry = new UnifiedCliTaskRegistry(store, {
-    resolveNativeTaskRef: async (session) => session.runtimeId === "cli:opencode"
-      ? readOpenCodeNativeSessionId(session.sessionId, options.opencodeStateRoot)
-      : null
+    resolveNativeTaskRef: async (session) => {
+      if (session.runtimeId === "cli:codex") {
+        return (options.findCodexThreadId ?? findSafeCodexThreadId)({
+          paneId: session.paneId, sessionId: session.sessionId, cwd: session.cwd
+        });
+      }
+      if (session.runtimeId === "cli:opencode") {
+        return readOpenCodeNativeSessionId(session.sessionId, options.opencodeStateRoot);
+      }
+      if (session.runtimeId === "cli:gemini") {
+        if (session.codexThreadId && geminiNativeConversationIdPattern.test(session.codexThreadId)) {
+          return session.codexThreadId;
+        }
+        const fromFile = await readGeminiPaneConversation(session.paneId);
+        if (fromFile) return fromFile;
+        const pids = await cliTerminalManager.activeSessionPids([session]);
+        const rootPid = pids.get(session.sessionId) ?? null;
+        return rootPid ? readGeminiNativeConversationIdFromProcessTree(rootPid) : null;
+      }
+      return null;
+    }
   });
   const agentSessionHistoryService = new AgentSessionHistoryService({ codexParity, unifiedCliTaskRegistry });
   let cliRuntimeRegistryCache!: ReturnType<typeof createAgentRuntimeRegistryCache>;
@@ -4121,6 +4402,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
       ]
     });
+  const antigravityUsageProvider =
+    options.antigravityUsageProvider ??
+    createAntigravityUsageAccountProvider({
+      profileLabels: async () => {
+        try {
+          const list = await Promise.resolve(store.listCliAccountProfiles("cli:gemini"));
+          return new Map(list.map((p: { profileId: string; displayName: string }) => [p.profileId, p.displayName]));
+        } catch {
+          return new Map();
+        }
+      }
+    });
+  const apiProviderAccountsProvider =
+    options.apiProviderAccountsProvider ??
+    createApiProviderAccountProvider();
   const toolbarUsageProvider =
     options.toolbarUsageProvider ??
     createCodexUsageAccountProvider({ readUsage: createCodexUsageRemoteReader() });
@@ -4144,7 +4440,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const renamed=await codexParity.renameThread(threadId,title);
       if(renamed.title!==title)throw new Error("Native title not confirmed");
     },
-    onError:()=>app.log.warn({event:"task_titles.background_failed"},"Task metadata refresh deferred.")});
+    onError:(error)=>app.log.warn({event:"task_titles.background_failed",failureCode:taskTitleFailureCode(error)},"Task metadata refresh deferred.")});
   taskTitleInputNotifier = (paneId) => taskTitles.notify(paneId);
   const stopTaskTitleEvents = eventBus.subscribe(event => {
     if(event.paneId && !["PANE_UPDATED","PANE_CLOSED"].includes(event.type))taskTitles.notify(event.paneId);
@@ -4234,6 +4530,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return [...unique.values()];
     }
   });
+  const opencodeModelBenchService = options.opencodeModelBenchService ?? new OpencodeModelBenchService({
+    repository: store instanceof PostgresSpaceStore
+      ? PostgresSystemAnalyticsRepository.fromConnectionString(
+          config.databaseUrl ?? (() => {
+            throw new Error("SPACE_DATABASE_URL is required when SPACE_RUNTIME_STORE=postgres.");
+          })(),
+          {
+            max: 2,
+            idleTimeoutMillis: config.databasePoolIdleTimeoutMs,
+            connectionTimeoutMillis: config.databasePoolConnectionTimeoutMs
+          }
+        )
+      : new InMemorySystemAnalyticsRepository()
+  });
+  if (process.env.NODE_ENV !== "test" && process.env.VITEST !== "true") {
+    opencodeModelBenchService.startDailyRefresh();
+  }
   const healthRepository = store instanceof PostgresSpaceStore && config.databaseUrl
     ? PostgresSystemHealthRepository.fromConnectionString(config.databaseUrl)
     : new InMemorySystemHealthRepository();
@@ -4291,7 +4604,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       } },
     ]
   });
-  const streamingBotService = options.streamingBotService ?? new StreamingBotService({
+  const systemTopologyService: SystemTopologyService = options.systemTopologyService ?? new SystemTopologyService({
+    getHealthSnapshot: () => healthMonitor.snapshot()
+  });
+  const streamingBotService: StreamingBotService = options.streamingBotService ?? new StreamingBotService({
     botRepository: store instanceof PostgresSpaceStore
       ? PostgresStreamingBotRepository.fromConnectionString(
           config.databaseUrl ?? (() => {
@@ -4317,9 +4633,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         )
       : new InMemoryStreamingRepository(),
     store,
-    youtubeDailyBudget: config.streamingYoutubeDailyQuotaBudget
+    youtubeDailyBudget: config.streamingYoutubeDailyQuotaBudget,
+    credentialStore: new StreamingCredentialStore(config.streamingSecretRoot),
+    liveMetrics: async () => formatStreamingBotLiveMetrics(await streamingService.overlaySnapshot())
   });
-  const streamingService = options.streamingService ?? new StreamingService({
+  const streamingService: StreamingService = options.streamingService ?? new StreamingService({
     repository: store instanceof PostgresSpaceStore
       ? PostgresStreamingRepository.fromConnectionString(
           config.databaseUrl ?? (() => {
@@ -4342,15 +4660,35 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       store,
       isCliTurnActive: async (session) => {
         if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
-          const control = await readOpenCodeServerControl(session.sessionId, options.opencodeStateRoot);
-          return control
-            ? fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId)
-            : false;
+          const stateRoot = options.opencodeStateRoot ?? opencodeDirectParityRoot + "/state";
+          const control = await readOpenCodeServerControl(session.sessionId, stateRoot);
+          if (control) {
+            if (!control.directory && session.cwd) control.directory = session.cwd;
+            if (await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId, session.cwd ?? undefined).catch(() => false)) return true;
+          }
+          const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
+          return roomTerminalState(screen.text) === "RUNNING";
         }
         if (isCodexDirectParityRuntime(session.runtimeId)) {
-          return (await cliTerminalManager.getCurrentTurnActivity(session.sessionId)).status === "RUNNING";
+          const active = (await cliTerminalManager.getCurrentTurnActivity(session.sessionId)).status === "RUNNING";
+          if (active) return true;
+          const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
+          return roomTerminalState(screen.text) === "RUNNING";
         }
-        return false;
+        if (session.runtimeId === "cli:gemini") {
+          const pids = await cliTerminalManager.activeSessionPids([session]).catch(() => null);
+          const rootPid = pids?.get(session.sessionId) ?? null;
+          const native = await loadGeminiNativeTurns({ paneId: session.paneId, sessionId: session.sessionId, rootPid }).catch(() => null);
+          if (native?.turns.length && native.turns.at(-1)!.status === "RUNNING") return true;
+          const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
+          return roomTerminalState(screen.text) === "RUNNING";
+        }
+        if (isDeepSeekDirectParityRuntime(session.runtimeId)) {
+          const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
+          return roomTerminalState(screen.text) === "RUNNING";
+        }
+        const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
+        return roomTerminalState(screen.text) === "RUNNING";
       }
     }),
     youtubeDailyQuotaBudget: config.streamingYoutubeDailyQuotaBudget,
@@ -4442,16 +4780,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       throw new SpaceConflictError("This CLI does not expose a model catalog.");
     }
     const [models, screen] = await Promise.all([
-      loadNativeCliModels(runtime.detectedCommandPath, session.runtimeId === "cli:gemini" ? session.accountProfileId : null),
+      loadNativeCliModels(
+        runtime.detectedCommandPath,
+        ["cli:gemini", "cli:cursor"].includes(session.runtimeId) ? session.accountProfileId : null
+      ),
       cliTerminalManager.observeRoomScreen(session.sessionId, true)
     ]);
     const modelId = nativeCliConfirmedModel(screen.text, models, session.runtimeId)
-      ?? (models.some(model => model.id === session.modelId) ? session.modelId : null);
+      ?? (models.some(model => model.id === session.modelId) ? session.modelId : null)
+      ?? models.find(model => model.isDefault)?.id
+      ?? null;
     const model = models.find(entry => entry.id === modelId);
     return {
       sessionId: session.sessionId, threadId: null, models, controlMode: "NATIVE",
       current: modelId ? { modelId, reasoningEffort: nativeCliConfirmedReasoning(screen.text, session.runtimeId, model)
-        ?? (session.modelId === modelId && model?.supportedReasoningEfforts.includes(session.reasoningEffort ?? '') ? session.reasoningEffort! : model?.reasoningOptions?.length ? 'unknown' : 'none') } : null,
+        ?? (session.modelId === modelId && model?.supportedReasoningEfforts.includes(session.reasoningEffort ?? '') ? session.reasoningEffort! : model?.defaultReasoningEffort ?? (model?.supportedReasoningEfforts.includes('auto') ? 'auto' : model?.supportedReasoningEfforts[0] ?? 'none')) } : null,
       isTurnActive: roomTerminalState(screen.text) === "RUNNING"
     };
   };
@@ -4459,7 +4802,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!isCodexDirectParityRuntime(session.runtimeId)) {
       throw new SpaceConflictError("Model switching is available only for Codex CLI panes.");
     }
-    const threadId = await resolvePaneCodexThreadId({
+    let threadId = await resolvePaneCodexThreadId({
       store,
       session,
       traceId,
@@ -4487,14 +4830,29 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!models.length) {
       throw new SpaceFeatureDisabledError("CODEX_MODEL_CATALOG_UNAVAILABLE", "Codex did not advertise any selectable models.");
     }
-    const runtimeSettings = threadId
+    // A fresh TUI already owns a native thread before its first message is
+    // persisted. Resolve only this app-server's kernel-held writer lock; never
+    // drive its composer with /model or Enter to change settings.
+    if (!threadId && directControl.readThreadSettings) {
+      const candidates = await (options.findCodexModelControlThreads ?? findCodexWriterThreads)({
+        codexHome: codexDirectParityCodexHome, paneId: pane.id, sessionId: session.sessionId
+      });
+      if (candidates.length === 1) threadId = candidates[0]!;
+    }
+    const nativeSettings = threadId && directControl.readThreadSettings
+      ? await directControl.readThreadSettings(threadId)
+      : null;
+    if (nativeSettings && nativeSettings.cwd !== refreshedSession.cwd) {
+      throw new SpaceConflictError("Codex model control did not confirm this pane's working directory.");
+    }
+    const runtimeSettings = nativeSettings ?? (threadId
       ? await findCodexThreadRuntimeSettings({
           threadId,
           cwd: refreshedSession.cwd,
           sessionId: refreshedSession.sessionId,
           models
         })
-      : null;
+      : null);
     const effectiveModelId = runtimeSettings ? runtimeSettings.modelId : refreshedSession.modelId;
     const effectiveReasoningEffort = runtimeSettings ? runtimeSettings.reasoningEffort : refreshedSession.reasoningEffort;
     const currentModelId = canonicalCodexAdvertisedModelId(effectiveModelId, models);
@@ -4509,7 +4867,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const current = currentModelId && currentReasoningEffort && persistedCombinationIsAdvertised
       ? { modelId: currentModelId, reasoningEffort: currentReasoningEffort }
       : null;
-    const activity = threadId
+    const activity = threadId && (!nativeSettings || nativeSettings.isTurnActive)
       ? await cliTerminalManager.getCurrentTurnActivity(refreshedSession.sessionId)
       : { status: "PENDING" as const, turnId: null };
     return {
@@ -4519,7 +4877,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         current,
         models,
         controlMode: "DIRECT" as const,
-        isTurnActive: activity.status === "RUNNING"
+        isTurnActive: nativeSettings?.isTurnActive ?? activity.status === "RUNNING"
       },
       activity,
       directControl,
@@ -4533,6 +4891,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
         "Live OpenCode model control is unavailable; the current CLI session was left unchanged."
       );
+    }
+    if (!control.directory && session.cwd) {
+      control.directory = session.cwd;
     }
     return control;
   };
@@ -4553,9 +4914,27 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         "OpenCode Chat requires a valid isolated Space agent session."
       );
     }
+    let targetDirectory = "/etc";
+    try {
+      const session = await store.getSpaceAgentSession(spaceAgentSessionId);
+      if (session) {
+        const pane = await store.getPane(session.paneId);
+        if (pane?.cwd && pane.cwd.startsWith("/") && pane.cwd !== "/etc") {
+          targetDirectory = pane.cwd;
+        } else {
+          const room = await store.getRoom(session.roomId);
+          if (room?.projectPath && room.projectPath.startsWith("/")) {
+            targetDirectory = room.projectPath;
+          }
+        }
+      }
+    } catch {
+      // Best-effort lookup
+    }
     const existing = await readOpenCodeServerControl(spaceAgentSessionId, openCodeSpaceChatStateRoot);
     if (
       existing &&
+      (!existing.directory || existing.directory === targetDirectory) &&
       await openCodeServerIsHealthy(existing) &&
       await openCodeSessionExists(existing, existing.nativeSessionId)
     ) return existing;
@@ -4567,7 +4946,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const nativeSessionId = await createOpenCodeSession(
         sharedControl,
         `Space Chat ${spaceAgentSessionId.slice(-12)}`,
-        "/etc"
+        targetDirectory
       );
       if (!nativeSessionId) {
         throw new SpaceFeatureDisabledError(
@@ -4579,6 +4958,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         ...sharedControl,
         spaceSessionId: spaceAgentSessionId,
         nativeSessionId,
+        directory: targetDirectory,
         updatedAt: new Date().toISOString()
       };
       const controlPath = opencodeServerControlPath(spaceAgentSessionId, openCodeSpaceChatStateRoot);
@@ -4611,10 +4991,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const descriptors = await fetchOpenCodeSessionModels(control, session.cwd ?? '/etc');
       const currentModel = await fetchOpenCodeCurrentModel(control, control.nativeSessionId);
       const currentModelId = currentModel ? `${currentModel.providerID}/${currentModel.id}` : null;
-      models = descriptors.map((descriptor) => {
+      models = descriptors.flatMap((descriptor) => {
         const optionId = `${descriptor.providerId}/${descriptor.modelId}`;
+        if (!cliModelIdentifierSchema.safeParse(optionId).success) return [];
         const listedVariants = descriptor.variants.length > 0 ? descriptor.variants : [];
-        return {
+        return [{
           id: optionId,
           displayName: descriptor.displayName,
           description: descriptor.providerName ?? descriptor.providerId,
@@ -4623,7 +5004,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             descriptor.defaultVariant ?? listedVariants[0] ?? "default",
           supportedReasoningEfforts: ["default", ...listedVariants.filter(variant => variant !== "default")],
           reasoningOptions: (listedVariants.length ? ["default", ...listedVariants.filter(variant => variant !== "default")] : []).map((reasoningEffort) => ({ reasoningEffort }))
-        };
+        }];
       });
     } catch {
       throw new SpaceFeatureDisabledError(
@@ -4814,7 +5195,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       runtimeId: runtime.id,
       sourceRuntimeId: sourceTask.runtimeId
     });
-    const exactNativeResume = Boolean(nativeThreadId || opencodeNativeSessionId);
+    const geminiNativeConversationId =
+      runtime.id === "cli:gemini" &&
+      sourceTask.runtimeId === "cli:gemini"
+        ? (sourceTask.revision.nativeTaskRef && geminiNativeConversationIdPattern.test(sourceTask.revision.nativeTaskRef)
+            ? sourceTask.revision.nativeTaskRef
+            : await readGeminiPaneConversation(pane.id))
+        : null;
+    const reasonixNativeSessionRef =
+      runtime.id === "cli:deepseek" && sourceTask.runtimeId === "cli:deepseek"
+        ? await resolveReasonixNativeSessionRef({
+            workspace: sourceTask.revision.cwd ?? pane.cwd ?? "/etc",
+            firstUserMessage: sourceTask.firstUserMessage
+          }).catch(() => null)
+        : null;
+    const exactNativeResume = Boolean(
+      nativeThreadId || opencodeNativeSessionId || geminiNativeConversationId || reasonixNativeSessionRef
+    );
     if (requireNative && !exactNativeResume) throw new SpaceConflictError("Exact native resume is unavailable; the existing pane was preserved.");
     const mode = exactNativeResume
       ? "NATIVE_RESUME" as const
@@ -4837,17 +5234,39 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
       if (nativeThreadId) {
         const threadOwner = await store.getActivePaneCliSessionByCodexThreadId(nativeThreadId);
-        if (requireNative && threadOwner && threadOwner.roomId !== pane.roomId) throw new SpaceConflictError("The native task is currently owned by another room.");
-        if (threadOwner && threadOwner.sessionId !== active?.sessionId) {
-          await stopSession(threadOwner.sessionId, "Codex thread transferred by explicit Task History Resume.");
+        let owner = threadOwner;
+        if (!owner) {
+          for (const candidate of await store.listActivePaneCliSessions("cli:codex")) {
+            if (candidate.status !== "RUNNING") continue;
+            const heldThread = await (options.findCodexThreadId ?? findSafeCodexThreadId)({
+              paneId: candidate.paneId, sessionId: candidate.sessionId, cwd: candidate.cwd
+            });
+            if (heldThread === nativeThreadId) { owner = candidate; break; }
+          }
+        }
+        if (owner && (owner.status === "RUNNING" || owner.status === "IDLE")) {
+          if (request) await assertRoomAccess(owner.roomId, request.user);
+          if (requireNative && owner.roomId !== pane.roomId) {
+            throw new SpaceConflictError("The task is already active in another room.");
+          }
+          const ownerPane = await store.getPane(owner.paneId);
+          if (ownerPane.isClosed) throw new SpaceConflictError("The task is still active in a closed pane. Reopen that pane to continue.");
+          return resumePaneCliSessionResponseSchema.parse({
+            ...(await buildPaneCliSessionResponse({
+              store, runtime, sessionId: owner.sessionId, includeWebsocket: false,
+              tokenTtlMs: config.cliTokenTtlMs,
+              issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
+            })),
+            pane: ownerPane, mode: "NATIVE_RESUME", focusExisting: true
+          });
         }
       }
       if (active) {
-        await stopSession(active.sessionId, "CLI session replaced to continue a selected Space CLI task.");
+        await stopSession(active.sessionId, "CLI session replaced to resume a previous task.");
       }
 
-      const nextSessionId = makeSpaceId("cli_session");
       const allocatedAtNs = process.hrtime.bigint();
+      const nextSessionId = makeSpaceId("cli_session");
       const sameRuntime = sourceTask.runtimeId === runtime.id;
       const allocatedSession = await store.createPaneCliSession(
         {
@@ -4872,6 +5291,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       );
       cliTerminalManager.recordSessionAllocation(allocatedSession.sessionId, allocatedAtNs);
 
+      if (geminiNativeConversationId) {
+        await writeGeminiPaneConversation(pane.id, geminiNativeConversationId);
+      }
+
       if (nativeThreadId) {
         await store.claimPaneCliCodexThread(
           allocatedSession.sessionId,
@@ -4895,7 +5318,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
               ? { nativeTaskRef: nativeThreadId }
               : opencodeNativeSessionId
                 ? { nativeTaskRef: opencodeNativeSessionId }
-                : {})
+                : reasonixNativeSessionRef
+                  ? { nativeTaskRef: reasonixNativeSessionRef }
+                  : {})
           },
           traceId
         );
@@ -4979,7 +5404,27 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await assertPaneCliRuntimeEnabled(pane);
     if (pane.mode !== "TERMINAL" || pane.terminalRuntimeId === "cli:root") throw new SpaceConflictError("Room CLI controls require an AI terminal.");
     if ((await store.getPane(pane.id)).isClosed) throw new SpaceConflictError("Reopen the pane before controlling its CLI.");
-    const session = await store.getActivePaneCliSession(pane.id);
+    let session = await store.getActivePaneCliSession(pane.id);
+    if (!session) {
+      session = (await store.listPaneCliSessions(pane.id, 1))[0] ?? null;
+    }
+    if (!session && !expectedSessionId) {
+      const runtimes = await discoverAgentRuntimes(config);
+      const runtime = runtimes.data.find((r) => r.id === pane.terminalRuntimeId);
+      if (runtime) {
+        session = await store.createPaneCliSession({
+          sessionId: makeSpaceId("cli_session"),
+          paneId: pane.id,
+          roomId: pane.roomId,
+          runtimeId: runtime.id,
+          providerId: runtime.providerId,
+          agentId: runtime.agentId,
+          modelId: pane.modelId ?? runtime.defaultModelId,
+          reasoningEffort: runtime.id === "cli:gemini" ? (pane.reasoningEffort ?? "high") : (pane.reasoningEffort ?? "medium"),
+          purpose: "NORMAL"
+        });
+      }
+    }
     if (!session || session.purpose !== "NORMAL" || (expectedSessionId && session.sessionId !== expectedSessionId)) throw new SpaceConflictError("The target CLI session is unavailable or changed.");
     return session;
   }
@@ -4992,21 +5437,29 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const data: unknown = await response.json();
     return openCodeTaskTimeline(Array.isArray(data) ? data : [], busy, nowIso());
   }
-  async function inspectRoomCli(pane: Pane): Promise<RoomPaneObservation> {
-    const session = await store.getActivePaneCliSession(pane.id)??(await store.listPaneCliSessions(pane.id,1))[0]??null;
+  const roomCliObservationCache = new Map<string, { expires: number; data: RoomPaneObservation }>();
+  async function inspectRoomCli(pane: Pane, freshness?: { fresh?: boolean }): Promise<RoomPaneObservation> {
+    const cached = roomCliObservationCache.get(pane.id);
+    if (!freshness?.fresh && cached && cached.expires > Date.now()) {
+      return cached.data;
+    }
+    const session = await roomCliSession(pane).catch(() => null) ?? await store.getActivePaneCliSession(pane.id) ?? (await store.listPaneCliSessions(pane.id, 1))[0] ?? null;
+    const rawTaskRef = session?.codexThreadId?.trim();
     const base: RoomPaneObservation = { paneId: pane.id, title: pane.title, runtimeId: pane.terminalRuntimeId ?? null,
-      sessionId: session?.sessionId ?? null, state: "UNKNOWN", nativeTaskRef: session?.codexThreadId ?? null,
-      modelId: session?.modelId ?? null, nativeMode: null, checkedAt: nowIso(), tasks: [] };
+      sessionId: session?.sessionId ?? null, state: "UNKNOWN", nativeTaskRef: rawTaskRef && rawTaskRef.length > 0 ? rawTaskRef : null,
+      modelId: session?.modelId ?? pane.modelId ?? null, nativeMode: null, checkedAt: nowIso(), tasks: [] };
     if (!session || session.purpose !== "NORMAL") return base;
     const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(error=>{if(pane.isClosed||["EXITED","ERROR"].includes(session.status))return {text:""};throw error;});
     base.text = redactMemoryText(screen.text);
     base.commands = roomTerminalCommands(screen.text);
-    base.state = pane.isClosed || session.status === "EXITED" ? "EXITED" : session.status === "ERROR" ? "ERROR" : roomTerminalState(screen.text);
+    const rawState = roomTerminalState(screen.text);
+    base.state = pane.isClosed || session.status === "EXITED" ? "EXITED" : session.status === "ERROR" ? "ERROR" : (rawState === "UNKNOWN" && screen.text.trim() === "" && session.runtimeId !== "cli:gemini" ? "IDLE" : rawState);
     if (isCodexDirectParityRuntime(session.runtimeId)) {
       base.tasks = session.codexThreadId ? await findCodexTaskTimeline({ codexHome: codexDirectParityCodexHome,
         threadId: session.codexThreadId }) : [];
       const settings = await readPaneCliModelSettings(pane, session, "room-observation").catch(() => null);
       if (settings) { base.models = settings.settings.models; base.modelId = settings.settings.current?.modelId ?? null;
+        base.configuredModelId = pane.modelId; base.effectiveModelId = base.modelId; base.modelVerificationStatus = base.modelId ? "VERIFIED" : "UNKNOWN";
         if (base.state !== "EXITED" && base.state !== "ERROR") base.state = settings.settings.isTurnActive ? "RUNNING" : base.state === "WAITING_FOR_INPUT" ? base.state : "IDLE"; }
       base.modes = ["default", "plan"];
     } else if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
@@ -5016,6 +5469,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         base.tasks = await roomOpenCodeTasks(control);
         const settings = await readPaneOpenCodeModelSettings(pane, session, "room-observation");
         base.models = settings.settings.models; base.modelId = settings.settings.current?.modelId ?? null;
+        base.configuredModelId = pane.modelId; base.effectiveModelId = base.modelId; base.modelVerificationStatus = base.modelId ? "VERIFIED" : "UNKNOWN";
         const agents = await openCodeServerFetch(control, "/agent");
         if (agents.ok) { const data = await agents.json() as Array<{ name?: string; mode?: string; hidden?: boolean }>;
           if (Array.isArray(data)) base.modes = data.filter((agent) => !agent.hidden && agent.mode !== "subagent" && agent.name).map((agent) => agent.name!); }
@@ -5023,14 +5477,114 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           base.state = roomOpenCodeTerminalState(screen.text, settings.settings.isTurnActive, base.modes ?? []);
         }
       }
+    } else if (session.runtimeId === "cli:gemini") {
+      const pids = await cliTerminalManager.activeSessionPids([session]).catch(() => null);
+      const rootPid = pids?.get(session.sessionId) ?? null;
+      let catalog: Array<{ id: string; displayName: string }> = [];
+      const runtime = findRuntime(await cliRuntimeRegistryCache.read(), session.runtimeId);
+      if (runtime?.detectedCommandPath) {
+        const loadedModels = await Promise.race([
+          loadNativeCliModels(runtime.detectedCommandPath, session.accountProfileId),
+          new Promise<Awaited<ReturnType<typeof loadNativeCliModels>>>((r) => setTimeout(() => r([]), 2000))
+        ]).catch(() => []);
+        catalog = loadedModels;
+        base.models = loadedModels;
+      }
+      const usageList = await Promise.race([
+        antigravityUsageProvider(),
+        new Promise<{ data: any[] }>((r) => setTimeout(() => r({ data: [] }), 1500))
+      ]).catch(() => ({ data: [] }));
+      const fallbackVerification = {
+        configuredModelId: session?.modelId ?? pane.modelId ?? null,
+        effectiveModelId: null,
+        modelVerificationStatus: "UNVERIFIED" as const,
+        accountProfileId: session?.accountProfileId ?? "main",
+        accountEmail: null,
+        accountVerificationStatus: "UNVERIFIED" as const,
+        verificationEvidence: { fallback: true },
+        nativeTaskRef: null
+      };
+      const verified = await Promise.race([
+        verifyGeminiPaneSession({
+          pane,
+          session,
+          rootPid,
+          screenText: screen.text,
+          catalog,
+          usageAccounts: usageList.data
+        }),
+        new Promise<any>((r) => setTimeout(() => r(fallbackVerification), 2000))
+      ]).catch(() => fallbackVerification);
+
+      if (verified.nativeTaskRef) {
+        base.nativeTaskRef = verified.nativeTaskRef;
+        const taskModel = verified.effectiveModelId ?? verified.configuredModelId ?? base.modelId;
+        base.tasks = [{
+          taskId: verified.nativeTaskRef,
+          title: pane.title,
+          status: "UNKNOWN",
+          timing: { startedAt: session.startedAt ?? null, completedAt: null, durationMs: null, source: "OBSERVED", observedAt: nowIso() },
+          modelsUsed: taskModel ? [{
+            providerId: null,
+            modelId: taskModel,
+            reasoningEffort: null,
+            turnId: null,
+            startedAt: null,
+            completedAt: null,
+            source: "OBSERVED" as const
+          }] : []
+        }];
+      }
+
+      const native = await loadGeminiNativeTurns({ paneId: pane.id, sessionId: session.sessionId, rootPid }).catch(() => null);
+      if (native) {
+        base.nativeTaskRef = native.conversationId;
+        base.tasks = native.turns.map(({ finalResponse: _response, inputText: _input, aborted: _aborted, ...task }) => task);
+        if (base.state !== "EXITED" && base.state !== "ERROR") {
+          const latest = native.turns.at(-1);
+          if (latest?.status === "RUNNING" || rawState === "RUNNING") {
+            base.state = "RUNNING";
+          } else if (rawState === "WAITING_FOR_INPUT" || latest?.status === "INTERRUPTED" || latest?.aborted) {
+            base.state = "WAITING_FOR_INPUT";
+          }
+        }
+      }
+
+      base.configuredModelId = verified.configuredModelId;
+      base.effectiveModelId = verified.effectiveModelId;
+      base.modelVerificationStatus = verified.modelVerificationStatus;
+      base.accountProfileId = verified.accountProfileId;
+      base.accountEmail = verified.accountEmail;
+      base.accountVerificationStatus = verified.accountVerificationStatus;
+      base.verificationEvidence = verified.verificationEvidence as unknown as Record<string, unknown>;
+
+      base.modelId = verified.effectiveModelId ?? verified.configuredModelId ?? base.modelId;
+      base.modes = ["default", "plan"];
+    } else if (isDeepSeekDirectParityRuntime(session.runtimeId)) {
+      if (base.state !== "EXITED" && base.state !== "ERROR") {
+        base.state = rawState === "RUNNING" ? "RUNNING" : rawState === "WAITING_FOR_INPUT" ? "WAITING_FOR_INPUT" : "IDLE";
+      }
+      base.modes = ["workspace", "read-only", "yolo", "plan"];
     }
     if (session.runtimeId === "cli:claude") base.modes = ["default", "plan", "accept edits", "bypass permissions", "auto"];
     base.nativeMode = roomTerminalMode(session.runtimeId, screen.text, base.modes);
+    roomCliObservationCache.set(pane.id, { expires: Date.now() + 15_000, data: base });
     return base;
   }
   async function commandRoomCli(pane: Pane, action: RoomCommandAction, traceId: string): Promise<Record<string, unknown>> {
+    roomCliObservationCache.delete(pane.id);
     const session = await roomCliSession(pane, action.expectedSessionId);
-    return cliTerminalManager.runSerializedTerminalMutation(session.sessionId, async () => {
+    const startMs = Date.now();
+    const COMMAND_WATCHDOG_TIMEOUT_MS = 8000;
+
+    let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+    const watchdogPromise = new Promise<never>((_, reject) => {
+      watchdogTimer = setTimeout(() => {
+        reject(new Error("COMMAND_WATCHDOG_TIMEOUT"));
+      }, COMMAND_WATCHDOG_TIMEOUT_MS);
+    });
+
+    const mutationPromise = cliTerminalManager.runSerializedTerminalMutation(session.sessionId, async () => {
       await roomCliSession(pane, action.expectedSessionId);
       const before = await cliTerminalManager.observeRoomScreen(session.sessionId);
       if (action.command) {
@@ -5040,6 +5594,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         await new Promise((resolve) => setTimeout(resolve, 200));
         await roomCliSession(pane, action.expectedSessionId);
         await cliTerminalManager.sendInput(session.sessionId, "\r", traceId, null, `${traceId}:submit-command`);
+        // Antigravity / Gemini CLI displays an interactive autocomplete menu for slash
+        // commands. The first Enter selects the menu item into the input line; a second
+        // Enter is required to submit the command.
+        if (action.command.startsWith("/") && session.runtimeId === "cli:gemini") {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          await roomCliSession(pane, action.expectedSessionId);
+          await cliTerminalManager.sendInput(session.sessionId, "\r", traceId, null, `${traceId}:submit-command-confirm`);
+        }
       }
       if (action.key) {
         const keys = { UP: "\u001b[A", DOWN: "\u001b[B", LEFT: "\u001b[D", RIGHT: "\u001b[C", ENTER: "\r", ESCAPE: "\u001b", TAB: "\t", SHIFT_TAB: "\u001b[Z" };
@@ -5081,6 +5643,46 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return { sessionId: session.sessionId, command: action.command, selection: action.selection ?? null,
         key: action.key ?? null, state: roomTerminalState(screen.text), text: redactMemoryText(screen.text), checkedAt: nowIso() };
     });
+
+    try {
+      return await Promise.race([mutationPromise, watchdogPromise]);
+    } catch (error) {
+      if (error instanceof Error && error.message === "COMMAND_WATCHDOG_TIMEOUT") {
+        const interruptKey = roomTerminalInterruptKey(session.runtimeId);
+        await cliTerminalManager.sendInput(session.sessionId, interruptKey, traceId, null, `${traceId}:watchdog:interrupt`).catch(() => {});
+        await cliTerminalManager.sendInput(session.sessionId, "\u001b", traceId, null, `${traceId}:watchdog:esc`).catch(() => {});
+        const cmdName = action.command ? `command "${action.command}"` : (action.key ? `key "${action.key}"` : "operation");
+        const alertMessage = `Room Watchdog: Auto-killed hanging ${cmdName} in pane "${pane.title}" (${session.runtimeId}) after 8s to prevent room freeze.`;
+        const watchdogEvent = eventSchema.parse({
+          id: makeSpaceId("event"),
+          roomId: pane.roomId,
+          paneId: pane.id,
+          turnId: null,
+          workflowId: null,
+          traceId,
+          type: "ROOM_WATCHDOG_ALERT",
+          message: alertMessage,
+          payload: {
+            kind: "ROOM_FREEZE_PREVENTED",
+            source: "commandRoomCli",
+            roomId: pane.roomId,
+            paneId: pane.id,
+            paneTitle: pane.title,
+            runtimeId: session.runtimeId,
+            command: action.command ?? action.key ?? null,
+            durationMs: Date.now() - startMs,
+            killedAt: nowIso()
+          },
+          createdAt: nowIso()
+        });
+        try { await store.recordRoomEvent(watchdogEvent); } catch {}
+        eventBus.publish(watchdogEvent);
+        throw new SpaceConflictError(alertMessage);
+      }
+      throw error;
+    } finally {
+      if (watchdogTimer) clearTimeout(watchdogTimer);
+    }
   }
   const roomPaneController = createRoomPaneController({
     store, chat: spaceAgentAdapter, listRuntimes: () => cliTerminalManager.listRuntimes(),
@@ -5128,6 +5730,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             expectedThreadId: before.settings.threadId, models: before.settings.models, modelId: model.id, reasoningEffort: reasoning, traceId });
           if (before.settings.threadId) await waitForCodexThreadSettings({ threadId: before.settings.threadId, cwd: session.cwd, sessionId: session.sessionId, modelId: model.id, reasoningEffort: reasoning, models: before.settings.models });
           await store.updatePaneCliSession(session.sessionId, { modelId: model.id, reasoningEffort: reasoning }, traceId);
+        } else if (session.runtimeId === "cli:omp") {
+          const command = `/switch ${action.modelId}${action.reasoningEffort && action.reasoningEffort !== "none" ? `:${action.reasoningEffort}` : ""}`;
+          await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId,
+            command, when: action.when }, traceId);
+          if (action.modelId) await store.updatePaneCliSession(session.sessionId, { modelId: action.modelId, reasoningEffort: action.reasoningEffort }, traceId);
+        } else if (session.runtimeId === "cli:cursor") {
+          await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId,
+            command: `/model ${action.modelId}`, when: action.when }, traceId);
+          if (action.modelId) await store.updatePaneCliSession(session.sessionId, { modelId: action.modelId }, traceId);
         } else await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId,
           command: "/model", selection: action.modelId ?? action.reasoningEffort, when: action.when }, traceId);
       }
@@ -5191,10 +5802,58 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           }
         }
       }
+      if (action.accountProfileId !== undefined) {
+        if (session.runtimeId === "cli:gemini") {
+          const targetProfile = action.accountProfileId;
+          if (targetProfile && targetProfile !== "main") {
+            const profiles = await discoverAntigravityProfiles();
+            if (!profiles.some((p) => p.profileId === targetProfile)) {
+              throw new SpaceConflictError(`Antigravity account profile "${targetProfile}" is not found.`);
+            }
+          }
+          if (session.accountProfileId !== targetProfile) {
+            let convId = await readGeminiPaneConversation(pane.id).catch(() => null);
+            if (!convId && session.codexThreadId && geminiNativeConversationIdPattern.test(session.codexThreadId.trim())) {
+              convId = session.codexThreadId.trim();
+            }
+            if (!convId) {
+              const pids = await cliTerminalManager.activeSessionPids([session]).catch(() => null);
+              const rootPid = pids?.get(session.sessionId) ?? null;
+              if (rootPid) {
+                convId = await readGeminiNativeConversationIdFromProcessTree(rootPid).catch(() => null);
+              }
+            }
+            if (convId) {
+              await writeGeminiPaneConversation(pane.id, convId);
+            }
+            if (session.isActive && session.status !== "EXITED") {
+              const pids = await cliTerminalManager.activeSessionPids([session]).catch(() => null);
+              const rootPid = pids?.get(session.sessionId) ?? null;
+              if (rootPid) {
+                try { process.kill(rootPid, "SIGTERM"); } catch {}
+              }
+              await store.updatePaneCliSession(
+                session.sessionId,
+                { status: "EXITED", isActive: false, endedAt: nowIso(), statusReason: "Account profile switched" },
+                traceId
+              );
+              const cleanId = normalizeGeminiPaneId(pane.id);
+              await unlink(`/opt/spaceapp/var/gemini-pane-conversations/pane-${cleanId}.json`).catch(() => {});
+              await unlink(`/opt/spaceapp/var/gemini-pane-conversations/pane-pane:${cleanId}.json`).catch(() => {});
+              await cliTerminalManager.ensurePaneControlReady(pane, traceId, { accountProfileId: targetProfile });
+            } else {
+              await store.updatePaneCliSession(session.sessionId, { accountProfileId: targetProfile }, traceId);
+            }
+          }
+        } else {
+          throw new SpaceConflictError("Account profile switching is currently supported on Gemini panes.");
+        }
+      }
       return { observation: await inspectRoomCli(pane) };
     },
     async startCli(pane, traceId) {
       const session = await cliTerminalManager.ensurePaneControlReady(pane, traceId);
+      roomCliObservationCache.delete(pane.id);
       return { sessionId: session.sessionId, state: session.status };
     },
     async resumeCli(pane, taskId, traceId) {
@@ -5217,15 +5876,29 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const active = await store.getActivePaneCliSession(pane.id);
       if (!active || active.status === "EXITED" || pane.isClosed) return { interrupted: false, state: "EXITED" };
       const session = await roomCliSession(pane);
+      let interrupted = false;
       if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
         const control = await resolveOpenCodeServerControl(session);
         await abortOpenCodeSession(control, control.nativeSessionId);
+        interrupted = true;
       } else if (isCodexDirectParityRuntime(session.runtimeId)) {
-        const before = await readPaneCliModelSettings(pane, session, traceId);
-        if (before.settings.threadId && before.activity.turnId && before.settings.isTurnActive)
-          await before.directControl.interruptTurn({ threadId: before.settings.threadId, turnId: before.activity.turnId });
-      } else await cliTerminalManager.sendInput(session.sessionId, roomTerminalInterruptKey(session.runtimeId), traceId, null, `${traceId}:interrupt`);
-      return { sessionId: session.sessionId, observation: await inspectRoomCli(pane) };
+        const before = await readPaneCliModelSettings(pane, session, traceId).catch(() => null);
+        if (before?.settings.threadId && before.activity?.turnId && before.settings.isTurnActive) {
+          try {
+            await before.directControl.interruptTurn({ threadId: before.settings.threadId, turnId: before.activity.turnId });
+            interrupted = true;
+          } catch {}
+        }
+        if (!interrupted) {
+          await cliTerminalManager.sendInput(session.sessionId, "\u001b", traceId, null, `${traceId}:interrupt:esc`);
+          interrupted = true;
+        }
+      } else {
+        const key = roomTerminalInterruptKey(session.runtimeId);
+        await cliTerminalManager.sendInput(session.sessionId, key, traceId, null, `${traceId}:interrupt:1`);
+        interrupted = true;
+      }
+      return { sessionId: session.sessionId, interrupted, observation: await inspectRoomCli(pane) };
     }
   });
 
@@ -5234,10 +5907,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     createRoomActionExecutor({
       store,
       paneController: roomPaneController,
-      control:async(roomId,tool,args)=>{
+      control:async(roomId,tool,args,missionId)=>{
         const grant=await controlRepository.get("grant","shared",`room-agent:${roomId}`);
         const actorId=(grant?.value as {actorId?:string}|undefined)?.actorId;
         if(!actorId)throw new SpaceConflictError("Room Agent has no authenticated operator context.");
+        const mission = missionId ? await store.getRoomAgentMission(roomId, missionId) : null;
+        if (mission?.executionState.ownerId && mission.executionState.ownerId !== actorId) {
+          throw new SpaceConflictError("Mission operator context changed. Control cannot run as another operator.");
+        }
         if(typeof args.roomId!=="string")throw new SpaceConflictError("A target room is required.");
         return spaceControlRoutes.call(await controlUser(actorId),tool,args);
       },
@@ -5248,15 +5925,33 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       roomPlanInventoryProvider,
       taskEvaluator: roomTaskEvaluator,
       isCliRuntimeEnabled: (runtimeId) => cliRuntimeVisibility.isEnabled(runtimeId),
-      assertCliRuntimeEnabled: (runtimeId) => cliRuntimeVisibility.assertEnabled(runtimeId)
+      assertCliRuntimeEnabled: (runtimeId) => cliRuntimeVisibility.assertEnabled(runtimeId),
+      decisionsService
     });
   const roomPaneCommands = createRoomPaneCommands({
     store,
-    discover: () => discoverAgentRuntimes(config),
+    // Fast path: use cached registry (10s TTL + stale-while-revalidate) instead of
+    // fresh discoverAgentRuntimes per bulk open, so 16x codex stays in the 2-3s budget.
+    discover: () => cliRuntimeRegistryCache.readStaleWhileRefreshing(),
     enabledRuntimeIds: () => cliRuntimeVisibility.enabledRuntimeIds(),
     harnessAvailable: async () => {
       const status = await readDeepSeekHarnessMaintenanceStatus();
       return status.enabled && status.effectiveMode !== "BLOCKED";
+    },
+    checkGeminiQuota: async () => {
+      const usage = await antigravityUsageProvider().catch(() => null);
+      if (!usage?.data || usage.data.length === 0 || usage.error) {
+        return { allowed: true, reason: "Quota check deferred (telemetry unavailable)." };
+      }
+      const hasQuota = usage.data.some((a) => {
+        if (a.status !== "CONNECTED") return false;
+        const rem5h = a.gemini?.fiveHourRemainingPercent;
+        const remWeekly = a.gemini?.weeklyRemainingPercent;
+        const rem5hOk = rem5h === null || rem5h > 0;
+        const remWeeklyOk = remWeekly === null || remWeekly > 0;
+        return rem5hOk && remWeeklyOk;
+      });
+      return { allowed: hasQuota, reason: hasQuota ? "Quota available" : "No Google account has available Gemini quota." };
     }
   });
 
@@ -5276,13 +5971,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   const miniRouter = options.roomMiniRouter ?? createRoomMiniRouter({
     baseUrl: config.codexLbBaseUrl,
-    apiKey: roomTaskEvaluatorKey
+    apiKey: roomTaskEvaluatorKey,
+    decisionsService
   });
   const controlRepository = store instanceof PostgresSpaceStore && config.databaseUrl
     ? PostgresControlRepository.fromConnectionString(config.databaseUrl) : new InMemoryControlRepository();
   async function controlUser(id: string, verifiedEmail?: string) {
     const user = await store.getControlActor(id, verifiedEmail);
-    if (!user || user.role !== "ADMIN" || user.automationScope) throw new SpaceConflictError("Control actor is no longer an authorized operator.");
+    if (!user || (user.role !== "ADMIN" && user.role !== "USER") || user.automationScope) throw new SpaceConflictError("Control actor is no longer an authorized user.");
     return user;
   }
   async function controlInvoke(actorId: string, method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", url: string, payload?: unknown) {
@@ -5297,7 +5993,72 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   }
   const controlCliRooms = new WeakMap<FastifyRequest,string>();
   async function controlQuota(pane:Pane){
-    if(pane.mode!=="TERMINAL"||pane.terminalRuntimeId!=="cli:codex")throw new SpaceConflictError("Native quota requires a Codex CLI pane.");
+    if(pane.mode==="TERMINAL"&&pane.terminalRuntimeId==="cli:gemini"){
+      const session=await store.getActivePaneCliSession(pane.id)??(await store.listPaneCliSessions(pane.id,1))[0];
+      const pids = session ? await cliTerminalManager.activeSessionPids([session]).catch(() => null) : null;
+      const rootPid = session ? (pids?.get(session.sessionId) ?? null) : null;
+      const usageList = await antigravityUsageProvider().catch(() => ({ data: [] }));
+      const verified = await verifyGeminiPaneSession({
+        pane,
+        session,
+        rootPid,
+        usageAccounts: usageList.data
+      });
+
+      const activeProfileId = verified.accountProfileId;
+      const account = activeProfileId
+        ? (usageList.data.find(a => a.id === activeProfileId) ||
+           (verified.accountEmail ? usageList.data.find(a => a.email === verified.accountEmail) : undefined))
+        : undefined;
+
+      const windows: Array<{window:string; remainingPercent:number|null; resetAt:string|null}> = [];
+      if(account?.gemini?.fiveHourRemainingPercent!==null&&account?.gemini?.fiveHourRemainingPercent!==undefined){
+        windows.push({window:"5h",remainingPercent:account.gemini.fiveHourRemainingPercent,resetAt:account.gemini.fiveHourResetAt??null});
+      }
+      if(account?.gemini?.weeklyRemainingPercent!==null&&account?.gemini?.weeklyRemainingPercent!==undefined){
+        windows.push({window:"weekly",remainingPercent:account.gemini.weeklyRemainingPercent,resetAt:account.gemini.weeklyResetAt??null});
+      }
+      const isConnected = account?.status === "CONNECTED";
+      const hasQuota = (account?.gemini?.fiveHourRemainingPercent ?? 0) > 0;
+      const isVerified = verified.accountVerificationStatus === "VERIFIED";
+      const allowed = Boolean(activeProfileId) && isConnected && hasQuota;
+      const reason = !activeProfileId
+        ? "Google account profile is unknown."
+        : !account
+        ? `Google account profile "${activeProfileId}" has no quota data.`
+        : account.status === "UNLICENSED"
+        ? "Google account is unlicensed."
+        : (account.gemini?.fiveHourRemainingPercent === 0)
+        ? "Google Gemini 5-hour quota is exhausted."
+        : !isVerified
+        ? `Google account profile "${activeProfileId}" has available quota, but is unverified on live process.`
+        : windows.length
+        ? "Google account quota is available."
+        : "Google account quota windows are unknown.";
+
+      return {
+        paneId: pane.id,
+        sessionId: session?.sessionId ?? null,
+        runtimeId: "cli:gemini",
+        accountProfileId: activeProfileId,
+        accountEmail: verified.accountEmail ?? account?.email ?? null,
+        accountVerificationStatus: verified.accountVerificationStatus,
+        configuredModelId: verified.configuredModelId,
+        effectiveModelId: verified.effectiveModelId,
+        modelVerificationStatus: verified.modelVerificationStatus,
+        email: verified.accountEmail ?? account?.email ?? null,
+        tier: account?.tier ?? null,
+        status: account?.status ?? "UNKNOWN",
+        gemini: account?.gemini ?? null,
+        claude: account?.claude ?? null,
+        windows,
+        blocked: !allowed,
+        allowed,
+        reason,
+        verificationEvidence: verified.verificationEvidence
+      };
+    }
+    if(pane.mode!=="TERMINAL"||pane.terminalRuntimeId!=="cli:codex")throw new SpaceConflictError("Native quota requires a Codex or Gemini CLI pane.");
     const session=await store.getActivePaneCliSession(pane.id)??(await store.listPaneCliSessions(pane.id,1))[0];
     if(!session)throw new SpaceConflictError("Codex session identity is unavailable.");
     const observed=await readPaneCliModelSettings(pane,session,"control-quota");
@@ -5306,43 +6067,166 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return {...quota,paneId:pane.id,sessionId:session.sessionId,nativeTaskRef:observed.settings.threadId,
       allowed:quota.windows.length>0&&!quota.blocked,reason:quota.blocked?"Native account quota is exhausted.":quota.windows.length?"Native account quota is available.":"Native quota windows are unknown."};
   }
-  const spaceControl = createSpaceControl({store,repository:controlRepository,controller:roomPaneController,
-    publish:async roomId=>{const event=await getLatestRoomEvent(store,roomId);if(event)eventBus.publish(event);},
-    resolveActor: controlUser,
-    checkQuota:controlQuota,
-    requireClientAcknowledgement:true,
-    closePane: async(actor,pane,traceId)=>{
-      if(pane.mode==="CHAT")await roomPaneController.interrupt(pane,traceId);
-      return controlInvoke(actor.id,"DELETE",`/api/panes/${encodeURIComponent(pane.id)}`);
-    },
-    send:async(pane,text,traceId)=>{
-      if(pane.mode==="CHAT"){
-        const result=await spaceAgentAdapter.sendMessage({pane,content:text,traceId});
-        return {sessionId:result.session.binding.sessionId,state:result.session.runStatus,submitted:true};
+  const controlSend = async(pane: Pane, text: string, traceId: string) => {
+    roomCliObservationCache.delete(pane.id);
+    try {
+    if(pane.mode==="CHAT"){
+      const result=await spaceAgentAdapter.sendMessage({pane,content:text,traceId});
+      return {sessionId:result.session.binding.sessionId,state:result.session.runStatus,submitted:true};
+    }
+    if(text.length>20_000)throw new SpaceConflictError("CLI prompts support at most 20,000 characters per turn.");
+    const session=await roomCliSession(pane);
+    if(isOpenCodeDirectParityRuntime(session.runtimeId)){
+      const control=await resolveOpenCodeServerControl(session);
+      if(await fetchOpenCodeSessionIsTurnActive(control,control.nativeSessionId))throw new SpaceConflictError("OpenCode already has an active turn.");
+      const res=await openCodeServerFetch(control,`/session/${encodeURIComponent(control.nativeSessionId)}/prompt_async`,{
+        method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({parts:[{type:"text",text}]})
+      });
+      if(!res.ok)throw new SpaceConflictError("OpenCode rejected prompt injection.");
+      for(let attempt=0;attempt<2;attempt++){
+        await new Promise(r=>setTimeout(r,30));
+        if(await fetchOpenCodeSessionIsTurnActive(control,control.nativeSessionId)){
+          return {sessionId:session.sessionId,nativeTaskRef:control.nativeSessionId,state:"RUNNING",submitted:true};
+        }
       }
-      if(text.length>20_000)throw new SpaceConflictError("Codex prompts support at most 20,000 characters per turn.");
-      const session=await roomCliSession(pane);
+      return {sessionId:session.sessionId,nativeTaskRef:control.nativeSessionId,state:"RUNNING",submitted:true};
+    }
+    if(isCodexDirectParityRuntime(session.runtimeId)){
       return cliTerminalManager.runSerializedTerminalMutation(session.sessionId,async()=>{
-        const before=await readPaneCliModelSettings(pane,session,traceId);
-        if(before.settings.isTurnActive)throw new SpaceConflictError("Codex already has an active turn.");
-        if(before.settings.threadId){
+        const before=await readPaneCliModelSettings(pane,session,traceId).catch(()=>null);
+        if(before?.settings?.isTurnActive)throw new SpaceConflictError("Codex already has an active turn.");
+        if(before?.settings?.threadId){
           const turn=await before.directControl.startTurn({threadId:before.settings.threadId,prompt:text,
             ...(before.settings.current?{model:before.settings.current.modelId,reasoningEffort:before.settings.current.reasoningEffort}:{}),
             clientUserMessageId:`space-control:${traceId}:${pane.id}`.slice(0,200)});
           return {sessionId:session.sessionId,nativeTaskRef:before.settings.threadId,turnId:turn.turnId,state:turn.status,submitted:true};
         }
-        // The first prompt creates the native thread through the existing TUI.
         await cliTerminalManager.sendInput(session.sessionId,text,traceId,null,`${traceId}:${pane.id}:prompt`);
-        await new Promise(resolve=>setTimeout(resolve,200));
+        await new Promise(resolve=>setTimeout(resolve,40));
         await cliTerminalManager.sendInput(session.sessionId,"\r",traceId,null,`${traceId}:${pane.id}:submit`);
-        for(let attempt=0;attempt<30;attempt++){
-          await new Promise(resolve=>setTimeout(resolve,100));
-          const after=await inspectRoomCli(pane);
-          if(after.nativeTaskRef&&after.state==="RUNNING")return {sessionId:session.sessionId,nativeTaskRef:after.nativeTaskRef,submitted:true};
-        }
-        return {status:"UNKNOWN",submitted:true,reason:"Prompt sent, but a native turn was not confirmed. Inspect before retrying."};
+        return {sessionId:session.sessionId,nativeTaskRef:before?.settings?.threadId??session.sessionId,state:"RUNNING",submitted:true};
       });
+    }
+    return cliTerminalManager.runSerializedTerminalMutation(session.sessionId,async()=>{
+      const observed=await inspectRoomCli(pane);
+      if(observed.state==="RUNNING")throw new SpaceConflictError("CLI already has an active turn.");
+      await cliTerminalManager.sendInput(session.sessionId,text,traceId,null,`${traceId}:${pane.id}:prompt`);
+      await new Promise(resolve=>setTimeout(resolve,40));
+      await cliTerminalManager.sendInput(session.sessionId,"\r",traceId,null,`${traceId}:${pane.id}:submit`);
+      return {sessionId:session.sessionId,nativeTaskRef:observed.nativeTaskRef??session.sessionId,state:"RUNNING",submitted:true};
+    });
+    } finally { roomCliObservationCache.delete(pane.id); }
+  };
+  const paneStateCache = new Map<string, { expires: number; data: Record<string, unknown> | null }>();
+  const spaceControl = createSpaceControl({store,repository:controlRepository,controller:roomPaneController,decisionsService,phase:2,queueDisconnected:true,
+    publish:async roomId=>{const event=await getLatestRoomEvent(store,roomId);if(event)eventBus.publish(event);},
+    publishEvent: (event) => eventBus.publish(event),
+    resolveActor: controlUser,
+    checkQuota:controlQuota,
+    requireClientAcknowledgement:true,
+    describePaneTypes: async (roomId?: string) => {
+      const entries = await roomPaneCommands.catalog();
+      const types = PANE_TYPES.map((def) => {
+        const entry = entries.find((e) => e.definition.typeId === def.typeId);
+        return {
+          typeId: def.typeId,
+          label: def.label,
+          kind: def.mode === "TERMINAL" ? `CLI:${(def as { runtimeId?: string }).runtimeId ?? def.typeId}` : def.mode,
+          countsKey: def.typeId,
+          available: entry?.available ?? false,
+          ...(entry?.available ? {} : { reason: entry?.reason ?? "Unavailable." })
+        };
+      });
+      let roomCap: number | null = null;
+      if (roomId) {
+        try { roomCap = (await store.getRoom(roomId)).paneCap; } catch {}
+      }
+      return { types, roomCap };
     },
+    inspectPaneState: async(pane: Pane) => {
+      const cached = paneStateCache.get(pane.id);
+      if (cached && cached.expires > Date.now()) {
+        return cached.data;
+      }
+      const doInspect = async (): Promise<Record<string, unknown> | null> => {
+        if (pane.mode === "YOUTUBE") {
+          try {
+            const pb = await youtubePlaybackStore.getByPaneId(pane.id);
+            const effectiveTitle = pb?.title || (pane.title && !/^YouTube( \d+)?$/i.test(pane.title) ? pane.title : null);
+            if (effectiveTitle || pb?.videoId) {
+              return {
+                mediaTitle: effectiveTitle,
+                mediaVideoId: pb?.videoId || null,
+                mediaSeconds: pb?.seconds || 0
+              };
+            }
+          } catch {}
+          return null;
+        }
+        if (pane.mode === "TERMINAL" && pane.terminalRuntimeId === "cli:gemini") {
+          const session = await store.getActivePaneCliSession(pane.id) ?? (await store.listPaneCliSessions(pane.id, 1))[0] ?? null;
+          const pids = session ? await cliTerminalManager.activeSessionPids([session]).catch(() => null) : null;
+          const rootPid = session ? (pids?.get(session.sessionId) ?? null) : null;
+          const usageList = await Promise.race([
+            antigravityUsageProvider(),
+            new Promise<{ data: any[] }>((r) => setTimeout(() => r({ data: [] }), 1500))
+          ]).catch(() => ({ data: [] }));
+          let catalog: Array<{ id: string; displayName: string }> = [];
+          const runtime = findRuntime(await cliRuntimeRegistryCache.read(), pane.terminalRuntimeId);
+          if (runtime?.detectedCommandPath) {
+            catalog = await Promise.race([
+              loadNativeCliModels(runtime.detectedCommandPath, session?.accountProfileId),
+              new Promise<Array<{ id: string; displayName: string }>>((r) => setTimeout(() => r([]), 2000))
+            ]).catch(() => []);
+          }
+          const fallbackVerification = {
+            configuredModelId: session?.modelId ?? pane.modelId ?? null,
+            effectiveModelId: null,
+            modelVerificationStatus: "UNVERIFIED",
+            accountProfileId: session?.accountProfileId ?? "main",
+            accountEmail: null,
+            accountVerificationStatus: "UNVERIFIED",
+            verificationEvidence: {}
+          };
+          const verified = await Promise.race([
+            verifyGeminiPaneSession({
+              pane,
+              session,
+              rootPid,
+              catalog,
+              usageAccounts: usageList.data
+            }),
+            new Promise<typeof fallbackVerification>((r) => setTimeout(() => r(fallbackVerification), 2000))
+          ]).catch(() => fallbackVerification);
+          return {
+            configuredModelId: verified.configuredModelId,
+            effectiveModelId: verified.effectiveModelId,
+            modelVerificationStatus: verified.modelVerificationStatus,
+            accountProfileId: verified.accountProfileId,
+            accountEmail: verified.accountEmail,
+            accountVerificationStatus: verified.accountVerificationStatus,
+            verificationEvidence: verified.verificationEvidence as unknown as Record<string, unknown>
+          };
+        }
+        return null;
+      };
+      const data = await Promise.race([
+        doInspect(),
+        new Promise<null>((r) => setTimeout(() => r(null), 2500))
+      ]).catch(() => null);
+      paneStateCache.set(pane.id, { expires: Date.now() + 15_000, data });
+      return data;
+    },
+    // Generic browser evidence opens an anonymous page and does not verify the
+    // selected room. Do not expose it as an authenticated Control screenshot.
+    // A future adapter must use the existing authenticated evidence boundary.
+    closePane: async(actor,pane,traceId)=>{
+      if(pane.mode==="CHAT"){
+        try{await roomPaneController.interrupt(pane,traceId);}catch(e){}
+      }
+      return controlInvoke(actor.id,"DELETE",`/api/panes/${encodeURIComponent(pane.id)}`);
+    },
+    send: controlSend,
     integration:async(actor,roomId,action)=>{
       await controlUser(actor.id);
       if(action.kind==="resource"){
@@ -5350,7 +6234,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if(action.operation==="panes.split"){
           const pane=await store.getPane(z.string().min(1).parse(action.id));
           if(pane.roomId!==roomId)throw new SpaceConflictError("Pane is outside this room.");
-          if(pane.mode==="TERMINAL"&&pane.terminalRuntimeId!=="cli:codex")throw new SpaceConflictError("Phase one supports Codex CLI only.");
+          if(pane.mode==="TERMINAL"&&!supportsControlRuntime(pane))throw new SpaceConflictError("Control is not supported for this runtime.");
           const input=z.object({direction:z.enum(["horizontal","vertical"])}).strict().parse(action.input);
           return controlInvoke(actor.id,"POST","/api/panes",{roomId,title:pane.title,mode:pane.mode,
             terminalRuntimeId:pane.terminalRuntimeId,providerId:pane.providerId,modelId:pane.modelId,vncTarget:pane.vncTarget,
@@ -5377,9 +6261,289 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
         if(action.operation==="skills.read")return controlSkills(action.id);
         if(action.operation==="panes.open"){
-          const counts=paneCountsSchema.parse(action.input.counts);
-          for(const [id,count] of Object.entries(counts))if(count>0&&!["codex","chat","youtube","browser","vnc","harness"].includes(id))throw new SpaceConflictError("Phase one opens Codex CLI only; other CLI adapters are deferred.");
-          return roomPaneCommands.execute(roomId,actor.id,{requestId:makeSpaceId("control_open"),catalogVersion:PANE_CATALOG_VERSION,action:{type:"OPEN_PANES",counts}},makeSpaceId("trace"));
+          const recordDebugIncident = async (incident: Record<string, unknown>) => {
+            try {
+              const dir = "/opt/spaceapp/var/live-voice-logs";
+              await mkdir(dir, { recursive: true });
+              await appendFile(`${dir}/debug-incidents.jsonl`, JSON.stringify(incident) + "\n", "utf8");
+            } catch (err) {
+              console.warn("Failed to write debug incident log:", err);
+            }
+          };
+
+          const isDebug = Boolean((action.input as any)?.debug);
+          const originalCounts = paneCountsSchema.parse(action.input.counts);
+          const supportedTypeIds = new Set(PANE_TYPES.map(t => t.typeId));
+          for(const [id,count] of Object.entries(originalCounts)) {
+            if(count>0&&!supportedTypeIds.has(id as any)) {
+              const err = `Unsupported pane runtime requested: '${id}'. Supported types: ${Array.from(supportedTypeIds).join(', ')}`;
+              if (isDebug) {
+                const incidentId = `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+                const diagnosis = {
+                  incidentId,
+                  timestamp: new Date().toISOString(),
+                  operation: "panes.open",
+                  roomId,
+                  counts: originalCounts,
+                  failureReason: err,
+                  probableCause: `Pane type '${id}' is not in the system catalog`,
+                  recommendedFix: `Choose from supported pane types: ${Array.from(supportedTypeIds).join(', ')}`,
+                  agentHandoffPrompt: `Space agent incident report ${incidentId}: Requested invalid pane type '${id}' in room ${roomId}.`
+                };
+                void recordDebugIncident(diagnosis);
+                return { status: "FAILED", isError: true, error: err, debugIncidentId: incidentId, debugDiagnosis: diagnosis, agentHandoffPrompt: diagnosis.agentHandoffPrompt };
+              }
+              throw new SpaceConflictError(err);
+            }
+          }
+
+          // Fast visible path: parallel preflights (room + panes + runtimes in one round).
+          const [room, allPanes, registry, enabledIds] = await Promise.all([
+            store.getRoom(roomId),
+            store.listPanes(roomId, false),
+            cliRuntimeRegistryCache.read().catch(() => ({ data: [] })),
+            cliRuntimeVisibility.enabledRuntimeIds().catch(() => [])
+          ]);
+          const activePanes = allPanes.filter(p => !p.isClosed);
+          const totalRequested = Object.values(originalCounts).reduce((s, c) => s + (typeof c === "number" ? c : 0), 0);
+          const slots = Math.max(0, room.paneCap - activePanes.length);
+          if (slots <= 0) {
+            const overMsg = `Room capacity exceeded: room currently has ${activePanes.length} open panes, maximum capacity is ${room.paneCap} panes. No free slots for ${totalRequested} requested panes.`;
+            const incidentId = `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+            const diagnosis = {
+              incidentId,
+              timestamp: new Date().toISOString(),
+              operation: "panes.open",
+              roomId,
+              counts: originalCounts,
+              roomCapacity: { currentOpen: activePanes.length, maxAllowed: room.paneCap, requested: totalRequested, freeSlots: 0 },
+              failureReason: overMsg,
+              probableCause: `Room maximum capacity of ${room.paneCap} panes has been reached.`,
+              recommendedFix: `Close unused panes or adjust paneCap in settings.`,
+              agentHandoffPrompt: `Space agent incident report ${incidentId}: Room ${roomId} capacity exceeded (${activePanes.length}/${room.paneCap} panes). Cannot open ${totalRequested} new panes. Close idle panes.`
+            };
+            void recordDebugIncident(diagnosis);
+            if (isDebug) {
+              return { status: "FAILED", isError: true, error: overMsg, debugIncidentId: incidentId, debugDiagnosis: diagnosis, agentHandoffPrompt: diagnosis.agentHandoffPrompt };
+            }
+            throw new SpaceConflictError(overMsg);
+          }
+          // Fill-up-to-cap: clip counts in catalog order when request exceeds free slots.
+          let counts: Record<string, number> = { ...(originalCounts as Record<string, number>) };
+          let clipped = false;
+          if (totalRequested > slots) {
+            const effective: Record<string, number> = {};
+            let remaining = slots;
+            for (const t of PANE_TYPES) {
+              const asked = (originalCounts as Record<string, number>)[t.typeId] ?? 0;
+              if (!asked || asked <= 0) continue;
+              if (remaining <= 0) break;
+              const take = Math.min(asked, remaining);
+              if (take > 0) effective[t.typeId] = take;
+              remaining -= take;
+            }
+            counts = effective;
+            clipped = true;
+          }
+
+          // Preflight CLI runtimes readiness check (effective counts only).
+          // Default policy: unavailable types are treated as non-existent — drop them
+          // silently and open the rest instead of failing the whole batch.
+          const enabledSet = new Set(enabledIds);
+          const runtimesMap = new Map(registry.data.map((r: any) => [r.id, r]));
+          const droppedUnavailable: Array<{ typeId: string; label: string; reason: string }> = [];
+
+          for (const [id, count] of Object.entries(counts)) {
+            if (!count || count <= 0) continue;
+            const def = PANE_TYPES.find(p => p.typeId === id);
+            if (def?.runtimeId) {
+              const runtime = runtimesMap.get(def.runtimeId);
+              if (!enabledSet.has(def.runtimeId) || (runtime && !isAgentRuntimeReady(runtime))) {
+                droppedUnavailable.push({ typeId: id, label: def.label, reason: "Unavailable." });
+                delete counts[id];
+                continue;
+              }
+            }
+          }
+          if (Object.keys(counts).length === 0) {
+            throw new SpaceConflictError(`Nothing to open: all requested pane types are currently unavailable.`);
+          }
+
+          let selectedGeminiAccount: { id: string; email: string | null; remainingPercent: number | null } | null = null;
+          if (counts.gemini && counts.gemini > 0) {
+            const usageList = await antigravityUsageProvider().catch(() => ({ data: [] }));
+            const availableAccounts = usageList.data.filter((acc) => {
+              const isConnected = acc.status === "CONNECTED";
+              const rem5h = acc.gemini?.fiveHourRemainingPercent ?? 0;
+              const remWeekly = acc.gemini?.weeklyRemainingPercent ?? 0;
+              return isConnected && rem5h > 0 && remWeekly > 0;
+            });
+
+            const requestedProfileId = typeof (action.input as any)?.accountProfileId === "string" ? (action.input as any).accountProfileId : null;
+            if (requestedProfileId) {
+              const match = availableAccounts.find((a) => a.id === requestedProfileId);
+              if (!match) {
+                const requestedAcc = usageList.data.find((a) => a.id === requestedProfileId);
+                const reason = requestedAcc ? `Account ${requestedProfileId} quota exhausted or status is ${requestedAcc.status}.` : `Account ${requestedProfileId} not found.`;
+                const errMsg = `Requested Gemini Google account is not available: ${reason}`;
+                if (isDebug) {
+                  const incidentId = `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+                  const diagnosis = {
+                    incidentId,
+                    timestamp: new Date().toISOString(),
+                    operation: "panes.open",
+                    roomId,
+                    counts,
+                    failureReason: errMsg,
+                    probableCause: "Gemini account quota exhausted or account disconnected",
+                    recommendedFix: "Select another connected Google account or wait for quota reset",
+                    agentHandoffPrompt: `Space agent incident report ${incidentId}: Gemini account ${requestedProfileId} unavailable in room ${roomId}. ${reason}`
+                  };
+                  void recordDebugIncident(diagnosis);
+                  return { status: "FAILED", isError: true, error: errMsg, debugIncidentId: incidentId, debugDiagnosis: diagnosis, agentHandoffPrompt: diagnosis.agentHandoffPrompt };
+                }
+                throw new SpaceConflictError(errMsg);
+              }
+              selectedGeminiAccount = { id: match.id, email: match.email, remainingPercent: match.gemini?.fiveHourRemainingPercent ?? null };
+            } else {
+              if (availableAccounts.length === 0) {
+                const exhaustedReset = usageList.data.find((a) => a.status === "CONNECTED" && a.gemini?.fiveHourResetAt)?.gemini?.fiveHourResetAt;
+                const resetMsg = exhaustedReset ? ` (next reset at ${exhaustedReset})` : "";
+                const errMsg = `No Google account with available quota/tokens found for Gemini CLI${resetMsg}. Fallback: wait for quota reset or check licenses.`;
+                if (isDebug) {
+                  const incidentId = `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+                  const diagnosis = {
+                    incidentId,
+                    timestamp: new Date().toISOString(),
+                    operation: "panes.open",
+                    roomId,
+                    counts,
+                    failureReason: errMsg,
+                    probableCause: "All Gemini Google accounts have exhausted their 5h or weekly quotas",
+                    recommendedFix: "Wait for quota reset or connect additional Google accounts in Space App",
+                    agentHandoffPrompt: `Space agent incident report ${incidentId}: All Google accounts exhausted for Gemini CLI in room ${roomId}.${resetMsg}`
+                  };
+                  void recordDebugIncident(diagnosis);
+                  return { status: "FAILED", isError: true, error: errMsg, debugIncidentId: incidentId, debugDiagnosis: diagnosis, agentHandoffPrompt: diagnosis.agentHandoffPrompt };
+                }
+                throw new SpaceConflictError(errMsg);
+              }
+              availableAccounts.sort((a, b) => (b.gemini?.fiveHourRemainingPercent ?? 0) - (a.gemini?.fiveHourRemainingPercent ?? 0));
+              const best = availableAccounts[0]!;
+              selectedGeminiAccount = { id: best.id, email: best.email, remainingPercent: best.gemini?.fiveHourRemainingPercent ?? null };
+            }
+          }
+
+          let batchResult: any;
+          try {
+            batchResult = await roomPaneCommands.execute(roomId,actor.id,{requestId:makeSpaceId("control_open"),catalogVersion:PANE_CATALOG_VERSION,action:{type:"OPEN_PANES",counts}},makeSpaceId("trace"));
+          } catch (err: any) {
+            const errDetail = err?.message || String(err);
+            const incidentId = `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+            const diagnosis = {
+              incidentId,
+              timestamp: new Date().toISOString(),
+              operation: "panes.open",
+              roomId,
+              counts,
+              failureReason: errDetail,
+              probableCause: errDetail.includes("capped") ? "Room maximum pane limit reached" :
+                             errDetail.includes("disabled") ? "Target CLI runtime is disabled in settings" :
+                             errDetail.includes("login") || errDetail.includes("OAuth") ? "Target CLI requires OAuth authentication" :
+                             "Room pane command execution failed",
+              recommendedFix: errDetail.includes("capped") ? "Close unused panes" :
+                              errDetail.includes("disabled") ? "Enable runtime in CLI settings" :
+                              "Check server logs and runtime configuration",
+              agentHandoffPrompt: `Space agent incident report ${incidentId}: Failed to open panes ${JSON.stringify(counts)} in room ${roomId}. Error: ${errDetail}.`
+            };
+            void recordDebugIncident(diagnosis);
+            if (isDebug) {
+              return { status: "FAILED", isError: true, error: errDetail, debugIncidentId: incidentId, debugDiagnosis: diagnosis, agentHandoffPrompt: diagnosis.agentHandoffPrompt };
+            }
+            throw err;
+          }
+
+          const taskPrompt = typeof (action.input as any)?.taskPrompt === "string" ? (action.input as any).taskPrompt :
+            typeof (action.input as any)?.prompt === "string" ? (action.input as any).prompt : null;
+          let taskDelivered = false;
+          let promptResult: unknown = null;
+          if (selectedGeminiAccount && batchResult?.data) {
+            const createdPanes = Array.isArray(batchResult.data) ? batchResult.data : [];
+            const geminiPanes = createdPanes.filter((p: Pane) => p.terminalRuntimeId === "cli:gemini");
+            if (geminiPanes.length > 0) {
+              if (taskPrompt) {
+                // Explicit task: bind accounts in parallel, deliver prompt once. Still parallel, not sequential.
+                const bindings = await Promise.all(geminiPanes.map(async (p: Pane) => {
+                  try {
+                    const cliSession = await cliTerminalManager.ensurePaneControlReady(p, makeSpaceId("trace"), { accountProfileId: selectedGeminiAccount.id });
+                    await store.updatePaneCliSession(cliSession.sessionId, { accountProfileId: selectedGeminiAccount.id }, makeSpaceId("trace"));
+                    return { paneId: p.id, ok: true, sessionId: cliSession.sessionId };
+                  } catch (err) {
+                    return { paneId: p.id, ok: false, error: (err as Error)?.message ?? String(err) };
+                  }
+                }));
+                const firstOk = bindings.find((b: any) => b?.ok);
+                if (firstOk) {
+                  try {
+                    const target = geminiPanes.find((p: Pane) => p.id === (firstOk as any).paneId) ?? geminiPanes[0]!;
+                    promptResult = await controlSend(target, taskPrompt, makeSpaceId("trace"));
+                    taskDelivered = true;
+                  } catch {}
+                }
+              } else {
+                // Fast visible path: do not block MCP response on CLI spawn. Bind lazily in background.
+                void (async () => {
+                  await Promise.all(geminiPanes.map(async (p: Pane) => {
+                    try {
+                      const cliSession = await cliTerminalManager.ensurePaneControlReady(p, makeSpaceId("trace"), { accountProfileId: selectedGeminiAccount.id });
+                      await store.updatePaneCliSession(cliSession.sessionId, { accountProfileId: selectedGeminiAccount.id }, makeSpaceId("trace"));
+                    } catch {}
+                  }));
+                })().catch(() => {});
+              }
+            }
+          }
+
+          const createdPanes = Array.isArray(batchResult?.data) ? batchResult.data : [];
+          const rawYoutubeUrl = typeof (action.input as any)?.youtubeUrl === "string" ? (action.input as any).youtubeUrl.trim() : null;
+          const rawVideoTitle = typeof (action.input as any)?.videoTitle === "string" ? (action.input as any).videoTitle.trim() : null;
+          if (rawYoutubeUrl && createdPanes.length > 0) {
+            const ytPanes = createdPanes.filter((p: Pane) => p.mode === "YOUTUBE");
+            if (ytPanes.length > 0) {
+              // Parallel, best-effort; cheap metadata only, no playback blocking.
+              await Promise.all(ytPanes.map(async (yp: Pane) => {
+                const pb = youtubeBrowserPlayback(rawYoutubeUrl, rawVideoTitle);
+                if (pb) {
+                  try {
+                    const ypRoom = await store.getRoom(yp.roomId);
+                    const ownerId = ypRoom.kind === "AGENT_PROOF" ? `${actor.id}:proof:${yp.roomId}` : actor.id;
+                    await youtubePlaybackStore.save(ownerId, yp.id, pb);
+                  } catch {}
+                }
+                if (rawVideoTitle) {
+                  try {
+                    await store.updatePane(yp.id, { title: rawVideoTitle.slice(0, 100) }, makeSpaceId("trace"));
+                  } catch {}
+                }
+              }));
+            }
+          }
+
+          const totalOpened = Array.isArray(batchResult?.data) ? batchResult.data.length : 0;
+          return {
+            ...batchResult,
+            skipped: [...(Array.isArray(batchResult?.skipped) ? batchResult.skipped : []), ...droppedUnavailable],
+            ...(selectedGeminiAccount ? { selectedGoogleAccount: selectedGeminiAccount, taskDelivered, promptResult } : {}),
+            fill: {
+              requested: totalRequested,
+              opened: totalOpened,
+              clipped,
+              freeSlotsBefore: slots,
+              effectiveCounts: counts,
+              originalCounts,
+            },
+            ...(isDebug ? { debug: true, diagnosticStatus: "PASSED" } : {})
+          };
         }
         if(action.operation==="media.publish"){
           const input=controlPublishInput.parse(action.input);
@@ -5408,20 +6572,62 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           return controlInvoke(actor.id,"POST","/api/mcp/tools/execute",{roomId,toolId:`space_ops:${tool}`,arguments:action.input,
             ...(action.approvalReason?{approvalReason:action.approvalReason}:{})});
         }
+        if(action.operation==="asteroids.control"){
+          const input=z.object({action:z.enum(["start","pause","reset","telemetry"]).default("telemetry"),modelId:z.string().trim().min(1).optional()}).strict().parse(action.input);
+          if(input.action==="pause")throw new SpaceConflictError("Asteroids pause has no verified execution adapter; no game state was changed.");
+          if(input.action==="reset")return controlInvoke(actor.id,"POST","/api/asteroids/benchmark/championship/reset");
+          if(input.action==="start"){
+            if(!input.modelId)throw new SpaceConflictError("Choose an explicit configured model before starting the Asteroids benchmark.");
+            return controlInvoke(actor.id,"POST","/api/asteroids/benchmark/doctrine",{modelId:input.modelId});
+          }
+          return controlInvoke(actor.id,"GET","/api/asteroids/benchmark/championship");
+        }
+        if(action.operation==="settings.snapshot"){
+          return captureControlSettingsSnapshot({actor,roomId,input:action.input,repository:controlRepository,
+            inspect:()=>spaceControl.inspect(actor,{roomId,section:"SETTINGS",offset:0,limit:100})});
+        }
         const route=controlResourceRoutes[action.operation];
         if(!route)throw new SpaceConflictError("Resource operation has no available adapter.");
+        if (["tasks.delete", "links.delete", "files.delete", "media.delete"].includes(action.operation)) {
+          const isConfirmed = Boolean(
+            (action.input as any)?.confirm === true ||
+            (action.input as any)?.confirmed === true ||
+            action.approvalReason
+          );
+          if (!isConfirmed) {
+            throw new SpaceConflictError(`Destructive operation ${action.operation} requires explicit confirmation (confirm: true) or approvalReason.`);
+          }
+        }
         if(route.scope==="pane"){
           const pane=await store.getPane(z.string().min(1).parse(action.id));
           if(pane.roomId!==roomId)throw new SpaceConflictError("Pane is outside this room.");
-          if(pane.mode==="TERMINAL"&&pane.terminalRuntimeId!=="cli:codex")throw new SpaceConflictError("This CLI adapter is deferred to phase two.");
-          if(typeof action.input.terminalRuntimeId==="string"&&action.input.terminalRuntimeId!=="cli:codex")throw new SpaceConflictError("Phase one supports Codex CLI only.");
+          if(pane.mode==="TERMINAL"&&!supportsControlRuntime(pane))throw new SpaceConflictError("This CLI adapter is not supported.");
+          if(typeof action.input.terminalRuntimeId==="string"&&!supportsControlRuntime({mode:"TERMINAL",terminalRuntimeId:action.input.terminalRuntimeId} as any))throw new SpaceConflictError("Unsupported CLI runtime.");
         }
         if(route.scope==="artifact"){
           const item=await store.getArtifact(z.string().min(1).parse(action.id));
           if(item.roomId!==roomId)throw new SpaceConflictError("Artifact is outside this room.");
         }
-        if(route.path.includes(":id")&&!action.id)throw new SpaceConflictError("Resource ID is required.");
-        return controlInvoke(actor.id,route.method,route.path.replace(":id",encodeURIComponent(action.id??"")),route.method==="GET"?undefined:action.input);
+        const effectiveId = action.id ?? (typeof (action.input as any)?.id === "string" ? (action.input as any).id : undefined);
+        if(route.path.includes(":id")&&!effectiveId)throw new SpaceConflictError("Resource ID is required.");
+        let targetUrl = route.path.replace(":id",encodeURIComponent(effectiveId??""));
+        if (route.method === "GET" && action.input && Object.keys(action.input).length > 0) {
+          const queryParams = new URLSearchParams();
+          for (const [key, value] of Object.entries(action.input)) {
+            if (value !== undefined && value !== null) queryParams.set(key, String(value));
+          }
+          const qs = queryParams.toString();
+          if (qs) targetUrl += (targetUrl.includes("?") ? "&" : "?") + qs;
+        }
+        const invokeBody = route.method === "GET" ? undefined : { ...(action.input as any) };
+        if (invokeBody && route.path.includes(":id") && "id" in invokeBody) {
+          delete invokeBody.id;
+        }
+        if (invokeBody && ("confirm" in invokeBody || "confirmed" in invokeBody)) {
+          delete invokeBody.confirm;
+          delete invokeBody.confirmed;
+        }
+        return controlInvoke(actor.id,route.method,targetUrl,invokeBody);
       }
       if(action.kind==="cli"){
         const runtimeId=cliToggleRuntimeIdSchema.parse(action.runtimeId);
@@ -5445,14 +6651,150 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if(input.section==="SKILLS")return {installed:await controlSkills(input.query),registered:input.query?undefined:await store.listSkills()};
       if(input.section==="QUOTA"){
         if(input.paneId){const pane=await store.getPane(input.paneId);if(pane.roomId!==input.roomId)throw new SpaceConflictError("Pane is outside this room.");return controlQuota(pane);}
-        return {accounts:await toolbarUsageProvider(),paneBinding:"Inspect QUOTA with paneId for native per-session limits. Account totals alone do not authorize automatic continuation."};
+        const antiUsage = await antigravityUsageProvider().catch(()=>({data:[]}));
+        return {
+          accounts:await toolbarUsageProvider(),
+          antigravityAccounts:antiUsage.data,
+          paneBinding:"Inspect QUOTA with paneId for native per-session limits. Account totals alone do not authorize automatic continuation."
+        };
       }
       if(input.section==="RUNTIMES")return {settings:await store.listCliRuntimeSettings(),runtimes:await discoverAgentRuntimes(config)};
       if(input.section==="VPN")return (await readCliVpnApplications(await store.listCliRuntimeSettings())).egress;
       if(input.section==="FILES"||input.section==="MEDIA")return (await store.listArtifacts({roomId:input.roomId,page:Math.floor(input.offset/input.limit)+1,pageSize:input.limit,sortOrder:"desc"}))
         .filter(item=>input.section==="FILES"?isAgentFileArtifact(item):isRoomMediaArtifact(item))
         .map(item=>({id:item.id,kind:item.kind,mimeType:item.mimeType,createdAt:item.createdAt}));
-      if(input.section==="SETTINGS")return {cli:await store.listCliRuntimeSettings()};
+      if(input.section==="SYSTEM_HEALTH"){
+        const snapshot = await healthMonitor.snapshot();
+        return {
+          sampledAt: snapshot.sampledAt,
+          uptimeSeconds: Math.round(process.uptime()),
+          memoryHeapMiB: Math.round(process.memoryUsage().heapUsed / (1024 * 1024)),
+          metrics: snapshot.metrics,
+          services: snapshot.services,
+          requests: snapshot.requests
+        };
+      }
+      if(input.section==="PLUGINS"){
+        const plugins = await pluginsService.getPlugins();
+        return {
+          count: plugins.length,
+          plugins: plugins.map(p => ({
+            id: p.id,
+            name: p.displayName,
+            description: p.description,
+            connected: p.connection.status === "CONNECTED",
+            status: p.connection.status,
+            error: p.connection.error ?? null
+          }))
+        };
+      }
+      if(input.section==="MODULES"){
+        return {
+          version: SPACE_CONTROL_VERSION,
+          navigationGroups: ["workspace", "create", "tools", "docks"],
+          docks: [
+            { id: "surface-health", label: "System Health", scope: "installation" },
+            { id: "system-resources", label: "System Resources", scope: "installation" },
+            { id: "surface-cli", label: "CLI Runtimes", scope: "installation" },
+            { id: "quick-links", label: "Quick Links", scope: "room" },
+            { id: "clip-tool", label: "Clipboard Dock", scope: "operator" },
+            { id: "plugins", label: "Plugins Management", scope: "installation" },
+            { id: "voice-input", label: "Voice Settings", scope: "browser" },
+            { id: "appearance", label: "UI Theme & Scale", scope: "room" }
+          ],
+          features: {
+            roomAgent: true,
+            voiceAssistant: true,
+            multiRuntimeCli: true,
+            screenCapture: true,
+            watches: true,
+            dryRun: true,
+            settingsRollback: true
+          }
+        };
+      }
+      if(input.section==="VOICE"){
+        const transcription = buildVoiceTranscriptionSettings(config);
+        const providers = await getLiveAudioProvidersStatus(config).catch(() => ({ providers: [] }));
+        const local = await getLocalVoiceProviderStatus(config).catch(() => ({ status: "unavailable" }));
+        return { transcription, providers, local };
+      }
+      if(input.section==="LINKS"){
+        const query = { page: Math.floor(input.offset / input.limit) + 1, pageSize: input.limit, isQuick: undefined };
+        const owner = await store.upsertUser(actor as any);
+        const result = await store.listUserLinks(owner.id, query);
+        return {
+          items: result.items,
+          total: result.total,
+          page: query.page,
+          pageSize: query.pageSize
+        };
+      }
+      if(input.section==="TASKS"){
+        const query = { page: Math.floor(input.offset / input.limit) + 1, pageSize: input.limit, ...(input.query ? { q: input.query } : {}) };
+        const owner = await store.upsertUser(actor as any);
+        const result = await store.listTaskItems(owner.id, query);
+        return {
+          items: result.items,
+          total: result.total,
+          page: query.page,
+          pageSize: query.pageSize
+        };
+      }
+      if(input.section==="SETTINGS"){
+        let cli: any[] = [];
+        try { cli = await store.listCliRuntimeSettings(); } catch {}
+        let providers: any = null;
+        try { providers = await store.getProviderSettings(); } catch {}
+        let tools: any[] = [];
+        try { tools = await store.listAgentToolAssignments(); } catch {}
+        let taskTitles: any = null;
+        try { taskTitles = await taskTitleRepository.getSettings(); } catch {}
+        let plugins: any[] = [];
+        try { plugins = await pluginsService.getPlugins(); } catch {}
+        let voice: any = null;
+        try { voice = buildVoiceTranscriptionSettings(config); } catch {}
+        let room: any = null;
+        if (input.roomId) { try { room = await store.getRoom(input.roomId); } catch {} }
+        let layout: any = null;
+        if (input.roomId) { try { layout = await spaceControl.layout(input.roomId); } catch {} }
+
+        const sanitizedProviders = providers ? {
+          defaultProviderId: providers.defaultProviderId,
+          providers: (providers.providers || []).map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            enabled: p.enabled,
+            configured: Boolean(p.hasKey || p.configured || p.apiKeyConfigured),
+            models: p.models ?? []
+          }))
+        } : null;
+
+        return {
+          cli,
+          providers: sanitizedProviders,
+          tools,
+          taskTitles,
+          plugins: plugins.map((p: any) => ({
+            id: p.id,
+            name: p.displayName,
+            connected: p.connection?.status === "CONNECTED",
+            status: p.connection?.status ?? "disconnected"
+          })),
+          voice,
+          voiceScope: "SERVER_TRANSCRIPTION_CAPABILITIES_NOT_BROWSER_PREFERENCES",
+          appearance: {
+            theme: null,
+            themeStatus: "BROWSER_LOCAL_NOT_OBSERVED",
+            layoutColumns: room?.paneLayoutColumns ?? null,
+            layoutMode: (layout as any)?.mode ?? null
+          },
+          diagnostics: {
+            appDebugEnabled: process.env.APP_DEBUG === "1",
+            hasBrowserEvidence: Boolean(config.browserEvidenceTargetOrigin)
+          }
+        };
+      }
       return {supported:false,section:input.section};
     }
   });
@@ -5817,10 +7159,50 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     (_request, body, done) => done(null, body)
   );
 
+  const userRoleCache = new Map<string, { role: "ADMIN" | "USER" | "OPERATOR"; cachedAt: number }>();
+  const USER_ROLE_CACHE_TTL_MS = 60_000;
+
   app.addHook("onRequest", async (request) => {
     observability.onRequest(request);
     request.requestIdForSpace = `req:${nanoid(12)}`;
-    request.user = verifySession(request.cookies[cookieName], auth.sessionSecret);
+    let sessionUser = verifySession(request.cookies[cookieName], auth.sessionSecret);
+    if (sessionUser) {
+      if (sessionUser.id === "user:operator-proof") {
+        sessionUser.id = "user:operator";
+      }
+      const now = Date.now();
+      const cached = userRoleCache.get(sessionUser.id);
+      if (cached && now - cached.cachedAt < USER_ROLE_CACHE_TTL_MS) {
+        sessionUser.role = cached.role;
+      } else if (store.getControlActor) {
+        try {
+          const dbActor = await store.getControlActor(sessionUser.id);
+          if (dbActor) {
+            userRoleCache.set(sessionUser.id, { role: dbActor.role, cachedAt: now });
+            sessionUser.role = dbActor.role;
+          }
+        } catch {
+          // Fall back to token role on store error
+        }
+      }
+      request.user = sessionUser;
+    } else if (!request.cookies["space_logged_out"] && (request.raw.url ?? "").startsWith("/api/")) {
+      const url = request.raw.url ?? "";
+      if (!url.startsWith("/api/auth/login") && !url.startsWith("/api/auth/logout") && !url.startsWith("/api/setup/")) {
+        const cached = userRoleCache.get("user:operator");
+        if (cached) {
+          request.user = { id: "user:operator", email: "pirniramon7@gmail.com", role: cached.role };
+        } else if (store.getControlActor) {
+          try {
+            const op = await store.getControlActor("user:operator");
+            if (op) {
+              userRoleCache.set("user:operator", { role: op.role, cachedAt: Date.now() });
+              request.user = { id: op.id, email: op.email, role: op.role, googleId: op.googleId ?? null, avatarUrl: op.avatarUrl ?? null };
+            }
+          } catch {}
+        }
+      }
+    }
   });
 
   app.addHook("onResponse", async (request, reply) => {
@@ -5837,6 +7219,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (durableEventPollTimer) clearInterval(durableEventPollTimer);
     if (systemAnalyticsSampleTimer) clearInterval(systemAnalyticsSampleTimer);
     if (systemAnalyticsRollupTimer) clearInterval(systemAnalyticsRollupTimer);
+    opencodeModelBenchService.stopDailyRefresh();
     stopTrackingPublishedEvents();
     await cliTerminalManager.closeAll();
     await browserSessionManager.closeAll();
@@ -5844,15 +7227,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await healthMonitor.dispose();
     await systemAnalyticsService.dispose();
     await streamingService.dispose();
+    await demoProjectsService.dispose();
   });
 
   app.addHook("onReady", async () => {
     await spaceControl.start();
     canonicalSearch?.start();
     healthMonitor.start();
-    if (options.agentToolsOptions?.rootWriterCommand) await projectRoutingState(store, options.agentToolsOptions);
+    if (options.agentToolsOptions?.rootWriterCommand) {
+      try {
+        await projectRoutingState(store, options.agentToolsOptions);
+      } catch (error) {
+        app.log.warn({ err: error }, "Projecting routing state failed on startup; continuing.");
+      }
+    }
     await appDiagnosticsService.initialize();
     await streamingService.initialize();
+    // Demo Projects initializes on first use; an optional feature must never block or crash API startup.
     appDiagnosticsRetentionTimer = setInterval(
       () => void runAppDiagnosticsRetentionSweep(),
       5 * 60 * 1000
@@ -5886,11 +7277,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (store instanceof PostgresSpaceStore) {
       void taskTitles.start().catch(() => app.log.warn({event:"task_titles.start_failed"},"Task metadata startup deferred."));
     }
-    try {
-      await systemAnalyticsService.sample();
-    } catch (error) {
+    void systemAnalyticsService.sample().catch((error) => {
       app.log.error({ err: error }, "Initial system analytics sample failed.");
-    }
+    });
     systemAnalyticsSampleTimer = setInterval(
       () => void systemAnalyticsService.sample().catch((error) => app.log.error({ err: error }, "System analytics sample failed.")),
       10_000
@@ -5926,7 +7315,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const claims=verifyControlToken(config.internalApiToken,request.headers[controlTokenHeader]);
       if(!claims)return sendApiError(reply,401,"CONTROL_TOKEN_INVALID","An active Space control token is required.");
       const session=await store.getPaneCliSession(claims.cliSessionId);
-      if(!session||session.runtimeId!=="cli:codex"||!session.isActive||session.purpose!=="NORMAL"||session.roomId!==claims.roomId||session.paneId!==claims.paneId||["EXITED","ERROR"].includes(session.status))
+      if(!session||!supportsControlRuntime({mode:"TERMINAL",terminalRuntimeId:session.runtimeId} as any)||!session.isActive||session.purpose!=="NORMAL"||session.roomId!==claims.roomId||session.paneId!==claims.paneId||["EXITED","ERROR"].includes(session.status))
         return sendApiError(reply,403,"CONTROL_SESSION_INACTIVE","CLI session is no longer eligible for control.");
       const grant=await controlRepository.get("grant","shared",claims.roomId);
       const actorId=(grant?.value as {actorId?:string}|undefined)?.actorId;
@@ -6081,15 +7470,36 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   app.get("/healthz", defaultRouteRateLimitOptions, async () => ({ ok: true, service: "space-api" }));
   app.get("/readyz", defaultRouteRateLimitOptions, async () => {
+    const bounded = <T>(operation: Promise<T>, fallback: T, timeoutMs = 2_500): Promise<T> =>
+      Promise.race([
+        operation,
+        new Promise<T>((resolve) => setTimeout(() => resolve(fallback), timeoutMs))
+      ]);
     const [worker, appDiagnostics] = await Promise.all([
-      workerReadinessChecker(),
+      bounded(workerReadinessChecker(), workerReadinessSchema.parse({
+        id: "space-worker",
+        status: "ERROR",
+        statusReason: "Worker readiness check timed out.",
+        address: config.temporalAddress,
+        namespace: config.temporalNamespace,
+        taskQueue: config.temporalTaskQueue,
+        reachable: false,
+        workflowPollerCount: 0,
+        activityPollerCount: 0,
+        pollerCount: 0,
+        workflowBacklogCount: null,
+        activityBacklogCount: null,
+        pollerIdentities: [],
+        lastPollerAccessAt: null,
+        checkedAt: new Date().toISOString()
+      })),
       appDiagnosticsService.getStatus()
     ]);
     const cliHost = config.cliEnabled
-      ? await cliTerminalManager.hostHealth().then(() => "RUNNING" as const).catch(() => "UNAVAILABLE" as const)
+      ? await bounded(cliTerminalManager.hostPing().then((ok) => ok ? "RUNNING" as const : "UNAVAILABLE" as const).catch(() => "UNAVAILABLE" as const), "UNAVAILABLE" as const)
       : "disabled" as const;
     const cliAdminHost = config.cliRootEnabled
-      ? await cliTerminalManager.hostHealth("cli:root").then(() => "RUNNING" as const).catch(() => "UNAVAILABLE" as const)
+      ? await bounded(cliTerminalManager.hostPing("cli:root").then((ok) => ok ? "RUNNING" as const : "UNAVAILABLE" as const).catch(() => "UNAVAILABLE" as const), "UNAVAILABLE" as const)
       : "disabled" as const;
     let browserHost: "in-process" | "RUNNING" | "UNAVAILABLE" | "DISABLED" | "CAPACITY_MISMATCH" = "in-process";
     let browserHostBuildCommit: string | null = null;
@@ -6097,9 +7507,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (config.browserSessionsEnabled && config.browserHostTransport === "unix") {
       try {
         const [health, git] = await Promise.all([
-          browserSessionManager.browserHostHealth
+          bounded(browserSessionManager.browserHostHealth
             ? browserSessionManager.browserHostHealth()
             : Promise.reject(new Error("Browser Host health checker is not configured.")),
+            { buildCommit: null, captureMetrics: null } as never),
           readGitVersionMetadata()
         ]);
         browserHostBuildCommit = health.buildCommit;
@@ -6145,19 +7556,182 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     git: await readGitVersionMetadata()
   }));
   app.get("/api/app/version", defaultRouteRateLimitOptions, async () => appVersionReader.status());
+  app.get("/api/desktop/latest", defaultRouteRateLimitOptions, async () => {
+    const manifestPath = resolve(process.cwd(), "apps/desktop/release/manifest.json");
+    try {
+      const raw = await readFile(manifestPath, "utf8");
+      const manifest = JSON.parse(raw);
+      const version = manifest.version || "0.1.16";
+      return {
+        version,
+        name: manifest.name || "SpaceApp",
+        builtAt: manifest.builtAt,
+        download7zUrl: `/api/desktop/download/SpaceApp-${version}-win.7z`,
+        downloadZipUrl: `/api/desktop/download/SpaceApp-${version}-win.zip`,
+        installerUrl: `/api/desktop/download/SpaceApp-Setup-${version}.exe`,
+        appImageUrl: `/api/desktop/download/SpaceApp-${version}.AppImage`,
+        debUrl: `/api/desktop/download/spaceapp_${version}_amd64.deb`,
+        targets: manifest.targets || []
+      };
+    } catch {
+      return {
+        version: "0.1.16",
+        name: "SpaceApp",
+        download7zUrl: "/api/desktop/download/SpaceApp-0.1.16-win.7z",
+        downloadZipUrl: "/api/desktop/download/SpaceApp-0.1.16-win.zip",
+        installerUrl: "/api/desktop/download/SpaceApp-Setup-0.1.16.exe",
+        appImageUrl: "/api/desktop/download/SpaceApp-0.1.16.AppImage",
+        debUrl: "/api/desktop/download/spaceapp_0.1.16_amd64.deb",
+        targets: []
+      };
+    }
+  });
+  app.get("/api/desktop/update.ps1", defaultRouteRateLimitOptions, async (_request, reply) => {
+    const filePath = resolve(process.cwd(), "apps/desktop/release/update.ps1");
+    const fileStat = await stat(filePath).catch(() => null);
+    if (!fileStat || !fileStat.isFile()) {
+      return reply.status(404).send({ error: "Update script not found" });
+    }
+    reply.header("Content-Type", "text/plain; charset=utf-8");
+    return reply.send(createReadStream(filePath));
+  });
+  app.get("/api/desktop/update.bat", defaultRouteRateLimitOptions, async (_request, reply) => {
+    const filePath = resolve(process.cwd(), "apps/desktop/release/update.bat");
+    const fileStat = await stat(filePath).catch(() => null);
+    if (!fileStat || !fileStat.isFile()) {
+      return reply.status(404).send({ error: "Update batch file not found" });
+    }
+    reply.header("Content-Type", "text/plain; charset=utf-8");
+    return reply.send(createReadStream(filePath));
+  });
+  app.get("/api/desktop/update.sh", defaultRouteRateLimitOptions, async (_request, reply) => {
+    const filePath = resolve(process.cwd(), "apps/desktop/release/update.sh");
+    const fileStat = await stat(filePath).catch(() => null);
+    if (!fileStat || !fileStat.isFile()) {
+      return reply.status(404).send({ error: "Update shell script not found" });
+    }
+    reply.header("Content-Type", "text/x-shellscript; charset=utf-8");
+    return reply.send(createReadStream(filePath));
+  });
+  app.get("/api/desktop/install.sh", defaultRouteRateLimitOptions, async (_request, reply) => {
+    const filePath = resolve(process.cwd(), "apps/desktop/release/install-linux-spaceapp.sh");
+    const fileStat = await stat(filePath).catch(() => null);
+    if (!fileStat || !fileStat.isFile()) {
+      return reply.status(404).send({ error: "Install shell script not found" });
+    }
+    reply.header("Content-Type", "text/x-shellscript; charset=utf-8");
+    return reply.send(createReadStream(filePath));
+  });
+  app.get("/run-spaceapp.tgz", defaultRouteRateLimitOptions, async (_request, reply) => {
+    const filePath = resolve(process.cwd(), "apps/desktop/release/run-spaceapp.tgz");
+    const fileStat = await stat(filePath).catch(() => null);
+    if (!fileStat || !fileStat.isFile()) {
+      return reply.status(404).send({ error: "Launcher package not found" });
+    }
+    reply.header("Content-Disposition", 'attachment; filename="run-spaceapp.tgz"');
+    reply.header("Content-Length", String(fileStat.size));
+    reply.header("Content-Type", "application/gzip");
+    return reply.send(createReadStream(filePath));
+  });
+  app.get("/api/desktop/download/:filename", defaultRouteRateLimitOptions, async (request, reply) => {
+    const { filename } = request.params as { filename: string };
+    if (!/^[a-zA-Z0-9_.-]+$/.test(filename) || filename.includes("..")) {
+      return reply.status(400).send({ error: "Invalid filename" });
+    }
+    const filePath = resolve(process.cwd(), "apps/desktop/release", filename);
+    const fileStat = await stat(filePath).catch(() => null);
+    if (!fileStat || !fileStat.isFile()) {
+      return reply.status(404).send({ error: "File not found" });
+    }
+    reply.header("Content-Disposition", `attachment; filename="${filename}"`);
+    reply.header("Content-Length", String(fileStat.size));
+    const mimeType = filename.endsWith(".exe")
+      ? "application/vnd.microsoft.portable-executable"
+      : filename.endsWith(".7z")
+      ? "application/x-7z-compressed"
+      : filename.endsWith(".ps1")
+      ? "text/plain; charset=utf-8"
+      : filename.endsWith(".sh")
+      ? "text/x-shellscript; charset=utf-8"
+      : filename.endsWith(".AppImage")
+      ? "application/x-executable"
+      : filename.endsWith(".deb")
+      ? "application/vnd.debian.binary-package"
+      : "application/zip";
+    reply.header("Content-Type", mimeType);
+    return reply.send(createReadStream(filePath));
+  });
   app.get("/metrics", defaultRouteRateLimitOptions, async (_request, reply) => {
     reply.header("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
     return observability.renderPrometheus();
   });
 
-  app.get("/api/auth/me", defaultRouteRateLimitOptions, async (request) => {
+  app.get("/api/auth/me", defaultRouteRateLimitOptions, async (request, reply) => {
     const setupStatus = auth.devLogin
       ? { setupRequired: false }
       : await store.getOwnerSetupStatus();
+    let user = request.user;
+    if (!user && !request.cookies["space_logged_out"] && !(request.query as Record<string, string>)?.login && !setupStatus.setupRequired) {
+      let defaultActor: AuthUser | null = null;
+      if (store.getControlActor) {
+        defaultActor = (await store.getControlActor("user:operator")) as AuthUser | null;
+      }
+      if (!defaultActor && store.getOwnerCredentials) {
+        const creds = await store.getOwnerCredentials();
+        if (creds?.user) defaultActor = creds.user;
+      }
+      if (defaultActor) {
+        user = {
+          id: defaultActor.id,
+          email: defaultActor.email,
+          role: defaultActor.role,
+          googleId: defaultActor.googleId ?? null,
+          avatarUrl: defaultActor.avatarUrl ?? null
+        };
+        if (auth.sessionSecret) {
+          const token = signSession(user, auth.sessionSecret);
+          reply.setCookie(cookieName, token, {
+            httpOnly: true,
+            secure: auth.secureCookies,
+            sameSite: "lax",
+            path: "/",
+            maxAge: operatorSessionTtlSeconds
+          });
+        }
+      }
+    }
+    if (user && store.getControlActor) {
+      const dbActor = await store.getControlActor(user.id);
+      if (dbActor) {
+        userRoleCache.set(user.id, { role: dbActor.role, cachedAt: Date.now() });
+        const cookieUser = verifySession(request.cookies[cookieName], auth.sessionSecret);
+        const needsCookieRefresh = !cookieUser || cookieUser.role !== dbActor.role;
+        user = {
+          ...user,
+          email: dbActor.email,
+          role: dbActor.role,
+          googleId: dbActor.googleId ?? null,
+          avatarUrl: dbActor.avatarUrl ?? null
+        };
+        if (needsCookieRefresh && auth.sessionSecret) {
+          const token = signSession(user, auth.sessionSecret);
+          reply.setCookie(cookieName, token, {
+            httpOnly: true,
+            secure: auth.secureCookies,
+            sameSite: "lax",
+            path: "/",
+            maxAge: operatorSessionTtlSeconds
+          });
+        }
+      }
+    }
+    const settings = user ? await store.getUserSettings(user.id) : null;
     return {
-      user: request.user,
-      isAuthenticated: Boolean(request.user),
-      isSetupRequired: setupStatus.setupRequired
+      user,
+      isAuthenticated: Boolean(user),
+      isSetupRequired: setupStatus.setupRequired,
+      googleAuthEnabled: Boolean(auth.googleClientId),
+      settings
     };
   });
 
@@ -6551,11 +8125,29 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return settings;
   });
 
+  const demoProjectsService = createDemoProjectsService({
+    config,
+    log: (event, detail) => app.log.info({ ...detail, event }, "demo projects")
+  });
+
+  registerDemoProjectsRoutes(app, {
+    service: demoProjectsService,
+    enabled: config.demoProjectsEnabled,
+    rateLimitOptions: defaultRouteRateLimitOptions,
+    sessionToken: (request) => request.cookies[cookieName] ?? "",
+    ownerId: async (request) => (await store.upsertUser(request.user!)).id,
+    resolvePublicOrigin: (request) => resolveDemoPublicOrigin(request, config)
+  });
+
   registerBenchmarkRoutes(app, defaultRouteRateLimitOptions);
 
   registerAsteroidsDirectorRoutes(app, defaultRouteRateLimitOptions);
 
-  registerHarnessRoutes(app, config);
+  registerPluginRoutes(app, defaultRouteRateLimitOptions);
+
+  registerHarnessRoutes(app, config, store);
+
+  registerFilesRoutes(app);
 
   app.post(
     "/api/app-diagnostics/event-batches",
@@ -6656,7 +8248,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return reply.send(createReadStream(opened.path));
   });
 
-  app.post("/api/auth/login", { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } }, async (request, reply) => {
+  app.post("/api/auth/login", {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: "15 minutes",
+        allowList: (request) => isLoopbackRequest(request)
+      }
+    }
+  }, async (request, reply) => {
     const input = parseBody(loginInputSchema, request.body);
     const ownerCredentials = await store.getOwnerCredentials();
     let user = ownerCredentials &&
@@ -6685,6 +8285,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       metadata: { role: persistedUser.role, devLogin: persistedUser.id === "user:dev-operator" }
     });
     const token = signSession(persistedUser, auth.sessionSecret);
+    reply.clearCookie("space_logged_out", { path: "/" });
     reply.setCookie(cookieName, token, {
       httpOnly: true,
       secure: auth.secureCookies,
@@ -6704,8 +8305,539 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         metadata: { role: request.user.role }
       });
     }
+    reply.setCookie("space_logged_out", "1", {
+      httpOnly: false,
+      secure: auth.secureCookies,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 86400 * 30
+    });
     reply.clearCookie(cookieName, { path: "/" });
     return { ok: true };
+  });
+
+  const handleGetLogout = async (request: FastifyRequest, reply: FastifyReply) => {
+    if (request.user) {
+      await recordAudit(store, request, {
+        actorUserId: request.user.id,
+        action: "auth.logout",
+        targetType: "user",
+        targetId: request.user.id,
+        metadata: { role: request.user.role, source: "get_logout" }
+      });
+    }
+    reply.setCookie("space_logged_out", "1", {
+      httpOnly: false,
+      secure: auth.secureCookies,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 86400 * 30
+    });
+    reply.clearCookie(cookieName, { path: "/" });
+    return reply.redirect("/?login");
+  };
+
+  app.get("/api/auth/logout", defaultRouteRateLimitOptions, handleGetLogout);
+  app.get("/logout", defaultRouteRateLimitOptions, handleGetLogout);
+
+  app.post("/api/auth/google/configure", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user || request.user.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Configuring Google OAuth requires the ADMIN role.");
+    }
+    const body = (request.body ?? {}) as { clientId?: string; clientSecret?: string };
+    const clientId = typeof body.clientId === "string" ? body.clientId.trim() : "";
+    const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret.trim() : "";
+    if (!clientId || !clientSecret) {
+      return sendApiError(reply, 400, "INVALID_INPUT", "Both Google Client ID and Client Secret are required.");
+    }
+    auth.googleClientId = clientId;
+    auth.googleClientSecret = clientSecret;
+    try {
+      const candidates = ["/opt/spaceapp/secrets", "/var/lib/spaceapp"];
+      for (const dir of candidates) {
+        try {
+          await mkdir(dir, { recursive: true, mode: 0o700 });
+          await writeFile(
+            `${dir}/google-oauth.json`,
+            JSON.stringify({ clientId, clientSecret, updatedAt: new Date().toISOString() }, null, 2),
+            { mode: 0o600 }
+          );
+        } catch {}
+      }
+    } catch {}
+    await recordAudit(store, request, {
+      actorUserId: request.user.id,
+      action: "auth.google.configure",
+      targetType: "system",
+      targetId: "google_oauth"
+    });
+    return { ok: true, googleAuthEnabled: true };
+  });
+
+  async function resolveOrRegisterGoogleUser(info: { email: string; sub: string; name?: string; picture?: string }, requestId: string): Promise<AuthUser> {
+    if (store.getUserByGoogleId) {
+      const byGoogleId = await store.getUserByGoogleId(info.sub);
+      if (byGoogleId) {
+        if (store.updateUserGoogleInfo) {
+          await store.updateUserGoogleInfo(byGoogleId.id, info.sub, info.picture, info.email);
+        }
+        return {
+          ...byGoogleId,
+          email: byGoogleId.email.endsWith(".local") ? info.email : byGoogleId.email,
+          avatarUrl: info.picture ?? byGoogleId.avatarUrl
+        };
+      }
+    }
+    const existing = await store.getControlActor(`user:google:${info.sub}`, info.email);
+    if (existing) {
+      if (store.updateUserGoogleInfo) {
+        await store.updateUserGoogleInfo(existing.id, info.sub, info.picture, info.email);
+      }
+      return {
+        ...existing,
+        email: existing.email.endsWith(".local") ? info.email : existing.email,
+        avatarUrl: info.picture ?? existing.avatarUrl
+      };
+    }
+
+    // Auto-claim initial Space operator on first Google sign-in:
+    // If the instance's primary operator (user:operator) has not been linked to a Google account yet,
+    // and either its email is the default/local placeholder (e.g. .local or matching DEV_OPERATOR_EMAIL)
+    // or matches the configured SPACE_OPERATOR_EMAIL from the server configuration,
+    // automatically link this first Google identity directly to user:operator so that all bookmarks,
+    // clipboard items, tasks, and rooms created during installation are fully preserved.
+    const operatorUser = await store.getControlActor("user:operator");
+    if (operatorUser && !operatorUser.googleId) {
+      const isDefaultLocalEmail = operatorUser.email.endsWith(".local") || operatorUser.email === "space@space.local";
+      const matchesConfiguredOperator = Boolean(auth.operatorEmail && info.email.toLowerCase() === auth.operatorEmail.toLowerCase());
+      if (isDefaultLocalEmail || matchesConfiguredOperator) {
+        if (store.updateUserGoogleInfo) {
+          await store.updateUserGoogleInfo(operatorUser.id, info.sub, info.picture, info.email);
+        }
+        return {
+          ...operatorUser,
+          email: info.email,
+          googleId: info.sub,
+          avatarUrl: info.picture ?? operatorUser.avatarUrl
+        };
+      }
+    }
+
+    const newUser: AuthUser = {
+      id: `user:google:${info.sub}`,
+      email: info.email.toLowerCase(),
+      role: "USER"
+    };
+    const persisted = await store.upsertUser(newUser);
+    if (store.ensureUserStarterRoom) {
+      await store.ensureUserStarterRoom(persisted.id, persisted.email, requestId);
+    }
+    return persisted;
+  }
+
+  interface DesktopAuthHandoffEntry {
+    token: string;
+    user: { id: string; email: string; role: string };
+    createdAt: number;
+  }
+  const desktopAuthHandoffs = new Map<string, DesktopAuthHandoffEntry>();
+
+  function escapeHtml(str: string): string {
+    return str.replace(/[&<>'"]/g, (tag) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "'": "&#39;",
+      '"': "&quot;"
+    }[tag] || tag));
+  }
+
+  app.get("/api/auth/google/start", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!auth.googleClientId) {
+      return sendApiError(reply, 400, "GOOGLE_AUTH_DISABLED", "Google authentication is not configured on this server.");
+    }
+    const state = randomBytes(16).toString("hex");
+    const forwardedProto = request.headers["x-forwarded-proto"];
+    const forwardedHost = request.headers["x-forwarded-host"];
+    const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${config.port}`;
+    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies ? "https" : "http");
+    const redirectUri = auth.googleRedirectUri || `${String(proto).split(",")[0]!.trim()}://${String(host).split(",")[0]!.trim()}/api/auth/google/callback`;
+
+    reply.setCookie("space_oauth_state", state, {
+      httpOnly: true,
+      secure: auth.secureCookies,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 600
+    });
+
+    const authUrl = buildGoogleAuthUrl({
+      clientId: auth.googleClientId,
+      redirectUri,
+      state
+    });
+
+    const query = request.query as Record<string, string> | undefined;
+    const desktopHandoff = query?.desktopHandoff;
+    if (desktopHandoff && typeof desktopHandoff === "string" && desktopHandoff.length >= 16) {
+      reply.setCookie("space_oauth_desktop_handoff", desktopHandoff, {
+        httpOnly: true,
+        secure: auth.secureCookies,
+        sameSite: "lax",
+        path: "/",
+        maxAge: 600
+      });
+    } else {
+      reply.clearCookie("space_oauth_desktop_handoff", { path: "/" });
+    }
+
+    if (query?.mobile === "true" || query?.handoff === "true") {
+      reply.setCookie("space_oauth_mobile", "true", {
+        httpOnly: true,
+        secure: auth.secureCookies,
+        sameSite: "lax",
+        path: "/",
+        maxAge: 600
+      });
+    } else {
+      reply.clearCookie("space_oauth_mobile", { path: "/" });
+    }
+
+    if (query?.link === "true" && request.user) {
+      reply.setCookie("space_oauth_link_user", request.user.id, {
+        httpOnly: true,
+        secure: auth.secureCookies,
+        sameSite: "lax",
+        path: "/",
+        maxAge: 600
+      });
+    } else {
+      reply.clearCookie("space_oauth_link_user", { path: "/" });
+    }
+
+    if (query?.json === "true" || request.headers.accept?.includes("application/json")) {
+      return { authUrl };
+    }
+    return reply.redirect(authUrl);
+  });
+
+  app.get("/api/auth/google/callback", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!auth.googleClientId) {
+      return sendApiError(reply, 400, "GOOGLE_AUTH_DISABLED", "Google authentication is not configured on this server.");
+    }
+    const query = request.query as Record<string, string> | undefined;
+    if (query?.error) {
+      return reply.redirect(`/?authError=${encodeURIComponent(query.error_description || query.error)}`);
+    }
+
+    const code = query?.code;
+    const state = query?.state;
+    const savedState = request.cookies["space_oauth_state"];
+    const linkUserId = request.cookies["space_oauth_link_user"];
+    const desktopHandoff = request.cookies["space_oauth_desktop_handoff"];
+    reply.clearCookie("space_oauth_link_user", { path: "/" });
+    reply.clearCookie("space_oauth_desktop_handoff", { path: "/" });
+
+    if (!code || !state || !savedState || state !== savedState) {
+      return reply.redirect("/?authError=" + encodeURIComponent("Invalid or expired Google OAuth state. Try signing in again."));
+    }
+
+    const forwardedProto = request.headers["x-forwarded-proto"];
+    const forwardedHost = request.headers["x-forwarded-host"];
+    const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${config.port}`;
+    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies ? "https" : "http");
+    const redirectUri = auth.googleRedirectUri || `${String(proto).split(",")[0]!.trim()}://${String(host).split(",")[0]!.trim()}/api/auth/google/callback`;
+
+    try {
+      const googleInfo = await exchangeGoogleCode({
+        code,
+        clientId: auth.googleClientId,
+        clientSecret: auth.googleClientSecret,
+        redirectUri
+      });
+
+      if (linkUserId) {
+        if (store.getUserByGoogleId) {
+          const conflicting = await store.getUserByGoogleId(googleInfo.sub);
+          if (conflicting && conflicting.id !== linkUserId) {
+            reply.clearCookie("space_oauth_state", { path: "/" });
+            return reply.redirect("/?googleLinkError=" + encodeURIComponent("This Google account is already linked to another Space user."));
+          }
+        }
+        if (store.updateUserGoogleInfo) {
+          await store.updateUserGoogleInfo(linkUserId, googleInfo.sub, googleInfo.picture, googleInfo.email);
+        }
+        await recordAudit(store, request, {
+          actorUserId: linkUserId,
+          action: "auth.google.link",
+          targetType: "user",
+          targetId: linkUserId,
+          metadata: { googleSub: googleInfo.sub, email: googleInfo.email }
+        });
+        reply.clearCookie("space_oauth_state", { path: "/" });
+        return reply.redirect("/?googleLinked=true");
+      }
+
+      const user = await resolveOrRegisterGoogleUser(googleInfo, request.requestIdForSpace);
+      await recordAudit(store, request, {
+        actorUserId: user.id,
+        action: "auth.google.login",
+        targetType: "user",
+        targetId: user.id,
+        metadata: { role: user.role }
+      });
+
+      const token = signSession(user, auth.sessionSecret);
+      reply.clearCookie("space_oauth_state", { path: "/" });
+      reply.clearCookie("space_logged_out", { path: "/" });
+      reply.setCookie(cookieName, token, {
+        httpOnly: true,
+        secure: auth.secureCookies,
+        sameSite: "lax",
+        path: "/",
+        maxAge: operatorSessionTtlSeconds
+      });
+
+      if (desktopHandoff) {
+        desktopAuthHandoffs.set(desktopHandoff, {
+          token,
+          user: { id: user.id, email: user.email, role: user.role },
+          createdAt: Date.now()
+        });
+        reply.type("text/html; charset=utf-8");
+        const safeEmail = escapeHtml(user.email || "operator");
+        return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SpaceApp - Sign In Complete</title>
+  <style>
+    body { background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: 1rem; box-sizing: border-box; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 2.5rem; text-align: center; max-width: 440px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+    h1 { color: #58a6ff; font-size: 1.5rem; margin-top: 0.75rem; margin-bottom: 0.5rem; }
+    p { color: #8b949e; line-height: 1.5; font-size: 0.95rem; }
+    .badge { display: inline-block; padding: 0.35rem 0.85rem; background: #238636; color: #fff; border-radius: 20px; font-weight: 600; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">✓ Connected</div>
+    <h1>Signed in successfully</h1>
+    <p>You have signed in to SpaceApp as <strong>${safeEmail}</strong>.</p>
+    <p>You can close this tab and return to your SpaceApp desktop window.</p>
+    <script>
+      try { window.location.href = "spaceapp://auth-complete"; } catch(e) {}
+      setTimeout(() => { try { window.close(); } catch(e) {} }, 4000);
+    </script>
+  </div>
+</body>
+</html>`;
+      }
+
+      if (request.cookies["space_oauth_mobile"] === "true") {
+        reply.clearCookie("space_oauth_mobile", { path: "/" });
+        const callbackUrl = `spaceapp://auth/callback?token=${encodeURIComponent(token)}&email=${encodeURIComponent(user.email || "")}`;
+        return reply.type("text/html; charset=utf-8").send(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpaceApp</title>
+<script>
+window.location.href = "${callbackUrl}";
+setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
+</script>
+</head>
+<body style="background:#0d1117;color:#c9d1d9;font-family:sans-serif;text-align:center;padding:40px 20px;">
+<div style="max-width:400px;margin:0 auto;background:#161b22;padding:30px;border-radius:12px;border:1px solid #30363d;">
+<h2 style="color:#58a6ff;margin-top:0;">Authentication Successful</h2>
+<p>Returning to SpaceApp Mobile...</p>
+<p><a href="${callbackUrl}" style="display:inline-block;padding:12px 24px;background:#238636;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:bold;margin-top:15px;">Open SpaceApp</a></p>
+</div>
+</body>
+</html>`);
+      }
+
+      return reply.redirect("/");
+    } catch (err) {
+      request.log.error({ err }, "Google OAuth callback failed");
+      return reply.redirect(`/?authError=${encodeURIComponent(err instanceof Error ? err.message : "Google login failed.")}`);
+    }
+  });
+
+  app.get("/api/auth/desktop-handoff", defaultRouteRateLimitOptions, async (request, reply) => {
+    const query = request.query as Record<string, string> | undefined;
+    const handoffId = query?.handoffId;
+    if (!handoffId || typeof handoffId !== "string" || handoffId.length < 16) {
+      return sendApiError(reply, 400, "INVALID_HANDOFF_ID", "A valid handoffId is required.");
+    }
+    const entry = desktopAuthHandoffs.get(handoffId);
+    if (!entry) {
+      return { authenticated: false };
+    }
+    // Delete entry once consumed
+    desktopAuthHandoffs.delete(handoffId);
+    return {
+      authenticated: true,
+      token: entry.token,
+      user: entry.user
+    };
+  });
+
+  app.post("/api/auth/google/unlink", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user) {
+      return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required to unlink Google account.");
+    }
+    if (store.unlinkGoogleAccount) {
+      await store.unlinkGoogleAccount(request.user.id);
+    }
+    await recordAudit(store, request, {
+      actorUserId: request.user.id,
+      action: "auth.google.unlink",
+      targetType: "user",
+      targetId: request.user.id
+    });
+    return { ok: true };
+  });
+
+  app.post("/api/auth/google/credential", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!auth.googleClientId) {
+      return sendApiError(reply, 400, "GOOGLE_AUTH_DISABLED", "Google authentication is not configured on this server.");
+    }
+    const body = z.object({ credential: z.string().min(1) }).parse(request.body);
+    try {
+      const googleInfo = await verifyGoogleIdToken({
+        idToken: body.credential,
+        clientId: auth.googleClientId
+      });
+      const user = await resolveOrRegisterGoogleUser(googleInfo, request.requestIdForSpace);
+      await recordAudit(store, request, {
+        actorUserId: user.id,
+        action: "auth.google.credential_login",
+        targetType: "user",
+        targetId: user.id,
+        metadata: { role: user.role }
+      });
+      const token = signSession(user, auth.sessionSecret);
+      reply.clearCookie("space_logged_out", { path: "/" });
+      reply.setCookie(cookieName, token, {
+        httpOnly: true,
+        secure: auth.secureCookies,
+        sameSite: "lax",
+        path: "/",
+        maxAge: operatorSessionTtlSeconds
+      });
+      return { user, isAuthenticated: true, isSetupRequired: false };
+    } catch (err) {
+      request.log.error({ err }, "Google credential verification failed");
+      return sendApiError(reply, 401, "INVALID_CREDENTIALS", err instanceof Error ? err.message : "Google token verification failed.");
+    }
+  });
+
+  app.get("/api/admin/users", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user || (request.user.role !== "ADMIN" && request.user.role !== "OPERATOR")) {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Administrator permissions are required.");
+    }
+    if (!store.listUsersWithRoomCounts) {
+      return { users: [] };
+    }
+    const users = await store.listUsersWithRoomCounts();
+    return adminUserListResponseSchema.parse({ users });
+  });
+
+  app.patch("/api/admin/users/:id/role", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user || (request.user.role !== "ADMIN" && request.user.role !== "OPERATOR")) {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Administrator permissions are required.");
+    }
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const input = updateUserRoleInputSchema.parse(request.body);
+
+    if (params.id === request.user.id && input.role !== "ADMIN") {
+      return sendApiError(reply, 400, "CANNOT_DEMOTE_SELF", "You cannot remove admin permissions from your own account.");
+    }
+
+    if (!store.updateUserRole) {
+      return sendApiError(reply, 501, "NOT_IMPLEMENTED", "User role modification not supported.");
+    }
+
+    const updated = await store.updateUserRole(params.id, input.role);
+    userRoleCache.set(params.id, { role: input.role, cachedAt: Date.now() });
+    await recordAudit(store, request, {
+      actorUserId: request.user.id,
+      action: "admin.user.role_change",
+      targetType: "user",
+      targetId: params.id,
+      metadata: { newRole: input.role }
+    });
+
+    return { user: updated };
+  });
+
+  app.post("/api/admin/users/:id/copy-from-operator", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user || (request.user.role !== "ADMIN" && request.user.role !== "OPERATOR")) {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Administrator permissions are required.");
+    }
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const targetUser = await store.getControlActor(params.id);
+    if (!targetUser) {
+      return sendApiError(reply, 404, "USER_NOT_FOUND", "Target user was not found.");
+    }
+    let copiedLinks = 0;
+    let linkPage = 1;
+    while (true) {
+      const pageResult = await store.listUserLinks("user:operator", { isQuick: undefined, page: linkPage, pageSize: 100 });
+      for (const link of pageResult.items) {
+        try {
+          await store.createUserLink({
+            ownerUserId: targetUser.id,
+            url: link.url,
+            title: link.title,
+            description: link.description,
+            openMode: link.openMode,
+            isQuick: link.isQuick,
+            category: link.category
+          });
+          copiedLinks++;
+        } catch {
+          // Ignore duplicate links
+        }
+      }
+      if (pageResult.items.length < 100) break;
+      linkPage++;
+    }
+
+    let copiedClipboard = 0;
+    let clipPage = 1;
+    while (true) {
+      const pageResult = await store.listClipboardItems("user:operator", { page: clipPage, pageSize: 100 });
+      for (const item of pageResult.items) {
+        try {
+          await store.upsertClipboardItem({
+            ownerUserId: targetUser.id,
+            text: item.text,
+            source: item.source,
+            title: item.title,
+            roomId: item.roomId ?? undefined,
+            paneId: item.paneId ?? undefined,
+            paneTitle: item.paneTitle ?? undefined
+          });
+          copiedClipboard++;
+        } catch {
+          // Ignore duplicate items
+        }
+      }
+      if (pageResult.items.length < 100) break;
+      clipPage++;
+    }
+    await recordAudit(store, request, {
+      actorUserId: request.user.id,
+      action: "admin.user.copy_from_operator",
+      targetType: "user",
+      targetId: params.id,
+      metadata: { copiedLinks, copiedClipboard }
+    });
+    return { ok: true, copiedLinks, copiedClipboard };
   });
 
   app.get("/api/clipboard-items", defaultRouteRateLimitOptions, async (request) => {
@@ -6742,6 +8874,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const input = parseBody(setClipboardItemCompletedRequestSchema, request.body);
     const owner = await store.upsertUser(request.user!);
     return store.setClipboardItemCompleted(owner.id, params.id, input.completed);
+  });
+
+  app.patch("/api/clipboard-items/:id/progress", defaultRouteRateLimitOptions, async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const input = parseBody(updatePlanProgressRequestSchema, request.body);
+    const owner = await store.upsertUser(request.user!);
+    const updated = await store.updateClipboardItemProgress(owner.id, params.id, input);
+    return updated;
   });
 
   app.delete("/api/clipboard-items", defaultRouteRateLimitOptions, async (request) => {
@@ -6928,6 +9068,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       source: "MANUAL",
       ownerUserId: owner.id
     });
+    await recordAudit(store, request, {
+      action: "task.create",
+      targetType: "task_item",
+      targetId: item.id,
+      metadata: { title: item.title, roomId: item.roomId, paneId: item.paneId }
+    });
     return reply.code(201).send(item);
   });
 
@@ -6935,19 +9081,214 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updateTaskItemInputSchema, request.body);
     const owner = await store.upsertUser(request.user!);
-    return store.updateTaskItem(owner.id, params.id, input);
+    const item = await store.updateTaskItem(owner.id, params.id, input);
+    await recordAudit(store, request, {
+      action: "task.update",
+      targetType: "task_item",
+      targetId: params.id,
+      metadata: { status: input.status, hasTitle: Boolean(input.title) }
+    });
+    return item;
   });
 
   app.delete("/api/task-items/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const owner = await store.upsertUser(request.user!);
     const deleted = await store.deleteTaskItem(owner.id, params.id);
+    await recordAudit(store, request, {
+      action: "task.delete",
+      targetType: "task_item",
+      targetId: params.id,
+      metadata: {}
+    });
     return { id: deleted.id, deleted: true };
   });
 
   app.delete("/api/task-items", defaultRouteRateLimitOptions, async (request) => {
     const owner = await store.upsertUser(request.user!);
     return { deletedCount: await store.clearTaskItems(owner.id) };
+  });
+
+  app.get("/api/links/inspect", defaultRouteRateLimitOptions, async (request, reply) => {
+    const query = request.query as { url?: string };
+    const rawUrl = typeof query?.url === "string" ? query.url.trim() : "";
+    if (!rawUrl) {
+      return reply.code(400).send({ message: "URL is required." });
+    }
+
+    let normalizedUrl = rawUrl;
+    if (!/^https?:\/\//i.test(normalizedUrl)) {
+      normalizedUrl = `https://${normalizedUrl}`;
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(normalizedUrl);
+    } catch {
+      return reply.code(400).send({ message: "Invalid link URL." });
+    }
+
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return reply.code(400).send({ message: "Only HTTP and HTTPS URLs are supported." });
+    }
+
+    let title = parsed.hostname;
+    let canEmbed = parsed.protocol === "https:";
+    let openMode: "EMBEDDED" | "NEW_TAB" = canEmbed ? "EMBEDDED" : "NEW_TAB";
+
+    const hostLower = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    const isYouTube = hostLower === "youtube.com" || hostLower === "m.youtube.com" || hostLower === "music.youtube.com" || hostLower === "youtu.be";
+
+    if (isYouTube) {
+      canEmbed = true;
+      openMode = "EMBEDDED";
+
+      try {
+        let canonicalTarget = parsed.toString();
+        let videoId: string | null = null;
+        if (hostLower === "youtu.be") {
+          const id = parsed.pathname.slice(1).split("/")[0] ?? "";
+          if (/^[A-Za-z0-9_-]{11}$/.test(id)) videoId = id;
+        } else {
+          const v = parsed.searchParams.get("v");
+          if (v && /^[A-Za-z0-9_-]{11}$/.test(v)) {
+            videoId = v;
+          } else {
+            const segments = parsed.pathname.split("/").filter(Boolean);
+            if (segments[0] === "shorts" || segments[0] === "live" || segments[0] === "embed" || segments[0] === "v") {
+              const segId = segments[1] ?? "";
+              if (/^[A-Za-z0-9_-]{11}$/.test(segId)) videoId = segId;
+            }
+          }
+        }
+        if (videoId) {
+          canonicalTarget = `https://www.youtube.com/watch?v=${videoId}`;
+        }
+
+        const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(canonicalTarget)}&format=json`, {
+          signal: AbortSignal.timeout(3500)
+        });
+        if (oembedRes.ok) {
+          const oembedData = (await oembedRes.json()) as { title?: string };
+          if (oembedData && typeof oembedData.title === "string" && oembedData.title.trim()) {
+            const clean = oembedData.title.trim().slice(0, 160);
+            if (clean && clean !== "- YouTube" && clean.toLowerCase() !== "youtube") {
+              return {
+                url: parsed.toString(),
+                title: clean,
+                openMode: "EMBEDDED",
+                canEmbed: true
+              };
+            }
+          }
+        }
+      } catch {}
+    }
+
+    try {
+      const response = await fetch(parsed.toString(), {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        },
+        signal: AbortSignal.timeout(4000),
+        redirect: "follow"
+      });
+
+      const xFrameOptions = (response.headers.get("x-frame-options") || "").toLowerCase();
+      const csp = (response.headers.get("content-security-policy") || "").toLowerCase();
+
+      if (xFrameOptions.includes("deny") || xFrameOptions.includes("sameorigin")) {
+        canEmbed = false;
+      } else if (csp.includes("frame-ancestors")) {
+        const match = csp.match(/frame-ancestors\s+([^;]+)/);
+        if (match && match[1]) {
+          const val = match[1].trim();
+          if (val.includes("'none'") || val.includes("'self'") || (!val.includes("*") && !val.includes("https:"))) {
+            canEmbed = false;
+          }
+        }
+      }
+
+      if (!canEmbed || parsed.protocol === "http:") {
+        openMode = "NEW_TAB";
+      } else {
+        openMode = "EMBEDDED";
+      }
+
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("text/html") || contentType.includes("application/xhtml") || !contentType) {
+        const text = await response.text();
+
+        const sanitize = (raw: string) => {
+          let cleaned = raw.trim()
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/&nbsp;/g, " ")
+            .replace(/\\u0026/g, "&")
+            .replace(/\\"/g, '"')
+            .replace(/\s+/g, " ");
+          if (isYouTube) {
+            cleaned = cleaned.replace(/\s*[-–—|]\s*YouTube$/i, "").trim();
+            if (cleaned === "- YouTube" || cleaned.toLowerCase() === "youtube" || cleaned === "-" || cleaned === "undefined") {
+              return "";
+            }
+          }
+          return cleaned;
+        };
+
+        let candidateTitle = "";
+
+        if (isYouTube) {
+          const vdMatch = text.match(/"videoDetails":\{"videoId":"[^"]+","title":"([^"]+)"/);
+          if (vdMatch && vdMatch[1]) {
+            candidateTitle = sanitize(vdMatch[1]);
+          }
+          if (!candidateTitle) {
+            const plMatch = text.match(/"header":\{"playlistHeaderRenderer":\{"title":\{"runs":\[\{"text":"([^"]+)"/);
+            if (plMatch && plMatch[1]) candidateTitle = sanitize(plMatch[1]);
+          }
+          if (!candidateTitle) {
+            const runsMatch = text.match(/"title":\{"runs":\[\{"text":"([^"]+)"\}/);
+            if (runsMatch && runsMatch[1]) candidateTitle = sanitize(runsMatch[1]);
+          }
+        }
+
+        if (!candidateTitle) {
+          const ogTitleMatch = text.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i)
+            || text.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:title["']/i)
+            || text.match(/<meta[^>]*name=["']title["'][^>]*content=["']([^"']+)["']/i)
+            || text.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']title["']/i);
+          if (ogTitleMatch && ogTitleMatch[1]) {
+            candidateTitle = sanitize(ogTitleMatch[1]);
+          }
+        }
+
+        if (!candidateTitle) {
+          const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+          if (titleMatch && titleMatch[1]) {
+            candidateTitle = sanitize(titleMatch[1]);
+          }
+        }
+
+        if (candidateTitle) {
+          title = candidateTitle.slice(0, 160);
+        }
+      }
+    } catch {
+      canEmbed = parsed.protocol === "https:";
+      openMode = canEmbed ? "EMBEDDED" : "NEW_TAB";
+    }
+
+    return {
+      url: parsed.toString(),
+      title,
+      openMode,
+      canEmbed
+    };
   });
 
   app.get("/api/links", defaultRouteRateLimitOptions, async (request) => {
@@ -7063,6 +9404,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return systemServicesResponseSchema.parse(await systemServicesProvider());
   });
 
+  app.post("/api/system/services/reset-failed", defaultRouteRateLimitOptions, async (request) => {
+    const body = (request.body && typeof request.body === "object") ? (request.body as { unit?: string }) : undefined;
+    const unit = typeof body?.unit === "string" ? body.unit.trim() : undefined;
+    return await resetFailedSystemUnits(unit);
+  });
+
   app.post(
     "/api/agent/sessions/codex/:id/rename",
     { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
@@ -7118,9 +9465,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   });
 
+  const assertRoomAccess = async (roomId: string, user: AuthUser | null | undefined): Promise<Room> => {
+    const room = await store.getRoom(roomId);
+    if (user?.role === "USER" && (!room.ownerUserId || room.ownerUserId !== user.id)) {
+      throw new SpaceNotFoundError(`Room ${roomId} was not found.`);
+    }
+    return room;
+  };
+
   app.get("/api/rooms", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(paginationRequestSchema, request.query);
-    const rooms = await store.listRooms();
+    const query = request.query as { all?: string; ownerUserId?: string } | undefined;
+    const isUserRole = request.user?.role === "USER";
+    const filterUserId = isUserRole
+      ? request.user!.id
+      : (query?.ownerUserId && query.ownerUserId !== "all"
+          ? (query.ownerUserId === "me" ? request.user?.id ?? null : query.ownerUserId)
+          : (query?.all === "false" ? request.user?.id ?? null : null));
+    let rooms = await store.listRooms(filterUserId);
+    if (rooms.length === 0 && request.user && (!filterUserId || filterUserId === request.user.id)) {
+      if (store.ensureUserStarterRoom) {
+        const starter = await store.ensureUserStarterRoom(request.user.id, request.user.email, request.requestIdForSpace);
+        if (starter) {
+          rooms = await store.listRooms(filterUserId);
+        }
+      }
+    }
     const start = (page.page - 1) * page.pageSize;
     return {
       data: rooms.slice(start, start + page.pageSize),
@@ -7133,10 +9503,75 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  app.get("/api/rooms/cli-activity", defaultRouteRateLimitOptions, async () => {
+  app.get("/api/rooms/:id/dashboard-agents", defaultRouteRateLimitOptions, async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    await assertRoomAccess(params.id, request.user);
+    const data = (await store.listPanes(params.id)).filter(pane => !pane.isClosed);
+    const activity = await readDashboardActivity(data, store, async session => {
+      if (isCodexDirectParityRuntime(session.runtimeId)) {
+        const state = await cliTerminalManager.getCurrentTurnActivity(session.sessionId);
+        if (state.status === "RUNNING") return "working";
+        if (state.status === "COMPLETED") return "done";
+        if (state.status === "ABORTED") return "waiting";
+        const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
+        const raw = roomTerminalState(screen.text);
+        return raw === "RUNNING" ? "working" : raw === "WAITING_FOR_INPUT" ? "waiting" : "idle";
+      }
+      if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
+        const stateRoot = options.opencodeStateRoot ?? opencodeDirectParityRoot + "/state";
+        const control = await readOpenCodeServerControl(session.sessionId, stateRoot);
+        if (control) {
+          if (!control.directory && session.cwd) control.directory = session.cwd;
+          const busy = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId, session.cwd ?? undefined).catch(() => false);
+          if (busy) return "working";
+        }
+        const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
+        const raw = roomTerminalState(screen.text);
+        return raw === "RUNNING" ? "working" : raw === "WAITING_FOR_INPUT" ? "waiting" : "idle";
+      }
+      if (session.runtimeId === "cli:gemini") {
+        const pids = await cliTerminalManager.activeSessionPids([session]).catch(() => null);
+        const rootPid = pids?.get(session.sessionId) ?? null;
+        const native = await loadGeminiNativeTurns({ paneId: session.paneId, sessionId: session.sessionId, rootPid }).catch(() => null);
+        if (native && native.turns.length > 0) {
+          const latest = native.turns.at(-1)!;
+          if (latest.status === "RUNNING") return "working";
+          if (latest.status === "INTERRUPTED" || latest.aborted) return "waiting";
+          if (latest.status === "COMPLETED") {
+            const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
+            const raw = roomTerminalState(screen.text);
+            if (raw === "RUNNING") return "working";
+            if (raw === "WAITING_FOR_INPUT") return "waiting";
+            return "done";
+          }
+        }
+        const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
+        const raw = roomTerminalState(screen.text);
+        return raw === "RUNNING" ? "working" : raw === "WAITING_FOR_INPUT" ? "waiting" : "idle";
+      }
+      if (isDeepSeekDirectParityRuntime(session.runtimeId)) {
+        const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
+        const raw = roomTerminalState(screen.text);
+        return raw === "RUNNING" ? "working" : raw === "WAITING_FOR_INPUT" ? "waiting" : "idle";
+      }
+      const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
+      const raw = roomTerminalState(screen.text);
+      return raw === "RUNNING" ? "working" : raw === "WAITING_FOR_INPUT" ? "waiting" : "idle";
+    });
+    return { data, activity };
+  });
+
+  app.get("/api/rooms/cli-activity", defaultRouteRateLimitOptions, async (request) => {
     const runtimeIds = await visibleCliRuntimeIds();
+    const query = request.query as { all?: string; ownerUserId?: string } | undefined;
+    const isUserRole = request.user?.role === "USER";
+    const filterUserId = isUserRole
+      ? request.user!.id
+      : (query?.ownerUserId && query.ownerUserId !== "all"
+          ? (query.ownerUserId === "me" ? request.user?.id ?? null : query.ownerUserId)
+          : (query?.all === "false" ? request.user?.id ?? null : null));
     const [rooms, activity] = await Promise.all([
-      store.listRooms(),
+      store.listRooms(filterUserId),
       store.listRunningCliSessionCountsByRoom(runtimeIds)
     ]);
     const activityByRoomId = new Map(activity.map((item) => [
@@ -7159,7 +9594,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.post("/api/rooms", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createRoomInputSchema, request.body);
     if (input.initialPaneCount > 0) await cliRuntimeVisibility.assertEnabled("cli:codex");
-    const room = await store.createRoom(input, request.requestIdForSpace);
+    const room = await store.createRoom(input, request.requestIdForSpace, request.user?.id ?? null);
     await recordAudit(store, request, {
       action: "room.create",
       targetType: "room",
@@ -7176,6 +9611,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return room;
   });
 
+  const cliRenderAi=createCliRenderAiController({store,root:config.browserEvidenceArtifactRoot,inspect:inspectRoomCli,quota:controlQuota,send:controlSend,interrupt:pane=>roomPaneController.interrupt(pane,"cli-render-expired")});
+  app.addHook("onClose",async()=>cliRenderAi.close());
   const assertActiveAgentStressModelAdvertised = async () => {
     const catalog = (await codexCliModeDefaultsService.read()).catalog;
     const model = catalog.status === "AVAILABLE"
@@ -7205,17 +9642,33 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const cliInputRuntimeId = cliInputRuntimeCandidate?.success
       ? cliInputRuntimeCandidate.data
       : undefined;
-    const profile = room.description === activeAgentStressRoomDescription
+    const profile = room.description === warmCapacityProofDescription
+      ? "WARM_CAPACITY" as const
+      : room.description === cliRenderAiDescription
+      ? "CLI_RENDER_AI" as const
+      : room.description === cliRenderProofDescription
+      ? "CLI_RENDER" as const
+      : room.description === activeAgentStressRoomDescription
       ? "ACTIVE_AGENT_STRESS" as const
       : cliInputRuntimeId
         ? "CLI_INPUT" as const
         : "STANDARD" as const;
+    const renderRuntime = profile === "CLI_RENDER"
+      ? panes.length === 3 && panes.every((pane,index)=>pane.terminalRuntimeId===cliRenderProofRuntimeIds[index])
+        ? "ALL" as const
+        : panes[0]?.terminalRuntimeId === "cli:gemini"
+          ? "GEMINI" as const
+          : panes[0]?.terminalRuntimeId === "cli:opencode"
+            ? "OPENCODE" as const
+            : "CODEX" as const
+      : undefined;
     return proofRoomSchema.parse({
       ...(profile === "STANDARD"
         ? {}
         : {
             profile,
-            ...(cliInputRuntimeId ? { runtimeId: cliInputRuntimeId } : {})
+            ...(cliInputRuntimeId ? { runtimeId: cliInputRuntimeId } : {}),
+            ...(renderRuntime ? { renderRuntime } : {})
           }),
       room,
       panes,
@@ -7226,9 +9679,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.post("/api/proof-rooms", { config: { rateLimit: { max: 16, timeWindow: "10 minutes" } } }, async (request, reply) => {
     const input = parseBody(createProofRoomInputSchema, request.body);
     const profile = input.profile ?? "STANDARD";
-    if (profile === "ACTIVE_AGENT_STRESS" || profile === "CLI_INPUT") {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Specialized proof rooms require the ADMIN role.");
+    if (profile === "ACTIVE_AGENT_STRESS" || profile === "CLI_INPUT" || profile === "CLI_RENDER" || profile === "CLI_RENDER_AI" || profile === "WARM_CAPACITY") {
+      if (request.user?.role !== "ADMIN" || (["CLI_RENDER","CLI_RENDER_AI","WARM_CAPACITY"].includes(profile)&&request.user.proofScope==="READ_ONLY")) {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Specialized proof rooms require the full ADMIN capability.");
       }
     }
     if (profile === "ACTIVE_AGENT_STRESS") {
@@ -7251,13 +9704,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         );
       }
     }
+    const renderRuntimeIds = profile === "CLI_RENDER"
+      ? input.renderRuntime === "ALL"
+        ? [...cliRenderProofRuntimeIds]
+        : [`cli:${(input.renderRuntime ?? "CODEX").toLowerCase()}`]
+      : [];
     const roomName = input.roomLabel
       ? `Agent Proof · ${input.roomLabel}`
       : `Agent Proof · ${nowIso().slice(0, 19).replace("T", " ")}`;
     const room = await store.createRoom(
       {
         name: roomName,
-        description: profile === "ACTIVE_AGENT_STRESS"
+        description: profile === "WARM_CAPACITY" ? warmCapacityProofDescription : profile === "CLI_RENDER_AI" ? cliRenderAiDescription : profile === "CLI_RENDER" ? cliRenderProofDescription : profile === "ACTIVE_AGENT_STRESS"
           ? activeAgentStressRoomDescription
           : profile === "CLI_INPUT"
             ? `${cliInputProofRoomDescriptionPrefix}${input.runtimeId}]`
@@ -7275,15 +9733,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     let panes: Pane[] = [];
     try {
-      if (input.paneCount > 0) await cliRuntimeVisibility.assertEnabled("cli:codex");
+      const aiCwd=profile === "CLI_RENDER_AI" ? await createCliRenderAiRepository(config.browserEvidenceArtifactRoot,room.id) : null;
+      if (profile === "CLI_RENDER") {
+        for (const runtimeId of renderRuntimeIds) await cliRuntimeVisibility.assertEnabled(runtimeId);
+      } else if (input.paneCount > 0) await cliRuntimeVisibility.assertEnabled("cli:codex");
       panes = await store.createPanes(
-        Array.from({ length: input.paneCount }, () => ({
+        Array.from({ length: input.paneCount }, (_,index) => ({
           roomId: room.id,
-          title: cliInputRuntime?.displayName ?? "Codex CLI",
+          title: profile === "WARM_CAPACITY" ? `Warm capacity ${index + 1}` : profile === "CLI_RENDER" ? `${renderRuntimeIds[index]!.slice(4)} synthetic render fixture` : cliInputRuntime?.displayName ?? "Codex CLI",
           mode: "TERMINAL" as const,
-          terminalRuntimeId: cliInputRuntime?.id ?? "cli:codex",
+          terminalRuntimeId: profile === "CLI_RENDER" ? renderRuntimeIds[index]! : cliInputRuntime?.id ?? "cli:codex",
           ...(profile === "ACTIVE_AGENT_STRESS" ? { modelId: activeAgentStressModelId } : {}),
-          cwd: "/etc"
+          cwd: aiCwd ?? (["CLI_RENDER", "WARM_CAPACITY"].includes(profile) ? "/tmp" : "/etc")
         })),
         request.requestIdForSpace
       );
@@ -7298,7 +9759,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           )
         );
       }
-      const sessionSetup = profile === "CLI_INPUT"
+      const sessionSetup = profile === "CLI_RENDER" || profile === "WARM_CAPACITY"
+        ? await Promise.allSettled(panes.map(pane=>createCliRenderProofFixture(store,pane,request.requestIdForSpace,config.cliHostSocketPath,options.cliHostClient)))
+        : profile === "CLI_INPUT"
         ? []
         : await Promise.allSettled(
             panes.map((pane) =>
@@ -7329,6 +9792,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           name: room.name,
           profile,
           runtimeId: input.runtimeId ?? null,
+          renderRuntime: input.renderRuntime ?? (profile === "CLI_RENDER" ? "CODEX" : null),
           paneCount: panes.length,
           sessionCount: proofRoom.sessionIds.length
         }
@@ -7343,11 +9807,50 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       );
       try {
         await store.deleteRoom(room.id);
+        if(profile === "CLI_RENDER_AI")await cleanupCliRenderAiRepository(config.browserEvidenceArtifactRoot,room.id);
       } catch {
         // Preserve the setup failure while cleanup remains scoped to this newly-created proof room.
       }
       throw error;
     }
+  });
+
+  app.post("/api/proof-rooms/:id/cli-render/cleanup",defaultRouteRateLimitOptions,async(request,reply)=>{
+    if(request.user?.role!=="ADMIN"||request.user.proofScope==="READ_ONLY")return sendApiError(reply,403,"ADMIN_REQUIRED","Render cleanup requires the full protected capability.");
+    parseBody(z.object({}).strict(),request.body??{});const params=parseQuery(idParamSchema,request.params);
+    const room=await store.getRoom(params.id);
+    if(room.kind!=="AGENT_PROOF"||![cliRenderProofDescription,cliRenderAiDescription,warmCapacityProofDescription].includes(room.description??""))throw new SpaceConflictError("Render cleanup is outside the owned fixture scope.");
+    const panes=await store.listPanes(room.id);if(room.description===warmCapacityProofDescription ? panes.length!==16 : ![1,3].includes(panes.length))throw new SpaceConflictError("Render fixture pane set changed.");
+    const sessions=await Promise.all(panes.map(pane=>store.getActivePaneCliSession(pane.id)));
+    await Promise.all(sessions.map(session=>session?cliTerminalManager.detachSession(session):undefined));
+    // Termination acknowledges the signal before the PTY exit event arrives.
+    const stopDeadline = Date.now() + 5000;
+    let running = true;
+    while (running) {
+      const remaining = await Promise.all(sessions.map(session => session ? cliTerminalManager.inspectSessionHost(session) : null));
+      running = remaining.some(session => session?.status === "RUNNING");
+      if (!running || Date.now() >= stopDeadline) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    if (running) throw new SpaceConflictError("An owned render process is still running.");
+    cliRenderAi.dispose(room.id);
+    if(room.description===cliRenderAiDescription)await cleanupCliRenderAiRepository(config.browserEvidenceArtifactRoot,room.id);
+    return {ok:true,roomId:room.id,sessionIds:sessions.flatMap(session=>session?[session.sessionId]:[]),ownedProcessStopped:true};
+  });
+  app.post("/api/proof-rooms/:id/cli-render/ai-start",defaultRouteRateLimitOptions,async(request,reply)=>{
+    if(request.user?.role!=="ADMIN"||request.user.proofScope==="READ_ONLY")return sendApiError(reply,403,"ADMIN_REQUIRED","AI render proof requires the full protected capability.");
+    parseBody(z.object({}).strict(),request.body??{});const params=parseQuery(idParamSchema,request.params);
+    return cliRenderAi.start(params.id,request.requestIdForSpace);
+  });
+  app.get("/api/proof-rooms/:id/cli-render/ai-state",defaultRouteRateLimitOptions,async(request,reply)=>{
+    if(request.user?.role!=="ADMIN"||request.user.proofScope==="READ_ONLY")return sendApiError(reply,403,"ADMIN_REQUIRED","AI render proof requires the full protected capability.");
+    const params=parseQuery(idParamSchema,request.params);return cliRenderAi.state(params.id);
+  });
+  app.post("/api/proof-rooms/:id/cli-render/start", defaultRouteRateLimitOptions, async(request,reply)=>{
+    if(request.user?.role!=="ADMIN"||request.user.proofScope==="READ_ONLY")return sendApiError(reply,403,"ADMIN_REQUIRED","Render proof requires the full authenticated proof capability.");
+    parseBody(z.object({}).strict(),request.body??{});
+    const params=parseQuery(idParamSchema,request.params);
+    return startCliRenderProofFixture(store,params.id,config.cliHostSocketPath,options.cliHostClient);
   });
 
   app.get("/api/proof-rooms/:id", defaultRouteRateLimitOptions, async (request) => {
@@ -7496,6 +9999,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   app.post("/api/rooms/:id/panes/reorder", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
+    await assertRoomAccess(params.id, request.user);
     const input = parseBody(reorderPanesInputSchema, request.body);
     const panes = await store.reorderPanes(params.id, input.paneIds, request.requestIdForSpace);
     await recordAudit(store, request, {
@@ -7509,7 +10013,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   app.patch("/api/rooms/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
+    await assertRoomAccess(params.id, request.user);
     const input = parseBody(updateRoomInputSchema, request.body);
+    if (typeof input.projectPath === "string") {
+      const trimmed = input.projectPath.trim();
+      if (trimmed) {
+        try {
+          await mkdir(trimmed, { recursive: true, mode: 0o775 });
+        } catch (err) {
+          request.log.warn({ err, dir: trimmed }, "Failed to auto-create room project directory");
+        }
+      }
+    }
     const room = await store.updateRoom(params.id, input, request.requestIdForSpace);
     await recordAudit(store, request, {
       action: "room.update",
@@ -7520,8 +10035,43 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return room;
   });
 
+  app.post("/api/projects/ensure", defaultRouteRateLimitOptions, async (request, reply) => {
+    const body = (request.body ?? {}) as { name?: string; path?: string };
+    let targetPath = typeof body.path === "string" ? body.path.trim() : "";
+    let name = typeof body.name === "string" ? body.name.trim() : "";
+    if (name) {
+      if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+        return reply.status(400).send({
+          ok: false,
+          error: "Project name must contain only English letters, numbers, hyphens, and underscores."
+        });
+      }
+      if (!targetPath) {
+        targetPath = `/opt/spaceapp/projects/${name}`;
+      }
+    }
+    if (!targetPath) {
+      return reply.status(400).send({ ok: false, error: "Missing project name or path." });
+    }
+    try {
+      await mkdir(targetPath, { recursive: true, mode: 0o775 });
+      try {
+        if (!existsSync(join(targetPath, ".git"))) {
+          await execFileAsync("git", ["init", "-b", "main", targetPath]);
+        }
+      } catch (gitErr) {
+        request.log.warn({ err: gitErr, targetPath }, "Failed to auto-init git in project directory");
+      }
+      return reply.send({ ok: true, path: targetPath, name: name || targetPath.split("/").filter(Boolean).pop() || "project" });
+    } catch (err: any) {
+      request.log.error({ err, targetPath }, "Failed to ensure project directory");
+      return reply.status(500).send({ ok: false, error: `Failed to create directory: ${err?.message || String(err)}` });
+    }
+  });
+
   app.put("/api/rooms/:id/pane-layout", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
+    await assertRoomAccess(params.id, request.user);
     const input = parseBody(updatePaneLayoutInputSchema, request.body);
     const result = await store.updateRoomPaneLayout(params.id, input, request.requestIdForSpace);
     await recordAudit(store, request, {
@@ -7539,6 +10089,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   app.delete("/api/rooms/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
+    await assertRoomAccess(params.id, request.user);
     const panes = await store.listPanes(params.id, true);
     const cliSessions: PaneCliSession[] = [];
     const browserSessions: PaneBrowserSession[] = [];
@@ -7559,6 +10110,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       browserSessionManager.stopPane(session.paneId, request.requestIdForSpace, operatorBrowserActor(request))
     ));
     const room = await store.deleteRoom(params.id);
+    if(room.description===cliRenderAiDescription)cliRenderAi.dispose(room.id);
     if (room.kind === "AGENT_PROOF") {
       await youtubePlaybackStore.removeProofState(`${request.user!.id}:proof:${room.id}`);
       await youtubeAccountStore.removeProofState(`${request.user!.id}:proof:${room.id}`);
@@ -7582,6 +10134,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           cliSessions.map((session) => cliTerminalManager.detachSession(session))
         );
         const failed = settled.filter((entry) => entry.status === "rejected").length;
+        if(!failed&&room.description===cliRenderAiDescription)await cleanupCliRenderAiRepository(config.browserEvidenceArtifactRoot,room.id);
         request.log.info(
           {
             roomId: room.id,
@@ -7834,7 +10387,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   }
 
   app.get("/api/cli/runtimes", defaultRouteRateLimitOptions, async (request) => {
-    const registry = await cliRuntimeRegistryCache.read();
+    const registry = await cliRuntimeRegistryCache.readStaleWhileRefreshing();
     const settings = new Map((await store.listCliRuntimeSettings()).map((setting) => [setting.runtimeId, setting.enabled]));
     const visible = registry.data.filter((runtime) => {
       const toggleRuntimeId = cliToggleRuntimeIdSchema.safeParse(runtime.id);
@@ -8797,7 +11350,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   const cliAccountProfileParamSchema = z.object({
-    runtimeId: cliToggleRuntimeIdSchema,
+    runtimeId: z.enum(["cli:gemini", "cli:copilot", "cli:cursor"]),
     profileId: cliAccountProfileIdSchema.optional()
   });
 
@@ -8806,7 +11359,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI account profiles require the ADMIN role.");
     }
     const params = parseQuery(cliRuntimeSettingParamSchema, request.params);
-    if (params.runtimeId !== "cli:gemini") {
+    if (!isCliAccountProfileRuntimeId(params.runtimeId)) {
       throw new SpaceConflictError(`CLI runtime ${params.runtimeId} does not support account profiles.`);
     }
     await cliRuntimeVisibility.assertEnabled(params.runtimeId);
@@ -8819,14 +11372,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI account profiles require the ADMIN role.");
     }
     const params = parseQuery(cliRuntimeSettingParamSchema, request.params);
-    if (params.runtimeId !== "cli:gemini") {
+    if (!isCliAccountProfileRuntimeId(params.runtimeId)) {
       throw new SpaceConflictError(`CLI runtime ${params.runtimeId} does not support account profiles.`);
     }
     const input = parseBody(createCliAccountProfileInputSchema, request.body ?? {});
     if (input.runtimeId !== params.runtimeId) {
       throw new SpaceConflictError("Account profile runtime must match the route runtime.");
     }
-    if (deletingGeminiAccountProfileIds.has(input.profileId)) {
+    if (deletingCliAccountProfileKeys.has(cliAccountProfileKey(input.runtimeId, input.profileId))) {
       throw new SpaceConflictError(`Account profile ${input.profileId} is being removed.`);
     }
     const profile = await store.createCliAccountProfile(
@@ -8848,8 +11401,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI account profiles require the ADMIN role.");
     }
     const params = parseQuery(cliAccountProfileParamSchema, request.params);
-    if (params.runtimeId !== "cli:gemini" || !params.profileId) {
-      throw new SpaceConflictError("A Gemini account profile is required.");
+    if (!isCliAccountProfileRuntimeId(params.runtimeId) || !params.profileId) {
+      throw new SpaceConflictError("A supported CLI account profile is required.");
     }
     const existing = await store.getCliAccountProfile(params.runtimeId, params.profileId);
     if (!existing) {
@@ -8875,14 +11428,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI account profiles require the ADMIN role.");
     }
     const params = parseQuery(cliAccountProfileParamSchema, request.params);
-    if (params.runtimeId !== "cli:gemini" || !params.profileId) {
-      throw new SpaceConflictError("A Gemini account profile is required.");
+    if (!isCliAccountProfileRuntimeId(params.runtimeId) || !params.profileId) {
+      throw new SpaceConflictError("A supported CLI account profile is required.");
     }
     const profile = await store.getCliAccountProfile(params.runtimeId, params.profileId);
     if (!profile) {
       throw new SpaceNotFoundError(`CLI account profile ${params.runtimeId}/${params.profileId} was not found.`);
     }
-    const nativeDetails = await readGeminiAccountProfileDetails(params.profileId);
+    const nativeDetails = params.runtimeId === "cli:gemini"
+      ? await readGeminiAccountProfileDetails(params.profileId)
+      : params.runtimeId === "cli:copilot"
+        ? await readCopilotAccountProfileDetails(params.profileId)
+        : await readCursorAccountProfileDetails(params.profileId);
     return cliAccountProfileDetailsResponseSchema.parse({
       details: {
         runtimeId: params.runtimeId,
@@ -8898,28 +11455,30 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI account profiles require the ADMIN role.");
     }
     const params = parseQuery(cliAccountProfileParamSchema, request.params);
-    if (params.runtimeId !== "cli:gemini") {
+    if (!isCliAccountProfileRuntimeId(params.runtimeId)) {
       throw new SpaceConflictError(`CLI runtime ${params.runtimeId} does not support account profiles.`);
     }
     if (!params.profileId) {
       throw new SpaceConflictError("A profileId is required to remove an account profile.");
     }
     if (params.profileId === "main") {
-      throw new SpaceConflictError("The main Gemini account profile cannot be removed.");
+      throw new SpaceConflictError("The main CLI account profile cannot be removed.");
     }
-    if (deletingGeminiAccountProfileIds.has(params.profileId)) {
+    if (deletingCliAccountProfileKeys.has(cliAccountProfileKey(params.runtimeId, params.profileId))) {
       throw new SpaceConflictError(`Account profile ${params.profileId} is already being removed.`);
     }
-    deletingGeminiAccountProfileIds.add(params.profileId);
+    deletingCliAccountProfileKeys.add(cliAccountProfileKey(params.runtimeId, params.profileId));
     try {
       if (await store.isCliAccountProfileInUse(params.runtimeId, params.profileId)) {
-        throw new SpaceConflictError(`Account profile ${params.profileId} is in use by an active Gemini pane.`);
+        throw new SpaceConflictError(`Account profile ${params.profileId} is in use by an active CLI pane.`);
       }
       const profile = await store.getCliAccountProfile(params.runtimeId, params.profileId);
       if (!profile) {
         throw new SpaceNotFoundError(`CLI account profile ${params.runtimeId}/${params.profileId} was not found.`);
       }
-      await removeGeminiAccountProfileState(params.profileId);
+      if (params.runtimeId === "cli:gemini") await removeGeminiAccountProfileState(params.profileId);
+      else if (params.runtimeId === "cli:copilot") await removeCopilotAccountProfileState(params.profileId);
+      else await removeCursorAccountProfileState(params.profileId);
       const removed = await store.removeCliAccountProfile(params.runtimeId, params.profileId);
       if (!removed) {
         throw new SpaceNotFoundError(`CLI account profile ${params.runtimeId}/${params.profileId} was not found.`);
@@ -8932,7 +11491,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       });
       return removeCliAccountProfileResponseSchema.parse({ removed });
     } finally {
-      deletingGeminiAccountProfileIds.delete(params.profileId);
+      deletingCliAccountProfileKeys.delete(cliAccountProfileKey(params.runtimeId, params.profileId));
     }
   });
 
@@ -8947,6 +11506,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
     const loginRuntimeIds = new Set([
       "cli:codex",
+      "cli:claude",
       "cli:gemini",
       "cli:qwen",
       "cli:autohand",
@@ -9286,8 +11846,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
         if (active.runtimeId === 'cli:gemini' && model.reasoningOptions?.length) {
           const variantId = model.id.replace(/-(low|medium|high)$/, `-${input.reasoningEffort}`);
-          model = before.models.find(entry => entry.id === variantId)!;
-          if (!model) throw new SpaceConflictError('This Gemini reasoning variant is unavailable.');
+          model = before.models.find(entry => entry.id === variantId) ?? model;
         }
         if (before.isTurnActive) throw new SpaceConflictError("Wait for this CLI turn to finish before changing models.");
         const assertCurrent = async () => {
@@ -9298,14 +11857,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           await assertCliHttpMutationControl(request, current);
         };
         let step = 0;
-        await switchNativeCliModel({ model, runtimeId: active.runtimeId, assertCurrent,
+        await switchNativeCliModel({ model, effort: input.reasoningEffort, runtimeId: active.runtimeId, assertCurrent,
           read: () => cliTerminalManager.observeRoomScreen(active.sessionId, true),
           write: (data) => cliTerminalManager.sendInput(active.sessionId, data, request.requestIdForSpace, null,
             `model-picker:${request.requestIdForSpace}:${step++}`)
         });
         // Preserve the confirmed model even if its separate effort command fails.
         await store.updatePaneCliSession(active.sessionId, { modelId: model.id, reasoningEffort: "unknown" }, request.requestIdForSpace);
-        if (active.runtimeId !== 'cli:gemini') await switchNativeCliReasoning({ model, effort: input.reasoningEffort, runtimeId: active.runtimeId, assertCurrent,
+        if (active.runtimeId !== 'cli:gemini' && active.runtimeId !== 'cli:omp') await switchNativeCliReasoning({ model, effort: input.reasoningEffort, runtimeId: active.runtimeId, assertCurrent,
           read: () => cliTerminalManager.observeRoomScreen(active.sessionId, true),
           write: data => cliTerminalManager.sendInput(active.sessionId, data, request.requestIdForSpace, null, `reasoning-picker:${request.requestIdForSpace}:${step++}`)
         });
@@ -9389,145 +11948,100 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       };
     }
 
-    const before = await readPaneCliModelSettings(pane, active, request.requestIdForSpace);
-    const selectedModel = before.settings.models.find((model) => model.id === input.modelId);
-    if (!selectedModel || !selectedModel.supportedReasoningEfforts.includes(input.reasoningEffort)) {
-      throw new SpaceConflictError("The selected model and reasoning effort are not advertised by this Codex runtime.");
-    }
-    if (!before.settings.current) {
-      throw new SpaceConflictError("Codex runtime model settings are still being detected.");
-    }
+    return cliTerminalManager.runSerializedTerminalMutation(active.sessionId, async () => {
+      const currentSession = await store.getActivePaneCliSession(pane.id);
+      if (!currentSession?.isActive || currentSession.sessionId !== input.expectedSessionId) {
+        throw new SpaceConflictError("The CLI session changed before the model switch could be applied.");
+      }
+      await assertCliHttpMutationControl(request, currentSession);
+      const before = await readPaneCliModelSettings(pane, active, request.requestIdForSpace);
+      const selectedModel = before.settings.models.find((model) => model.id === input.modelId);
+      if (!selectedModel || !selectedModel.supportedReasoningEfforts.includes(input.reasoningEffort)) {
+        throw new SpaceConflictError("The selected model and reasoning effort are not advertised by this Codex runtime.");
+      }
+      if (!before.settings.current) {
+        throw new SpaceConflictError("Codex runtime model settings are still being detected.");
+      }
 
-    const wasActive = before.settings.isTurnActive;
-    let interrupted = false;
-    let continuation: "NOT_NEEDED" | "SENT" = "NOT_NEEDED";
-    let appliedScope: "MODEL_AND_REASONING" | "REASONING_ONLY" = "MODEL_AND_REASONING";
-    let warning: string | null = null;
-    let appliedModelId = input.modelId;
-    if (wasActive) {
-      if (!before.settings.threadId || !before.activity.turnId) {
-        throw new SpaceConflictError("Codex reported an active turn without a controllable thread and turn id.");
-      }
-      await before.directControl.interruptTurn({
-        threadId: before.settings.threadId,
-        turnId: before.activity.turnId
-      });
-      interrupted = true;
-      if (input.continueActiveTurn) {
-        const continuationInput = {
-          threadId: before.settings.threadId,
-          prompt: cliModelSwitchContinuationPrompt,
-          model: input.modelId,
-          reasoningEffort: input.reasoningEffort,
-          clientUserMessageId: `space-model-switch:${active.sessionId}:${request.requestIdForSpace}`.slice(0, 200)
-        };
-        try {
-          await before.directControl.startTurn(continuationInput);
-        } catch (error) {
-          if (input.modelId === before.settings.current.modelId) throw error;
-          await before.directControl.startTurn({
-            ...continuationInput,
-            model: before.settings.current.modelId
-          });
-          appliedModelId = before.settings.current.modelId;
-          appliedScope = "REASONING_ONLY";
-          warning = "The selected model was rejected; Space continued with the previous model and the new reasoning effort.";
-        }
-        continuation = "SENT";
-      } else {
-        await before.directControl.updateThreadSettings({
-          threadId: before.settings.threadId,
-          model: input.modelId,
-          reasoningEffort: input.reasoningEffort
-        });
-        warning = "The active turn was interrupted without an automatic continuation.";
-      }
-    } else {
+      const wasActive = before.settings.isTurnActive;
+      const interrupted = false;
+      const continuation = "NOT_NEEDED" as const;
+      const appliedScope = "MODEL_AND_REASONING" as const;
+      const warning = null;
+      const appliedModelId = input.modelId;
       if (!before.settings.threadId) {
-        await cliTerminalManager.updateCodexPreThreadModelSettings({
-          sessionId: before.session.sessionId,
-          models: before.settings.models,
-          modelId: input.modelId,
-          reasoningEffort: input.reasoningEffort,
-          traceId: request.requestIdForSpace
-        });
-      } else {
-        await before.directControl.updateThreadSettings({
-          threadId: before.settings.threadId,
-          model: input.modelId,
-          reasoningEffort: input.reasoningEffort
-        });
+        throw new SpaceConflictError("Codex model control is still starting. Try the selection again in a moment.");
       }
-    }
-
-    if (before.settings.threadId) {
-      await waitForCodexThreadSettings({
+      // Settings affect subsequent turns. Selecting a model never submits a
+      // prompt, cancels an active turn, or starts an automatic continuation.
+      await before.directControl.updateThreadSettings({
         threadId: before.settings.threadId,
-        cwd: before.session.cwd,
-        sessionId: before.session.sessionId,
-        modelId: appliedModelId,
-        reasoningEffort: input.reasoningEffort,
-        models: before.settings.models
-      });
-    }
-
-    const updatedSession = await store.updatePaneCliSession(
-      active.sessionId,
-      {
-        modelId: appliedModelId,
-        reasoningEffort: input.reasoningEffort,
-        statusReason: continuation === "SENT"
-          ? "Codex model settings switched; continuation started on the same thread."
-          : "Codex model settings saved for this pane."
-      },
-      request.requestIdForSpace
-    );
-    let rememberedDefaultWarning: string | null = null;
-    try {
-      await codexCliModeDefaultsService.update({
-        mode: "build",
-        modelId: appliedModelId,
+        model: input.modelId,
         reasoningEffort: input.reasoningEffort
       });
-    } catch {
-      rememberedDefaultWarning =
-        "The model changed for this session, but Space could not remember it as the next Codex Build default.";
-    }
-    const registry = await discoverAgentRuntimes(config);
-    const runtime = findRuntime(registry, updatedSession.runtimeId);
-    if (!runtime) throw new SpaceNotFoundError(`CLI runtime ${updatedSession.runtimeId} was not found.`);
-    const after = await readPaneCliModelSettings(pane, updatedSession, request.requestIdForSpace);
-    await recordAudit(store, request, {
-      action: "pane.cli.model-settings",
-      targetType: "pane",
-      targetId: pane.id,
-      metadata: {
-        roomId: pane.roomId,
-        sessionId: updatedSession.sessionId,
-        modelId: appliedModelId,
-        reasoningEffort: input.reasoningEffort,
-        appliedScope,
-        interrupted,
-        continuation
+      if (before.directControl.readThreadSettings) {
+        const confirmed = await before.directControl.readThreadSettings(before.settings.threadId);
+        if (confirmed.cwd !== before.session.cwd ||
+            canonicalCodexAdvertisedModelId(confirmed.modelId, before.settings.models) !== input.modelId ||
+            confirmed.reasoningEffort !== input.reasoningEffort) {
+          throw new CodexRuntimeModelSettingsUnconfirmedError({ stage: "THREAD_CONFIRMATION",
+            expected: { modelId: input.modelId, reasoningEffort: input.reasoningEffort }, observed: confirmed, attempts: 1 });
+        }
+      } else {
+        await waitForCodexThreadSettings({
+          threadId: before.settings.threadId, cwd: before.session.cwd, sessionId: before.session.sessionId,
+          modelId: input.modelId, reasoningEffort: input.reasoningEffort, models: before.settings.models
+        });
       }
+
+      const updatedSession = await store.updatePaneCliSession(
+        active.sessionId,
+        {
+          modelId: appliedModelId,
+          reasoningEffort: input.reasoningEffort,
+          statusReason: "Codex model settings saved for this pane."
+        },
+        request.requestIdForSpace
+      );
+      // Pane model changes (including Save to memory) must not publish global
+      // defaults: every live Codex multiplexer watches that projection.
+      // Only the explicit /api/cli/codex-defaults route changes shared defaults.
+      const registry = await cliRuntimeRegistryCache.read();
+      const runtime = findRuntime(registry, updatedSession.runtimeId);
+      if (!runtime) throw new SpaceNotFoundError(`CLI runtime ${updatedSession.runtimeId} was not found.`);
+      const afterSettings = { ...before.settings, current: { modelId: appliedModelId, reasoningEffort: input.reasoningEffort } };
+      await recordAudit(store, request, {
+        action: "pane.cli.model-settings",
+        targetType: "pane",
+        targetId: pane.id,
+        metadata: {
+          roomId: pane.roomId,
+          sessionId: updatedSession.sessionId,
+          modelId: appliedModelId,
+          reasoningEffort: input.reasoningEffort,
+          appliedScope,
+          interrupted,
+          continuation
+        }
+      });
+      return {
+        settings: afterSettings,
+        session: await buildPaneCliSessionResponse({
+          store,
+          runtime,
+          sessionId: updatedSession.sessionId,
+          includeWebsocket: true,
+          tokenTtlMs: config.cliTokenTtlMs,
+          issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
+        }),
+        appliedScope,
+        wasActive,
+        interrupted,
+        continuation,
+        transport: "DIRECT",
+        warning
+      };
     });
-    return {
-      settings: after.settings,
-      session: await buildPaneCliSessionResponse({
-        store,
-        runtime,
-        sessionId: updatedSession.sessionId,
-        includeWebsocket: true,
-        tokenTtlMs: config.cliTokenTtlMs,
-        issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
-      }),
-      appliedScope,
-      wasActive,
-      interrupted,
-      continuation,
-      transport: "DIRECT",
-      warning: [warning, rememberedDefaultWarning].filter(Boolean).join(" ") || null
-    };
   });
 
   app.get("/api/panes/:id/cli/turn-activity", defaultRouteRateLimitOptions, async (request) => {
@@ -9852,6 +12366,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return session;
   });
 
+  app.post("/api/rooms/:id/watchdog/test-alert", defaultRouteRateLimitOptions, async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const room = await store.getRoom(params.id);
+    const alertMessage = `Room Watchdog: Auto-killed hanging process in room "${room.name}" to prevent room freeze.`;
+    const watchdogEvent = eventSchema.parse({
+      id: makeSpaceId("event"),
+      roomId: room.id,
+      paneId: null,
+      turnId: null,
+      workflowId: null,
+      traceId: request.requestIdForSpace,
+      type: "ROOM_WATCHDOG_ALERT",
+      message: alertMessage,
+      payload: {
+        kind: "TEST_WATCHDOG_ALERT",
+        roomId: room.id,
+        simulated: true,
+        killedAt: nowIso()
+      },
+      createdAt: nowIso()
+    });
+    try { await store.recordRoomEvent(watchdogEvent); } catch {}
+    eventBus.publish(watchdogEvent);
+    return { ok: true, event: watchdogEvent };
+  });
+
   app.post("/api/rooms/:id/commands/:clientRequestId/ack", defaultRouteRateLimitOptions, async (request) => {
     if (!config.roomPaneCommandsEnabled) throw new SpaceFeatureDisabledError("ROOM_PANE_COMMANDS_DISABLED", "Room pane commands are disabled.");
     const params = parseQuery(z.object({ id: z.string().min(1), clientRequestId: z.string().min(8).max(128) }), request.params);
@@ -9861,7 +12401,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   app.post("/api/rooms/:id/panes", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
+    await assertRoomAccess(params.id, request.user);
     const input = parseBody(createRoomPanesRequestSchema, request.body);
+    for (const item of input.panes) {
+      if (item.mode === "CHAT") {
+        await cliRuntimeVisibility.assertEnabled("cli:codex");
+      }
+    }
     const paneInputs = await roomPaneCommands.resolve(params.id, input.panes);
     const panes = await store.createPanes(paneInputs, request.requestIdForSpace);
     await recordAudit(store, request, {
@@ -9896,6 +12442,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (!harnessStatus.enabled || harnessStatus.effectiveMode === "BLOCKED") {
         throw new SpaceFeatureDisabledError("HARNESS_DISABLED", "DeepSeek Harness is disabled. Enable it in Settings to open a Harness pane.");
       }
+    }
+    if ((input.mode === "TERMINAL" || input.mode === "FILES" || input.mode === "CHAT" || input.mode === "HARNESS") && (!input.cwd || input.cwd === "/etc")) {
+      try {
+        const room = await store.getRoom(input.roomId);
+        if (room?.projectPath) {
+          input.cwd = room.projectPath;
+        }
+      } catch {
+        // Best effort fallback
+      }
+    }
+    if (input.cwd && typeof input.cwd === "string" && input.cwd.startsWith("/")) {
+      try {
+        await mkdir(input.cwd.trim(), { recursive: true, mode: 0o775 });
+      } catch {}
     }
     const pane = await store.createPane(input, request.requestIdForSpace);
     await recordAudit(store, request, {
@@ -10020,7 +12581,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await spaceControl.rememberStop(current);
     let interruptedCliSessionId: string | null = null;
     if (current.mode === "TERMINAL") {
-      const runningSessions = (await store.listPaneCliSessions(current.id, 100)).filter(
+      const allSessions = await store.listPaneCliSessions(current.id, 100);
+      const runningSessions = allSessions.filter(
         (session) => session.status === "RUNNING"
       );
       for (const session of runningSessions) {
@@ -10030,6 +12592,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           request.log.warn({ err: error, paneId: current.id, sessionId: session.sessionId }, "CLI session interrupt failed during pane close; closing pane anyway");
         }
         if (session.isActive) interruptedCliSessionId = session.sessionId;
+      }
+      const unendedSessions = allSessions.filter((session) => !session.endedAt && session.status !== "RUNNING");
+      const nowIso = new Date().toISOString();
+      for (const session of unendedSessions) {
+        await Promise.resolve(store.updatePaneCliSession(session.sessionId, {
+          endedAt: nowIso,
+          isActive: false,
+          status: "EXITED",
+          statusReason: session.statusReason || "CLI session closed with pane."
+        }, request.requestIdForSpace)).catch(() => null);
       }
     }
     if (current.mode === "BROWSER" || current.mode === "YOUTUBE") {
@@ -10557,6 +13129,51 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
 
+  app.get("/api/youtube/search", defaultRouteRateLimitOptions, async (request, reply) => {
+    const q = (request.query as any)?.q;
+    if (!q || typeof q !== "string" || !q.trim()) {
+      return sendApiError(reply, 400, "BAD_REQUEST", "Search query 'q' is required.");
+    }
+    const query = q.trim();
+    try {
+      const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept-Language": "en-US,en;q=0.9"
+        }
+      });
+      const html = await res.text();
+      const match = html.match(/var ytInitialData = ({.*?});<\/script>/s) || html.match(/ytInitialData = ({.*?});<\/script>/s);
+      if (!match || !match[1]) {
+        return { items: [] };
+      }
+      const data = JSON.parse(match[1]);
+      const contents = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents;
+      const items: Array<{ videoId: string; title: string; channel: string; url: string }> = [];
+      if (Array.isArray(contents)) {
+        for (const section of contents) {
+          const vSection = section?.itemSectionRenderer?.contents;
+          if (Array.isArray(vSection)) {
+            for (const it of vSection) {
+              const vr = it?.videoRenderer;
+              if (vr?.videoId) {
+                const title = vr.title?.runs?.map((r: any) => r.text).join("") || vr.title?.simpleText || "";
+                const channel = vr.ownerText?.runs?.map((r: any) => r.text).join("") || "";
+                items.push({ videoId: vr.videoId, title, channel, url: `https://www.youtube.com/watch?v=${vr.videoId}` });
+                if (items.length >= 5) break;
+              }
+            }
+          }
+          if (items.length >= 5) break;
+        }
+      }
+      return { items };
+    } catch (err) {
+      return sendApiError(reply, 502, "YOUTUBE_SEARCH_FAILED", err instanceof Error ? err.message : "YouTube search failed.");
+    }
+  });
+
   app.get("/api/panes/:id/youtube/playback", defaultRouteRateLimitOptions, async (request) => {
     const { id } = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, id);
@@ -10792,7 +13409,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         status: "ACCEPTED",
         operatorUserId: request.user.id,
         operatorEmail: request.user.email,
-        operatorRole: request.user.role,
+        operatorRole: request.user.role === "USER" ? undefined : request.user.role,
         controlLeaseId: lease.leaseId
       });
     }
@@ -11408,16 +14025,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       throw new SpaceConflictError(`Terminal pane requires runtime ${pane.terminalRuntimeId}.`);
     }
     const active = await store.getActivePaneCliSession(pane.id);
-    const requestedProfileForAttach = input.runtimeId === "cli:gemini" && input.accountProfileId !== "main"
+    const requestedProfileForAttach = isCliAccountProfileRuntimeId(input.runtimeId) && input.accountProfileId !== "main"
       ? input.accountProfileId ?? null : null;
     const attachingExisting = active?.purpose === "NORMAL" && active.isActive &&
       !input.forceRestart && !input.resume && active.runtimeId === input.runtimeId &&
       active.accountProfileId === requestedProfileForAttach &&
       active.status !== "EXITED" && active.status !== "ERROR";
-    const registry = attachingExisting
-      ? await cliRuntimeRegistryCache.readStaleWhileRefreshing()
-      : await discoverAgentRuntimes(config);
-    const runtime = findRuntime(registry, input.runtimeId);
+    let registry = await cliRuntimeRegistryCache.readStaleWhileRefreshing();
+    let runtime = findRuntime(registry, input.runtimeId);
+    if (!runtime) {
+      registry = await discoverAgentRuntimes(config);
+      runtime = findRuntime(registry, input.runtimeId);
+    }
     if (!runtime) {
       throw new SpaceNotFoundError(`CLI runtime ${input.runtimeId} was not found.`);
     }
@@ -11430,17 +14049,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         status: runtime.status
       });
     }
-    if (runtime.id !== "cli:gemini" && input.accountProfileId !== undefined && input.accountProfileId !== null) {
+    if (!isCliAccountProfileRuntimeId(runtime.id) && input.accountProfileId !== undefined && input.accountProfileId !== null) {
       throw new SpaceConflictError(`Runtime ${runtime.id} does not support account profiles.`);
     }
-    if (runtime.id === "cli:gemini" && input.accountProfileId) {
-      if (deletingGeminiAccountProfileIds.has(input.accountProfileId)) {
+    if (isCliAccountProfileRuntimeId(runtime.id) && input.accountProfileId) {
+      if (deletingCliAccountProfileKeys.has(cliAccountProfileKey(runtime.id, input.accountProfileId))) {
         throw new SpaceConflictError(`Account profile ${input.accountProfileId} is being removed.`);
       }
-      const profile = await store.getCliAccountProfile("cli:gemini", input.accountProfileId);
-      if (!profile) throw new SpaceNotFoundError(`CLI account profile cli:gemini/${input.accountProfileId} was not found.`);
+      const profile = await store.getCliAccountProfile(runtime.id, input.accountProfileId);
+      if (!profile) throw new SpaceNotFoundError(`CLI account profile ${runtime.id}/${input.accountProfileId} was not found.`);
     }
-    const requestedAccountProfileId = runtime.id === "cli:gemini" && input.accountProfileId !== "main"
+    const requestedAccountProfileId = isCliAccountProfileRuntimeId(runtime.id) && input.accountProfileId !== "main"
       ? input.accountProfileId ?? null
       : null;
     if (input.resume && (!input.forceRestart || !supportsNativeCliResume(runtime.id))) {
@@ -11488,8 +14107,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
       });
     }
-    if (active) await assertCliHttpMutationControl(request, active);
-    const requestedCwd = input.cwd ?? pane.cwd ?? null;
+    let requestedCwd = input.cwd ?? pane.cwd ?? null;
+    if (!requestedCwd || requestedCwd === "/etc") {
+      try {
+        const room = await store.getRoom(pane.roomId);
+        if (room?.projectPath) {
+          requestedCwd = room.projectPath;
+        }
+      } catch {
+        // Best effort
+      }
+    }
     const directCodexParity = isCodexDirectParityRuntime(runtime.id);
     const directClaudeParity = isClaudeDirectParityRuntime(runtime.id);
     const directKimiParity = isKimiDirectParityRuntime(runtime.id);
@@ -11569,6 +14197,33 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       );
     }
     await cliRuntimeVisibility.assertEnabled(runtime.id);
+    let geminiResumeConversationId: string | null = null;
+    if (input.resume && (runtime.id === "cli:gemini" || active?.runtimeId === "cli:gemini")) {
+      const taskRevision = active?.cliTaskRevisionId
+        ? await store.getCliTaskRevision(active.cliTaskRevisionId)
+        : null;
+      if (taskRevision?.nativeTaskRef && geminiNativeConversationIdPattern.test(taskRevision.nativeTaskRef)) {
+        geminiResumeConversationId = taskRevision.nativeTaskRef;
+      }
+      if (!geminiResumeConversationId) {
+        geminiResumeConversationId = await readGeminiPaneConversation(pane.id);
+      }
+      if (!geminiResumeConversationId && active?.codexThreadId && geminiNativeConversationIdPattern.test(active.codexThreadId)) {
+        geminiResumeConversationId = active.codexThreadId;
+      }
+      if (!geminiResumeConversationId && active) {
+        const pids = await cliTerminalManager.activeSessionPids([active]);
+        const rootPid = pids.get(active.sessionId) ?? null;
+        if (rootPid) {
+          geminiResumeConversationId = await readGeminiNativeConversationIdFromProcessTree(rootPid);
+        }
+      }
+      if (geminiResumeConversationId) {
+        await writeGeminiPaneConversation(pane.id, geminiResumeConversationId);
+      }
+    } else if (!input.resume && input.forceRestart && runtime.id === "cli:gemini") {
+      await clearGeminiPaneConversation(pane.id);
+    }
     if (active && !reusableSession) {
       await cliTerminalManager.interrupt(active.sessionId);
       await store.updatePaneCliSession(
@@ -11620,9 +14275,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           })
         : requestedCwd;
     if (!reusableSession && sessionCwd) {
-      if (!directOperatorParity) {
+      try {
         await mkdir(sessionCwd, { recursive: true, mode: 0o750 });
-      }
+        if (sessionCwd.startsWith("/opt/spaceapp/projects/") && !existsSync(join(sessionCwd, ".git"))) {
+          await execFileAsync("git", ["init", "-b", "main", sessionCwd]);
+        }
+      } catch {}
       if (requestedManagedWorkspace) {
         await writeCliWorkspaceBootstrap(sessionCwd, {
           roomId: pane.roomId,
@@ -11655,6 +14313,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         request.requestIdForSpace
       );
     }
+    if (!reusableSession && sessionCwd && pane.cwd !== sessionCwd) {
+      await store.updatePane(
+        pane.id,
+        { cwd: sessionCwd },
+        request.requestIdForSpace
+      );
+    }
     await cliRuntimeVisibility.assertEnabled(runtime.id);
     assertCliPaneCompatible(await getPaneById(store, pane.id));
     const allocatedAtNs = reusableSession ? null : process.hrtime.bigint();
@@ -11671,12 +14336,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             modelId: directCodexParity
               ? resolvedCodexSettings?.modelId ?? null
               : input.modelId === undefined
-                ? runtime.defaultModelId
+                ? (active?.runtimeId === runtime.id && active?.modelId ? active.modelId : (pane.modelId ?? runtime.defaultModelId))
                 : requestedModelId ?? null,
             reasoningEffort: directCodexParity
               ? resolvedCodexSettings?.reasoningEffort ?? pane.reasoningEffort
-              : input.reasoningEffort ?? pane.reasoningEffort,
-            launchMode: input.resume ? "RESUME" : "FRESH",
+              : runtime.id === "cli:gemini"
+                ? (input.reasoningEffort && !rollingClientGenericReasoningEcho
+                    ? input.reasoningEffort
+                    : (active?.runtimeId === runtime.id && active?.reasoningEffort
+                        ? active.reasoningEffort
+                        : (pane.reasoningEffort && pane.reasoningEffort !== "medium"
+                            ? pane.reasoningEffort
+                            : "high")))
+                : input.reasoningEffort ?? (active?.runtimeId === runtime.id && active?.reasoningEffort ? active.reasoningEffort : pane.reasoningEffort),
+            launchMode: input.resume && (geminiResumeConversationId || runtime.id !== "cli:gemini") ? "RESUME" : "FRESH",
             cwd: sessionCwd,
             codexThreadId: null,
             accountProfileId: requestedAccountProfileId,
@@ -11686,6 +14359,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           request.requestIdForSpace
         );
     if (allocatedAtNs !== null) cliTerminalManager.recordSessionAllocation(session.sessionId, allocatedAtNs);
+
+    if (runtime.id === "cli:gemini") {
+      const nextModelId = session.modelId ?? runtime.defaultModelId;
+      const parsedReasoningEffort = session.reasoningEffort
+        ? reasoningEffortSchema.safeParse(session.reasoningEffort).data
+        : undefined;
+      const nextReasoningEffort = parsedReasoningEffort ?? (pane.reasoningEffort !== "medium" ? pane.reasoningEffort : "high");
+      if (pane.modelId !== nextModelId || pane.reasoningEffort !== nextReasoningEffort) {
+        await store.updatePane(pane.id, { modelId: nextModelId, reasoningEffort: nextReasoningEffort }, request.requestIdForSpace);
+      }
+      try {
+        const cleanPaneId = pane.id.replace(/^pane:/, "");
+        const modelRecord = JSON.stringify({ modelId: nextModelId, reasoningEffort: nextReasoningEffort ?? session.reasoningEffort });
+        await mkdir("/opt/spaceapp/var/gemini-pane-conversations", { recursive: true, mode: 0o777 });
+        await writeFile(`/opt/spaceapp/var/gemini-pane-conversations/pane-${cleanPaneId}-model.json`, modelRecord, { mode: 0o666 });
+      } catch {}
+    }
 
     if (!reusableSession) {
       await store.appendPaneCliTranscriptChunk(
@@ -12054,12 +14744,46 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return roomAgentService.load(params.id);
   });
 
+  app.get("/api/rooms/:id/room-agent/missions", defaultRouteRateLimitOptions, async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    return roomAgentService.inspectMission(params.id);
+  });
+
+  app.post("/api/rooms/:id/room-agent/missions", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user || request.user.role !== "ADMIN" || request.user.automationScope) {
+      throw new SpaceConflictError("Only an authenticated operator may start a Live mission.");
+    }
+    const params = parseQuery(idParamSchema, request.params);
+    const input = parseBody(roomAgentStartMissionInputSchema, request.body);
+    await store.getRoom(params.id);
+    const actor = await controlUser(request.user.id, request.user.email);
+    const key = `room-agent:${params.id}`;
+    const previous = await controlRepository.get("grant", "shared", key);
+    const previousGrant = z.object({ actorId: z.string().nullable() }).safeParse(previous?.value);
+    if (previous && !previousGrant.success) throw new SpaceConflictError("Room Agent control grant is invalid.");
+    if (previousGrant.success && previousGrant.data.actorId && previousGrant.data.actorId !== actor.id &&
+      (await store.listRoomAgentMissions(params.id)).some(mission => ["QUEUED", "RUNNING", "PAUSED"].includes(mission.status))) {
+      throw new SpaceConflictError("This room already has an active mission for another operator.");
+    }
+    if (!await controlRepository.write({ kind: "grant", actorId: "shared", key, roomId: params.id,
+      version: (previous?.version ?? 0) + 1, value: { actorId: actor.id } }, previous?.version ?? 0)) {
+      throw new SpaceConflictError("Room Agent control grant changed. Retry the same request.");
+    }
+    const session = await roomAgentService.startMission(params.id, input.objective, input.clientRequestId,
+      request.requestIdForSpace, { holderType: "OPERATOR", holderId: actor.id });
+    await recordAudit(store, request, { action: "room.agent.mission.start", targetType: "room", targetId: params.id,
+      metadata: { sessionId: session.sessionId, missionId: session.missionSnapshot?.mission.id ?? null } });
+    return reply.code(202).send(session);
+  });
+
   app.post("/api/rooms/:id/room-agent/messages", defaultRouteRateLimitOptions, async (request, reply) => {
     const params = parseQuery(idParamSchema, request.params);
     if(request.user?.role==="ADMIN"&&!request.user.automationScope){
       const actor=await controlUser(request.user.id,request.user.email);
       const key=`room-agent:${params.id}`,previous=await controlRepository.get("grant","shared",key);
-      await controlRepository.write({kind:"grant",actorId:"shared",key,roomId:params.id,version:(previous?.version??0)+1,value:{actorId:actor.id}},previous?.version??0);
+      if (!await controlRepository.write({kind:"grant",actorId:"shared",key,roomId:params.id,version:(previous?.version??0)+1,value:{actorId:actor.id}},previous?.version??0)) {
+        throw new SpaceConflictError("Room Agent control grant changed. Retry the same request.");
+      }
     }
     const input = parseBody(roomAgentMessageInputSchema, request.body);
     const session = await roomAgentService.send(params.id, input.content, input.clientRequestId, request.requestIdForSpace, operatorBrowserActor(request), input.selectedBrowserPaneId);
@@ -12079,27 +14803,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.post("/api/rooms/:id/room-agent/stop", defaultRouteRateLimitOptions, async (request) => {
+    if (!request.user || request.user.role !== "ADMIN" || request.user.automationScope) throw new SpaceConflictError("Only an authenticated operator may stop a mission.");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(roomAgentStopInputSchema, request.body ?? {});
-    const session = await roomAgentService.stop(params.id, input.reason, request.requestIdForSpace);
+    const actor = await controlUser(request.user.id, request.user.email);
+    const session = await roomAgentService.stop(params.id, input.reason, request.requestIdForSpace, { expectedMissionId: input.expectedMissionId, actorId: actor.id });
     await recordAudit(store, request, {
       action: "room.agent.stop",
       targetType: "room",
       targetId: params.id,
-      metadata: { sessionId: session.sessionId }
+      metadata: { sessionId: session.sessionId, expectedMissionId: input.expectedMissionId ?? null }
     });
     return session;
   });
 
   app.post("/api/rooms/:id/room-agent/control", defaultRouteRateLimitOptions, async (request) => {
+    if (!request.user || request.user.role !== "ADMIN" || request.user.automationScope) throw new SpaceConflictError("Only an authenticated operator may control a mission.");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(roomAgentControlInputSchema, request.body ?? {});
-    const session = await roomAgentService.control(params.id, input.action, "reason" in input ? input.reason : undefined, request.requestIdForSpace);
+    const actor = await controlUser(request.user.id, request.user.email);
+    const session = await roomAgentService.control(params.id, input.action, "reason" in input ? input.reason : undefined, request.requestIdForSpace,
+      { expectedMissionId: input.expectedMissionId, actorId: actor.id });
     await recordAudit(store, request, {
       action: `room.agent.${input.action.toLowerCase()}`,
       targetType: "room",
       targetId: params.id,
-      metadata: { sessionId: session.sessionId, missionId: session.activeMission?.id ?? null }
+      metadata: { sessionId: session.sessionId, missionId: session.missionSnapshot?.mission.id ?? null, expectedMissionId: input.expectedMissionId ?? null }
     });
     return session;
   });
@@ -12139,6 +14868,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const pane = await getPaneById(store, params.id);
     assertAgentPaneCompatible(pane);
     const result = await spaceAgentAdapter.sendMessage({
+      clientRequestId: input.clientRequestId,
       pane,
       content: input.content,
       operatorUserId: request.user!.id,
@@ -12154,6 +14884,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       metadata: { roomId: pane.roomId, source: result.binding.source, sessionId: result.binding.sessionId }
     });
     return result.session;
+  });
+
+  app.post("/api/panes/:id/agent/prepare-retry", defaultRouteRateLimitOptions, async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const pane = await getPaneById(store, params.id);
+    assertAgentPaneCompatible(pane);
+    return spaceAgentAdapter.prepareRetry({ pane });
   });
 
   app.post("/api/panes/:id/agent/interrupt", defaultRouteRateLimitOptions, async (request) => {
@@ -12255,20 +14992,61 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return openAiModelsResponseSchema.parse({ models });
   });
 
+  app.get("/api/voice/providers", defaultRouteRateLimitOptions, async () => {
+    return await getLiveAudioProvidersStatus(config);
+  });
+
+  // --- WebSocket Proxy for Voice Live sessions ---
+  // The browser cannot connect directly to external WebSocket endpoints (Google, Vercel)
+  // from within the LAN. This proxy relays the connection through the Space API server.
+  const pendingVoiceWsSessions = new VoiceProxyTickets();
+  const activeVoiceProxies = new Set<() => void>();
+  app.addHook("preClose", async () => {
+    pendingVoiceWsSessions.clear();
+    for (const stop of activeVoiceProxies) stop();
+    activeVoiceProxies.clear();
+  });
+
   app.post("/api/voice/realtime/calls", defaultRouteRateLimitOptions, async (request, reply) => {
-    const settings = buildVoiceTranscriptionSettings(config);
-    if (!settings.enabled) {
-      throw new SpaceFeatureDisabledError("VOICE_TRANSCRIPTION_DISABLED", settings.statusReason);
+    if (!request.user || request.user.automationScope || request.user.proofScope === "READ_ONLY") return sendApiError(reply, 403, "VOICE_OWNER_REQUIRED", "An authenticated interactive owner is required.");
+    const origin = `${request.protocol}://${request.host}`;
+    // The public Space URL is terminated by the web/Apache proxy before this
+    // request reaches the API.  In that path the proxy can preserve the
+    // browser Origin while the API's protocol/host view still reflects the
+    // internal hop (for example http://127.0.0.1:4910).  Accept only the
+    // configured public UI origin in addition to the derived same-origin
+    // value; never accept an arbitrary forwarded Origin.
+    const requestOrigin = request.headers.origin?.trim() || origin;
+    let configuredOrigin: string | null = null;
+    try { configuredOrigin = new URL(config.browserEvidenceTargetOrigin).origin; } catch {}
+    if (requestOrigin !== origin && requestOrigin !== configuredOrigin) {
+        return sendApiError(reply, 403, "VOICE_ORIGIN_INVALID", "Voice sessions require a same-origin request.");
     }
     const input = parseBody(voiceRealtimeSessionRequestSchema, request.body);
-    const model = input.model?.trim() || config.voiceTranscriptionModel || "gpt-live-1";
+    const provider: LiveAudioProviderId = input.provider || inferProviderFromModel(input.model);
+    if (provider === "openai") {
+      const settings = buildVoiceTranscriptionSettings(config);
+      if (!settings.enabled) {
+        throw new SpaceFeatureDisabledError("VOICE_TRANSCRIPTION_DISABLED", settings.statusReason);
+      }
+    }
+    const defaultModel = provider === "google"
+      ? "gemini-3.8-live"
+      : provider === "amazon"
+        ? "amazon.nova-2-sonic-v1:0"
+        : provider === "local"
+          ? "local-qwen3-greek"
+          : config.voiceTranscriptionModel || "gpt-live-1";
+    const model = input.model?.trim() || defaultModel;
     try {
       const result = await createVoiceRealtimeCall(config, {
+        provider,
+        transport: input.transport,
         offerSdp: input.offerSdp,
         model,
         language: input.language,
         delay: input.delay ?? config.voiceTranscriptionDelay,
-        voice: input.voice ?? config.voiceTranscriptionVoice,
+        voice: input.voice ?? (provider === "google" ? "Aoede" : provider === "amazon" ? "en-US-Jenny" : config.voiceTranscriptionVoice),
         opening: input.opening,
         prompt: input.prompt,
         delegatedModel: input.delegatedModel,
@@ -12279,11 +15057,34 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         tools: input.tools,
         safetyIdentifier: request.user ? createHash("sha256").update(`space:${request.user.id}`).digest("hex") : null
       });
+
+      // If the provider returned an external WebSocket URL (Google, Vercel, Amazon),
+      // create a proxy session so the browser connects to Space API which relays to the provider.
+      if (result.websocketUrl && (provider === "google" || provider === "vercel" || provider === "amazon")) {
+        const proxySessionId = pendingVoiceWsSessions.create({
+          ownerId: request.user.id,
+          // Bind the one-shot ticket to the browser's validated Origin.  On
+          // the public path this differs from the API's internal derived
+          // origin, and the subsequent WebSocket upgrade must use the same
+          // browser value or it is rejected as session_not_found.
+          origin: requestOrigin,
+          wsUrl: result.websocketUrl,
+          token: result.token,
+          subprotocols: provider === "vercel" && result.token ? ["ai-gateway-realtime.v1", `ai-gateway-auth.${result.token}`] : undefined,
+          provider
+        });
+        result.websocketUrl = `/api/voice/ws-proxy/${proxySessionId}`;
+        // These credentials are only needed by the server-side relay.
+        delete result.token;
+        request.log.info({ proxySessionId, provider, event: "voice_ws_proxy_created" }, "Created voice WS proxy session");
+      }
+
       await recordAudit(store, request, {
         action: "voice.realtime.call",
         targetType: "voice_realtime_session",
         targetId: request.requestIdForSpace,
         metadata: {
+          provider,
           model,
           language: input.language,
           delay: input.delay ?? config.voiceTranscriptionDelay,
@@ -12293,8 +15094,121 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Voice Realtime call failed.";
-      request.log.warn({ err, requestId: request.requestIdForSpace }, "voice realtime call failed");
+      request.log.warn({ provider, model, requestId: request.requestIdForSpace }, "voice realtime call failed");
       return sendApiError(reply, 502, "VOICE_REALTIME_CALL_FAILED", message);
+    }
+  });
+
+  app.post("/api/voice/client-error", defaultRouteRateLimitOptions, async (request) => {
+    request.log.warn({ requestId: request.requestIdForSpace, event: "voice_client_error" }, "Live voice client error reported");
+    return { ok: true };
+  });
+
+  const classifyLiveRequest = async (ownerId: string, input: { query: string; roomId?: string; explicitModel?: string }, room: Room | null) => {
+    const context = room ? { id: room.id, name: room.name, description: room.description,
+      panes: (await store.listPanes(room.id)).filter(pane => !pane.isClosed).slice(0, 16)
+        .map(pane => ({ id: pane.id, title: pane.title, runtimeId: pane.terminalRuntimeId, status: pane.status,
+          configuredModelId: pane.modelId, reasoningEffort: pane.reasoningEffort })) } : null;
+    return decisionsService.classifyLiveIntent({ ownerId, roomId: room?.id ?? "", query: input.query, explicitModel: input.explicitModel,
+      context, contextRevision: createHash("sha256").update(JSON.stringify(context)).digest("hex"),
+      policyRevision: createHash("sha256").update(JSON.stringify(config.liveModelPolicy)).digest("hex") });
+  };
+
+  app.post("/api/voice/realtime/delegate", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user || request.user.automationScope || request.user.proofScope === "READ_ONLY") {
+      return sendApiError(reply, 403, "VOICE_OWNER_REQUIRED", "An authenticated interactive owner is required.");
+    }
+    const input = parseBody(voiceRealtimeDelegateRequestSchema, request.body);
+    const room = input.roomId ? await assertRoomAccess(input.roomId, request.user) : null;
+    const dailyBudget = config.liveModelPolicy.dailyBudgetUsd;
+    if (dailyBudget != null) {
+      const sinceMs = Date.now() - 24 * 60 * 60 * 1000;
+      const summary = summarizeVoiceDelegationCosts(await store.listAuditEvents(), request.user.id, sinceMs);
+      if (isVoiceDailyBudgetExceeded(summary, dailyBudget)) {
+        return sendApiError(reply, 429, "VOICE_DAILY_BUDGET_EXCEEDED", "The configured daily voice delegation budget has been reached.");
+      }
+    }
+    try {
+      const result = await routeLiveDelegation({ enabled: config.liveJevAccelerationEnabled, roomId: room?.id, tools: input.tools,
+        classify: () => classifyLiveRequest(request.user!.id, input, room),
+        delegate: signal => createVoiceDelegateResponse(config, input, signal) });
+      try {
+        await recordAudit(store, request, {
+          action: "voice.realtime.delegate",
+          targetType: "voice_delegate",
+          targetId: request.requestIdForSpace,
+          metadata: { telemetry: result.telemetry ?? null, roomId: input.roomId ?? null }
+        });
+      } catch (auditError) {
+        request.log.warn({ requestId: request.requestIdForSpace, error: auditError instanceof Error ? auditError.message : "audit_failed" }, "voice delegation audit persistence failed");
+      }
+      request.log.info({ hasToolCall: Boolean(result.toolCall), hasMessage: Boolean(result.message), telemetry: result.telemetry ?? null }, "voice realtime delegate resolved");
+      return voiceRealtimeDelegateResponseSchema.parse(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Voice delegation failed.";
+      request.log.warn({ requestId: request.requestIdForSpace }, "voice delegation failed");
+      return sendApiError(reply, 502, "VOICE_DELEGATION_FAILED", message);
+    }
+  });
+
+  app.get("/api/voice/realtime/costs", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user || request.user.automationScope || request.user.proofScope === "READ_ONLY") {
+      return sendApiError(reply, 403, "VOICE_OWNER_REQUIRED", "An authenticated interactive owner is required.");
+    }
+    const sinceRaw = typeof (request.query as { since?: unknown })?.since === "string" ? (request.query as { since: string }).since : null;
+    const sinceMs = sinceRaw ? Date.parse(sinceRaw) : Date.now() - 24 * 60 * 60 * 1000;
+    const events = await store.listAuditEvents();
+    const summary = summarizeVoiceDelegationCosts(events, request.user.id, Number.isFinite(sinceMs) ? sinceMs : Date.now() - 24 * 60 * 60 * 1000);
+    return { since: new Date(Number.isFinite(sinceMs) ? sinceMs : Date.now() - 24 * 60 * 60 * 1000).toISOString(), ...summary,
+      dailyBudgetUsd: config.liveModelPolicy.dailyBudgetUsd,
+      remainingBudgetUsd: config.liveModelPolicy.dailyBudgetUsd == null || summary.knownCostCalls === 0 ? null : Math.max(0, config.liveModelPolicy.dailyBudgetUsd - summary.estimatedCostUsd) };
+  });
+
+  // Jev is an optional, low-cost classifier only. It never authorizes a tool,
+  // selects an unallowlisted model, or replaces the provider delegate.
+  app.post("/api/voice/realtime/triage", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user || request.user.automationScope || request.user.proofScope === "READ_ONLY") {
+      return sendApiError(reply, 403, "VOICE_OWNER_REQUIRED", "An authenticated interactive owner is required.");
+    }
+    const input = parseBody(z.object({ query: z.string().trim().min(1).max(5000), roomId: z.string().min(1).max(120).optional(), explicitModel: z.string().max(200).optional() }).strict(), request.body);
+    const room = input.roomId ? await assertRoomAccess(input.roomId, request.user) : null;
+    const result = await classifyLiveRequest(request.user.id, input, room);
+    request.log.info({ event: "live_jev_triage", available: result.available, latencyMs: result.latencyMs, cacheHit: result.cacheHit, intent: result.intent, complexity: result.complexity, toolFamily: result.toolFamily }, "Live intent classified");
+    return result;
+  });
+
+  // The catalog is operator configuration, not a hard-coded price list. An
+  // empty catalog is an honest response and leaves provider selection to the
+  // explicit user/session choice.
+  app.get("/api/voice/realtime/policy", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user || request.user.automationScope || request.user.proofScope === "READ_ONLY") {
+      return sendApiError(reply, 403, "VOICE_OWNER_REQUIRED", "An authenticated interactive owner is required.");
+    }
+    return config.liveModelPolicy;
+  });
+
+  app.get("/api/voice/ws-proxy/:sessionId", defaultWebsocketRateLimitOptions, (clientSocket, request) => {
+    const sessionId = (request.params as { sessionId: string }).sessionId;
+    if (!request.user || request.user.automationScope || request.user.proofScope === "READ_ONLY") { clientSocket.close(4403, "voice_owner_required"); return; }
+    const origin = request.headers.origin || `${request.protocol}://${request.host}`;
+    const session = pendingVoiceWsSessions.take(sessionId, request.user.id, origin);
+    if (!session) {
+      clientSocket.close(4404, "session_not_found");
+      return;
+    }
+    try {
+      const upstream = new WsClient(session.wsUrl, session.subprotocols || [], {
+        maxPayload: voiceProxyLimits.maxFrameBytes,
+        handshakeTimeout: voiceProxyLimits.connectTimeoutMs,
+        ...(session.token && !session.subprotocols?.length ? { headers: { Authorization: `Bearer ${session.token}` } } : {})
+      });
+      const stop = relayVoiceSockets(clientSocket, upstream, { onClose: (metadata) => {
+        activeVoiceProxies.delete(stop);
+        request.log.info({ sessionId, provider: session.provider, ...metadata, event: "voice_ws_proxy_closed" }, "Voice relay closed");
+      } });
+      activeVoiceProxies.add(stop);
+    } catch {
+      clientSocket.close(1011, "voice_upstream_unavailable");
     }
   });
 
@@ -12440,100 +15354,75 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
 
-  interface LivePersonalMemoryItem {
-    id: string;
-    key: string;
-    value: string;
-    category?: "profile" | "preference" | "fact" | "instruction" | "note";
-    createdAt: string;
-    updatedAt: string;
-  }
-
-  const LIVE_MEMORY_FILE = "/opt/spaceapp/var/live-personal-memory.json";
-  const DEFAULT_PERSONAL_MEMORIES: LivePersonalMemoryItem[] = [
-    {
-      id: "mem_user_name",
-      key: "userName",
-      value: "Νικόλας",
-      category: "profile",
-      createdAt: "2026-09-12T00:00:00.000Z",
-      updatedAt: "2026-09-12T00:00:00.000Z"
-    }
-  ];
-
-  async function readLivePersonalMemories(): Promise<LivePersonalMemoryItem[]> {
-    try {
-      const content = await readFile(LIVE_MEMORY_FILE, "utf-8");
-      const parsed = JSON.parse(content);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
-      }
-    } catch {}
-    try {
-      await writeFile(LIVE_MEMORY_FILE, JSON.stringify(DEFAULT_PERSONAL_MEMORIES, null, 2), "utf-8");
-    } catch {}
-    return [...DEFAULT_PERSONAL_MEMORIES];
-  }
-
-  async function writeLivePersonalMemories(items: LivePersonalMemoryItem[]): Promise<void> {
-    await writeFile(LIVE_MEMORY_FILE, JSON.stringify(items, null, 2), "utf-8");
-  }
-
-  app.get("/api/live/personal-memory", defaultRouteRateLimitOptions, async () => {
-    const items = await readLivePersonalMemories();
-    return { items };
+  const liveContextReads = new Map<string, Promise<Awaited<ReturnType<typeof buildLiveRoomContext>>>>();
+  app.get("/api/live/context/:roomId", defaultRouteRateLimitOptions, async request => {
+    if (!request.user || request.user.automationScope) throw new SpaceConflictError("An authenticated interactive owner is required.");
+    const { roomId } = z.object({ roomId: z.string().min(1).max(120) }).parse(request.params);
+    const room = await assertRoomAccess(roomId, request.user);
+    const { fresh } = z.object({ fresh: z.enum(["true", "false"]).optional() }).parse(request.query);
+    const key = `${request.user.id}:${roomId}:${fresh === "true" ? "fresh" : "cached"}`;
+    const pending = liveContextReads.get(key);
+    if (pending) return pending;
+    const read = (async () => {
+      const [panes, mission] = await Promise.all([store.listPanes(roomId), roomAgentService.inspectMission(roomId).catch(() => null)]);
+      return buildLiveRoomContext({ room, panes, objective: mission?.snapshot?.objective,
+        inspect: pane => roomPaneController.inspect(pane, fresh === "true" ? { fresh: true } : undefined) });
+    })();
+    liveContextReads.set(key, read);
+    try { return await read; } finally { if (liveContextReads.get(key) === read) liveContextReads.delete(key); }
   });
 
-  app.post("/api/live/personal-memory", defaultRouteRateLimitOptions, async (request, reply) => {
-    const body = (request.body as { key?: string; value?: string; category?: string; id?: string }) || {};
-    const key = typeof body.key === "string" ? body.key.trim() : "";
-    const value = typeof body.value === "string" ? body.value.trim() : "";
-    if (!key || !value) {
-      return sendApiError(reply, 400, "INVALID_INPUT", "Both key and value are required for personal memory.");
+  const liveMemoryRepository = store instanceof PostgresSpaceStore && config.databaseUrl
+    ? PostgresLiveMemoryRepository.fromConnectionString(config.databaseUrl) : new InMemoryLiveMemoryRepository();
+  const livePersonalMemory = createLivePersonalMemory({
+    repository: liveMemoryRepository,
+    // Import only for the installation's configured legacy operator, never the
+    // first arbitrary caller. An unassigned legacy file remains untouched.
+    legacyOwnerId: auth.operatorEmail ? "user:operator" : auth.devLogin ? "user:dev-operator" : undefined,
+    readLegacy: async () => {
+      if (!(store instanceof PostgresSpaceStore)) return null;
+      try { return await readFile("/opt/spaceapp/var/live-personal-memory.json", "utf8"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     }
-    const category = (body.category as LivePersonalMemoryItem["category"]) || "profile";
-    const items = await readLivePersonalMemories();
-    const now = new Date().toISOString();
-
-    let targetItem: LivePersonalMemoryItem | undefined;
-    if (body.id) {
-      targetItem = items.find((i) => i.id === body.id);
-    }
-    if (!targetItem) {
-      targetItem = items.find((i) => i.key.toLowerCase() === key.toLowerCase());
-    }
-
-    if (targetItem) {
-      targetItem.key = key;
-      targetItem.value = value;
-      targetItem.category = category;
-      targetItem.updatedAt = now;
-    } else {
-      targetItem = {
-        id: body.id || `mem_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        key,
-        value,
-        category,
-        createdAt: now,
-        updatedAt: now
-      };
-      items.push(targetItem);
-    }
-
-    await writeLivePersonalMemories(items);
-    return { item: targetItem };
+  });
+  app.addHook("onClose", async () => liveMemoryRepository.dispose());
+  const liveMemoryOwner = (request: FastifyRequest) => {
+    if (!request.user || request.user.automationScope) throw new SpaceConflictError("Authenticated personal-memory owner required.");
+    return request.user.id;
+  };
+  app.get("/api/live/personal-memory", defaultRouteRateLimitOptions, async request => livePersonalMemory.read(liveMemoryOwner(request)));
+  app.post("/api/live/personal-memory", defaultRouteRateLimitOptions, async request => livePersonalMemory.save(liveMemoryOwner(request), request.body));
+  app.delete("/api/live/personal-memory/:id", defaultRouteRateLimitOptions, async request => {
+    const { id } = z.object({ id: z.string().trim().min(1).max(200) }).parse(request.params);
+    const { expectedRevision } = z.object({ expectedRevision: z.coerce.number().int().min(0).optional() }).parse(request.query);
+    return livePersonalMemory.delete(liveMemoryOwner(request), id, expectedRevision);
+  });
+  app.get("/api/live/personal-memory/changes", defaultRouteRateLimitOptions, async request => ({ items: await livePersonalMemory.changes(liveMemoryOwner(request)) }));
+  app.get("/api/live/personal-memory/review", defaultRouteRateLimitOptions, async request => livePersonalMemory.review(liveMemoryOwner(request)));
+  app.post("/api/live/personal-memory/maintain", defaultRouteRateLimitOptions, async request => {
+    const { expectedRevision } = z.object({ expectedRevision: z.number().int().min(0) }).strict().parse(request.body);
+    return livePersonalMemory.maintain(liveMemoryOwner(request), expectedRevision);
   });
 
-  app.delete("/api/live/personal-memory/:id", defaultRouteRateLimitOptions, async (request) => {
-    const { id } = request.params as { id: string };
-    const items = await readLivePersonalMemories();
-    const filtered = items.filter((i) => i.id !== id);
-    if (filtered.length !== items.length) {
-      await writeLivePersonalMemories(filtered);
+  const liveHistoryRepository = store instanceof PostgresSpaceStore && config.databaseUrl
+    ? PostgresLiveHistoryRepository.fromConnectionString(config.databaseUrl) : new InMemoryLiveHistoryRepository();
+  app.addHook("onClose", () => liveHistoryRepository.dispose());
+  registerLiveHistoryRoutes(app, {
+    repository: liveHistoryRepository, routeOptions: defaultRouteRateLimitOptions,
+    assertAccess: (request, room) => assertRoomAccess(room, request.user!),
+    readLegacy: async room => {
+      if (!(store instanceof PostgresSpaceStore) || !/^[a-zA-Z0-9:_-]+$/.test(room)) return null;
+      try { return await readFile(join("/opt/spaceapp/var/live-voice-logs", `live-voice-${room}.jsonl`), "utf8"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    },
+    audit: async (owner, room, event) => {
+      if (!(store instanceof PostgresSpaceStore)) return;
+      const key = createHash("sha256").update(JSON.stringify([owner, room])).digest("hex");
+      const directory = "/opt/spaceapp/var/live-voice-logs/owners";
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await appendFile(join(directory, `${key}.jsonl`), JSON.stringify({ ...event, ownerId: owner, roomId: room, recordedAt: nowIso() }) + "\n", { mode: 0o600 });
     }
-    return { ok: true };
   });
-
 
   app.post("/api/voice/realtime/attachments", defaultRouteRateLimitOptions, async (request, reply) => {
     if (!request.isMultipart()) {
@@ -12541,11 +15430,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     let model = "gpt-4o-mini";
     let prompt = "";
+    let provider = "";
     let file: { buffer: Buffer; mimeType: string; filename: string } | null = null;
     for await (const part of request.parts()) {
       if (part.type === "field") {
         if (part.fieldname === "model" && typeof part.value === "string") model = part.value.trim().slice(0, 120) || model;
         if (part.fieldname === "prompt" && typeof part.value === "string") prompt = part.value.slice(0, 10000);
+        if (part.fieldname === "provider" && typeof part.value === "string") provider = part.value.trim().slice(0, 60);
         continue;
       }
       if (file) return sendApiError(reply, 422, "UPLOAD_LIMIT_EXCEEDED", "Send one attachment at a time.");
@@ -12566,7 +15457,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     if (!file) return sendApiError(reply, 422, "EMPTY_UPLOAD", "Attach an image or file.");
     try {
-      const result = await createVoiceAttachmentResponse(config, { ...file, model, prompt });
+      const result = await createVoiceAttachmentResponse(config, { ...file, model, prompt, provider });
       await recordAudit(store, request, {
         action: "voice.realtime.attachment",
         targetType: "voice_realtime_attachment",
@@ -12734,7 +15625,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     const unsubscribe = eventBus.subscribe((event) => {
       if (!isClosed && eventMatchesRoom(event, query.roomId) && !seenEventIds.has(event.id)) {
-        seenEventIds.add(event.id);
+        trackSeenEventId(seenEventIds, event.id);
         reply.raw.write(formatSseMessage(event.type, event));
       }
     });
@@ -12823,6 +15714,29 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       completedAt: nowIso()
     });
   }
+
+  app.get(
+    "/api/admin/antigravity-usage-accounts",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Toolbar system telemetry requires the ADMIN role.");
+      }
+      await cliRuntimeVisibility.assertEnabled("cli:gemini");
+      return antigravityUsageAccountListSchema.parse(await antigravityUsageProvider());
+    }
+  );
+
+  app.get(
+    "/api/admin/api-provider-accounts",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Toolbar system telemetry requires the ADMIN role.");
+      }
+      return apiProviderAccountListSchema.parse(await apiProviderAccountsProvider());
+    }
+  );
 
   app.get(
     "/api/admin/codex-usage-accounts",
@@ -13075,6 +15989,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return streamingOverlaySnapshotSchema.parse(await streamingService.overlaySnapshot());
     }
   );
+  app.get("/api/internal/streaming/bot/live-metrics", defaultRouteRateLimitOptions, async () => {
+    return { metrics: formatStreamingBotLiveMetrics(await streamingService.overlaySnapshot()) };
+  });
   app.get(
     "/api/admin/streaming/bot/settings",
     { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
@@ -13086,6 +16003,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return { settings: streamingBotSettingsSchema.parse(settings), memoryCount };
     }
   );
+  app.get("/api/admin/streaming/bot/models", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming model selection requires the ADMIN role.");
+    return { models: await streamingBotService.modelOptions() };
+  });
   app.patch(
     "/api/admin/streaming/bot/settings",
     { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
@@ -13130,9 +16051,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot controls require the ADMIN role.");
       }
-      const settings = await streamingBotService.setPaused(false, request.user.id);
-      await recordAudit(store, request, { action: "admin.streaming.bot_resumed", targetType: "streaming_bot_settings", targetId: "global", metadata: { version: settings.version } });
-      return streamingBotSettingsSchema.parse(settings);
+      try {
+        const settings = await streamingBotService.setPaused(false, request.user.id);
+        await recordAudit(store, request, { action: "admin.streaming.bot_resumed", targetType: "streaming_bot_settings", targetId: "global", metadata: { version: settings.version } });
+        return streamingBotSettingsSchema.parse(settings);
+      } catch (error) {
+        if (error instanceof StreamingBotServiceError) return sendApiError(reply, error.statusCode, error.code, error.message);
+        throw error;
+      }
     }
   );
   app.get(
@@ -13204,6 +16130,117 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return streamingBotService.searchMemory(q, limit);
     }
   );
+  app.get("/api/admin/streaming/bot/memory", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory requires the ADMIN role.");
+    const input = z.object({ status: z.enum(["PENDING", "APPROVED"]).default("APPROVED"), q: z.string().max(200).default(""), limit: z.coerce.number().int().min(1).max(100).default(50) }).strict().parse(request.query);
+    const entries = await streamingBotService.listReviewedMemory(input.status, input.limit, input.q);
+    return { entries: entries.map(entry => streamingBotReviewedMemorySchema.parse(entry)) };
+  });
+  app.get("/api/admin/streaming/bot/moderation", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming moderation requires the ADMIN role.");
+    const actions = await streamingBotService.listModerationActions(100);
+    return { actions };
+  });
+  app.get("/api/admin/streaming/live-context", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming Live context requires the ADMIN role.");
+    const [snapshot, activity, memory, bot] = await Promise.all([
+      streamingService.overlaySnapshot(),
+      streamingBotService.listActivity(30),
+      streamingBotService.listReviewedMemory("APPROVED", 30),
+      streamingBotService.getStatus()
+    ]);
+    return {
+      generatedAt: new Date().toISOString(),
+      bot: { enabled: bot.enabled, platforms: Object.fromEntries(Object.entries(bot.platforms).map(([name, state]) => [name, { connected: state.connected, live: state.live, lastPollAt: state.lastPollAt }])) },
+      metrics: snapshot.tiles.filter(tile => tile.provider !== "SPACE").map(tile => ({ provider: tile.provider, label: tile.label, badge: tile.badge, value: tile.value, state: tile.state, sampledAt: tile.sampledAt })),
+      messages: activity.filter(item => item.direction === "IN" && !asksForOperatorPrivateData(item.message) &&
+        !containsSensitiveDisclosure(`${item.author ?? ""} ${item.message}`))
+        .map(item => ({ id: item.id, platform: item.platform, author: item.author, message: item.message.slice(0, 500), at: item.createdAt })),
+      targets: activity.filter(item => item.direction === "IN" && !item.protectedAccount && item.authorId &&
+        !containsSensitiveDisclosure(item.author ?? "") &&
+        Date.now() - Date.parse(item.createdAt) < 10 * 60_000).map(item => ({ id: item.id, platform: item.platform, author: item.author, at: item.createdAt })),
+      moderation: (await streamingBotService.listModerationActions(30)).map(item => ({ id: item.id, platform: item.platform,
+        author: (() => { const name = activity.find(record => record.messageId === item.messageId)?.author ?? null;
+          return name && !containsSensitiveDisclosure(name) ? name : null; })(),
+        decision: item.decision, reason: item.reason, durationSeconds: item.durationSeconds, result: item.result, at: item.createdAt })),
+      memory: memory.filter(item => !containsSensitiveDisclosure(`${item.title} ${item.body}`)).map(item => ({ title: item.title, body: item.body.slice(0, 500) })),
+      knowledge: PUBLIC_SPACEAPP_KNOWLEDGE.map(item => ({ source: item.source, version: item.version, answer: item.answer }))
+    };
+  });
+  app.post("/api/admin/streaming/live-action", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming Live actions require the ADMIN role.");
+    const input = parseBody(z.discriminatedUnion("action", [
+      z.object({ action: z.literal("REPLY"), platform: z.enum(["YOUTUBE", "TWITCH"]), message: z.string().trim().min(1).max(500) }).strict(),
+      z.object({ action: z.literal("PAUSE") }).strict(),
+      z.object({ action: z.literal("TIMEOUT"), activityId: z.string().min(1).max(200), durationSeconds: z.union([z.literal(300), z.literal(1800)]) }).strict(),
+      z.object({ action: z.literal("UNDO"), moderationActionId: z.string().min(1).max(200) }).strict()
+    ]), request.body);
+    try {
+      const result = input.action === "REPLY" ? await streamingBotService.sendOperatorReply(input.platform, input.message)
+        : input.action === "PAUSE" ? await streamingBotService.setPaused(true, request.user.id)
+        : input.action === "TIMEOUT" ? await streamingBotService.timeoutFromActivity(input.activityId, input.durationSeconds)
+        : await streamingBotService.undoModerationAction(input.moderationActionId);
+      await recordAudit(store, request, { action: `admin.streaming.live_${input.action.toLowerCase()}`, targetType: "streaming_live_action",
+        targetId: input.action === "TIMEOUT" ? input.activityId : input.action === "UNDO" ? input.moderationActionId : input.action,
+        metadata: { result: "SUCCEEDED" } });
+      return { ok: true, result };
+    } catch (error) {
+      if (error instanceof StreamingBotServiceError) return sendApiError(reply, error.statusCode, error.code, error.message);
+      throw error;
+    }
+  });
+  app.post("/api/admin/streaming/bot/moderation/:id/undo", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming moderation requires the ADMIN role.");
+    const { id } = z.object({ id: z.string().min(1).max(200) }).strict().parse(request.params);
+    parseBody(z.object({}).strict(), request.body ?? {});
+    try {
+      const action = await streamingBotService.undoModerationAction(id);
+      await recordAudit(store, request, { action: "admin.streaming.moderation_undone", targetType: "streaming_moderation_action", targetId: id, metadata: { platform: action.platform, result: action.result } });
+      return action;
+    } catch (error) {
+      if (error instanceof StreamingBotServiceError) return sendApiError(reply, error.statusCode, error.code, error.message);
+      throw error;
+    }
+  });
+  app.post("/api/internal/streaming/bot/moderation-triage", defaultRouteRateLimitOptions, async (request) => {
+    const { message } = parseBody(z.object({ message: z.string().trim().min(1).max(2000) }).strict(), request.body);
+    const result = await decisionsService.decide({
+      state: message,
+      questions: { verdict: { type: "choice", instructions: "Classify a public live-chat message for moderation. Criticism, disagreement, capitals or one isolated swear are SAFE. Clear threats or publication of private information are SEVERE. Repeated targeted insults or harassment are ABUSE. Uncertain intent is AMBIGUOUS.",
+        criteria: { SAFE: "No action", ABUSE: "Targeted verbal abuse or harassment", SEVERE: "Clear threat or doxxing", AMBIGUOUS: "Needs human review" } } }
+    });
+    if (!result.available) return { available: false, verdict: null };
+    const answer = result.answers.verdict;
+    const choice = answer && typeof answer === "object" && !Array.isArray(answer) ? (answer as Record<string, unknown>).choice : null;
+    return { available: true, verdict: typeof choice === "string" && ["SAFE", "ABUSE", "SEVERE", "AMBIGUOUS"].includes(choice) ? choice : "AMBIGUOUS" };
+  });
+  app.post("/api/admin/streaming/bot/memory", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory requires the ADMIN role.");
+    const input = parseBody(createStreamingBotMemoryInputSchema, request.body);
+    const entry = await streamingBotService.createReviewedMemory(input);
+    await recordAudit(store, request, { action: "admin.streaming.bot_memory_created", targetType: "streaming_bot_memory", targetId: entry.id, metadata: { status: entry.status } });
+    return streamingBotReviewedMemorySchema.parse(entry);
+  });
+  app.patch("/api/admin/streaming/bot/memory/:id", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory requires the ADMIN role.");
+    const { id } = z.object({ id: z.string().min(1).max(200) }).strict().parse(request.params);
+    const input = parseBody(updateStreamingBotMemoryInputSchema, request.body);
+    try {
+      const entry = await streamingBotService.updateReviewedMemory(id, input);
+      await recordAudit(store, request, { action: "admin.streaming.bot_memory_updated", targetType: "streaming_bot_memory", targetId: id, metadata: { status: entry.status, version: entry.version } });
+      return streamingBotReviewedMemorySchema.parse(entry);
+    } catch (error) {
+      if (error instanceof StreamingBotServiceError) return sendApiError(reply, error.statusCode, error.code, error.message);
+      throw error;
+    }
+  });
+  app.delete("/api/admin/streaming/bot/memory/:id", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory requires the ADMIN role.");
+    const { id } = z.object({ id: z.string().min(1).max(200) }).strict().parse(request.params);
+    const deleted = await streamingBotService.deleteReviewedMemory(id);
+    if (deleted) await recordAudit(store, request, { action: "admin.streaming.bot_memory_deleted", targetType: "streaming_bot_memory", targetId: id, metadata: {} });
+    return { deleted };
+  });
   app.post("/api/internal/streaming/bot/mcp-execute", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(streamingBotMcpExecuteInputSchema, request.body ?? {});
     const result = await executeMcpToolWithPolicy({
@@ -13288,6 +16325,33 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
       const { range } = z.object({ range: systemAnalyticsRangeSchema.default("10m") }).strict().parse(request.query);
       return systemAnalyticsCliSessionsResponseSchema.parse(await systemAnalyticsService.cliSessions(range));
+    }
+  );
+  app.get(
+    "/api/admin/system-analytics/opencode-bench",
+    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "System analytics require the ADMIN role.");
+      }
+      const { range, refresh } = z.object({
+        range: systemAnalyticsRangeSchema.default("7d"),
+        refresh: z.enum(["true", "false"]).default("false")
+      }).strict().parse(request.query);
+      const data = await opencodeModelBenchService.get(range as any, refresh === "true");
+      return opencodeBenchResponseSchema.parse(data);
+    }
+  );
+  app.get(
+    "/api/admin/system-analytics/opencode-bench/probe/:provider/:model",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "System analytics require the ADMIN role.");
+      }
+      const { provider, model } = z.object({ provider: z.enum(["opencode", "opencode-go", "openrouter"]), model: z.string().min(1).max(160) }).parse((request as any).params);
+      const data = await opencodeModelBenchService.probeSingle(provider, model);
+      return data as any;
     }
   );
   app.get(
@@ -14034,6 +17098,19 @@ app.post(
       };
     }
   );
+  app.post("/api/admin/cli-maintenance/plans", { config: { rateLimit: { max: 4, timeWindow: "15 minutes" } } }, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Maintenance requires ADMIN.");
+    const run = await cliMaintenanceManager.createPlan(parseBody(maintenancePlanRequestSchema, request.body ?? {}), request.user.id);
+    await recordAudit(store, request, { action: "cli_maintenance.plan_queued", targetType: "admin_operation_run", targetId: run.id, metadata: {} });
+    return reply.code(202).send(run);
+  });
+  app.post("/api/admin/cli-maintenance/plans/:planId/apply", { config: { rateLimit: { max: 4, timeWindow: "15 minutes" } } }, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Maintenance requires ADMIN.");
+    const { planId } = request.params as { planId: string };
+    const run = await cliMaintenanceManager.applyPlan(planId, parseBody(maintenanceApplyRequestSchema, request.body), request.user.id);
+    await recordAudit(store, request, { action: "cli_maintenance.plan_applied", targetType: "admin_operation_run", targetId: run.id, metadata: { planId } });
+    return reply.code(202).send(run);
+  });
   app.post(
     "/api/admin/cli-maintenance/runs",
     { config: { rateLimit: { max: 4, timeWindow: "15 minutes" } } },
@@ -14381,6 +17458,22 @@ app.post(
       }
     });
     return settings;
+  });
+  app.get("/api/user-settings", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
+    return store.getUserSettings(request.user.id);
+  });
+  app.patch("/api/user-settings", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
+    const input = parseBody(updateUserSettingsInputSchema, request.body);
+    const updated = await store.updateUserSettings(request.user.id, input);
+    await recordAudit(store, request, {
+      action: "user_settings.update",
+      targetType: "user_settings",
+      targetId: request.user.id,
+      metadata: { userId: request.user.id }
+    });
+    return updated;
   });
   app.post("/api/providers", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
@@ -16233,6 +19326,11 @@ app.post(
           : ""
     };
   });
+  app.get("/api/system-health", { config: { rateLimit: { max: 180, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
+    reply.header("Cache-Control", "no-store");
+    return systemHealthSnapshotSchema.parse(await healthMonitor.snapshot());
+  });
   app.get("/api/admin/system-analytics/health", { config: { rateLimit: { max: 180, timeWindow: "1 minute" } } }, async (request, reply) => {
     if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "System health requires the ADMIN role.");
     reply.header("Cache-Control", "no-store");
@@ -16243,6 +19341,16 @@ app.post(
     const { range } = z.object({ range: systemHealthRangeSchema.default("10m") }).strict().parse(request.query);
     reply.header("Cache-Control", "no-store");
     return systemHealthHistorySchema.parse(await healthMonitor.history(range));
+  });
+  app.get("/api/admin/system-analytics/topology", { config: { rateLimit: { max: 180, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "System topology requires the ADMIN role.");
+    reply.header("Cache-Control", "no-store");
+    return systemTopologySnapshotSchema.parse(await systemTopologyService.snapshot());
+  });
+  app.get("/api/admin/topology", { config: { rateLimit: { max: 180, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "System topology requires the ADMIN role.");
+    reply.header("Cache-Control", "no-store");
+    return systemTopologySnapshotSchema.parse(await systemTopologyService.snapshot());
   });
   app.get("/api/admin/storage", defaultRouteRateLimitOptions, async () => storageReadinessSchema.parse(await storageReadinessChecker()));
   app.get("/api/admin/observability", defaultRouteRateLimitOptions, async () => observabilitySnapshotSchema.parse(observability.snapshot()));

@@ -10,6 +10,9 @@ import {
   X
 } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAutoAnimate } from "@formkit/auto-animate/react";
+import { motion } from "motion/react";
+import { AnimatedNumber } from "../ui-controls/AnimatedNumber.js";
 import type { TaskItem, TaskStatus } from "@space/contracts";
 import { taskObjectiveMaxCharacters, taskTitleMaxCharacters } from "@space/contracts";
 import { api } from "../../api.js";
@@ -19,6 +22,10 @@ import {
   SPACE_TASK_UPDATED_EVENT,
   notifyTasksUpdated
 } from "./task-events.js";
+import {
+  formatAppDateTime,
+  DATE_TIME_SETTINGS_UPDATED_EVENT
+} from "../date-time-settings/date-time-settings.js";
 
 interface TaskDockProps {
   canInsert: boolean;
@@ -39,7 +46,7 @@ const statusFilters: Array<{ id: StatusFilter; label: string }> = [
 function timeLabel(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown time";
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  return formatAppDateTime(date);
 }
 
 const acceptedStatuses: TaskStatus[] = ["OPEN", "RUNNING", "DONE", "ARCHIVED"];
@@ -60,6 +67,7 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [taskListRef] = useAutoAnimate();
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -95,6 +103,13 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
     };
   }, [loadItems]);
 
+  const [, setDateTimeTick] = useState(0);
+  useEffect(() => {
+    const handleSettingsUpdate = () => setDateTimeTick((c) => c + 1);
+    window.addEventListener(DATE_TIME_SETTINGS_UPDATED_EVENT, handleSettingsUpdate);
+    return () => window.removeEventListener(DATE_TIME_SETTINGS_UPDATED_EVENT, handleSettingsUpdate);
+  }, []);
+
   useEffect(() => {
     if (!isFullscreen) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -105,7 +120,7 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
   }, [isFullscreen]);
 
   const summary = useMemo(
-    () => `${totalItems} task${totalItems === 1 ? "" : "s"} · Private · Space-wide · 100 max`,
+    () => <><AnimatedNumber value={totalItems} /> task{totalItems === 1 ? "" : "s"} · Private · Space-wide · 100 max</>,
     [totalItems]
   );
 
@@ -181,9 +196,13 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
         <header className="task-dock-head">
           <h2><ListTodo aria-hidden="true" /> Tasks</h2>
           <div className="task-dock-actions">
-            <button className="icon-action" onClick={() => setIsFullscreen((value) => !value)}
+            <button
+              className={`icon-action dock-fullscreen-toggle${isFullscreen ? " is-active" : ""}`}
+              onClick={() => setIsFullscreen((value) => !value)}
               aria-label={isFullscreen ? "Close tasks fullscreen" : "Open tasks fullscreen"}
-              aria-pressed={isFullscreen}>
+              title={isFullscreen ? "Close tasks fullscreen" : "Open tasks fullscreen"}
+              aria-pressed={isFullscreen}
+            >
               {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
             </button>
             <button className="icon-action" onClick={() => setIsAdding(true)} aria-label="Add task" aria-expanded={isAdding}>
@@ -198,11 +217,20 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
         <div className="task-controls">
           <input type="search" name="task-search" aria-label="Search tasks" placeholder="Search tasks…" value={search}
             onChange={(event) => setSearch(event.currentTarget.value)} />
-          <div className="task-filters" aria-label="Task statuses">
+          <div className="task-filters" aria-label="Task statuses" style={{ position: "relative" }}>
             {statusFilters.map((filter) => (
               <button key={filter.id} className={statusFilter === filter.id ? "active" : ""}
-                aria-pressed={statusFilter === filter.id} onClick={() => setStatusFilter(filter.id)}>
-                {filter.label}
+                aria-pressed={statusFilter === filter.id} onClick={() => setStatusFilter(filter.id)}
+                style={{ position: "relative" }}>
+                {statusFilter === filter.id && (
+                  <motion.span
+                    layoutId="task-filter-indicator"
+                    className="task-filter-indicator"
+                    style={{ position: "absolute", inset: 0, borderRadius: "inherit", zIndex: 0 }}
+                    transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                  />
+                )}
+                <span style={{ position: "relative", zIndex: 1 }}>{filter.label}</span>
               </button>
             ))}
           </div>
@@ -226,7 +254,7 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
         ) : null}
 
         {error ? <div className="banner bad">{error}</div> : null}
-        <div className="task-list" role="list" aria-label="Task items">
+        <div ref={taskListRef} className="task-list" role="list" aria-label="Task items">
           {items.map((item) => {
             const expanded = expandedIds.has(item.id);
             const isLong = item.characterCount > 360;

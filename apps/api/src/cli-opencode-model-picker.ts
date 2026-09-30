@@ -35,7 +35,7 @@ export function openCodeComposerLine(screen: string): string | null {
     const line = window[i]!;
     if (!/^\s*[┃│]/.test(line)) continue;
     const next = window.slice(i + 1, i + 3).join('\n');
-    if (!/^╹[▀━─]{3,}/m.test(next) && !/\(\d+(?:\.\d+)?%\)/.test(next) && !/ctrl\+p/.test(next)) continue;
+    if (!/^[ \t]*╹[▀━─]{3,}/m.test(next) && !/\(\d+(?:\.\d+)?%\)/.test(next) && !/ctrl\+p/.test(next)) continue;
     return line;
   }
   return null;
@@ -198,15 +198,27 @@ export async function switchOpenCodeTuiSettings(input: Control & { model: Model;
       if (heading.test(screen)) return screen;
       await wait(50);
     }
-    throw new SpaceConflictError(`OpenCode did not open its native ${heading === modelMenu ? 'model' : 'reasoning'} menu.`);
+    const menuType = heading === modelMenu ? 'model' : heading === variantMenu ? 'reasoning' : 'command';
+    throw new SpaceConflictError(`OpenCode did not open its native ${menuType} menu.`);
   };
   const openModels = async () => {
     // Native shortcuts open a dialog without replacing an unsubmitted draft.
     await send('\u0018'); await send('m'); await awaitMenu(modelMenu);
   };
   const openVariants = async () => {
+    let current = await observe();
+    if (variantMenu.test(current)) return;
+    if (modelMenu.test(current) || /Commands/.test(current)) {
+      await send('\u001b');
+      current = await observe();
+    }
     await send('\u0010'); await awaitMenu(/Commands/);
-    await send('Switch model variant'); await send('\r'); await awaitMenu(variantMenu);
+    await send('Switch model variant');
+    current = await observe();
+    if (/No (?:matching )?commands/i.test(current)) {
+      throw new SpaceConflictError('The active OpenCode model does not support reasoning variants.');
+    }
+    await send('\r'); await awaitMenu(variantMenu);
   };
   const filter = async (heading: RegExp, query: string) => {
     await send(query);
@@ -236,13 +248,14 @@ export async function switchOpenCodeTuiSettings(input: Control & { model: Model;
   await input.assertCurrent();
   let screen = await observe();
   // The HTTP catalog is ready before a newly attached TUI accepts keys.
-  // Require its composer and keyboard hints to settle before the first shortcut.
+  // Require its composer to settle before the first shortcut. Keyboard hints
+  // can be clipped or hidden in narrow panes; they are not a readiness signal.
   // The composer is detected structurally (bordered input row closed by the
   // input rail) so narrow panes without middle-dot separators qualify too.
   if (!modelMenu.test(screen) && !variantMenu.test(screen)) {
     let stable = 0;
     for (let i = 0; i < 60; i++) {
-      if (openCodeComposerLine(screen) && /ctrl\+p/.test(screen) && /commands/.test(screen)) stable++;
+      if (openCodeComposerLine(screen)) stable++;
       else stable = 0;
       if (stable >= 2) break;
       await wait(60); screen = await observe();
@@ -260,10 +273,9 @@ export async function switchOpenCodeTuiSettings(input: Control & { model: Model;
     if (!input.skipModelStep) {
       await openModels();
       await choose(await filter(modelMenu, query), input.model.displayName);
-      // Dismiss whichever follow-up the TUI opened (the unified reasoning step
-      // or the legacy variant dialog). A single pass keeps the terminal from
-      // flashing menus repeatedly; the server readback below stays authoritative.
-      await send('\u001b');
+      if (!input.model.reasoningOptions?.length) {
+        await send('\u001b');
+      }
     }
     if (input.model.reasoningOptions?.length) {
       await openVariants();

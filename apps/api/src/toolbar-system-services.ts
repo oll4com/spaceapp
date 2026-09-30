@@ -31,7 +31,8 @@ const codexUsageSnapshotSchema = z.object({
     weeklyRemainingPercent: z.number().min(0).max(100).nullable(),
     fiveHourResetAt: z.string().datetime().nullable().optional(),
     weeklyResetAt: z.string().datetime().nullable().optional(),
-    sampledAt: z.string().datetime().nullable()
+    sampledAt: z.string().datetime().nullable(),
+    planType: z.string().max(60).nullable().optional()
   }).strict()).max(100)
 }).strict();
 
@@ -109,7 +110,8 @@ export function parseCodexUsageAccounts(raw: string, checkedAt: Date): CodexUsag
     weeklyRemainingPercent: percentOrNull(account.weeklyRemainingPercent),
     fiveHourResetAt: validIso(account.fiveHourResetAt),
     weeklyResetAt: validIso(account.weeklyResetAt),
-    sampledAt: validIso(account.sampledAt)
+    sampledAt: validIso(account.sampledAt),
+    planType: account.planType ?? null
   }));
   return codexUsageAccountListSchema.parse({
     data,

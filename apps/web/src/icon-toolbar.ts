@@ -1,3 +1,4 @@
+import { canonicalSystemAction } from "./features/server-actions/manage-navigation.js";
 import type { LucideIcon } from "./features/ui-theme/app-icons.js";
 import {
   useCallback,
@@ -173,14 +174,22 @@ function normalizeHiddenActions(actions: IconToolbarAction[], hiddenActionIds: s
   return hiddenActionIds.filter((actionId) => (preserveUnknownActionIds || actionIds.has(actionId)) && !nonHideableIds.has(actionId));
 }
 
-function reorderActionIds(actionIds: string[], draggedActionId: string, targetActionId: string): string[] {
+function reorderActionIds(
+  actionIds: string[],
+  draggedActionId: string,
+  targetActionId: string,
+  position?: "before" | "after"
+): string[] {
   if (draggedActionId === targetActionId) return actionIds;
   const draggedIndex = actionIds.indexOf(draggedActionId);
-  const targetIndex = actionIds.indexOf(targetActionId);
-  if (draggedIndex === -1 || targetIndex === -1) return actionIds;
-  const next = [...actionIds];
-  next.splice(draggedIndex, 1);
-  next.splice(targetIndex, 0, draggedActionId);
+  const origTargetIndex = actionIds.indexOf(targetActionId);
+  if (draggedIndex === -1 || origTargetIndex === -1) return actionIds;
+  const next = actionIds.filter((id) => id !== draggedActionId);
+  const targetPos = next.indexOf(targetActionId);
+  if (targetPos === -1) return actionIds;
+  const effectivePosition = position ?? (draggedIndex < origTargetIndex ? "after" : "before");
+  const insertIndex = effectivePosition === "after" ? targetPos + 1 : targetPos;
+  next.splice(insertIndex, 0, draggedActionId);
   return next;
 }
 
@@ -238,8 +247,13 @@ export function usePersistentIconToolbar({
   preserveUnknownActionIds?: boolean;
   closeOverflowOnDragStart?: boolean;
 }) {
-  const [hiddenActionIds, setHiddenActionIds] = useStoredStringList(hiddenStorageKey);
-  const [orderedActionIds, setOrderedActionIds] = useStoredStringList(orderStorageKey);
+  const [storedHiddenActionIds, setHiddenActionIds] = useStoredStringList(hiddenStorageKey);
+  const isSystemToolbar = actions.some(action => action.id === "resources");
+  const hiddenActionIds = useMemo(() => isSystemToolbar
+    ? storedHiddenActionIds.filter(id => canonicalSystemAction(id) === id) : storedHiddenActionIds,
+    [storedHiddenActionIds, isSystemToolbar]);
+  const [storedOrderedActionIds, setOrderedActionIds] = useStoredStringList(orderStorageKey);
+  const orderedActionIds = useMemo(() => isSystemToolbar ? [...new Set(storedOrderedActionIds.map(canonicalSystemAction))] : storedOrderedActionIds, [storedOrderedActionIds, isSystemToolbar]);
   const [isOverflowOpen, setIsOverflowOpen] = useState(false);
   const [actionMenu, setActionMenu] = useState<IconActionMenuState | null>(null);
   const [draggedActionId, setDraggedActionId] = useState<string | null>(null);
@@ -250,14 +264,14 @@ export function usePersistentIconToolbar({
 
   useEffect(() => {
     const normalized = normalizeHiddenActions(actions.filter((action) => !nonPersistentSet.has(action.id)), hiddenActionIds, preserveUnknownActionIds);
-    if (!stringListsEqual(normalized, hiddenActionIds)) {
+    if (!stringListsEqual(normalized, storedHiddenActionIds)) {
       setHiddenActionIds(normalized);
     }
   }, [actions, hiddenActionIds, nonPersistentSet, preserveUnknownActionIds, setHiddenActionIds]);
 
   useEffect(() => {
     const normalized = normalizeActionOrder(actionIds, orderedActionIds, preserveUnknownActionIds);
-    if (!stringListsEqual(normalized, orderedActionIds)) {
+    if (!stringListsEqual(normalized, storedOrderedActionIds)) {
       setOrderedActionIds(normalized);
     }
   }, [actionIds, orderedActionIds, preserveUnknownActionIds, setOrderedActionIds]);
@@ -334,8 +348,13 @@ export function usePersistentIconToolbar({
   }, [setHiddenActionIds]);
 
   const moveAction = useCallback(
-    (draggedId: string, targetId: string) => {
-      const nextOrder = reorderActionIds(normalizeActionOrder(actionIds, orderedActionIds, preserveUnknownActionIds), draggedId, targetId);
+    (draggedId: string, targetId: string, position?: "before" | "after") => {
+      const nextOrder = reorderActionIds(
+        normalizeActionOrder(actionIds, orderedActionIds, preserveUnknownActionIds),
+        draggedId,
+        targetId,
+        position
+      );
       setOrderedActionIds(nextOrder);
     },
     [actionIds, orderedActionIds, preserveUnknownActionIds, setOrderedActionIds]
@@ -351,9 +370,13 @@ export function usePersistentIconToolbar({
   const getDragHandleProps = useCallback(
     (action: IconToolbarAction) => ({
       draggable: hasFinePointer && action.draggable !== false,
-      onDragStart: () => {
+      onDragStart: (event?: ReactDragEvent<HTMLElement>) => {
         if (!hasFinePointer || action.draggable === false) return;
         setDraggedActionId(action.id);
+        if (event?.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", action.id);
+        }
         if (closeOverflowOnDragStart) {
           setIsOverflowOpen(false);
         }
@@ -404,6 +427,7 @@ export function usePersistentIconToolbar({
     hiddenActions,
     hideAction,
     isOverflowOpen,
+    moveAction,
     moveActionToEnd,
     orderedActions,
     overflowDropProps,

@@ -1,6 +1,6 @@
 import { useMenuWheel, useRailPopover } from "../rail-popover.js";
-import { Check, Loader2 } from "../ui-theme/app-icons.js";
-import { useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent, type RefObject } from "react";
+import { Check, Grid2X2, Loader2, Minus, Plus } from "../ui-theme/app-icons.js";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type RefObject } from "react";
 import type { Room } from "@space/contracts";
 import { PANE_LAYOUT_MENU_ID } from "../toolbar-menu-ids.js";
 export { PANE_LAYOUT_MENU_ID } from "../toolbar-menu-ids.js";
@@ -8,10 +8,21 @@ export { PANE_LAYOUT_MENU_ID } from "../toolbar-menu-ids.js";
 type PaneLayoutColumns = Room["paneLayoutColumns"];
 type PaneLayoutHeight = Room["paneLayoutHeight"];
 
+export interface EmptySlotsMetrics {
+  count: number;
+  min: number;
+  max: number;
+  onIncrement: () => void;
+  onDecrement: () => void;
+  disabled?: boolean;
+  disabledReason?: string;
+}
+
 interface PaneLayoutMenuProps {
   automaticColumns: number;
   currentColumns: PaneLayoutColumns;
   currentHeight?: PaneLayoutHeight;
+  emptySlots?: EmptySlotsMetrics;
   error: string | null;
   maximumColumns: number;
   menuId?: string;
@@ -88,6 +99,7 @@ export function PaneLayoutMenu({
   automaticColumns,
   currentColumns,
   currentHeight = 1,
+  emptySlots,
   error,
   maximumColumns,
   menuId = PANE_LAYOUT_MENU_ID,
@@ -99,6 +111,19 @@ export function PaneLayoutMenu({
   visiblePaneCount
 }: PaneLayoutMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const [optimisticHeight, setOptimisticHeight] = useState<number | null>(null);
+
+  useEffect(() => {
+    setOptimisticHeight(null);
+  }, [currentHeight]);
+
+  const effectiveHeight = optimisticHeight ?? currentHeight ?? 1;
+
+  const emptySlotsCount = emptySlots?.count ?? 0;
+  const canMinus = emptySlots ? emptySlots.count > emptySlots.min && !pending : false;
+  const canPlus = emptySlots ? emptySlots.count < emptySlots.max && !pending : false;
+  const emptySlotsReason = emptySlots?.disabledReason;
+
   useRailPopover(menuRef, triggerRef);
   useMenuWheel(menuRef, '[role="menuitemradio"]', true, triggerRef, true);
   const visibleOptions = useMemo(
@@ -163,7 +188,7 @@ export function PaneLayoutMenu({
           <span className="pane-layout-height-label">Height</span>
           <div className="pane-layout-height-buttons">
             {([1, 2, 3, 4] as const).map((height) => {
-              const isSelected = (currentHeight ?? 1) === height;
+              const isSelected = effectiveHeight === height;
               return (
                 <button
                   key={height}
@@ -172,7 +197,11 @@ export function PaneLayoutMenu({
                   aria-pressed={isSelected}
                   aria-label={`Height ${height}`}
                   disabled={pending}
-                  onClick={() => onSelectHeight?.(height)}
+                  onClick={() => {
+                    const nextHeight = isSelected && height !== 1 ? 1 : height;
+                    setOptimisticHeight(nextHeight);
+                    onSelectHeight?.(nextHeight);
+                  }}
                 >
                   {height}
                 </button>
@@ -181,6 +210,85 @@ export function PaneLayoutMenu({
           </div>
         </div>
       </header>
+      {emptySlots ? (
+        <div
+          className={`pane-layout-empty-slots desktop-empty-slots-action${emptySlots.disabled || (!canMinus && !canPlus) ? " is-disabled" : ""}`}
+          role="button"
+          tabIndex={0}
+          aria-label="Empty slots"
+          title={emptySlotsReason ?? (emptySlots.count >= emptySlots.max ? "Maximum empty slots reached" : "Adjust empty slots in room")}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              if (canPlus && emptySlots) emptySlots.onIncrement();
+            } else if (e.key === "ArrowRight" || e.key === "+") {
+              e.preventDefault();
+              if (canPlus && emptySlots) emptySlots.onIncrement();
+            } else if (e.key === "ArrowLeft" || e.key === "-") {
+              e.preventDefault();
+              if (canMinus && emptySlots) emptySlots.onDecrement();
+            }
+          }}
+          onClick={() => {
+            if (canPlus && emptySlots) emptySlots.onIncrement();
+          }}
+        >
+          <Grid2X2 aria-hidden="true" />
+          <span>
+            <strong>Empty slots</strong>
+            <small>{emptySlotsReason ? emptySlotsReason : `${emptySlotsCount} in room`}</small>
+          </span>
+          <span className="desktop-action-trailing" onClick={(e) => e.stopPropagation()}>
+            <div
+              className="cli-launcher-count-stepper"
+              role="spinbutton"
+              aria-valuenow={emptySlotsCount}
+              aria-valuemin={emptySlots.min}
+              aria-valuemax={emptySlots.max}
+              aria-label="Empty slots count"
+              onWheel={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.deltaY < 0 && canPlus) emptySlots?.onIncrement();
+                else if (e.deltaY > 0 && canMinus) emptySlots?.onDecrement();
+              }}
+            >
+              <button
+                type="button"
+                className="cli-count-btn cli-count-btn-minus"
+                aria-label="Decrease empty slots"
+                title="Decrease empty slots"
+                disabled={!canMinus}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  emptySlots?.onDecrement();
+                }}
+              >
+                <Minus aria-hidden="true" />
+              </button>
+              <span
+                className="cli-count-value"
+                title={`Empty slots (${emptySlots.min}-${emptySlots.max})`}
+              >
+                {emptySlotsCount}
+              </span>
+              <button
+                type="button"
+                className="cli-count-btn cli-count-btn-plus"
+                aria-label="Increase empty slots"
+                title="Increase empty slots"
+                disabled={!canPlus}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  emptySlots?.onIncrement();
+                }}
+              >
+                <Plus aria-hidden="true" />
+              </button>
+            </div>
+          </span>
+        </div>
+      ) : null}
       {visiblePaneCount <= 1 ? <p className="pane-layout-status">{visiblePaneCount === 0 ? "Add panes to choose a layout." : "One pane uses the available space. More layouts appear when you add panes."}</p> : null}
       <div className="pane-layout-options">
         {visibleOptions.map((option) => {

@@ -17,7 +17,11 @@ export function retainOpenTabAssets(): Plugin {
     async closeBundle() {
       const assetsDirectory = path.join(outputDirectory, "assets");
       const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      for (const entry of await readdir(assetsDirectory, { withFileTypes: true })) {
+      const entries = await readdir(assetsDirectory, { withFileTypes: true }).catch(error => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      for (const entry of entries) {
         if (!entry.isFile()) continue;
         const name = `assets/${entry.name}`;
         if (currentAssets.has(name.replace(/\.(br|gz)$/, ""))) continue;

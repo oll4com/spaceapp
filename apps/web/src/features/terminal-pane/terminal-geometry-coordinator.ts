@@ -21,6 +21,7 @@ export interface TerminalResizeFrame {
   cols: number;
   rows: number;
   leaseId: string | null;
+  force?: boolean;
 }
 
 export type TerminalRepaintPhase = "initial" | "reveal" | "refit" | "delayed" | "force" | "background";
@@ -60,6 +61,10 @@ export interface TerminalGeometryCoordinatorOptions {
 
 export interface TerminalRefitOptions {
   delayedPass?: boolean;
+  repair?: boolean;
+}
+
+export interface TerminalVisibilityOptions {
   repair?: boolean;
 }
 
@@ -367,7 +372,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     options.sendResize({ cols, rows, leaseId: identity.leaseId });
   };
 
-  const sendResizeOnce = (cols: number, rows: number) => {
+  const sendResizeOnce = (cols: number, rows: number, force = false) => {
     if (!isEligible() || !Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) return;
     const identity = options.getResizeIdentity();
     if (
@@ -385,9 +390,9 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       cols,
       rows
     ]);
-    if (key === lastResizeKey) return;
+    if (key === lastResizeKey && !force) return;
     lastResizeKey = key;
-    options.sendResize({ cols, rows, leaseId: identity.leaseId });
+    options.sendResize({ cols, rows, leaseId: identity.leaseId, ...(force ? { force: true } : {}) });
   };
 
   const applyGeometry = (sample: LayoutSample) => {
@@ -435,9 +440,16 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       populatedRowCount: rowSample.populatedRowCount,
       blankRowRatio: rowSample.blankRowRatio
     });
-    if (keepAtBottom) options.scrollToBottom?.();
+    if (keepAtBottom) {
+      options.scrollToBottom?.();
+      ownerWindow.requestAnimationFrame(() => {
+        if (!disposed && isEligible() && (options.isScrolledToBottom?.() ?? true)) {
+          options.scrollToBottom?.();
+        }
+      });
+    }
     updateGeometryDataset(terminal, sample, repaired);
-    sendResizeOnce(terminal.cols, terminal.rows);
+    sendResizeOnce(terminal.cols, terminal.rows, repaired);
     lastStableGeometry = {
       sample,
       cols: terminal.cols,
@@ -473,6 +485,9 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     updateGeometryDataset(terminal, sample, false);
     sendResizeOnce(terminal.cols, terminal.rows);
     terminal.refresh(0, terminal.rows - 1);
+    if (options.isScrolledToBottom?.()) {
+      options.scrollToBottom?.();
+    }
     const paintScreen = screenRectSample(options.host);
     const backing = canvasBackingSample(options.host);
     const rowSample = domRowSample(options.host);
@@ -592,7 +607,8 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     return true;
   };
 
-  const syncVisibility = () => {
+  const syncVisibility = (request: TerminalVisibilityOptions = {}) => {
+    if (request.repair === true) repairRequested = true;
     const eligible = isEligible();
     if (!eligible) {
       active = false;
@@ -614,7 +630,9 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       }, REFIT_STABILIZE_DELAY_MS);
       return;
     }
-    if (pendingRefit) requestRefit({ delayedPass: false });
+    if (pendingRefit || request.repair === true) {
+      requestRefit({ delayedPass: false, repair: request.repair === true });
+    }
   };
 
   const handleViewportChange = () => {
@@ -647,10 +665,10 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       options.ownerDocument.fonts?.removeEventListener("loadingdone", handleFontChange);
       options.ownerDocument.fonts?.removeEventListener("loadingerror", handleFontChange);
     },
-    handleTerminalResize(cols: number, rows: number) {
-      sendResizeOnce(cols, rows);
+    handleTerminalResize(cols: number, rows: number, force = false) {
+      sendResizeOnce(cols, rows, force);
     },
-    reconcileResize(cols: number, rows: number) {
+    reconcileResize(cols: number, rows: number, force = true) {
       if (!isEligible() || !Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) return;
       const identity = options.getResizeIdentity();
       if (
@@ -668,7 +686,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
         cols,
         rows
       ]);
-      options.sendResize({ cols, rows, leaseId: identity.leaseId });
+      options.sendResize({ cols, rows, leaseId: identity.leaseId, force });
     },
     repairIfBroken(): boolean {
       const terminal = options.getTerminal();

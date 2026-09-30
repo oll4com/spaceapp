@@ -1,222 +1,83 @@
 import { createPortal } from "react-dom";
-import { X, type LucideIcon } from "../ui-theme/app-icons.js";
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type KeyboardEvent,
-  type RefObject,
-} from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Search, X, Wrench, Link as LinkIcon, ServerCog, Users, type LucideIcon } from "../ui-theme/app-icons.js";
 import { SERVER_ACTIONS_MENU_ID } from "../toolbar-menu-ids.js";
+import "./manage.css";
 export { SERVER_ACTIONS_MENU_ID } from "../toolbar-menu-ids.js";
-
 export interface ServerActionCommand {
-  id: string;
-  label: string;
-  description: string;
-  icon: LucideIcon;
-  onSelect: () => void;
-  disabled?: boolean;
-  title?: string;
-  categoryHeader?: string;
+  id: string; label: string; description: string; icon: LucideIcon; onSelect: () => void;
+  disabled?: boolean; title?: string; categoryHeader?: string;
 }
-
-interface ServerActionsMenuProps {
-  actions: ServerActionCommand[];
-  mobile: boolean;
-  onClose: () => void;
+const groups = [
+  { id: "maintenance", label: "Maintenance", detail: "Check, update and clean up", icon: Wrench },
+  { id: "connections", label: "Connections", detail: "Tools, accounts and providers", icon: LinkIcon },
+  { id: "services", label: "Services", detail: "Services and runtime controls", icon: ServerCog },
+  { id: "administration", label: "Administration", detail: "Users, permissions and releases", icon: Users }
+] as const;
+export function managementGroup(id: string) {
+  if (["setup-connections", "codex-lb-speed-control"].includes(id)) return "connections";
+  if (["restart-server", "restart-all-cli-runtimes", "system-services"].includes(id)) return "services";
+  if (["user-management", "publish-space-release"].includes(id)) return "administration";
+  return "maintenance";
+}
+export function ServerActionsMenu({ actions, onClose, triggerRef, renderAction, initialAction, suspended = false }: {
+  actions: ServerActionCommand[]; mobile: boolean; onClose: () => void;
   triggerRef: RefObject<HTMLButtonElement | null>;
-}
-
-const VIEWPORT_MARGIN = 8;
-const ANCHOR_GAP = 8;
-const FALLBACK_WIDTH = 336;
-const FALLBACK_HEIGHT = 272;
-
-function enabledButtons(container: HTMLElement | null): HTMLButtonElement[] {
-  return Array.from(container?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
-}
-
-export function ServerActionsMenu({ actions, mobile, onClose, triggerRef }: ServerActionsMenuProps) {
-  const popupRef = useRef<HTMLElement | null>(null);
-  const closeIntentRef = useRef<"dismissal" | "activation">("dismissal");
-  const [position, setPosition] = useState({ left: VIEWPORT_MARGIN, top: VIEWPORT_MARGIN, ready: false });
-
-  useLayoutEffect(() => {
-    if (mobile) return;
-
-    function updatePosition() {
-      const trigger = triggerRef.current;
-      const popup = popupRef.current;
-      if (!trigger || !popup) return;
-      const triggerRect = trigger.getBoundingClientRect();
-      const popupRect = popup.getBoundingClientRect();
-      const width = popupRect.width || FALLBACK_WIDTH;
-      const height = popupRect.height || FALLBACK_HEIGHT;
-      const fitsBelow = triggerRect.bottom + ANCHOR_GAP + height <= window.innerHeight - VIEWPORT_MARGIN;
-      const desiredTop = fitsBelow
-        ? triggerRect.bottom + ANCHOR_GAP
-        : triggerRect.top - ANCHOR_GAP - height;
-      setPosition({
-        left: Math.max(VIEWPORT_MARGIN, Math.min(triggerRect.left, window.innerWidth - width - VIEWPORT_MARGIN)),
-        top: Math.max(VIEWPORT_MARGIN, Math.min(desiredTop, window.innerHeight - height - VIEWPORT_MARGIN)),
-        ready: true,
-      });
-    }
-
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-    return () => {
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-    };
-  }, [mobile, triggerRef]);
-
+  renderAction?: (id: string, back: () => void) => ReactNode;
+  initialAction?: string | null;
+  suspended?: boolean;
+}) {
+  const ref = useRef<HTMLElement>(null);
+  const [query, setQuery] = useState("");
+  const [group, setGroup] = useState<string | null>(initialAction ? managementGroup(initialAction) : null);
+  const [selected, setSelected] = useState<string | null>(initialAction ?? null);
+  const previousInitialAction = useRef(initialAction);
   useEffect(() => {
-    const focusFrame = window.requestAnimationFrame(() => enabledButtons(popupRef.current)[0]?.focus());
-    return () => {
-      window.cancelAnimationFrame(focusFrame);
-      if (closeIntentRef.current === "dismissal") triggerRef.current?.focus();
-    };
+    if (previousInitialAction.current === initialAction) return;
+    previousInitialAction.current = initialAction;
+    setSelected(initialAction ?? null);
+    setGroup(initialAction ? managementGroup(initialAction) : null);
+  }, [initialAction]);
+  const childBusy = () => Boolean(ref.current?.querySelector('[aria-busy="true"]'));
+  const close = () => { if (!childBusy()) onClose(); };
+  const back = () => { if (!childBusy()) { setSelected(null); setQuery(""); } };
+  const content = selected ? renderAction?.(selected, back) : null;
+  const source = triggerRef.current?.closest<HTMLElement>("[data-shell-mode]") ?? document.querySelector<HTMLElement>(".space-shell");
+  useEffect(() => {
+    (ref.current?.querySelector<HTMLInputElement>("input") ?? ref.current?.querySelector<HTMLButtonElement>("button"))?.focus();
+    const trigger = triggerRef.current;
+    return () => trigger?.focus();
   }, [triggerRef]);
-
-  useEffect(() => {
-    if (mobile) return;
-    function handleOutsidePointer(event: PointerEvent) {
-      const target = event.target as Node;
-      if (popupRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
-      closeIntentRef.current = "dismissal";
-      onClose();
-    }
-    document.addEventListener("pointerdown", handleOutsidePointer, true);
-    return () => document.removeEventListener("pointerdown", handleOutsidePointer, true);
-  }, [mobile, onClose, triggerRef]);
-
-  function dismiss() {
-    closeIntentRef.current = "dismissal";
-    onClose();
-  }
-
-  function runAction(action: ServerActionCommand) {
+  const filtered = actions.filter(a => a.id !== "system-analytics" && (query
+    ? `${a.label} ${a.description} ${a.categoryHeader ?? ""}`.toLowerCase().includes(query.toLowerCase())
+    : managementGroup(a.id) === group));
+  function activate(action: ServerActionCommand) {
     if (action.disabled) return;
-    closeIntentRef.current = "activation";
-    onClose();
-    window.requestAnimationFrame(action.onSelect);
+    if (renderAction?.(action.id, back)) setSelected(action.id);
+    else { action.onSelect(); }
   }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      dismiss();
-      return;
-    }
-
-    const buttons = enabledButtons(popupRef.current);
-    if (mobile && event.key === "Tab") {
-      const first = buttons[0];
-      const last = buttons.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && (document.activeElement === first || !popupRef.current?.contains(document.activeElement))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (document.activeElement === last || !popupRef.current?.contains(document.activeElement))) {
-        event.preventDefault();
-        first.focus();
-      }
-      return;
-    }
-
-    if (mobile || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || !buttons.length) return;
-    event.preventDefault();
-    const activeIndex = buttons.findIndex((button) => button === document.activeElement);
-    const nextIndex = event.key === "Home"
-      ? 0
-      : event.key === "End"
-        ? buttons.length - 1
-        : event.key === "ArrowUp"
-          ? activeIndex <= 0 ? buttons.length - 1 : activeIndex - 1
-          : activeIndex < 0 || activeIndex === buttons.length - 1 ? 0 : activeIndex + 1;
-    buttons[nextIndex]?.focus();
-  }
-
-  const actionElements: React.ReactNode[] = [];
-  actions.forEach((action) => {
-    if (action.categoryHeader) {
-      actionElements.push(
-        <span key={`hdr-${action.id}`} className="server-actions-section-header">
-          {action.categoryHeader}
-        </span>
-      );
-    }
-    const ActionIcon = action.icon;
-    actionElements.push(
-      <button
-        key={action.id}
-        type="button"
-        role={mobile ? undefined : "menuitem"}
-        className={mobile ? "mobile-action-sheet-main" : undefined}
-        aria-label={action.label}
-        disabled={action.disabled}
-        title={action.title}
-        onClick={() => runAction(action)}
-      >
-        <ActionIcon aria-hidden="true" />
-        <span>
-          <strong>{action.label}</strong>
-          <small>{action.description}</small>
-        </span>
-      </button>
-    );
-  });
-
-  if (mobile) {
-    return createPortal(
-      <div className="mobile-action-sheet-backdrop" onClick={dismiss}>
-        <section
-          ref={popupRef}
-          id={SERVER_ACTIONS_MENU_ID}
-          className="mobile-action-sheet server-actions-sheet"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Server actions"
-          onClick={(event) => event.stopPropagation()}
-          onKeyDown={handleKeyDown}
-        >
-          <header>
-            <strong>Server actions</strong>
-            <button type="button" className="mobile-action-sheet-close" aria-label="Close Server actions" onClick={dismiss}>
-              <X aria-hidden="true" />
-            </button>
-          </header>
-          <div className="mobile-action-sheet-list">
-            <div className="mobile-action-sheet-section server-actions-sheet-list">{actionElements}</div>
-          </div>
-        </section>
-      </div>,
-      document.body,
-    );
-  }
-
-  return createPortal(
-    <section
-      ref={popupRef}
-      id={SERVER_ACTIONS_MENU_ID}
-      className="icon-overflow-menu server-actions-menu"
-      role="menu"
-      aria-label="Server actions"
-      style={{
-        left: `${position.left}px`,
-        top: `${position.top}px`,
-        visibility: position.ready ? "visible" : "hidden",
-      }}
-      onKeyDown={handleKeyDown}
-    >
-      <span className="server-actions-menu-label">Server actions</span>
-      {actionElements}
-    </section>,
-    document.body,
-  );
+  return createPortal(<div className="manage-backdrop" style={suspended ? { display: "none" } : undefined} onPointerDown={e => { if (e.target === e.currentTarget) close(); }}>
+    <section ref={ref} id={SERVER_ACTIONS_MENU_ID} className="manage-workspace" role="dialog" aria-modal="true" aria-label="Manage"
+      data-ui-theme={source?.dataset.uiTheme} data-color-mode={source?.dataset.colorMode} data-room-theme={source?.dataset.roomTheme}
+      onKeyDown={e => {
+        if (e.key === "Escape") { e.stopPropagation(); if (e.defaultPrevented || childBusy()) return; if (selected) back(); else if (group) setGroup(null); else close(); }
+        if (e.key === "Tab") {
+          const items = Array.from(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),a[href],summary,[tabindex="0"]') ?? []).filter(el => el.getClientRects().length);
+          const first = items[0], last = items.at(-1);
+          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+          if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+        }
+      }}>
+      <header className="manage-header"><div><h2>Manage</h2><p>Tools, services & maintenance</p></div><button type="button" aria-label="Close Manage" onClick={close}><X /></button></header>
+      <div className="manage-body">
+        {selected && content ? <><button type="button" className="manage-back" onClick={back}>← Back</button>{content}</> : <>
+          <label className="manage-search"><Search aria-hidden="true" /><input aria-label="Find an action" placeholder="Find an action…" value={query} onChange={e => setQuery(e.target.value)} /></label>
+          {!group && !query ? <div className="manage-groups">{groups.map(g => <button type="button" key={g.id} aria-label={g.label} onClick={() => setGroup(g.id)}><g.icon aria-hidden="true" /><span><strong>{g.label}</strong><small>{g.detail}</small></span></button>)}</div> : <>
+            <button type="button" className="manage-back" onClick={() => { setGroup(null); setQuery(""); }}>← All sections</button>
+            <div className="manage-actions">{filtered.map(a => <button type="button" key={a.id} aria-label={a.label} disabled={a.disabled} title={a.title} onClick={() => activate(a)}><a.icon aria-hidden="true" /><span><strong>{a.label}</strong><small>{a.description}</small></span></button>)}{!filtered.length && <p>No matching actions.</p>}</div>
+          </>}
+        </>}
+      </div>
+    </section>
+  </div>, document.body);
 }

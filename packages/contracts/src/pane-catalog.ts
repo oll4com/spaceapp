@@ -3,12 +3,12 @@ import { z } from "zod";
 
 // Shared by menu presentation, composer, command validation and router tools.
 // Readiness is a runtime observation, never inferred from these definitions.
-export const PANE_CATALOG_VERSION = "room-panes-v3.1";
+export const PANE_CATALOG_VERSION = "room-panes-v3.2";
 export const CLI_PANE_TYPES = Object.freeze([
   { typeId: "opencode", id: "cli:opencode", brand: "opencode", displayName: "OpenCode CLI", shortLabel: "OpenCode", aliases: ["open code"] },
   { typeId: "codex", id: "cli:codex", brand: "codex", displayName: "Codex CLI", shortLabel: "Codex", aliases: [] },
   { typeId: "claude", id: "cli:claude", brand: "claude", displayName: "Claude Code CLI", shortLabel: "Claude Code", aliases: ["claude code"] },
-  { typeId: "gemini", id: "cli:gemini", brand: "gemini", displayName: "Gemini CLI", shortLabel: "Gemini", aliases: [] },
+  { typeId: "gemini", id: "cli:gemini", brand: "gemini", displayName: "Gemini CLI", shortLabel: "Gemini", aliases: ["antigravity", "agy", "google antigravity", "antigravity cli"] },
   { typeId: "autohand", id: "cli:autohand", brand: "autohand", displayName: "Autohand Code CLI", shortLabel: "Autohand Code", aliases: ["autohand code"] },
   { typeId: "qwen", id: "cli:qwen", brand: "qwen", displayName: "Qwen Code CLI", shortLabel: "Qwen Code", aliases: ["qwen code"] },
   { typeId: "kimi", id: "cli:kimi", brand: "kimi", displayName: "Kimi Code CLI", shortLabel: "Kimi Code", aliases: ["kimi code"] },
@@ -16,7 +16,11 @@ export const CLI_PANE_TYPES = Object.freeze([
   { typeId: "deepseek", id: "cli:deepseek", brand: "deepseek", displayName: "DeepSeek CLI", shortLabel: "DeepSeek", aliases: ["deepseek cli"] },
   { typeId: "cursor", id: "cli:cursor", brand: "cursor", displayName: "Cursor CLI", shortLabel: "Cursor", aliases: [] },
   { typeId: "copilot", id: "cli:copilot", brand: "copilot", displayName: "GitHub Copilot CLI", shortLabel: "Copilot", aliases: ["github copilot"] },
-  { typeId: "hermes", id: "cli:hermes", brand: "hermes", displayName: "Hermes Agent CLI", shortLabel: "Hermes", aliases: ["hermes agent"] }
+  { typeId: "hermes", id: "cli:hermes", brand: "hermes", displayName: "Hermes Agent CLI", shortLabel: "Hermes", aliases: ["hermes agent"] },
+  { typeId: "omp", id: "cli:omp", brand: "omp", displayName: "Oh My Pi CLI", shortLabel: "Oh My Pi", aliases: ["omp", "oh my pi"] },
+  { typeId: "qoder", id: "cli:qoder", brand: "qoder", displayName: "Qoder CLI", shortLabel: "Qoder", aliases: ["qoder", "qoder cli"] },
+  { typeId: "muse", id: "cli:muse", brand: "muse", displayName: "Muse Code CLI", shortLabel: "Muse Code", aliases: ["muse code"] },
+  { typeId: "droid", id: "cli:droid", brand: "droid", displayName: "Droid CLI", shortLabel: "Droid", aliases: ["factory", "factory droid"] }
 ] as const);
 
 export const PANE_TYPES = Object.freeze([
@@ -27,7 +31,9 @@ export const PANE_TYPES = Object.freeze([
   { typeId: "vnc", label: "VNC", aliases: [], mode: "VNC", runtimeId: null, adapter: "vnc", readiness: "CONNECTION_FORM" },
   { typeId: "browser", label: "Browser", aliases: [], mode: "BROWSER", runtimeId: null, adapter: "browser", readiness: "NAVIGATION" },
   { typeId: "harness", label: "DeepSeek Harness", aliases: ["deepseek harness"], mode: "HARNESS", runtimeId: null, adapter: "harness", readiness: "HARNESS_INPUT" },
-  { typeId: "live", label: "Live", aliases: ["audio", "voice", "gpt-live"], mode: "LIVE", runtimeId: null, adapter: "live", readiness: "AUDIO_INPUT" }
+  { typeId: "live", label: "Live", aliases: ["audio", "voice", "gpt-live"], mode: "LIVE", runtimeId: null, adapter: "live", readiness: "AUDIO_INPUT" },
+  { typeId: "files", label: "Files", aliases: ["file manager", "filemanager", "explorer"], mode: "FILES", runtimeId: null, adapter: "files", readiness: "BROWSER" },
+  { typeId: "demos", label: "Demo Projects", aliases: ["demo projects", "demos", "demo"], mode: "DEMOS", runtimeId: null, adapter: "demos", readiness: "DEMO_PROJECT" }
 ] as const);
 export type PaneType = typeof PANE_TYPES[number];
 export type PaneTypeId = PaneType["typeId"];

@@ -1,3 +1,4 @@
+import { usePanePolling } from "../../use-pane-polling.js";
 import { useGoogleAccountSignIn } from "./useGoogleAccountSignIn.js";
 import { useBrowserAudio } from "./useBrowserAudio.js";
 import { resolveBrowserAddress } from "./browser-address.js";
@@ -95,6 +96,8 @@ export {
 } from "./events.js";
 
 interface BrowserPaneProps {
+  isVisible?: boolean;
+  mobile?: boolean;
   pane: Pane;
   agentNumber: number;
   observerOnly?: boolean;
@@ -182,7 +185,7 @@ function scrollPaneIntoView(element: HTMLElement | null) {
   element.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
-export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme = "classic" }: BrowserPaneProps) {
+export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme = "classic", isVisible = true, mobile = false }: BrowserPaneProps) {
   const [status, setStatus] = useState<BrowserStatusPayload | null>(null);
   const [response, setResponse] = useState<PaneBrowserSessionResponse | null>(null);
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
@@ -202,6 +205,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const pageListRef = useRef<BrowserPageListPayload | null>(null);
   const pageSessionIdRef = useRef<string | null>(null);
   const pageRequestRef = useRef(0);
+  const pageFlightRef = useRef<{ sessionId: string | null; request: number; promise: Promise<BrowserPageListPayload | null> } | null>(null);
   const pageMutationRef = useRef(false);
   const [canvasHistoryLength, setCanvasHistoryLength] = useState(0);
   const [selectedFrameIndex, setSelectedFrameIndex] = useState<number | null>(null);
@@ -288,7 +292,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const compactToolbar = toolbarWidth < 1000;
   const session = (response?.session as BrowserSessionV2 | undefined) ?? null;
   const { audioState, resumeAudio } = useBrowserAudio(pane.id, session?.sessionId, !observerOnly && session?.status !== "CLOSED");
-  const viewport = session?.viewport ?? defaultViewport;
+  const viewport = session?.viewport ?? (mobile ? "mobile" : defaultViewport);
   const activeFrame = frame ?? response?.frame ?? null;
   const statusText = session?.statusReason ?? status?.statusReason ?? "Browser session";
   const canUseSession = Boolean(session && status?.enabled);
@@ -525,28 +529,25 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     if (nextSession.status !== "CLOSED") void loadPages();
   }
 
-  async function loadPages() {
-    const request = ++pageRequestRef.current;
+  function loadPages(): Promise<BrowserPageListPayload | null> {
     const sessionId = pageSessionIdRef.current;
-    try {
-      const next = await api.browserPages(pane.id);
+    const pending = pageFlightRef.current;
+    if (pending?.sessionId === sessionId && pending.request === pageRequestRef.current) return pending.promise;
+    const request = ++pageRequestRef.current;
+    const promise = api.browserPages(pane.id).then((next) => {
       if (request !== pageRequestRef.current || sessionId !== pageSessionIdRef.current || next.sessionId !== sessionId) return null;
       applyPagePayload(next);
       return next;
-    } catch {
-      // The legacy browser host exposes one implicit page through the session response.
-      return null;
-    }
+    }).catch(() => null).finally(() => {
+      if (pageFlightRef.current?.promise === promise) pageFlightRef.current = null;
+    });
+    pageFlightRef.current = { sessionId, request, promise };
+    return promise;
   }
 
-  useEffect(() => {
-    if (!session || session.status === "CLOSED") return;
-    // Other operators and agents share these tabs with the current pane.
-    const timer = window.setInterval(() => {
-      if (!pageMutationRef.current && document.visibilityState !== "hidden") void loadPages();
-    }, 5000);
-    return () => { window.clearInterval(timer); pageRequestRef.current += 1; };
-  }, [pane.id, session?.sessionId, session?.status]);
+  usePanePolling(async () => {
+    if (!pageMutationRef.current) await loadPages();
+  }, 5000, isVisible && !pane.isMinimized && Boolean(session && session.status !== "CLOSED"), false);
 
   async function loadArtifacts() {
     setArtifactsPending(true);
@@ -616,8 +617,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         let nextResponse = await api.browserSession(pane.id);
         if (!observerOnly && (nextResponse.session.status === "CLOSED" || nextResponse.session.status === "ERROR")) {
           nextResponse = await api.startBrowserSession(pane.id, {
-            viewport: defaultViewport, targetUrl: homeUrl, ownerAgentId: `agent:${agentNumber}`
+            viewport: mobile ? "mobile" : defaultViewport, targetUrl: homeUrl, ownerAgentId: `agent:${agentNumber}`
           });
+        }
+        if (mobile && !observerOnly && nextResponse.session.viewport !== "mobile") {
+          nextResponse = await api.setBrowserViewport(pane.id, "mobile");
         }
         applyResponse(nextResponse);
         recordLifecycleDebugEvent({
@@ -641,7 +645,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           return;
         }
         const nextResponse = await api.startBrowserSession(pane.id, {
-          viewport: defaultViewport,
+          viewport: mobile ? "mobile" : defaultViewport,
           targetUrl: homeUrl,
           ownerAgentId: `agent:${agentNumber}`
         });
@@ -665,6 +669,16 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     void loadOrStart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id]);
+
+  useEffect(() => {
+    if (!mobile || observerOnly || !isVisible || !session || session.status === "CLOSED" || session.viewport === "mobile") return;
+    let cancelled = false;
+    void api.setBrowserViewport(pane.id, "mobile").then((next) => {
+      if (!cancelled) applyResponse(next);
+    }).catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : "Browser viewport update failed"); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mobile, observerOnly, isVisible, pane.id, session?.sessionId, session?.viewport, session?.status]);
 
   useEffect(() => {
     const fallbackTicket = response?.websocket ?? null;
@@ -837,19 +851,21 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     return () => window.clearInterval(interval);
   }, [debugOpen, debugTab]);
 
-  useEffect(() => {
-    if (!session || session.status === "CLOSED" || streamMode === "SILENT") return;
-    const intervalMs = streamMode === "PREVIEW" || streamMode === "AUTO" ? 5000 : streamMode === "INTERACTIVE" ? 1500 : 5000;
-    const interval = window.setInterval(() => {
-      if (browserStreamSocketRef.current?.readyState === WebSocket.OPEN) return;
-      api.browserFrame(pane.id, session.sessionId).then(appendFrame).catch(() => undefined);
-    }, intervalMs);
-    return () => window.clearInterval(interval);
-  }, [pane.id, session?.sessionId, session?.status, streamMode]);
+  usePanePolling(async () => {
+    if (!session || browserStreamSocketRef.current?.readyState === WebSocket.OPEN) return;
+    const next = await api.browserFrame(pane.id, session.sessionId);
+    appendFrame(next);
+  }, streamMode === "INTERACTIVE" ? 1500 : 5000,
+  isVisible && !pane.isMinimized && Boolean(session && session.status !== "CLOSED") && streamMode !== "SILENT", false);
 
   useEffect(() => {
     if (!controlLease) return;
     const interval = window.setInterval(() => {
+      if (Date.parse(controlLease.expiresAt) <= Date.now()) {
+        setControlLease(null);
+        setHandoff(false);
+        return;
+      }
       api.heartbeatBrowserControl(pane.id, { leaseId: controlLease.leaseId, ttlSeconds: 60 })
         .then((next) => {
           if (next.lease.status === "ACTIVE") {
@@ -859,7 +875,12 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             setHandoff(false);
           }
         })
-        .catch(() => undefined);
+        .catch((error: unknown) => {
+          if (typeof error === "object" && error !== null && "status" in error && error.status === 409) {
+            setControlLease(null);
+            setHandoff(false);
+          }
+        });
     }, 15_000);
     return () => window.clearInterval(interval);
   }, [controlLease?.leaseId, pane.id]);
@@ -1914,7 +1935,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           </button>
           {!compactToolbar ? <button
             type="button"
-            className={`browser-focus-toggle${focusMode ? " selected" : ""}`}
+            className={`browser-focus-toggle dock-fullscreen-toggle${focusMode ? " selected is-active" : ""}`}
             title={focusMode ? "Exit browser focus mode" : "Expand browser view"}
             aria-label={`${focusMode ? "Exit browser focus mode" : "Expand browser view"} ${pane.title}`}
             aria-pressed={focusMode}

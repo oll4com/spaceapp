@@ -6,7 +6,7 @@ import { CliHostError, CliHostSessionRegistry } from "./session-registry.js";
 import { encodeLengthPrefixedJson, LengthPrefixedJsonDecoder } from "./framing.js";
 import type { CliHostAttachInput, CliHostEvent, CliHostIdentity } from "./types.js";
 
-type CliHostMethod = "inspect" | "attach" | "input" | "resize" | "detach" | "terminate" | "reapDetached";
+type CliHostMethod = "inspect" | "attach" | "input" | "resize" | "detach" | "terminate" | "reapDetached" | "ping";
 
 interface CliHostRequest {
   kind: "request";
@@ -33,7 +33,7 @@ function parseRequest(value: unknown): CliHostRequest {
   if (!isRecord(value) || value.kind !== "request" || typeof value.requestId !== "string" || typeof value.method !== "string") {
     throw new CliHostError("CLI_HOST_BAD_REQUEST", "CLI host IPC request envelope is invalid.");
   }
-  if (!["inspect", "attach", "input", "resize", "detach", "terminate", "reapDetached"].includes(value.method)) {
+  if (!["inspect", "attach", "input", "resize", "detach", "terminate", "reapDetached", "ping"].includes(value.method)) {
     throw new CliHostError("CLI_HOST_BAD_REQUEST", `Unsupported CLI host IPC method ${value.method}.`);
   }
   return {
@@ -179,13 +179,30 @@ async function handleRequest(
   }
   try {
     let result: unknown;
-    if (request.method === "inspect") {
+    if (request.method === "ping") {
+      result = {
+        ok: true,
+        hostPid: process.pid,
+        startedAt: cliHostStartedAt,
+        buildCommit: cliHostBuildCommit,
+        sessionCount: registry.sessionCount()
+      };
+    } else if (request.method === "inspect") {
+      const inspectStart = Date.now();
       result = request.params.identity ? await registry.inspectAsync(requireIdentity(request.params)) : {
         hostPid: process.pid,
         startedAt: cliHostStartedAt,
         buildCommit: cliHostBuildCommit,
         sessions: registry.inspectAll()
       };
+      const inspectDurationMs = Date.now() - inspectStart;
+      if (inspectDurationMs > 200) {
+        process.stderr.write(`${JSON.stringify({
+          event: "cli_host_inspect_slow_warning",
+          durationMs: inspectDurationMs,
+          sessionCount: registry.sessionCount()
+        })}\n`);
+      }
     } else if (request.method === "attach") {
       const identity = requireIdentity(request.params);
       const earlyEvents: CliHostEvent[] = [];

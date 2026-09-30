@@ -12,7 +12,11 @@ export type CliRuntimeKey =
   | "deepseek"
   | "cursor"
   | "copilot"
-  | "hermes";
+  | "hermes"
+  | "omp"
+  | "qoder"
+  | "muse"
+  | "droid";
 
 export interface CliRuntimeDescriptor {
   key: CliRuntimeKey;
@@ -55,7 +59,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     credentialSmokeEnv: "SPACE_CLI_OPENCODE_CREDENTIAL_SMOKE",
     authMode: "MANAGED",
     missingAuthState: "UNAVAILABLE",
-    missingAuthReason: "OpenCode is not installed.",
+    missingAuthReason: "OpenCode managed credentials have not been verified by the operator.",
     loginAction: null,
     credentialObservationAction: "credential-observation",
     credentialSmokeMarker: "SPACE_OPENCODE_OK",
@@ -71,7 +75,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     },
     nativeResumeArgs: ["--continue"],
     defaultModelId: null,
-    credentialVerifiedReason: "OpenCode is available. A free native model is verified on first launch.",
+    credentialVerifiedReason: "OpenCode CLI direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
   {
@@ -145,7 +149,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-gemini/tmp`,
     environment: {},
     nativeResumeArgs: ["--continue"],
-    defaultModelId: "gemini-2.5-flash",
+    defaultModelId: "gemini-3.8-flash",
     credentialVerifiedReason: "The official Google Antigravity CLI is installed; authentication is handled natively inside the CLI.",
     loginBootstrapReason: null
   },
@@ -353,6 +357,106 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     nativeResumeArgs: ["--continue"],
     defaultModelId: "hermes-3-llama-3.1-8b",
     credentialVerifiedReason: "Hermes Agent v0.20.1 installed at ~/.hermes; node-pty TUI smoke and end-to-end chat smoke verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "omp",
+    id: "cli:omp",
+    providerId: "oh-my-pi",
+    providerName: "Oh My Pi",
+    agentName: "Oh My Pi CLI",
+    commandName: "omp-vscode-parity",
+    commandEnv: "SPACE_CLI_OMP_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_OMP_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "Oh My Pi CLI is unavailable on this host.",
+    loginAction: null,
+    credentialObservationAction: null,
+    credentialSmokeMarker: null,
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-omp`,
+    tempDir: `${codexHome}/space-omp/tmp`,
+    environment: {},
+    nativeResumeArgs: ["--resume"],
+    defaultModelId: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+    credentialVerifiedReason: "Oh My Pi CLI is installed and launched through the isolated Space wrapper.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "qoder",
+    id: "cli:qoder",
+    providerId: "qoder",
+    providerName: "Qoder",
+    agentName: "Qoder CLI",
+    commandName: "qoder-vscode-parity",
+    commandEnv: "SPACE_CLI_QODER_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_QODER_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "Qoder CLI is unavailable on this host.",
+    loginAction: null,
+    credentialObservationAction: null,
+    credentialSmokeMarker: null,
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-qoder`,
+    tempDir: `${codexHome}/space-qoder/tmp`,
+    environment: {},
+    nativeResumeArgs: ["--resume"],
+    defaultModelId: null,
+    credentialVerifiedReason: "Qoder CLI is installed and launched through the isolated Space wrapper.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "muse",
+    id: "cli:muse",
+    providerId: "muse",
+    providerName: "Meta",
+    agentName: "Muse Code CLI",
+    commandName: "muse-vscode-parity",
+    commandEnv: "SPACE_CLI_MUSE_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_MUSE_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "Muse Code is unavailable on this host.",
+    loginAction: null,
+    credentialObservationAction: null,
+    credentialSmokeMarker: null,
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-muse`,
+    tempDir: `${codexHome}/space-muse/tmp`,
+    environment: {},
+    nativeResumeArgs: null,
+    defaultModelId: null,
+    credentialVerifiedReason: "Muse Code is installed and launched through the isolated Space wrapper.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "droid",
+    id: "cli:droid",
+    providerId: "droid",
+    providerName: "Factory",
+    agentName: "Droid CLI",
+    commandName: "droid-vscode-parity",
+    commandEnv: "SPACE_CLI_DROID_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_DROID_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "Droid is unavailable on this host.",
+    loginAction: null,
+    credentialObservationAction: null,
+    credentialSmokeMarker: null,
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-droid`,
+    tempDir: `${codexHome}/space-droid/tmp`,
+    environment: {},
+    nativeResumeArgs: null,
+    defaultModelId: null,
+    credentialVerifiedReason: "Droid is installed and launched through the isolated Space wrapper.",
     loginBootstrapReason: null
   }
 ];

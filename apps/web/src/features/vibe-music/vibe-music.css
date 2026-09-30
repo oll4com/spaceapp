@@ -540,6 +540,40 @@
   border-radius: 8px 8px 0 0;
   box-shadow: 0 -1rem 2.8rem rgba(0, 0, 0, 0.42);
 }
+.vibe-music-mobile-picker { min-width: 0; }
+.vibe-music-mobile-picker-trigger {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
+  border: 1px solid #394144;
+  border-radius: 6px;
+  background: #0f1213;
+  color: #f1ece2;
+}
+.vibe-music-mobile-playlists {
+  display: grid;
+  max-height: min(32dvh, 15rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-top: 4px;
+  border: 1px solid #394144;
+  border-radius: 6px;
+}
+.vibe-music-mobile-playlists button {
+  min-height: 44px;
+  padding: 8px 10px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  background: #151819;
+  color: #f1ece2;
+  border: 0;
+  border-bottom: 1px solid #303638;
+}
+.vibe-music-mobile-playlists button[aria-pressed="true"] { color: var(--room-accent, #6db7aa); }
 
 .vibe-music-debug {
   min-width: 0;
@@ -618,4 +652,162 @@
 
 .vibe-music-delete-link {
   color: #e3989f;
+}
+
+/* Vibe Music Light Mode contrast rules */
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-panel {
+  background: #ffffff;
+  border-color: #d2dce4;
+  color: #17232d;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-header {
+  border-bottom-color: #d2dce4;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-source {
+  background: #f0f4f7;
+  border-color: #d2dce4;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-source button {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-source button:hover:not(.is-active),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-source button:focus-visible {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-source button.is-active {
+  background: #ffffff;
+  border-color: #b7c6d1;
+  color: #17232d;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-close {
+  background: #ffffff;
+  border-color: #d2dce4;
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-close:hover {
+  background: #eef3f6;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-now-playing strong,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-player-track strong {
+  color: #17232d !important;
+  font-weight: 700;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-now-playing > span,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-playlist-picker-label,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-position,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-player-progress output,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-connection {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-player-art {
+  background: #f7f9fb;
+  border-color: #d2dce4;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-playlist-picker select {
+  background: #ffffff;
+  border-color: #d2dce4;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-player-main {
+  background: var(--room-accent, #087568);
+  border-color: var(--room-accent, #087568);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(8, 117, 104, 0.25);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-player-main:hover:not(:disabled) {
+  background: var(--room-accent, #087568);
+  opacity: 0.9;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-player-main svg {
+  fill: currentColor;
+  color: #ffffff;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-player-aux {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-player-aux:hover:not(:disabled) {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-volume {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-volume output {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-queue {
+  background: #f7f9fb;
+  border-color: #d2dce4;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-queue-label {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-queue-row button {
+  background: #ffffff;
+  border-color: #d2dce4;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-queue-row button:hover {
+  background: #eef3f6;
+  border-color: #b7c6d1;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-queue-row.is-active button {
+  background: #e6f4f1;
+  border-color: var(--room-accent, #087568);
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-playback {
+  background: #ffffff;
+  border-color: #d2dce4;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .vibe-music-playback:hover:not(:disabled) {
+  background: #eef3f6;
+  border-color: #b7c6d1;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .vibe-music-player-live {
+  border-color: #fca5a5;
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.vibe-music-volume, .vibe-music-player-progress) input[type="range"] {
+  accent-color: var(--room-accent, #087568);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.vibe-music-volume, .vibe-music-player-progress) input[type="range"]::-webkit-slider-runnable-track {
+  background: #e2e8f0;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.vibe-music-volume, .vibe-music-player-progress) input[type="range"]::-moz-range-track {
+  background: #e2e8f0;
 }

@@ -1,3 +1,4 @@
+import { terminalRenderObservationSchema } from "./terminal-render.js";
 import { z } from "zod";
 
 export const appDiagnosticsRetentionHours = 24;
@@ -61,6 +62,7 @@ const selectionEventSchema = z.object({
 }).strict();
 
 const performanceEventSchema = z.object({
+  terminalRender: terminalRenderObservationSchema.optional(),
   sequence: sequenceSchema,
   occurredAt: occurredAtSchema,
   category: z.literal("PERFORMANCE"),
@@ -72,6 +74,7 @@ const performanceEventSchema = z.object({
     "ROOM_HYDRATION",
     "ROOM_PRESENTATION",
     "TERMINAL_GEOMETRY",
+    "TERMINAL_RENDER",
     "TERMINAL_PAINT",
     "TERMINAL_EDGE_LEAK",
     "TERMINAL_FULLSCREEN",
@@ -197,7 +200,7 @@ const anomalyEventSchema = z.object({
   sequence: sequenceSchema,
   occurredAt: occurredAtSchema,
   category: z.literal("ANOMALY"),
-  anomaly: z.enum(["VISIBILITY_CHURN", "STYLE_CHURN", "REMOUNT_CHURN", "FLICKER"]),
+  anomaly: z.enum(["VISIBILITY_CHURN", "STYLE_CHURN", "REMOUNT_CHURN", "FLICKER", "TERMINAL_RENDER"]),
   occurrenceCount: z.number().int().min(2).max(10_000),
   windowMs: z.number().int().min(1).max(60_000),
   snapshotId: diagnosticsIdSchema.optional()

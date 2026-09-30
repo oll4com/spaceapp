@@ -12,6 +12,17 @@ export interface DurableEventQuery {
   limit: number;
 }
 
+const locallyPublishedEventIdsLimit = 20_000;
+
+export function trackSeenEventId(recentEventIds: Set<string>, eventId: string): void {
+  recentEventIds.add(eventId);
+  while (recentEventIds.size > locallyPublishedEventIdsLimit) {
+    const oldest = recentEventIds.values().next();
+    if (oldest.done) return;
+    recentEventIds.delete(oldest.value);
+  }
+}
+
 export function createDurableEventRelay(options: {
   listEvents: (query: DurableEventQuery) => EventChange[] | Promise<EventChange[]>;
   publish: (event: Event) => void;
@@ -24,7 +35,7 @@ export function createDurableEventRelay(options: {
 
   return {
     markSeen(event) {
-      locallyPublishedEventIds.add(event.id);
+      trackSeenEventId(locallyPublishedEventIds, event.id);
     },
     seed(sequence) {
       afterSequence = sequence;
@@ -79,7 +90,7 @@ export function eventMatchesRoom(event: Event, roomId?: string): boolean {
 export function collectUnseenEvents(events: Event[], seenEventIds: Set<string>, roomId?: string): Event[] {
   const unseen = events.filter((event) => eventMatchesRoom(event, roomId) && !seenEventIds.has(event.id));
   for (const event of unseen) {
-    seenEventIds.add(event.id);
+    trackSeenEventId(seenEventIds, event.id);
   }
   return unseen;
 }

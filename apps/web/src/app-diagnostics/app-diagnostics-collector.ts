@@ -1,3 +1,4 @@
+import { createTerminalRenderSampler } from "../features/terminal-render/terminal-render-sampler.js";
 import {
   appDiagnosticsClientBufferMaxBytes,
   appDiagnosticsClientBufferMaxEvents,
@@ -779,6 +780,12 @@ export function createAppDiagnosticsCollector(
     }
   }
 
+  const terminalRenderSampler = createTerminalRenderSampler((sample, anomaly) => {
+    record({ category: "PERFORMANCE", metric: "TERMINAL_RENDER", roomId: sample.roomId, paneId: sample.paneId,
+      durationMs: sample.sampleDurationMs, terminalRender: sample });
+    if (anomaly) record({ category: "ANOMALY", anomaly: "TERMINAL_RENDER",
+      occurrenceCount: 2, windowMs: 10000 });
+  });
   let animationFrame = 0;
   let previousFrame = performance.now();
   const measureFrame = (timestamp: number) => {
@@ -788,6 +795,7 @@ export function createAppDiagnosticsCollector(
       animationFrame = window.requestAnimationFrame(measureFrame);
       return;
     }
+    terminalRenderSampler.tick(timestamp);
     const durationMs = timestamp - previousFrame;
     previousFrame = timestamp;
     if (durationMs > 100) record({ category: "PERFORMANCE", metric: "FRAME_STALL", durationMs });
@@ -813,6 +821,7 @@ export function createAppDiagnosticsCollector(
     stop: () => {
       if (stopped) return;
       stopped = true;
+      terminalRenderSampler.stop();
       uploadAbort?.abort();
       window.clearInterval(flushTimer);
       if (mutationTimer !== null) window.clearTimeout(mutationTimer);

@@ -25,8 +25,8 @@ export function cliBuildModeState(runtimeId: string, screen: string): 'plan' | '
     if (/Accept.edits mode:.*shift\+tab to cycle|(?:Normal|Default|Ask) mode:.*shift\+tab to cycle|Bypass.*mode:.*shift\+tab to cycle/i.test(footer)) return 'build';
   }
   if (runtimeId === 'cli:deepseek') {
-    if (/Plan\s*·.*Shift\+Tab ask\/auto\/plan/i.test(footer)) return 'plan';
-    if (/(?:Ask|Auto(?:\+Approve)?|YOLO)\s*·.*Shift\+Tab ask\/auto\/plan/i.test(footer)) return 'build';
+    if (/Plan\s*·.*Shift\+Tab/i.test(footer)) return 'plan';
+    if (/(?:Ask|Auto(?:\+Approve)?|YOLO|read-only|workspace)\s*·.*Shift\+Tab/i.test(footer)) return 'build';
   }
   if (runtimeId === 'cli:copilot') {
     if (/open sidebar\s*·\s*plan\s*·/i.test(footer)) return 'plan';
@@ -74,7 +74,7 @@ export async function returnCliToBuildMode(runtimeId: string, target: {
     current();
     if (state === 'build') return;
     if (!state) throw Error('The current CLI mode is not visible. Close native dialogs and try Build mode again.');
-    const previousRail = target.screen().split(/\r?\n/).filter(line => /shift\+tab to cycle|open sidebar/i.test(line)).join('\n');
+    const previousRail = target.screen().split(/\r?\n/).filter(line => /shift\+tab|open sidebar/i.test(line)).join('\n');
     if (runtimeId === 'cli:kimi' || runtimeId === 'cli:grok') await target.submit(runtimeId === 'cli:kimi' ? '/plan off' : '/plan');
     else if (!target.write(runtimeId === 'cli:opencode' ? '\t' : '\x1b[Z')) throw Error('Build mode key could not be sent.');
     let changed = false;
@@ -82,7 +82,7 @@ export async function returnCliToBuildMode(runtimeId: string, target: {
       await target.sleep(100);
       current();
       const next = cliBuildModeState(runtimeId, target.screen());
-      const nextRail = target.screen().split(/\r?\n/).filter(line => /shift\+tab to cycle|open sidebar/i.test(line)).join('\n');
+      const nextRail = target.screen().split(/\r?\n/).filter(line => /shift\+tab|open sidebar/i.test(line)).join('\n');
       if (next && (next !== state || (next === 'other' && nextRail !== previousRail))) { state = next; changed = true; break; }
     }
     if (!changed) throw Error('The CLI did not confirm leaving Plan mode.');

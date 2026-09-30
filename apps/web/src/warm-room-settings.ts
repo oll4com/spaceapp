@@ -1,4 +1,5 @@
 import { getSpaceRuntime } from "./runtime/SpaceRuntime.js";
+import { api } from "./api.js";
 
 export const WARM_ROOM_ENABLED_STORAGE_KEY = "space.warmRoom.enabled.v1";
 export const DEFAULT_WARM_ROOM_ENABLED = true;
@@ -19,12 +20,29 @@ export function readStoredWarmRoomEnabled(): boolean {
   }
 }
 
+export function applyServerWarmRoomEnabled(enabled: boolean): boolean {
+  if (typeof window === "undefined") return enabled;
+  try {
+    getSpaceRuntime().platform.localStorage.setItem(WARM_ROOM_ENABLED_STORAGE_KEY, String(enabled));
+  } catch {
+    // Ignore storage errors
+  }
+  return enabled;
+}
+
 export function writeStoredWarmRoomEnabled(enabled: boolean): boolean {
   if (typeof window === "undefined") return enabled;
   try {
     getSpaceRuntime().platform.localStorage.setItem(WARM_ROOM_ENABLED_STORAGE_KEY, String(enabled));
   } catch {
     // The effective in-memory setting still applies when browser storage is unavailable.
+  }
+  try {
+    void api.updateUserSettings({ warmRoomEnabled: enabled }).catch(() => {
+      // Session/offline fallback
+    });
+  } catch {
+    // Runtime unavailable (e.g. isolated unit tests)
   }
   return enabled;
 }
@@ -53,6 +71,20 @@ export function readStoredWarmRoomConnectedPaneLimit(): number {
   }
 }
 
+export function applyServerWarmRoomConnectedPaneLimit(value: unknown): number {
+  const normalized = normalizeWarmRoomConnectedPaneLimit(value);
+  if (typeof window === "undefined") return normalized;
+  try {
+    getSpaceRuntime().platform.localStorage.setItem(
+      WARM_ROOM_CONNECTED_PANE_LIMIT_STORAGE_KEY,
+      String(normalized)
+    );
+  } catch {
+    // Ignore storage errors
+  }
+  return normalized;
+}
+
 export function writeStoredWarmRoomConnectedPaneLimit(value: unknown): number {
   const normalized = normalizeWarmRoomConnectedPaneLimit(value);
   if (typeof window === "undefined") return normalized;
@@ -63,6 +95,13 @@ export function writeStoredWarmRoomConnectedPaneLimit(value: unknown): number {
     );
   } catch {
     // The effective in-memory setting still applies when browser storage is unavailable.
+  }
+  try {
+    void api.updateUserSettings({ warmRoomConnectedPaneLimit: normalized }).catch(() => {
+      // Session/offline fallback
+    });
+  } catch {
+    // Runtime unavailable (e.g. isolated unit tests)
   }
   return normalized;
 }

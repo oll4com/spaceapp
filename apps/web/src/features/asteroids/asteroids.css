@@ -16,10 +16,11 @@
 .asteroids-score strong { font-size: 25px; font-weight: 500; letter-spacing: .08em; }
 .asteroids-score span { font-size: 9px; color: var(--asteroids-muted); }
 .asteroids-actions { display: flex; gap: 6px; pointer-events: auto; }
-.asteroids-host .asteroids-actions button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 10px; display: grid; place-items: center; color: var(--asteroids-text); border-color: var(--asteroids-border); }
+.asteroids-host .asteroids-actions button { width: auto; min-width: 44px; height: 44px; min-height: 44px; padding: 9px 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--asteroids-text); border-color: color-mix(in srgb, var(--asteroids-accent) 35%, var(--asteroids-border)); background: color-mix(in srgb, var(--asteroids-surface) 84%, transparent); box-shadow: 0 8px 24px rgb(0 0 0 / .16); font: 700 10px ui-monospace, monospace; letter-spacing: .08em; text-transform: uppercase; transition: transform .16s ease, background .16s ease, border-color .16s ease; }
+.asteroids-host .asteroids-actions button:hover { transform: translateY(-2px); background: color-mix(in srgb, var(--asteroids-accent) 14%, var(--asteroids-surface)); }
 .asteroids-host .asteroids-actions button svg { width: 22px; height: 22px; stroke-width: 2.5; }
 .asteroids-host .asteroids-actions .asteroids-pause { color: var(--asteroids-accent); background: var(--asteroids-surface); border-color: var(--asteroids-accent); }
-.asteroids-host .asteroids-actions button[aria-pressed="true"] { color: var(--asteroids-accent); border-color: var(--asteroids-accent); }
+.asteroids-host .asteroids-actions button[aria-pressed="true"] { color: var(--asteroids-accent); border-color: var(--asteroids-accent); background: color-mix(in srgb, var(--asteroids-accent) 15%, var(--asteroids-surface)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--asteroids-accent) 35%, transparent), 0 8px 26px color-mix(in srgb, var(--asteroids-accent) 18%, transparent); }
 .asteroids-overlay { position: absolute; inset: 98px 12px 65px; display: grid; place-items: center; overflow: auto; background: transparent; }
 .asteroids-panel { width: min(640px, 100%); padding: 28px 20px; text-align: center; border: 1px solid var(--asteroids-border); background: var(--asteroids-surface); border-radius: 20px; box-shadow: var(--modern-shadow, none); }
 .asteroids-intro { background: radial-gradient(ellipse at 50% 0%, var(--asteroids-accent-soft), transparent 65%), var(--asteroids-surface); }
@@ -29,7 +30,7 @@
 .asteroids-panel p { color: var(--asteroids-muted); font-size: 13px; line-height: 1.8; margin: 12px 0 24px; }
 
 .asteroids-host .asteroids-game .asteroids-primary { padding: 13px 22px; min-width: 215px; background: var(--asteroids-accent); border-color: var(--asteroids-accent); color: var(--asteroids-on-accent); font-weight: 650; }
-.asteroids-host .asteroids-game .asteroids-primary:hover { background: var(--asteroids-accent); }
+.asteroids-host .asteroids-game .asteroids-primary:hover { background: var(--asteroids-accent); transform: translateY(-2px); box-shadow: 0 10px 28px color-mix(in srgb, var(--asteroids-accent) 26%, transparent); }
 /* Intro actions stack vertically — Launch + Continue never collide. */
 .asteroids-intro .asteroids-primary { display: block; width: 100%; margin: 6px 0; }
 .asteroids-primary span { padding-left: 28px; }
@@ -76,7 +77,7 @@
   .asteroids-brand { gap: 7px; } .asteroids-orbit-mark { flex-basis: 30px; width: 30px; height: 30px; }
   .asteroids-brand strong { font-size: 9px; } .asteroids-brand strong span { font-size: 8px; }
   .asteroids-brand small { font-size: 8px; } .asteroids-score strong { font-size: 18px; }
-  .asteroids-actions { gap: 6px; flex-shrink: 0; }
+  .asteroids-actions { gap: 5px; flex-shrink: 0; } .asteroids-host .asteroids-actions button { min-width: 38px; padding: 8px; font-size: 9px; }
   .asteroids-brand { min-width: 0; } .asteroids-brand small { max-width: 95px; }
   .asteroids-score { min-width: 0; }
   .asteroids-panel { padding: 25px 16px; } .asteroids-eyebrow { font-size: 8px; }
@@ -151,3 +152,47 @@
 .asteroids-game[data-inferno="true"] .asteroids-combo { color: var(--asteroids-danger); }
 @keyframes asteroids-inferno-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 @media (prefers-reduced-motion: reduce) { .asteroids-ai-panel.asteroids-ai-inferno strong { animation: none; } }
+
+/* Jev Live Pilot Directive Banner & Active Button */
+.asteroids-host .asteroids-actions button.asteroids-pilot-active {
+  color: #00f0ff !important;
+  border-color: #00f0ff !important;
+  background: rgba(0, 240, 255, 0.16) !important;
+  box-shadow: 0 0 14px rgba(0, 240, 255, 0.35) !important;
+}
+.asteroids-jev-directive-banner {
+  position: absolute;
+  top: 78px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: rgba(8, 18, 28, 0.92);
+  border: 1px solid rgba(0, 240, 255, 0.55);
+  border-radius: 20px;
+  color: #00f0ff;
+  font: 700 11px ui-monospace, monospace;
+  letter-spacing: .06em;
+  box-shadow: 0 4px 20px rgba(0, 240, 255, 0.28);
+  pointer-events: none;
+  z-index: 10;
+  text-transform: uppercase;
+}
+.asteroids-jev-directive-banner small {
+  color: #ffe600;
+  font-size: 10px;
+}
+.asteroids-jev-pulse {
+  display: inline-block;
+  color: #00f0ff;
+  animation: asteroids-jev-glow 1.2s infinite alternate;
+}
+@keyframes asteroids-jev-glow {
+  from { opacity: 0.35; transform: scale(0.85); }
+  to { opacity: 1; transform: scale(1.15); }
+}
+.asteroids-footer .asteroids-pilot-tag {
+  color: #00f0ff;
+}

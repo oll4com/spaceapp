@@ -8,6 +8,7 @@ import {
   type RefObject
 } from "react";
 import { createPortal } from "react-dom";
+import { dispatchRailMenuChange } from "../rail-popover.js";
 
 export const ROOM_THEME_MENU_ID = "room-theme-menu";
 
@@ -16,7 +17,8 @@ export const roomThemes = [
   { id: "forest", label: "Forest" },
   { id: "copper", label: "Copper" },
   { id: "steel", label: "Steel" },
-  { id: "contrast", label: "Contrast" }
+  { id: "contrast", label: "Contrast" },
+  { id: "motion", label: "Motion" }
 ] as const;
 
 export type RoomTheme = (typeof roomThemes)[number]["id"];
@@ -107,6 +109,7 @@ export function RoomThemeMenu({
           { height: window.innerHeight, width: window.innerWidth }
         )
       );
+      dispatchRailMenuChange();
     };
 
     updatePosition();
@@ -115,6 +118,7 @@ export function RoomThemeMenu({
     return () => {
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
+      dispatchRailMenuChange();
     };
   }, [mobile, triggerRef]);
 

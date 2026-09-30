@@ -99,11 +99,12 @@ if (databaseUrl) {
     runCycle: async () => {
       const result = await runStreamingBotCycle({
         streamingRepository,
+        spaceStore: notificationStore!,
         botRepository,
         credentialStore: new StreamingCredentialStore(
           process.env.SPACE_STREAMING_SECRET_ROOT || "/opt/spaceapp/var/streaming-secrets"
         ),
-        memoryStore: createSpaceBotMemoryStore(notificationStore!),
+        memoryStore: createSpaceBotMemoryStore(botRepository),
         youtubeDailyBudget: Number.parseInt(process.env.SPACE_STREAMING_YOUTUBE_DAILY_QUOTA_BUDGET ?? "8000", 10),
         youtubeReplyUnitCost: 10,
         internalApiBaseUrl: process.env.SPACE_STREAMING_BOT_API_BASE_URL || "http://127.0.0.1:4910",

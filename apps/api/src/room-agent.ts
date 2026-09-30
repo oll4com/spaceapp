@@ -26,6 +26,8 @@ import {
 import { SpaceConflictError, SpaceFeatureDisabledError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { RoomQuickActionResult } from "./room-quick-actions.js";
 import type { RoomPlanInventoryProvider } from "./room-plan-inventory.js";
+import { roomMissionSnapshot } from "./room-mission-snapshot.js";
+import { resolveMissionControlTarget, assertMissionControlOwner, activeMissionStatuses, type RoomMissionControlTarget } from "./room-mission-control.js";
 
 export const roomAgentToolIds = [
   "room:inspect",
@@ -92,14 +94,14 @@ function composeRoomAgentTurnPrompt(context: string, content: string): string {
 
 export interface RoomAgentWorkflowCoordinator {
   enqueue(item: RoomAgentSupervisorQueueItem): Promise<{ workflowId: string; runId: string | null }>;
-  stop(roomId: string, reason: string): Promise<void>;
+  stop(roomId: string, reason: string, missionId?: string): Promise<void>;
   enqueueAction?(actionId: string, bridge: SpaceAgentRoomActionBridgeRequest, traceId: string): Promise<void>;
 }
 
 export interface RoomAgentMissionStopper {
-  pauseMission(roomId: string, reason: string, traceId: string): Promise<unknown>;
-  resumeMission(roomId: string, traceId: string): Promise<unknown>;
-  stopMission(roomId: string, reason: string, traceId: string): Promise<unknown>;
+  pauseMission(roomId: string, reason: string, traceId: string, target?: RoomMissionControlTarget): Promise<unknown>;
+  resumeMission(roomId: string, traceId: string, target?: RoomMissionControlTarget): Promise<unknown>;
+  stopMission(roomId: string, reason: string, traceId: string, target?: RoomMissionControlTarget): Promise<unknown>;
 }
 
 export class DisabledRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCoordinator {
@@ -130,7 +132,7 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
       try {
         await client.workflow.start("roomAgentActionWorkflow", {
           workflowId: `space-room-action:${actionId}`, taskQueue: this.options.taskQueue,
-          args: [{ bridge: { ...bridge, backgroundExecution: true }, traceId }],
+          args: [{ actionId, bridge: { ...bridge, backgroundExecution: true }, traceId }],
           workflowIdReusePolicy: "REJECT_DUPLICATE"
         });
       } catch (error) { if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error; }
@@ -156,12 +158,12 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
     }
   }
 
-  async stop(roomId: string, reason: string): Promise<void> {
+  async stop(roomId: string, reason: string, missionId?: string): Promise<void> {
     const connection = await Connection.connect({ address: this.options.address, connectTimeout: "5s" });
     try {
       const client = new Client({ connection, namespace: this.options.namespace });
       await client.workflow.getHandle(buildRoomAgentSupervisorWorkflowId(roomId)).signal(ROOM_AGENT_STOP_SIGNAL, {
-        missionId: null,
+        missionId: missionId ?? null,
         reason
       });
     } catch (error) {
@@ -207,7 +209,7 @@ export function createRoomAgentService(options: {
   async function ensureSession(roomId: string) {
     await store.getRoom(roomId);
     const pane = await store.getOrCreateRoomAgentPane(roomId);
-    const existing = await store.getActiveSpaceAgentSession(pane.id);
+    const existing = await store.getActiveSpaceAgentSession(pane.id) ?? await store.getSpaceAgentSession(pane.id);
     const fixed = {
       paneId: pane.id,
       roomId,
@@ -358,6 +360,7 @@ export function createRoomAgentService(options: {
         .filter((message) => !transcriptClearedAt || message.updatedAt > transcriptClearedAt)
         .map(mapRoomAgentMessage),
       activeMission,
+      missionSnapshot: roomMissionSnapshot(metricMission, actions, taskRuns),
       queuedMissionCount,
       currentPaneId: activePaneIds[0] ?? null,
       activePaneIds,
@@ -379,7 +382,7 @@ export function createRoomAgentService(options: {
       missionSummary,
       capabilities: {
         canSend: true,
-        canPause: activeMission?.status === "RUNNING",
+        canPause: activeMission?.status === "RUNNING" || activeMission?.status === "QUEUED",
         canResume: activeMission?.status === "PAUSED",
         canStop: Boolean(activeMission),
         canClear: true
@@ -427,13 +430,13 @@ export function createRoomAgentService(options: {
     ].join("\n");
   }
 
-  async function sendAdvanced(roomId: string, content: string, clientRequestId: string, traceId: string, requestFingerprint?: string): Promise<RoomAgentSession> {
+  async function sendAdvanced(roomId: string, content: string, clientRequestId: string, traceId: string, requestFingerprint?: string, newMission?: { ownerId: string }): Promise<RoomAgentSession> {
     const { pane, session } = await ensureSession(roomId);
     const missions = await store.listRoomAgentMissions(roomId, 500);
     const activeMission = missions.find((mission) =>
       mission.status === "RUNNING" || mission.status === "PAUSED" || mission.status === "QUEUED"
     ) ?? null;
-    const missionId = activeMission?.id ?? makeSpaceId("room_agent_mission");
+    const missionId = (!newMission && activeMission?.id) || makeSpaceId("room_agent_mission");
     const promptMessageId = makeSpaceId("agent_msg");
     const responseMessageId = makeSpaceId("agent_msg");
     const runId = makeSpaceId("agent_run");
@@ -464,6 +467,8 @@ export function createRoomAgentService(options: {
       requestId: makeSpaceId("room_agent_request"),
       clientRequestId,
       requestFingerprint,
+      requireNewMission: Boolean(newMission),
+      initialExecutionState: { objective: content, source: newMission ? "LIVE" : "ROOM_AGENT", ...(newMission ? { ownerId: newMission.ownerId } : {}) },
       content,
       supervisorWorkflowId: buildRoomAgentSupervisorWorkflowId(roomId),
       childWorkflowId,
@@ -480,6 +485,32 @@ export function createRoomAgentService(options: {
   }
 
   const directRequests = new Map<string, { fingerprint: string; pending: Promise<RoomAgentSession> }>();
+  async function inspectMission(roomId: string) {
+    await store.getRoom(roomId);
+    const missions = await store.listRoomAgentMissions(roomId, 500);
+    const mission = missions.find(value => value.status === "RUNNING") ?? missions.find(value => value.status === "PAUSED") ??
+      missions.find(value => value.status === "QUEUED") ?? missions.at(-1) ?? null;
+    const [actions, tasks] = mission ? await Promise.all([store.listRoomAgentActions(mission.id), store.listRoomAgentTaskRuns(mission.id)]) : [[], []];
+    return { roomId, snapshot: roomMissionSnapshot(mission, actions, tasks) };
+  }
+  async function startMission(roomId: string, objective: string, clientRequestId: string, traceId: string, actor: BrowserHostActorContext) {
+    if (actor.holderType !== "OPERATOR" || !actor.holderId) throw new SpaceConflictError("An authenticated operator is required.");
+    const digest = fingerprint(`live-mission:${objective}`, actor);
+    const key = JSON.stringify([roomId, clientRequestId]);
+    const inFlight = directRequests.get(key);
+    if (inFlight) {
+      if (inFlight.fingerprint !== digest) throw new SpaceConflictError("Request ID was already used with a different actor or payload.");
+      return inFlight.pending;
+    }
+    const pending = (async () => {
+      const existing = await store.getRoomAgentRequest(roomId, clientRequestId);
+      if (existing) await assertMatchingRequest(existing, objective, digest);
+      return sendAdvanced(roomId, objective, clientRequestId, traceId, digest, { ownerId: actor.holderId });
+    })();
+    directRequests.set(key, { fingerprint: digest, pending });
+    try { return await pending; }
+    finally { if (directRequests.get(key)?.pending === pending) directRequests.delete(key); }
+  }
   function fingerprint(content: string, actor?: BrowserHostActorContext) {
     return createHash("sha256").update(JSON.stringify([actor?.holderType ?? null, actor?.holderId ?? null, content])).digest("hex");
   }
@@ -640,35 +671,55 @@ export function createRoomAgentService(options: {
     return { scanned: pending.length, recovered, failed: pending.length - recovered };
   }
 
-  async function stop(roomId: string, reason: string, traceId: string): Promise<RoomAgentSession> {
+  async function controlResponse(roomId: string, missionId?: string): Promise<RoomAgentSession> {
+    const session = await load(roomId);
+    if (!missionId) return session;
+    const [mission, actions, taskRuns] = await Promise.all([
+      store.getRoomAgentMission(roomId, missionId), store.listRoomAgentActions(missionId), store.listRoomAgentTaskRuns(missionId)
+    ]);
+    if (!mission) throw new SpaceConflictError("The controlled mission is no longer available. Refresh its state.");
+    return { ...session, missionSnapshot: roomMissionSnapshot(mission, actions, taskRuns) };
+  }
+
+  async function stop(roomId: string, reason: string, traceId: string, target?: RoomMissionControlTarget): Promise<RoomAgentSession> {
     await store.getRoom(roomId);
-    const [roomActionStop] = await Promise.allSettled([
-      missionStopper.stopMission(roomId, reason, traceId)
-    ]);
-    const [workflowStop] = await Promise.allSettled([
-      workflow.stop(roomId, reason)
-    ]);
-    if (roomActionStop.status === "rejected") throw roomActionStop.reason;
-    if (workflowStop.status === "rejected") throw workflowStop.reason;
-    return load(roomId);
+    const explicit = target?.expectedMissionId
+      ? await resolveMissionControlTarget(store, roomId, target, [...activeMissionStatuses, "INTERRUPTED"]) : null;
+    const missions = explicit ? [explicit] : (await store.listRoomAgentMissions(roomId)).filter(mission => activeMissionStatuses.includes(mission.status));
+    // Resolve and authorize the complete snapshot before changing any mission.
+    for (const mission of missions) assertMissionControlOwner(mission, target?.actorId);
+    const results = await Promise.allSettled(missions.map(async mission => {
+      await missionStopper.stopMission(roomId, reason, traceId, { ...target, expectedMissionId: mission.id });
+      // Never use a wildcard signal after an asynchronous local stop: it could
+      // cancel new work submitted while the original mission was being stopped.
+      await workflow.stop(roomId, reason, mission.id);
+    }));
+    const failure = results.find(result => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+    return controlResponse(roomId, explicit?.id ?? (missions.length === 1 ? missions[0]!.id : undefined));
   }
 
   async function control(
     roomId: string,
     action: "PAUSE" | "RESUME" | "STOP",
     reason: string | undefined,
-    traceId: string
+    traceId: string,
+    target?: RoomMissionControlTarget
   ): Promise<RoomAgentSession> {
     await store.getRoom(roomId);
+    if (action === "STOP") return stop(roomId, reason ?? "Stopped by operator.", traceId, target);
+    const mission = await resolveMissionControlTarget(store, roomId, target);
+    if (!mission) throw new SpaceConflictError("There is no active mission in this room.");
+    const resolvedTarget = { ...target, expectedMissionId: mission.id };
     if (action === "PAUSE") {
-      await missionStopper.pauseMission(roomId, reason ?? "Paused by operator.", traceId);
-      return load(roomId);
+      await missionStopper.pauseMission(roomId, reason ?? "Paused by operator.", traceId, resolvedTarget);
+      return controlResponse(roomId, mission.id);
     }
     if (action === "RESUME") {
-      await missionStopper.resumeMission(roomId, traceId);
-      return load(roomId);
+      await missionStopper.resumeMission(roomId, traceId, resolvedTarget);
+      return controlResponse(roomId, mission.id);
     }
-    return stop(roomId, reason ?? "Stopped by operator.", traceId);
+    throw new SpaceConflictError("Unsupported mission control action.");
   }
 
   async function clearTranscript(roomId: string, traceId: string): Promise<RoomAgentSession> {
@@ -677,7 +728,7 @@ export function createRoomAgentService(options: {
     return load(roomId);
   }
 
-  return { load, send, executeCommand, acknowledgeCommand, recoverPending, stop, control, clearTranscript };
+  return { load, send, startMission, inspectMission, executeCommand, acknowledgeCommand, recoverPending, stop, control, clearTranscript };
 }
 
 export type RoomAgentService = ReturnType<typeof createRoomAgentService>;

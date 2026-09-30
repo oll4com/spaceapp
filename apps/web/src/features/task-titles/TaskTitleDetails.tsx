@@ -37,12 +37,16 @@ export function TaskTitleDetails({
     taskPane && pane.titleSource !== "manual"
       ? shortTaskTitle(pane.title, "Task")
       : displayTitle;
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    const handleGlobalDragStart = () => {
+      close();
+    };
+    window.addEventListener("dragstart", handleGlobalDragStart);
+    return () => {
       if (timer.current) clearTimeout(timer.current);
-    },
-    [],
-  );
+      window.removeEventListener("dragstart", handleGlobalDragStart);
+    };
+  }, []);
   useLayoutEffect(() => {
     if (!open) return;
     const popover = popoverRef.current;
@@ -110,10 +114,15 @@ export function TaskTitleDetails({
       }}
       onPointerEnter={(event) => {
         if (event.pointerType === "touch") return;
+        if (event.buttons !== 0) return;
+        if (detailsRef.current?.closest(".pane-card")?.classList.contains("is-dragging")) return;
         cancelTimer();
         timer.current = setTimeout(() => {
           if (detailsRef.current) detailsRef.current.open = true;
         }, 300);
+      }}
+      onPointerDown={() => {
+        cancelTimer();
       }}
       onPointerLeave={() => {
         cancelTimer();
@@ -140,6 +149,7 @@ export function TaskTitleDetails({
         aria-label={`Show task details ${title}`}
         onClick={(event) => {
           event.preventDefault();
+          if (detailsRef.current?.closest(".pane-card")?.classList.contains("is-dragging")) return;
           if (detailsRef.current) detailsRef.current.open = true;
           setOpen(true);
         }}

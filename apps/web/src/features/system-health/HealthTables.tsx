@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type {
+  AntigravityUsageAccountList,
+  ApiProviderAccountList,
   CodexUsageAccountList,
   SystemAnalyticsCliSessionsResponse,
   SystemAnalyticsModelsResponse,
@@ -12,6 +14,7 @@ import {
   toneLabels,
   type HealthThresholds,
 } from "./health-model.js";
+import { formatAppTime, formatAppDateTime } from "../date-time-settings/date-time-settings.js";
 
 export type ProcessSort =
   | "rss"
@@ -238,7 +241,7 @@ export function HealthProcessTable({
       <footer className="health-pagination">
         <small>
           {data
-            ? `Updated ${new Date(data.sampledAt).toLocaleTimeString()}`
+            ? `Updated ${formatAppTime(data.sampledAt)}`
             : ""}
         </small>
         <button
@@ -261,10 +264,39 @@ export function HealthProcessTable({
   );
 }
 
+export function formatResetCountdown(
+  iso: string | null | undefined,
+  now: number,
+): string {
+  if (!iso) return "—";
+  const targetMs = Date.parse(iso);
+  if (!Number.isFinite(targetMs)) return "—";
+  const diffMs = targetMs - now;
+  if (diffMs <= 0) return "Ready";
+  const totalSeconds = Math.max(0, Math.round(diffMs / 1000));
+  if (totalSeconds >= 86400) {
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    return `Resets in ${days}d ${hours}h`;
+  }
+  if (totalSeconds >= 3 * 3600) {
+    const hours = Math.floor(totalSeconds / 3600);
+    const mins = Math.floor((totalSeconds % 3600) / 60);
+    return `Resets in ${hours}h ${mins}m`;
+  }
+  if (totalSeconds >= 60) {
+    const mins = Math.floor(totalSeconds / 60);
+    return `Resets in ${mins}m`;
+  }
+  return "Resets in <1m";
+}
+
 export function HealthAiPanel({
   onOpenUsage,
   models,
   accounts,
+  antigravityAccounts,
+  apiProviderAccounts,
   onManage,
   thresholds,
   now,
@@ -274,8 +306,13 @@ export function HealthAiPanel({
   onOpenUsage?: () => void;
   models: SystemAnalyticsModelsResponse | null;
   accounts: CodexUsageAccountList | null;
+  antigravityAccounts?: AntigravityUsageAccountList | null;
+  apiProviderAccounts?: ApiProviderAccountList | null;
   onManage?: (id: "accounts" | "provider" | "cli") => void;
 }) {
+  const [providerFilter, setProviderFilter] = useState<
+    "all" | "antigravity" | "codex" | "api"
+  >("all");
   const [sessions, setSessions] =
     useState<SystemAnalyticsCliSessionsResponse | null>(null);
   const [error, setError] = useState(false);
@@ -307,7 +344,7 @@ export function HealthAiPanel({
     };
   }, []);
   const accountTone = (value: number | null, at: string | null) =>
-    accounts?.isStale || !at || now - Date.parse(at) > 180_000
+    !at || now - Date.parse(at) > 180_000
       ? "stale"
       : numericHealthTone("accounts", value, thresholds);
   const accountValue = (value: number | null, at: string | null) => {
@@ -318,6 +355,22 @@ export function HealthAiPanel({
         {formatHealthValue(value, "PERCENT")}
       </span>
     );
+  };
+  const onProviderCardClick = (providerId: string) => {
+    const norm = providerId.toLowerCase();
+    let target: "all" | "antigravity" | "codex" | "api" = "all";
+    if (
+      norm.includes("google") ||
+      norm.includes("gemini") ||
+      norm.includes("antigravity")
+    ) {
+      target = "antigravity";
+    } else if (norm.includes("codex")) {
+      target = "codex";
+    } else {
+      target = "api";
+    }
+    setProviderFilter((prev) => (prev === target ? "all" : target));
   };
   return (
     <div className="health-stack">
@@ -334,41 +387,458 @@ export function HealthAiPanel({
           )}
         </header>
         <div className="health-provider-grid">
-          {models?.providers.map((p) => (
-            <article key={p.providerId}>
-              <small>{p.providerId}</small>
-              <strong>{p.activeSessions} active sessions</strong>
-              <span>
-                {p.modelCount} models · {p.completedTurns} completed turns
-              </span>
-            </article>
-          ))}
+          {models?.providers.map((p) => {
+            const norm = p.providerId.toLowerCase();
+            const isAntigravity =
+              norm.includes("google") ||
+              norm.includes("gemini") ||
+              norm.includes("antigravity");
+            const isCodex = norm.includes("codex");
+            const isApi = !isAntigravity && !isCodex;
+            const isActive =
+              (isAntigravity && providerFilter === "antigravity") ||
+              (isCodex && providerFilter === "codex") ||
+              (isApi && providerFilter === "api");
+            return (
+              <article
+                key={p.providerId}
+                className={`is-clickable ${isActive ? "is-active" : ""}`}
+                onClick={() => onProviderCardClick(p.providerId)}
+                role="button"
+                tabIndex={0}
+                aria-label={`Filter by ${p.providerId}`}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onProviderCardClick(p.providerId);
+                  }
+                }}
+                title={`Filter by ${p.providerId}`}
+              >
+                <small>{p.providerId}</small>
+                <strong>{p.activeSessions} active sessions</strong>
+                <span>
+                  {p.modelCount} models · {p.completedTurns} completed turns
+                </span>
+              </article>
+            );
+          })}
         </div>
-        {accounts?.isStale && (
-          <p className="health-error">Account data is stale.</p>
+        <div
+          className="health-provider-filters"
+          role="tablist"
+          aria-label="Provider filter"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={providerFilter === "all"}
+            className={`health-filter-btn ${providerFilter === "all" ? "is-active" : ""}`}
+            onClick={() => setProviderFilter("all")}
+          >
+            All Providers
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={providerFilter === "antigravity"}
+            className={`health-filter-btn ${providerFilter === "antigravity" ? "is-active" : ""}`}
+            onClick={() => setProviderFilter("antigravity")}
+          >
+            Antigravity (Google)
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={providerFilter === "codex"}
+            className={`health-filter-btn ${providerFilter === "codex" ? "is-active" : ""}`}
+            onClick={() => setProviderFilter("codex")}
+          >
+            Codex
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={providerFilter === "api"}
+            className={`health-filter-btn ${providerFilter === "api" ? "is-active" : ""}`}
+            onClick={() => setProviderFilter("api")}
+          >
+            API Providers
+          </button>
+        </div>
+
+        {(providerFilter === "all" || providerFilter === "antigravity") && (
+          <div className="health-accounts-block">
+            <div className="health-accounts-block-header">
+              <div>
+                <h3>Antigravity (Google) accounts</h3>
+                <p>Gemini and Claude / GPT quota availability</p>
+              </div>
+              {antigravityAccounts?.source && (
+                <small className="health-accounts-source">
+                  Source: {antigravityAccounts.source}
+                </small>
+              )}
+            </div>
+            {antigravityAccounts?.isStale && (
+              <p className="health-error">Antigravity account data is stale.</p>
+            )}
+            {antigravityAccounts?.error && (
+              <p className="health-error">{antigravityAccounts.error}</p>
+            )}
+            <div className="health-table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Account</th>
+                    <th>Gemini 5-hour</th>
+                    <th>Gemini Weekly</th>
+                    <th>Claude 5-hour</th>
+                    <th>Claude Weekly</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {antigravityAccounts?.data.map((a) => (
+                    <tr key={a.id}>
+                      <td>
+                        <div className="health-account-cell">
+                          <div className="health-account-header">
+                            <strong>{a.label}</strong>
+                            {a.tier && (
+                              <span className="health-badge is-tier">
+                                {a.tier}
+                              </span>
+                            )}
+                            {a.status === "UNLICENSED" && (
+                              <span className="health-badge is-warning">
+                                Unlicensed
+                              </span>
+                            )}
+                            {a.status === "EXPIRED" && (
+                              <span className="health-badge is-critical">
+                                Expired
+                              </span>
+                            )}
+                            {a.status === "ERROR" && (
+                              <span className="health-badge is-critical">
+                                Error
+                              </span>
+                            )}
+                          </div>
+                          {a.email && (
+                            <small className="health-account-email">
+                              {a.email}
+                            </small>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        {a.status === "UNLICENSED" ? (
+                          <span className="health-status is-stale">
+                            <i /> No license
+                          </span>
+                        ) : (
+                          <div className="health-quota-cell">
+                            {accountValue(
+                              a.gemini.fiveHourRemainingPercent,
+                              a.sampledAt,
+                            )}
+                            {a.gemini.fiveHourResetAt && (
+                              <small
+                                className="health-quota-reset"
+                                title={`Resets at ${formatAppDateTime(a.gemini.fiveHourResetAt)}`}
+                              >
+                                {formatResetCountdown(
+                                  a.gemini.fiveHourResetAt,
+                                  now,
+                                )}
+                              </small>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        {a.status === "UNLICENSED" ? (
+                          <span className="health-status is-stale">
+                            <i /> No license
+                          </span>
+                        ) : (
+                          <div className="health-quota-cell">
+                            {accountValue(
+                              a.gemini.weeklyRemainingPercent,
+                              a.sampledAt,
+                            )}
+                            {a.gemini.weeklyResetAt && (
+                              <small
+                                className="health-quota-reset"
+                                title={`Resets at ${formatAppDateTime(a.gemini.weeklyResetAt)}`}
+                              >
+                                {formatResetCountdown(
+                                  a.gemini.weeklyResetAt,
+                                  now,
+                                )}
+                              </small>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        {a.status === "UNLICENSED" ? (
+                          <span className="health-status is-stale">
+                            <i /> No license
+                          </span>
+                        ) : (
+                          <div className="health-quota-cell">
+                            {accountValue(
+                              a.claude.fiveHourRemainingPercent,
+                              a.sampledAt,
+                            )}
+                            {a.claude.fiveHourResetAt && (
+                              <small
+                                className="health-quota-reset"
+                                title={`Resets at ${formatAppDateTime(a.claude.fiveHourResetAt)}`}
+                              >
+                                {formatResetCountdown(
+                                  a.claude.fiveHourResetAt,
+                                  now,
+                                )}
+                              </small>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        {a.status === "UNLICENSED" ? (
+                          <span className="health-status is-stale">
+                            <i /> No license
+                          </span>
+                        ) : (
+                          <div className="health-quota-cell">
+                            {accountValue(
+                              a.claude.weeklyRemainingPercent,
+                              a.sampledAt,
+                            )}
+                            {a.claude.weeklyResetAt && (
+                              <small
+                                className="health-quota-reset"
+                                title={`Resets at ${formatAppDateTime(a.claude.weeklyResetAt)}`}
+                              >
+                                {formatResetCountdown(
+                                  a.claude.weeklyResetAt,
+                                  now,
+                                )}
+                              </small>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {(!antigravityAccounts?.data ||
+                    antigravityAccounts.data.length === 0) && (
+                    <tr>
+                      <td colSpan={5} className="health-empty-cell">
+                        No Antigravity accounts configured.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
-        <div className="health-table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Account</th>
-                <th>5-hour remaining</th>
-                <th>Weekly remaining</th>
-              </tr>
-            </thead>
-            <tbody>
-              {accounts?.data.map((a) => (
-                <tr key={a.id}>
-                  <td>{a.label}</td>
-                  <td>
-                    {accountValue(a.fiveHourRemainingPercent, a.sampledAt)}
-                  </td>
-                  <td>{accountValue(a.weeklyRemainingPercent, a.sampledAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+
+        {(providerFilter === "all" || providerFilter === "codex") && (
+          <div className="health-accounts-block">
+            {providerFilter === "all" && (
+              <div className="health-accounts-block-header">
+                <div>
+                  <h3>Codex accounts</h3>
+                  <p>5-hour and weekly capacity limits</p>
+                </div>
+              </div>
+            )}
+            {accounts?.isStale && (
+              <p className="health-error">Account data is stale.</p>
+            )}
+            <div className="health-table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Account</th>
+                    <th>5-hour</th>
+                    <th>Weekly</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accounts?.data.map((a) => (
+                    <tr key={a.id}>
+                      <td>
+                        <div className="health-account-cell">
+                          <div className="health-account-header">
+                            <strong>{a.label}</strong>
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="health-quota-cell">
+                          {accountValue(a.fiveHourRemainingPercent, a.sampledAt)}
+                          {a.fiveHourResetAt && (
+                            <small
+                              className="health-quota-reset"
+                              title={`Resets at ${formatAppDateTime(a.fiveHourResetAt)}`}
+                            >
+                              {formatResetCountdown(a.fiveHourResetAt, now)}
+                            </small>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="health-quota-cell">
+                          {accountValue(a.weeklyRemainingPercent, a.sampledAt)}
+                          {a.weeklyResetAt && (
+                            <small
+                              className="health-quota-reset"
+                              title={`Resets at ${formatAppDateTime(a.weeklyResetAt)}`}
+                            >
+                              {formatResetCountdown(a.weeklyResetAt, now)}
+                            </small>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {(!accounts?.data || accounts.data.length === 0) && (
+                    <tr>
+                      <td colSpan={3} className="health-empty-cell">
+                        No Codex accounts configured.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {(providerFilter === "all" || providerFilter === "api") && (
+          <div className="health-accounts-block">
+            <div className="health-accounts-block-header">
+              <div>
+                <h3>API provider accounts &amp; balances</h3>
+                <p>DeepSeek, OpenRouter, Vercel AI Gateway, Google Gemini, and configured API providers</p>
+              </div>
+              {apiProviderAccounts?.source && (
+                <small className="health-accounts-source">
+                  Source: {apiProviderAccounts.source}
+                </small>
+              )}
+            </div>
+            {apiProviderAccounts?.isStale && (
+              <p className="health-error">API provider data is stale.</p>
+            )}
+            {apiProviderAccounts?.error && (
+              <p className="health-error">{apiProviderAccounts.error}</p>
+            )}
+            <div className="health-table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th>Status</th>
+                    <th>Balance</th>
+                    <th>Usage / Quota</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {apiProviderAccounts?.data.map((a) => (
+                    <tr key={a.id}>
+                      <td>
+                        <div className="health-account-cell">
+                          <div className="health-account-header">
+                            <strong>{a.label}</strong>
+                            <span
+                              className={`health-badge ${
+                                a.status === "CONNECTED"
+                                  ? "is-tier"
+                                  : a.status === "EXHAUSTED"
+                                    ? "is-warning"
+                                    : "is-critical"
+                              }`}
+                            >
+                              {a.status === "CONNECTED"
+                                ? "Connected"
+                                : a.status === "EXHAUSTED"
+                                  ? "Exhausted"
+                                  : a.status}
+                            </span>
+                          </div>
+                          <small className="health-account-email">
+                            {a.providerId}
+                          </small>
+                        </div>
+                      </td>
+                      <td>
+                        <span
+                          className={`health-status ${
+                            a.status === "CONNECTED"
+                              ? "is-healthy"
+                              : a.status === "EXHAUSTED"
+                                ? "is-warning"
+                                : "is-critical"
+                          }`}
+                        >
+                          <i /> {a.status}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="health-quota-cell">
+                          <strong>{a.balance ?? "—"}</strong>
+                          {a.currency && (
+                            <small className="health-quota-reset">
+                              {a.currency}
+                            </small>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="health-quota-cell">
+                          {a.usage ? (
+                            <span>
+                              {a.usage}
+                              {a.limit ? ` / ${a.limit}` : ""}
+                            </span>
+                          ) : (
+                            <span>—</span>
+                          )}
+                          {a.remainingPercent != null && (
+                            <small className="health-quota-reset">
+                              {a.remainingPercent}% remaining
+                            </small>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <small className="health-quota-reset">
+                          {a.detail ?? "—"}
+                        </small>
+                      </td>
+                    </tr>
+                  ))}
+                  {(!apiProviderAccounts?.data ||
+                    apiProviderAccounts.data.length === 0) && (
+                    <tr>
+                      <td colSpan={5} className="health-empty-cell">
+                        No API providers configured.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
         {onManage && (
           <button type="button" onClick={() => onManage("accounts")}>
             Account details & credits

@@ -2,6 +2,7 @@ import { lstat, readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { StreamingBotMcpExecuteResponse } from "@space/contracts";
 import { buildBotSystemPrompt, buildRecentExchange, type BotPromptContext } from "./prompts.js";
+import { asksForOperatorPrivateData, containsSensitiveDisclosure, PRIVATE_DATA_REFUSAL } from "./privacy.js";
 
 export interface StreamingBotLlmConfig {
   enabled: boolean;
@@ -24,8 +25,6 @@ export interface BotTurnTools {
   sendReply(input: { platform: "YOUTUBE" | "TWITCH"; message: string; replyToId?: string }): Promise<{ ok: boolean; error?: string }>;
   memorySave(input: { title: string; body: string; tags?: string[] }): Promise<{ ok: boolean; error?: string }>;
   memorySearch(input: { query: string }): Promise<{ ok: boolean; entries: string[]; error?: string }>;
-  mcpCall(input: { toolId: string; arguments?: Record<string, unknown> }): Promise<{ ok: boolean; observation: string; error?: string }>;
-  skillRead(input: { name: string }): Promise<{ ok: boolean; content: string; error?: string }>;
 }
 
 export interface BotTurnResult {
@@ -41,6 +40,7 @@ export interface RunBotTurnOptions {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   now?: () => Date;
+  modelId?: string;
 }
 
 function boundedInt(raw: string | undefined, fallback: number, maximum: number): number {
@@ -117,9 +117,9 @@ function toolDefinitions(): Array<Record<string, unknown>> {
           properties: {
             platform: { type: "string", enum: ["YOUTUBE", "TWITCH"] },
             message: { type: "string", description: "The reply text in English, 1-3 sentences." },
-            replyToId: { type: "string", description: "Optional id of the viewer message being answered." }
+            replyToId: { type: "string", description: "Id of the viewer message being answered." }
           },
-          required: ["platform", "message"]
+          required: ["platform", "message", "replyToId"]
         }
       }
     },
@@ -127,7 +127,7 @@ function toolDefinitions(): Array<Record<string, unknown>> {
       type: "function",
       function: {
         name: "memory_save",
-        description: "Store a fact learned from a viewer question for later in this stream or future streams.",
+        description: "Propose a public fact learned from a viewer question for operator review before future use.",
         parameters: {
           type: "object",
           properties: {
@@ -150,35 +150,6 @@ function toolDefinitions(): Array<Record<string, unknown>> {
             query: { type: "string" }
           },
           required: ["query"]
-        }
-      }
-    },
-    {
-      type: "function",
-      function: {
-        name: "mcp_call",
-        description: "Run a tool of a Space MCP server (e.g. space_ops, olla, space_browser, summary_tools, vision).",
-        parameters: {
-          type: "object",
-          properties: {
-            toolId: { type: "string", description: "MCP tool id as listed by the Space MCP registry, e.g. space-readonly:space_status." },
-            arguments: { type: "object", description: "Tool arguments." }
-          },
-          required: ["toolId"]
-        }
-      }
-    },
-    {
-      type: "function",
-      function: {
-        name: "skill_read",
-        description: "Load a Space skill definition to learn a workflow.",
-        parameters: {
-          type: "object",
-          properties: {
-            name: { type: "string" }
-          },
-          required: ["name"]
         }
       }
     }
@@ -204,7 +175,7 @@ function parseToolCalls(message: Record<string, unknown>): ToolCall[] {
     }
     return [{ id, name, arguments: parsedArguments }];
   });
-  const allowed = new Set(["send_reply", "memory_save", "memory_search", "mcp_call", "skill_read"]);
+  const allowed = new Set(["send_reply", "memory_save", "memory_search"]);
   return calls.filter((call) => allowed.has(call.name)).slice(0, 3);
 }
 
@@ -224,6 +195,7 @@ export async function runBotTurn(
   options: RunBotTurnOptions = {}
 ): Promise<BotTurnResult> {
   const config = getStreamingBotLlmConfig(options.env ?? process.env);
+  if (options.modelId) config.model = options.modelId;
   if (!config.enabled) return { ...skippedResult(null), errorCode: "BOT_GATE_DISABLED" };
   if (!config.baseUrl || !config.keyFile || !config.keyName || !config.model) {
     return { ...skippedResult(null), errorCode: "MISSING_CONFIG" };
@@ -235,13 +207,19 @@ export async function runBotTurn(
   let credential: string;
   try {
     const metadata = await lstat(config.keyFile);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o007) !== 0) {
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 4096 || (metadata.mode & 0o007) !== 0) {
       return { ...skippedResult(null), errorCode: "KEY_FILE_NOT_PROTECTED" };
     }
     credential = (await readFile(config.keyFile, "utf8")).trim();
     if (!credential) return { ...skippedResult(null), errorCode: "KEY_FILE_EMPTY" };
   } catch {
     return { ...skippedResult(null), errorCode: "KEY_FILE_UNREADABLE" };
+  }
+
+  const privateQuestion = input.messages.find(message => asksForOperatorPrivateData(message.message));
+  if (privateQuestion) {
+    const sent = await input.tools.sendReply({ platform: privateQuestion.platform, message: PRIVATE_DATA_REFUSAL, replyToId: privateQuestion.id });
+    return { replies: sent.ok ? [{ platform: privateQuestion.platform, message: PRIVATE_DATA_REFUSAL, replyToId: privateQuestion.id }] : [], memorySaves: [], skipped: !sent.ok, model: null, rounds: 0, errorCode: sent.ok ? null : (sent.error ?? "PRIVATE_REPLY_FAILED") };
   }
 
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -302,7 +280,7 @@ export async function runBotTurn(
         function: { name: call.name, arguments: JSON.stringify(call.arguments) }
       })) });
       for (const call of toolCalls) {
-        const result = await executeTool(call, input.tools, replies, memorySaves);
+        const result = await executeTool(call, input.tools, replies, memorySaves, input.messages);
         conversation.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
       }
       if (toolCalls.some((call) => call.name === "send_reply")) break;
@@ -318,16 +296,21 @@ async function executeTool(
   call: ToolCall,
   tools: BotTurnTools,
   replies: BotTurnResult["replies"],
-  memorySaves: BotTurnResult["memorySaves"]
+  memorySaves: BotTurnResult["memorySaves"],
+  messages: BotTurnMessage[]
 ): Promise<Record<string, unknown>> {
   const args = call.arguments;
   switch (call.name) {
     case "send_reply": {
-      const platform = args.platform === "TWITCH" ? "TWITCH" : "YOUTUBE";
+      const platform = args.platform;
+      if (platform !== "YOUTUBE" && platform !== "TWITCH") return { ok: false, error: "INVALID_PLATFORM" };
+      if (!messages.some(input => input.platform === platform)) return { ok: false, error: "PLATFORM_MISMATCH" };
       const message = typeof args.message === "string" ? args.message.trim() : "";
       if (!message) return { ok: false, error: "EMPTY_MESSAGE" };
-      if (replies.length >= 3) return { ok: false, error: "REPLY_LIMIT" };
+      if (containsSensitiveDisclosure(message)) return { ok: false, error: "SENSITIVE_OUTPUT_BLOCKED" };
+      if (replies.length >= 1) return { ok: false, error: "REPLY_LIMIT" };
       const replyToId = typeof args.replyToId === "string" && args.replyToId ? args.replyToId : undefined;
+      if (!replyToId || !messages.some(input => input.platform === platform && input.id === replyToId)) return { ok: false, error: "UNKNOWN_REPLY_TARGET" };
       const result = await tools.sendReply({ platform, message, replyToId });
       if (result.ok) replies.push({ platform, message, replyToId });
       return result;
@@ -336,6 +319,7 @@ async function executeTool(
       const title = typeof args.title === "string" ? args.title.trim() : "";
       const body = typeof args.body === "string" ? args.body.trim() : "";
       if (!title || !body) return { ok: false, error: "MEMORY_FIELDS_REQUIRED" };
+      if (containsSensitiveDisclosure(`${title} ${body}`)) return { ok: false, error: "SENSITIVE_MEMORY_BLOCKED" };
       const tags = Array.isArray(args.tags) ? args.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 12) : [];
       const result = await tools.memorySave({ title: title.slice(0, 160), body: body.slice(0, 500), tags });
       if (result.ok) memorySaves.push({ title: title.slice(0, 160), body: body.slice(0, 500), tags });
@@ -345,20 +329,6 @@ async function executeTool(
       const query = typeof args.query === "string" ? args.query.trim() : "";
       if (!query) return { ok: false, error: "QUERY_REQUIRED" };
       return tools.memorySearch({ query: query.slice(0, 200) });
-    }
-    case "mcp_call": {
-      const toolId = typeof args.toolId === "string" ? args.toolId.trim() : "";
-      if (!toolId) return { ok: false, error: "TOOL_ID_REQUIRED" };
-      const rawArguments = args.arguments;
-      const toolArguments = rawArguments && typeof rawArguments === "object" && !Array.isArray(rawArguments)
-        ? rawArguments as Record<string, unknown>
-        : {};
-      return tools.mcpCall({ toolId, arguments: toolArguments });
-    }
-    case "skill_read": {
-      const name = typeof args.name === "string" ? args.name.trim() : "";
-      if (!name) return { ok: false, error: "SKILL_NAME_REQUIRED" };
-      return tools.skillRead({ name });
     }
     default:
       return { ok: false, error: "UNKNOWN_TOOL" };

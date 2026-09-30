@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -22,6 +22,19 @@ export class YouTubePlaybackStore {
   private async read(userId: string): Promise<{ panes: Record<string, Playback> }> {
     try { return stateSchema.parse(JSON.parse(await readFile(this.path(userId), 'utf8'))); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { panes: {} }; throw error; }
+  }
+  async getByPaneId(paneId: string): Promise<Playback | null> {
+    try {
+      const files = await readdir(this.root).catch(() => []);
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        try {
+          const content = JSON.parse(await readFile(join(this.root, file), 'utf8'));
+          if (content?.panes?.[paneId]) return content.panes[paneId];
+        } catch {}
+      }
+    } catch {}
+    return null;
   }
   async removeProofState(userId: string) {
     if (!userId.includes(':proof:room:')) throw new Error('Only disposable proof playback can be removed here.');

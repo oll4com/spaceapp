@@ -3,9 +3,23 @@
 node_modules/
 dist/
 dist-types/
+server-dist/
 coverage/
 playwright-report/
 test-results/
+scratch/
+.npm/
+apps/desktop/release/*-unpacked/
+apps/desktop/release/*.7z
+apps/desktop/release/*.zip
+apps/desktop/release/*.exe
+apps/desktop/release/*.AppImage
+apps/desktop/release/*.deb
+apps/desktop/release/*.tar.*
+apps/desktop/release/*.tgz
+apps/desktop/release/@space/
+apps/desktop/release/*.yml
+apps/desktop/release/*.yaml
 
 # Live/deploy-adjacent runtime state. Do not delete with blanket git clean.
 secrets/
@@ -14,6 +28,7 @@ bin/
 !packages/run-spaceapp/bin/
 !packages/run-spaceapp/bin/spaceapp.mjs
 var/
+projects/
 /lost+found/
 
 # Local credentials and machine-specific environment.
@@ -23,5 +38,9 @@ var/
 *.pem
 *.key
 *.log
-*.tgz
 .DS_Store
+.cache/
+.autohand/
+
+# Local installer pack artifacts are never source.
+run-spaceapp-*.tgz

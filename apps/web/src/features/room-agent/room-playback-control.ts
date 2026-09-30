@@ -45,13 +45,42 @@ export function runRoomPlaybackCommand(roomId: string, requestId: string, comman
 }
 
 export function inspectPlaybackTargets(roomId:string){return [...targets.entries()].filter(([,t])=>t.roomId===roomId).map(([id,t])=>({id,kind:t.kind,playing:t.playing}));}
-export async function runExtendedPlaybackCommand(roomId:string,command:Extract<ControlAction,{kind:"playback"}>){
+export async function runExtendedPlaybackCommand(roomId:string,command:Extract<ControlAction,{kind:"playback"}>):Promise<boolean | { ok: boolean; evidence: Record<string, unknown> }>{
  const candidates=[...targets.entries()].filter(([id,t])=>t.roomId===roomId&&(!command.targetId||id===command.targetId)&&(command.target==="AUTO"||t.kind===command.target));
+ if(candidates.length===0){
+  return { ok: false, evidence: { applied: false, reason: "MISSING_PLAYER", detail: `No ${command.target} player is active in room.` } };
+ }
  const playing=candidates.filter(([,t])=>t.playing);
- const selected=command.targetId?candidates:playing.length?playing:candidates;
- if(selected.length!==1)return false;
- const target=selected[0]![1];
- if(target.control)return Boolean(await target.control(command));
- if(["play","pause","next","previous"].includes(command.operation))return target.run({type:"MUSIC",action:command.operation.toUpperCase() as MusicCommand["action"],target:command.target==="MUSIC"?"AUTO":command.target});
- return false;
+ const youtube=candidates.filter(([,t])=>t.kind==="YOUTUBE");
+ const music=candidates.filter(([,t])=>t.kind==="MUSIC");
+ const targetEntries = command.targetId
+   ? candidates
+   : playing.length > 0
+     ? playing
+     : command.target === "YOUTUBE"
+       ? youtube
+       : command.target === "MUSIC"
+         ? music
+         : youtube.length > 0
+           ? youtube
+           : candidates;
+ const target = targetEntries[0]?.[1];
+ const targetId = targetEntries[0]?.[0];
+ if(!target) return { ok: false, evidence: { applied: false, reason: "MISSING_TARGET", detail: "Playback target not found." } };
+ let applied = false;
+ if(target.control) applied = Boolean(await target.control(command));
+ else if(["play","pause","next","previous"].includes(command.operation)) {
+  applied = Boolean(await target.run({type:"MUSIC",action:command.operation.toUpperCase() as MusicCommand["action"],target:command.target==="MUSIC"?"AUTO":command.target}));
+ }
+ return {
+  ok: applied,
+  evidence: {
+   applied,
+   targetKind: target.kind,
+   targetId,
+   operation: command.operation,
+   playing: target.playing,
+   detail: applied ? `Client confirmed ${command.operation} on ${target.kind}.` : `Player could not apply ${command.operation}.`
+  }
+ };
 }

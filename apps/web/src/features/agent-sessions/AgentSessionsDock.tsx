@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useAutoAnimate } from "@formkit/auto-animate/react";
+import { AnimatedNumber } from "../ui-controls/AnimatedNumber.js";
 import type { AgentSessionHistoryItem } from "@space/contracts";
 import {
   Archive,
@@ -16,6 +18,7 @@ import {
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import { api, SpaceApiError } from "../../api.js";
+import { formatAppDate } from "../date-time-settings/date-time-settings.js";
 
 interface AgentSessionsDockProps {
   activePaneLabel: string | null;
@@ -37,7 +40,7 @@ function relativeTime(iso: string | null): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   if (days < 30) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
+  return formatAppDate(iso);
 }
 
 function folderGroup(cwd: string | null): string {
@@ -97,6 +100,7 @@ export function AgentSessionsDock({
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const loadRequestIdRef = useRef(0);
+  const [sessionListRef] = useAutoAnimate();
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query), 300);
@@ -190,7 +194,13 @@ export function AgentSessionsDock({
     setError(null);
     try {
       await api.agentSessionArchive(item.threadId);
-      setItems((current) => current.filter((entry) => entry.id !== item.id));
+      if (includeArchived) {
+        setItems((current) =>
+          current.map((entry) => (entry.id === item.id ? { ...entry, archived: true } : entry))
+        );
+      } else {
+        setItems((current) => current.filter((entry) => entry.id !== item.id));
+      }
     } catch (archiveError) {
       setError(archiveError instanceof SpaceApiError ? archiveError.message : archiveError instanceof Error ? archiveError.message : "Session archive failed.");
     } finally {
@@ -214,16 +224,14 @@ export function AgentSessionsDock({
   };
 
   return (
-    <div className="dock-panel event-dock agent-sessions-dock">
-      <section className="event-source" aria-label="Agent session history status">
+    <div className="dock-panel agent-sessions-dock">
+      <section className="agent-sessions-summary" aria-label="Agent session history status">
+        <History aria-hidden="true" />
         <div>
-          <History aria-hidden="true" />
-          <span>
-            <strong>Agent Session History</strong>
-            <small>
-              {visibleItems} shown · {totalItems} recent — sessions from every active CLI runtime.
-            </small>
-          </span>
+          <strong>Agent Session History</strong>
+          <small>
+            <AnimatedNumber value={visibleItems} /> shown · <AnimatedNumber value={totalItems} /> recent — sessions from every active CLI runtime.
+          </small>
         </div>
         <button
           className="compact-action"
@@ -232,12 +240,12 @@ export function AgentSessionsDock({
           title="Refresh agent session history"
           aria-label="Refresh agent session history"
         >
-          <RefreshCw aria-hidden="true" />
+          {loading ? <Loader2 aria-hidden="true" className="spin" /> : <RefreshCw aria-hidden="true" />}
           <span>{loading ? "Loading" : "Refresh"}</span>
         </button>
       </section>
 
-      <section className="activity-log-filter" aria-label="Agent session history filters">
+      <section className="agent-sessions-controls" aria-label="Agent session history filters">
         <SpaceToggle
           className="agent-sessions-archive-toggle"
           label="Include archived"
@@ -267,10 +275,10 @@ export function AgentSessionsDock({
         </label>
       </section>
 
-      <section className="event-feed" aria-label="Agent session history list">
+      <section ref={sessionListRef} className="agent-sessions-list" aria-label="Agent session history list">
         {loading ? (
           <div className="empty-mini" role="status">
-            <Loader2 aria-hidden="true" />
+            <Loader2 aria-hidden="true" className="spin" />
             <span>Loading sessions</span>
           </div>
         ) : error && !items.length ? (
@@ -295,14 +303,14 @@ export function AgentSessionsDock({
                     className={collapsed ? undefined : "agent-sessions-chevron-open"}
                   />
                   <span>{group.label}</span>
-                  <span className="agent-sessions-group-count">{group.items.length}</span>
+                  <span className="agent-sessions-group-count"><AnimatedNumber value={group.items.length} duration={0.3} /></span>
                 </button>
                 {!collapsed ? (
                   group.items.map((item) => {
                     const pending = pendingActionId === item.id;
                     const resumable = canResumeItem(item);
                     return (
-                      <article key={item.id} className="event-entry agent-sessions-row">
+                      <article key={item.id} className="agent-sessions-row">
                         <div className="agent-sessions-row-title">
                           <AgentBrandIcon item={item} />
                           <strong title={item.title}>{item.title}</strong>
@@ -348,7 +356,7 @@ export function AgentSessionsDock({
                                 title={`Resume in ${activePaneLabel ?? "pane"}`}
                                 aria-label={`Resume session ${item.title}`}
                               >
-                                <Play aria-hidden="true" />
+                                {pending ? <Loader2 aria-hidden="true" className="spin" /> : <Play aria-hidden="true" />}
                                 <span>{pending ? "Opening…" : "Resume"}</span>
                               </button>
                               {item.kind === "codex" ? (

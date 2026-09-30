@@ -6,8 +6,10 @@ import type {
 } from "@space/contracts";
 import {
   Boxes,
+  Discord,
   Music2,
   Radio,
+  XSocialIcon,
   Youtube
 } from "../ui-theme/app-icons.js";
 import {
@@ -21,6 +23,8 @@ import {
   type ReactNode
 } from "react";
 import { api } from "../../api.js";
+import { loadWidgetStates } from "../desktop-widgets/widget-storage.js";
+import { publishStreamingSnapshot } from "./streaming-snapshot-store.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import "./streaming.css";
 
@@ -57,9 +61,20 @@ export function StreamingOverlayProvider({
   const runtime = getSpaceRuntime();
   const [enabled, setEnabledState] = useState(readEnabled);
   const [previewActive, setPreviewActive] = useState(false);
+  const [widgetActive, setWidgetActive] = useState(() => loadWidgetStates()["streaming-metrics"].enabled);
   const [snapshot, setSnapshot] = useState<StreamingOverlaySnapshot | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const requestSequence = useRef(0);
+
+  useEffect(() => {
+    const update = () => setWidgetActive(loadWidgetStates()["streaming-metrics"].enabled);
+    window.addEventListener("space:desktop-widgets:changed", update);
+    window.addEventListener("storage", update);
+    return () => {
+      window.removeEventListener("space:desktop-widgets:changed", update);
+      window.removeEventListener("storage", update);
+    };
+  }, []);
 
   const setEnabled = useCallback((next: boolean) => {
     setEnabledState(next);
@@ -77,6 +92,7 @@ export function StreamingOverlayProvider({
       const next = await api.streamingOverlaySnapshot();
       if (sequence !== requestSequence.current) return;
       setSnapshot(next);
+      publishStreamingSnapshot(next);
       setSnapshotError(null);
     } catch (error) {
       if (sequence !== requestSequence.current) return;
@@ -84,12 +100,17 @@ export function StreamingOverlayProvider({
     }
   }, [active]);
 
-  const shouldPoll = active && (enabled || previewActive);
+  const shouldPoll = active && (enabled || previewActive || widgetActive);
   useEffect(() => {
     if (!shouldPoll) return;
-    void refreshSnapshot();
-    const interval = window.setInterval(() => void refreshSnapshot(), STREAMING_OVERLAY_POLL_INTERVAL_MS);
-    return () => window.clearInterval(interval);
+    let stopped = false;
+    let timer: number | undefined;
+    async function poll() {
+      if (document.visibilityState === "visible") await refreshSnapshot();
+      if (!stopped) timer = window.setTimeout(() => void poll(), STREAMING_OVERLAY_POLL_INTERVAL_MS);
+    }
+    void poll();
+    return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer); };
   }, [refreshSnapshot, shouldPoll]);
 
   const value = useMemo<StreamingOverlayContextValue>(() => ({
@@ -112,14 +133,12 @@ export function useStreamingOverlay(): StreamingOverlayContextValue {
 }
 
 function ProviderIcon({ provider }: { provider: StreamingProvider }) {
-  const Icon = provider === "YOUTUBE"
-    ? Youtube
-    : provider === "TWITCH"
-      ? Radio
-      : provider === "TIKTOK"
-        ? Music2
-        : Boxes;
-  return <Icon aria-hidden="true" />;
+  if (provider === "YOUTUBE") return <Youtube aria-hidden="true" />;
+  if (provider === "TWITCH") return <Radio aria-hidden="true" />;
+  if (provider === "TIKTOK") return <Music2 aria-hidden="true" />;
+  if (provider === "X") return <XSocialIcon aria-hidden="true" />;
+  if (provider === "DISCORD") return <Discord aria-hidden="true" />;
+  return <Boxes aria-hidden="true" />;
 }
 
 export function formatStreamingValue(value: number | string | null): string {
@@ -147,7 +166,6 @@ export function StreamingMetricTile({ tile }: { tile: StreamingMetricTileSnapsho
         <span className="streaming-provider-icon" aria-label={tile.provider.toLowerCase()}>
           <ProviderIcon provider={tile.provider} />
         </span>
-        <span className="streaming-metric-badge" title={tile.badge}>{tile.badge}</span>
       </div>
       <strong>{formatStreamingValue(tile.value)}</strong>
       <span className="streaming-metric-label">{tile.label}</span>

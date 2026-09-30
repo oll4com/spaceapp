@@ -45,7 +45,7 @@ export function CliDock({
       />
 
 
-      <SettingsDisclosure initialOpen title="Room cache" description="Keep recently used rooms ready in this browser." scope="This browser" icon={Gauge}>
+      <SettingsDisclosure title="Room cache" description="Keep recently used rooms ready for your account." scope="Your account" icon={Gauge}>
       <section className="agent-settings-card settings-flat-card warm-room-cache-settings-card" aria-label="Warm room cache settings">
         <div className="agent-settings-section-title settings-flat-heading">
           <Gauge aria-hidden="true" />
@@ -94,7 +94,7 @@ export function CliDock({
       </section>
 
       </SettingsDisclosure>
-      <SettingsDisclosure title="Image previews" description="Choose how many uploaded images remain in the preview strip." scope="This browser" icon={Images}>
+      <SettingsDisclosure title="Image previews" description="Choose how many uploaded images remain in the preview strip." scope="Your account" icon={Images}>
       <section className="agent-settings-card settings-flat-card cli-upload-settings-card" aria-label="CLI photo preview settings">
         <div className="agent-settings-section-title settings-flat-heading">
           <Images aria-hidden="true" />

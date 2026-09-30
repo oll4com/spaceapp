@@ -9,7 +9,8 @@ import {
   patched,
   proxyActivities,
   setHandler,
-  uuid4
+  uuid4,
+  workflowInfo
 } from "@temporalio/workflow";
 import {
   buildCodexAppServerTurnWorkflowId,
@@ -345,5 +346,16 @@ async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervis
 }
 
 export async function roomAgentActionWorkflow(input: Parameters<typeof activities.runRoomAgentBackgroundAction>[0]) {
-  return roomAgentTurnActivities.runRoomAgentBackgroundAction(input);
+  try {
+    return await roomAgentTurnActivities.runRoomAgentBackgroundAction(input);
+  } catch (error) {
+    if (patched("room-background-action-failure-v1")) {
+      await CancellationScope.nonCancellable(() => supervisorActivities.failRoomAgentBackgroundAction({
+        roomId: input.bridge.roomId, missionId: input.bridge.missionId,
+        actionId: input.actionId ?? workflowInfo().workflowId.replace(/^space-room-action:/, ""),
+        cancelled: isCancellation(error)
+      }));
+    }
+    throw error;
+  }
 }

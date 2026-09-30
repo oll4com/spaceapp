@@ -185,7 +185,11 @@ require a real browser check with clean console and network results.
 
 ## License
 
-SpaceApp source is licensed under the [Apache License 2.0](LICENSE). Integrated
-provider CLIs remain subject to their own licenses and terms; SpaceApp does not
-provide provider accounts, usage credits, or credentials. See
-[Third-party notices](THIRD_PARTY_NOTICES.md).
+SpaceApp source code is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE) by [example.invalid](https://example.invalid).
+
+- **Free and Allowed Use:** You are free to copy, modify, test, self-host, and use SpaceApp for personal and internal business operations.
+- **Use Limitation:** You may not make the functionality of SpaceApp available to third parties as a hosted or managed service, application service provider (ASP), or software-as-a-service (SaaS) that competes with example.invalid products or services.
+- **Change Date:** On October 1, 2030, this version of the software automatically transitions to the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0).
+
+Integrated provider CLIs remain subject to their own licenses and terms; SpaceApp does not provide provider accounts, usage credits, or credentials. See [Third-party notices](THIRD_PARTY_NOTICES.md).
+

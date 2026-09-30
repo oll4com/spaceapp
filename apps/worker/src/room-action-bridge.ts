@@ -27,15 +27,27 @@ const roomActionBridgeDispatcher = new Agent({
 
 export async function executeBackgroundRoomAction(
   bridge: SpaceAgentRoomActionBridgeRequest,
-  config: Pick<CodexAppServerTurnActivityConfig, "internalApiBaseUrl" | "internalApiToken">
+  config: Pick<CodexAppServerTurnActivityConfig, "internalApiBaseUrl" | "internalApiToken">,
+  fetchImpl: typeof undiciFetch = undiciFetch
 ): Promise<SpaceAgentRoomActionBridgeResponse> {
   if (!config.internalApiToken) throw new Error("Room actions require internal API authentication.");
-  const response = await undiciFetch(`${config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/agent/room-actions`, {
+  const response = await fetchImpl(`${config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/agent/room-actions`, {
     method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken },
     body: JSON.stringify({ ...bridge, backgroundExecution: true }), dispatcher: roomActionBridgeDispatcher,
     signal: activeActivityCancellationSignal()
   });
-  if (!response.ok) throw new Error(`Background room action transport returned HTTP ${response.status}.`);
+  if (!response.ok) {
+    // Never copy arbitrary response text (or an upstream HTML page) into logs.
+    const body = await response.json().catch(() => null) as { error?: { message?: unknown } } | null;
+    const message = body?.error?.message;
+    const reason = typeof message !== "string" ? "unrecognized response"
+      : message.startsWith("Room Agent pane ") ? "agent pane mismatch"
+      : message.startsWith("Room Agent session ") ? "agent session unavailable"
+      : message === "Internal API route is not available." ? "internal API disabled"
+      : message === "Internal API authentication is required." ? "internal authentication rejected"
+      : "request rejected";
+    throw new Error(`Background room action transport returned HTTP ${response.status} (${reason}).`);
+  }
   return spaceAgentRoomActionBridgeResponseSchema.parse(await response.json());
 }
 

@@ -83,3 +83,11 @@ export interface CliHostInputResult {
 export type CliHostEventListener = (event: CliHostEvent) => void;
 
 export type CliHostSpawn = (spec: CliHostSpawnSpec) => CliHostPty | Promise<CliHostPty>;
+
+export interface CliHostPingResult {
+  ok: true;
+  hostPid: number;
+  startedAt: string;
+  buildCommit: string | null;
+  sessionCount: number;
+}

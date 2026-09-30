@@ -1,3 +1,10 @@
+import type { HealthTelemetry } from "../system-health/use-health-telemetry.js";
+import { DEFAULT_AI_QUOTA_CONFIG } from "../desktop-widgets/widget-storage.js";
+import {
+  formatAppDateTime,
+  useDateTimeSettings,
+  type DateTimeSettings,
+} from "../date-time-settings/date-time-settings.js";
 import {
   forwardRef,
   useCallback,
@@ -9,6 +16,8 @@ import {
   type MouseEvent,
 } from "react";
 import type {
+  AntigravityUsageAccountList,
+  ApiProviderAccountList,
   CliSessionReapResponse,
   CliSessionStats,
   CodexEnvironment,
@@ -27,16 +36,21 @@ import type {
 } from "@space/contracts";
 import type { SystemAnalyticsTab } from "../system-analytics/SystemAnalyticsWorkspace.js";
 import { api, SpaceApiError } from "../../api.js";
-import { DEMO_LOCAL_REPLY, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
+import { DEMO_LOCAL_REPLY, getSpaceRuntime, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import { Activity, X } from "../ui-theme/app-icons.js";
 import { ResourcesDrawer } from "./ResourcesDrawer.js";
 import { ConfirmationDialog, MetricPopover } from "./MetricLayers.js";
 import {
   CODEX_EXHAUSTION_THRESHOLD_PERCENT,
+  QUOTA_EXHAUSTION_THRESHOLD_PERCENT,
+  QUOTA_WARNING_THRESHOLD_PERCENT,
+  QuotaTone,
   computeCodexCooldown,
   isCodexAccountActive,
+  quotaTone,
 } from "../system-health/health-model.js";
+import { AiQuotaGaugeCard, toggleDesktopWidget } from "../desktop-widgets/index.js";
 import "./toolbar-metrics.css";
 
 type PanelKey = "accounts" | "cli" | "memory" | "cpu" | "rtt" | "provider" | "models";
@@ -94,16 +108,22 @@ export interface ToolbarMetricsClient {
   analyticsResources?(): Promise<SystemAnalyticsResourcesResponse>;
   analyticsCliSessions?(): Promise<SystemAnalyticsCliSessionsResponse>;
   analyticsModels?(): Promise<SystemAnalyticsModelsResponse>;
+  antigravityAccounts?(): Promise<AntigravityUsageAccountList>;
+  apiProviderAccounts?(): Promise<ApiProviderAccountList>;
+  reopenPane?(roomId: string, paneId: string): Promise<void>;
+  reopenAllDetached?(): Promise<void>;
 }
 
 const defaultClient: ToolbarMetricsClient = {
   roundTrip: async () => {
     if (getSpaceRuntimeKind() === "demo") return null;
     const startedAt = performance.now();
-    await api.readyz();
+    await api.healthPing();
     return Math.max(0, Math.round(performance.now() - startedAt));
   },
   usageAccounts: () => api.toolbarUsageAccounts(),
+  antigravityAccounts: () => api.toolbarAntigravityUsageAccounts(),
+  apiProviderAccounts: () => api.toolbarApiProviderAccounts(),
   resetCredits: () => api.toolbarResetCredits(),
   redeemResetCredit: (accountId, idempotencyKey) => api.redeemToolbarResetCredit(accountId, idempotencyKey),
   cliSessions: () => api.toolbarCliSessions(),
@@ -116,9 +136,21 @@ const defaultClient: ToolbarMetricsClient = {
   analyticsResources: () => api.systemAnalyticsResources("10m"),
   analyticsCliSessions: () => api.systemAnalyticsCliSessions("10m"),
   analyticsModels: () => api.systemAnalyticsModels("10m"),
+  reopenPane: async (_roomId: string, paneId: string) => {
+    await api.updatePane(paneId, { isClosed: false, isMinimized: false, status: "IDLE" });
+  },
+  reopenAllDetached: async () => {
+    const res = await api.systemAnalyticsCliSessions("10m");
+    const detached = res.sessions.filter((s) => s.status === "RUNNING" && s.attachmentCount === 0);
+    for (const session of detached) {
+      await api.updatePane(session.paneId, { isClosed: false, isMinimized: false, status: "IDLE" }).catch(() => null);
+    }
+  },
 };
 
-function useLazyResource<T>(loader: () => Promise<T>, ttlMs: number) {
+function useLazyResource<T>(loader: () => Promise<T>, ttlMs: number, shared?: T | null) {
+  const sharedRef = useRef(shared);
+  sharedRef.current = shared;
   const loaderRef = useRef(loader);
   const dataRef = useRef<T | null>(null);
   const loadedAtRef = useRef(0);
@@ -128,7 +160,9 @@ function useLazyResource<T>(loader: () => Promise<T>, ttlMs: number) {
   const [loading, setLoading] = useState(false);
   loaderRef.current = loader;
 
+  useEffect(() => { if (shared !== undefined) { setData(shared); dataRef.current = shared; } }, [shared]);
   const load = useCallback((force = false) => {
+    if (!force && sharedRef.current !== undefined) return Promise.resolve(sharedRef.current);
     if (dataRef.current && !force && Date.now() - loadedAtRef.current < ttlMs) return Promise.resolve(dataRef.current);
     if (inFlightRef.current) return inFlightRef.current;
     setLoading(true);
@@ -155,26 +189,46 @@ function useLazyResource<T>(loader: () => Promise<T>, ttlMs: number) {
   return { data, error, load, loading };
 }
 
-function formatPercent(value: number | null | undefined): string {
+export function formatPercent(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? `${Math.round(value)}%` : "--";
 }
 
-function formatWeeklyReset(value: string | null | undefined): string {
+export function formatWeeklyReset(value: string | null | undefined, settings?: DateTimeSettings): string {
   if (!value) return "week reset unavailable";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "week reset unavailable";
-  const formatted = new Intl.DateTimeFormat(undefined, {
+  const formatted = formatAppDateTime(date, {
     weekday: "short",
     day: "2-digit",
     month: "short",
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(date);
+  }, settings);
   return `week resets ${formatted}`;
 }
 
-function formatBytes(value: number | null | undefined): string {
+export function formatAccountReset(
+  value: string | null | undefined,
+  clock: number,
+  prefix: string = "5h resets",
+  settings?: DateTimeSettings,
+): string {
+  if (!value) return `${prefix} unavailable`;
+  const targetMs = Date.parse(value);
+  if (!Number.isFinite(targetMs)) return `${prefix} unavailable`;
+  const diffMs = targetMs - clock;
+  if (diffMs <= 0) return `${prefix}: ready`;
+  const totalSeconds = Math.max(0, Math.round(diffMs / 1000));
+  if (totalSeconds < 3 * 3600) {
+    const mins = Math.max(1, Math.round(totalSeconds / 60));
+    return `${prefix}: in ${mins}m`;
+  }
+  const formatted = formatWeeklyReset(value, settings).replace("week resets ", "");
+  return `${prefix}: ${formatted}`;
+}
+
+export function formatBytes(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "--";
   const gib = 1024 ** 3;
   const mib = 1024 ** 2;
@@ -269,12 +323,61 @@ export function ToolbarMetricsSummary({ environment }: { environment: CodexEnvir
   );
 }
 
-function MetricRow({ label, value }: { label: string; value: string }) {
-  return <div className="toolbar-metric-row"><span>{label}</span><strong>{value}</strong></div>;
+export function QuotaIndicator({
+  value,
+  label,
+  alwaysWrap = true,
+}: {
+  value: number | null | undefined;
+  label?: string;
+  alwaysWrap?: boolean;
+}) {
+  const tone = quotaTone(value);
+  const formatted = formatPercent(value);
+  const title = tone === "critical"
+    ? `${label ? `${label}: ` : ""}Exhausted (${formatted})`
+    : tone === "warning"
+      ? `${label ? `${label}: ` : ""}Near exhaustion (${formatted})`
+      : tone === "healthy"
+        ? `${label ? `${label}: ` : ""}Healthy (${formatted})`
+        : undefined;
+
+  if (!tone) {
+    return alwaysWrap ? <strong>{formatted}</strong> : <>{formatted}</>;
+  }
+
+  return (
+    <strong
+      className={`toolbar-metric-quota-val is-${tone}`}
+      title={title}
+      aria-label={title}
+    >
+      <i className="toolbar-metric-quota-dot" aria-hidden="true" />
+      {formatted}
+    </strong>
+  );
+}
+
+function MetricRow({ label, value, tone }: { label: string; value: string; tone?: QuotaTone }) {
+  return (
+    <div className="toolbar-metric-row">
+      <span>{label}</span>
+      {tone ? (
+        <strong className={`toolbar-metric-quota-val is-${tone}`}>
+          <i className="toolbar-metric-quota-dot" aria-hidden="true" />
+          {value}
+        </strong>
+      ) : (
+        <strong>{value}</strong>
+      )}
+    </div>
+  );
 }
 
 export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
-  presentation?: "strip" | "drawer";
+  presentation?: "strip" | "drawer" | "embedded";
+  initialPanel?: PanelKey;
+  sharedTelemetry?: HealthTelemetry;
   onOpenResources?: () => void;
   hideTrigger?: boolean;
   canManage?: boolean;
@@ -285,8 +388,13 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   roomName?: string;
   roomId?: string | null;
   onOpenAnalytics?: (tab: SystemAnalyticsTab) => void;
+  onReopenPane?: (roomId: string, paneId: string) => Promise<void> | void;
+  onReopenAllDetached?: () => Promise<void> | void;
+  onCloseSession?: (paneId: string) => Promise<void> | void;
 }>(function ToolbarMetrics({
   presentation = "strip",
+  initialPanel = "accounts",
+  sharedTelemetry,
   onOpenResources,
   hideTrigger = false,
   canManage = true,
@@ -297,11 +405,85 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   roomName,
   roomId,
   onOpenAnalytics,
+  onReopenPane,
+  onReopenAllDetached,
+  onCloseSession,
 }, ref) {
   const isCodexEnabled = environment?.isCodexEnabled ?? true;
-  const accounts = useLazyResource(() => client.usageAccounts(), 60_000);
+  const { settings: dateTimeSettings } = useDateTimeSettings();
+  const accounts = useLazyResource(() => client.usageAccounts(), 60_000, sharedTelemetry?.accounts);
+  const antigravityAccounts = useLazyResource(
+    () => {
+      if (client.antigravityAccounts) return client.antigravityAccounts();
+      try {
+        return api.toolbarAntigravityUsageAccounts();
+      } catch {
+        return Promise.resolve({
+          data: [],
+          pagination: { page: 1, pageSize: 0, totalItems: 0, totalPages: 0 },
+          source: "space-gemini-profiles",
+          isStale: false,
+          error: null,
+          checkedAt: new Date().toISOString(),
+        });
+      }
+    },
+    30_000, sharedTelemetry?.antigravityAccounts
+  );
+  const apiProviderAccounts = useLazyResource(
+    () => {
+      if (client.apiProviderAccounts) return client.apiProviderAccounts();
+      try {
+        return api.toolbarApiProviderAccounts();
+      } catch {
+        return Promise.resolve({
+          data: [],
+          pagination: { page: 1, pageSize: 0, totalItems: 0, totalPages: 0 },
+          isStale: false,
+          error: null,
+          source: "mock",
+          checkedAt: new Date().toISOString(),
+        });
+      }
+    },
+    30_000, sharedTelemetry?.apiProviderAccounts
+  );
+  const [chartsVisible, setChartsVisible] = useState(false);
+  const [chartConfig, setChartConfig] = useState(DEFAULT_AI_QUOTA_CONFIG);
+  const [quotaWindow, setQuotaWindow] = useState<"5h" | "weekly">("weekly");
+  const [accountProviderFilter, setAccountProviderFilter] = useState<"all" | "antigravity" | "codex" | "api">(() => {
+    try { const value = getSpaceRuntime().platform.localStorage.getItem("space:health-accounts:provider-filter");
+      if (value === "all" || value === "antigravity" || value === "codex" || value === "api") return value;
+    } catch { /* Storage can be unavailable. */ }
+    return "all";
+  });
+  const [quotaFilter, setQuotaFilter] = useState(() => {
+    try { return getSpaceRuntime().platform.localStorage.getItem("space:health-accounts:quota-filter") === "true"; } catch { return false; }
+  });
+  const [proFilter, setProFilter] = useState(() => {
+    try { return getSpaceRuntime().platform.localStorage.getItem("space:health-accounts:pro-filter") === "true"; } catch { return false; }
+  });
+  const [geminiFilter, setGeminiFilter] = useState(() => {
+    try { return getSpaceRuntime().platform.localStorage.getItem("space:health-accounts:gemini-filter") === "true"; } catch { return false; }
+  });
+  useEffect(() => {
+    try {
+      getSpaceRuntime().platform.localStorage.setItem("space:health-accounts:provider-filter", accountProviderFilter);
+      getSpaceRuntime().platform.localStorage.setItem("space:health-accounts:quota-filter", String(quotaFilter));
+      getSpaceRuntime().platform.localStorage.setItem("space:health-accounts:pro-filter", String(proFilter));
+      getSpaceRuntime().platform.localStorage.setItem("space:health-accounts:gemini-filter", String(geminiFilter));
+    } catch { /* Best effort persistence. */ }
+  }, [accountProviderFilter, quotaFilter, proFilter, geminiFilter]);
+  const hasQuota = (quota: { weeklyRemainingPercent?: number | null; fiveHourRemainingPercent?: number | null } | null | undefined) =>
+    quota?.weeklyRemainingPercent != null && quota.weeklyRemainingPercent >= 1 && (quota.fiveHourRemainingPercent == null || quota.fiveHourRemainingPercent >= 1);
+  const hasGemini = (account: { gemini?: { weeklyRemainingPercent?: number | null; fiveHourRemainingPercent?: number | null } | null }) =>
+    quotaFilter ? hasQuota(account.gemini) : Boolean(account.gemini && (account.gemini.weeklyRemainingPercent != null || account.gemini.fiveHourRemainingPercent != null));
+  const isProAccount = (account: { tier?: string | null }) =>
+    Boolean(account.tier && account.tier.toLowerCase().includes("pro"));
+  const isProCodexAccount = (account: { planType?: string | null }) =>
+    Boolean(account.planType && account.planType.toLowerCase().includes("pro"));
   const resetCredits = useLazyResource(() => client.resetCredits(), 60_000);
-  const cli = useLazyResource(() => client.cliSessions(), 5_000);
+  const cli = useLazyResource(() => client.cliSessions(), 5_000, sharedTelemetry?.sessions);
   const memory = useLazyResource(() => client.hostMemory(), 10_000);
   const providers = useLazyResource(() => client.providerTargets(), 10_000);
   const modelStats = useLazyResource(
@@ -325,10 +507,10 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const resetInFlightRef = useRef(new Set<string>());
   const actionTriggerRef = useRef<HTMLButtonElement | null>(null);
   const providerMenuRef = useRef<HTMLDivElement | null>(null);
-  const [activePanel, setActivePanel] = useState<PanelKey | null>(null);
+  const [activePanel, setActivePanel] = useState<PanelKey | null>(presentation === "embedded" ? initialPanel : null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerTriggerRef = useRef<HTMLButtonElement>(null);
-  const telemetryVisible = presentation === "strip" || drawerOpen;
+  const telemetryVisible = presentation === "strip" || presentation === "embedded" || drawerOpen;
   const [confirmation, setConfirmation] = useState<ConfirmationKind | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -338,10 +520,10 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   );
   const [clock, setClock] = useState(() => Date.now());
   useEffect(() => {
-    if (!telemetryVisible || !isExhausted) return;
+    if (!telemetryVisible || (!isExhausted && activePanel !== "accounts")) return;
     const timer = window.setInterval(() => setClock(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [telemetryVisible, isExhausted]);
+  }, [telemetryVisible, isExhausted, activePanel]);
   const cooldown = computeCodexCooldown(accounts.data, environment, clock);
   useAutoDismiss(actionMessage, setActionMessage);
   const [providerMenuFocusRequested, setProviderMenuFocusRequested] = useState(false);
@@ -354,6 +536,9 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const [resetFeedback, setResetFeedback] = useState<{ accountId: string; message: string } | null>(null);
   const [rttMs, setRttMs] = useState<number | null>(null);
   const [rttFailed, setRttFailed] = useState(false);
+  const [reopeningSessionId, setReopeningSessionId] = useState<string | null>(null);
+  const [reopeningAll, setReopeningAll] = useState(false);
+  const [closingSessionId, setClosingSessionId] = useState<string | null>(null);
   const snapshot = getToolbarMetricsSnapshot(environment);
   const providerCode = isCodexEnabled ? switchedProviderCode ?? snapshot.provider : "OFF";
   const visibleProviderTargets = providers.data?.data.filter((provider) => provider.isCurrent || provider.canSwitch) ?? [];
@@ -380,7 +565,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
 
   useEffect(() => setSwitchedProviderCode(null), [environment]);
   useEffect(() => {
-    if (!canManage || !telemetryVisible) return;
+    if (!canManage || !telemetryVisible || (presentation === "embedded" && activePanel !== "models")) return;
     let disposed = false;
     const load = () => {
       if (disposed || document.visibilityState !== "visible") return;
@@ -392,14 +577,14 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [canManage, loadModels, telemetryVisible]);
+  }, [canManage, loadModels, telemetryVisible, presentation, activePanel]);
   useEffect(() => {
     if (isCodexEnabled) return;
     setActivePanel((current) => current === "accounts" || current === "provider" ? null : current);
     setProviderMenuFocusRequested(false);
   }, [isCodexEnabled]);
   useEffect(() => {
-    if (!telemetryVisible) return;
+    if (!telemetryVisible || presentation === "embedded") return;
     let disposed = false;
     let inFlight = false;
 
@@ -441,7 +626,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [client, telemetryVisible]);
+  }, [client, telemetryVisible, presentation]);
   useEffect(() => {
     if (!providerMenuFocusRequested || !providers.data) return;
     providerMenuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
@@ -471,6 +656,8 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     switch (panel) {
       case "accounts":
         void resetCredits.load();
+        void antigravityAccounts.load();
+        void apiProviderAccounts.load();
         return accounts.load();
       case "cli": return Promise.all([cli.load(), analyticsSessions.load()]);
       case "memory": return Promise.all([memory.load(), analyticsResources.load()]);
@@ -482,7 +669,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   }
 
   function openPanel(panel: PanelKey) {
-    if (!isCodexEnabled && (panel === "accounts" || panel === "provider")) return;
+    if (!isCodexEnabled && panel === "provider") return;
     cancelClose();
     setActivePanel(panel);
     if (canManage) void loadPanel(panel);
@@ -500,16 +687,19 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     window.addEventListener("space:navigation-open", dismiss);
     return () => window.removeEventListener("space:navigation-open", dismiss);
   }, []);
+  useEffect(() => {
+    if (presentation === "embedded") openPanel(initialPanel);
+  }, [presentation, initialPanel]);
   useImperativeHandle(ref, () => ({
     openResources: (trigger) => {
       if (trigger) drawerTriggerRef.current = trigger;
-      if (onOpenResources) onOpenResources();
-      else setDrawerOpen(true);
+      setDrawerOpen(true);
+      if (!activePanel) openPanel("accounts");
     },
     openMetricDetails: (panel) => { setDrawerOpen(true); openPanel(panel); },
     openCliCleanup: (trigger) => openConfirmation("cli", trigger),
     openMemoryReclaim: (trigger) => openConfirmation("memory", trigger),
-  }), [openConfirmation, onOpenResources]);
+  }), [openConfirmation, activePanel]);
 
   function closeConfirmation() {
     setConfirmation(null);
@@ -563,6 +753,74 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       setActionMessage(reason instanceof Error ? reason.message : "Provider switch failed; the previous route remains active.");
     } finally {
       setProviderSwitchingId(null);
+    }
+  }
+
+  async function handleReopenSession(targetRoomId: string, targetPaneId: string, sessionId: string) {
+    setReopeningSessionId(sessionId);
+    try {
+      if (onReopenPane) {
+        await onReopenPane(targetRoomId, targetPaneId);
+      } else if (client.reopenPane) {
+        await client.reopenPane(targetRoomId, targetPaneId);
+      } else {
+        await api.updatePane(targetPaneId, { isClosed: false, isMinimized: false, status: "IDLE" });
+        await onChanged?.();
+      }
+      if (presentation === "drawer") {
+        setDrawerOpen(false);
+        closePanel();
+      }
+      void cli.load(true);
+      void analyticsSessions.load(true);
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : "Failed to reopen window");
+    } finally {
+      setReopeningSessionId(null);
+    }
+  }
+
+  async function handleReopenAllDetached() {
+    setReopeningAll(true);
+    try {
+      if (onReopenAllDetached) {
+        await onReopenAllDetached();
+      } else if (client.reopenAllDetached) {
+        await client.reopenAllDetached();
+      } else {
+        const detached = (analyticsSessions.data?.sessions ?? []).filter((s) => s.status === "RUNNING" && s.attachmentCount === 0);
+        for (const s of detached) {
+          await api.updatePane(s.paneId, { isClosed: false, isMinimized: false, status: "IDLE" }).catch(() => null);
+        }
+        await onChanged?.();
+      }
+      if (presentation === "drawer") {
+        setDrawerOpen(false);
+        closePanel();
+      }
+      void cli.load(true);
+      void analyticsSessions.load(true);
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : "Failed to reopen detached windows");
+    } finally {
+      setReopeningAll(false);
+    }
+  }
+
+  async function handleCloseSession(paneId: string, sessionId: string) {
+    setClosingSessionId(sessionId);
+    try {
+      if (onCloseSession) {
+        await onCloseSession(paneId);
+      } else {
+        await api.closePane(paneId);
+      }
+      void cli.load(true);
+      void analyticsSessions.load(true);
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : "Failed to close session");
+    } finally {
+      setClosingSessionId(null);
     }
   }
 
@@ -687,9 +945,9 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
             label="Current"
             value={rttFailed ? "Unavailable" : rttMs === null ? "Measuring…" : `${rtt.value} ms`}
           />
-          <MetricRow label="Status" value={`${rtt.status[0]?.toUpperCase()}${rtt.status.slice(1)}`} />
+          <MetricRow label="Status" value={rtt.status === "critical" ? "Alert" : `${rtt.status[0]?.toUpperCase()}${rtt.status.slice(1)}`} />
           <MetricRow label="Warning at" value="300 ms" />
-          <MetricRow label="Critical at" value="425 ms" />
+          <MetricRow label="Alert at" value="425 ms" />
           <MetricRow label="Probe" value="Browser → API" />
           <MetricRow label="Refresh" value="Every 10 sec" />
         </div>
@@ -699,64 +957,276 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     if (!canManage) return <p className="toolbar-metric-note">ADMIN access is required for detailed system telemetry and actions.</p>;
     if (activePanel === "accounts") return (
       <>
-        <header><strong>Codex usage</strong><small>{accounts.data?.isStale ? "Stale sample" : "On demand"}</small></header>
-        <div className="toolbar-metric-grid">
-          <MetricRow label="All accounts" value={formatPercent(environment?.lbUsage?.allAccountsRemainingPercent)} />
-          <MetricRow label="Active accounts" value={formatPercent(environment?.lbUsage?.activeAccountsRemainingPercent)} />
+        {cooldown && <p role="status">Next Codex account available: {cooldown.accountLabel} in {cooldown.formatted}</p>}
+        <div className="toolbar-metric-provider-tabs" role="tablist" aria-label="Account providers">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={accountProviderFilter === "all"}
+            className={`toolbar-metric-tab-btn ${accountProviderFilter === "all" ? "is-active" : ""}`}
+            onClick={() => setAccountProviderFilter("all")}
+          >All Providers</button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={accountProviderFilter === "antigravity"}
+            className={`toolbar-metric-tab-btn ${accountProviderFilter === "antigravity" ? "is-active" : ""}`}
+            onClick={() => setAccountProviderFilter("antigravity")}
+          >Antigravity (Google)</button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={accountProviderFilter === "codex"}
+            className={`toolbar-metric-tab-btn ${accountProviderFilter === "codex" ? "is-active" : ""}`}
+            onClick={() => setAccountProviderFilter("codex")}
+          >Codex</button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={accountProviderFilter === "api"}
+            className={`toolbar-metric-tab-btn ${accountProviderFilter === "api" ? "is-active" : ""}`}
+            onClick={() => setAccountProviderFilter("api")}
+          >API Providers</button>
         </div>
-        {accounts.loading ? <p className="toolbar-metric-note">Loading account details…</p> : null}
-        {accounts.error ? <p className="toolbar-metric-error" role="alert">{accounts.error}</p> : null}
-        {accounts.data?.error ? <p className="toolbar-metric-error">{accounts.data.error}</p> : null}
-        {accounts.data ? <ul className="toolbar-metric-list">
-          {accounts.data.data.map((account) => <li key={account.id}>
-            <div className="toolbar-metric-account-heading">
-              <strong>{account.label}</strong>
-              <button
-                type="button"
-                disabled={!allowChanges || resetLabel(account.id).disabled}
-                title={resetLabel(account.id).disabled ? undefined : `Use the earliest-expiring reset credit for ${account.label}`}
-                onClick={() => void redeemReset(account.id)}
-              >{resetLabel(account.id).label}</button>
-            </div>
-            <span>5h {formatPercent(account.fiveHourRemainingPercent)} · week {formatPercent(account.weeklyRemainingPercent)}</span>
-            <span>{formatWeeklyReset(account.weeklyResetAt)}</span>
-            {account.fiveHourResetAt && (account.fiveHourRemainingPercent ?? 0) < CODEX_EXHAUSTION_THRESHOLD_PERCENT ? (
-              <span>{formatWeeklyReset(account.fiveHourResetAt).replace("week resets", "5h resets")}</span>
+
+        <div className="resources-quota-window" role="group" aria-label="Quota period">
+          <button type="button" className={quotaWindow === "5h" ? "is-active" : ""} aria-pressed={quotaWindow === "5h"} onClick={() => setQuotaWindow("5h")}>5h</button>
+          <button type="button" className={quotaWindow === "weekly" ? "is-active" : ""} aria-pressed={quotaWindow === "weekly"} onClick={() => setQuotaWindow("weekly")}>Week</button>
+        </div>
+        <div className="resources-quota-filters" role="group" aria-label="Account filters">
+          <button type="button" className={quotaFilter ? "is-active" : ""} aria-pressed={quotaFilter} onClick={() => setQuotaFilter(value => !value)}>5h &amp; week &gt; 1%</button>
+          {accountProviderFilter === "antigravity" && (
+            <>
+              <button type="button" className={proFilter ? "is-active" : ""} aria-pressed={proFilter} onClick={() => setProFilter(value => !value)}>Pro accounts</button>
+              <button type="button" className={geminiFilter ? "is-active" : ""} aria-pressed={geminiFilter} onClick={() => setGeminiFilter(value => !value)}>Gemini only</button>
+            </>
+          )}
+        </div>
+        <details className="resources-charts" onToggle={e => setChartsVisible(e.currentTarget.open)}><summary>Charts & floating monitor</summary>
+          {chartsVisible && <AiQuotaGaugeCard embedded={true} hideScopeControls externalConfig={{ ...chartConfig, activeTab: accountProviderFilter, windowMode: quotaWindow }} onUpdateConfig={patch => { setChartConfig(config => ({ ...config, ...patch })); if (patch.activeTab) setAccountProviderFilter(patch.activeTab); if (patch.windowMode) setQuotaWindow(patch.windowMode); }} onOpenDesktopWidget={() => toggleDesktopWidget("ai-quota")} />}
+        </details>
+
+        {(accountProviderFilter === "all" || accountProviderFilter === "antigravity") && (
+          <div className="toolbar-metric-provider-section">
+            <header>
+              <strong>Antigravity (Google)</strong>
+              <small>{antigravityAccounts.data?.isStale ? "Stale sample" : "Source: space-gemini-profiles"}</small>
+            </header>
+            {antigravityAccounts.loading ? <p className="toolbar-metric-note">Loading Antigravity accounts…</p> : null}
+            {antigravityAccounts.error ? <p className="toolbar-metric-error" role="alert">{antigravityAccounts.error}</p> : null}
+            {antigravityAccounts.data?.error ? <p className="toolbar-metric-error">{antigravityAccounts.data.error}</p> : null}
+            {antigravityAccounts.data ? (
+              <ul className="toolbar-metric-list">
+                {antigravityAccounts.data.data
+                  .filter(account => !quotaFilter || (geminiFilter ? hasQuota(account.gemini) : (hasQuota(account.gemini) || hasQuota(account.claude))))
+                  .filter(account => !proFilter || isProAccount(account))
+                  .filter(account => !geminiFilter || hasGemini(account))
+                  .map((account) => (
+                  <li key={account.id} className="toolbar-metric-account-card">
+                    <div className="toolbar-metric-account-heading">
+                      <strong>{account.label || account.email}</strong>
+                      <span className={`toolbar-metric-badge ${account.status === "CONNECTED" ? "is-active" : account.status === "UNLICENSED" ? "is-warning" : "is-critical"}`}>
+                        {account.tier ? `${account.tier} · ` : ""}{account.status === "CONNECTED" ? "Connected" : account.status === "UNLICENSED" ? "Unlicensed" : account.status.toLowerCase() === "critical" ? "Unavailable" : account.status}
+                      </span>
+                    </div>
+                    {account.email && account.label !== account.email ? (
+                      <small className="toolbar-metric-subtext">{account.email}</small>
+                    ) : null}
+                    {account.status === "UNLICENSED" ? (
+                      <span className="toolbar-metric-dim">No quota allocation for unlicensed profile</span>
+                    ) : (
+                      <div className="toolbar-metric-quotas">
+                        {(!quotaFilter || hasQuota(account.gemini)) && <div className="toolbar-metric-quota-item is-gemini">
+                          <span>Gemini {quotaWindow === "5h" ? "5h" : "weekly"} remaining <QuotaIndicator value={quotaWindow === "5h" ? account.gemini?.fiveHourRemainingPercent : account.gemini?.weeklyRemainingPercent} label="Gemini remaining" /></span>
+                          {account.gemini?.fiveHourResetAt ? (
+                            <small className={`toolbar-metric-subtext${(account.gemini.fiveHourRemainingPercent ?? 100) <= QUOTA_EXHAUSTION_THRESHOLD_PERCENT ? " is-critical" : (account.gemini.fiveHourRemainingPercent ?? 100) <= QUOTA_WARNING_THRESHOLD_PERCENT ? " is-warning" : ""}`}>{formatAccountReset(account.gemini.fiveHourResetAt, clock, "5h resets", dateTimeSettings)}</small>
+                          ) : null}
+                          {account.gemini?.weeklyResetAt ? (
+                            <small className="toolbar-metric-subtext">{formatWeeklyReset(account.gemini.weeklyResetAt, dateTimeSettings)}</small>
+                          ) : null}
+                        </div>}
+                        {!geminiFilter && (!quotaFilter || hasQuota(account.claude)) && <div className="toolbar-metric-quota-item is-claude">
+                          <span>Claude {quotaWindow === "5h" ? "5h" : "weekly"} remaining <QuotaIndicator value={quotaWindow === "5h" ? account.claude?.fiveHourRemainingPercent : account.claude?.weeklyRemainingPercent} label="Claude remaining" /></span>
+                          {account.claude?.fiveHourResetAt ? (
+                            <small className={`toolbar-metric-subtext${(account.claude.fiveHourRemainingPercent ?? 100) <= QUOTA_EXHAUSTION_THRESHOLD_PERCENT ? " is-critical" : (account.claude.fiveHourRemainingPercent ?? 100) <= QUOTA_WARNING_THRESHOLD_PERCENT ? " is-warning" : ""}`}>{formatAccountReset(account.claude.fiveHourResetAt, clock, "5h resets", dateTimeSettings)}</small>
+                          ) : null}
+                          {account.claude?.weeklyResetAt ? (
+                            <small className="toolbar-metric-subtext">{formatWeeklyReset(account.claude.weeklyResetAt, dateTimeSettings)}</small>
+                          ) : null}
+                        </div>}
+                      </div>
+                    )}
+                  </li>
+                ))}
+                {!antigravityAccounts.data.data.filter(account => (!quotaFilter || (geminiFilter ? hasQuota(account.gemini) : (hasQuota(account.gemini) || hasQuota(account.claude)))) && (!proFilter || isProAccount(account)) && (!geminiFilter || hasGemini(account))).length ? (
+                  <li><span>{antigravityAccounts.data.data.length ? "No accounts match the active filters." : "No Antigravity accounts configured."}</span></li>
+                ) : null}
+              </ul>
             ) : null}
-          </li>)}
-          {!accounts.data.data.length ? <li><span>No enabled account samples.</span></li> : null}
-        </ul> : null}
-        {resetFeedback ? <p className="toolbar-metric-reset-status" role="status" aria-live="polite">
-          {resetFeedback.message}
-        </p> : null}
-      </>
-    );
-    if (activePanel === "cli") return (
-      <>
-        <header><strong>Space CLI sessions</strong><small>On demand</small></header>
-        {cli.loading ? <p className="toolbar-metric-note">Loading CLI details…</p> : null}
-        {cli.error ? <p className="toolbar-metric-error" role="alert">{cli.error}</p> : null}
-        {cli.data ? <>
-          <div className="toolbar-metric-grid">
-            <MetricRow label="Running" value={String(cli.data.summary.running)} />
-            <MetricRow label="Attached" value={String(cli.data.summary.attached)} />
-            <MetricRow label="Detached" value={String(cli.data.summary.detached)} />
-            <MetricRow label="Cleanup eligible" value={String(cli.data.summary.cleanupEligible)} />
           </div>
-          <ul className="toolbar-metric-list">
-            {(analyticsSessions.data?.sessions ?? []).slice(0, 8).map((session) => <li key={session.sessionId}>
-              <strong>{session.paneTitle} · {formatBytes(session.rssBytes)}</strong>
-              <span>{session.roomName} · {session.runtimeName} · {session.attachmentCount} attachments</span>
-            </li>)}
-            {!analyticsSessions.data && cli.data.sessions.map((session) => <li key={`${session.hostId}:${session.sessionId}`}>
-              <strong>{session.hostId.toUpperCase()} · {formatBytes(session.rssBytes)}</strong>
-              <span>{session.attachmentCount} attachments · {session.cleanupEligible ? "eligible" : "protected"}</span>
-            </li>)}
-          </ul>
-          {analysisButton("sessions", "Open full CLI session analysis")}
-        </> : null}
+        )}
+
+        {(accountProviderFilter === "all" || accountProviderFilter === "codex") && (
+          <div className="toolbar-metric-provider-section">
+            <header>
+              <strong>Codex usage</strong>
+              <small>{accounts.data?.isStale ? "Stale sample" : "On demand"}</small>
+            </header>
+            <div className="toolbar-metric-grid">
+              <MetricRow
+                label="Routing capacity · all accounts"
+                value={formatPercent(environment?.lbUsage?.allAccountsRemainingPercent)}
+                tone={quotaTone(environment?.lbUsage?.allAccountsRemainingPercent)}
+              />
+              <MetricRow
+                label="Routing capacity · active accounts"
+                value={formatPercent(environment?.lbUsage?.activeAccountsRemainingPercent)}
+                tone={quotaTone(environment?.lbUsage?.activeAccountsRemainingPercent)}
+              />
+            </div>
+            {accounts.loading ? <p className="toolbar-metric-note">Loading account details…</p> : null}
+            {accounts.error ? <p className="toolbar-metric-error" role="alert">{accounts.error}</p> : null}
+            {accounts.data?.error ? <p className="toolbar-metric-error">{accounts.data.error}</p> : null}
+            {accounts.data ? (
+              <ul className="toolbar-metric-list">
+                {accounts.data.data
+                  .filter(account => !quotaFilter || hasQuota(account))
+                  .map((account) => (
+                  <li key={account.id} className="toolbar-metric-account-card">
+                    <div className="toolbar-metric-account-heading">
+                      <strong>{account.label}</strong>
+                      <button
+                        type="button"
+                        disabled={!allowChanges || resetLabel(account.id).disabled}
+                        title={resetLabel(account.id).disabled ? undefined : `Use the earliest-expiring reset credit for ${account.label}`}
+                        onClick={() => void redeemReset(account.id)}
+                      >{resetLabel(account.id).label}</button>
+                    </div>
+                    <span>{quotaWindow === "5h" ? "5h remaining " : "Weekly remaining "}<QuotaIndicator value={quotaWindow === "5h" ? account.fiveHourRemainingPercent : account.weeklyRemainingPercent} label={quotaWindow} alwaysWrap={false} /></span>
+                    <span>{formatWeeklyReset(account.weeklyResetAt, dateTimeSettings)}</span>
+                    {account.fiveHourResetAt && (account.fiveHourRemainingPercent ?? 0) < CODEX_EXHAUSTION_THRESHOLD_PERCENT ? (
+                      <span>{formatAccountReset(account.fiveHourResetAt, clock, "5h resets", dateTimeSettings)}</span>
+                    ) : null}
+                  </li>
+                ))}
+                {!accounts.data.data.filter(account => !quotaFilter || hasQuota(account)).length ? <li><span>{accounts.data.data.length ? "No accounts match the active filters." : "No enabled account samples."}</span></li> : null}
+              </ul>
+            ) : null}
+            {resetFeedback ? (
+              <p className="toolbar-metric-reset-status" role="status" aria-live="polite">
+                {resetFeedback.message}
+              </p>
+            ) : null}
+          </div>
+        )}
+
+        {(accountProviderFilter === "all" || accountProviderFilter === "api") && (
+          <div className="toolbar-metric-provider-section">
+            <header>
+              <strong>API Providers &amp; Balances</strong>
+              <small>{apiProviderAccounts.data?.isStale ? "Stale sample" : "DeepSeek, OpenRouter, Vercel, Google & API keys"}</small>
+            </header>
+            {apiProviderAccounts.loading ? <p className="toolbar-metric-note">Loading API provider details…</p> : null}
+            {apiProviderAccounts.error ? <p className="toolbar-metric-error" role="alert">{apiProviderAccounts.error}</p> : null}
+            {apiProviderAccounts.data?.error ? <p className="toolbar-metric-error">{apiProviderAccounts.data.error}</p> : null}
+            {apiProviderAccounts.data ? (
+              <ul className="toolbar-metric-list">
+                {apiProviderAccounts.data.data.map((account) => (
+                  <li key={account.id} className="toolbar-metric-account-card">
+                    <div className="toolbar-metric-account-heading">
+                      <strong>{account.label}</strong>
+                      <span className={`toolbar-metric-badge ${account.status === "CONNECTED" ? "is-active" : account.status === "EXHAUSTED" ? "is-warning" : "is-critical"}`}>
+                        {account.balance ? `BAL ${account.balance}` : account.status.toLowerCase() === "critical" ? "Unavailable" : account.status}
+                      </span>
+                    </div>
+                    {account.detail ? (
+                      <small className="toolbar-metric-subtext">{account.detail}</small>
+                    ) : null}
+                  </li>
+                ))}
+                {!apiProviderAccounts.data.data.length ? (
+                  <li><span>No API providers configured.</span></li>
+                ) : null}
+              </ul>
+            ) : null}
+          </div>
+        )}
       </>
     );
+    if (activePanel === "cli") {
+      const detachedCount = cli.data?.summary.detached ?? 0;
+      const detachedSessions = (analyticsSessions.data?.sessions ?? []).filter((s) => s.status === "RUNNING" && s.attachmentCount === 0);
+      const hasDetached = detachedCount > 0 || detachedSessions.length > 0;
+      return (
+        <>
+          <header><strong>Space CLI sessions</strong><small>On demand</small></header>
+          {cli.loading ? <p className="toolbar-metric-note">Loading CLI details…</p> : null}
+          {cli.error ? <p className="toolbar-metric-error" role="alert">{cli.error}</p> : null}
+          {cli.data ? <>
+            <div className="toolbar-metric-grid">
+              <MetricRow label="Running" value={String(cli.data.summary.running)} />
+              <MetricRow label="Attached" value={String(cli.data.summary.attached)} />
+              <MetricRow label="Detached" value={String(cli.data.summary.detached)} />
+              <MetricRow label="Cleanup eligible" value={String(cli.data.summary.cleanupEligible)} />
+            </div>
+            {hasDetached ? (
+              <div className="toolbar-metric-detached-banner">
+                <span>{detachedCount || detachedSessions.length} detached window{(detachedCount || detachedSessions.length) === 1 ? "" : "s"}</span>
+                <button
+                  type="button"
+                  className="toolbar-metric-reopen-all-btn"
+                  disabled={reopeningAll}
+                  onClick={() => void handleReopenAllDetached()}
+                >
+                  {reopeningAll ? "Reopening…" : "Reopen detached"}
+                </button>
+              </div>
+            ) : null}
+            <ul className="toolbar-metric-list">
+              {(analyticsSessions.data?.sessions ?? []).slice(0, 8).map((session) => {
+                const isDetached = session.status === "RUNNING" && session.attachmentCount === 0;
+                const isBusy = reopeningSessionId === session.sessionId || closingSessionId === session.sessionId;
+                return (
+                  <li key={session.sessionId}>
+                    <div className="toolbar-metric-session-header">
+                      <strong>{session.paneTitle} · {formatBytes(session.rssBytes)}</strong>
+                      {isDetached ? (
+                        <div className="health-session-actions">
+                          <button
+                            type="button"
+                            className="toolbar-metric-reopen-btn"
+                            disabled={isBusy}
+                            onClick={() => void handleReopenSession(session.roomId, session.paneId, session.sessionId)}
+                            title={`Reopen window for ${session.paneTitle}`}
+                          >
+                            {reopeningSessionId === session.sessionId ? "Reopening…" : "Reopen"}
+                          </button>
+                          <button
+                            type="button"
+                            className="toolbar-metric-close-btn"
+                            disabled={isBusy}
+                            onClick={() => void handleCloseSession(session.paneId, session.sessionId)}
+                            title={`Close and terminate ${session.paneTitle}`}
+                          >
+                            {closingSessionId === session.sessionId ? "Closing…" : "Close"}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                    <span>{session.roomName} · {session.runtimeName} · {session.attachmentCount} attachment{session.attachmentCount === 1 ? "" : "s"}{isDetached ? " · detached" : ""}</span>
+                  </li>
+                );
+              })}
+              {!analyticsSessions.data && cli.data.sessions.map((session) => <li key={`${session.hostId}:${session.sessionId}`}>
+                <strong>{session.hostId.toUpperCase()} · {formatBytes(session.rssBytes)}</strong>
+                <span>{session.attachmentCount} attachments · {session.cleanupEligible ? "eligible" : "protected"}</span>
+              </li>)}
+            </ul>
+            {analysisButton("sessions", "Open full CLI session analysis")}
+          </> : null}
+        </>
+      );
+    }
     if (activePanel === "memory") return (
       <>
         <header><strong>Host memory</strong><small>On demand</small></header>
@@ -920,11 +1390,20 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     models: "Active model details",
   };
 
+  const allAccountsRemaining = environment?.lbUsage?.allAccountsRemainingPercent;
+  const accountsTone = isCodexEnabled && allAccountsRemaining !== undefined && allAccountsRemaining !== null
+    ? allAccountsRemaining <= QUOTA_EXHAUSTION_THRESHOLD_PERCENT
+      ? "bad"
+      : allAccountsRemaining <= QUOTA_WARNING_THRESHOLD_PERCENT
+        ? "warn"
+        : null
+    : null;
+
   const metricStrip = <section className="toolbar-lb-strip toolbar-metrics-strip" aria-label={roomName ? `Room Codex LB ${roomName}` : "Toolbar system metrics"}>
       <button
         ref={(node) => { anchorsRef.current.accounts = node; }}
         type="button"
-        className="toolbar-lb-badge toolbar-metric-trigger"
+        className={`toolbar-lb-badge toolbar-metric-trigger${accountsTone ? ` tone-${accountsTone}` : ""}`}
         aria-label={`ALL ${snapshot.all}`}
         aria-expanded={activePanel === "accounts"}
         aria-controls="toolbar-metric-panel-accounts"
@@ -981,17 +1460,17 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         type="button"
         className={`toolbar-lb-badge toolbar-metric-trigger tone-${rtt.tone}`}
         aria-label={rttFailed
-          ? "RTT unavailable, critical"
+          ? "RTT unavailable, alert"
           : rttMs === null
             ? "RTT measuring"
-            : `RTT ${rtt.value} milliseconds, ${rtt.status}`}
+            : `RTT ${rtt.value} milliseconds, ${rtt.status === "critical" ? "alert" : rtt.status}`}
         aria-expanded={activePanel === "rtt"}
         aria-controls="toolbar-metric-panel-rtt"
         title={rttFailed
-          ? "RTT: unavailable · Critical"
+          ? "RTT: unavailable · Alert"
           : rttMs === null
             ? "RTT: measuring"
-            : `RTT: ${rtt.value} ms · ${rtt.status[0]?.toUpperCase()}${rtt.status.slice(1)}`}
+            : `RTT: ${rtt.value} ms · ${rtt.status === "critical" ? "Alert" : `${rtt.status[0]?.toUpperCase()}${rtt.status.slice(1)}`}`}
         onClick={() => openPanel("rtt")}
         {...anchorEvents("rtt")}
       ><small>{presentation === "drawer" ? "Network latency" : "RTT"}</small><strong data-sensitive-ignore>{rtt.value}</strong></button>
@@ -1023,13 +1502,16 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       ><small>{presentation === "drawer" ? "Provider" : providerCode}</small>{presentation === "drawer" ? <strong>{providerCode}</strong> : null}</button>
     </section>;
   return <>
-    {presentation === "drawer" ? <>
+    {presentation === "embedded" ? <section className="resources-embedded-metric">{panelContent()}</section> : presentation === "drawer" ? <>
       <button hidden={hideTrigger} style={hideTrigger ? { display: "none" } : undefined} ref={drawerTriggerRef} className="resources-trigger" type="button"
         aria-expanded={drawerOpen} aria-controls="resources-drawer"
         onClick={() => {
-          if (onOpenResources) { setDrawerOpen(false); closePanel(); onOpenResources(); return; }
           setDrawerOpen(!drawerOpen);
-          if (drawerOpen) closePanel();
+          if (!drawerOpen) {
+            if (!activePanel) openPanel("accounts");
+          } else {
+            closePanel();
+          }
         }}><Activity aria-hidden="true" />Resources</button>
       {drawerOpen ? <ResourcesDrawer triggerRef={drawerTriggerRef} onClose={() => { setDrawerOpen(false); closePanel(); }}>
         {metricStrip}

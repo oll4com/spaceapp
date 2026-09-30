@@ -35,10 +35,25 @@ function safeDescription(value: unknown): string | null {
   return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 400);
 }
 
-function validIsoOrNull(value: unknown): string | null {
-  if (typeof value !== "string" || !value) return null;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+function parseTimestampToIso(value: unknown): string | null {
+  if (value === null || value === undefined || value === 0 || value === "0") return null;
+  if (typeof value === "number") {
+    const ms = value > 1e14 ? Math.floor(value / 1000) : value;
+    if (Number.isFinite(ms) && ms > 0) return new Date(ms).toISOString();
+    return null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === "n/a" || trimmed === "-" || trimmed === "0") return null;
+    const asNum = Number(trimmed);
+    if (!Number.isNaN(asNum) && asNum > 0) {
+      const ms = asNum > 1e14 ? Math.floor(asNum / 1000) : asNum;
+      return new Date(ms).toISOString();
+    }
+    const parsed = Date.parse(trimmed);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  }
+  return null;
 }
 
 function parseSystemctlUnits(raw: string): Map<string, Pick<SystemServiceUnit, "unit" | "description" | "type" | "loadState" | "activeState" | "subState">> {
@@ -83,15 +98,31 @@ function parseSystemctlTimers(raw: string): Map<string, { activates: string | nu
     if (typeof record.unit !== "string" || !record.unit.endsWith(".timer")) continue;
     timers.set(record.unit, {
       activates: typeof record.activates === "string" && record.activates ? record.activates : null,
-      next: typeof record.next === "string" ? validIsoOrNull(record.next) : null,
-      last: typeof record.last === "string" ? validIsoOrNull(record.last) : null
+      next: parseTimestampToIso(record.next),
+      last: parseTimestampToIso(record.last)
     });
   }
   return timers;
 }
 
-function parseSystemctlShow(raw: string): Map<string, string | null> {
+function parseSystemctlShowOrUnitFiles(raw: string): Map<string, string | null> {
   const states = new Map<string, string | null>();
+  if (!raw.trim()) return states;
+  try {
+    const payload = JSON.parse(raw);
+    if (Array.isArray(payload)) {
+      for (const item of payload) {
+        if (!item || typeof item !== "object") continue;
+        const record = item as { unit_file?: unknown; state?: unknown };
+        if (typeof record.unit_file === "string" && record.unit_file) {
+          states.set(record.unit_file, typeof record.state === "string" && record.state ? record.state : null);
+        }
+      }
+      return states;
+    }
+  } catch {
+    // Fall back to key=value parsing
+  }
   let currentUnit: string | null = null;
   for (const line of raw.split("\n")) {
     const idMatch = /^Id=(\S+)$/.exec(line.trim());
@@ -126,14 +157,22 @@ export async function runSystemServicesCollector(): Promise<SystemServicesRespon
     ], { timeout: 8_000, maxBuffer: 2 * 1024 * 1024 }),
     execFileAsync(SYSTEM_SERVICES_COMMAND.command, [
       ...SYSTEM_SERVICES_COMMAND.args,
-      "show",
+      "list-unit-files",
       "--all",
-      "--property=Id,UnitFileState"
-    ], { timeout: 8_000, maxBuffer: 2 * 1024 * 1024 }).catch(() => ({ stdout: "" }))
+      "--type=service,timer",
+      "--output=json"
+    ], { timeout: 8_000, maxBuffer: 2 * 1024 * 1024 }).catch(() =>
+      execFileAsync(SYSTEM_SERVICES_COMMAND.command, [
+        ...SYSTEM_SERVICES_COMMAND.args,
+        "show",
+        "--all",
+        "--property=Id,UnitFileState"
+      ], { timeout: 8_000, maxBuffer: 2 * 1024 * 1024 }).catch(() => ({ stdout: "" }))
+    )
   ]);
   const units = parseSystemctlUnits(String(unitsRaw.stdout));
   const timers = parseSystemctlTimers(String(timersRaw.stdout));
-  const fileStates = parseSystemctlShow(String(showRaw.stdout));
+  const fileStates = parseSystemctlShowOrUnitFiles(String(showRaw.stdout));
 
   const matched = [...units.values()]
     .filter((unit) => matchesSpaceService(unit.unit))
@@ -186,4 +225,13 @@ export function createSystemServicesProvider(options: {
     void request.then(clear, clear);
     return request;
   };
+}
+
+export async function resetFailedSystemUnits(unit?: string): Promise<{ success: boolean; reset: string }> {
+  const target = unit && matchesSpaceService(unit) ? unit : "space-*";
+  await execFileAsync("/usr/bin/sudo", ["-n", "/usr/bin/systemctl", "reset-failed", target], {
+    timeout: 8_000,
+    windowsHide: true
+  });
+  return { success: true, reset: target };
 }

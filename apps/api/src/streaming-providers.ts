@@ -139,6 +139,31 @@ async function requestJson(
   }
 }
 
+async function requestJsonArray(
+  fetcher: FetchLike,
+  provider: StreamingOAuthProvider,
+  url: string,
+  init: RequestInit
+): Promise<unknown[]> {
+  let response: Response;
+  try {
+    response = await fetcher(url, { ...init, signal: AbortSignal.timeout(15_000) });
+  } catch {
+    throw new StreamingProviderError(`${provider}_NETWORK`, `${provider} could not be reached.`, true);
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw providerHttpError(provider, response);
+  }
+  try {
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    throw new StreamingProviderError(`${provider}_RESPONSE_INVALID`, `${provider} returned invalid JSON.`, false, response.status);
+  }
+}
+
+
 async function requestEmpty(
   fetcher: FetchLike,
   provider: StreamingOAuthProvider,
@@ -317,46 +342,55 @@ class YouTubeAdapter implements StreamingProviderAdapter {
     }
 
     if (liveKeys) {
-      input.quota.consume(1);
-      const broadcastUrl = new URL("https://www.googleapis.com/youtube/v3/liveBroadcasts");
-      broadcastUrl.search = formBody({ part: "id,snippet,status", mine: "true", broadcastStatus: "active", maxResults: "1" }).toString();
-      const broadcastPayload = await requestJson(this.fetcher, this.provider, broadcastUrl.toString(), { headers: bearerHeaders(input.token) });
-      const broadcastValue = asArray(broadcastPayload.items)[0];
-      if (!broadcastValue) {
-        for (const key of keys) if (key.startsWith("youtube.live.")) result[key] = metric(null, "OFFLINE");
-      } else {
-        const broadcast = asRecord(broadcastValue);
-        const snippet = asRecord(broadcast.snippet ?? {});
-        const videoId = stringValue(broadcast.id);
-        const sampledAt = nowIso();
-        let statistics: Record<string, unknown> = {};
-        let liveDetails: Record<string, unknown> = {};
-        if (videoId) {
-          input.quota.consume(1);
-          const videoUrl = new URL("https://www.googleapis.com/youtube/v3/videos");
-          videoUrl.search = formBody({ part: "statistics,liveStreamingDetails", id: videoId, maxResults: "1" }).toString();
-          const videoPayload = await requestJson(this.fetcher, this.provider, videoUrl.toString(), { headers: bearerHeaders(input.token) });
-          const video = asRecord(asArray(videoPayload.items)[0] ?? {});
-          statistics = asRecord(video.statistics ?? {});
-          liveDetails = asRecord(video.liveStreamingDetails ?? {});
+      try {
+        input.quota.consume(1);
+        const broadcastUrl = new URL("https://www.googleapis.com/youtube/v3/liveBroadcasts");
+        broadcastUrl.search = formBody({ part: "id,snippet,status", mine: "true", broadcastStatus: "active", broadcastType: "all", maxResults: "1" }).toString();
+        const broadcastPayload = await requestJson(this.fetcher, this.provider, broadcastUrl.toString(), { headers: bearerHeaders(input.token) });
+        const broadcastValue = asArray(broadcastPayload.items)[0];
+        if (!broadcastValue) {
+          for (const key of keys) if (key.startsWith("youtube.live.")) result[key] = metric(null, "OFFLINE");
+        } else {
+          const broadcast = asRecord(broadcastValue);
+          const snippet = asRecord(broadcast.snippet ?? {});
+          const videoId = stringValue(broadcast.id);
+          const sampledAt = nowIso();
+          let statistics: Record<string, unknown> = {};
+          let liveDetails: Record<string, unknown> = {};
+          if (videoId) {
+            input.quota.consume(1);
+            const videoUrl = new URL("https://www.googleapis.com/youtube/v3/videos");
+            videoUrl.search = formBody({ part: "statistics,liveStreamingDetails", id: videoId, maxResults: "1" }).toString();
+            const videoPayload = await requestJson(this.fetcher, this.provider, videoUrl.toString(), { headers: bearerHeaders(input.token) });
+            const video = asRecord(asArray(videoPayload.items)[0] ?? {});
+            statistics = asRecord(video.statistics ?? {});
+            liveDetails = asRecord(video.liveStreamingDetails ?? {});
+          }
+          if (keys.has("youtube.live.concurrent_viewers")) result["youtube.live.concurrent_viewers"] = metric(numberValue(liveDetails.concurrentViewers), "FRESH", sampledAt);
+          if (keys.has("youtube.live.likes")) result["youtube.live.likes"] = metric(numberValue(statistics.likeCount), "FRESH", sampledAt);
+          if (keys.has("youtube.live.duration")) result["youtube.live.duration"] = metric(durationSeconds(liveDetails.actualStartTime ?? snippet.actualStartTime ?? snippet.scheduledStartTime), "FRESH", sampledAt);
+          if (keys.has("youtube.live.total_chat_count")) {
+            const liveChatId = stringValue(snippet.liveChatId);
+            if (!liveChatId) {
+              result["youtube.live.total_chat_count"] = metric(null, "UNAVAILABLE", sampledAt);
+            } else {
+              input.quota.consume(5);
+              const chatUrl = new URL("https://www.googleapis.com/youtube/v3/liveChat/messages");
+              chatUrl.search = formBody({ part: "id", liveChatId, maxResults: "2000" }).toString();
+              const chatPayload = await requestJson(this.fetcher, this.provider, chatUrl.toString(), { headers: bearerHeaders(input.token) });
+              result["youtube.live.total_chat_count"] = metric(
+                numberValue(asRecord(chatPayload.pageInfo ?? {}).totalResults) ?? asArray(chatPayload.items).length,
+                "FRESH",
+                sampledAt
+              );
+            }
+          }
         }
-        if (keys.has("youtube.live.concurrent_viewers")) result["youtube.live.concurrent_viewers"] = metric(numberValue(liveDetails.concurrentViewers), "FRESH", sampledAt);
-        if (keys.has("youtube.live.likes")) result["youtube.live.likes"] = metric(numberValue(statistics.likeCount), "FRESH", sampledAt);
-        if (keys.has("youtube.live.duration")) result["youtube.live.duration"] = metric(durationSeconds(liveDetails.actualStartTime ?? snippet.actualStartTime ?? snippet.scheduledStartTime), "FRESH", sampledAt);
-        if (keys.has("youtube.live.total_chat_count")) {
-          const liveChatId = stringValue(snippet.liveChatId);
-          if (!liveChatId) {
-            result["youtube.live.total_chat_count"] = metric(null, "UNAVAILABLE", sampledAt);
-          } else {
-            input.quota.consume(5);
-            const chatUrl = new URL("https://www.googleapis.com/youtube/v3/liveChat/messages");
-            chatUrl.search = formBody({ part: "id", liveChatId, maxResults: "2000" }).toString();
-            const chatPayload = await requestJson(this.fetcher, this.provider, chatUrl.toString(), { headers: bearerHeaders(input.token) });
-            result["youtube.live.total_chat_count"] = metric(
-              numberValue(asRecord(chatPayload.pageInfo ?? {}).totalResults) ?? asArray(chatPayload.items).length,
-              "FRESH",
-              sampledAt
-            );
+      } catch {
+        // If live broadcast query fails (e.g. channel has live streaming disabled or permissions differ), treat as OFFLINE
+        for (const key of keys) {
+          if (key.startsWith("youtube.live.")) {
+            result[key] = metric(null, "OFFLINE");
           }
         }
       }
@@ -610,11 +644,242 @@ class TikTokAdapter implements StreamingProviderAdapter {
   }
 }
 
+class XAdapter implements StreamingProviderAdapter {
+  readonly provider = "X" as const;
+
+  constructor(private readonly fetcher: FetchLike) {}
+
+  authorizationUrl(input: { client: StreamingProviderClient; state: string; codeChallenge: string }): string {
+    const url = new URL("https://x.com/i/oauth2/authorize");
+    url.search = formBody({
+      response_type: "code",
+      client_id: input.client.clientId,
+      redirect_uri: input.client.redirectUri,
+      scope: streamingProviderScopes.X.join(" "),
+      state: input.state,
+      code_challenge: input.codeChallenge,
+      code_challenge_method: "S256"
+    }).toString().replace(/\+/g, "%20");
+    return url.toString();
+  }
+
+  async exchangeCode(input: { client: StreamingProviderClient; code: string; codeVerifier: string }): Promise<StreamingTokenSet> {
+    const basicAuth = Buffer.from(`${input.client.clientId}:${input.client.clientSecret}`).toString("base64");
+    return tokenSet(await requestJson(this.fetcher, this.provider, "https://api.twitter.com/2/oauth2/token", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        authorization: `Basic ${basicAuth}`
+      },
+      body: formBody({
+        grant_type: "authorization_code",
+        code: input.code,
+        redirect_uri: input.client.redirectUri,
+        code_verifier: input.codeVerifier
+      })
+    }));
+  }
+
+  async refreshToken(input: { client: StreamingProviderClient; token: StreamingTokenSet }): Promise<StreamingTokenSet> {
+    if (!input.token.refreshToken) throw new StreamingProviderError("X_REFRESH_MISSING", "X refresh access is unavailable.", false);
+    const basicAuth = Buffer.from(`${input.client.clientId}:${input.client.clientSecret}`).toString("base64");
+    return tokenSet(await requestJson(this.fetcher, this.provider, "https://api.twitter.com/2/oauth2/token", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        authorization: `Basic ${basicAuth}`
+      },
+      body: formBody({
+        grant_type: "refresh_token",
+        refresh_token: input.token.refreshToken
+      })
+    }), input.token);
+  }
+
+  async revoke(input: { client: StreamingProviderClient; token: StreamingTokenSet }): Promise<void> {
+    const basicAuth = Buffer.from(`${input.client.clientId}:${input.client.clientSecret}`).toString("base64");
+    await requestEmpty(this.fetcher, this.provider, "https://api.twitter.com/2/oauth2/revoke", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        authorization: `Basic ${basicAuth}`
+      },
+      body: formBody({ token: input.token.refreshToken ?? input.token.accessToken })
+    });
+  }
+
+  async discoverAccounts(input: { client: StreamingProviderClient; token: StreamingTokenSet }): Promise<StreamingDiscoveredAccount[]> {
+    void input.client;
+    const url = new URL("https://api.twitter.com/2/users/me");
+    url.search = formBody({ "user.fields": "username,name,profile_image_url" }).toString();
+    const payload = await requestJson(this.fetcher, this.provider, url.toString(), {
+      headers: bearerHeaders(input.token)
+    });
+    const data = asRecord(payload.data ?? {});
+    const id = stringValue(data.id);
+    const username = stringValue(data.username);
+    if (!id || !username) throw new StreamingProviderError("X_ACCOUNT_MISSING", "X did not return the connected profile.", false);
+    const displayName = stringValue(data.name) ?? username;
+    return [{ externalAccountId: id, displayName, badge: `@${username}`, grantSubject: id }];
+  }
+
+  async collectMetrics(input: {
+    client: StreamingProviderClient;
+    token: StreamingTokenSet;
+    account: StreamingDiscoveredAccount;
+    metricKeys: StreamingMetricKey[];
+    analyticsPeriod: StreamingAnalyticsPeriod;
+    quota: StreamingQuotaConsumer;
+  }): Promise<StreamingProviderMetricMap> {
+    void input.client;
+    void input.account;
+    void input.analyticsPeriod;
+    void input.quota;
+    const keys = new Set(input.metricKeys);
+    const result: StreamingProviderMetricMap = {};
+    if (keys.has("x.followers") || keys.has("x.posts")) {
+      const url = new URL("https://api.twitter.com/2/users/me");
+      url.search = formBody({ "user.fields": "public_metrics" }).toString();
+      const payload = await requestJson(this.fetcher, this.provider, url.toString(), {
+        headers: bearerHeaders(input.token)
+      });
+      const data = asRecord(payload.data ?? {});
+      const metrics = asRecord(data.public_metrics ?? {});
+      if (keys.has("x.followers")) result["x.followers"] = metric(numberValue(metrics.followers_count));
+      if (keys.has("x.posts")) result["x.posts"] = metric(numberValue(metrics.tweet_count));
+    }
+    if (keys.has("x.live.viewers")) {
+      result["x.live.viewers"] = metric(null, "OFFLINE");
+    }
+    return result;
+  }
+}
+
+class DiscordAdapter implements StreamingProviderAdapter {
+  readonly provider = "DISCORD" as const;
+
+  constructor(private readonly fetcher: FetchLike) {}
+
+  authorizationUrl(input: { client: StreamingProviderClient; state: string; codeChallenge: string }): string {
+    const url = new URL("https://discord.com/oauth2/authorize");
+    url.search = formBody({
+      response_type: "code",
+      client_id: input.client.clientId,
+      redirect_uri: input.client.redirectUri,
+      scope: streamingProviderScopes.DISCORD.join(" "),
+      state: input.state,
+      prompt: "consent"
+    }).toString();
+    return url.toString();
+  }
+
+  async exchangeCode(input: { client: StreamingProviderClient; code: string; codeVerifier: string }): Promise<StreamingTokenSet> {
+    void input.codeVerifier;
+    return tokenSet(await requestJson(this.fetcher, this.provider, "https://discord.com/api/v10/oauth2/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: formBody({
+        grant_type: "authorization_code",
+        code: input.code,
+        redirect_uri: input.client.redirectUri,
+        client_id: input.client.clientId,
+        client_secret: input.client.clientSecret
+      })
+    }));
+  }
+
+  async refreshToken(input: { client: StreamingProviderClient; token: StreamingTokenSet }): Promise<StreamingTokenSet> {
+    if (!input.token.refreshToken) throw new StreamingProviderError("DISCORD_REFRESH_MISSING", "Discord refresh access is unavailable.", false);
+    return tokenSet(await requestJson(this.fetcher, this.provider, "https://discord.com/api/v10/oauth2/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: formBody({
+        grant_type: "refresh_token",
+        refresh_token: input.token.refreshToken,
+        client_id: input.client.clientId,
+        client_secret: input.client.clientSecret
+      })
+    }), input.token);
+  }
+
+  async revoke(input: { client: StreamingProviderClient; token: StreamingTokenSet }): Promise<void> {
+    await requestEmpty(this.fetcher, this.provider, "https://discord.com/api/v10/oauth2/token/revoke", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: formBody({
+        token: input.token.refreshToken ?? input.token.accessToken,
+        client_id: input.client.clientId,
+        client_secret: input.client.clientSecret
+      })
+    });
+  }
+
+  async discoverAccounts(input: { client: StreamingProviderClient; token: StreamingTokenSet }): Promise<StreamingDiscoveredAccount[]> {
+    void input.client;
+    const payload = await requestJson(this.fetcher, this.provider, "https://discord.com/api/v10/users/@me", {
+      headers: bearerHeaders(input.token)
+    });
+    const id = stringValue(payload.id);
+    const username = stringValue(payload.username);
+    if (!id || !username) throw new StreamingProviderError("DISCORD_ACCOUNT_MISSING", "Discord did not return the connected user.", false);
+    const displayName = stringValue(payload.global_name) ?? username;
+    return [{ externalAccountId: id, displayName, badge: `@${username}`, grantSubject: id }];
+  }
+
+  async collectMetrics(input: {
+    client: StreamingProviderClient;
+    token: StreamingTokenSet;
+    account: StreamingDiscoveredAccount;
+    metricKeys: StreamingMetricKey[];
+    analyticsPeriod: StreamingAnalyticsPeriod;
+    quota: StreamingQuotaConsumer;
+  }): Promise<StreamingProviderMetricMap> {
+    void input.client;
+    void input.account;
+    void input.analyticsPeriod;
+    void input.quota;
+    const keys = new Set(input.metricKeys);
+    const result: StreamingProviderMetricMap = {};
+    if (keys.has("discord.total_members") || keys.has("discord.online_members")) {
+      try {
+        const guilds = await requestJsonArray(this.fetcher, this.provider, "https://discord.com/api/v10/users/@me/guilds?with_counts=true", {
+          headers: bearerHeaders(input.token)
+        });
+        let primaryGuild: Record<string, unknown> = {};
+        for (const item of guilds) {
+          if (typeof item === "object" && item !== null && !Array.isArray(item)) {
+            const rec = item as Record<string, unknown>;
+            if (rec.owner === true) {
+              primaryGuild = rec;
+              break;
+            }
+          }
+        }
+        if (!primaryGuild.id && guilds.length > 0 && typeof guilds[0] === "object" && guilds[0] !== null && !Array.isArray(guilds[0])) {
+          primaryGuild = guilds[0] as Record<string, unknown>;
+        }
+        if (keys.has("discord.total_members")) {
+          result["discord.total_members"] = metric(numberValue(primaryGuild.approximate_member_count) ?? guilds.length);
+        }
+        if (keys.has("discord.online_members")) {
+          result["discord.online_members"] = metric(numberValue(primaryGuild.approximate_presence_count) ?? (guilds.length === 0 ? 0 : 0));
+        }
+      } catch {
+        if (keys.has("discord.total_members")) result["discord.total_members"] = metric(null, "UNAVAILABLE");
+        if (keys.has("discord.online_members")) result["discord.online_members"] = metric(null, "UNAVAILABLE");
+      }
+    }
+    return result;
+  }
+}
+
 export function createStreamingProviderAdapters(fetcher: FetchLike = fetch): Record<StreamingOAuthProvider, StreamingProviderAdapter> {
   return {
     YOUTUBE: new YouTubeAdapter(fetcher),
     TWITCH: new TwitchAdapter(fetcher),
-    TIKTOK: new TikTokAdapter(fetcher)
+    TIKTOK: new TikTokAdapter(fetcher),
+    X: new XAdapter(fetcher),
+    DISCORD: new DiscordAdapter(fetcher)
   };
 }
 

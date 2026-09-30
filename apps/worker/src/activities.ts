@@ -40,6 +40,7 @@ import {
   createCanonicalGeminiMemoryBridge,
   redactMemoryText,
   resolveCanonicalGeminiMemoryPaths,
+  SpaceNotFoundError,
   type CanonicalMemoryBridge,
   type SpaceStore
 } from "@space/runtime";
@@ -154,6 +155,7 @@ function codexAppServerSessionMetadata(session: CodexAppServerTurnSessionState):
     codexAppServer: {
       threadId: session.threadId,
       turnId: session.turnId,
+      runtimeModelAtStart: session.runtimeModelAtStart ?? null,
       turnStatus: session.turnStatus,
       goalStatus: session.goalStatus ?? null,
       notificationCount: session.notificationCount,
@@ -171,6 +173,28 @@ function getCompletionStore(storeOverride?: SpaceStore): SpaceStore | null {
   }
   cachedStore ??= PostgresSpaceStore.fromConnectionString(databaseUrl);
   return cachedStore;
+}
+
+async function resolveTurnWorkspace(input: DummyTurnInput, storeOverride?: SpaceStore): Promise<string | null> {
+  const store = getCompletionStore(storeOverride);
+  if (!store) return null;
+  try {
+    if (input.paneId) {
+      const pane = await store.getPane(input.paneId);
+      if (pane?.cwd && pane.cwd.startsWith("/") && pane.cwd !== "/etc") {
+        return pane.cwd;
+      }
+    }
+    if (input.roomId) {
+      const room = await store.getRoom(input.roomId);
+      if (room?.projectPath && room.projectPath.startsWith("/")) {
+        return room.projectPath;
+      }
+    }
+  } catch {
+    // Best-effort lookup
+  }
+  return null;
 }
 
 function currentActivityCancellationSignal(): AbortSignal | undefined {
@@ -213,10 +237,11 @@ function fetchWithCancellation(fetchImpl: typeof fetch, signal: AbortSignal | un
   return (input, init) => fetchImpl(input, { ...init, signal });
 }
 
-function positiveIntegerEnvMs(value: string | undefined, fallback: number): number {
+function positiveIntegerEnvMs(value: string | undefined, fallback: number, maxMs = 2_400_000): number {
   if (!value) return fallback;
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 5_000 && parsed <= 290_000 ? parsed : fallback;
+  const effectiveMax = Math.max(maxMs, fallback);
+  return Number.isInteger(parsed) && parsed >= 5_000 && parsed <= effectiveMax ? parsed : fallback;
 }
 
 export async function recordDummyTurnStarted(input: DummyTurnInput): Promise<{ workflowId: string }> {
@@ -358,11 +383,33 @@ export function getCodexAppServerTurnActivityConfig(env: NodeJS.ProcessEnv = pro
 }
 
 export async function runRoomAgentBackgroundAction(input: {
-  bridge: import("@space/contracts").SpaceAgentRoomActionBridgeRequest; traceId: string;
+  actionId?: string; bridge: import("@space/contracts").SpaceAgentRoomActionBridgeRequest; traceId: string;
 }) {
   const timer = setInterval(() => { try { Context.current().heartbeat({ phase: "room-pane-action" }); } catch { /* Outside Temporal in tests. */ } }, 5_000);
   try { return await executeBackgroundRoomAction(input.bridge, getCodexAppServerTurnActivityConfig()); }
   finally { clearInterval(timer); }
+}
+
+export async function failRoomAgentBackgroundAction(input: {
+  roomId: string; missionId: string; actionId: string; cancelled: boolean;
+}, storeOverride?: SpaceStore): Promise<void> {
+  const store = requiredRoomAgentStore(storeOverride);
+  const action = await store.getRoomAgentAction(input.missionId, input.actionId);
+  if (!action || action.roomId !== input.roomId ||
+      action.requestPayload._roomBackgroundRoot !== true ||
+      !["QUEUED", "RUNNING"].includes(action.status)) return;
+  try {
+    if (!await store.getRoomAgentMission(input.roomId, input.missionId)) return;
+  } catch (error) {
+    if (error instanceof SpaceNotFoundError) return;
+    throw error;
+  }
+  await store.updateRoomAgentAction(action.actionId, {
+    status: input.cancelled ? "BLOCKED" : "FAILED",
+    statusReason: input.cancelled ? "Background action was cancelled; completion is unverified."
+      : "Background action transport failed after retries; inspect runtime evidence before retrying.",
+    completedAt: new Date().toISOString()
+  });
 }
 
 export async function settleRoomAgentBackgroundMission(input: { roomId: string; missionId: string }, storeOverride?: SpaceStore): Promise<boolean> {
@@ -476,17 +523,24 @@ async function defaultStdioTurnExecutor(
   recovery?: {
     turnId: string | null;
     onCheckpoint: (checkpoint: { threadId: string; turnId: string | null }) => Promise<void>;
-  }
+  },
+  storeOverride?: SpaceStore
 ): Promise<CodexAppServerTurnSessionState> {
   const imageAttachments = await loadCodexTurnImageAttachments(input, config);
-  const turnConfig = runtime.codexHome ? { ...config, home: runtime.codexHome } : config;
+  const targetWorkspace = await resolveTurnWorkspace(input, storeOverride);
+  const baseTurnConfig = runtime.codexHome ? { ...config, home: runtime.codexHome } : config;
+  const turnConfig = targetWorkspace ? { ...baseTurnConfig, cwd: targetWorkspace } : baseTurnConfig;
   const modelProvider = runtime.modelProvider;
   const nativeChat = isNativeChatTurn(input);
   await applyCodexProviderRoute(runtime, turnConfig, env, routeSwitcher);
+  const turnEnv = buildCodexAppServerTurnEnv(turnConfig, env);
+  if (targetWorkspace) {
+    (turnEnv as Record<string, string | undefined>).SPACE_CLI_WORKSPACE = targetWorkspace;
+  }
   const run = (threadId: string | null, resumeTurnId: string | null) => runCodexAppServerStdioTurnSession({
     command: turnConfig.command,
     cwd: turnConfig.cwd,
-    env: buildCodexAppServerTurnEnv(turnConfig, env),
+    env: turnEnv,
     prompt: input.prompt,
     threadId,
     ephemeral: input.agentSessionId ? false : true,
@@ -1376,7 +1430,9 @@ async function recordSpaceAgentRunCompleted(
       }
     : null;
   const workflowId = buildCodexAppServerTurnWorkflowId(input);
+  const runtimeModelAtStart = codexMetadataValue(metadata, "runtimeModelAtStart");
   const run = await store.updateSpaceAgentRunByWorkflowId(workflowId, {
+    runtimeModelAtStart: runtimeModelAtStart && runtimeModelAtStart.length <= 200 ? runtimeModelAtStart : null,
     status: "RUNNING",
     codexThreadId: threadId,
     codexTurnId: turnId
@@ -1877,7 +1933,9 @@ async function runCodexAppServerTurnImplementation(
           options.spawnProcess,
           options.env,
           options.routeSwitcher,
-          abortSignal
+          abortSignal,
+          undefined,
+          options.completionStore
         ));
     const session = options.executeStdioTurn
       ? await executeStdioTurn(parsed, config, providerRuntime.runtime)
@@ -1892,7 +1950,8 @@ async function runCodexAppServerTurnImplementation(
           {
             turnId: durableRun?.codexTurnId ?? null,
             onCheckpoint: (checkpoint) => checkpointSpaceAgentTurn(parsed, checkpoint, options.completionStore)
-          }
+          },
+          options.completionStore
         );
     if (abortSignal?.aborted) throw abortSignal.reason;
     const metadata = codexAppServerSessionMetadata(session);
@@ -2081,7 +2140,7 @@ async function runOpenCodeAgentTurnImplementation(
       if (!retryingWorker) await recordSpaceAgentRunInterrupted(parsed, "Room Agent turn was stopped by the operator.", options.completionStore);
       throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
     }
-    const failure = classifyCodexExecutorFailure(error);
+    const failure = classifyOpenCodeExecutorFailure(error);
     return recordOpenCodeAgentTurnFailure(
       parsed,
       failure.reasonCode,
@@ -2090,6 +2149,28 @@ async function runOpenCodeAgentTurnImplementation(
       options.completionStore
     );
   }
+}
+
+export function classifyOpenCodeExecutorFailure(error: unknown): { reasonCode: string; message: string; metadata: Record<string, unknown> } {
+  const rawMessage = error instanceof Error ? error.message : "";
+  const metadata = {
+    executorFailure: {
+      name: error instanceof Error ? error.name : typeof error,
+      kind: "unknown"
+    }
+  };
+  if (/timed out|timeout/i.test(rawMessage)) {
+    return {
+      reasonCode: "OPENCODE_TURN_TIMEOUT",
+      message: "OpenCode turn timed out before completion. The worker now keeps the session fail-closed; inspect worker readiness or increase SPACE_OPENCODE_MESSAGE_TIMEOUT_MS.",
+      metadata: { executorFailure: { ...metadata.executorFailure, kind: "timeout" } }
+    };
+  }
+  return {
+    reasonCode: "OPENCODE_EXECUTOR_FAILED",
+    message: error instanceof Error ? error.message.slice(0, 500) : "OpenCode worker execution failed before completion.",
+    metadata
+  };
 }
 
 async function recordOpenCodeAgentTurnFailure(
@@ -2304,7 +2385,7 @@ async function runCliAgentTurnImplementation(
   try {
     const durableRun = await markSpaceAgentRunStarted(parsed, options.completionStore);
     await ensureCliTurnWorkflowRow(parsed, durableRun, options);
-    const text = await executeCliAgentTurnPrompt(runtimeId, parsed, config, abortSignal);
+    const text = await executeCliAgentTurnPrompt(runtimeId, parsed, config, abortSignal, options.completionStore);
     if (abortSignal?.aborted) throw abortSignal.reason;
     const metadata = { codexAppServer: { agentMessageText: text ?? null, turnStatus: "COMPLETED" } };
     if (!text) {
@@ -2435,9 +2516,19 @@ async function executeCliAgentTurnPrompt(
   runtimeId: string,
   input: DummyTurnInput,
   config: CliAgentTurnActivityConfig,
-  abortSignal: AbortSignal | undefined
+  abortSignal: AbortSignal | undefined,
+  storeOverride?: SpaceStore
 ): Promise<string | null> {
-  const stdout = await runCliAgentTurnProcess(runtimeId, input.prompt, config, abortSignal, input.modelId, input.reasoningEffort);
+  const workspaceDir = await resolveTurnWorkspace(input, storeOverride);
+  const stdout = await runCliAgentTurnProcess(
+    runtimeId,
+    input.prompt,
+    config,
+    abortSignal,
+    input.modelId,
+    input.reasoningEffort,
+    workspaceDir
+  );
   const text = stdout.trim();
   return text.length ? text.slice(0, config.maxOutputBytes) : null;
 }
@@ -2448,7 +2539,8 @@ function runCliAgentTurnProcess(
   config: CliAgentTurnActivityConfig,
   abortSignal: AbortSignal | undefined,
   modelId?: string | null,
-  reasoningEffort?: string | null
+  reasoningEffort?: string | null,
+  workspaceDir?: string | null
 ): Promise<string> {
   return new Promise((resolvePromise, rejectPromise) => {
     const modelEnv = modelId && modelId !== "auto"
@@ -2457,16 +2549,21 @@ function runCliAgentTurnProcess(
     const effortEnv = reasoningEffort && reasoningEffort !== "none"
       ? { SPACE_AGENT_CHAT_REASONING_EFFORT: reasoningEffort }
       : {};
+    const workspaceEnv = workspaceDir && workspaceDir.startsWith("/")
+      ? { SPACE_CLI_WORKSPACE: workspaceDir }
+      : {};
     const child = spawn(
       "/usr/bin/sudo",
       ["-n", config.brokerExecutable, "exec", runtimeId, "agent-chat"],
       {
+        cwd: workspaceDir && workspaceDir.startsWith("/") ? workspaceDir : undefined,
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
           LANG: "C.UTF-8",
           ...modelEnv,
-          ...effortEnv
+          ...effortEnv,
+          ...workspaceEnv
         },
         windowsHide: true
       }

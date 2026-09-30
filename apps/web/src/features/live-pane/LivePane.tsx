@@ -1,19 +1,38 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import type { Pane } from "@space/contracts";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import type { Pane, LiveAudioProviderId } from "@space/contracts";
 import {
-  openLiveConversationSession,
+  getAllLiveAudioProviders,
+  getModelsForProvider,
+  getVoicesForProvider,
+  getDefaultModelForProvider,
+  getDefaultVoiceForProvider,
+  inferProviderFromModel
+} from "@space/contracts";
+import {
+  loadLiveConversationSession,
   getGreetingForThailandTime,
+  mergeTranscriptText,
   type LiveInputPart,
   type LiveSessionHandle,
   type LiveTranscriptItem
-} from "./live-session.js";
+} from "./live-session-loader.js";
+import { useLiveCoordinator, useLiveSessionState } from "./LiveSessionProvider.js";
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
-import { api, type LivePersonalMemoryItem } from "../../live-api.js";
+import { api, type LivePersonalMemoryItem } from "../../api.js";
 import "./live-pane.css";
+import {
+  updateLiveSessionStats,
+  getLiveSessionStats,
+  subscribeLiveSessionStats,
+  type LiveSessionStats
+} from "./live-stats.js";
+import { captureLiveVisual } from "./live-visual-capture.js";
+import { loadLivePaneConfig, saveLivePaneConfig, type LivePaneStoredConfig } from "./live-pane-config.js";
 
 interface LivePaneProps {
   pane: Pane;
   workspaceTextSize?: number;
+  mobile?: boolean;
 }
 
 const VOICE_OPTIONS = [
@@ -94,89 +113,50 @@ const REASONING_EFFORTS = [
   { value: "xhigh", label: "xhigh" }
 ];
 
-export interface LivePaneStoredConfig {
-  prompt?: string;
-  voiceModel?: string;
-  voice?: string;
-  language?: "auto" | "el" | "en";
-  timeZone?: string;
-  opening?: string;
-  voicePrompt?: string;
-  delegatedModel?: string;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
-  webSearch?: boolean;
-  delegatedPrompt?: string;
-  geminiMemoryEnabled?: boolean;
-  selectedDeviceId?: string;
-  voiceOnly?: boolean;
-  personalMemoryCollapsed?: boolean;
-  personalMemories?: LivePersonalMemoryItem[];
-}
-
-const DEFAULT_PERSONAL_MEMORIES: LivePersonalMemoryItem[] = [{
-  id: "mem_user_name",
-  key: "userName",
-  value: "Νικόλας",
-  category: "profile",
-  createdAt: "2026-09-12T00:00:00.000Z",
-  updatedAt: "2026-09-12T00:00:00.000Z"
-}];
-
 function loadStoredPersonalMemories(): LivePersonalMemoryItem[] {
   try {
     const raw = typeof localStorage !== "undefined" ? localStorage.getItem("space_live_personal_memory") : null;
     const parsed = raw ? JSON.parse(raw) : null;
     if (Array.isArray(parsed) && parsed.length > 0) return parsed;
   } catch {}
-  return [...DEFAULT_PERSONAL_MEMORIES];
+  return [];
 }
 
 function saveStoredPersonalMemories(items: LivePersonalMemoryItem[]) {
   try { localStorage.setItem("space_live_personal_memory", JSON.stringify(items)); } catch {}
 }
 
-export function loadLivePaneConfig(paneId: string): LivePaneStoredConfig {
-  try {
-    const raw =
-      (typeof localStorage !== "undefined" && localStorage.getItem(`space_live_pane_${paneId}`)) ||
-      (typeof localStorage !== "undefined" && localStorage.getItem("space_live_pane_default"));
-    if (raw) {
-      return JSON.parse(raw);
-    }
-  } catch {}
-  return {};
-}
-
-export function saveLivePaneConfig(paneId: string, config: LivePaneStoredConfig) {
-  try {
-    if (typeof localStorage === "undefined") return;
-    const serialized = JSON.stringify(config);
-    localStorage.setItem(`space_live_pane_${paneId}`, serialized);
-    localStorage.setItem("space_live_pane_default", serialized);
-  } catch {}
-}
-
-export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
+export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LivePaneProps) {
   const initialConfig = useRef<LivePaneStoredConfig | null>(null);
   if (!initialConfig.current) {
     initialConfig.current = loadLivePaneConfig(pane.id);
   }
   const cfg = initialConfig.current;
+  const [streamingMode, setStreamingMode] = useState(cfg.streamingMode ?? false);
+  const coordinator = useLiveCoordinator();
+  const sharedState = useLiveSessionState();
+  const shared = !streamingMode && coordinator !== null;
 
-  const [personalMemories, setPersonalMemories] = useState<LivePersonalMemoryItem[]>(
-    cfg.personalMemories?.length ? cfg.personalMemories : loadStoredPersonalMemories()
-  );
+  const [personalMemories, setPersonalMemories] = useState<LivePersonalMemoryItem[]>(() => loadStoredPersonalMemories());
+  const memoryRevisionRef = useRef<number | undefined>(undefined);
   const [personalMemoryCollapsed, setPersonalMemoryCollapsed] = useState(cfg.personalMemoryCollapsed ?? false);
   const [newMemoryKey, setNewMemoryKey] = useState("");
   const [newMemoryValue, setNewMemoryValue] = useState("");
 
   const [prompt, setPrompt] = useState(cfg.prompt ?? "");
-  const [voiceModel, setVoiceModel] = useState("gpt-live-1");
-  const [voice, setVoice] = useState(cfg.voice ?? "gleam");
+  const initialProvider: LiveAudioProviderId =
+    cfg.provider ?? (cfg.voiceModel ? inferProviderFromModel(cfg.voiceModel) : "openai");
+  const [provider, setProvider] = useState<LiveAudioProviderId>(initialProvider);
+  const [voiceModel, setVoiceModel] = useState(
+    cfg.voiceModel ?? getDefaultModelForProvider(initialProvider)
+  );
+  const [voice, setVoice] = useState(
+    cfg.voice ?? getDefaultVoiceForProvider(initialProvider)
+  );
   const [language, setLanguage] = useState<"auto" | "el" | "en">(cfg.language ?? "auto");
-  const userName = personalMemories.find((m) => m.key.toLowerCase() === "username")?.value || "Νικόλας";
-  const [timeZone, setTimeZone] = useState(cfg.timeZone ?? "Asia/Bangkok");
-  const [opening, setOpening] = useState(cfg.opening?.trim() || getGreetingForThailandTime(userName, timeZone));
+  const userName = personalMemories.find((m) => m.key.toLowerCase() === "username")?.value || "";
+  const [timeZone, setTimeZone] = useState(cfg.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC");
+  const [opening, setOpening] = useState(cfg.opening?.trim() || "");
   const [voicePrompt, setVoicePrompt] = useState(cfg.voicePrompt ?? "");
 
   const [delegatedType] = useState<"responses" | "client">("responses");
@@ -192,18 +172,195 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
   const [modelSearch, setModelSearch] = useState("");
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
   const [reasoningEffort, setReasoningEffort] = useState<"minimal" | "low" | "medium" | "high" | "xhigh">(
-    cfg.reasoningEffort ?? "medium"
+    cfg.reasoningEffort && cfg.reasoningEffort !== "medium" ? cfg.reasoningEffort : "minimal"
   );
   const [webSearch, setWebSearch] = useState(cfg.webSearch ?? true);
   const [delegatedPrompt, setDelegatedPrompt] = useState(cfg.delegatedPrompt ?? "");
   const [geminiMemoryEnabled, setGeminiMemoryEnabled] = useState(cfg.geminiMemoryEnabled ?? true);
+  const [enableMcpTools, setEnableMcpTools] = useState(cfg.enableMcpTools ?? true);
+  const [enableProfileMemory, setEnableProfileMemory] = useState(cfg.enableProfileMemory ?? true);
   const [voiceOnly, setVoiceOnly] = useState(cfg.voiceOnly ?? false);
+  const [showToolCalls, setShowToolCalls] = useState(cfg.showToolCalls ?? false);
 
   const [voiceModelCollapsed, setVoiceModelCollapsed] = useState(false);
+  const [memoryControlCollapsed, setMemoryControlCollapsed] = useState(false);
   const [delegatedModelCollapsed, setDelegatedModelCollapsed] = useState(false);
+  const [newMemoryCategory, setNewMemoryCategory] = useState<"core" | "profile" | "preference" | "fact" | "instruction" | "note">("profile");
 
-  const [status, setStatus] = useState<"idle" | "connecting" | "active" | "listening" | "speaking" | "error">("idle");
-  const [transcripts, setTranscripts] = useState<LiveTranscriptItem[]>([]);
+  const availableModels = getModelsForProvider(provider);
+  const availableVoices = getVoicesForProvider(provider);
+
+  const handleProviderChange = (newProvider: LiveAudioProviderId) => {
+    setProvider(newProvider);
+    const newModel = getDefaultModelForProvider(newProvider);
+    setVoiceModel(newModel);
+    const models = getModelsForProvider(newProvider);
+    const modelDef = models.find((m) => m.id === newModel);
+    setVoice(modelDef?.defaultVoice ?? getDefaultVoiceForProvider(newProvider));
+  };
+
+  const handleModelChange = (newModelId: string) => {
+    setVoiceModel(newModelId);
+    const modelDef = availableModels.find((m) => m.id === newModelId);
+    if (modelDef?.defaultVoice) {
+      setVoice(modelDef.defaultVoice);
+    }
+  };
+
+  useEffect(() => {
+    if (availableVoices.length > 0 && !availableVoices.some((v) => v.id === voice)) {
+      const modelDef = availableModels.find((m) => m.id === voiceModel);
+      const fallbackVoice = (modelDef?.defaultVoice && availableVoices.some((v) => v.id === modelDef.defaultVoice))
+        ? modelDef.defaultVoice
+        : availableVoices[0]!.id;
+      setVoice(fallbackVoice);
+    }
+  }, [availableVoices, voice, voiceModel, availableModels]);
+
+  const [status, setStatus] = useState<"idle" | "connecting" | "active" | "listening" | "thinking" | "speaking" | "error">("idle");
+  const [stats, setStats] = useState<LiveSessionStats>(() => getLiveSessionStats());
+  useEffect(() => {
+    return subscribeLiveSessionStats(setStats);
+  }, []);
+  const storageKey = streamingMode
+    ? `space_streaming_live_pane_transcripts_${pane.id}`
+    : pane.roomId ? `space_live_room_transcripts_${pane.roomId}` : `space_live_pane_transcripts_${pane.id}`;
+  const [transcripts, setTranscripts] = useState<LiveTranscriptItem[]>(() => {
+    try {
+      const raw = localStorage.getItem(storageKey) || (!streamingMode && sessionStorage.getItem(`space_live_pane_transcripts_${pane.id}`));
+      return raw ? (JSON.parse(raw) as LiveTranscriptItem[]) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const handleClearConversationAndLogs = useCallback(async () => {
+    const now = Date.now();
+    if (now - (clearGuardRef.current || 0) < 1500) return;
+    clearGuardRef.current = now;
+    if (shared) { await coordinator.clearRoom(pane.roomId); return; }
+    setTranscripts([]);
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.removeItem(storageKey);
+      }
+    } catch {}
+    if (pane.roomId && !streamingMode) {
+      void api.clearVoiceRealtimeLogs(pane.roomId);
+    }
+    if (typeof window !== "undefined" && !streamingMode) {
+      window.dispatchEvent(new CustomEvent("space-live-clear-transcripts", {
+        detail: { roomId: pane.roomId || "global" }
+      }));
+    }
+  }, [pane.roomId, storageKey, streamingMode, shared, coordinator]);
+
+  useEffect(() => {
+    if (shared) return;
+    const onClear = () => {
+      void handleClearConversationAndLogs();
+    };
+    window.addEventListener("space-live-rail-clear-conversation", onClear);
+    window.addEventListener("space-live-clear-transcripts", onClear);
+    return () => {
+      window.removeEventListener("space-live-rail-clear-conversation", onClear);
+      window.removeEventListener("space-live-clear-transcripts", onClear);
+    };
+  }, [handleClearConversationAndLogs, shared]);
+
+  useEffect(() => {
+    const handleSync = (event: Event) => {
+      if (streamingMode || shared) return;
+      if (sessionRef.current) return;
+      const customEvent = event as CustomEvent<{ roomId?: string; item?: LiveTranscriptItem; sourcePaneId?: string }>;
+      if (customEvent.detail?.sourcePaneId === pane.id) return;
+      const item = customEvent.detail?.item;
+      if (!item) return;
+      const targetRoom = customEvent.detail?.roomId;
+      if (targetRoom && pane.roomId && targetRoom !== pane.roomId && targetRoom !== "global") return;
+      setTranscripts((prev) => {
+        if (item.isDelta) {
+          const last = prev[prev.length - 1];
+          if (last && last.role === item.role && (last.id === item.id || !item.id)) {
+            return [
+              ...prev.slice(0, -1),
+              { ...last, text: mergeTranscriptText(last.text, item.text) }
+            ];
+          }
+          const existingIdx = prev.findIndex((candidate) => candidate.id === item.id);
+          if (existingIdx !== -1) {
+            const next = [...prev];
+            next[existingIdx] = { ...next[existingIdx]!, text: mergeTranscriptText(next[existingIdx]!.text, item.text) };
+            return next;
+          }
+          return [...prev, { ...item, isDelta: false }];
+        }
+        const existingIdx = prev.findIndex((candidate) => candidate.id === item.id);
+        if (existingIdx !== -1) {
+          const next = [...prev];
+          next[existingIdx] = { ...next[existingIdx]!, ...item, text: item.text || next[existingIdx]!.text };
+          return next;
+        }
+        const trimmedNewText = (item.text || "").trim();
+        if (trimmedNewText) {
+          const recentWindow = prev.slice(-5);
+          if (recentWindow.some((cand) => cand.role === item.role && cand.text.trim() === trimmedNewText)) {
+            return prev;
+          }
+          if (item.role === "user") {
+            const prefixMatchIdx = prev.findLastIndex(
+              (cand) => cand.role === "user" &&
+                cand.text.trim().length > 0 &&
+                trimmedNewText.startsWith(cand.text.trim()) &&
+                trimmedNewText.length >= cand.text.trim().length
+            );
+            if (prefixMatchIdx !== -1 && prev.length - prefixMatchIdx <= 3) {
+              const next = [...prev];
+              next[prefixMatchIdx] = { ...next[prefixMatchIdx]!, ...item, text: item.text };
+              return next;
+            }
+          }
+        }
+        return [...prev, item];
+      });
+    };
+    window.addEventListener("space-live-transcript-sync", handleSync);
+    return () => {
+      window.removeEventListener("space-live-transcript-sync", handleSync);
+    };
+  }, [pane.roomId, streamingMode, shared]);
+
+  useEffect(() => {
+    if (shared) return;
+    try {
+      const trimmed = transcripts.length > 200 ? transcripts.slice(-200) : transcripts;
+      localStorage.setItem(storageKey, JSON.stringify(trimmed));
+      if (!streamingMode) sessionStorage.setItem(`space_live_pane_transcripts_${pane.id}`, JSON.stringify(trimmed));
+    } catch {}
+  }, [storageKey, pane.id, transcripts, streamingMode, shared]);
+
+  useEffect(() => {
+    if (!shared && !streamingMode && pane.roomId && transcripts.length === 0) {
+      try {
+        if (typeof api?.getVoiceRealtimeHistory === "function") {
+          void api.getVoiceRealtimeHistory(pane.roomId, 30).then((res) => {
+            if (res?.ok && res.items && res.items.length > 0) {
+              const loaded: LiveTranscriptItem[] = res.items.map((item, idx) => ({
+                id: item.id || `hist_${idx}_${Date.now()}`,
+                role: item.role === "tool" ? "system" : item.role,
+                text: item.text,
+                timestamp: new Date(item.timestamp).toLocaleTimeString(),
+                createdAtMs: item.createdAtMs
+              }));
+              setTranscripts(loaded);
+            }
+          }).catch(() => {});
+        }
+      } catch {
+        // Runtime or api not available in some test environments
+      }
+    }
+  }, [pane.roomId, streamingMode, shared]);
   const [error, setError] = useState<string | null>(null);
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState(cfg.selectedDeviceId ?? "");
@@ -211,14 +368,45 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
   const [userAudioLevel, setUserAudioLevel] = useState(0);
   const [micSilent, setMicSilent] = useState(false);
   const [pendingInputs, setPendingInputs] = useState<LiveInputPart[]>([]);
-  const [settingsOpen, setSettingsOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [clockNow, setClockNow] = useState(() => new Date());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const visualCaptureRef = useRef<AbortController | null>(null);
+  useEffect(() => () => { visualCaptureRef.current?.abort(); }, [pane.id, pane.roomId]);
 
+  // This ref owns only the separate public streaming session.
   const sessionRef = useRef<LiveSessionHandle | null>(null);
+  useEffect(() => {
+    if (!shared || !sharedState) return;
+    setStatus(sharedState.status);
+    setMuted(sharedState.muted);
+    setError(sharedState.error);
+    setTranscripts(sharedState.transcripts.filter(item => item.roomId === pane.roomId));
+  }, [shared, sharedState, pane.roomId]);
+  const sessionGenerationRef = useRef(0);
+  const startPendingRef = useRef(false);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const streamingOperatorIntentRef = useRef<{ text: string; at: number } | null>(null);
+  const reconnectInFlightRef = useRef(false);
+  const reconnectWindowRef = useRef<{ startedAt: number; attempts: number }>({ startedAt: 0, attempts: 0 });
+  const clearGuardRef = useRef<number>(0);
   const transcriptBottomRef = useRef<HTMLDivElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const mainBodyRef = useRef<HTMLDivElement | null>(null);
+  const [isCompactHeight, setIsCompactHeight] = useState(false);
+
+  useEffect(() => {
+    const el = mainBodyRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setIsCompactHeight(entry.contentRect.height < 560);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockNow(new Date()), 1000);
@@ -227,6 +415,8 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
 
   useEffect(() => {
     saveLivePaneConfig(pane.id, {
+      streamingMode,
+      provider,
       prompt,
       voiceModel,
       voice,
@@ -239,13 +429,32 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
       webSearch,
       delegatedPrompt,
       geminiMemoryEnabled,
+      enableMcpTools,
+      enableProfileMemory,
       selectedDeviceId,
       voiceOnly,
+      showToolCalls,
       personalMemoryCollapsed,
       personalMemories
+    }, true);
+    updateLiveSessionStats((prev) => {
+      if (!prev.sessionActive) {
+        return {
+          model: voiceModel,
+          delegatedModel,
+          delegatedReasoningEffort: reasoningEffort,
+          delegatedType,
+          voice,
+          language,
+          webSearch
+        };
+      }
+      return {};
     });
   }, [
     pane.id,
+    streamingMode,
+    provider,
     prompt,
     voiceModel,
     voice,
@@ -258,6 +467,8 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
     webSearch,
     delegatedPrompt,
     geminiMemoryEnabled,
+    enableMcpTools,
+    enableProfileMemory,
     selectedDeviceId,
     voiceOnly,
     personalMemoryCollapsed,
@@ -266,12 +477,19 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
 
   useEffect(() => {
     let active = true;
-    void api.getLivePersonalMemory().then((response) => {
-      if (active && response.items?.length) {
-        setPersonalMemories(response.items);
-        saveStoredPersonalMemories(response.items);
+    try {
+      if (typeof api?.getLivePersonalMemory === "function") {
+        void api.getLivePersonalMemory().then((response) => {
+          if (active && Array.isArray(response.items)) {
+            memoryRevisionRef.current = response.revision;
+            setPersonalMemories(response.items);
+            saveStoredPersonalMemories(response.items);
+          }
+        }).catch(() => undefined);
       }
-    }).catch(() => undefined);
+    } catch {
+      // Runtime or api not available in some test environments
+    }
     return () => { active = false; };
   }, []);
 
@@ -280,19 +498,29 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
     const value = newMemoryValue.trim();
     if (!key || !value) return;
     try {
-      const response = await api.saveLivePersonalMemory({ key, value, category: "profile" });
+      const response = await api.saveLivePersonalMemory({ key, value, category: newMemoryCategory, expectedRevision: memoryRevisionRef.current });
+      memoryRevisionRef.current = response.revision;
       setPersonalMemories((current) => {
         const next = [...current.filter((item) => item.key.toLowerCase() !== key.toLowerCase()), response.item];
         saveStoredPersonalMemories(next);
         return next;
       });
-    } catch {}
-    setNewMemoryKey("");
-    setNewMemoryValue("");
+      setNewMemoryKey("");
+      setNewMemoryValue("");
+    } catch {
+      setError("Personal memory could not be saved. Your input has been preserved.");
+    }
   }
 
   async function deletePersonalMemory(item: LivePersonalMemoryItem) {
-    await api.deleteLivePersonalMemory(item.id).catch(() => undefined);
+    try {
+      const result = await api.deleteLivePersonalMemory(item.id, memoryRevisionRef.current);
+      if (!result.ok) throw new Error("Delete was not confirmed.");
+      memoryRevisionRef.current = result.revision;
+    } catch {
+      setError("Personal memory could not be deleted. Please try again.");
+      return;
+    }
     setPersonalMemories((current) => {
       const next = current.filter((candidate) => candidate.id !== item.id);
       saveStoredPersonalMemories(next);
@@ -316,7 +544,6 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
         paneId: pane.id,
         paneMode: pane.mode
       });
-      sessionRef.current?.close();
     };
   }, [pane.id, pane.mode, pane.title]);
 
@@ -402,101 +629,328 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
     requestAnimationFrame(() => settingsButtonRef.current?.focus());
   }
 
+  function changeStreamingMode(next: boolean) {
+    if (status !== "idle" && status !== "error") return;
+    if (next && provider !== "openai" && provider !== "google" && provider !== "vercel") {
+      handleProviderChange("openai");
+    }
+    const nextKey = next
+      ? `space_streaming_live_pane_transcripts_${pane.id}`
+      : pane.roomId ? `space_live_room_transcripts_${pane.roomId}` : `space_live_pane_transcripts_${pane.id}`;
+    try {
+      const raw = localStorage.getItem(nextKey) || (!next && sessionStorage.getItem(`space_live_pane_transcripts_${pane.id}`));
+      setTranscripts(raw ? JSON.parse(raw) as LiveTranscriptItem[] : []);
+    } catch { setTranscripts([]); }
+    setStreamingMode(next);
+    setError(null);
+  }
+
   async function handleToggleSession() {
-    if (status !== "idle" && status !== "error") {
-      sessionRef.current?.close();
+    if (shared) {
+      coordinator.configure({ provider, model: voiceModel, language, voice, opening, prompt: [prompt, voicePrompt].filter(Boolean).join("\n\n"),
+        delegatedModel, delegatedType, delegatedReasoningEffort: reasoningEffort, delegatedWebSearch: webSearch, delegatedPrompt,
+        audioDeviceId: selectedDeviceId || undefined, enableGeminiMemory: geminiMemoryEnabled, enableMcpTools, enableProfileMemory, timeZone });
+      coordinator.toggle(); return;
+    }
+    if (startPendingRef.current || status === "connecting") return;
+    const activeGlobal = !streamingMode && typeof window !== "undefined" ? (window as any).__SPACE_ACTIVE_LIVE_SESSION__ : null;
+    if ((status !== "idle" && status !== "error") || activeGlobal) {
+      cancelPendingSession();
+      if (activeGlobal?.handle) {
+        try { activeGlobal.handle.close(); } catch {}
+      }
+      if (sessionRef.current && sessionRef.current !== activeGlobal?.handle) {
+        try { sessionRef.current.close(); } catch {}
+      }
+      if (!streamingMode && typeof window !== "undefined") {
+        (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
+      }
       sessionRef.current = null;
+      streamingOperatorIntentRef.current = null;
       setStatus("idle");
       setUserAudioLevel(0);
       setMicSilent(false);
+      window.dispatchEvent(new CustomEvent("space-live-pane-status", {
+        detail: { paneId: pane.id, rail: true, status: "idle" }
+      }));
       return;
     }
 
     setError(null);
     setMicSilent(false);
+    const generation = ++sessionGenerationRef.current;
+    const isCurrent = () => sessionGenerationRef.current === generation;
+    let ended = false;
+    startPendingRef.current = true;
+    setStatus("connecting");
     try {
-      const combinedPrompt = [prompt.trim(), voicePrompt.trim()].filter(Boolean).join("\n\n");
-      const handle = await openLiveConversationSession(
+      const combinedPrompt = streamingMode ? "" : [prompt.trim(), voicePrompt.trim()].filter(Boolean).join("\n\n");
+      const initialMemories = streamingMode ? [] : personalMemories.length > 0 ? personalMemories : loadStoredPersonalMemories();
+      if (!streamingMode) void api.getLivePersonalMemory().then((res) => {
+        if (res?.items) {
+          setPersonalMemories(res.items);
+          memoryRevisionRef.current = res.revision;
+          saveStoredPersonalMemories(res.items);
+        }
+      }).catch(() => undefined);
+      const openLiveConversationSession = await loadLiveConversationSession();
+        if (!isCurrent()) return;
+        const handle = await openLiveConversationSession(
         {
+          streamingMode,
+          streamingOperatorIntent: () => {
+            const current = streamingOperatorIntentRef.current;
+            streamingOperatorIntentRef.current = null;
+            return current;
+          },
           paneId: pane.id,
+          roomId: pane.roomId,
+          provider,
           model: voiceModel,
-          language,
+          language: streamingMode ? "en" : language,
           voice: voice as any,
-          opening: opening.trim() || undefined,
+          opening: streamingMode ? undefined : opening.trim() || undefined,
           prompt: combinedPrompt || undefined,
           delegatedModel,
           delegatedType,
           delegatedReasoningEffort: reasoningEffort,
-          delegatedWebSearch: webSearch,
-          delegatedPrompt: delegatedPrompt.trim() || undefined,
-          audioDeviceId: selectedDeviceId || undefined,
-          enableGeminiMemory: geminiMemoryEnabled,
+          delegatedWebSearch: streamingMode ? false : webSearch,
+          delegatedPrompt: streamingMode ? undefined : delegatedPrompt.trim() || undefined,
+          audioDeviceId: (audioDevices.length === 0 || audioDevices.some((d) => d.deviceId === selectedDeviceId)) ? (selectedDeviceId || undefined) : undefined,
+          enableGeminiMemory: streamingMode ? false : geminiMemoryEnabled,
+          enableMcpTools: streamingMode ? false : enableMcpTools,
+          enableProfileMemory: streamingMode ? false : enableProfileMemory,
           timeZone,
-          personalMemories
+          personalMemories: initialMemories,
+          transcripts: streamingMode ? [] : transcripts
         },
         {
           onStatusChange: (newStatus) => {
+            if (!isCurrent()) return;
             setStatus(newStatus);
             if (newStatus === "idle" || newStatus === "error") {
+              ended = true;
               setUserAudioLevel(0);
               setMicSilent(false);
-            }
-          },
-          onAudioLevel: (level, source) => {
-            if (source === "user") {
-              setUserAudioLevel(level);
-              if (level > 0.05) {
-                setMicSilent(false);
+              if (typeof window !== "undefined" && (window as any).__SPACE_ACTIVE_LIVE_SESSION__?.handle === sessionRef.current) {
+                (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
               }
+              sessionRef.current = null;
             }
           },
-          onMicSilence: (silent) => {
-            setMicSilent(silent);
+          onReconnect: (reconnect) => {
+            if (!isCurrent()) return;
+            const now = Date.now();
+            const windowState = reconnectWindowRef.current;
+            if (now - windowState.startedAt > 60_000) {
+              windowState.startedAt = now;
+              windowState.attempts = 0;
+            }
+            if (reconnectInFlightRef.current || windowState.attempts >= 3) {
+              setError("Google Gemini Live could not reconnect automatically after the provider closed the session.");
+              setStatus("error");
+              return;
+            }
+            windowState.attempts += 1;
+            reconnectInFlightRef.current = true;
+            setStatus("connecting");
+            reconnectTimerRef.current = window.setTimeout(() => {
+              reconnectTimerRef.current = null;
+              if (!isCurrent()) return;
+              ended = false;
+              void reconnect().then((nextHandle) => {
+                if (!isCurrent() || ended) {
+                  nextHandle.close();
+                  return;
+                }
+                sessionRef.current = nextHandle;
+                if (typeof window !== "undefined") {
+                  (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = {
+                    handle: nextHandle,
+                    source: "pane",
+                    paneId: pane.id,
+                    roomId: pane.roomId
+                  };
+                }
+                setError(null);
+              }).catch((err) => {
+                if (!isCurrent()) return;
+                setError(err instanceof Error ? err.message : "Google Gemini Live reconnect failed.");
+                setStatus("error");
+              }).finally(() => {
+                if (isCurrent()) reconnectInFlightRef.current = false;
+              });
+            }, Math.min(4000, 500 * windowState.attempts));
           },
-          onPersonalMemoryUpdate: (item) => {
-            setPersonalMemories((current) => {
-              const next = [...current.filter((candidate) => candidate.key.toLowerCase() !== item.key.toLowerCase()), item];
-              saveStoredPersonalMemories(next);
-              return next;
+          onTranscriptUpdate: (item) => {
+            if (!isCurrent()) return;
+            if (streamingMode && item.role === "user" && !item.isDelta && item.text.trim()) {
+              streamingOperatorIntentRef.current = { text: item.text.trim(), at: Date.now() };
+            }
+            if (typeof window !== "undefined" && !streamingMode) {
+              window.dispatchEvent(new CustomEvent("space-live-transcript-sync", {
+                detail: { roomId: pane.roomId || "global", item, sourcePaneId: pane.id }
+              }));
+            }
+            setTranscripts((prev) => {
+              if (item.isDelta) {
+                const last = prev[prev.length - 1];
+                if (last && last.role === item.role && last.id === item.id) {
+                  return [
+                    ...prev.slice(0, -1),
+                    { ...last, text: mergeTranscriptText(last.text, item.text) }
+                  ];
+                }
+                const existingIdx = prev.findIndex((candidate) => candidate.id === item.id);
+                if (existingIdx !== -1) {
+                  const existing = prev[existingIdx];
+                  if (existing) {
+                    const next = [...prev];
+                    next[existingIdx] = { ...existing, text: mergeTranscriptText(existing.text, item.text) };
+                    return next;
+                  }
+                }
+                return [...prev, { ...item, isDelta: false }];
+              }
+              const existingIdx = prev.findIndex((candidate) => candidate.id === item.id);
+              if (existingIdx !== -1) {
+                const existing = prev[existingIdx];
+                if (existing) {
+                  const next = [...prev];
+                  next[existingIdx] = { ...existing, ...item, text: item.text || existing.text };
+                  return next;
+                }
+              }
+              const trimmedNewText = (item.text || "").trim();
+              if (trimmedNewText) {
+                const recentWindow = prev.slice(-5);
+                if (recentWindow.some((cand) => cand.role === item.role && cand.text.trim() === trimmedNewText)) {
+                  return prev;
+                }
+                if (item.role === "user") {
+                  const prefixMatchIdx = prev.findLastIndex(
+                    (cand) => cand.role === "user" &&
+                      cand.text.trim().length > 0 &&
+                      trimmedNewText.startsWith(cand.text.trim()) &&
+                      trimmedNewText.length >= cand.text.trim().length
+                  );
+                  if (prefixMatchIdx !== -1 && prev.length - prefixMatchIdx <= 3) {
+                    const next = [...prev];
+                    next[prefixMatchIdx] = { ...next[prefixMatchIdx]!, ...item, text: item.text };
+                    return next;
+                  }
+                }
+              }
+              return [...prev, item];
             });
           },
           onRemoteStream: (stream) => {
+            if (!isCurrent()) return;
             if (remoteAudioRef.current) {
               remoteAudioRef.current.srcObject = stream;
               remoteAudioRef.current.play().catch((err) => console.warn("Mounted audio play error:", err));
             }
           },
-          onTranscriptUpdate: (item) => {
-            setTranscripts((prev) => {
-              const normalized = item.text.trim().replace(/\s+/g, " ").toLowerCase();
-              if (!item.isDelta && normalized && prev.slice(-4).some((candidate) =>
-                candidate.role === item.role && candidate.text.trim().replace(/\s+/g, " ").toLowerCase() === normalized
-              )) return prev;
-              const existingIdx = prev.findIndex((i) => i.id === item.id);
-              if (existingIdx >= 0) {
+          onAudioLevel: (level, src) => {
+            if (!isCurrent()) return;
+            if (src === "user") {
+              setUserAudioLevel(level);
+              if (level > 0.05) setMicSilent(false);
+            }
+          },
+          onMicSilence: (isSilent) => setMicSilent(isSilent),
+          onPersonalMemoryUpdate: (item) => {
+            setPersonalMemories((prev) => {
+              const idx = prev.findIndex((m) => m.key.toLowerCase() === item.key.toLowerCase());
+              if (idx !== -1) {
                 const next = [...prev];
-                const current = next[existingIdx]!;
-                if (!item.isDelta && current.text.trim() === item.text.trim()) return prev;
-                next[existingIdx] = {
-                  ...item,
-                  text: item.isDelta ? current.text + item.text : item.text
-                };
+                next[idx] = item;
+                saveStoredPersonalMemories(next);
                 return next;
               }
-              return [...prev, item];
+              const next = [...prev, item];
+              saveStoredPersonalMemories(next);
+              return next;
             });
           },
-          onError: (errMsg) => setError(errMsg)
+          onPersonalMemoryDeleted: (keyOrId) => {
+            setPersonalMemories((prev) => {
+              const target = keyOrId.trim().toLowerCase();
+              const next = prev.filter((m) => m.id !== keyOrId && m.key.toLowerCase() !== target);
+              saveStoredPersonalMemories(next);
+              return next;
+            });
+          },
+          onError: (errMsg) => {
+            if (!isCurrent()) return;
+            setError(errMsg);
+            try {
+              void fetch("/api/voice/client-error", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ error: errMsg, provider, model: voiceModel, event: "onError" })
+              }).catch(() => {});
+            } catch {}
+          }
         }
       );
+      if (!isCurrent() || ended) {
+        handle.close();
+        return;
+      }
       sessionRef.current = handle;
+      setPendingInputs((prev) => {
+        if (prev.length > 0) {
+          handle.sendInput?.(prev);
+        }
+        return [];
+      });
+      if (!streamingMode && typeof window !== "undefined") {
+        (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = {
+          handle,
+          source: "pane",
+          paneId: pane.id,
+          roomId: pane.roomId
+        };
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start Live session.");
+      if (!isCurrent()) return;
+      if (typeof window !== "undefined" && (window as any).__SPACE_ACTIVE_LIVE_SESSION__?.paneId === pane.id) {
+        (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
+      }
+      const msg = err instanceof Error ? err.message : "Failed to start Live session.";
+      console.error("[LivePane] Session start failed:", msg, err);
+      try {
+        void fetch("/api/voice/client-error", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: msg,
+            provider,
+            model: voiceModel,
+            name: err instanceof Error ? err.name : undefined,
+            stack: err instanceof Error ? err.stack : undefined,
+            event: "catch"
+          })
+        }).catch(() => {});
+      } catch {}
+      setError(msg);
       setStatus("error");
+    } finally {
+      if (isCurrent()) startPendingRef.current = false;
     }
   }
 
+  function cancelPendingSession() {
+    sessionGenerationRef.current += 1;
+    startPendingRef.current = false;
+    reconnectInFlightRef.current = false;
+    if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
+    reconnectTimerRef.current = null;
+  }
+
   function handleMuteToggle() {
+    if (shared) { coordinator.setMuted(!coordinator.getSnapshot().muted); return; }
     if (!sessionRef.current) return;
     const next = !muted;
     sessionRef.current.setMuted(next);
@@ -526,44 +980,123 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
   }
 
   async function captureVisual(source: "camera" | "screen") {
+    if (visualCaptureRef.current) return;
+    const controller = new AbortController();
+    visualCaptureRef.current = controller;
     try {
-      const stream = source === "camera"
-        ? await navigator.mediaDevices.getUserMedia({ video: true })
-        : await navigator.mediaDevices.getDisplayMedia({ video: true });
-      const track = stream.getVideoTracks()[0];
-      const settings = track?.getSettings();
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.min(1280, settings?.width || 1280);
-      canvas.height = Math.min(720, settings?.height || 720);
-      const video = document.createElement("video");
-      video.srcObject = stream;
-      video.muted = true;
-      await video.play();
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
-      track?.stop();
-      const image: LiveInputPart = { type: "image", dataUrl: canvas.toDataURL("image/jpeg", 0.82), filename: `${source}-capture.jpg` };
-      setPendingInputs((prev) => [...prev, image].slice(-4));
+      const image = await captureLiveVisual(source, controller.signal);
+      if (!controller.signal.aborted) {
+        if (shared && coordinator.getSnapshot().handle) {
+          await coordinator.send([image]);
+        } else if (sessionRef.current) {
+          sessionRef.current.sendInput?.([image]);
+        } else {
+          setPendingInputs((prev) => [...prev, image].slice(-4));
+        }
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : `${source} capture was not available.`);
+      if (!controller.signal.aborted) setError(err instanceof Error ? err.message : `${source} capture was not available.`);
+    } finally {
+      if (visualCaptureRef.current === controller) visualCaptureRef.current = null;
     }
   }
 
-  const isLive = status === "active" || status === "listening" || status === "speaking" || status === "connecting";
+  const isLive = status === "active" || status === "listening" || status === "thinking" || status === "speaking" || status === "connecting";
 
   useEffect(() => {
+    if (!shared) window.dispatchEvent(new CustomEvent("space-live-pane-status", { detail: { paneId: pane.id, status } }));
+  }, [pane.id, status, shared]);
+
+  useEffect(() => {
+    const onStart = (event: Event) => {
+      const detail = (event as CustomEvent<{ paneId?: string; roomId?: string }>).detail;
+      const matches = detail?.paneId ? detail.paneId === pane.id
+        : detail?.roomId ? detail.roomId === pane.roomId : true;
+      if (shared) { if (matches) void coordinator.start(); return; }
+      if (matches && (status === "idle" || status === "error" || !sessionRef.current)) {
+        void handleToggleSession();
+      }
+    };
+    const onToggle = (event: Event) => {
+      const detail = (event as CustomEvent<{ paneId?: string; roomId?: string }>).detail;
+      const matches = detail?.paneId ? detail.paneId === pane.id
+        : detail?.roomId ? detail.roomId === pane.roomId : true;
+      if (matches) {
+        void handleToggleSession();
+      }
+    };
+    const onStop = () => {
+      if (shared) return;
+      cancelPendingSession();
+      if (sessionRef.current) {
+        try { sessionRef.current.close(); } catch {}
+        sessionRef.current = null;
+      }
+      if (typeof window !== "undefined" && (window as any).__SPACE_ACTIVE_LIVE_SESSION__?.paneId === pane.id) {
+        (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
+      }
+      setStatus("idle");
+      setUserAudioLevel(0);
+      setMicSilent(false);
+    };
+    const onRailStatus = (event: Event) => {
+      if (shared || streamingMode) return;
+      const detail = (event as CustomEvent<{ paneId?: string; rail?: boolean; status?: string }>).detail;
+      if (!detail) return;
+      if (detail.rail && detail.status) {
+        if (detail.status === "idle" || detail.status === "error") {
+          if (!sessionRef.current) {
+            setStatus(detail.status as any);
+            setUserAudioLevel(0);
+            setMicSilent(false);
+          }
+        } else if (["active", "listening", "thinking", "speaking", "connecting"].includes(detail.status)) {
+          if (!sessionRef.current) {
+            setStatus(detail.status as any);
+          }
+        }
+      }
+    };
     const onAction = (event: Event) => {
       const detail = (event as CustomEvent<{ paneId?: string; action?: string }>).detail;
-      if (detail?.paneId !== pane.id || !isLive) return;
+      if (detail?.paneId !== pane.id) return;
       if (detail.action === "attach") fileInputRef.current?.click();
       if (detail.action === "camera") void captureVisual("camera");
       if (detail.action === "screen") void captureVisual("screen");
     };
+    window.addEventListener("space-live-pane-start", onStart);
+    window.addEventListener("space-live-pane-toggle", onToggle);
+    window.addEventListener("space-live-session-stop", onStop);
+    window.addEventListener("space-live-pane-status", onRailStatus);
     window.addEventListener("space-live-pane-action", onAction);
-    return () => window.removeEventListener("space-live-pane-action", onAction);
-  }, [pane.id, isLive]);
+    return () => {
+      window.removeEventListener("space-live-pane-start", onStart);
+      window.removeEventListener("space-live-pane-toggle", onToggle);
+      window.removeEventListener("space-live-session-stop", onStop);
+      window.removeEventListener("space-live-pane-status", onRailStatus);
+      window.removeEventListener("space-live-pane-action", onAction);
+    };
+  }, [pane.id, pane.roomId, isLive, status, shared, streamingMode, coordinator]);
+
+  useEffect(() => {
+    return () => {
+      cancelPendingSession();
+      if (sessionRef.current) {
+        try { sessionRef.current.close(); } catch {}
+        sessionRef.current = null;
+      }
+      if (typeof window !== "undefined" && (window as any).__SPACE_ACTIVE_LIVE_SESSION__?.paneId === pane.id) {
+        (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
+      }
+    };
+  }, [pane.id]);
 
   function sendPendingInputs() {
+    if (shared) {
+      try { void Promise.resolve(coordinator.send(pendingInputs)).then(() => setPendingInputs([])).catch(error => setError(error.message)); }
+      catch (error) { setError(error instanceof Error ? error.message : "Could not send input."); }
+      return;
+    }
     if (!sessionRef.current || pendingInputs.length === 0) return;
     sessionRef.current.sendInput?.(pendingInputs);
     setPendingInputs([]);
@@ -576,6 +1109,7 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
   return (
     <section
       className="live-pane-root"
+      data-mobile={mobile || undefined}
       aria-label={`Live audio pane ${pane.title}`}
       data-live-pane-id={pane.id}
       data-live-status={status}
@@ -589,6 +1123,18 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
           </button>
         </div>
         <div className="live-pane-sidebar-content">
+          <div className="live-sidebar-section">
+            <div className="live-toggle-row">
+              <span className="live-toggle-label">Streaming mode</span>
+              <label className="live-switch">
+                <input type="checkbox" aria-label="Streaming mode" checked={streamingMode}
+                  onChange={(event) => changeStreamingMode(event.target.checked)} disabled={isLive} />
+                <span className="live-slider" />
+              </label>
+            </div>
+            {streamingMode && <p className="live-form-hint">Uses public stream metrics, chat activity and approved Streaming memory. Personal memory and private tools are unavailable.</p>}
+          </div>
+          {!streamingMode && (
           <div className="live-sidebar-section">
             <div className="live-section-header">
               <span>Start from a prompt</span>
@@ -636,6 +1182,7 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
               </button>
             </div>
           </div>
+          )}
 
           <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle, #30363d)", margin: "4px 0" }} />
 
@@ -685,6 +1232,45 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
                 <span className="live-slider" />
               </label>
             </div>
+            <div className="live-toggle-row">
+              <span className="live-toggle-label">Show tool calls in chat</span>
+              <label className="live-switch">
+                <input
+                  type="checkbox"
+                  aria-label="Show tool calls in chat"
+                  checked={showToolCalls}
+                  onChange={(e) => setShowToolCalls(e.target.checked)}
+                />
+                <span className="live-slider" />
+              </label>
+            </div>
+            <div className="live-toggle-row" style={{ marginTop: 6 }}>
+              <span className="live-toggle-label">Live statistics</span>
+              <button
+                type="button"
+                className="live-btn-secondary"
+                style={{ padding: "3px 10px", fontSize: 11, width: "auto", flex: "none" }}
+                onClick={() => {
+                  updateLiveSessionStats((prev) => {
+                    if (!prev.sessionActive) {
+                      return {
+                        model: voiceModel,
+                        delegatedModel,
+                        delegatedReasoningEffort: reasoningEffort,
+                        delegatedType,
+                        voice,
+                        language,
+                        webSearch
+                      };
+                    }
+                    return {};
+                  });
+                  window.dispatchEvent(new Event("space-live-rail-stats-toggle"));
+                }}
+              >
+                📊 Show live stats
+              </button>
+            </div>
           </div>
 
           <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle, #30363d)", margin: "4px 0" }} />
@@ -703,6 +1289,25 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
             {!voiceModelCollapsed && (
               <>
                 <div className="live-form-group">
+                  <label className="live-form-label" htmlFor="live-voice-provider-select">
+                    Provider
+                  </label>
+                  <select
+                    id="live-voice-provider-select"
+                    className="live-select"
+                    value={provider}
+                    onChange={(e) => handleProviderChange(e.target.value as LiveAudioProviderId)}
+                    disabled={isLive}
+                  >
+                    {getAllLiveAudioProviders().filter((p) => !streamingMode || p.id === "openai" || p.id === "google" || p.id === "vercel").map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.displayName} ({p.transport.toUpperCase()})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="live-form-group">
                   <label className="live-form-label" htmlFor="live-voice-model-select">
                     Model
                   </label>
@@ -710,11 +1315,11 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
                     id="live-voice-model-select"
                     className="live-select"
                     value={voiceModel}
-                    onChange={(e) => setVoiceModel(e.target.value)}
+                    onChange={(e) => handleModelChange(e.target.value)}
                     disabled={isLive}
                   >
-                    {VOICE_MODELS.map((m) => (
-                      <option key={m.value} value={m.value}>
+                    {availableModels.map((m) => (
+                      <option key={m.id} value={m.id}>
                         {m.label}
                       </option>
                     ))}
@@ -732,8 +1337,8 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
                     onChange={(e) => setVoice(e.target.value)}
                     disabled={isLive}
                   >
-                    {VOICE_OPTIONS.map((v) => (
-                      <option key={v.value} value={v.value}>
+                    {availableVoices.map((v) => (
+                      <option key={v.id} value={v.id}>
                         {v.label}
                       </option>
                     ))}
@@ -792,143 +1397,46 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
 
           <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle, #30363d)", margin: "4px 0" }} />
 
-          <div className="live-sidebar-section">
+          {!streamingMode && <div className="live-sidebar-section">
             <div
               className="live-section-header"
-              onClick={() => setDelegatedModelCollapsed((prev) => !prev)}
+              onClick={() => setMemoryControlCollapsed((prev) => !prev)}
               role="button"
               tabIndex={0}
             >
-              <span>Delegated model</span>
-              <span>{delegatedModelCollapsed ? "+" : "^"}</span>
+              <span>Space Control & Memory</span>
+              <span>{memoryControlCollapsed ? "+" : "^"}</span>
             </div>
 
-            {!delegatedModelCollapsed && (
+            {!memoryControlCollapsed && (
               <>
-                <div className="live-form-group">
-                  <label className="live-form-label" htmlFor="live-delegated-type">
-                    Type
-                  </label>
-                  <input
-                    id="live-delegated-type"
-                    type="text"
-                    className="live-input"
-                    value={delegatedType === "responses" ? "Responses" : "Client"}
-                    readOnly
-                  />
-                </div>
-
-                <div className="live-form-group" ref={modelPickerRef}>
-                  <label className="live-form-label" htmlFor="live-delegated-model">
-                    Model
-                  </label>
-                  <div className="live-model-picker-container">
-                    <button
-                      type="button"
-                      id="live-delegated-model"
-                      aria-haspopup="listbox"
-                      aria-expanded={modelPickerOpen}
-                      className="live-select live-model-trigger"
-                      onClick={() => !isLive && setModelPickerOpen((prev) => !prev)}
-                      disabled={isLive}
-                    >
-                      <span className="live-model-trigger-text">{delegatedModel}</span>
-                      <span className="live-model-trigger-icon">↕</span>
-                    </button>
-
-                    {modelPickerOpen && (
-                      <div className="live-model-picker-menu">
-                        <div className="live-model-search-box">
-                          <svg className="live-model-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <circle cx="11" cy="11" r="8" />
-                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                          </svg>
-                          <input
-                            type="text"
-                            className="live-model-search-input"
-                            placeholder="Select a model..."
-                            value={modelSearch}
-                            onChange={(e) => setModelSearch(e.target.value)}
-                            autoFocus
-                          />
-                        </div>
-                        <div className="live-model-list" role="listbox">
-                          {filteredModels.map((m) => {
-                            const isSelected = m === delegatedModel;
-                            return (
-                              <div
-                                key={m}
-                                role="option"
-                                aria-selected={isSelected}
-                                className={`live-model-item ${isSelected ? "selected" : ""}`}
-                                onClick={() => {
-                                  setDelegatedModel(m);
-                                  setModelPickerOpen(false);
-                                  setModelSearch("");
-                                }}
-                              >
-                                <span className="live-model-check">{isSelected ? "✓" : ""}</span>
-                                <span className="live-model-name">{m}</span>
-                              </div>
-                            );
-                          })}
-                          {filteredModels.length === 0 && modelSearch.trim() && (
-                            <div
-                              role="option"
-                              aria-selected={false}
-                              className="live-model-item"
-                              onClick={() => {
-                                setDelegatedModel(modelSearch.trim());
-                                setModelPickerOpen(false);
-                                setModelSearch("");
-                              }}
-                            >
-                              <span className="live-model-check"></span>
-                              <span className="live-model-name">Use &quot;{modelSearch.trim()}&quot;</span>
-                            </div>
-                          )}
-                          {filteredModels.length === 0 && !modelSearch.trim() && (
-                            <div className="live-model-empty">No models available</div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="live-form-group">
-                  <label className="live-form-label" htmlFor="live-reasoning-effort">
-                    Reasoning effort
-                  </label>
-                  <select
-                    id="live-reasoning-effort"
-                    className="live-select"
-                    value={reasoningEffort}
-                    onChange={(e) => setReasoningEffort(e.target.value as any)}
-                    disabled={isLive}
-                  >
-                    {REASONING_EFFORTS.map((r) => (
-                      <option key={r.value} value={r.value}>
-                        {r.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
                 <div className="live-toggle-row">
-                  <span className="live-toggle-label">Web search</span>
+                  <span className="live-toggle-label">Space Control MCP Tools</span>
                   <label className="live-switch">
                     <input
                       type="checkbox"
-                      aria-label="Web search"
-                      checked={webSearch}
-                      onChange={(e) => setWebSearch(e.target.checked)}
+                      aria-label="Space Control MCP Tools"
+                      checked={enableMcpTools}
+                      onChange={(e) => setEnableMcpTools(e.target.checked)}
                       disabled={isLive}
                     />
                     <span className="live-slider" />
                   </label>
                 </div>
 
+                <div className="live-toggle-row">
+                  <span className="live-toggle-label">Extended Profile Memory</span>
+                  <label className="live-switch">
+                    <input
+                      type="checkbox"
+                      aria-label="Extended Profile Memory"
+                      checked={enableProfileMemory}
+                      onChange={(e) => setEnableProfileMemory(e.target.checked)}
+                      disabled={isLive}
+                    />
+                    <span className="live-slider" />
+                  </label>
+                </div>
                 <div className="live-toggle-row">
                   <span className="live-toggle-label">Gemini Memory Access</span>
                   <label className="live-switch">
@@ -941,21 +1449,6 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
                     />
                     <span className="live-slider" />
                   </label>
-                </div>
-
-                <div className="live-form-group">
-                  <label className="live-form-label" htmlFor="live-delegated-prompt">
-                    Prompt
-                  </label>
-                  <textarea
-                    id="live-delegated-prompt"
-                    className="live-prompt-textarea"
-                    style={{ minHeight: "60px" }}
-                    placeholder="+ Add delegated model prompt"
-                    value={delegatedPrompt}
-                    onChange={(e) => setDelegatedPrompt(e.target.value)}
-                    disabled={isLive}
-                  />
                 </div>
 
                 <div className="live-form-group">
@@ -980,11 +1473,172 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
                 </div>
               </>
             )}
-          </div>
+          </div>}
+
+          {provider !== "google" && provider !== "local" && (
+            <>
+              <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle, #30363d)", margin: "4px 0" }} />
+
+              <div className="live-sidebar-section">
+                <div
+                  className="live-section-header"
+                  onClick={() => setDelegatedModelCollapsed((prev) => !prev)}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <span>Delegated model</span>
+                  <span>{delegatedModelCollapsed ? "+" : "^"}</span>
+                </div>
+
+                {!delegatedModelCollapsed && (
+                  <>
+                    <div className="live-form-group">
+                      <label className="live-form-label" htmlFor="live-delegated-type">
+                        Type
+                      </label>
+                      <input
+                        id="live-delegated-type"
+                        type="text"
+                        className="live-input"
+                        value={delegatedType === "responses" ? "Responses" : "Client"}
+                        readOnly
+                      />
+                    </div>
+
+                    <div className="live-form-group" ref={modelPickerRef}>
+                      <label className="live-form-label" htmlFor="live-delegated-model">
+                        Model
+                      </label>
+                      <div className="live-model-picker-container">
+                        <button
+                          type="button"
+                          id="live-delegated-model"
+                          aria-haspopup="listbox"
+                          aria-expanded={modelPickerOpen}
+                          className="live-select live-model-trigger"
+                          onClick={() => !isLive && setModelPickerOpen((prev) => !prev)}
+                          disabled={isLive}
+                        >
+                          <span className="live-model-trigger-text">{delegatedModel}</span>
+                          <span className="live-model-trigger-icon">↕</span>
+                        </button>
+
+                        {modelPickerOpen && (
+                          <div className="live-model-picker-menu">
+                            <div className="live-model-search-box">
+                              <svg className="live-model-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <circle cx="11" cy="11" r="8" />
+                                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                              </svg>
+                              <input
+                                type="text"
+                                className="live-model-search-input"
+                                placeholder="Select a model..."
+                                value={modelSearch}
+                                onChange={(e) => setModelSearch(e.target.value)}
+                                autoFocus
+                              />
+                            </div>
+                            <div className="live-model-list" role="listbox">
+                              {filteredModels.map((m) => {
+                                const isSelected = m === delegatedModel;
+                                return (
+                                  <div
+                                    key={m}
+                                    role="option"
+                                    aria-selected={isSelected}
+                                    className={`live-model-item ${isSelected ? "selected" : ""}`}
+                                    onClick={() => {
+                                      setDelegatedModel(m);
+                                      setModelPickerOpen(false);
+                                      setModelSearch("");
+                                    }}
+                                  >
+                                    <span className="live-model-check">{isSelected ? "✓" : ""}</span>
+                                    <span className="live-model-name">{m}</span>
+                                  </div>
+                                );
+                              })}
+                              {filteredModels.length === 0 && modelSearch.trim() && (
+                                <div
+                                  role="option"
+                                  aria-selected={false}
+                                  className="live-model-item"
+                                  onClick={() => {
+                                    setDelegatedModel(modelSearch.trim());
+                                    setModelPickerOpen(false);
+                                    setModelSearch("");
+                                  }}
+                                >
+                                  <span className="live-model-check"></span>
+                                  <span className="live-model-name">Use &quot;{modelSearch.trim()}&quot;</span>
+                                </div>
+                              )}
+                              {filteredModels.length === 0 && !modelSearch.trim() && (
+                                <div className="live-model-empty">No models available</div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="live-form-group">
+                      <label className="live-form-label" htmlFor="live-reasoning-effort">
+                        Reasoning effort
+                      </label>
+                      <select
+                        id="live-reasoning-effort"
+                        className="live-select"
+                        value={reasoningEffort}
+                        onChange={(e) => setReasoningEffort(e.target.value as any)}
+                        disabled={isLive}
+                      >
+                        {REASONING_EFFORTS.map((r) => (
+                          <option key={r.value} value={r.value}>
+                            {r.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="live-toggle-row">
+                      <span className="live-toggle-label">Web search</span>
+                      <label className="live-switch">
+                        <input
+                          type="checkbox"
+                          aria-label="Web search"
+                          checked={webSearch}
+                          onChange={(e) => setWebSearch(e.target.checked)}
+                          disabled={isLive}
+                        />
+                        <span className="live-slider" />
+                      </label>
+                    </div>
+
+                    <div className="live-form-group">
+                      <label className="live-form-label" htmlFor="live-delegated-prompt">
+                        Prompt
+                      </label>
+                      <textarea
+                        id="live-delegated-prompt"
+                        className="live-prompt-textarea"
+                        style={{ minHeight: "60px" }}
+                        placeholder="+ Add delegated model prompt"
+                        value={delegatedPrompt}
+                        onChange={(e) => setDelegatedPrompt(e.target.value)}
+                        disabled={isLive}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            </>
+          )}
 
           <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle, #30363d)", margin: "4px 0" }} />
 
-          <div className="live-sidebar-section">
+          {!streamingMode && <div className="live-sidebar-section">
             <div
               className="live-section-header"
               onClick={() => setPersonalMemoryCollapsed((prev) => !prev)}
@@ -999,7 +1653,12 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
                 <div className="live-functions-box" aria-label="Personal memory entries">
                   {personalMemories.map((item) => (
                     <div className="live-function-item" key={item.id}>
-                      <span title={item.value}>{item.key}: {item.value}</span>
+                      <span title={item.value}>
+                        <span className="live-function-tag" style={{ marginRight: 6, textTransform: "uppercase", fontSize: 9 }}>
+                          {item.category || "profile"}
+                        </span>
+                        <strong>{item.key}</strong>: {item.value}
+                      </span>
                       <button
                         type="button"
                         className="live-btn-secondary"
@@ -1011,6 +1670,23 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
                       </button>
                     </div>
                   ))}
+                </div>
+                <div className="live-form-group">
+                  <label className="live-form-label" htmlFor="live-memory-category">Category</label>
+                  <select
+                    id="live-memory-category"
+                    className="live-select"
+                    value={newMemoryCategory}
+                    onChange={(e) => setNewMemoryCategory(e.target.value as any)}
+                    disabled={isLive}
+                  >
+                    <option value="core">Core (Tier 1 - Always loaded)</option>
+                    <option value="profile">Profile (Tier 2 - Extended)</option>
+                    <option value="preference">Preference</option>
+                    <option value="fact">Fact</option>
+                    <option value="instruction">Instruction</option>
+                    <option value="note">Note</option>
+                  </select>
                 </div>
                 <div className="live-form-group">
                   <label className="live-form-label" htmlFor="live-memory-key">Key</label>
@@ -1039,124 +1715,257 @@ export function LivePane({ pane, workspaceTextSize = 14 }: LivePaneProps) {
                 </button>
               </>
             )}
-          </div>
+          </div>}
         </div>
       </aside>
 
       <main className="live-pane-main">
-        <div className="live-main-body">
-          {error && (
-            <div className="live-error-banner" role="alert">
-              <strong>Error:</strong> {error}
-            </div>
-          )}
+        {(() => {
+          const activeRunningTool = transcripts.slice().reverse().find((item) => item.toolCall && item.toolCall.status === "running")?.toolCall;
+          const visibleTranscripts = transcripts.filter((item) => {
+            if (voiceOnly && !item.toolCall) return false;
+            if (item.toolCall && !showToolCalls) return false;
+            return true;
+          });
 
-          {isLive && micSilent && (
-            <div className="live-mic-warning" role="alert">
-              <strong>No audio detected</strong> from {selectedDeviceLabel}. Check the microphone permission or mute switch.
-            </div>
-          )}
+          const isCompactLayout = visibleTranscripts.length > 0 && !mobile;
 
-          {!voiceOnly && transcripts.length > 0 && (
-            <div className="live-transcript-feed" role="log" aria-label="Chat transcript">
-              {transcripts.map((item) => (
-                <div key={item.id} className={`live-transcript-bubble ${item.role}`}>
-                  <div className="live-transcript-text">{item.text}</div>
-                  <div className="live-transcript-meta">
-                    {item.role === "user" ? "You" : item.role === "assistant" ? "GPT-Live" : "System"} • {item.timestamp}
+          return (
+            <div
+              ref={mainBodyRef}
+              className={`live-main-body ${
+                visibleTranscripts.length === 0 ? "is-empty" : "has-transcripts"
+              } ${isCompactLayout ? "is-compact-dialog" : ""}`}
+            >
+              {error && (
+                <div className="live-error-banner" role="alert">
+                  <strong>Error:</strong> {error}
+                </div>
+              )}
+
+              {isLive && micSilent && (
+                <div className="live-mic-warning" role="alert">
+                  <strong>No audio detected</strong> from {selectedDeviceLabel}. Check the microphone permission or mute switch.
+                </div>
+              )}
+
+              {showToolCalls && activeRunningTool && (
+                <div className="live-active-tool-banner" role="status" aria-live="polite">
+                  <span className="live-active-tool-icon">⚡</span>
+                  <span className="live-active-tool-text">
+                    <strong>Tool executing:</strong> {activeRunningTool.name}
+                  </span>
+                </div>
+              )}
+
+              <section className={`live-session-card ${isLive ? "is-live" : ""}`} aria-label="Live controls">
+                <div className="live-session-card-header">
+                  <div className="live-session-header-left">
+                    {isCompactLayout && (
+                      <button
+                        type="button"
+                        className={`room-toolbar-visibility-button room-live-rail-button live-pane-mini-orb ${
+                          isLive ? "is-connected" : ""
+                        } ${status === "listening" ? "is-listening is-user-speaking" : ""} ${
+                          status === "speaking" ? "is-speaking is-agent-speaking" : ""
+                        } ${status === "thinking" || status === "connecting" ? "is-thinking" : ""}`}
+                        onClick={() => void handleToggleSession()}
+                        aria-label={isLive ? "End session" : "Start session"}
+                        disabled={status === "connecting"}
+                        title={isLive ? "Click to end Live session" : "Click to start Live session"}
+                      >
+                        <span className="room-live-rail-glow" aria-hidden="true" />
+                        <span className="room-live-rail-sphere" aria-hidden="true">
+                          <span className="room-live-rail-line line-one" />
+                          <span className="room-live-rail-line line-two" />
+                          <span className="room-live-rail-line line-three" />
+                          <span className="room-live-rail-line line-four" />
+                          <span className="room-live-rail-core" />
+                        </span>
+                      </button>
+                    )}
+                    <div className="live-session-title-group">
+                      <div className="live-session-card-title">
+                        {streamingMode
+                          ? "Streaming Live"
+                          : voiceOnly
+                          ? "Voice-only mode"
+                          : provider === "google"
+                          ? "Talk to Gemini Live"
+                          : provider === "amazon"
+                          ? "Talk to Nova Sonic"
+                          : provider === "local"
+                          ? "Talk to Local Qwen"
+                          : provider === "vercel"
+                          ? "Talk to GPT-Live (Vercel)"
+                          : "Talk to GPT-Live"}
+                      </div>
+                      <div className="live-session-card-subtitle">
+                        {new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(clockNow)} · {TIME_ZONE_OPTIONS.find((option) => option.value === timeZone)?.label || timeZone}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
-              <div ref={transcriptBottomRef} />
-            </div>
-          )}
+                  <div className="live-session-card-tools">
+                      <button
+                        type="button"
+                        className={`live-icon-btn ${voiceOnly ? "is-voice-only-active is-active" : ""}`}
+                        onClick={() => setVoiceOnly((prev) => !prev)}
+                        aria-label={voiceOnly ? "Disable voice-only mode" : "Enable voice-only mode"}
+                        title={voiceOnly ? "Voice-only mode enabled (click to disable)" : "Enable voice-only mode"}
+                      >
+                        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                          <path d="M2 10v4" />
+                          <path d="M6 6v12" />
+                          <path d="M10 3v18" />
+                          <path d="M14 6v12" />
+                          <path d="M18 10v4" />
+                          <path d="M22 12v0" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        className={`live-icon-btn ${muted ? "is-muted" : ""}`}
+                        onClick={handleMuteToggle}
+                        aria-label={muted ? "Unmute microphone" : "Mute microphone"}
+                        title={muted ? "Unmute microphone" : "Mute microphone"}
+                        disabled={!isLive}
+                      >
+                        {muted ? (
+                          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <line x1="2" y1="2" x2="22" y2="22" />
+                            <path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2" />
+                            <path d="M5 10v2a7 7 0 0 0 12 5" />
+                            <path d="M15 9.34V5a3 3 0 0 0-5.68-1.33" />
+                            <path d="M9 9v3a3 3 0 0 0 5.12 2.12" />
+                            <line x1="12" y1="19" x2="12" y2="22" />
+                          </svg>
+                        ) : (
+                          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                            <line x1="12" y1="19" x2="12" y2="22" />
+                          </svg>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        className="live-icon-btn"
+                        onClick={() => void handleClearConversationAndLogs()}
+                        aria-label="Clear conversation and logs"
+                        title="Clear conversation transcript and disk logs"
+                      >
+                        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M3 6h18" />
+                          <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                          <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                          <line x1="10" y1="11" x2="10" y2="17" />
+                          <line x1="14" y1="11" x2="14" y2="17" />
+                        </svg>
+                      </button>
+                      <button
+                        ref={settingsButtonRef}
+                        type="button"
+                        className="live-icon-btn live-settings-open"
+                        aria-label="Open live settings"
+                        aria-expanded={settingsOpen}
+                        title="Settings"
+                        onClick={() => setSettingsOpen(true)}
+                      >
+                        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="m19.4 15 .1.1a2 2 0 0 1-2.8 2.8l-.1-.1a2 2 0 0 0-3.4 1.4V19a2 2 0 0 1-4 0v-.2a2 2 0 0 0-3.4-1.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A2 2 0 0 0 3.4 11H3a2 2 0 0 1 0-4h.2a2 2 0 0 0 1.4-3.4l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A2 2 0 0 0 11 2.6V2a2 2 0 0 1 4 0v.2a2 2 0 0 0 3.4 1.4l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A2 2 0 0 0 20.6 10h.2a2 2 0 0 1 0 4h-.2a2 2 0 0 0-1.2 1Z"/></svg>
+                      </button>
+                    </div>
+                  </div>
 
-          <section className={`live-session-card ${isLive ? "is-live" : ""}`} aria-label="Live controls">
-            <div className="live-session-card-header">
-              <div>
-                <div className="live-session-card-title">{voiceOnly ? "Voice-only mode" : "Talk to GPT-Live"}</div>
-                <div className="live-session-card-subtitle">
-                  {new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(clockNow)} · {TIME_ZONE_OPTIONS.find((option) => option.value === timeZone)?.label || timeZone}
-                </div>
+                  {!isCompactLayout && (
+                    <div className="live-pane-orb-wrapper">
+                      <button
+                        type="button"
+                        className={`room-toolbar-visibility-button room-live-rail-button live-pane-orb-button ${
+                          isLive ? "is-connected" : ""
+                        } ${status === "listening" ? "is-listening is-user-speaking" : ""} ${
+                          status === "speaking" ? "is-speaking is-agent-speaking" : ""
+                        } ${status === "thinking" || status === "connecting" ? "is-thinking" : ""}`}
+                        onClick={() => void handleToggleSession()}
+                        aria-label={isLive ? "End session" : "Start session"}
+                        disabled={status === "connecting"}
+                        title={isLive ? "Click to end Live session" : "Click to start Live session"}
+                      >
+                        <span className="room-live-rail-glow" aria-hidden="true" />
+                        <span className="room-live-rail-sphere" aria-hidden="true">
+                          <span className="room-live-rail-line line-one" />
+                          <span className="room-live-rail-line line-two" />
+                          <span className="room-live-rail-line line-three" />
+                          <span className="room-live-rail-line line-four" />
+                          <span className="room-live-rail-core" />
+                        </span>
+                      </button>
+                    </div>
+                  )}
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    hidden
+                    multiple
+                    accept="image/*,.pdf,.txt,.md,.json,.csv"
+                    onChange={(event) => {
+                      if (event.target.files) void handleFiles(event.target.files);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                  {pendingInputs.length > 0 && (
+                    <div style={{ display: "flex", justifyContent: "center", margin: "6px 0" }}>
+                      <button type="button" className="live-btn-secondary live-send-inputs" onClick={sendPendingInputs} disabled={!isLive}>
+                        Send {pendingInputs.length} input{pendingInputs.length === 1 ? "" : "s"}
+                      </button>
+                    </div>
+                  )}
+
+                  {isLive && (
+                    <div className="live-session-card-footer">
+                      <div className="live-mic-level" role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(1, userAudioLevel) * 100)}>
+                        <div className="live-mic-level-fill" style={{ width: `${Math.min(100, Math.round(userAudioLevel * 100))}%` }} />
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                {visibleTranscripts.length > 0 && (
+                  <div className="live-transcript-feed" role="log" aria-label="Chat transcript">
+                    {visibleTranscripts.map((item) => (
+                      <div key={item.id} className={`live-transcript-bubble ${item.role}`}>
+                        <div className="live-transcript-text">
+                          {item.toolCall ? (
+                            <div className="live-tool-call-badge" style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 600 }}>
+                                <span>⚡</span>
+                                <span>{item.toolCall.name}</span>
+                                {item.toolCall.status === "running" && <span style={{ color: "#e3b341", fontSize: "11px" }}>● εκτελείται...</span>}
+                                {item.toolCall.status === "done" && <span style={{ color: "#3fb950", fontSize: "11px" }}>✓ ολοκληρώθηκε</span>}
+                                {item.toolCall.status === "error" && <span style={{ color: "#f85149", fontSize: "11px" }}>✗ σφάλμα</span>}
+                              </div>
+                              {item.toolCall.query && <div style={{ fontSize: "11px", opacity: 0.8 }}>Παράμετροι: {item.toolCall.query}</div>}
+                              {item.toolCall.resultSummary && <div style={{ fontSize: "11px", color: "#7ee787" }}>{item.toolCall.resultSummary}</div>}
+                            </div>
+                          ) : (
+                            item.text
+                          )}
+                        </div>
+                        <div className="live-transcript-meta">
+                          {item.toolCall ? "Space Control MCP" : item.role === "user" ? "You" : item.role === "assistant" ? (provider === "google" ? "Gemini Live" : provider === "amazon" ? "Nova Sonic" : provider === "local" ? "Local Qwen" : provider === "vercel" ? "GPT-Live (Vercel)" : "GPT-Live") : "System"} • {item.timestamp}
+                        </div>
+                      </div>
+                    ))}
+                    <div ref={transcriptBottomRef} />
+                  </div>
+                )}
               </div>
-              <div className="live-session-card-tools">
-                <span className={`live-status-pill ${status}`}><span className={`live-status-dot ${status}`} />{status}</span>
-                <button
-                  ref={settingsButtonRef}
-                  type="button"
-                  className="live-settings-open"
-                  aria-label="Open live settings"
-                  aria-expanded={settingsOpen}
-                  onClick={() => setSettingsOpen(true)}
-                >
-                  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="m19.4 15 .1.1a2 2 0 0 1-2.8 2.8l-.1-.1a2 2 0 0 0-3.4 1.4V19a2 2 0 0 1-4 0v-.2a2 2 0 0 0-3.4-1.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A2 2 0 0 0 3.4 11H3a2 2 0 0 1 0-4h.2a2 2 0 0 0 1.4-3.4l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A2 2 0 0 0 11 2.6V2a2 2 0 0 1 4 0v.2a2 2 0 0 0 3.4 1.4l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A2 2 0 0 0 20.6 10h.2a2 2 0 0 1 0 4h-.2a2 2 0 0 0-1.2 1Z"/></svg>
-                </button>
-              </div>
-            </div>
-
-            {transcripts.length === 0 && (
-              <>
-                <div
-                  className={`live-waveform-orb ${status === "listening" || userAudioLevel > 0.05 ? "is-listening" : status === "speaking" ? "is-speaking" : ""}`}
-                  style={userAudioLevel > 0.05 ? { transform: `scale(${1 + Math.min(0.4, userAudioLevel * 0.4)})` } : undefined}
-                >
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" />
-                  </svg>
-                </div>
-                <p className="live-hero-subtitle">
-                  {voiceOnly ? "Chat transcript is disabled. Audio status and microphone controls remain active." : "Start a voice conversation using your microphone."}
-                </p>
-              </>
-            )}
-
-            <div className="live-session-actions">
-              <button
-                type="button"
-                className={`live-btn-session ${isLive ? "is-stop" : "is-start"}`}
-                onClick={() => void handleToggleSession()}
-                aria-label={isLive ? "End session" : "Start session"}
-                disabled={status === "connecting"}
-              >
-                {isLive ? "End session" : "Start session"}
-              </button>
-              {isLive && (
-                <button type="button" className="live-btn-secondary" onClick={handleMuteToggle} aria-label={muted ? "Unmute microphone" : "Mute microphone"}>
-                  {muted ? "Unmute" : "Mute"}
-                </button>
-              )}
-              <input
-                ref={fileInputRef}
-                type="file"
-                hidden
-                multiple
-                accept="image/*,.pdf,.txt,.md,.json,.csv"
-                onChange={(event) => {
-                  if (event.target.files) void handleFiles(event.target.files);
-                  event.currentTarget.value = "";
-                }}
-              />
-              {pendingInputs.length > 0 && (
-                <button type="button" className="live-btn-secondary live-send-inputs" onClick={sendPendingInputs} disabled={!isLive}>
-                  Send {pendingInputs.length} input{pendingInputs.length === 1 ? "" : "s"}
-                </button>
-              )}
-            </div>
-
-            <div className="live-session-card-footer">
-              {isLive && <span className="live-session-hint">Listening for your voice</span>}
-              {isLive && (
-                <div className="live-mic-level" role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(1, userAudioLevel) * 100)}>
-                  <div className="live-mic-level-fill" style={{ width: `${Math.min(100, Math.round(userAudioLevel * 100))}%` }} />
-                </div>
-              )}
-            </div>
-          </section>
-        </div>
+            );
+          })()}
       </main>
 
       <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: "none" }} />
+
     </section>
   );
 }

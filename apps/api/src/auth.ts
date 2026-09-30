@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { createHmac, randomBytes, scrypt as scryptCallback, timingSafeEqual, type ScryptOptions } from "node:crypto";
 import { authUserSchema, type AuthUser, type LoginInput } from "@space/contracts";
 import { persistentOperatorSessionTtlSeconds, signPersistentOperatorSessionToken, signSessionTokenWithTtl } from "@space/runtime";
@@ -26,6 +27,16 @@ export interface AuthConfig {
   operatorPasswordHash?: string;
   devLogin: boolean;
   secureCookies: boolean;
+  googleClientId?: string;
+  googleClientSecret?: string;
+  googleRedirectUri?: string;
+}
+
+export interface GoogleAuthUserInfo {
+  email: string;
+  sub: string;
+  name?: string;
+  picture?: string;
 }
 
 export interface SessionPayload {
@@ -37,12 +48,32 @@ export const cookieName = SESSION_COOKIE;
 export const csrfHeaderName = CSRF_HEADER;
 
 export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
+  let googleClientId = env.SPACE_GOOGLE_CLIENT_ID || env.GOOGLE_CLIENT_ID || undefined;
+  let googleClientSecret = env.SPACE_GOOGLE_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || undefined;
+  if (!googleClientId) {
+    try {
+      const candidates = ["/opt/spaceapp/secrets/google-oauth.json", "/var/lib/spaceapp/google-oauth.json"];
+      for (const p of candidates) {
+        if (existsSync(p)) {
+          const raw = JSON.parse(readFileSync(p, "utf8"));
+          if (raw.clientId && raw.clientSecret) {
+            googleClientId = raw.clientId;
+            googleClientSecret = raw.clientSecret;
+            break;
+          }
+        }
+      }
+    } catch {}
+  }
   return {
     sessionSecret: env.SPACE_SESSION_SECRET ?? "",
     operatorEmail: env.SPACE_OPERATOR_EMAIL,
     operatorPasswordHash: env.SPACE_OPERATOR_PASSWORD_HASH,
     devLogin: env.NODE_ENV !== "production" && env.SPACE_DEV_LOGIN === "true",
-    secureCookies: env.NODE_ENV === "production"
+    secureCookies: env.NODE_ENV === "production",
+    googleClientId,
+    googleClientSecret,
+    googleRedirectUri: env.SPACE_GOOGLE_REDIRECT_URI || env.GOOGLE_REDIRECT_URI || undefined
   };
 }
 
@@ -164,4 +195,112 @@ export function verifySession(token: string | undefined, secret: string): AuthUs
   } catch {
     return null;
   }
+}
+
+export function buildGoogleAuthUrl(input: {
+  clientId: string;
+  redirectUri: string;
+  state: string;
+  codeChallenge?: string;
+}): string {
+  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  url.searchParams.set("client_id", input.clientId);
+  url.searchParams.set("redirect_uri", input.redirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", "openid email profile");
+  url.searchParams.set("access_type", "online");
+  url.searchParams.set("prompt", "select_account");
+  url.searchParams.set("state", input.state);
+  if (input.codeChallenge) {
+    url.searchParams.set("code_challenge", input.codeChallenge);
+    url.searchParams.set("code_challenge_method", "S256");
+  }
+  return url.toString();
+}
+
+export function decodeGoogleIdToken(idToken: string): GoogleAuthUserInfo {
+  const segment = idToken.split(".")[1];
+  if (!segment) throw new Error("Invalid ID token format.");
+  const payload = JSON.parse(Buffer.from(segment, "base64url").toString("utf8")) as {
+    email?: string;
+    sub?: string;
+    name?: string;
+    picture?: string;
+  };
+  if (!payload.email || !payload.sub) {
+    throw new Error("Google ID token missing required email or sub claim.");
+  }
+  return {
+    email: payload.email,
+    sub: payload.sub,
+    name: payload.name,
+    picture: payload.picture
+  };
+}
+
+export async function exchangeGoogleCode(input: {
+  code: string;
+  clientId: string;
+  clientSecret?: string;
+  redirectUri: string;
+  codeVerifier?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<GoogleAuthUserInfo> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code: input.code,
+    redirect_uri: input.redirectUri,
+    client_id: input.clientId
+  });
+  if (input.clientSecret) body.set("client_secret", input.clientSecret);
+  if (input.codeVerifier) body.set("code_verifier", input.codeVerifier);
+
+  const res = await fetchImpl("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    body
+  });
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => "");
+    throw new Error(`Google token exchange failed (${res.status}): ${errorText}`);
+  }
+  const data = (await res.json()) as { id_token?: string; access_token?: string };
+  if (data.id_token) {
+    return decodeGoogleIdToken(data.id_token);
+  }
+  if (data.access_token) {
+    const userInfoRes = await fetchImpl("https://openidconnect.googleapis.com/v1/userinfo", {
+      headers: { authorization: `Bearer ${data.access_token}` }
+    });
+    if (!userInfoRes.ok) throw new Error("Failed to fetch Google user info.");
+    const info = (await userInfoRes.json()) as { email: string; sub: string; name?: string; picture?: string };
+    return { email: info.email, sub: info.sub, name: info.name, picture: info.picture };
+  }
+  throw new Error("No id_token or access_token returned by Google.");
+}
+
+export async function verifyGoogleIdToken(input: {
+  idToken: string;
+  clientId?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<GoogleAuthUserInfo> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const res = await fetchImpl(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(input.idToken)}`);
+  if (!res.ok) {
+    throw new Error("Google token verification failed.");
+  }
+  const payload = (await res.json()) as { email?: string; sub?: string; aud?: string; name?: string; picture?: string };
+  if (!payload.email || !payload.sub) {
+    throw new Error("Google token response missing required fields.");
+  }
+  if (input.clientId && payload.aud && payload.aud !== input.clientId) {
+    throw new Error("Google token audience mismatch.");
+  }
+  return {
+    email: payload.email,
+    sub: payload.sub,
+    name: payload.name,
+    picture: payload.picture
+  };
 }

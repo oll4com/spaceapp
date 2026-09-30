@@ -15,6 +15,8 @@ export const geminiDirectParityRuntimeId = "cli:gemini";
 export const geminiDirectParityCommand = "gemini-vscode-parity";
 export const qwenDirectParityRuntimeId = "cli:qwen";
 export const qwenDirectParityCommand = "qwen-vscode-parity";
+export const deepseekDirectParityRuntimeId = "cli:deepseek";
+export const deepseekDirectParityCommand = "deepseek-vscode-parity";
 export const codexDirectParityCwd = "/etc";
 export const codexDirectParityHome = "/var/lib/spaceapp-user";
 export const codexDirectParityCodexHome = "/var/lib/spaceapp-user/.codex";
@@ -56,6 +58,10 @@ export function isGrokDirectParityRuntime(runtimeId: string | null | undefined):
   return runtimeId === grokDirectParityRuntimeId;
 }
 
+export function isDeepSeekDirectParityRuntime(runtimeId: string | null | undefined): boolean {
+  return runtimeId === deepseekDirectParityRuntimeId;
+}
+
 export function isDirectOperatorParityRuntime(runtimeId: string | null | undefined): boolean {
   return findCliRuntimeDescriptor(runtimeId) !== null;
 }
@@ -69,7 +75,7 @@ export function pathInside(root: string, candidate: string): boolean {
 export function isLegacyCodexCliCwd(cwd: string | null | undefined, workspaceRoot: string): boolean {
   if (!cwd) return true;
   const resolved = resolve(cwd);
-  return resolved === "/opt/spaceapp" || pathInside(workspaceRoot, resolved);
+  return resolved === resolve(workspaceRoot);
 }
 
 export function resolveCodexDirectParityCwd(cwd: string | null | undefined, workspaceRoot: string): string {

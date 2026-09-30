@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   cliChatTurnDefaultRuntimeIds,
@@ -15,6 +16,7 @@ import {
   configuredCliRuntimeCommands,
   type CliRuntimeKey
 } from "./cli-runtime-descriptors.js";
+import { parseLiveModelPolicy, type LiveModelPolicy } from "./live-model-policy.js";
 
 export interface SpaceApiConfig {
   host: string;
@@ -96,8 +98,20 @@ export interface SpaceApiConfig {
   voiceTranscriptionDelay: "minimal" | "low" | "medium" | "high" | "xhigh";
   voiceTranscriptionTimeoutMs: number;
   voiceTranscriptionMaxDurationMs: number;
+  googleVoiceKeyFile: string | null;
+  googleVoiceApiKey: string | null;
+  googleVoiceBaseUrl: string;
+  awsVoiceKeyFile: string | null;
+  awsAccessKeyId: string | null;
+  awsSecretAccessKey: string | null;
+  awsRegion: string;
   localVoiceProviderUrl: string;
   localVoiceProviderToken: string | null;
+  vercelVoiceKeyFile: string | null;
+  vercelVoiceApiKey: string | null;
+  vercelVoiceBaseUrl: string;
+  liveModelPolicy: LiveModelPolicy;
+  liveJevAccelerationEnabled: boolean;
   geminiMemoryIndexPath: string;
   geminiMemoryMonthlyPath: string;
   geminiMemoryLockPath: string;
@@ -128,6 +142,13 @@ export interface SpaceApiConfig {
   telegramSecretRoot: string;
   streamingSecretRoot: string;
   streamingYoutubeDailyQuotaBudget: number;
+  demoProjectsEnabled: boolean;
+  demoProjectsRoot: string;
+  demoProjectsVarRoot: string;
+  demoProjectsPortStart: number;
+  demoProjectsPortEnd: number;
+  demoProjectsHealthTimeoutMs: number;
+  demoProjectsPublicOrigin: string | null;
   agentToolsWriterCommand: string | null;
   roomPaneCommandsEnabled: boolean;
   roomMiniRouterEnabled: boolean;
@@ -168,7 +189,7 @@ function parseMcpServerConfigs(raw: string | undefined): { configs: McpServerCon
 
 function parseVoiceTranscriptionModel(raw: string | undefined): VoiceTranscriptionModel {
   const parsed = voiceTranscriptionModelSchema.safeParse(raw);
-  return parsed.success ? parsed.data : "gpt-transcribe";
+  return parsed.success ? parsed.data : "gpt-live-1";
 }
 
 function parseVoiceTranscriptionVoice(raw: string | undefined): VoiceModelVoice {
@@ -266,8 +287,20 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     voiceTranscriptionDelay: parseVoiceTranscriptionDelay(env.SPACE_VOICE_TRANSCRIPTION_DELAY),
     voiceTranscriptionTimeoutMs: Math.min(parsePositiveInt(env.SPACE_VOICE_TRANSCRIPTION_TIMEOUT_MS, 15000), 60000),
     voiceTranscriptionMaxDurationMs: Math.min(parsePositiveInt(env.SPACE_VOICE_TRANSCRIPTION_MAX_DURATION_MS, 60000), 5 * 60 * 1000),
+    googleVoiceKeyFile: env.SPACE_GOOGLE_VOICE_KEY_FILE || env.SPACE_GEMINI_VOICE_KEY_FILE || null,
+    googleVoiceApiKey: env.GEMINI_API_KEY || env.GOOGLE_API_KEY || null,
+    googleVoiceBaseUrl: env.SPACE_GOOGLE_VOICE_BASE_URL || "https://generativelanguage.googleapis.com",
+    awsVoiceKeyFile: env.SPACE_AWS_VOICE_KEY_FILE || null,
+    awsAccessKeyId: env.AWS_ACCESS_KEY_ID || null,
+    awsSecretAccessKey: env.AWS_SECRET_ACCESS_KEY || null,
+    awsRegion: env.AWS_REGION || env.AWS_DEFAULT_REGION || "us-east-1",
     localVoiceProviderUrl: env.SPACE_LOCAL_VOICE_PROVIDER_URL || "http://192.168.10.213:8765",
     localVoiceProviderToken: env.SPACE_LOCAL_VOICE_PROVIDER_TOKEN || null,
+    vercelVoiceKeyFile: env.SPACE_VERCEL_VOICE_KEY_FILE || env.SPACE_VERCEL_AI_GATEWAY_KEY_FILE || null,
+    vercelVoiceApiKey: env.AI_GATEWAY_API_KEY || env.VERCEL_AI_GATEWAY_API_KEY || null,
+    vercelVoiceBaseUrl: env.SPACE_VERCEL_VOICE_BASE_URL || "https://ai-gateway.vercel.sh",
+    liveModelPolicy: parseLiveModelPolicy(env.SPACE_LIVE_MODEL_POLICY_JSON, env.SPACE_LIVE_DAILY_BUDGET_USD, env.SPACE_LIVE_COST_MODE),
+    liveJevAccelerationEnabled: env.SPACE_LIVE_JEV_ACCELERATION_ENABLED === "true",
     geminiMemoryIndexPath: geminiMemoryPaths.indexPath,
     geminiMemoryMonthlyPath: geminiMemoryPaths.monthlyPath,
     geminiMemoryLockPath: geminiMemoryPaths.lockPath,
@@ -298,7 +331,19 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     telegramSecretRoot: env.SPACE_TELEGRAM_SECRET_ROOT || "/opt/spaceapp/secrets/telegram",
     streamingSecretRoot: env.SPACE_STREAMING_SECRET_ROOT || "/opt/spaceapp/var/streaming-secrets",
     streamingYoutubeDailyQuotaBudget: Math.min(parsePositiveInt(env.SPACE_STREAMING_YOUTUBE_DAILY_QUOTA_BUDGET, 8000), 10000),
-    agentToolsWriterCommand: env.SPACE_AGENT_TOOLS_WRITER || "/opt/spaceapp/bin/space-agent-tools-writer",
+    demoProjectsEnabled: env.SPACE_DEMO_PROJECTS_ENABLED !== "false",
+    demoProjectsRoot: env.SPACE_DEMO_PROJECTS_ROOT || "/opt/spaceapp/demos",
+    demoProjectsVarRoot: env.SPACE_DEMO_PROJECTS_VAR_ROOT || "/opt/spaceapp/var/demo-projects",
+    demoProjectsPortStart: Math.min(parsePositiveInt(env.SPACE_DEMO_PROJECTS_PORT_START, 4930), 65000),
+    demoProjectsPortEnd: Math.min(parsePositiveInt(env.SPACE_DEMO_PROJECTS_PORT_END, 4999), 65500),
+    demoProjectsHealthTimeoutMs: Math.min(parsePositiveInt(env.SPACE_DEMO_PROJECTS_HEALTH_TIMEOUT_MS, 15000), 60000),
+    demoProjectsPublicOrigin: env.SPACE_DEMO_PROJECTS_PUBLIC_ORIGIN?.trim() || null,
+    agentToolsWriterCommand:
+      env.SPACE_PUBLIC_DISTRIBUTION === "true" ||
+      env.SPACE_AGENT_TOOLS_WRITER === "disabled" ||
+      env.SPACE_AGENT_TOOLS_WRITER === "none"
+        ? null
+        : (env.SPACE_AGENT_TOOLS_WRITER || (existsSync("/opt/spaceapp/bin/space-agent-tools-writer") ? "/opt/spaceapp/bin/space-agent-tools-writer" : null)),
     roomMiniRouterEnabled: env.SPACE_ROOM_MINI_ROUTER_ENABLED === "true",
     roomPaneCommandsEnabled: env.SPACE_ROOM_PANE_COMMANDS_ENABLED === "true",
     harnessEnabled: env.SPACE_HARNESS_ENABLED === "true",

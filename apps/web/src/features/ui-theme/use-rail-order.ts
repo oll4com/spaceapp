@@ -2,16 +2,28 @@ import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 
 export const RAIL_ORDER_KEY = 'space:room-rail-order:v1';
-export const RAIL_IDS = ['previous', 'next', 'create', 'layout', 'keyboard', 'music', 'docks', 'tools', 'expand', 'more'];
+export const RAIL_IDS = ['previous', 'next', 'rooms', 'create', 'layout', 'sticky', 'keyboard', 'music', 'snip-tool', 'live-model', 'quick-links', 'docks', 'tools', 'displays', 'fullscreen', 'expand'];
 
 export const UPPER_RAIL_ORDER_KEY = 'space:upper-rail-order:v1';
-export const UPPER_RAIL_IDS = ['minimized-bar', 'accounts', 'codex-reset', 'cli', 'memory', 'cpu', 'rtt'];
+export const UPPER_RAIL_IDS = ['agents-dashboard', 'minimized-bar', 'accounts', 'codex-reset', 'cli', 'memory', 'cpu', 'rtt'];
 
 export const LOWER_RAIL_ORDER_KEY = RAIL_ORDER_KEY;
 export const LOWER_RAIL_IDS = RAIL_IDS;
 
 export function normalizeRailOrder(value: unknown, allowedIds: string[] = RAIL_IDS): string[] {
-  return [...new Set([...(Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string' && allowedIds.includes(id)) : []), ...allowedIds])];
+  const existing = [...new Set(Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string' && allowedIds.includes(id)) : [])];
+  // Introduce the dashboard at the top once, preserving every existing relative order.
+  if (allowedIds === UPPER_RAIL_IDS && !existing.includes('agents-dashboard')) existing.unshift('agents-dashboard');
+  const missing = allowedIds.filter(id => !existing.includes(id));
+  if (missing.length === 0) return existing;
+  const expandIndex = existing.indexOf('expand');
+  if (expandIndex !== -1) {
+    const result = [...existing];
+    result.splice(expandIndex, 0, ...missing.filter(id => id !== 'expand'));
+    if (!result.includes('expand')) result.push('expand');
+    return result;
+  }
+  return [...existing, ...missing];
 }
 export function moveRailIcon(order: string[], from: string, to: string, after: boolean): string[] {
   if (from === to || !order.includes(from) || !order.includes(to)) return order;
@@ -56,7 +68,7 @@ export function useRailOrder(
     for (const icon of icons) {
       icon.style.order = String(order.indexOf(icon.dataset.railId!));
       icon.draggable = true;
-      icon.setAttribute('aria-description', 'Drag to reorder. Alt+ArrowUp or Alt+ArrowDown moves this icon.');
+      icon.setAttribute('aria-description', 'Drag to reorder. Right-click the rail to show or hide icons. Alt+ArrowUp or Alt+ArrowDown moves this icon.');
     }
     const iconAt = (target: EventTarget | null) => {
       const btn = target instanceof Element ? target.closest<HTMLButtonElement>('button[data-rail-id]') : null;

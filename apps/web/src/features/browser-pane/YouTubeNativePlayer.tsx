@@ -86,17 +86,37 @@ export function YouTubeNativePlayer({
       },
       play() {
         if (!playerReadyRef.current || !activePlayer.current) return;
+        playing.current = true;
+        onPlayingChange?.(true);
+        if (playbackKey) {
+          try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch {}
+        }
         activePlayer.current.playVideo();
       },
       pause() {
         if (!playerReadyRef.current || !activePlayer.current) return;
+        playing.current = false;
+        onPlayingChange?.(false);
+        if (playbackKey) {
+          try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch {}
+        }
         activePlayer.current.pauseVideo();
       },
       togglePlay() {
         if (!playerReadyRef.current || !activePlayer.current) return;
         if (playing.current) {
+          playing.current = false;
+          onPlayingChange?.(false);
+          if (playbackKey) {
+            try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch {}
+          }
           activePlayer.current.pauseVideo();
         } else {
+          playing.current = true;
+          onPlayingChange?.(true);
+          if (playbackKey) {
+            try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch {}
+          }
           activePlayer.current.playVideo();
         }
       },
@@ -155,6 +175,7 @@ export function YouTubeNativePlayer({
     let timer: number | null = null;
     setReady(false);
     setError(null);
+    let lastProgress: YouTubePlayback | null = null;
     const save = () => {
       if (!playerReady || !player) return;
       try {
@@ -170,17 +191,22 @@ export function YouTubeNativePlayer({
         if (previousInitial.current === restore) {
           resumeRef.current = value;
         }
+        if (lastProgress && lastProgress.videoId === value.videoId &&
+            lastProgress.playlistId === value.playlistId && lastProgress.index === value.index &&
+            lastProgress.seconds === value.seconds && lastProgress.title === value.title) return;
+        lastProgress = value;
         progress.current(value);
       } catch { /* The iframe may be navigating to the next video. */ }
     };
     const onVisibility = () => { if (document.hidden) save(); };
     document.addEventListener('visibilitychange', onVisibility);
-    const pagehide = () => {
-      save();
+    const handlePageUnload = () => {
+      try { save(); } catch {}
       if (!playbackKey) return;
       try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: playing.current, savedAt: Date.now() })); } catch {}
     };
-    window.addEventListener('pagehide', pagehide);
+    window.addEventListener('pagehide', handlePageUnload);
+    window.addEventListener('beforeunload', handlePageUnload);
     const stage = document.createElement('div');
     container.current?.replaceChildren(stage);
     void loadYouTubeIframeApi().then((yt) => {
@@ -200,15 +226,24 @@ export function YouTubeNativePlayer({
             activePlayer.current = player;
             player?.setVolume(getSpaceVolume() * 100);
             try { player?.setLoop?.(true); } catch {}
-            try { if (playbackKey) sessionStorage.removeItem(playbackKey + ':reload'); } catch {}
             setReady(true);
-            // Preserve the saved point and restore playing intent only after a page reload.
-            if (restore.seconds > 0) player?.seekTo(restore.seconds, true);
-            if (autoPlay || pendingReload.current) {
-              pendingReload.current = false;
+            const shouldPlay = autoPlay || pendingReload.current;
+            pendingReload.current = false;
+            if (shouldPlay) {
+              if (restore.seconds > 0) player?.seekTo(restore.seconds, true);
               player?.playVideo();
               playing.current = true;
               onPlayingChange?.(true);
+              if (playbackKey) {
+                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch {}
+              }
+            } else {
+              player?.pauseVideo();
+              playing.current = false;
+              onPlayingChange?.(false);
+              if (playbackKey) {
+                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch {}
+              }
             }
             save();
             timer = window.setInterval(save, 1000);
@@ -218,10 +253,16 @@ export function YouTubeNativePlayer({
             if (event.data === 1) {
               playing.current = true;
               onPlayingChange?.(true);
+              if (playbackKey) {
+                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch {}
+              }
             }
             if (event.data === 0 || event.data === 2) {
               playing.current = false;
               onPlayingChange?.(false);
+              if (playbackKey) {
+                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch {}
+              }
             }
             if (event.data === 0) {
               const list = player?.getPlaylist?.() ?? [];
@@ -253,7 +294,8 @@ export function YouTubeNativePlayer({
       onPlayingChange?.(false);
       if (timer !== null) window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('pagehide', pagehide);
+      window.removeEventListener('pagehide', handlePageUnload);
+      window.removeEventListener('beforeunload', handlePageUnload);
       try { player?.destroy(); } catch { /* The iframe may already be detached. */ }
       container.current?.replaceChildren();
     };

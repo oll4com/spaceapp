@@ -26,9 +26,10 @@ import {
   type Pane,
   type PaneBrowserSession,
   type PermissionMode,
+  type SpaceAgentRunRecord,
   type SpaceAgentSessionRecord
 } from "@space/contracts";
-import { SpaceFeatureDisabledError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
+import { SpaceConflictError, SpaceFeatureDisabledError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
 import {
   codexChatProviderAdapter,
   codexChatProviderConfigIdPrefix,
@@ -42,6 +43,9 @@ import {
 } from "./chat-providers.js";
 import type { SpaceApiConfig } from "./config.js";
 import { TurnStarterDisabledError, type TurnStarter } from "./turns.js";
+import type { DecisionsService } from "./decisions-service.js";
+import { chatAttachmentReceipts, resolveChatAttachments } from "./chat-attachments.js";
+import { chatSubmissionFingerprint } from "./chat-submissions.js";
 
 export interface SpaceAgentAdapterInput {
   pane: Pane;
@@ -56,6 +60,7 @@ export interface SpaceAgentCreateInput extends SpaceAgentAdapterInput {
 }
 
 export interface SpaceAgentSendInput extends SpaceAgentAdapterInput {
+  clientRequestId?: string;
   content: string;
   operatorUserId?: string;
   selectedModelConfigId?: string;
@@ -87,6 +92,7 @@ export interface SpaceAgentMutationResult {
 }
 
 export interface SpaceAgentAdapter {
+  prepareRetry(input: SpaceAgentAdapterInput): Promise<{ content: string; artifacts: Artifact[] }>;
   listRoomChatTypes?(): Promise<Array<{ id: string; title: string; mode: "CHAT"; selectedModelConfigId: string }>>;
   loadSession(input: SpaceAgentAdapterInput): Promise<AgentPaneSession>;
   createOrRestoreSession(input: SpaceAgentCreateInput): Promise<AgentPaneSession>;
@@ -564,6 +570,14 @@ function isImageTurnArtifact(artifact: Artifact): boolean {
   return artifact.kind === "IMAGE" && imageArtifactMimeTypeSchema.safeParse(artifact.mimeType).success;
 }
 
+function workspaceContext(targetDir?: string | null): string | null {
+  if (!targetDir || !targetDir.startsWith("/") || targetDir === "/etc") return null;
+  return [
+    `Space workspace directory: ${targetDir}`,
+    "All file paths, editing tasks, and shell commands should be executed relative to or within this workspace."
+  ].join("\n");
+}
+
 function artifactContext(artifacts: Artifact[]): string | null {
   if (!artifacts.length) return null;
   const lines = artifacts.slice(0, 8).map((artifact) => {
@@ -801,6 +815,8 @@ export function createSpaceAgentAdapter(options: {
   isChatProviderEnabled?: (providerId: string) => Promise<boolean>;
   readGoal?: SpaceAgentGoalReader;
   requirementsCacheTtlMs?: number;
+  cancelWorkflow?: (workflowId: string) => Promise<void>;
+  decisionsService?: DecisionsService;
 }): SpaceAgentAdapter {
   const {
     store,
@@ -809,7 +825,8 @@ export function createSpaceAgentAdapter(options: {
     codexAgentControl,
     openCodeControlResolver,
     openCodeSessionControlResolver,
-    readGoal
+    readGoal,
+    cancelWorkflow
   } = options;
   let cachedRuntimeCapabilities: { value: SpaceAgentRuntimeCapabilities; expiresAt: number } | null = null;
 
@@ -911,9 +928,17 @@ export function createSpaceAgentAdapter(options: {
       store.listMcpTools(),
       store.listActivePaneBrowserSessions(roomId)
     ]);
-    const eligibleProviders = providers.filter((_provider, index) => enabled[index]);
+    // A provider is offered only while its catalog actually works. A provider that
+    // fails (runtime/credential/quota/catalog error) goes inactive automatically and
+    // returns on the next session read, once its catalog loads again. The selected
+    // provider remains selected while inactive; Chat must not silently switch models.
+    const providerActive = providers.map((_provider, index) => {
+      const result = providerResults[index];
+      return Boolean(enabled[index] && result && !result.error && result.models.length > 0);
+    });
+    const activeProviders = providers.filter((_provider, index) => providerActive[index]);
     const configuredProvider = providerForConfigId(providers, selectedModelConfigId ?? null);
-    if (strictModelSelection && configuredProvider && !eligibleProviders.includes(configuredProvider)) {
+    if (strictModelSelection && configuredProvider && !activeProviders.includes(configuredProvider)) {
       throw new SpaceFeatureDisabledError(
         "SPACE_AGENT_PROVIDER_DISABLED",
         `${configuredProvider.providerName} is disabled for Chat.`
@@ -930,32 +955,53 @@ export function createSpaceAgentAdapter(options: {
       );
     }
     const effectiveSelectedModelConfigId = removedChatSelection ? null : selectedModelConfigId;
-    const currentProvider = providerForConfigId(eligibleProviders, effectiveSelectedModelConfigId ?? null)
-      ?? eligibleProviders[0]
+    // Keep an explicitly selected provider as the current provider even when its
+    // catalog is unavailable. This makes the pane visibly blocked until that same
+    // provider recovers or the operator explicitly chooses another model.
+    const currentProvider = configuredProvider
+      ?? providers.find((_provider, index) => Boolean(enabled[index]))
+      ?? providers[0]
       ?? null;
+    const currentProviderIsRemembered = !configuredProvider || currentProvider === configuredProvider;
     const currentIndex = currentProvider ? providers.findIndex((provider) => provider === currentProvider) : -1;
     const currentResult = currentIndex >= 0 ? providerResults[currentIndex] : null;
     const currentCatalog = currentResult?.models ?? [];
     const modelList = currentProvider ? providerModelOptions(currentProvider, currentCatalog) : [];
-    const modelSelectionConfigId = configuredProvider && eligibleProviders.includes(configuredProvider)
-      ? effectiveSelectedModelConfigId
-      : null;
-    const modelSelection = currentResult?.error
-      ? { selectedModel: null, modelSelectionGate: null }
-      : selectedModelFromOptions(
-          modelList,
-          currentCatalog,
-          modelSelectionConfigId ?? null,
-          strictModelSelection
-        );
-    const modelProviders: AgentPaneModelProvider[] = providers.flatMap((provider, index) => {
+    const modelSelectionConfigId = currentProviderIsRemembered ? effectiveSelectedModelConfigId : null;
+    const modelSelection = selectedModelFromOptions(
+      modelList,
+      currentCatalog,
+      modelSelectionConfigId ?? null,
+      strictModelSelection
+    );
+    // Only the reason of an enabled-but-inactive provider explains a blocked pane.
+    const inactiveProviderReason = providers.flatMap((provider, index) => {
+      if (!enabled[index]) return [];
+      const error = providerResults[index]?.error;
+      return error ? [`${provider.providerName}: ${error}`] : [];
+    })[0] ?? null;
+    const modelProviders: AgentPaneModelProvider[] = providers.flatMap<AgentPaneModelProvider>((provider, index) => {
       if (!enabled[index]) return [];
       const result = providerResults[index];
+      if (!providerActive[index]) {
+        if (!result?.error) return [];
+        const inactive: AgentPaneModelProvider = {
+          providerId: provider.providerId,
+          providerName: provider.providerName,
+          configIdPrefix: provider.configIdPrefix,
+          isCurrent: provider.providerId === currentProvider?.providerId,
+          isInactive: true,
+          statusReason: result.error,
+          models: []
+        };
+        return [inactive];
+      }
       return [{
         providerId: provider.providerId,
         providerName: provider.providerName,
         configIdPrefix: provider.configIdPrefix,
         isCurrent: provider.providerId === currentProvider?.providerId,
+        isInactive: false,
         statusReason: result?.error ?? null,
         models: result?.models ?? []
       }];
@@ -979,17 +1025,35 @@ export function createSpaceAgentAdapter(options: {
       modelList,
       selectedModel: modelSelection.selectedModel,
       modelProviders,
-      modelCatalogGate: currentResult?.error
-        ?? (modelList.length
-          ? null
-          : currentProvider
+      // False only when there is no resolved model for the remembered provider. Write
+      // paths use this to preserve the persisted model while its provider is inactive.
+      selectionIsRemembered: currentProviderIsRemembered,
+      modelCatalogGate: modelList.length
+        ? null
+        : currentResult?.error
+          ?? (currentProvider
             ? `${currentProvider.providerName} did not advertise a selectable model.`
-            : "No Chat provider is enabled."),
+            : inactiveProviderReason
+              ? `No Chat provider is available. ${inactiveProviderReason}`
+              : "No Chat provider is enabled."),
       modelSelectionGate: modelSelection.modelSelectionGate,
       tools,
       selectedTools,
       browserSessions
     };
+  }
+
+  /**
+   * A selection is "remembered" when Chat served the provider the session selected. When
+   * it served another provider because the selected one failed, the write paths must not
+   * persist it — otherwise a transient failure would silently change the operator's model.
+   */
+  function isRememberedSelection(
+    select: Awaited<ReturnType<typeof selection>>,
+    session: Pick<SpaceAgentSessionRecord, "selectedModelConfigId">
+  ): boolean {
+    if (!select.selectionIsRemembered) return false;
+    return session.selectedModelConfigId == null || select.selectedModel !== null;
   }
 
   async function selectionForExistingSession(
@@ -1038,7 +1102,8 @@ export function createSpaceAgentAdapter(options: {
         status,
         title: input.title ?? existing.title,
         threadId: input.threadId === undefined ? existing.threadId : input.threadId,
-        ...selectedSessionFields(select, existing),
+        // A failover read must not overwrite the remembered provider/model.
+        ...(isRememberedSelection(select, existing) ? selectedSessionFields(select, existing) : {}),
         permissionMode: existing.permissionMode ?? "full_access",
         lastSyncedAt: nowIso()
       });
@@ -1053,8 +1118,34 @@ export function createSpaceAgentAdapter(options: {
         status,
         title: input.title ?? active.title,
         threadId: input.threadId === undefined ? active.threadId : input.threadId,
-        ...selectedSessionFields(select, active),
+        // A failover read must not overwrite the remembered provider/model.
+        ...(isRememberedSelection(select, active) ? selectedSessionFields(select, active) : {}),
         permissionMode: active.permissionMode ?? "full_access",
+        lastSyncedAt: nowIso()
+      });
+    }
+
+    // A pane was closed or its session deactivated: reuse that session instead of
+    // starting a new one, so the model/provider/reasoning selection the operator made
+    // in this pane is remembered when it is opened again.
+    const remembered = forceNewSession ? null : await store.getLatestSpaceAgentSessionForPane(input.pane.id);
+    if (remembered && (input.selectedModelConfigId === undefined || input.selectedModelConfigId === null)) {
+      const reactivated = await store.updateSpaceAgentSession(remembered.sessionId, {
+        isActive: true,
+        paneId: input.pane.id,
+        title: input.title ?? remembered.title,
+        lastSyncedAt: nowIso()
+      });
+      const select = await selectionForExistingSession(reactivated, input, operation);
+      const gate = runtimeGate ?? select.modelCatalogGate ?? select.modelSelectionGate;
+      const status = gate ? "BLOCKED" : reactivated.status === "RUNNING" ? "RUNNING" : "READY";
+      return store.updateSpaceAgentSession(reactivated.sessionId, {
+        status,
+        title: input.title ?? reactivated.title,
+        threadId: input.threadId === undefined ? reactivated.threadId : input.threadId,
+        // A failover read must not overwrite the remembered provider/model.
+        ...(isRememberedSelection(select, reactivated) ? selectedSessionFields(select, reactivated) : {}),
+        permissionMode: reactivated.permissionMode ?? "full_access",
         lastSyncedAt: nowIso()
       });
     }
@@ -1070,7 +1161,7 @@ export function createSpaceAgentAdapter(options: {
     );
     const gate = runtimeGate ?? select.modelCatalogGate ?? select.modelSelectionGate;
     const status = gate ? "BLOCKED" : "READY";
-    return store.createSpaceAgentSession({
+    const created = await store.createSpaceAgentSession({
       paneId: input.pane.id,
       roomId: input.pane.roomId,
       status,
@@ -1081,11 +1172,38 @@ export function createSpaceAgentAdapter(options: {
       isActive: true,
       lastSyncedAt: nowIso()
     });
+    if (isRememberedSelection(select, created)) return created;
+    // The session was created while its provider was failing (failover). Persist the
+    // provider/model/effort the operator actually chose, defaulting to the preferred
+    // (first) provider when this pane never had one.
+    const preferred = select.modelProviders.find((provider) => provider.isCurrent)
+      ?? select.modelProviders.find((provider) => !provider.isInactive && provider.models.length > 0)
+      ?? null;
+    const preferredModel = preferred?.models.find((model) => model.isDefault) ?? preferred?.models[0] ?? null;
+    return store.updateSpaceAgentSession(created.sessionId, {
+      ...selectedSessionFields(
+        preferred && preferredModel
+          ? {
+              ...select,
+              selectedModel: {
+                id: `${preferred.configIdPrefix}${preferredModel.id}|${preferredModel.defaultReasoningEffort}`,
+                displayName: preferredModel.displayName,
+                providerId: preferred.providerId,
+                providerName: preferred.providerName,
+                model: preferredModel.id,
+                reasoningKey: preferredModel.defaultReasoningEffort,
+                reasoningLabel: reasoningLabel(preferredModel.defaultReasoningEffort),
+                isDefault: true
+              }
+            }
+          : select
+      ),
+      lastSyncedAt: nowIso()
+    });
   }
 
   function sessionGateState(
-    session: SpaceAgentSessionRecord,
-    select: Awaited<ReturnType<typeof selection>>,
+    session: SpaceAgentSessionRecord,    select: Awaited<ReturnType<typeof selection>>,
     runtimeResult: SpaceAgentRuntimeCapabilitiesResult
   ) {
     const availablePermissionOptions = permissionOptions(runtimeResult.value?.requirements ?? null, runtimeResult.error, session.selectedProviderId ?? null);
@@ -1140,7 +1258,9 @@ export function createSpaceAgentAdapter(options: {
       status: projectedStatus,
       permissionMode: statusSession.permissionMode ?? "full_access" as const,
       collaborationMode: statusSession.collaborationMode ?? "default",
-      ...selectedSessionFields(select, select.modelSelectionGate ? undefined : statusSession)
+      // Preserve the persisted model while its provider is inactive. A model change
+      // can only come from an explicit selection update.
+      ...selectedSessionFields(select, statusSession)
     };
     const [messages, latestRun, nativeHistory, legacyHistory, goal] = await Promise.all([
       store.listSpaceAgentMessages(projectedSession.sessionId, 500),
@@ -1156,6 +1276,14 @@ export function createSpaceAgentAdapter(options: {
     const canSend =
       !gates.gate && runStatus !== "RUNNING" && runStatus !== "QUEUED" && runStatus !== "INTERRUPTING";
     return agentPaneSessionSchema.parse({
+      latestRun: latestRun ? {
+        runId: latestRun.runId, status: latestRun.status,
+        createdAt: latestRun.createdAt, startedAt: latestRun.startedAt ?? null,
+        completedAt: latestRun.completedAt,
+        execution: latestRun.execution ?? null, runtimeModelAtStart: latestRun.runtimeModelAtStart ?? null,
+        threadId: latestRun.codexThreadId, turnId: latestRun.codexTurnId,
+        costStatus: "UNKNOWN", evaluationStatus: "NOT_EVALUATED"
+      } : null,
       binding: bindingFromSession(projectedSession),
       threadId: projectedSession.threadId,
       messages: messages.map(mapMessage),
@@ -1177,7 +1305,9 @@ export function createSpaceAgentAdapter(options: {
         canSend,
         canInterrupt:
           !gates.gate && Boolean(latestRun && (latestRun.status === "QUEUED" || latestRun.status === "RUNNING")),
-        canSelectModel: !gates.nonSelectionGate && select.modelList.length > 0,
+        // The picker stays usable while the selected provider is inactive: the user
+        // must be able to switch to one of the working providers.
+        canSelectModel: !closedRuntimeGate(config) && select.modelProviders.length > 0,
         canSelectTools: !gates.gate,
         supportsTools: true
       }
@@ -1196,7 +1326,47 @@ export function createSpaceAgentAdapter(options: {
     return buildSession(session, operation);
   }
 
+  async function replaySubmission(run: SpaceAgentRunRecord, pane: Pane): Promise<SpaceAgentMutationResult> {
+    const saved = await store.getSpaceAgentSession(run.sessionId);
+    if (!saved || saved.paneId !== pane.id || saved.roomId !== pane.roomId || run.roomId !== pane.roomId) {
+      throw new SpaceConflictError("The accepted task is no longer available in this Chat pane.");
+    }
+    const session = await buildSession(saved, createOperationContext());
+    return { binding: session.binding, session,
+      submission: { sessionId: run.sessionId, responseMessageId: run.responseMessageId, runId: run.runId } };
+  }
+
+  async function prepareRetry(input: SpaceAgentAdapterInput) {
+    const session = await store.getActiveSpaceAgentSession(input.pane.id);
+    const run = session ? await store.getLatestSpaceAgentRun(session.sessionId) : null;
+    if (!session || !run || (run.status !== "FAILED" && run.status !== "INTERRUPTED")) {
+      throw new SpaceConflictError("Only a failed or interrupted task can be prepared for another attempt.");
+    }
+    const receipts = run.execution?.attachments;
+    if (!receipts) throw new SpaceConflictError("The original file list was not recorded. Review the conversation and compose a new request.");
+    const messages = await store.listSpaceAgentMessages(session.sessionId);
+    const prompt = messages.find(message => message.messageId === run.promptMessageId && message.role === "user");
+    if (!prompt) throw new SpaceConflictError("The original request is unavailable. Review the conversation before starting a new attempt.");
+    const artifacts = await resolveChatAttachments(store, input.pane, receipts.map(receipt => receipt.artifactId));
+    if (artifacts.some((artifact, index) => artifact.sha256 !== receipts[index]?.sha256)) {
+      throw new SpaceConflictError("An original attachment changed. Review the files before starting a new attempt.");
+    }
+    return { content: prompt.content, artifacts };
+  }
+
   async function sendMessage(input: SpaceAgentSendInput): Promise<SpaceAgentMutationResult> {
+    const fingerprint = input.clientRequestId ? chatSubmissionFingerprint(input) : undefined;
+    if (input.clientRequestId) {
+      const existing = await store.getSpaceAgentSubmission(input.pane.id, input.clientRequestId);
+      if (existing) {
+        if (existing.requestFingerprint !== fingerprint) throw new SpaceConflictError("This submission key was already used for a different request.");
+        // A lost acknowledgement is not permission to repeat runtime work, even
+        // if the original file expired or the original run has already failed.
+        return replaySubmission(existing, input.pane);
+      }
+    }
+    // Reject the whole submission before session/transcript writes if any ID is unavailable.
+    const attachedArtifacts = await resolveChatAttachments(store, input.pane, input.artifactIds);
     const operation = createOperationContext();
     let session = await ensureSession({
       pane: input.pane,
@@ -1214,28 +1384,13 @@ export function createSpaceAgentAdapter(options: {
     const sendGates = sessionGateState(session, sendSelection, await operation.runtimeCapabilities);
     if (sendGates.gate) {
       session = await store.updateSpaceAgentSession(session.sessionId, { status: "BLOCKED", lastSyncedAt: nowIso() });
+      if (input.clientRequestId) throw new SpaceConflictError(sendGates.gate);
       const blocked = await buildSession(session, operation);
       return { binding: blocked.binding, session: blocked };
     }
 
-    const userMessage = await store.createSpaceAgentMessage({
-      sessionId: session.sessionId,
-      role: "user",
-      content: input.content,
-      status: "COMPLETED"
-    });
-    const assistantMessage = await store.createSpaceAgentMessage({
-      sessionId: session.sessionId,
-      role: "assistant",
-      content: "",
-      status: "RUNNING"
-    });
-    const requestedArtifactIds = Array.from(new Set(input.artifactIds ?? [])).slice(0, 8);
-    const attachedArtifacts = requestedArtifactIds.length
-      ? (await store.listArtifacts({ page: 1, pageSize: 100, sortOrder: "desc", roomId: input.pane.roomId })).filter((artifact) => {
-          return requestedArtifactIds.includes(artifact.id) && (!artifact.paneId || artifact.paneId === input.pane.id);
-        })
-      : [];
+    const userMessageId = makeSpaceId("agent_msg");
+    const assistantMessageId = makeSpaceId("agent_msg");
 
     let providerSessionId: string | undefined;
     if (session.selectedProviderId === "opencode") {
@@ -1248,13 +1403,36 @@ export function createSpaceAgentAdapter(options: {
       providerSessionId = (await openCodeSessionControlResolver(session.sessionId)).spaceSessionId;
     }
 
+    let effectiveTools = sendSelection.selectedTools;
+    if (options.decisionsService) {
+      try {
+        const surface = await options.decisionsService.evaluateToolSurface(input.content, effectiveTools);
+        effectiveTools = surface.filteredTools;
+      } catch {
+        // Fallback to unpruned tools
+      }
+    }
+
+    let targetDir = input.pane.cwd && input.pane.cwd.startsWith("/") && input.pane.cwd !== "/etc" ? input.pane.cwd : null;
+    if (!targetDir) {
+      try {
+        const room = await store.getRoom(input.pane.roomId);
+        if (room?.projectPath && room.projectPath.startsWith("/")) {
+          targetDir = room.projectPath;
+        }
+      } catch {
+        // Best effort
+      }
+    }
+
     const turnInput: DummyTurnInput = {
       roomId: input.pane.roomId,
       paneId: input.pane.id,
       prompt: promptWithAgentContexts(input.content, [
-        clipboardToolContext(sendSelection.selectedTools),
-        taskToolContext(sendSelection.selectedTools),
-        sharedChatToolContext(sendSelection.selectedTools),
+        workspaceContext(targetDir),
+        clipboardToolContext(effectiveTools),
+        taskToolContext(effectiveTools),
+        sharedChatToolContext(effectiveTools),
         artifactContext(attachedArtifacts)
       ]),
       artifactIds: attachedArtifacts.filter(isImageTurnArtifact).map((artifact) => artifact.id),
@@ -1263,29 +1441,42 @@ export function createSpaceAgentAdapter(options: {
       modelId: session.selectedModelId === "codex-app-server-default" ? null : session.selectedModelId,
       reasoningEffort: toReasoningEffort(session.selectedReasoningKey),
       agentSessionId: session.sessionId,
-      agentUserMessageId: userMessage.messageId,
-      agentAssistantMessageId: assistantMessage.messageId,
+      agentUserMessageId: userMessageId,
+      agentAssistantMessageId: assistantMessageId,
       agentThreadId: session.threadId,
       operatorUserId: input.operatorUserId,
-      selectedToolIds: session.selectedToolIds ?? [],
+      selectedToolIds: effectiveTools,
       permissionMode: session.permissionMode ?? "full_access",
       collaborationMode: session.collaborationMode ?? "default",
       traceId: input.traceId
     };
     const planned = codexTurnStarter.plan(turnInput);
-    const run = await store.createSpaceAgentRun({
+    const accepted = await store.createSpaceAgentSubmission({ content: input.content, run: {
+      clientRequestId: input.clientRequestId,
+      requestFingerprint: fingerprint,
+      execution: {
+        traceId: input.traceId,
+        modelConfigId: session.selectedModelConfigId,
+        providerId: session.selectedProviderId ?? null,
+        providerName: session.selectedProviderName,
+        requestedModel: turnInput.modelId ?? null,
+        requestedReasoning: turnInput.reasoningEffort ?? null,
+        attachments: chatAttachmentReceipts(attachedArtifacts)
+      },
       sessionId: session.sessionId,
       paneId: input.pane.id,
       roomId: input.pane.roomId,
       workflowId: planned.workflowId,
       temporalRunId: planned.runId,
       status: "QUEUED",
-      promptMessageId: userMessage.messageId,
-      responseMessageId: assistantMessage.messageId,
+      promptMessageId: userMessageId,
+      responseMessageId: assistantMessageId,
       codexThreadId: session.threadId,
       codexTurnId: null
-    });
-    session = await store.updateSpaceAgentSession(session.sessionId, { status: "RUNNING", lastSyncedAt: nowIso() });
+    } }, input.traceId);
+    if (!accepted.created) return replaySubmission(accepted.run, input.pane);
+    const run = accepted.run;
+    session = { ...session, status: "RUNNING" };
 
     try {
       const started = await codexTurnStarter.start(turnInput);
@@ -1302,14 +1493,14 @@ export function createSpaceAgentAdapter(options: {
         errorCode: "SPACE_AGENT_RUNTIME_UNAVAILABLE",
         errorMessage: message
       });
-      await store.updateSpaceAgentMessage(assistantMessage.messageId, { status: "FAILED", content: message });
+      await store.updateSpaceAgentMessage(assistantMessageId, { status: "FAILED", content: message });
       session = await store.updateSpaceAgentSession(session.sessionId, { status: "BLOCKED", lastSyncedAt: nowIso() });
       throw new SpaceFeatureDisabledError("SPACE_AGENT_RUNTIME_UNAVAILABLE", message);
     }
 
     const nextSession = await buildSession(session, operation);
     return { binding: nextSession.binding, session: nextSession,
-      submission: { sessionId: session.sessionId, responseMessageId: assistantMessage.messageId, runId: run.runId } };
+      submission: { sessionId: session.sessionId, responseMessageId: assistantMessageId, runId: run.runId } };
   }
 
   async function interrupt(input: SpaceAgentInterruptInput): Promise<SpaceAgentMutationResult> {
@@ -1317,16 +1508,20 @@ export function createSpaceAgentAdapter(options: {
     const session = await ensureSession({ pane: input.pane }, operation);
     const run = await store.getLatestSpaceAgentRun(session.sessionId);
     if (run && (run.status === "QUEUED" || run.status === "RUNNING")) {
-      try {
-        const connection = await Connection.connect({ address: config.temporalAddress, connectTimeout: "5s" });
+      if (cancelWorkflow) {
+        await cancelWorkflow(run.workflowId).catch(() => null);
+      } else {
         try {
-          const client = new Client({ connection, namespace: config.temporalNamespace });
-          await client.workflow.getHandle(run.workflowId).cancel();
-        } finally {
-          await connection.close();
+          const connection = await Connection.connect({ address: config.temporalAddress, connectTimeout: "5s" });
+          try {
+            const client = new Client({ connection, namespace: config.temporalNamespace });
+            await client.workflow.getHandle(run.workflowId).cancel();
+          } finally {
+            await connection.close();
+          }
+        } catch {
+          // The DB/UI state still records the operator interrupt. Temporal cancellation is best-effort for stdio activities.
         }
-      } catch {
-        // The DB/UI state still records the operator interrupt. Temporal cancellation is best-effort for stdio activities.
       }
       await store.updateSpaceAgentRun(run.runId, {
         status: "INTERRUPTED",
@@ -1432,6 +1627,7 @@ export function createSpaceAgentAdapter(options: {
     loadSession,
     createOrRestoreSession,
     sendMessage,
+    prepareRetry,
     interrupt,
     updateSettings,
     setGoal,

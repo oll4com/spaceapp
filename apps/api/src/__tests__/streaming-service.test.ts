@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryStreamingRepository } from "@space/db";
 import { InMemorySpaceStore } from "@space/runtime";
+import type { StreamingOAuthProvider } from "@space/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StreamingCredentialStore } from "../streaming-credential-store.js";
 import type {
@@ -49,7 +50,7 @@ function token(): StreamingTokenSet {
 }
 
 function adapter(input: {
-  provider?: "YOUTUBE" | "TWITCH" | "TIKTOK";
+  provider?: StreamingOAuthProvider;
   accounts?: StreamingDiscoveredAccount[];
   collect?: StreamingProviderAdapter["collectMetrics"];
 } = {}): StreamingProviderAdapter {
@@ -70,11 +71,13 @@ function adapter(input: {
   };
 }
 
-function adapters(youtube: StreamingProviderAdapter) {
+function adapters(youtube: StreamingProviderAdapter): Record<StreamingOAuthProvider, StreamingProviderAdapter> {
   return {
     YOUTUBE: youtube,
     TWITCH: adapter({ provider: "TWITCH" }),
-    TIKTOK: adapter({ provider: "TIKTOK" })
+    TIKTOK: adapter({ provider: "TIKTOK" }),
+    X: adapter({ provider: "X" }),
+    DISCORD: adapter({ provider: "DISCORD" })
   };
 }
 

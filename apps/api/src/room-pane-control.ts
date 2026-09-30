@@ -16,10 +16,17 @@ export interface RoomPaneObservation {
   checkedAt: string; tasks: NativeTaskExecution[];
   models?: Array<{ id: string; supportedReasoningEfforts: string[]; defaultReasoningEffort?: string }>;
   modes?: string[]; commands?: string[]; text?: string;
+  configuredModelId?: string | null;
+  effectiveModelId?: string | null;
+  modelVerificationStatus?: "VERIFIED" | "UNVERIFIED" | "UNKNOWN";
+  accountProfileId?: string | null;
+  accountEmail?: string | null;
+  accountVerificationStatus?: "VERIFIED" | "UNVERIFIED" | "UNKNOWN";
+  verificationEvidence?: Record<string, unknown>;
 }
 export interface RoomPaneController {
   catalog(roomId: string): Promise<{ types: RoomRuntimeType[]; unavailable: Array<{ id: string; reason: string }> }>;
-  inspect(pane: Pane): Promise<RoomPaneObservation>;
+  inspect(pane: Pane, freshness?: { fresh?: boolean }): Promise<RoomPaneObservation>;
   configure(pane: Pane, action: RoomConfigureAction, traceId: string): Promise<Record<string, unknown>>;
   command(pane: Pane, action: RoomCommandAction, traceId: string): Promise<Record<string, unknown>>;
   start(pane: Pane, traceId: string): Promise<Record<string, unknown>>;
@@ -33,19 +40,19 @@ export function createRoomPaneController(options: {
   isEnabled(runtimeId: string): Promise<boolean>;
   chatTypes(): Promise<RoomRuntimeType[]>;
   chatTasks?(pane: Pane): Promise<NativeTaskExecution[]>;
-  inspectCli(pane: Pane): Promise<RoomPaneObservation>;
+  inspectCli(pane: Pane, freshness?: { fresh?: boolean }): Promise<RoomPaneObservation>;
   configureCli(pane: Pane, action: RoomConfigureAction, traceId: string): Promise<Record<string, unknown>>;
   commandCli(pane: Pane, action: RoomCommandAction, traceId: string): Promise<Record<string, unknown>>;
   startCli(pane: Pane, traceId: string): Promise<Record<string, unknown>>;
   resumeCli(pane: Pane, taskId: string | undefined, traceId: string): Promise<Record<string, unknown>>;
   interruptCli(pane: Pane, traceId: string): Promise<Record<string, unknown>>;
 }): RoomPaneController {
-  async function inspect(pane: Pane): Promise<RoomPaneObservation> {
-    if (pane.mode === "TERMINAL") return options.inspectCli(pane);
+  async function inspect(pane: Pane, freshness?: { fresh?: boolean }): Promise<RoomPaneObservation> {
+    if (pane.mode === "TERMINAL") return options.inspectCli(pane, freshness);
     const session = pane.mode === "CHAT" ? await options.store.getActiveSpaceAgentSession(pane.id) : null;
     // Reuse the same advertised catalog and effective mode as the Chat UI.
     // The stored selection alone has no model list and may inherit its mode.
-    const chatView = session && !pane.isClosed ? await options.chat.loadSession({ pane }) : null;
+    const chatView = session && !pane.isClosed ? await options.chat.loadSession({ pane }).catch(() => null) : null;
     if (chatView && chatView.binding.sessionId !== session?.sessionId) throw new SpaceConflictError("The Chat session changed during inspection; inspect it again.");
     const models = new Map<string, { id: string; supportedReasoningEfforts: string[]; defaultReasoningEffort?: string }>();
     for (const option of chatView?.modelOptions ?? []) {

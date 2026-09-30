@@ -1,5 +1,22 @@
+import { CliShortcutUserContext } from "./features/terminal-pane/cli-shortcut-usage.js";
+import { openManage, consolidatedResourceActions, consolidatedManageActions } from "./features/server-actions/manage-navigation.js";
 import { useSpaceControlClient } from "./features/room-agent/space-control-client.js";
 import { useRailOrder } from "./features/ui-theme/use-rail-order.js";
+import { useTouchContextMenu } from "./features/ui-theme/use-touch-context-menu.js";
+import { RailVisibilityMenu } from "./features/ui-theme/RailVisibilityMenu.js";
+import { LiveSessionProvider } from "./features/live-pane/LiveSessionProvider.js";
+import { LiveRailSession } from "./features/live-pane/LiveRailSession.js";
+import { LiveRailContextMenu } from "./features/live-pane/LiveRailContextMenu.js";
+import {
+  DEFAULT_LOWER_RAIL_ITEMS,
+  LOWER_RAIL_HIDDEN_KEY,
+  LOWER_RAIL_LABELS,
+  LOWER_RAIL_NON_HIDEABLE,
+  LOWER_RAIL_VISIBILITY_IDS,
+  railVisibilityItems,
+  useRailVisibility,
+  type RailVisibilityMenuState,
+} from "./features/ui-theme/use-rail-visibility.js";
 import { bindSpaceMediaVolume } from './space-audio.js';
 import { AsteroidsGate } from "./features/asteroids/AsteroidsGate.js";
 import { canPlayAsteroids } from "./features/asteroids/eligibility.js";
@@ -22,22 +39,29 @@ import {
   Camera,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   CheckCircle2,
   Chrome,
   CircleHelp,
   CircleStop,
   Clipboard,
   ClipboardList,
+  Clock3,
   CodeXml,
   Columns2,
   Columns3,
   Copy,
+  Cpu,
   Crosshair,
+  Crop,
   Database,
+  SlidersHorizontal,
+  Dumbbell,
   Eraser,
   Eye,
   EyeOff,
   FileInput,
+  Folder,
   FolderOpen,
   FolderPlus,
   Gauge,
@@ -68,13 +92,13 @@ import {
   Network,
   Paperclip,
   Palette,
+  PanelLeft,
   PanelRight,
   PanelsTopLeft,
   PanelTopOpen,
   Pencil,
   PictureInPicture2,
   Plus,
-  Printer,
   Radio,
   RefreshCw,
   Rocket,
@@ -84,15 +108,20 @@ import {
   ServerCog,
   Settings2,
   Bell,
+  Bug,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Star,
+  StickyNote,
   Shrink,
   Terminal,
+  Timer,
   Trash2,
   Upload,
   Undo2,
   UserCheck,
+  Users,
   Wrench,
   X,
   Youtube,
@@ -165,9 +194,11 @@ import type {
   WorkerReadiness,
   UserLink,
   CliRuntimeSettingsResponse,
-  AgentSessionHistoryItem
+  AgentSessionHistoryItem,
+  AdminUserItem,
+  UserSettings
 } from "@space/contracts";
-import { paneCategoryColors, type PaneCategoryColor } from "@space/contracts";
+import { LIVE_AUDIO_PROVIDERS, type LiveAudioProviderId, paneCategoryColors, type PaneCategoryColor } from "@space/contracts";
 import {
   nextCategoryColor,
   readStoredCategoryFilter,
@@ -184,6 +215,7 @@ import {
   pendingPaneCompletionEventId,
   type PaneCompletionLifecycleState
 } from "./pane-completion-lifecycle.js";
+import { type AgentDashboardSummary } from "./features/agents-dashboard/dashboard-model.js";
 import {
   PANE_RUN_LIFECYCLE_EVENT,
   type PaneRunLifecycleDetail
@@ -196,14 +228,16 @@ import {
 } from "./cli-runtime-presentation.js";
 import {
   CLI_RUNTIME_VISIBILITY_EVENT,
-  dispatchCliRuntimeVisibilityChange
+  dispatchCliRuntimeVisibilityChange,
+  readCliRuntimeVisibilityChange
 } from "./cli-runtime-visibility-events.js";
 import {
   CLI_VPN_ROUTING_STATUS_EVENT,
   harnessPaneVpnRoutingPresentation,
   loadCliVpnRoutingStatus,
   paneVpnRoutingPresentation,
-  publishCliVpnRoutingStatus
+  publishCliVpnRoutingStatus,
+  refreshCliVpnRoutingStatus
 } from "./cli-vpn-routing.js";
 import {
   CLI_RECOVERY_OPENED_EVENT,
@@ -218,7 +252,9 @@ import {
   MAX_CLI_IMAGE_PREVIEW_LIMIT,
   MIN_CLI_IMAGE_PREVIEW_LIMIT,
   normalizeCliImagePreviewLimit,
-  readStoredCliImagePreviewLimit
+  readStoredCliImagePreviewLimit,
+  writeStoredCliImagePreviewLimit,
+  applyServerCliImagePreviewLimit
 } from "./cli-upload-settings.js";
 import {
   dispatchAgentPaneActionEvent,
@@ -238,16 +274,26 @@ import { AppVersionMeta, DemoVersionMeta } from "./features/app-version/AppVersi
 import { useAppVersion } from "./features/app-version/use-app-version.js";
 import {
   AppDiagnosticsGlobalIndicators,
-  AppDiagnosticsSettingsCard
+  AppDiagnosticsSettingsCard,
+  useDiagnosticsState
 } from "./features/app-diagnostics/AppDiagnosticsSettingsCard.js";
 import { emitAppDiagnosticsPerformance } from "./app-diagnostics/app-diagnostics-performance.js";
-import { startAppDiagnosticsBootstrap } from "./app-diagnostics/app-diagnostics-bootstrap.js";
+import {
+  applyAppDiagnosticsStatus,
+  startAppDiagnosticsBootstrap
+} from "./app-diagnostics/app-diagnostics-bootstrap.js";
 import { SettingsActionMenu } from "./features/settings/SettingsActionMenu.js";
 import { GitBranch } from "./features/ui-theme/app-icons.js";
+import { Plug } from "lucide-react";
+import { PluginsSettingsCard } from "./features/plugins/PluginsSettingsCard.js";
+import { KeyboardAutocorrectSettingsCard } from "./features/keyboard-autocorrect/KeyboardAutocorrectSettingsCard.js";
+import { applyServerKeyboardAutocorrectSettings } from "./features/keyboard-autocorrect/keyboard-autocorrect-settings.js";
+import { DateTimeSettingsCard } from "./features/date-time-settings/DateTimeSettingsCard.js";
+import { applyServerDateTimeSettings } from "./features/date-time-settings/date-time-settings.js";
+import { GoogleAccountSettingsCard } from "./features/auth/GoogleAccountSettingsCard.js";
 import { SettingsDisclosure, SettingsSections } from "./features/settings/SettingsDisclosure.js";
 import { DesktopNavigation } from "./features/ui-theme/DesktopNavigation.js";
 import "./features/ui-theme/workspace-chrome.css";
-import { MobilePaneSwitcher } from "./features/ui-theme/MobilePaneSwitcher.js";
 import { workspaceRoomActivity, workspaceRoomMatches, type WorkspaceRoomFilter } from "./features/ui-theme/workspace-room-filter.js";
 import { desktopActionDescriptions } from "./features/ui-theme/desktop-navigation.js";
 import {
@@ -259,6 +305,10 @@ import {
   StreamingOverlay,
   StreamingOverlayProvider
 } from "./features/streaming/StreamingOverlay.js";
+import {
+  getTerminalPreviewLines,
+  subscribeTerminalPreview
+} from "./features/terminal-pane/terminal-preview-service.js";
 import { reorderPanesByTarget, setPaneDragData, type PaneDropPosition } from "./features/pane-drag/pane-drag.js";
 import { LinksPanel, QuickLinksPopover } from "./features/user-links/UserLinks.js";
 import {
@@ -299,6 +349,8 @@ import {
   PANE_SPAN_ALL_MENU_ID,
   SERVER_ACTIONS_MENU_ID
 } from "./features/toolbar-menu-ids.js";
+import { CliLauncherMenu } from "./features/cli-launcher/CliLauncherMenu.js";
+import { PaneLayoutMenu } from "./features/pane-layout/PaneLayoutMenu.js";
 import {
   createTerminalBootstrapBarrier,
   TerminalPane,
@@ -309,6 +361,10 @@ import { registerYouTubeBrowseIntent } from "./features/browser-pane/youtube-bro
 import { registerCliResumeIntent } from "./features/terminal-pane/cli-resume-intent.js";
 import type { OnScreenKeyboardInput } from "./features/osk-keyboard/OnScreenKeyboard.js";
 import { VIBE_MUSIC_PANEL_ID, VibeMusicPlayer } from "./features/vibe-music/VibeMusicPlayer.js";
+import { SnipToolOverlay } from "./features/snip-tool/SnipToolOverlay.js";
+import { StickyNoteLayer, useStickyNoteWindows } from "./features/clipboard-dock/StickyNoteWindow.js";
+import { DesktopWidgetsLayer, useDesktopWidgets } from "./features/desktop-widgets/index.js";
+import { useRailMenuDodge } from "./features/rail-popover.js";
 import {
   ToolbarMetrics,
   ToolbarMetricsSummary,
@@ -328,6 +384,8 @@ import {
   MINIMIZED_PANE_BAR_TOGGLE_ID,
   MinimizedPaneBarToggle
 } from "./features/pane-float/MinimizedPaneBarToggle.js";
+import { DesktopDisplayControls } from "./features/desktop-screens/DesktopDisplayControls.js";
+import { DesktopWindowTitlebar } from "./features/desktop-titlebar/DesktopWindowTitlebar.js";
 import {
   useDismissibleToolbarLayer,
   usePersistentIconToolbar,
@@ -346,6 +404,7 @@ import {
 } from "./lifecycle-debug.js";
 import {
   writeVoiceComposerSettings,
+  applyServerVoiceSettings,
   type VoiceComposerSettings
 } from "./voice-settings.js";
 import { useVoiceInput } from "./features/voice-input/VoiceInputProvider.js";
@@ -371,10 +430,13 @@ import {
   readStoredWarmRoomEnabled,
   writeStoredWarmRoomConnectedPaneLimit,
   writeStoredWarmRoomEnabled,
+  applyServerWarmRoomConnectedPaneLimit,
+  applyServerWarmRoomEnabled
 } from "./warm-room-settings.js";
 import {
   readStoredSuppressNotifications,
   writeStoredSuppressNotifications,
+  applyServerSuppressNotifications
 } from "./notifications-settings.js";
 
 const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
@@ -388,10 +450,18 @@ const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
   YOUTUBE: Youtube,
   VNC: Monitor,
   HARNESS: Network,
-  LIVE: Mic
+  LIVE: Mic,
+  FILES: FolderOpen,
+  DEMOS: Boxes
 };
 
 const ROOM_PRESENTATION_FAILURE_TIMEOUT_MS = 8_000;
+
+const DEFAULT_PROJECT_PRESETS: { label: string; path: string }[] = [
+  { label: "space", path: "/opt/spaceapp" },
+  { label: "space1", path: "/opt/spaceapp/projects/space1" },
+  { label: "space2", path: "/opt/spaceapp/projects/space2" }
+];
 
 function PaneModeIcon({ pane }: { pane: Pick<Pane, "mode" | "terminalRuntimeId"> }) {
   const runtimeId = pane.terminalRuntimeId?.replace(/^cli:/, "") ?? "codex";
@@ -415,7 +485,7 @@ function PaneModeIcon({ pane }: { pane: Pick<Pane, "mode" | "terminalRuntimeId">
   return <Icon aria-hidden="true" />;
 }
 
-type SideSurface = "rooms" | "room-agent" | "shared-chat" | "media" | "streaming" | "agent-files" | "clipboard" | "tasks" | "links" | "settings" | "health" | "logs" | "agent-tools" | "cli" | "agent-sessions";
+type SideSurface = "rooms" | "room-agent" | "shared-chat" | "media" | "streaming" | "agent-files" | "clipboard" | "tasks" | "links" | "settings" | "health" | "cli" | "agent-sessions";
 type EventStreamStatus = "idle" | "connecting" | "connected" | "reconnecting" | "unavailable";
 type ActiveRoomEventStreamStatus = "idle" | "connecting" | "connected" | "disconnected" | "unavailable";
 type RoomRefreshCategory = "panes" | "turns" | "swarm" | "events";
@@ -449,9 +519,12 @@ export function shellVisiblePaneIds(
   shellMode: ShellMode,
   fullscreenLayout = false
 ): string[] {
-  const visiblePanes = panes.filter((pane) => !pane.isMinimized);
+  const visiblePanes = shellMode === "mobile" ? panes : panes.filter((pane) => !pane.isMinimized);
   if (shellMode === "mobile" || fullscreenLayout) {
-    const selectedPane = visiblePanes.find((pane) => pane.id === selectedPaneId) ?? visiblePanes[0];
+    const selectedPane = visiblePanes.find((pane) => pane.id === selectedPaneId && !pane.isMinimized)
+      ?? visiblePanes.find((p) => !p.isMinimized)
+      ?? visiblePanes.find((pane) => pane.id === selectedPaneId)
+      ?? visiblePanes[0];
     return selectedPane ? [selectedPane.id] : [];
   }
   const maximizedPanes = visiblePanes.filter((pane) => pane.isMaximized);
@@ -527,7 +600,8 @@ function TerminalBootstrapBoundary({
   children: (barriers: ReadonlyMap<string, TerminalBootstrapBarrier>) => ReactNode;
 }) {
   const barrierByPaneIdRef = useRef(new Map<string, TerminalBootstrapBarrier>());
-  const newPaneIds = paneIds.filter((paneId) => !barrierByPaneIdRef.current.has(paneId));
+  const validPaneIds = paneIds.filter((paneId) => !paneId.startsWith("pane:optimistic-"));
+  const newPaneIds = validPaneIds.filter((paneId) => !barrierByPaneIdRef.current.has(paneId));
   if (newPaneIds.length > 0) {
     const barrier = createTerminalBootstrapBarrier(newPaneIds);
     for (const paneId of newPaneIds) barrierByPaneIdRef.current.set(paneId, barrier);
@@ -535,7 +609,8 @@ function TerminalBootstrapBoundary({
   return children(barrierByPaneIdRef.current);
 }
 
-type PaneColumnAnchorMap = Map<string, number>;
+export type PaneColumnAnchor = number | { columnStart: number; rowIndex?: number };
+export type PaneColumnAnchorMap = Map<string, PaneColumnAnchor>;
 
 const LazyMemoryWorkspace = lazy(() =>
   import("./features/memory-workspace/MemoryWorkspace.js").then((module) => ({ default: module.MemoryWorkspace }))
@@ -562,6 +637,12 @@ const LazyHarnessPane = lazy(() =>
 const LazyLivePane = lazy(() =>
   import("./features/live-pane/LivePane.js").then((module) => ({ default: module.LivePane }))
 );
+const LazyDemosPane = lazy(() =>
+  import("./features/demos-pane/DemosPane.js").then((module) => ({ default: module.DemosPane }))
+);
+const LazyFilesPane = lazy(() =>
+  import("./features/files-pane/FilesPane.js").then((module) => ({ default: module.FilesPane }))
+);
 const LazyAdminOperationsDialog = lazy(() =>
   import("./features/admin-operations/AdminOperationsDialog.js")
     .then((module) => ({ default: module.AdminOperationsDialog }))
@@ -569,6 +650,10 @@ const LazyAdminOperationsDialog = lazy(() =>
 const LazyAdminCodexToolsDialog = lazy(() =>
   import("./features/admin-codex-tools/AdminCodexToolsDialog.js")
     .then((module) => ({ default: module.AdminCodexToolsDialog }))
+);
+const LazyUserManagementDialog = lazy(() =>
+  import("./features/user-management/UserManagementDialog.js")
+    .then((module) => ({ default: module.UserManagementDialog }))
 );
 const LazySetupConnectionsWizard = lazy(() =>
   import("./features/setup-connections/SetupConnectionsWizard.js")
@@ -578,11 +663,18 @@ const LazyEmbeddedDashboardDialog = lazy(() =>
   import("./features/embedded-dashboard/EmbeddedDashboardDialog.js")
     .then((module) => ({ default: module.EmbeddedDashboardDialog }))
 );
+const LazySystemServicesDialog = lazy(() =>
+  import("./features/service-control/SystemServicesDialog.js")
+    .then((module) => ({ default: module.SystemServicesDialog }))
+);
 const LazyHelpPage = lazy(() =>
   import("./features/help/HelpPage.js").then((module) => ({ default: module.HelpPage }))
 );
 const LazyBenchmarkPage = lazy(() =>
   import("./features/benchmark/BenchmarkPage.js").then((module) => ({ default: module.BenchmarkPage }))
+);
+const LazyDemoModeOverlay = lazy(() =>
+  import("./features/demo-mode/DemoModeOverlay.js").then((module) => ({ default: module.DemoModeOverlay }))
 );
 const LazyRoomAgentDock = lazy(() =>
   import("./features/room-agent/RoomAgentDock.js").then((module) => ({ default: module.RoomAgentDock }))
@@ -593,12 +685,11 @@ const LazyMediaDock = lazy(() =>
 const LazyStreamingDock = lazy(() =>
   import("./features/streaming/StreamingDock.js").then((module) => ({ default: module.StreamingDock }))
 );
-const LazyAgentToolsDock = lazy(() =>
-  import("./features/agent-tools/AgentToolsDock.js").then((module) => ({ default: module.AgentToolsDock }))
-);
 const LazyCliDock = lazy(() =>
   import("./features/cli-dock/CliDock.js").then((module) => ({ default: module.CliDock }))
 );
+const LazyAgentsDashboard = lazy(() => import("./features/agents-dashboard/AgentsDashboard.js").then(module => ({ default: module.AgentsDashboard })));
+
 const LazyAgentSessionsDock = lazy(() =>
   import("./features/agent-sessions/AgentSessionsDock.js").then((module) => ({ default: module.AgentSessionsDock }))
 );
@@ -613,9 +704,6 @@ const LazyClipboardDock = lazy(() =>
 );
 const LazyTaskDock = lazy(() =>
   import("./features/task-dock/TaskDock.js").then((module) => ({ default: module.TaskDock }))
-);
-const LazyActivityLogDock = lazy(() =>
-  import("./features/activity-log/ActivityLogDock.js").then((module) => ({ default: module.ActivityLogDock }))
 );
 const LazyUiThemeSettingsCard = lazy(() =>
   import("./features/ui-theme/UiThemeSettingsCard.js").then((module) => ({ default: module.UiThemeSettingsCard }))
@@ -635,18 +723,14 @@ const LazyTelegramIntegrationCard = lazy(() =>
 const LazyOnScreenKeyboard = lazy(() =>
   import("./features/osk-keyboard/OnScreenKeyboard.js").then((module) => ({ default: module.OnScreenKeyboard }))
 );
-const LazyCliLauncherMenu = lazy(() =>
-  import("./features/cli-launcher/CliLauncherMenu.js").then((module) => ({ default: module.CliLauncherMenu }))
-);
+const LazyCliLauncherMenu = CliLauncherMenu;
 const LazyChatLauncherMenu = lazy(() =>
   import("./features/chat-launcher/ChatLauncherMenu.js").then((module) => ({ default: module.ChatLauncherMenu }))
 );
 const LazyServerActionsMenu = lazy(() =>
   import("./features/server-actions/ServerActionsMenu.js").then((module) => ({ default: module.ServerActionsMenu }))
 );
-const LazyPaneLayoutMenu = lazy(() =>
-  import("./features/pane-layout/PaneLayoutMenu.js").then((module) => ({ default: module.PaneLayoutMenu }))
-);
+const LazyPaneLayoutMenu = PaneLayoutMenu;
 const LazyPaneSpanAllMenu = lazy(() =>
   import("./features/pane-layout/PaneSpanAllMenu.js").then((module) => ({ default: module.PaneSpanAllMenu }))
 );
@@ -669,6 +753,7 @@ const SIDE_SURFACE_HIDDEN_STORAGE_KEY = "space.roomsRailHidden";
 const ROOM_FOCUS_MODE_STORAGE_KEY = "space.roomFocusMode";
 const ROOM_TOOLBAR_HIDDEN_STORAGE_KEY = "space.roomToolbar.hidden.v1";
 const ROOM_THEME_STORAGE_KEY = "space.room.theme";
+const ADMIN_MODE_REQUESTED_STORAGE_KEY = "space.adminModeRequested";
 const OSK_PANEL_ID = "space-osk-keyboard";
 const ROOM_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY = "space.roomToolbar.hiddenActionIds.v3";
 const ROOM_TOOLBAR_ACTION_ORDER_STORAGE_KEY = "space.roomToolbar.actionOrder.v3";
@@ -678,9 +763,10 @@ const SHARED_CODEX_TOOLBAR_HIDDEN_STORAGE_KEY = "space.paneToolbar.sharedCodex.h
 const SHARED_CODEX_TOOLBAR_ORDER_STORAGE_KEY = "space.paneToolbar.sharedCodex.actionOrder";
 const SELECTED_ROOM_ID_STORAGE_KEY = "space.selectedRoomId";
 const SELECTED_PANE_ID_STORAGE_KEY = "space.selectedPaneId";
+const DISMISSED_STORAGE_WARNING_STORAGE_KEY = "space.dismissedStorageWarning";
 const TERMINAL_PANE_ACTION_EVENT = "space:terminal-pane-action";
 const AGENT_PANE_SETTINGS_EVENT = "space:agent-pane-settings-updated";
-const MOBILE_SHELL_MAX_WIDTH = 768;
+const MOBILE_SHELL_MAX_WIDTH = 767;
 const TABLET_SHELL_MAX_WIDTH = 1100;
 const MAX_PANE_COLUMN_SPAN = 4;
 const ROOM_CLI_ACTIVITY_POLL_INTERVAL_MS = 5_000;
@@ -693,13 +779,13 @@ function readAppView(): AppView {
 }
 
 const paneGridDensityMetrics: Record<PaneDensity, { minWidthRem: number; gapRem: number }> = {
-  regular: { minWidthRem: 19, gapRem: 0.75 },
-  dense: { minWidthRem: 16, gapRem: 0.6 },
-  tight: { minWidthRem: 14, gapRem: 0.5 }
+  regular: { minWidthRem: 19, gapRem: 0.375 },
+  dense: { minWidthRem: 16, gapRem: 0.3125 },
+  tight: { minWidthRem: 14, gapRem: 0.25 }
 };
 
 type TerminalPaneAction =
-  | { action: "upload" | "reconnect" | "copy" | "focus" | "cancel_login" | "new_task" }
+  | { action: "upload" | "reconnect" | "copy" | "paste" | "focus" | "cancel_login" | "new_task" }
   | { action: "attach_clip_image"; file: File }
   | { action: "insert_text"; text: string }
   | { action: "keyboard_input"; text: string }
@@ -707,7 +793,7 @@ type TerminalPaneAction =
   | { action: "insert_clipboard_text"; text: string }
   | { action: "start_task_item"; objective: string }
   | { action: "ensure_plan_mode" }
-  | { action: "enter_native_plan_mode"; runtimeId: "cli:gemini" | "cli:qwen" }
+  | { action: "enter_native_plan_mode"; runtimeId: "cli:gemini" | "cli:qwen" | "cli:omp" }
   | { action: "control_key"; key: "ctrl_c" | "shift_tab" | "escape" }
   | { action: "replace_session"; session: PaneCliSessionResponse }
   | {
@@ -787,11 +873,12 @@ const streamEventTypes: SpaceEvent["type"][] = [
   "REVIEW_CHECK_RECORDED",
   "REVIEW_DIFF_RECORDED",
   "REVIEW_DECISION_CREATED",
-  "BROWSER_HANDOFF_REQUESTED"
+  "BROWSER_HANDOFF_REQUESTED",
+  "ROOM_WATCHDOG_ALERT"
 ];
 
 const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: string; surfaceLabel: string }> = {
-  rooms: { icon: PanelRight, label: "rooms", surfaceLabel: "Rooms" },
+  rooms: { icon: PanelLeft, label: "rooms", surfaceLabel: "Rooms" },
   "room-agent": { icon: Bot, label: "room agent", surfaceLabel: "Room Agent" },
   "shared-chat": { icon: MessageSquare, label: "shared chat", surfaceLabel: "Shared Chat" },
   media: { icon: Images, label: "media dock", surfaceLabel: "Media dock" },
@@ -802,8 +889,6 @@ const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: string; su
   links: { icon: LinkIcon, label: "links", surfaceLabel: "Links" },
   settings: { icon: Settings2, label: "settings dock", surfaceLabel: "Settings dock" },
   health: { icon: Activity, label: "health dock", surfaceLabel: "Health dock" },
-  logs: { icon: History, label: "activity log", surfaceLabel: "Activity log" },
-  "agent-tools": { icon: Wrench, label: "agent tools", surfaceLabel: "Agent Tools" },
   cli: { icon: Terminal, label: "cli dock", surfaceLabel: "CLI dock" },
   "agent-sessions": { icon: Archive, label: "agent session history", surfaceLabel: "Agent Session History" }
 };
@@ -982,11 +1067,13 @@ function computePaneGridPlacements(panes: Pane[], columnCount: number, anchoredC
 
   for (const pane of sortPanesForGrid(panes)) {
     const effectiveSpan = clampPaneColumnSpan(pane.columnSpan, columnCount);
-    const anchoredColumnStart = anchoredColumnStarts.get(pane.id);
+    const anchorData = anchoredColumnStarts.get(pane.id);
+    const anchoredColumnStart = typeof anchorData === "number" ? anchorData : anchorData?.columnStart;
+    const anchoredRowIndex = typeof anchorData === "object" ? anchorData?.rowIndex : undefined;
     const placement =
       anchoredColumnStart === undefined
         ? placeAutoFlowPane(effectiveSpan)
-        : placeAnchoredPane(anchoredColumnStart, effectiveSpan, cursorRow);
+        : placeAnchoredPane(anchoredColumnStart, effectiveSpan, anchoredRowIndex ?? cursorRow);
 
     for (let offset = 0; offset < effectiveSpan; offset += 1) {
       occupancy[placement.rowIndex]![placement.columnStart - 1 + offset] = true;
@@ -1015,7 +1102,7 @@ function canPaneGrowAtCurrentPlacement(input: {
   return nextColumnSpan > currentPlacement.effectiveSpan;
 }
 
-function resolvePaneGridPlacements(panes: Pane[], columnCount: number, anchoredColumnStarts: PaneColumnAnchorMap = new Map()) {
+export function resolvePaneGridPlacements(panes: Pane[], columnCount: number, anchoredColumnStarts: PaneColumnAnchorMap = new Map()) {
   const placements = new Map<string, PaneGridPlacement>();
   const basePlacements = computePaneGridPlacements(panes, columnCount, anchoredColumnStarts);
 
@@ -1034,6 +1121,48 @@ function resolvePaneGridPlacements(panes: Pane[], columnCount: number, anchoredC
   }
 
   return placements;
+}
+
+export function calculatePaneGridBaseRows(input: {
+  placements: Map<string, { rowIndex: number; effectiveSpan?: number }>;
+  visiblePaneCount: number;
+  columnCount: number;
+  targetEmptySlots?: number;
+}): {
+  naturalRows: number;
+  naturalEmptySlots: number;
+  actualBaseRows: number;
+  targetEmptySlots: number;
+  minCount: number;
+  maxCount: number;
+} {
+  const { placements, visiblePaneCount, columnCount, targetEmptySlots: storedTarget } = input;
+  const maxPaneRowIndex =
+    placements.size > 0
+      ? Math.max(0, ...Array.from(placements.values(), (placement) => placement.rowIndex))
+      : (visiblePaneCount > 0 ? Math.ceil(visiblePaneCount / Math.max(columnCount, 1)) - 1 : 0);
+  const naturalRows = Math.max(1, maxPaneRowIndex + 1);
+  const occupiedCells =
+    placements.size > 0
+      ? Array.from(placements.values()).reduce((sum, p) => sum + (p.effectiveSpan ?? 1), 0)
+      : visiblePaneCount;
+  const naturalCapacity = naturalRows * columnCount;
+  const naturalEmptySlots = Math.max(0, naturalCapacity - occupiedCells);
+  const MAX_ROOM_EMPTY_SLOTS = 6;
+  const minCount = 0;
+  const maxCount = Math.min(MAX_ROOM_EMPTY_SLOTS, Math.max(minCount, 16 - visiblePaneCount));
+  const targetEmptySlots = typeof storedTarget === "number"
+    ? Math.max(minCount, Math.min(maxCount, storedTarget))
+    : 0;
+  const additionalSlotsNeeded = Math.max(0, targetEmptySlots - naturalEmptySlots);
+  const neededCells = Math.min(16, naturalCapacity + additionalSlotsNeeded);
+  const rowsForSlots = Math.ceil(neededCells / Math.max(columnCount, 1));
+  const maxPossibleRows = Math.max(1, Math.ceil(16 / Math.max(columnCount, 1)));
+  const actualBaseRows = Math.min(
+    maxPossibleRows,
+    Math.max(naturalRows, rowsForSlots, 1)
+  );
+  return { naturalRows, naturalEmptySlots, actualBaseRows, targetEmptySlots, minCount, maxCount };
 }
 
 interface BlueprintProgressItem {
@@ -1109,6 +1238,19 @@ function readStoredSessionString(key: string): string | null {
   }
 }
 
+function writeStoredSessionString(key: string, value: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (value) {
+      getSpaceRuntime().platform.sessionStorage.setItem(key, value);
+    } else {
+      getSpaceRuntime().platform.sessionStorage.removeItem(key);
+    }
+  } catch {
+    // Session-only preference when storage is blocked.
+  }
+}
+
 function detectShellMode(width: number, mobileMaxWidth = MOBILE_SHELL_MAX_WIDTH): ShellMode {
   if (width <= mobileMaxWidth) return "mobile";
   if (width <= TABLET_SHELL_MAX_WIDTH) return "tablet";
@@ -1116,7 +1258,21 @@ function detectShellMode(width: number, mobileMaxWidth = MOBILE_SHELL_MAX_WIDTH)
 }
 
 function detectUiThemeShellMode(width: number, uiTheme: UiTheme): ShellMode {
-  return detectShellMode(width, uiTheme !== "classic" ? 767 : MOBILE_SHELL_MAX_WIDTH);
+  if (typeof window !== "undefined") {
+    const mobileHint = (navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData?.mobile;
+    const userAgent = navigator.userAgent;
+    const phoneUserAgent = /iPhone|iPod/i.test(userAgent) || (/Android/i.test(userAgent) && /\bMobile\b/i.test(userAgent));
+    const tabletUserAgent = /iPad/i.test(userAgent) || (/Android/i.test(userAgent) && mobileHint !== true && !/\bMobile\b/i.test(userAgent));
+    const screenShortSide = Math.min(window.screen.width, window.screen.height);
+    const coarsePointer = window.matchMedia?.("(pointer: coarse)")?.matches ?? false;
+    if (mobileHint === true || phoneUserAgent || (!tabletUserAgent && coarsePointer && screenShortSide > 0 && screenShortSide <= MOBILE_SHELL_MAX_WIDTH)) {
+      return "mobile";
+    }
+    if ((tabletUserAgent || (coarsePointer && screenShortSide >= 768)) && width <= TABLET_SHELL_MAX_WIDTH) {
+      return "tablet";
+    }
+  }
+  return detectShellMode(width, MOBILE_SHELL_MAX_WIDTH);
 }
 
 function paneDensityFor(shellMode: ShellMode, paneCount: number): PaneDensity {
@@ -1142,7 +1298,9 @@ const paneModeLabels: Record<Pane["mode"], string> = {
   YOUTUBE: "YouTube",
   VNC: "VNC",
   HARNESS: "Harness",
-  LIVE: "Live"
+  LIVE: "Live",
+  FILES: "Files",
+  DEMOS: "Demo Projects"
 };
 
 function paneModeLabel(mode: Pane["mode"]): string {
@@ -1187,7 +1345,7 @@ const ROOM_CATALOG_PAGE_SIZE = 100;
 const ROOM_CATALOG_MAX_PAGES = 20;
 
 async function loadBoundedRoomCatalog(): Promise<Room[]> {
-  const firstPage = await api.rooms({ page: 1, pageSize: ROOM_CATALOG_PAGE_SIZE });
+  const firstPage = await api.rooms({ page: 1, pageSize: ROOM_CATALOG_PAGE_SIZE, all: true });
   const reportedPageCount = firstPage.pagination.totalPages;
   const pageCount = Number.isSafeInteger(reportedPageCount) && reportedPageCount > 1
     ? Math.min(reportedPageCount, ROOM_CATALOG_MAX_PAGES)
@@ -1196,7 +1354,7 @@ async function loadBoundedRoomCatalog(): Promise<Room[]> {
 
   const remainingPages = await Promise.all(
     Array.from({ length: pageCount - 1 }, (_, index) =>
-      api.rooms({ page: index + 2, pageSize: ROOM_CATALOG_PAGE_SIZE })
+      api.rooms({ page: index + 2, pageSize: ROOM_CATALOG_PAGE_SIZE, all: true })
     )
   );
   return [firstPage, ...remainingPages].flatMap((page) => page.data);
@@ -1463,6 +1621,7 @@ function DesktopActionManager({
   label,
   onClose,
   onHideAction,
+  onReorderAction,
   onRunAction,
   onRunCommand,
   onShowAction,
@@ -1479,6 +1638,7 @@ function DesktopActionManager({
   label: string;
   onClose: () => void;
   onHideAction: (actionId: string) => void;
+  onReorderAction?: (draggedId: string, targetId: string, position?: "before" | "after") => void;
   onRunAction?: (action: IconToolbarAction) => void;
   onRunCommand?: (command: PaneOverflowCommand) => void;
   onShowAction: (actionId: string) => void;
@@ -1492,6 +1652,12 @@ function DesktopActionManager({
   const primarySet = primaryActionIds ? new Set(primaryActionIds) : null;
   const menuRef = useRef<HTMLDivElement>(null);
   const closeIntentRef = useRef<PopupCloseIntent>("auto");
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [dropPosition, setDropPosition] = useState<"before" | "after">("after");
+  const draggedIdRef = useRef<string | null>(null);
+  const dropPositionRef = useRef<"before" | "after">("after");
+  const isDraggingRef = useRef(false);
   const [position, setPosition] = useState<{
     left: number;
     top: number;
@@ -1518,7 +1684,11 @@ function DesktopActionManager({
       const triggerRect = trigger.getBoundingClientRect();
       const menuRect = menu.getBoundingClientRect();
       const width = menuRect.width || Math.min(320, window.innerWidth - margin * 2);
-      const height = menuRect.height || Math.min(448, window.innerHeight * 0.7);
+      const scrollEl = menu.querySelector<HTMLElement>(".icon-action-manager-scroll");
+      const scrollContentHeight = scrollEl && scrollEl.scrollHeight > scrollEl.offsetHeight
+        ? menu.offsetHeight - scrollEl.offsetHeight + scrollEl.scrollHeight
+        : 0;
+      const height = Math.max(menuRect.height, scrollContentHeight) || Math.min(448, window.innerHeight * 0.7);
       const maxLeft = Math.max(margin, window.innerWidth - width - margin);
       const maxTop = Math.max(margin, window.innerHeight - height - margin);
       const pane = preferPaneInside ? trigger.closest<HTMLElement>(".pane-card") : null;
@@ -1551,15 +1721,23 @@ function DesktopActionManager({
         });
         return;
       }
-      const fitsBelow = triggerRect.bottom + gap + height <= window.innerHeight - margin;
-      const desiredTop = fitsBelow ? triggerRect.bottom + gap : triggerRect.top - gap - height;
+      const availableHeightBelow = Math.max(0, window.innerHeight - margin - (triggerRect.bottom + gap));
+      const availableHeightAbove = Math.max(0, triggerRect.top - gap - margin);
+      const fitsBelow = height <= availableHeightBelow;
+      const fitsAbove = height <= availableHeightAbove;
+      const placeBelow = fitsBelow || (!fitsAbove && availableHeightBelow >= availableHeightAbove);
+      const availableHeight = placeBelow ? availableHeightBelow : availableHeightAbove;
+      const desiredTop = placeBelow
+        ? triggerRect.bottom + gap
+        : triggerRect.top - gap - Math.min(height, availableHeight);
+      const actualMaxHeight = height > availableHeight ? availableHeight : null;
       setPosition({
         left: Math.max(margin, Math.min(triggerRect.right - width, maxLeft)),
         top: Math.max(margin, Math.min(desiredTop, maxTop)),
         ready: true,
         width: null,
-        maxHeight: null,
-        placement: fitsBelow ? "trigger-below" : "trigger-above"
+        maxHeight: actualMaxHeight,
+        placement: placeBelow ? "trigger-below" : "trigger-above"
       });
     }
 
@@ -1601,6 +1779,65 @@ function DesktopActionManager({
     onRunAction?.(action);
   }
 
+  function handleDragStart(event: ReactDragEvent<HTMLElement>, actionId: string) {
+    if (!onReorderAction) return;
+    isDraggingRef.current = true;
+    draggedIdRef.current = actionId;
+    setDraggedId(actionId);
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", actionId);
+    }
+  }
+
+  function handleDragOver(event: ReactDragEvent<HTMLElement>, actionId: string) {
+    const currentDragged = draggedIdRef.current || draggedId;
+    if (!onReorderAction || !currentDragged || currentDragged === actionId) return;
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "move";
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const rowHeight = rect.height || 36;
+    const midY = rect.top + rowHeight / 2;
+    const clientY = typeof event.clientY === "number" ? event.clientY : midY - 1;
+    const position = clientY < midY ? "before" : "after";
+    dropPositionRef.current = position;
+    setDragOverId(actionId);
+    setDropPosition(position);
+  }
+
+  function handleDragLeave(event: ReactDragEvent<HTMLElement>, actionId: string) {
+    if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+    if (dragOverId === actionId) {
+      setDragOverId(null);
+    }
+  }
+
+  function handleDrop(event: ReactDragEvent<HTMLElement>, targetActionId: string) {
+    const sourceId = draggedIdRef.current || draggedId || event.dataTransfer?.getData("text/plain");
+    if (!onReorderAction || !sourceId || sourceId === targetActionId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const effectivePos = dropPositionRef.current || dropPosition;
+    onReorderAction(sourceId, targetActionId, effectivePos);
+    draggedIdRef.current = null;
+    setDraggedId(null);
+    setDragOverId(null);
+    setTimeout(() => {
+      isDraggingRef.current = false;
+    }, 100);
+  }
+
+  function handleDragEnd() {
+    draggedIdRef.current = null;
+    setDraggedId(null);
+    setDragOverId(null);
+    setTimeout(() => {
+      isDraggingRef.current = false;
+    }, 100);
+  }
+
   function handleMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -1608,11 +1845,32 @@ function DesktopActionManager({
       dismiss();
       return;
     }
-    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     const menu = menuRef.current;
     if (!menu) return;
     const items = enabledButtons(menu);
     if (!items.length) return;
+    if (onReorderAction && (event.altKey || event.ctrlKey) && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      const activeElement = document.activeElement;
+      const activeButton = items.find((btn) => btn === activeElement);
+      const actionId = activeButton?.dataset.actionId;
+      if (actionId) {
+        event.preventDefault();
+        const currentIndex = actions.findIndex((a) => a.id === actionId);
+        if (currentIndex !== -1) {
+          const targetIndex = event.key === "ArrowUp" ? currentIndex - 1 : currentIndex + 1;
+          const targetAction = actions[targetIndex];
+          if (targetAction) {
+            onReorderAction(actionId, targetAction.id, event.key === "ArrowUp" ? "before" : "after");
+            requestAnimationFrame(() => {
+              const nextBtn = menu.querySelector<HTMLButtonElement>(`button[data-action-id="${actionId}"]`);
+              nextBtn?.focus();
+            });
+            return;
+          }
+        }
+      }
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     const activeIndex = items.findIndex((item) => item === document.activeElement);
     const nextIndex = event.key === "Home"
@@ -1674,36 +1932,73 @@ function DesktopActionManager({
             const isShown = !isHidden && (primarySet?.has(action.id) ?? true);
             const canHide = action.hideable !== false;
             const stateLabel = isShown ? (canHide ? "Hide" : "Shown") : "Show";
-            if (plainActions) {
-              return (
-                <button
-                  key={action.id}
-                  type="button"
-                  role="menuitem"
-                  aria-label={action.ariaLabel}
-                  title={action.title}
-                  disabled={action.disabled}
-                  onClick={() => runAction(action)}
-                >
-                  <ActionIcon aria-hidden="true" />
-                  <span>{action.label}{action.disabled && <small className="action-disabled-reason">{action.title}</small>}</span>
-                </button>
-              );
-            }
+            const isDraggable = Boolean(onReorderAction) && action.draggable !== false;
+            const isDragging = draggedId === action.id;
+            const isDragOver = dragOverId === action.id;
+            const rowDragClass = isDragging
+              ? " is-dragging"
+              : isDragOver
+                ? dropPosition === "before"
+                  ? " is-drag-over-before"
+                  : " is-drag-over-after"
+                : "";
+
             return (
-              <button
+              <div
                 key={action.id}
-                type="button"
-                role="menuitemcheckbox"
-                aria-checked={isShown}
-                aria-label={`${stateLabel} ${action.ariaLabel}`}
-                disabled={isShown && !canHide}
-                onClick={() => (isShown ? onHideAction(action.id) : onShowAction(action.id))}
+                className={`icon-action-manager-row${rowDragClass}`}
+                draggable={isDraggable}
+                onDragStart={(event) => handleDragStart(event, action.id)}
+                onDragOver={(event) => handleDragOver(event, action.id)}
+                onDragLeave={(event) => handleDragLeave(event, action.id)}
+                onDrop={(event) => handleDrop(event, action.id)}
+                onDragEnd={handleDragEnd}
               >
-                <ActionIcon aria-hidden="true" />
-                <span>{action.label}</span>
-                <span className="icon-action-manager-state">{stateLabel}</span>
-              </button>
+                {plainActions ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-action-id={action.id}
+                    aria-label={action.ariaLabel}
+                    title={action.title}
+                    disabled={action.disabled}
+                    onClick={(event) => {
+                      if (isDraggingRef.current) {
+                        event.preventDefault();
+                        return;
+                      }
+                      runAction(action);
+                    }}
+                  >
+                    <ActionIcon aria-hidden="true" />
+                    <span>{action.label}{action.disabled && <small className="action-disabled-reason">{action.title}</small>}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    data-action-id={action.id}
+                    aria-checked={isShown}
+                    aria-label={`${stateLabel} ${action.ariaLabel}`}
+                    disabled={isShown && !canHide}
+                    onClick={(event) => {
+                      if (isDraggingRef.current) {
+                        event.preventDefault();
+                        return;
+                      }
+                      if (isShown) {
+                        onHideAction(action.id);
+                      } else {
+                        onShowAction(action.id);
+                      }
+                    }}
+                  >
+                    <ActionIcon aria-hidden="true" />
+                    <span>{action.label}</span>
+                    <span className="icon-action-manager-state">{stateLabel}</span>
+                  </button>
+                )}
+              </div>
             );
           })}
         </div>
@@ -1968,11 +2263,6 @@ function readStoredBoolean(key: string): boolean {
   return getSpaceRuntime().platform.localStorage.getItem(key) === "true";
 }
 
-function hasStoredValue(key: string): boolean {
-  if (typeof window === "undefined") return false;
-  return getSpaceRuntime().platform.localStorage.getItem(key) !== null;
-}
-
 function readStoredBooleanDefaultTrue(key: string): boolean {
   if (typeof window === "undefined") return true;
   const stored = getSpaceRuntime().platform.localStorage.getItem(key);
@@ -1983,6 +2273,30 @@ function readStoredRoomTheme(): RoomTheme {
   if (typeof window === "undefined") return "graphite";
   const stored = getSpaceRuntime().platform.localStorage.getItem(ROOM_THEME_STORAGE_KEY);
   return roomThemes.some((theme) => theme.id === stored) ? (stored as RoomTheme) : "graphite";
+}
+
+const LIVE_RAIL_GRAPHIC_DISABLED_STORAGE_KEY = "space.liveRail.graphicDisabled.v1";
+
+const ROOM_EXTRA_EMPTY_SLOTS_STORAGE_KEY = "space:room-extra-empty-slots.v1";
+
+function readStoredRoomExtraEmptySlots(): Record<string, number> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = getSpaceRuntime().platform.localStorage.getItem(ROOM_EXTRA_EMPTY_SLOTS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (parsed && typeof parsed === "object") {
+      const clamped: Record<string, number> = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === "number" && Number.isFinite(v)) {
+          clamped[k] = Math.max(0, Math.min(6, Math.round(v)));
+        }
+      }
+      return clamped;
+    }
+    return {};
+  } catch {
+    return {};
+  }
 }
 
 function paneToolbarHiddenStorageKey(mode: Pane["mode"]): string {
@@ -2021,7 +2335,7 @@ function dispatchTerminalPaneAction(paneId: string, action: TerminalPaneAction) 
 
 function terminalPlanModeAction(runtimeId: string): TerminalPaneAction {
   if (runtimeId === "cli:claude") return { action: "ensure_plan_mode" };
-  if (runtimeId === "cli:gemini" || runtimeId === "cli:qwen") {
+  if (runtimeId === "cli:gemini" || runtimeId === "cli:qwen" || runtimeId === "cli:omp") {
     return { action: "enter_native_plan_mode", runtimeId };
   }
   return { action: "control_key", key: "shift_tab" };
@@ -2341,11 +2655,234 @@ function buildLaunchBlockers(props: BlueprintProgressProps): LaunchBlocker[] {
   return blockers;
 }
 
+function MinimizedPanePreviewCard({
+  pane,
+  isRunning,
+  latestTurn,
+  onRestore
+}: {
+  pane: Pane;
+  isRunning: boolean;
+  latestTurn?: Turn | null;
+  onRestore: () => void;
+}) {
+  const [terminalLines, setTerminalLines] = useState<string[]>(() => {
+    if (pane.mode === "TERMINAL") {
+      return getTerminalPreviewLines(pane.id, 5);
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    if (pane.mode !== "TERMINAL") return;
+    const update = () => {
+      setTerminalLines(getTerminalPreviewLines(pane.id, 5));
+    };
+    update();
+    const unsubscribe = subscribeTerminalPreview((updatedPaneId) => {
+      if (!updatedPaneId || updatedPaneId === pane.id) {
+        update();
+      }
+    });
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") update();
+    }, 10_000);
+    return () => {
+      unsubscribe();
+      clearInterval(interval);
+    };
+  }, [pane.id, pane.mode]);
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={`minimized-preview-card ${isRunning ? "is-running" : ""}`}
+      data-category-color={pane.categoryColor ?? undefined}
+      onClick={onRestore}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onRestore();
+        }
+      }}
+      aria-label={`Restore pane ${displayPaneTitle(pane)}`}
+      title={`Click to restore ${pane.title}`}
+    >
+      <header className="minimized-preview-card-header">
+        <div className="minimized-preview-card-identity">
+          <PaneModeIcon pane={pane} />
+          <span className="minimized-preview-card-title" title={pane.title}>{displayPaneTitle(pane)}</span>
+        </div>
+      </header>
+      <div className="minimized-preview-card-body">
+        {pane.mode === "TERMINAL" ? (
+          terminalLines.length > 0 ? (
+            <div className="minimized-preview-terminal-view">
+              {terminalLines.map((line, idx) => {
+                const isLast = idx === terminalLines.length - 1;
+                return (
+                  <div key={idx} className="minimized-preview-terminal-line" title={line}>
+                    <span>{line || "\u00A0"}</span>
+                    {isLast && isRunning ? (
+                      <span className="minimized-preview-terminal-cursor">▋</span>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="minimized-preview-placeholder">
+              {isRunning ? (
+                <>
+                  <Loader2 className="minimized-pane-run-indicator" aria-hidden="true" />
+                  <span>Agent running terminal command...</span>
+                </>
+              ) : (
+                <span>No active terminal output</span>
+              )}
+            </div>
+          )
+        ) : pane.mode === "CHAT" ? (
+          <div className="minimized-preview-chat-view">
+            {latestTurn?.prompt ? (
+              <div className="minimized-preview-chat-prompt">
+                <span className="minimized-preview-prompt-tag">&gt;</span>
+                <span className="minimized-preview-prompt-text">{latestTurn.prompt}</span>
+              </div>
+            ) : null}
+            {latestTurn?.status ? (
+              <div className="minimized-preview-chat-summary">
+                Status: {latestTurn.status}
+              </div>
+            ) : isRunning ? (
+              <div className="minimized-preview-placeholder">
+                <Loader2 className="minimized-pane-run-indicator" aria-hidden="true" />
+                <span>Generating response...</span>
+              </div>
+            ) : (
+              <div className="minimized-preview-placeholder">Ready</div>
+            )}
+          </div>
+        ) : (
+          <div className="minimized-preview-generic-view">
+            <span className="minimized-preview-generic-mode">{pane.mode}</span>
+            <span className="minimized-preview-generic-subtitle">{pane.title}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function isDocumentFullscreen(): boolean {
+  if (typeof document === "undefined") return false;
+  return Boolean(
+    document.fullscreenElement ||
+    (document as any).webkitFullscreenElement ||
+    (document as any).mozFullScreenElement ||
+    (document as any).msFullscreenElement
+  );
+}
+
+async function toggleBrowserFullscreen(): Promise<void> {
+  if (typeof document === "undefined") return;
+  try {
+    if (!isDocumentFullscreen()) {
+      const docEl = document.documentElement as any;
+      if (docEl.requestFullscreen) {
+        await docEl.requestFullscreen();
+      } else if (docEl.webkitRequestFullscreen) {
+        await docEl.webkitRequestFullscreen();
+      } else if (docEl.mozRequestFullScreen) {
+        await docEl.mozRequestFullScreen();
+      } else if (docEl.msRequestFullscreen) {
+        await docEl.msRequestFullscreen();
+      }
+    } else {
+      const doc = document as any;
+      if (doc.exitFullscreen) {
+        await doc.exitFullscreen();
+      } else if (doc.webkitExitFullscreen) {
+        await doc.webkitExitFullscreen();
+      } else if (doc.mozCancelFullScreen) {
+        await doc.mozCancelFullScreen();
+      } else if (doc.msExitFullscreen) {
+        await doc.msExitFullscreen();
+      }
+    }
+  } catch (err) {
+    console.warn("Browser fullscreen toggle failed:", err);
+  }
+}
+
+function applyServerUserSettings(
+  storage: Storage,
+  settings: UserSettings,
+  currentUiTheme: UiTheme,
+  currentModernAppearance: ModernAppearance,
+  currentModernIconPack: ModernIconPack,
+  userId?: string
+): { themeChanged: boolean } {
+  let themeChanged = false;
+  if (settings.uiTheme && settings.uiTheme !== currentUiTheme) {
+    writeUiTheme(storage, settings.uiTheme);
+    themeChanged = true;
+  }
+  if (settings.modernAppearance && settings.modernAppearance !== currentModernAppearance) {
+    writeModernAppearance(storage, settings.modernAppearance);
+    themeChanged = true;
+  }
+  if (settings.modernIconPack && settings.modernIconPack !== currentModernIconPack) {
+    writeModernIconPack(storage, settings.modernIconPack);
+    themeChanged = true;
+  }
+  if (settings.dateTime) {
+    applyServerDateTimeSettings(settings.dateTime, userId);
+  }
+  if (settings.voice) {
+    applyServerVoiceSettings(settings.voice);
+  }
+  if (settings.keyboardAutocorrect) {
+    applyServerKeyboardAutocorrectSettings(settings.keyboardAutocorrect);
+  }
+  if (typeof settings.suppressNotifications === "boolean") {
+    applyServerSuppressNotifications(settings.suppressNotifications);
+  }
+  if (typeof settings.warmRoomEnabled === "boolean") {
+    applyServerWarmRoomEnabled(settings.warmRoomEnabled);
+  }
+  if (typeof settings.warmRoomConnectedPaneLimit === "number") {
+    applyServerWarmRoomConnectedPaneLimit(settings.warmRoomConnectedPaneLimit);
+  }
+  if (typeof settings.cliImagePreviewLimit === "number") {
+    applyServerCliImagePreviewLimit(settings.cliImagePreviewLimit);
+  }
+  return { themeChanged };
+}
+
 export function App() {
   useEffect(() => bindSpaceMediaVolume(), []);
   const runtime = getSpaceRuntime();
   const runtimeKind = getSpaceRuntimeKind();
   const { ensureServerSettings } = useVoiceInput();
+  const {
+    windows: stickyWindows,
+    openNew: openStickyNote,
+    closeWindow: closeStickyWindow,
+    updateWindow: updateStickyWindow,
+    bringToFront: bringStickyWindowToFront
+  } = useStickyNoteWindows();
+  const desktopWidgets = useDesktopWidgets();
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const item = (e as CustomEvent<ClipboardItem | null>).detail;
+      openStickyNote(item);
+    };
+    window.addEventListener("space:sticky-note:open", handler);
+    return () => window.removeEventListener("space:sticky-note:open", handler);
+  }, [openStickyNote]);
   migrateLegacyCliToolbarPreferences(runtime.platform.localStorage);
   const [uiTheme] = useState<UiTheme>(() => readUiTheme(runtime.platform.localStorage));
   const [roomToolbarStorageKeys] = useState(() => {
@@ -2374,7 +2911,7 @@ export function App() {
   const [systemPrefersDark, setSystemPrefersDark] = useState(
     () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches
   );
-  const modernColorMode = uiTheme === "codex" ? "dark" : resolveModernColorMode(modernAppearance, systemPrefersDark);
+  const modernColorMode = uiTheme === "codex" || uiTheme === "motion" ? "dark" : resolveModernColorMode(modernAppearance, systemPrefersDark);
   useEffect(() => {
     document.documentElement.dataset.interfaceTheme = uiTheme;
     return () => { delete document.documentElement.dataset.interfaceTheme; };
@@ -2382,31 +2919,62 @@ export function App() {
   const [toolbarVpnRoute, setToolbarVpnRoute] = useState<CliEgressRouteId | null>(null);
   useEffect(() => {
     const body = document.body;
+    const html = document.documentElement;
     if (uiTheme === "classic") {
       body.removeAttribute("data-ui-theme");
       body.removeAttribute("data-color-mode");
       body.removeAttribute("data-icon-pack");
+      html.removeAttribute("data-color-mode");
+      html.style.colorScheme = "dark";
       return;
     }
     body.setAttribute("data-ui-theme", "modern");
     body.setAttribute("data-color-mode", modernColorMode);
     body.setAttribute("data-icon-pack", modernIconPack);
+    html.setAttribute("data-color-mode", modernColorMode);
+    html.style.colorScheme = modernColorMode;
     return () => {
       if (body.getAttribute("data-ui-theme") === "modern") body.removeAttribute("data-ui-theme");
       if (body.getAttribute("data-color-mode") === modernColorMode) body.removeAttribute("data-color-mode");
       if (body.getAttribute("data-icon-pack") === modernIconPack) body.removeAttribute("data-icon-pack");
+      if (html.getAttribute("data-color-mode") === modernColorMode) html.removeAttribute("data-color-mode");
     };
   }, [modernColorMode, modernIconPack, uiTheme]);
   const [auth, setAuth] = useState<AuthMe | null>(null);
-  const [adminModeRequested, setAdminModeRequested] = useState(false);
+  const [adminModeRequested, setAdminModeRequestedState] = useState(() => readStoredBoolean(ADMIN_MODE_REQUESTED_STORAGE_KEY));
+  const setAdminModeRequested = useCallback((next: boolean | ((current: boolean) => boolean)) => {
+    setAdminModeRequestedState((current) => {
+      const value = typeof next === "function" ? next(current) : next;
+      try {
+        runtime.platform.localStorage.setItem(ADMIN_MODE_REQUESTED_STORAGE_KEY, String(value));
+      } catch {
+        // storage unavailable
+      }
+      return value;
+    });
+  }, [runtime.platform.localStorage]);
   const isAdminMode = auth?.user?.role === "ADMIN" && adminModeRequested;
-  useEffect(() => setAdminModeRequested(false), [auth?.user?.id]);
+  const [roomExtraEmptySlots, setRoomExtraEmptySlots] = useState<Record<string, number>>(() => readStoredRoomExtraEmptySlots());
+  const updateRoomExtraEmptySlots = useCallback((roomId: string, targetOrDelta: number, isAbsolute = false) => {
+    setRoomExtraEmptySlots((prev) => {
+      const current = prev[roomId] ?? 0;
+      const nextVal = Math.max(0, Math.min(6, isAbsolute ? targetOrDelta : current + targetOrDelta));
+      const next = { ...prev, [roomId]: nextVal };
+      try {
+        runtime.platform.localStorage.setItem(ROOM_EXTRA_EMPTY_SLOTS_STORAGE_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, [runtime.platform.localStorage]);
+  const [isDemoModeActive, setIsDemoModeActive] = useState(false);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const voiceSettingsAuthUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!auth?.isAuthenticated) return;
-    const interval = window.setInterval(() => publishCliVpnRoutingStatus(), 20_000);
+    const interval = window.setInterval(() => {
+      void refreshCliVpnRoutingStatus().catch(() => undefined);
+    }, 20_000);
     return () => window.clearInterval(interval);
   }, [auth?.isAuthenticated]);
 
@@ -2426,7 +2994,7 @@ export function App() {
           if (active) setToolbarVpnRoute(null);
         });
       void api
-        .cliRuntimeSettings({ forceRefresh: true })
+        .cliRuntimeSettings()
         .then((settings) => {
           if (active) setCliRuntimeSettings(settings);
         })
@@ -2454,7 +3022,54 @@ export function App() {
   const [appView, setAppView] = useState<AppView>(readAppView);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [roomSearch, setRoomSearch] = useState("");
-  const [roomFilter, setRoomFilter] = useState<WorkspaceRoomFilter>("all");
+  const [adminRoomFilterMode, setAdminRoomFilterMode] = useState<"mine" | "all" | "user">("mine");
+  const [adminSelectedUserId, setAdminSelectedUserId] = useState<string>("");
+  const [adminUsersList, setAdminUsersList] = useState<AdminUserItem[]>([]);
+
+  useEffect(() => {
+    if (auth?.user?.role === "ADMIN") {
+      api.listAdminUsers()
+        .then((res) => {
+          if (Array.isArray(res?.users)) {
+            setAdminUsersList(res.users);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [auth?.user?.role]);
+
+  const userEmailById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const u of adminUsersList) {
+      map.set(u.id, u.email || u.id);
+    }
+    return map;
+  }, [adminUsersList]);
+
+  // Compute live room counts per user from the current rooms state
+  // (overrides the DB snapshot count from listAdminUsers which may be stale)
+  const liveRoomCountByUserId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of rooms) {
+      if (r.ownerUserId) {
+        map.set(r.ownerUserId, (map.get(r.ownerUserId) ?? 0) + 1);
+      }
+    }
+    return map;
+  }, [rooms]);
+
+  // Merge adminUsersList with live room counts
+  const adminUsersListWithLiveCounts = useMemo(() => {
+    return adminUsersList.map((u) => ({
+      ...u,
+      roomCount: liveRoomCountByUserId.get(u.id) ?? u.roomCount,
+    }));
+  }, [adminUsersList, liveRoomCountByUserId]);
+
+  const roomsPanelRef = useRef<HTMLDivElement | null>(null);
+  const [showDownloadBanner, setShowDownloadBanner] = useState(true);
+  const [roomListOverflow, setRoomListOverflow] = useState(false);
+  const [roomListMaxHeight, setRoomListMaxHeight] = useState<number | null>(null);
   const [roomCliActivityCounts, setRoomCliActivityCounts] = useState<Record<string, number>>({});
   const [roomCliRuntimeIds, setRoomCliRuntimeIds] = useState<Record<string, string[]>>({});
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => readStoredSessionString(SELECTED_ROOM_ID_STORAGE_KEY));
@@ -2463,9 +3078,39 @@ export function App() {
   const [displayedRoomId, setDisplayedRoomId] = useState<string | null>(selectedRoomId);
   const [preparingRoomId, setPreparingRoomId] = useState<string | null>(null);
   const [panes, setPanes] = useState<Pane[]>([]);
+  const [liveRailStatus, setLiveRailStatus] = useState<"idle" | "connecting" | "active" | "listening" | "thinking" | "speaking" | "error">("idle");
+  const [liveRailContextMenu, setLiveRailContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [liveDebugToast, setLiveDebugToast] = useState<{ id: number; message: string; type: "info" | "success" | "error" } | null>(null);
+  const liveDebugTimerRef = useRef<number | null>(null);
+
+  const showLiveDebug = useCallback((message: string, type: "info" | "success" | "error" = "info") => {
+    console.log(`[AI-Live-Debug][${type.toUpperCase()}] ${message}`);
+    if (liveDebugTimerRef.current !== null) window.clearTimeout(liveDebugTimerRef.current);
+    setLiveDebugToast({ id: Date.now(), message, type });
+    liveDebugTimerRef.current = window.setTimeout(() => {
+      setLiveDebugToast(null);
+      liveDebugTimerRef.current = null;
+    }, 4500);
+  }, []);
+
+  useEffect(() => {
+    const handleDebug = (event: Event) => {
+      const detail = (event as CustomEvent<{ message: string; type?: "info" | "success" | "error" }>).detail;
+      if (detail?.message) showLiveDebug(detail.message, detail.type || "info");
+    };
+    window.addEventListener("space-live-debug", handleDebug);
+    return () => window.removeEventListener("space-live-debug", handleDebug);
+  }, [showLiveDebug]);
+
+  const [isLiveRailGraphicDisabled, setIsLiveRailGraphicDisabled] = useState<boolean>(() => readStoredBoolean(LIVE_RAIL_GRAPHIC_DISABLED_STORAGE_KEY));
   const [activeCategoryColorByRoom, setActiveCategoryColorByRoom] = useState<Record<string, PaneCategoryColor>>({});
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(() => readStoredSessionString(SELECTED_PANE_ID_STORAGE_KEY));
   const [shellMode, setShellMode] = useState<ShellMode>(() => detectUiThemeShellMode(readViewportWidth(), uiTheme));
+  const [roomNamePreview, setRoomNamePreview] = useState<string | null>(null);
+  const roomNameHoldTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (roomNameHoldTimerRef.current !== null) window.clearTimeout(roomNameHoldTimerRef.current);
+  }, []);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [roomEvents, setRoomEvents] = useState<SpaceEvent[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -2486,9 +3131,29 @@ export function App() {
   const [workerReadiness, setWorkerReadiness] = useState<WorkerReadiness | null>(null);
   const [storageReadiness, setStorageReadiness] = useState<StorageReadiness | null>(null);
   const [storageWarning, setStorageWarning] = useState<string>("");
+  const [dismissedStorageWarning, setDismissedStorageWarning] = useState<string | null>(() =>
+    readStoredSessionString(DISMISSED_STORAGE_WARNING_STORAGE_KEY)
+  );
   const [clipboardNotice, setClipboardNotice] = useState<string | null>(null);
   const [clipToolNotice, setClipToolNotice] = useState<string | null>(null);
   useAutoDismiss(clipToolNotice, setClipToolNotice);
+  const [watchdogAlerts, setWatchdogAlerts] = useState<Array<{ id: string; message: string; timestamp: string }>>([]);
+
+  useEffect(() => {
+    const handleWatchdogCustomEvent = (customEvent: globalThis.Event) => {
+      const detail = (customEvent as CustomEvent<{ id?: string; message: string; timestamp?: string }>).detail;
+      if (!detail?.message) return;
+      const id = detail.id ?? `watchdog-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      setWatchdogAlerts((current) => {
+        if (current.some((item) => item.id === id)) return current;
+        return [...current, { id, message: detail.message, timestamp: detail.timestamp ?? new Date().toISOString() }];
+      });
+    };
+    window.addEventListener("space:room-watchdog-alert", handleWatchdogCustomEvent as EventListener);
+    return () => {
+      window.removeEventListener("space:room-watchdog-alert", handleWatchdogCustomEvent as EventListener);
+    };
+  }, []);
   const [codexEnvironmentSummary, setCodexEnvironmentSummary] = useState<CodexEnvironment | null>(null);
   const isCodexEnabled = codexEnvironmentSummary?.isCodexEnabled ?? true;
   const [cliRuntimeSettings, setCliRuntimeSettings] = useState<CliRuntimeSettingsResponse | null>(null);
@@ -2498,6 +3163,33 @@ export function App() {
   const [activeSideSurface, setActiveSideSurface] = useState<SideSurface>(() => (restoredDock?.surface as SideSurface | undefined) ?? "rooms");
   const [isRoomFocusMode, setIsRoomFocusMode] = useState(() => readStoredBoolean(ROOM_FOCUS_MODE_STORAGE_KEY));
   const [isRoomToolbarHidden, setIsRoomToolbarHidden] = useState(() => readStoredBoolean(ROOM_TOOLBAR_HIDDEN_STORAGE_KEY));
+  const [isBrowserFullscreen, setIsBrowserFullscreen] = useState(() => isDocumentFullscreen());
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsBrowserFullscreen(isDocumentFullscreen());
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+    document.addEventListener("mozfullscreenchange", handleFullscreenChange);
+    document.addEventListener("MSFullscreenChange", handleFullscreenChange);
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "F11") {
+        event.preventDefault();
+        void toggleBrowserFullscreen();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+      document.removeEventListener("mozfullscreenchange", handleFullscreenChange);
+      document.removeEventListener("MSFullscreenChange", handleFullscreenChange);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
   const [isMobilePaneFocusMode, setIsMobilePaneFocusMode] = useState(false);
   const [isDesktopSideSurfaceOpen, setIsDesktopSideSurfaceOpen] = useState(() => restoredDock?.desktopOpen ?? !readStoredBoolean(SIDE_SURFACE_HIDDEN_STORAGE_KEY));
   const [isCompactSideSurfaceOpen, setIsCompactSideSurfaceOpen] = useState(() => restoredDock?.compactOpen ?? false);
@@ -2508,8 +3200,39 @@ export function App() {
   const [warmRoomEnabled, setWarmRoomEnabled] = useState(readStoredWarmRoomEnabled);
   const [warmConnectedPaneLimit, setWarmConnectedPaneLimit] = useState(readStoredWarmRoomConnectedPaneLimit);
   const [suppressNotifications, setSuppressNotifications] = useState(readStoredSuppressNotifications);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.setAttribute("data-suppress-notifications", String(suppressNotifications));
+    if (document.body) {
+      document.body.setAttribute("data-suppress-notifications", String(suppressNotifications));
+    }
+  }, [suppressNotifications]);
   const [showSessionDebugIds, setShowSessionDebugIds] = useState(() => readStoredBooleanDefaultTrue(SESSION_DEBUG_IDS_STORAGE_KEY));
   const [cliDebugModeEnabled, setCliDebugModeEnabled] = useState(() => readStoredBoolean(CLI_DEBUG_MODE_STORAGE_KEY));
+  const appDiagnosticsState = useDiagnosticsState();
+  const [debugModePending, setDebugModePending] = useState(false);
+  const canManageDiagnostics = auth?.user?.role === "ADMIN";
+  const isAppDiagnosticsEnabled = Boolean(appDiagnosticsState.status?.isEnabled);
+  const isDebugModeActive = canManageDiagnostics ? isAppDiagnosticsEnabled : cliDebugModeEnabled;
+
+  const toggleDebugMode = useCallback(async () => {
+    if (debugModePending) return;
+    const nextEnabled = !isDebugModeActive;
+    setDebugModePending(true);
+    try {
+      try {
+        const updated = await api.updateAppDiagnosticsStatus(nextEnabled);
+        await applyAppDiagnosticsStatus(updated);
+      } catch (diagError) {
+        console.warn("App diagnostics update error:", diagError);
+      }
+      setCliDebugModeEnabled(nextEnabled);
+    } catch (error) {
+      console.error("Failed to toggle debug mode", error);
+    } finally {
+      setDebugModePending(false);
+    }
+  }, [debugModePending, isDebugModeActive]);
   const [cliFloatsHidden, setCliFloatsHidden] = useState(() => readStoredBoolean(CLI_FLOATS_HIDDEN_STORAGE_KEY));
   const [maskSensitiveData, setMaskSensitiveData] = useState(() =>
     readStoredBoolean(SPACE_SENSITIVE_DATA_MASKED_STORAGE_KEY)
@@ -2532,25 +3255,48 @@ export function App() {
   const [isPaneLayoutMenuOpen, setIsPaneLayoutMenuOpen] = useState(false);
   const [isCollapsedPaneLayoutMenuOpen, setIsCollapsedPaneLayoutMenuOpen] = useState(false);
   const [paneLayoutPending, setPaneLayoutPending] = useState(false);
+  const paneLayoutSequenceRef = useRef(0);
   const [vpnCityNotice, setVpnCityNotice] = useState<string | null>(null);
   const [vpnCityPending, setVpnCityPending] = useState(false);
   useAutoDismiss(vpnCityNotice, setVpnCityNotice);
   const [paneLayoutError, setPaneLayoutError] = useState<string | null>(null);
   const [isPaneSpanAllMenuOpen, setIsPaneSpanAllMenuOpen] = useState(false);
   const [paneSpanAllPending, setPaneSpanAllPending] = useState(false);
+  const paneSpanSequenceRef = useRef(0);
   const [paneSpanAllError, setPaneSpanAllError] = useState<string | null>(null);
   const [isWorkspaceTextSizePickerOpen, setIsWorkspaceTextSizePickerOpen] = useState(false);
   const [isCliLauncherOpen, setIsCliLauncherOpen] = useState(false);
   const [isChatLauncherOpen, setIsChatLauncherOpen] = useState(false);
   const [cliPaneCreationPending, setCliPaneCreationPending] = useState(false);
   const [isVibeMusicOpen, setIsVibeMusicOpen] = useState(false);
+  const [isSnipToolOpen, setIsSnipToolOpen] = useState(false);
   const [isOskKeyboardOpen, setIsOskKeyboardOpen] = useState(false);
   const oskKeyboardMountedRef = useRef(false);
   const [isServerActionsMenuOpen, setIsServerActionsMenuOpen] = useState(false);
+  const [manageLoginPending, setManageLoginPending] = useState(false);
+  const manageLoginPendingRef = useRef(false);
+  const [manageInitialAction, setManageInitialAction] = useState<string | null>(null);
+  useEffect(() => {
+    const open = (event: Event) => {
+      if (auth?.user?.role !== "ADMIN") return;
+      manageLoginPendingRef.current = false;
+      setManageLoginPending(false);
+      setManageInitialAction((event as CustomEvent<{action?: string}>).detail?.action ?? null);
+      setIsServerActionsMenuOpen(true);
+    };
+    window.addEventListener("space:manage", open);
+    return () => window.removeEventListener("space:manage", open);
+  }, [auth?.user?.role]);
+
   const [isSetupConnectionsOpen, setIsSetupConnectionsOpen] = useState(false);
+  const setupConnectionsMounted = useRef(false);
+  if (isSetupConnectionsOpen) setupConnectionsMounted.current = true;
   const [isServerRestartDialogOpen, setIsServerRestartDialogOpen] = useState(false);
   const [adminCodexTool, setAdminCodexTool] = useState<AdminCodexTool | null>(null);
   const [adminOperationTool, setAdminOperationTool] = useState<AdminOperationTool | null>(null);
+  const [isSystemServicesDialogOpen, setIsSystemServicesDialogOpen] = useState(false);
+  const [isUserManagementOpen, setIsUserManagementOpen] = useState(false);
+  const userManagementTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [serverRestartPending, setServerRestartPending] = useState(false);
   const [serverRestartMessage, setServerRestartMessage] = useState<string | null>(null);
   const [serverRestartError, setServerRestartError] = useState<string | null>(null);
@@ -2565,15 +3311,115 @@ export function App() {
   const [restoreAllPending, setRestoreAllPending] = useState(false);
   const [minimizeAllPending, setMinimizeAllPending] = useState(false);
   const [isRoomRenameOpen, setIsRoomRenameOpen] = useState(false);
+  const [isAgentsDashboardOpen, setIsAgentsDashboardOpen] = useState(false);
+  const [agentsDashboardSummary, setAgentsDashboardSummary] = useState<AgentDashboardSummary | null>(null);
   const [isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen] = useState(false);
   const [resourceIndicatorsVisible, toggleResourceIndicators] = useResourceIndicators(auth?.user?.id);
   const [systemAnalyticsTab, setSystemAnalyticsTab] = useState<SystemAnalyticsTab | null>(null);
+  useEffect(() => {
+    if (systemAnalyticsTab) {
+      openSystemHealth("analytics", systemAnalyticsTab);
+      setSystemAnalyticsTab(null);
+    }
+  }, [systemAnalyticsTab]);
+
+
   const [activeUserLink, setActiveUserLink] = useState<UserLink | null>(null);
   const [isQuickLinksOpen, setIsQuickLinksOpen] = useState(false);
   const [roomNameDraft, setRoomNameDraft] = useState("");
+  const [roomProjectPathDraft, setRoomProjectPathDraft] = useState("");
   const [roomRenamePending, setRoomRenamePending] = useState(false);
   const [roomRenameError, setRoomRenameError] = useState<string | null>(null);
   useAutoDismiss(roomRenameError, setRoomRenameError);
+  const [dockExpandedRoomId, setDockExpandedRoomId] = useState<string | null>(null);
+  const [dockProjectPathDrafts, setDockProjectPathDrafts] = useState<Record<string, string>>({});
+  const [dockProjectSavingRoomId, setDockProjectSavingRoomId] = useState<string | null>(null);
+  const [projectPresets, setProjectPresets] = useState<{ label: string; path: string }[]>(() => {
+    try {
+      const saved = localStorage.getItem("space:project_presets");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const filtered = parsed.filter(
+            (p) =>
+              p.label !== "olla" &&
+              p.label !== "workspace" &&
+              !p.path?.includes("/olla") &&
+              !p.path?.includes("/workspace")
+          );
+          localStorage.setItem("space:project_presets", JSON.stringify(filtered));
+          return filtered.length > 0 ? filtered : DEFAULT_PROJECT_PRESETS;
+        }
+      }
+    } catch {}
+    return DEFAULT_PROJECT_PRESETS;
+  });
+  const [isAddingPresetRoomId, setIsAddingPresetRoomId] = useState<string | null>(null);
+  const [newPresetDraft, setNewPresetDraft] = useState("");
+
+  async function ensureProjectFolder(targetPath: string) {
+    if (!targetPath || !targetPath.trim()) return;
+    try {
+      await fetch("/api/projects/ensure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ path: targetPath.trim() })
+      });
+    } catch {}
+  }
+
+  async function handleAddNewPreset(roomId: string) {
+    const name = newPresetDraft.trim();
+    if (!name || !/^[a-zA-Z0-9_-]+$/.test(name)) return;
+    const projectPath = `/opt/spaceapp/projects/${name}`;
+    await ensureProjectFolder(projectPath);
+    setProjectPresets((prev) => {
+      if (prev.some((p) => p.label.toLowerCase() === name.toLowerCase())) return prev;
+      const next = [...prev, { label: name, path: projectPath }];
+      try {
+        localStorage.setItem("space:project_presets", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    setDockProjectPathDrafts((prev) => ({ ...prev, [roomId]: projectPath }));
+    setIsAddingPresetRoomId(null);
+    setNewPresetDraft("");
+    const targetRoom = rooms.find((r) => r.id === roomId);
+    if (targetRoom) {
+      try {
+        const updated = await api.updateRoom(roomId, {
+          name: targetRoom.name,
+          projectPath
+        });
+        setRooms((current) => current.map((r) => (r.id === roomId ? updated : r)));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to save project");
+      }
+    }
+  }
+
+  async function saveDockProject(roomId: string) {
+    if (dockProjectSavingRoomId) return;
+    const targetRoom = rooms.find((r) => r.id === roomId);
+    if (!targetRoom) return;
+    setDockProjectSavingRoomId(roomId);
+    const draft = dockProjectPathDrafts[roomId]?.trim() || null;
+    try {
+      if (draft) {
+        await ensureProjectFolder(draft);
+      }
+      const updated = await api.updateRoom(roomId, {
+        name: targetRoom.name,
+        projectPath: draft
+      });
+      setRooms((current) => current.map((r) => (r.id === roomId ? updated : r)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update project path");
+    } finally {
+      setDockProjectSavingRoomId(null);
+    }
+  }
   const [isRoomToolbarStacked, setIsRoomToolbarStacked] = useState(false);
   const [paneMoveDialog, setPaneMoveDialog] = useState<{
     pane: Pane;
@@ -2582,6 +3428,29 @@ export function App() {
     error: string | null;
   } | null>(null);
   const [paneMoveNotice, setPaneMoveNotice] = useState<string | null>(null);
+  const [accountNotice, setAccountNotice] = useState<string | null>(null);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  useAutoDismiss(accountNotice, setAccountNotice);
+  useAutoDismiss(accountError, setAccountError);
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const googleLinked = params.get("googleLinked");
+      const googleLinkError = params.get("googleLinkError");
+      if (googleLinked === "true") {
+        setAccountNotice("Google account linked successfully.");
+        const nextUrl = window.location.pathname;
+        window.history.replaceState({}, document.title, nextUrl);
+      } else if (googleLinkError) {
+        setAccountError(decodeURIComponent(googleLinkError));
+        const nextUrl = window.location.pathname;
+        window.history.replaceState({}, document.title, nextUrl);
+      }
+    } catch {
+      // Ignore URL parsing errors
+    }
+  }, []);
   const [roomReorderPending, setRoomReorderPending] = useState(false);
   const [draggedRoomId, setDraggedRoomId] = useState<string | null>(null);
   const [dragOverRoomId, setDragOverRoomId] = useState<string | null>(null);
@@ -2607,8 +3476,6 @@ export function App() {
   const [activeRoomEventStreamStatus, setActiveRoomEventStreamStatus] = useState<ActiveRoomEventStreamStatus>("idle");
   const cliMemorySaveModelId = useMemo(() => pickCliMemorySaveModelId(models), [models]);
   const previousShellModeRef = useRef<ShellMode | null>(null);
-  const mobileRoomFocusDefaultAppliedRef = useRef(false);
-  const hasStoredRoomFocusPreferenceRef = useRef(hasStoredValue(ROOM_FOCUS_MODE_STORAGE_KEY));
   const mobilePaneFocusRoomIdRef = useRef(selectedRoomId);
   const previousSelectedRoomIdRef = useRef<string | null>(null);
   const previousSelectedPaneIdRef = useRef<string | null>(null);
@@ -2660,6 +3527,7 @@ export function App() {
   const roomPaneLoadStatesRef = useRef(roomPaneLoadStates);
   const clipImageInputRef = useRef<HTMLInputElement | null>(null);
   const pendingClipImageTargetRef = useRef<ClipImageTarget | null>(null);
+  const isCapturingScreenRef = useRef(false);
   const boardToolbarRef = useRef<HTMLDivElement | null>(null);
   const roomToolbarActionsRef = useRef<HTMLDivElement | null>(null);
   const roomToolbarScrollRef = useRef<HTMLDivElement | null>(null);
@@ -2672,9 +3540,18 @@ export function App() {
   const roomCreationPendingRef = useRef(false);
   const workspaceTextSizeButtonRef = useRef<HTMLButtonElement | null>(null);
   const vibeMusicButtonRef = useRef<HTMLButtonElement | null>(null);
+  const quickLinksButtonRef = useRef<HTMLButtonElement | null>(null);
   const paneLayoutButtonRef = useRef<HTMLButtonElement | null>(null);
   const paneLayoutCollapsedButtonRef = useRef<HTMLButtonElement | null>(null);
   const collapsedToolbarRef = useRef<HTMLDivElement | null>(null);
+  const [lowerRailVisibilityMenu, setLowerRailVisibilityMenu] = useState<RailVisibilityMenuState>(null);
+  const lowerRailTouchContext = useTouchContextMenu(
+    (source) => source instanceof Element && !source.closest(".room-live-rail-button, .touch-context-menu-trigger")
+      ? source.closest<HTMLElement>(".room-toolbar-collapsed > button, .room-toolbar-collapsed > .toolbar-overflow > button")
+      : null,
+    ({ x, y }) => setLowerRailVisibilityMenu((current) => current ? null : { x, y })
+  );
+  const lowerRailVisibility = useRailVisibility(LOWER_RAIL_HIDDEN_KEY, LOWER_RAIL_VISIBILITY_IDS, LOWER_RAIL_NON_HIDEABLE);
   const vpnCityNoticeRef = useRef<HTMLDivElement | null>(null);
   const paneSpanAllButtonRef = useRef<HTMLButtonElement | null>(null);
   const roomThemeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -2756,6 +3633,11 @@ export function App() {
   function closeAdminOperationTool() {
     setAdminOperationTool(null);
     window.requestAnimationFrame(() => adminOperationToolTriggerRef.current?.focus());
+  }
+
+  function closeUserManagement() {
+    setIsUserManagementOpen(false);
+    window.requestAnimationFrame(() => userManagementTriggerRef.current?.focus());
   }
 
   useLayoutEffect(() => {
@@ -3642,7 +4524,7 @@ export function App() {
   }
 
   async function recoverMissingRoom(missingRoomId: string) {
-    const roomPayload = await api.rooms();
+    const roomPayload = await api.rooms({ all: true });
     const nextRoomId = roomPayload.data[0]?.id ?? null;
     setRooms(sortRoomsByOrder(roomPayload.data));
     activateRoom(nextRoomId, { preserveOutgoing: false });
@@ -3673,7 +4555,68 @@ export function App() {
   }, []);
 
   async function refresh() {
+    try {
+      const search = window.location.search;
+      if (search) {
+        const params = new URLSearchParams(search);
+        if (
+          params.has("login") ||
+          params.has("logout") ||
+          params.has("relogin") ||
+          params.has("forceLogin") ||
+          params.has("switch") ||
+          params.has("new") ||
+          params.get("prompt") === "login" ||
+          params.get("action") === "logout"
+        ) {
+          await api.logout().catch(() => undefined);
+          params.delete("login");
+          params.delete("logout");
+          params.delete("relogin");
+          params.delete("forceLogin");
+          params.delete("switch");
+          params.delete("new");
+          if (params.get("prompt") === "login") params.delete("prompt");
+          if (params.get("action") === "logout") params.delete("action");
+          const remaining = params.toString();
+          const cleanUrl = window.location.pathname + (remaining ? `?${remaining}` : "");
+          window.history.replaceState({}, document.title, cleanUrl);
+        }
+      }
+    } catch {
+      // Ignore
+    }
+
     const me = await api.me();
+    if (me.settings) {
+      if (typeof me.settings.suppressNotifications === "boolean") {
+        setSuppressNotifications(me.settings.suppressNotifications);
+      }
+      if (typeof me.settings.warmRoomEnabled === "boolean") {
+        setWarmRoomEnabled(me.settings.warmRoomEnabled);
+      }
+      if (typeof me.settings.warmRoomConnectedPaneLimit === "number") {
+        setWarmConnectedPaneLimit(me.settings.warmRoomConnectedPaneLimit);
+      }
+      if (typeof me.settings.cliImagePreviewLimit === "number") {
+        setCliImagePreviewLimit(me.settings.cliImagePreviewLimit);
+      }
+      if (typeof me.settings.roomTheme === "string" && roomThemes.some((t) => t.id === me.settings?.roomTheme)) {
+        setRoomTheme(me.settings.roomTheme as RoomTheme);
+      }
+      const { themeChanged } = applyServerUserSettings(
+        runtime.platform.localStorage,
+        me.settings,
+        uiTheme,
+        modernAppearance,
+        modernIconPack,
+        me.user?.id
+      );
+      if (themeChanged) {
+        runtime.platform.reloadPage();
+        return;
+      }
+    }
     const nextSetupStatus: SetupStatus =
       me.isAuthenticated && !me.isSetupRequired
         ? { setupRequired: false, expiresAt: null }
@@ -3687,10 +4630,12 @@ export function App() {
     api.warmCliRuntimes();
     if (me.user?.role === "ADMIN") api.warmCliRuntimeSettings();
 
-    let roomPayload = await api.rooms();
+    let roomPayload = await api.rooms({ all: true });
+    const userStorageKey = me.user?.id ? `${SELECTED_ROOM_ID_STORAGE_KEY}.${me.user.id}` : SELECTED_ROOM_ID_STORAGE_KEY;
+    const userSelectedRoomId = readStoredSessionString(userStorageKey) ?? (selectedRoomId && roomPayload.data.some((room) => room.id === selectedRoomId) ? selectedRoomId : null);
     if (
-      selectedRoomId &&
-      !roomPayload.data.some((room) => room.id === selectedRoomId) &&
+      userSelectedRoomId &&
+      !roomPayload.data.some((room) => room.id === userSelectedRoomId) &&
       roomPayload.pagination.totalPages > 1
     ) {
       roomPayload = {
@@ -3699,11 +4644,15 @@ export function App() {
       };
     }
     setRooms(sortRoomsByOrder(roomPayload.data));
-    const selectedRoomStillExists = selectedRoomId ? roomPayload.data.some((room) => room.id === selectedRoomId) : false;
-    const nextRoomId = selectedRoomStillExists ? selectedRoomId : roomPayload.data[0]?.id ?? null;
+    const myRooms = roomPayload.data.filter((room) => !room.ownerUserId || room.ownerUserId === me.user?.id);
+    const selectedRoomIsMine = userSelectedRoomId ? myRooms.some((room) => room.id === userSelectedRoomId) : false;
+    const selectedRoomStillExists = userSelectedRoomId ? roomPayload.data.some((room) => room.id === userSelectedRoomId) : false;
+    const nextRoomId = (selectedRoomIsMine || adminModeRequested) && selectedRoomStillExists
+      ? userSelectedRoomId
+      : (myRooms[0]?.id ?? roomPayload.data[0]?.id ?? null);
     activateRoom(nextRoomId, { preserveOutgoing: selectedRoomStillExists });
-    if (selectedRoomId && !selectedRoomStillExists && nextRoomId) {
-      setError(`Room ${selectedRoomId} no longer exists; switched to ${roomPayload.data[0]?.name ?? "the next room"}.`);
+    if (userSelectedRoomId && !selectedRoomStillExists && nextRoomId && roomPayload.data.length > 0) {
+      setError(`Room ${userSelectedRoomId} no longer exists; switched to ${roomPayload.data[0]?.name ?? "the next room"}.`);
     }
     if (nextRoomId) {
       // User-approved 2026-08-14: background warm starts IMMEDIATELY (in
@@ -3770,7 +4719,13 @@ export function App() {
     void Promise.allSettled([api.readyz(), api.admin()]).then(([readyResult, adminResult]) => {
       if (!appMountedRef.current) return;
       if (readyResult.status === "fulfilled") setReadiness(readyResult.value);
-      if (adminResult.status === "fulfilled") setStorageWarning(adminResult.value.storageWarning);
+      if (adminResult.status === "fulfilled") {
+        setStorageWarning(adminResult.value.storageWarning);
+        if (!adminResult.value.storageWarning) {
+          setDismissedStorageWarning(null);
+          writeStoredSessionString(DISMISSED_STORAGE_WARNING_STORAGE_KEY, null);
+        }
+      }
     });
 
     if (me.user?.role === "ADMIN") {
@@ -3938,12 +4893,18 @@ export function App() {
 
   useEffect(() => {
     try {
-      if (selectedRoomId) runtime.platform.sessionStorage.setItem(SELECTED_ROOM_ID_STORAGE_KEY, selectedRoomId);
-      else runtime.platform.sessionStorage.removeItem(SELECTED_ROOM_ID_STORAGE_KEY);
+      const storageKey = auth?.user?.id ? `${SELECTED_ROOM_ID_STORAGE_KEY}.${auth.user.id}` : SELECTED_ROOM_ID_STORAGE_KEY;
+      if (selectedRoomId) {
+        runtime.platform.sessionStorage.setItem(storageKey, selectedRoomId);
+        runtime.platform.sessionStorage.setItem(SELECTED_ROOM_ID_STORAGE_KEY, selectedRoomId);
+      } else {
+        runtime.platform.sessionStorage.removeItem(storageKey);
+        runtime.platform.sessionStorage.removeItem(SELECTED_ROOM_ID_STORAGE_KEY);
+      }
     } catch {
       // Best effort only.
     }
-  }, [selectedRoomId]);
+  }, [selectedRoomId, auth?.user?.id]);
 
   useEffect(() => {
     if (!selectedRoomId) return;
@@ -3980,7 +4941,7 @@ export function App() {
   }, [terminalFontSize]);
 
   useEffect(() => {
-    runtime.platform.localStorage.setItem(CLI_IMAGE_PREVIEW_LIMIT_STORAGE_KEY, String(cliImagePreviewLimit));
+    writeStoredCliImagePreviewLimit(cliImagePreviewLimit);
   }, [cliImagePreviewLimit]);
 
   useEffect(() => {
@@ -3997,7 +4958,10 @@ export function App() {
 
   useEffect(() => {
     runtime.platform.localStorage.setItem(ROOM_THEME_STORAGE_KEY, roomTheme);
-  }, [roomTheme]);
+    if (auth?.isAuthenticated) {
+      void api.updateUserSettings({ roomTheme }).catch(() => {});
+    }
+  }, [roomTheme, auth?.isAuthenticated]);
 
   useEffect(() => {
     if (uiTheme === "classic" || modernAppearance !== "system" || typeof window.matchMedia !== "function") return;
@@ -4066,6 +5030,35 @@ export function App() {
   }, [auth?.isAuthenticated]);
 
   async function handleLogin(nextAuth: AuthMe) {
+    if (nextAuth.isAuthenticated && nextAuth.settings) {
+      if (typeof nextAuth.settings.suppressNotifications === "boolean") {
+        setSuppressNotifications(nextAuth.settings.suppressNotifications);
+      }
+      if (typeof nextAuth.settings.warmRoomEnabled === "boolean") {
+        setWarmRoomEnabled(nextAuth.settings.warmRoomEnabled);
+      }
+      if (typeof nextAuth.settings.warmRoomConnectedPaneLimit === "number") {
+        setWarmConnectedPaneLimit(nextAuth.settings.warmRoomConnectedPaneLimit);
+      }
+      if (typeof nextAuth.settings.cliImagePreviewLimit === "number") {
+        setCliImagePreviewLimit(nextAuth.settings.cliImagePreviewLimit);
+      }
+      if (typeof nextAuth.settings.roomTheme === "string" && roomThemes.some((t) => t.id === nextAuth.settings?.roomTheme)) {
+        setRoomTheme(nextAuth.settings.roomTheme as RoomTheme);
+      }
+      const { themeChanged } = applyServerUserSettings(
+        runtime.platform.localStorage,
+        nextAuth.settings,
+        uiTheme,
+        modernAppearance,
+        modernIconPack,
+        nextAuth.user?.id
+      );
+      if (themeChanged) {
+        runtime.platform.reloadPage();
+        return;
+      }
+    }
     setAuth(nextAuth);
     if (nextAuth.isAuthenticated) {
       const diagnosticsStartup = startAppDiagnosticsBootstrap();
@@ -4149,18 +5142,68 @@ export function App() {
   }
 
   async function addRoomPanes(roomId: string, input: CreateRoomPanesRequest) {
-    await api.createRoomPanes(roomId, input);
+    const result = await api.createRoomPanes(roomId, input);
+    const createdPane = result.data.at(-1);
+    if (shellMode === "mobile" && selectedRoomIdRef.current === roomId && createdPane) {
+      selectedPaneIdRef.current = createdPane.id;
+      setSelectedPaneId(createdPane.id);
+    }
     await loadRoomRuntime(roomId);
   }
 
-  async function addRootAdminPane() {
-    if (!selectedRoomId || panes.length >= 16) return;
-    const created = await api.createPane(selectedRoomId, "CLI ROOT", "TERMINAL", {
-      cwd: "/etc",
+  async function addRootAdminPane(targetRoomId?: string) {
+    const roomId = targetRoomId || selectedRoomId;
+    if (!roomId || panes.length >= 16) return;
+    const targetRoom = rooms.find((r) => r.id === roomId);
+    const targetCwd = targetRoom?.projectPath || "/etc";
+    const created = await api.createPane(roomId, "CLI ROOT", "TERMINAL", {
+      cwd: targetCwd,
       terminalRuntimeId: "cli:root"
     });
     setPanes((current) => [...current, created]);
     setSelectedPaneId(created.id);
+    await loadRoomRuntime(roomId);
+  }
+
+  async function addFilesPane(count = 1, targetRoomId?: string) {
+    const roomId = targetRoomId || selectedRoomId;
+    if (!roomId || panes.length >= 16) return;
+    const targetRoom = rooms.find((r) => r.id === roomId);
+    if (targetRoom?.projectPath) {
+      await ensureProjectFolder(targetRoom.projectPath);
+    }
+    const targetCount = Math.min(Math.max(1, count), 16 - panes.length);
+    try {
+      for (let i = 0; i < targetCount; i++) {
+        const prior = (await api.panes(roomId, { includeClosed: true }).catch(() => null))?.data ?? [];
+        const closedMatch = prior.find((candidate) => candidate.isClosed && candidate.mode === "FILES");
+        let pane: Pane;
+        if (closedMatch) {
+          pane = await api.updatePane(closedMatch.id, {
+            isClosed: false,
+            status: "IDLE",
+            cwd: targetRoom?.projectPath || undefined
+          });
+        } else {
+          pane = await api.createPane(roomId, paneTitleForMode("FILES", panes.length + 1), "FILES", {
+            cwd: targetRoom?.projectPath || undefined
+          });
+        }
+        setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
+        setSelectedPaneId(pane.id);
+      }
+      await refreshRoomEvents(roomId);
+      await loadRoomRuntime(roomId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Files pane failed to open");
+    }
+  }
+
+  async function addDemosPane(count = 1) {
+    if (!selectedRoomId || panes.length >= 16) return;
+    const targetCount = Math.min(Math.max(1, count), 16 - panes.length);
+    const newPanes = Array.from({ length: targetCount }, () => ({ mode: "DEMOS" as const }));
+    await addRoomPanes(selectedRoomId, { panes: newPanes });
   }
 
   function toggleCliLauncher() {
@@ -4204,7 +5247,7 @@ export function App() {
     setIsChatLauncherOpen(false);
   }
 
-  async function addCliRuntimePane(runtime: AgentRuntime) {
+  async function addCliRuntimePane(runtime: AgentRuntime, count = 1) {
     const roomId = selectedRoomIdRef.current;
     if (!roomId) throw new Error("Select a room before adding a CLI pane.");
     if (panesRef.current.length >= 16) throw new Error("This room already has the maximum of 16 panes.");
@@ -4213,65 +5256,103 @@ export function App() {
       throw new Error(runtime.statusReason || "This CLI runtime is unavailable.");
     }
 
+    const targetRoom = rooms.find((r) => r.id === roomId);
+    const roomCwd = targetRoom?.projectPath || "/etc";
     cliPaneCreationPendingRef.current = true;
     setCliPaneCreationPending(true);
-    const optimisticId = `pane:optimistic-${Date.now().toString(36)}`;
-    const optimisticTitle =
-      runtime.id === "cli:codex"
-        ? paneTitleForMode("TERMINAL", panesRef.current.length + 1)
-        : runtime.displayName;
-    const nowIso = new Date().toISOString();
-    const optimisticPane: Pane = {
-      id: optimisticId,
-      roomId,
-      title: optimisticTitle,
-      titleSource: "auto",
-      mode: "TERMINAL",
-      status: "IDLE",
-      providerId: null,
-      modelId: null,
-      terminalRuntimeId: runtime.id === "cli:codex" ? null : runtime.id,
-      reasoningEffort: "medium",
-      cwd: runtime.id === "cli:codex" ? null : "/etc",
-      order: panesRef.current.length,
-      columnSpan: 1,
-      isMaximized: false,
-      isMinimized: false,
-      isClosed: false,
-      split: { parentId: null, direction: null, size: null },
-      categoryColor: null,
-      vncTarget: null,
-      createdAt: nowIso,
-      updatedAt: nowIso
-    };
-    // Show a skeleton card immediately; replace it with the server pane on success.
-    if (selectedRoomIdRef.current === roomId) {
-      setPanes((current) => [...current, optimisticPane]);
-      setSelectedPaneId(optimisticId);
-    }
+    const targetCount = Math.min(Math.max(1, count), 16 - panesRef.current.length);
+    if (targetCount <= 0) return;
     try {
-      const created = runtime.id === "cli:codex"
-        ? await api.createPane(roomId, optimisticTitle, "TERMINAL")
-        : await api.createPane(roomId, runtime.displayName, "TERMINAL", {
-            cwd: "/etc",
-            terminalRuntimeId: runtime.id
-          });
+      const optimisticPanes: Pane[] = [];
+      const baseOrder = panesRef.current.length;
+      const nowIso = new Date().toISOString();
+      const baseTimestamp = Date.now().toString(36);
+
+      for (let i = 0; i < targetCount; i++) {
+        const optimisticId = `pane:optimistic-${baseTimestamp}-${i}`;
+        const optimisticTitle =
+          runtime.id === "cli:codex"
+            ? paneTitleForMode("TERMINAL", baseOrder + i + 1)
+            : runtime.displayName;
+        optimisticPanes.push({
+          id: optimisticId,
+          roomId,
+          title: optimisticTitle,
+          titleSource: "auto",
+          mode: "TERMINAL",
+          status: "IDLE",
+          providerId: null,
+          modelId: null,
+          terminalRuntimeId: runtime.id === "cli:codex" ? null : runtime.id,
+          reasoningEffort: "medium",
+          cwd: targetRoom?.projectPath ? targetRoom.projectPath : (runtime.id === "cli:codex" ? null : "/etc"),
+          order: baseOrder + i,
+          columnSpan: 1,
+          isMaximized: false,
+          isMinimized: false,
+          isClosed: false,
+          split: { parentId: null, direction: null, size: null },
+          categoryColor: null,
+          vncTarget: null,
+          createdAt: nowIso,
+          updatedAt: nowIso
+        });
+      }
+
+      // Show skeleton cards immediately
+      if (selectedRoomIdRef.current === roomId) {
+        setPanes((current) => [...current, ...optimisticPanes]);
+        if (optimisticPanes[0]) {
+          setSelectedPaneId(optimisticPanes[0].id);
+        }
+      }
+
+      // Create all panes concurrently
+      const createPromises = optimisticPanes.map(async (optPane) => {
+        const created = runtime.id === "cli:codex"
+          ? await api.createPane(roomId, optPane.title, "TERMINAL", targetRoom?.projectPath ? { cwd: targetRoom.projectPath } : undefined)
+          : await api.createPane(roomId, runtime.displayName, "TERMINAL", {
+              cwd: roomCwd,
+              terminalRuntimeId: runtime.id
+            });
+        return { optimisticId: optPane.id, created };
+      });
+
+      const results = await Promise.allSettled(createPromises);
+      const createdPanes: Pane[] = [];
+      const failedOptimisticIds = new Set<string>();
+
+      for (let i = 0; i < results.length; i++) {
+        const res = results[i];
+        const optPane = optimisticPanes[i];
+        if (!res || !optPane) continue;
+        if (res.status === "fulfilled") {
+          createdPanes.push(res.value.created);
+        } else {
+          failedOptimisticIds.add(optPane.id);
+        }
+      }
+
       if (selectedRoomIdRef.current === roomId) {
         setPanes((current) => {
-          const withoutOptimistic = current.filter((pane) => pane.id !== optimisticId);
-          return withoutOptimistic.some((pane) => pane.id === created.id)
-            ? withoutOptimistic
-            : [...withoutOptimistic, created];
+          const optimisticIds = new Set(optimisticPanes.map((p) => p.id));
+          const withoutOptimistic = current.filter((pane) => !optimisticIds.has(pane.id));
+          const existingIds = new Set(withoutOptimistic.map((p) => p.id));
+          const toAdd = createdPanes.filter((p) => !existingIds.has(p.id));
+          return [...withoutOptimistic, ...toAdd];
         });
-        setSelectedPaneId(created.id);
+        const firstCreated = createdPanes[0];
+        if (firstCreated) {
+          setSelectedPaneId(firstCreated.id);
+        }
+      }
+      if (failedOptimisticIds.size > 0 && createdPanes.length === 0) {
+        const firstError = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+        throw firstError?.reason ?? new Error("Failed to create CLI panes.");
+      }
+      if (selectedRoomIdRef.current === roomId) {
         void refreshRoomEvents(roomId).catch(() => setError("CLI pane created, but room activity could not be refreshed."));
       }
-    } catch (error) {
-      if (selectedRoomIdRef.current === roomId) {
-        setPanes((current) => current.filter((pane) => pane.id !== optimisticId));
-        setSelectedPaneId((current) => (current === optimisticId ? panesRef.current.find((pane) => pane.id !== optimisticId)?.id ?? null : current));
-      }
-      throw error;
     } finally {
       cliPaneCreationPendingRef.current = false;
       setCliPaneCreationPending(false);
@@ -4322,6 +5403,9 @@ export function App() {
       toRoomId: roomId,
       temperature: classifyRoomSwitchTemperature(roomId, warmRoomIdsRef.current)
     });
+    // Activate before starting any load. A document-wide View Transition defers
+    // this callback until Chrome captures all visible pane surfaces, including
+    // canvases/iframes, adding work even when the target runtime is already warm.
     activateRoom(roomId);
     recordRoomSwitchMeasurementPhase(measurement, "activated");
     if (!options.keepCompactSurfaceOpen) setIsCompactSideSurfaceOpen(false);
@@ -4347,7 +5431,7 @@ export function App() {
       const detail = parseCliRecoveryOpenedDetail(event.detail);
       if (!detail) return;
       void (async () => {
-        const roomPayload = await api.rooms();
+        const roomPayload = await api.rooms({ all: true });
         setRooms(sortRoomsByOrder(roomPayload.data));
         await selectRoom(detail.roomId);
         if (detail.paneId) setSelectedPaneId(detail.paneId);
@@ -4356,6 +5440,18 @@ export function App() {
     window.addEventListener(CLI_RECOVERY_OPENED_EVENT, openRecoveryRoom);
     return () => window.removeEventListener(CLI_RECOVERY_OPENED_EVENT, openRecoveryRoom);
   });
+
+  useEffect(() => {
+    if (!isAdminMode && selectedRoomId && rooms.length > 0) {
+      const currentRoom = rooms.find((r) => r.id === selectedRoomId);
+      if (currentRoom && currentRoom.ownerUserId && currentRoom.ownerUserId !== auth?.user?.id) {
+        const myFirstRoom = rooms.find((r) => !r.ownerUserId || r.ownerUserId === auth?.user?.id);
+        if (myFirstRoom) {
+          void selectRoom(myFirstRoom.id);
+        }
+      }
+    }
+  }, [isAdminMode, selectedRoomId, rooms, auth?.user?.id]);
 
   async function deleteRoom(roomId: string) {
     if (deletePendingRoomId) return;
@@ -4368,7 +5464,8 @@ export function App() {
     }
     const deletedRoom = rooms.find((room) => room.id === roomId);
     const nextRooms = rooms.filter((room) => room.id !== roomId);
-    const nextSelectedRoomId = selectedRoomId === roomId ? nextRooms[0]?.id ?? null : selectedRoomId;
+    const candidateRooms = !isAdminMode ? nextRooms.filter((r) => !r.ownerUserId || r.ownerUserId === auth?.user?.id) : nextRooms;
+    const nextSelectedRoomId = selectedRoomId === roomId ? candidateRooms[0]?.id ?? null : selectedRoomId;
     setDeletePendingRoomId(roomId);
     setError(null);
     setRooms(nextRooms);
@@ -4450,7 +5547,7 @@ export function App() {
     }
   }
 
-  async function addPane(mode: Pane["mode"], youtubeUrl?: string) {
+  async function addPane(mode: Pane["mode"], youtubeUrl?: string, count = 1) {
     const roomId = selectedRoomIdRef.current;
     if (
       !roomId ||
@@ -4461,21 +5558,24 @@ export function App() {
     paneCreationPendingRef.current = true;
     setPaneCreationPendingMode(mode);
     setError(null);
+    const targetCount = Math.min(Math.max(1, count), 16 - panesRef.current.length);
     try {
-      const prior = (await api.panes(roomId, { includeClosed: true }).catch(() => null))?.data ?? [];
-      const closedMatch = prior.find((candidate) => candidate.isClosed && candidate.mode === mode);
-      let pane: Pane;
-      if (closedMatch) {
-        pane = await api.updatePane(closedMatch.id, { isClosed: false, status: "IDLE" });
-      } else {
-        pane = await api.createPane(roomId, paneTitleForMode(mode, panesRef.current.length + 1), mode);
-      }
-      if (mode === "YOUTUBE" && youtubeUrl) {
-        registerYouTubeBrowseIntent(pane.id, youtubeUrl);
-      }
-      if (selectedRoomIdRef.current === roomId) {
-        setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
-        setSelectedPaneId(pane.id);
+      for (let i = 0; i < targetCount; i++) {
+        const prior = (await api.panes(roomId, { includeClosed: true }).catch(() => null))?.data ?? [];
+        const closedMatch = prior.find((candidate) => candidate.isClosed && candidate.mode === mode);
+        let pane: Pane;
+        if (closedMatch) {
+          pane = await api.updatePane(closedMatch.id, { isClosed: false, status: "IDLE" });
+        } else {
+          pane = await api.createPane(roomId, paneTitleForMode(mode, panesRef.current.length + 1), mode);
+        }
+        if (mode === "YOUTUBE" && youtubeUrl) {
+          registerYouTubeBrowseIntent(pane.id, youtubeUrl);
+        }
+        if (selectedRoomIdRef.current === roomId) {
+          setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
+          setSelectedPaneId(pane.id);
+        }
       }
       await refreshRoomEvents(roomId);
     } catch (err) {
@@ -4486,33 +5586,88 @@ export function App() {
     }
   }
 
-  async function addHarnessPane() {
+  async function addHarnessPane(count = 1) {
     if (!selectedRoomId || panes.length >= 16) return;
     if (!isHarnessEnabled) {
       setError("DeepSeek Harness is disabled. Enable it in Settings to open a Harness pane.");
       return;
     }
+    const targetCount = Math.min(Math.max(1, count), 16 - panes.length);
     try {
-      const pane = await api.createPane(selectedRoomId, paneTitleForMode("HARNESS", panes.length + 1), "HARNESS");
-      setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
-      setSelectedPaneId(pane.id);
+      for (let i = 0; i < targetCount; i++) {
+        const pane = await api.createPane(selectedRoomId, paneTitleForMode("HARNESS", panes.length + 1), "HARNESS");
+        setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
+        setSelectedPaneId(pane.id);
+      }
       await refreshRoomEvents(selectedRoomId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Harness pane failed to open");
     }
   }
 
-  async function addLivePane() {
-    if (!selectedRoomId || panes.length >= 16) return;
+  async function addLivePane(count = 1): Promise<Pane | null> {
+    const targetRoomId = selectedRoomId || activeRoom?.id || rooms[0]?.id;
+    if (!targetRoomId) {
+      showLiveDebug("Cannot open AI Live: No active room found.", "error");
+      return null;
+    }
+    if (panes.length >= 16) {
+      showLiveDebug("Room pane limit reached (16 max).", "error");
+      return null;
+    }
+    showLiveDebug("Opening AI Live audio pane...", "info");
+    const targetCount = Math.min(Math.max(1, count), 16 - panes.length);
+    let lastPane: Pane | null = null;
     try {
-      const pane = await api.createPane(selectedRoomId, paneTitleForMode("LIVE", panes.length + 1), "LIVE");
-      setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
-      setSelectedPaneId(pane.id);
-      await refreshRoomEvents(selectedRoomId);
+      for (let i = 0; i < targetCount; i++) {
+        const pane = await api.createPane(targetRoomId, paneTitleForMode("LIVE", panes.length + 1), "LIVE");
+        setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
+        setSelectedPaneId(pane.id);
+        lastPane = pane;
+      }
+      await refreshRoomEvents(targetRoomId);
+      showLiveDebug("AI Live pane opened successfully.", "success");
+      return lastPane;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Live audio pane failed to open");
+      const msg = err instanceof Error ? err.message : "Live audio pane failed to open";
+      setError(msg);
+      showLiveDebug(`AI Live pane error: ${msg}`, "error");
+      return null;
     }
   }
+
+  function activateLiveFromRail() {
+    showLiveDebug("AI Live button tapped...", "info");
+    const targetRoomId = selectedRoomId || activeRoom?.id || rooms[0]?.id;
+    if (!targetRoomId) {
+      showLiveDebug("No active room found for AI Live.", "error");
+      return;
+    }
+    if (!selectedRoomId) {
+      setSelectedRoomId(targetRoomId);
+    }
+    window.dispatchEvent(new CustomEvent("space-live-rail-toggle"));
+  }
+
+  const toggleLiveRailGraphic = useCallback(() => {
+    setIsLiveRailGraphicDisabled((prev) => {
+      const next = !prev;
+      try {
+        getSpaceRuntime().platform.localStorage.setItem(LIVE_RAIL_GRAPHIC_DISABLED_STORAGE_KEY, String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleToggle = () => {
+      toggleLiveRailGraphic();
+    };
+    window.addEventListener("space-live-rail-graphic-toggle", handleToggle);
+    return () => {
+      window.removeEventListener("space-live-rail-graphic-toggle", handleToggle);
+    };
+  }, [toggleLiveRailGraphic]);
 
   async function addLegacyHarnessPane() {
     if (!selectedRoomId || panes.length >= 16) return;
@@ -4562,9 +5717,25 @@ export function App() {
   }
 
   async function toggleMaximize(pane: Pane) {
-    const updated = await api.updatePane(pane.id, { isMaximized: !pane.isMaximized });
-    setPanes((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-    await refreshRoomEvents(pane.roomId);
+    const willBeMaximized = !pane.isMaximized;
+    setSelectedPaneId(pane.id);
+    setPanes((current) =>
+      current.map((item) => {
+        if (item.id === pane.id) return { ...item, isMaximized: willBeMaximized };
+        if (willBeMaximized && item.isMaximized) return { ...item, isMaximized: false };
+        return item;
+      })
+    );
+    try {
+      const updated = await api.updatePane(pane.id, { isMaximized: willBeMaximized });
+      setPanes((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      void refreshRoomEvents(pane.roomId);
+    } catch (err) {
+      setPanes((current) =>
+        current.map((item) => (item.id === pane.id ? { ...item, isMaximized: !willBeMaximized } : item))
+      );
+      setError(err instanceof Error ? err.message : "Failed to toggle pane maximize");
+    }
   }
 
   const cycleRoomCategoryColor = useStableCallback((roomId: string, deltaY: number) => {
@@ -4693,15 +5864,22 @@ export function App() {
   async function updatePaneColumnSpan(pane: Pane, columnSpan: number, anchorColumnStart?: number) {
     const nextColumnSpan = Math.max(1, Math.min(MAX_PANE_COLUMN_SPAN, columnSpan));
     if ((pane.columnSpan ?? 1) === nextColumnSpan) return;
+    const previousColumnSpan = pane.columnSpan;
     const previousAnchorColumnStart = paneColumnAnchorStartsRef.current.get(pane.id);
     if (anchorColumnStart !== undefined) {
       paneColumnAnchorStartsRef.current.set(pane.id, anchorColumnStart);
     }
+    setPanes((current) =>
+      current.map((item) => (item.id === pane.id ? { ...item, columnSpan: nextColumnSpan } : item))
+    );
     try {
       const updated = await api.updatePane(pane.id, { columnSpan: nextColumnSpan });
       setPanes((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-      await refreshRoomEvents(pane.roomId);
+      void refreshRoomEvents(pane.roomId);
     } catch (error) {
+      setPanes((current) =>
+        current.map((item) => (item.id === pane.id ? { ...item, columnSpan: previousColumnSpan } : item))
+      );
       if (anchorColumnStart !== undefined) {
         if (previousAnchorColumnStart === undefined) {
           paneColumnAnchorStartsRef.current.delete(pane.id);
@@ -4751,21 +5929,49 @@ export function App() {
     });
   }, []);
   const visiblePanes = useMemo(() => {
-    const unfiltered = panes.filter((pane) => !pane.isMinimized && !floatingYouTubePaneIds.has(pane.id));
+    const unfiltered = panes.filter((pane) => (shellMode === "mobile" || !pane.isMinimized) && !floatingYouTubePaneIds.has(pane.id));
     return activeRoomCategoryFilter
       ? unfiltered.filter((pane) => pane.categoryColor === activeRoomCategoryFilter)
       : unfiltered;
-  }, [panes, activeRoomCategoryFilter, floatingYouTubePaneIds]);
+  }, [panes, activeRoomCategoryFilter, floatingYouTubePaneIds, shellMode]);
   const minimizedPanes = useMemo(() => panes.filter((pane) => pane.isMinimized), [panes]);
   const minimizedPaneRunningCount = useMemo(
     () => minimizedPanes.filter((pane) => paneCompletionLifecycle.panes[pane.id]?.activeRunKey != null).length,
     [minimizedPanes, paneCompletionLifecycle]
   );
-  // The minimized panes bar stays parked behind one float icon until the operator asks for it.
   const [minimizedBarExpanded, setMinimizedBarExpanded] = useState(false);
+  const showMinimizedBar = shellMode !== "mobile" && minimizedPanes.length > 0 && minimizedBarExpanded;
+  /** The bar hides behind one room toolbar button, so only render it where that button can live. */
+  const showMinimizedBarToggle = minimizedPanes.length > 0 && shellMode !== "mobile";
+  const [minimizedBarPreviewMode, setMinimizedBarPreviewMode] = useState(() => {
+    try {
+      return getSpaceRuntime().platform.localStorage.getItem("space.minimized.bar.preview.v1") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleMinimizedBarPreviewMode = useCallback(() => {
+    setMinimizedBarPreviewMode((prev) => {
+      const next = !prev;
+      try {
+        getSpaceRuntime().platform.localStorage.setItem("space.minimized.bar.preview.v1", String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
 
   const activePane = useMemo(
-    () => visiblePanes.find((pane) => pane.id === selectedPaneId) ?? visiblePanes[0] ?? null,
+    () => {
+      if (selectedPaneId) {
+        const match = visiblePanes.find((pane) => pane.id === selectedPaneId && !pane.isMinimized);
+        if (match) return match;
+      }
+      return visiblePanes.find((pane) => !pane.isMinimized)
+        ?? visiblePanes.find((pane) => pane.id === selectedPaneId)
+        ?? visiblePanes[0]
+        ?? null;
+    },
     [selectedPaneId, visiblePanes]
   );
   const presentationRoom = useMemo(
@@ -4815,7 +6021,7 @@ export function App() {
   }
 
   function routeCliShortcut(command: OskCliCommand): boolean {
-    if (activePane?.mode === "CHAT" && (command.id === "plan_progress" || command.id === "deploy")) {
+    if (activePane?.mode === "CHAT" && (command.id === "plan_progress" || command.id === "deploy" || command.id === "clean_worktree")) {
       setIsOskKeyboardOpen(false);
       dispatchAgentPaneActionEvent({ paneId: activePane.id, action: command.id });
       return true;
@@ -4925,8 +6131,15 @@ export function App() {
       if (!event || selectedRoomIdRef.current !== activeRoom.id) return;
       if (replaying && baselineReplay) replayCompletionEvents.push(event);
       appendRoomEvent(event, !replaying || !baselineReplay);
+      if (/^(PANE_|TASK_|ROOM_AGENT_|MISSION_|MODEL_)/.test(event.type)) window.dispatchEvent(new CustomEvent("space-live-context-invalidated", { detail: { roomId: activeRoom.id } }));
       if (event.type === "PANE_UPDATED" && event.payload.roomPaneLayoutChanged === true) {
         void requestRoomCatalogRefreshRef.current();
+      }
+      if (event.type === "ROOM_WATCHDOG_ALERT") {
+        setWatchdogAlerts((current) => {
+          if (current.some((item) => item.id === event.id)) return current;
+          return [...current, { id: event.id, message: event.message, timestamp: event.createdAt }];
+        });
       }
       for (const category of roomRefreshCategoriesForEvent(event.type)) {
         if (replaying) replayRefreshCategories.add(category);
@@ -5090,9 +6303,11 @@ export function App() {
 
   useEffect(() => {
     if (!auth?.isAuthenticated) return;
-    const handleCliRuntimeVisibility = () => {
-      api.invalidateCliRuntimes();
+    const handleCliRuntimeVisibility = (event: Event) => {
+      const change = readCliRuntimeVisibilityChange(event);
+      api.invalidateCliRuntimes(change ?? undefined);
       api.invalidateCliRuntimeSettings();
+      void api.cliRuntimes().catch(() => undefined);
       void api.codexEnvironment()
         .then((environment) => {
           if (appMountedRef.current) setCodexEnvironmentSummary(environment);
@@ -5139,12 +6354,21 @@ export function App() {
     dispatchBrowserPaneAction(pendingBrowserHandoffPaneId, "handoff");
     setPendingBrowserHandoffPaneId(null);
   }, [panes, pendingBrowserHandoffPaneId]);
+  const userNavigableRooms = useMemo(() => {
+    if (!isAdminMode || adminRoomFilterMode === "mine") {
+      return rooms.filter((r) => !r.ownerUserId || r.ownerUserId === auth?.user?.id);
+    }
+    if (adminRoomFilterMode === "user" && adminSelectedUserId) {
+      return rooms.filter((r) => r.ownerUserId === adminSelectedUserId);
+    }
+    return rooms;
+  }, [rooms, isAdminMode, adminRoomFilterMode, adminSelectedUserId, auth?.user?.id]);
   const activeRoomIndex = useMemo(
-    () => (activeRoom ? rooms.findIndex((room) => room.id === activeRoom.id) : -1),
-    [activeRoom, rooms]
+    () => (activeRoom ? userNavigableRooms.findIndex((room) => room.id === activeRoom.id) : -1),
+    [activeRoom, userNavigableRooms]
   );
-  const previousRoom = activeRoomIndex > 0 ? rooms[activeRoomIndex - 1] ?? null : null;
-  const nextRoom = activeRoomIndex >= 0 && activeRoomIndex < rooms.length - 1 ? rooms[activeRoomIndex + 1] ?? null : null;
+  const previousRoom = activeRoomIndex > 0 ? userNavigableRooms[activeRoomIndex - 1] ?? null : null;
+  const nextRoom = activeRoomIndex >= 0 && activeRoomIndex < userNavigableRooms.length - 1 ? userNavigableRooms[activeRoomIndex + 1] ?? null : null;
   useEffect(() => {
     setIsRoomRenameOpen(false);
     setRoomRenamePending(false);
@@ -5155,7 +6379,17 @@ export function App() {
     setIsPaneSpanAllMenuOpen(false);
     setPaneSpanAllError(null);
   }, [activeRoom?.id, activeRoom?.name]);
-  const paneDensity = useMemo(() => paneDensityFor(shellMode, visiblePanes.length), [shellMode, visiblePanes.length]);
+  const activeRoomExtraSlots = activeRoom ? (roomExtraEmptySlots[activeRoom.id] ?? 0) : 0;
+  const effectiveVisiblePaneCountForAuto = useMemo(() => {
+    if (visiblePanes.length < 1) return 0;
+    if (activeRoomExtraSlots <= 0) return visiblePanes.length;
+    return Math.min(16, visiblePanes.length + activeRoomExtraSlots);
+  }, [visiblePanes.length, activeRoomExtraSlots]);
+
+  const paneDensity = useMemo(
+    () => paneDensityFor(shellMode, effectiveVisiblePaneCountForAuto),
+    [shellMode, effectiveVisiblePaneCountForAuto]
+  );
   const automaticPaneGridColumnCount = useMemo(
     () =>
       resolvePaneGridColumnCount({
@@ -5163,10 +6397,10 @@ export function App() {
         paneDensity,
         containerWidth: paneGridWidth,
         paneLayoutColumns: null,
-        visiblePaneCount: visiblePanes.length,
+        visiblePaneCount: effectiveVisiblePaneCountForAuto,
         forceTabletTwoColumns: uiTheme !== "classic"
       }),
-    [paneDensity, paneGridWidth, shellMode, uiTheme, visiblePanes.length]
+    [paneDensity, paneGridWidth, shellMode, uiTheme, effectiveVisiblePaneCountForAuto]
   );
   const paneGridColumnCount = useMemo(
     () =>
@@ -5175,10 +6409,10 @@ export function App() {
         paneDensity,
         containerWidth: paneGridWidth,
         paneLayoutColumns: activeRoom?.paneLayoutColumns ?? null,
-        visiblePaneCount: visiblePanes.length,
+        visiblePaneCount: effectiveVisiblePaneCountForAuto,
         forceTabletTwoColumns: uiTheme !== "classic"
       }),
-    [activeRoom?.paneLayoutColumns, paneDensity, paneGridWidth, shellMode, uiTheme, visiblePanes.length]
+    [activeRoom?.paneLayoutColumns, paneDensity, paneGridWidth, shellMode, uiTheme, effectiveVisiblePaneCountForAuto]
   );
   if (previousPaneGridColumnCountRef.current !== paneGridColumnCount) {
     previousPaneGridColumnCountRef.current = paneGridColumnCount;
@@ -5195,6 +6429,58 @@ export function App() {
     () => resolvePaneGridPlacements(visiblePanes, paneGridColumnCount, paneColumnAnchorStartsRef.current),
     [paneGridColumnCount, visiblePanes]
   );
+  const activeRoomEmptySlotsMetrics = useMemo(() => {
+    if (!activeRoom) return null;
+    const { minCount, maxCount, targetEmptySlots } = calculatePaneGridBaseRows({
+      placements: paneGridPlacements,
+      visiblePaneCount: visiblePanes.length,
+      columnCount: paneGridColumnCount,
+      targetEmptySlots: roomExtraEmptySlots[activeRoom.id]
+    });
+    return {
+      count: targetEmptySlots,
+      min: minCount,
+      max: maxCount,
+      disabledReason: targetEmptySlots >= maxCount
+        ? (targetEmptySlots >= 6 ? "Maximum empty slots reached (6)" : "Room is at maximum capacity (16)")
+        : undefined,
+      onIncrement: () => {
+        if (targetEmptySlots < maxCount) {
+          updateRoomExtraEmptySlots(activeRoom.id, targetEmptySlots + 1, true);
+        }
+      },
+      onDecrement: () => {
+        if (targetEmptySlots > minCount) {
+          const nextVal = targetEmptySlots - 1;
+          updateRoomExtraEmptySlots(activeRoom.id, nextVal, true);
+          if (nextVal === 0) {
+            for (const [paneId, anchor] of Array.from(paneColumnAnchorStartsRef.current.entries())) {
+              if (typeof anchor === "object" && anchor.rowIndex !== undefined) {
+                paneColumnAnchorStartsRef.current.delete(paneId);
+              }
+            }
+          }
+        }
+      }
+    };
+  }, [activeRoom, paneGridColumnCount, paneGridPlacements, roomExtraEmptySlots, updateRoomExtraEmptySlots, visiblePanes.length]);
+  const effectiveLayoutPaneCount = useMemo(() => {
+    if (visiblePanes.length < 1) return 0;
+    const emptyCount = activeRoomEmptySlotsMetrics?.count ?? 0;
+    return Math.min(16, visiblePanes.length + emptyCount);
+  }, [visiblePanes.length, activeRoomEmptySlotsMetrics?.count]);
+  const layoutAutomaticPaneGridColumnCount = useMemo(
+    () =>
+      resolvePaneGridColumnCount({
+        shellMode,
+        paneDensity: paneDensityFor(shellMode, effectiveLayoutPaneCount),
+        containerWidth: paneGridWidth,
+        paneLayoutColumns: null,
+        visiblePaneCount: effectiveLayoutPaneCount,
+        forceTabletTwoColumns: uiTheme !== "classic"
+      }),
+    [effectiveLayoutPaneCount, paneGridWidth, shellMode, uiTheme]
+  );
   const agentNumberByPaneId = useMemo(() => new Map(panes.map((pane, index) => [pane.id, index + 1])), [panes]);
   const isCompactShell = shellMode !== "desktop";
   const isSideSurfaceOpen = isCompactShell ? isCompactSideSurfaceOpen : isDesktopSideSurfaceOpen;
@@ -5202,7 +6488,107 @@ export function App() {
   const activeSideSurfaceCloseLabel = `Close ${sideSurfaceMeta[activeSideSurface].label}`;
   const showInlineSideSurface = !isCompactShell && isDesktopSideSurfaceOpen;
   const showOverlaySideSurface = isCompactShell && isCompactSideSurfaceOpen;
+  useEffect(() => {
+    const handleLiveStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{ paneId?: string; rail?: boolean; status?: typeof liveRailStatus }>).detail;
+      if (detail.rail && detail.status) {
+        setLiveRailStatus(detail.status);
+        return;
+      }
+      const livePane = panes.find((pane) => pane.id === detail?.paneId && pane.mode === "LIVE");
+      if (livePane && detail.status) setLiveRailStatus(detail.status);
+    };
+    window.addEventListener("space-live-pane-status", handleLiveStatus);
+    return () => window.removeEventListener("space-live-pane-status", handleLiveStatus);
+  }, [panes]);
+
+  useEffect(() => {
+    const handlePaneControlAction = async (event: Event) => {
+      const customEvent = event as CustomEvent<{
+        action: "minimize" | "maximize" | "restore" | "close" | "refresh";
+        paneId?: string;
+        paneIds?: string[];
+        mode?: string;
+      }>;
+      const detail = customEvent.detail;
+      if (!detail?.action) return;
+
+      const currentPanes = panesRef.current || panes;
+      let targetPanes: Pane[] = [];
+
+      if (detail.paneId) {
+        const found = currentPanes.find((p) => p.id === detail.paneId);
+        if (found) targetPanes = [found];
+      } else if (detail.paneIds && detail.paneIds.length > 0) {
+        targetPanes = currentPanes.filter((p) => detail.paneIds!.includes(p.id));
+      } else if (detail.mode) {
+        targetPanes = currentPanes.filter(
+          (p) => p.mode !== "LIVE" && String(p.mode).toUpperCase() === detail.mode!.toUpperCase()
+        );
+      } else {
+        const nonLive = currentPanes.filter((p) => p.mode !== "LIVE");
+        const last = nonLive[nonLive.length - 1];
+        if (last) targetPanes = [last];
+      }
+
+      if (detail.action === "minimize") {
+        for (const p of targetPanes) {
+          await minimizePane(p);
+        }
+      } else if (detail.action === "maximize") {
+        for (const p of targetPanes) {
+          if (!p.isMaximized) {
+            await toggleMaximize(p);
+          }
+        }
+      } else if (detail.action === "restore") {
+        if (targetPanes.length > 0) {
+          for (const p of targetPanes) {
+            await restorePane(p);
+          }
+        } else {
+          await restoreAllPanes();
+        }
+      } else if (detail.action === "close") {
+        for (const p of targetPanes) {
+          await closePane(p.id);
+        }
+      } else if (detail.action === "refresh") {
+        if (selectedRoomId) {
+          try {
+            const reconciled = await api.panes(selectedRoomId);
+            setPanes([...reconciled.data]);
+          } catch {}
+        }
+      }
+    };
+
+    window.addEventListener("space-pane-control-action", handlePaneControlAction);
+    return () => window.removeEventListener("space-pane-control-action", handlePaneControlAction);
+  }, [panes, selectedRoomId]);
   useRailOrder(collapsedToolbarRef, Boolean(auth?.isAuthenticated && setupStatus) && appView === "workspace" && !(shellMode === "mobile" && isMobilePaneFocusMode && activePane) && isRoomToolbarHidden && !showOverlaySideSurface && !isMemoryWorkspaceOpen && !systemAnalyticsTab);
+  useLayoutEffect(() => {
+    const element = collapsedToolbarRef.current;
+    if (!element) return;
+    const shell = element.closest<HTMLElement>(".space-shell");
+    if (!shell) return;
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      if (rect.height > 0) {
+        shell.style.setProperty("--room-toolbar-collapsed-height", `${rect.height}px`);
+      }
+    };
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    observer?.observe(element);
+    return () => {
+      observer?.disconnect();
+      shell.style.removeProperty("--room-toolbar-collapsed-height");
+    };
+  }, [isRoomToolbarHidden, showOverlaySideSurface]);
+  useEffect(() => {
+    if (!isRoomToolbarHidden) setLowerRailVisibilityMenu(null);
+  }, [isRoomToolbarHidden]);
   useEffect(() => {
     if (!auth?.isAuthenticated || !isSideSurfaceOpen) return;
     if (activeSideSurface === "settings") {
@@ -5362,6 +6748,25 @@ export function App() {
     setIsDesktopSideSurfaceOpen((current) => !current);
   }
 
+  const dockOrder: SideSurface[] = ["rooms", "room-agent", "shared-chat", "media", "streaming", "agent-files", "clipboard", "tasks", "links", "settings", "cli", "agent-sessions"];
+  const availableDocks = dockOrder.filter((surface) =>
+    surface !== "streaming" || auth?.user?.role === "ADMIN"
+  );
+
+  function navigateDock(direction: "prev" | "next") {
+    const currentIndex = availableDocks.indexOf(activeSideSurface);
+    const offset = direction === "next" ? 1 : -1;
+    const nextIndex = (currentIndex + offset + availableDocks.length) % availableDocks.length;
+    const nextSurface = availableDocks[nextIndex];
+    if (!nextSurface) return;
+    setActiveSideSurface(nextSurface);
+    if (isCompactShell) {
+      setIsCompactSideSurfaceOpen(true);
+    } else {
+      setIsDesktopSideSurfaceOpen(true);
+    }
+  }
+
   function openSettingsSurface() {
     setIsCliLauncherOpen(false);
     setActiveSideSurface("settings");
@@ -5379,8 +6784,34 @@ export function App() {
     else setIsDesktopSideSurfaceOpen(true);
   }
 
+  function isYouTubeUrl(url: string): boolean {
+    try {
+      const host = new URL(url).hostname.replace(/^www\./, "");
+      return host === "youtube.com" || host === "m.youtube.com" || host === "youtu.be";
+    } catch {
+      return false;
+    }
+  }
+
   function openUserLink(link: UserLink) {
     setIsQuickLinksOpen(false);
+    // YouTube links: route to the YouTube pane (existing or new)
+    if (isYouTubeUrl(link.url)) {
+      const existingYouTubePane = panesRef.current.find(
+        (pane) => pane.mode === "YOUTUBE" && !pane.isMinimized && !pane.isClosed,
+      );
+      if (existingYouTubePane) {
+        window.dispatchEvent(
+          new CustomEvent("space-play-youtube-url", {
+            detail: { paneId: existingYouTubePane.id, url: link.url, title: link.title },
+          }),
+        );
+        setSelectedPaneId(existingYouTubePane.id);
+      } else {
+        void addPane("YOUTUBE", link.url);
+      }
+      return;
+    }
     if (link.openMode === "NEW_TAB") {
       const opened = runtime.platform.openLink(link.url, "_blank", "noopener,noreferrer");
       if (opened) opened.opener = null;
@@ -5525,12 +6956,12 @@ export function App() {
     paneLayoutHeight?: Room["paneLayoutHeight"],
     keepMenuOpen = false
   ) {
-    if (!activeRoom || paneLayoutPending) return;
-    setPaneLayoutPending(true);
-    setPaneLayoutError(null);
+    if (!activeRoom) return;
+    const sequence = ++paneLayoutSequenceRef.current;
     const previousRoom = activeRoom;
-    const nextColumns = paneLayoutColumns !== undefined ? paneLayoutColumns : activeRoom.paneLayoutColumns;
-    const nextHeight = paneLayoutHeight !== undefined ? paneLayoutHeight : (activeRoom.paneLayoutHeight ?? 1);
+    const isPresetSelection = paneLayoutColumns !== undefined;
+    const nextColumns = isPresetSelection ? paneLayoutColumns : activeRoom.paneLayoutColumns;
+    const nextHeight = isPresetSelection ? 1 : (paneLayoutHeight !== undefined ? paneLayoutHeight : (activeRoom.paneLayoutHeight ?? 1));
     emitAppDiagnosticsPerformance({
       category: "PERFORMANCE",
       metric: "PANE_LAYOUT",
@@ -5538,8 +6969,7 @@ export function App() {
       roomId: activeRoom.id,
       value: nextColumns ?? -1
     });
-    // Optimistic: apply the layout locally before the server round-trip so pane
-    // hosts resize immediately and visible terminals refit without waiting.
+    // Optimistic: apply the layout locally in 0ms so panes resize instantly
     setRooms((current) =>
       sortRoomsByOrder(
         current.map((room) =>
@@ -5549,11 +6979,30 @@ export function App() {
         )
       )
     );
+    if (isPresetSelection) {
+      setPanes((current) =>
+        current.map((pane) =>
+          pane.roomId === activeRoom.id && (pane.columnSpan !== 1 || pane.isMaximized)
+            ? { ...pane, columnSpan: 1, isMaximized: false }
+            : pane
+        )
+      );
+    }
+    if (!keepMenuOpen) {
+      closePaneLayoutMenu();
+      setIsCollapsedPaneLayoutMenuOpen(false);
+    }
+    setPaneLayoutError(null);
     try {
       const payload: { paneLayoutColumns?: Room["paneLayoutColumns"]; paneLayoutHeight?: Room["paneLayoutHeight"] } = {};
-      if (paneLayoutColumns !== undefined) payload.paneLayoutColumns = paneLayoutColumns;
-      if (paneLayoutHeight !== undefined) payload.paneLayoutHeight = paneLayoutHeight;
+      if (paneLayoutColumns !== undefined) {
+        payload.paneLayoutColumns = paneLayoutColumns;
+        payload.paneLayoutHeight = 1;
+      } else if (paneLayoutHeight !== undefined) {
+        payload.paneLayoutHeight = paneLayoutHeight;
+      }
       const result = await api.updateRoomPaneLayout(activeRoom.id, payload);
+      if (sequence !== paneLayoutSequenceRef.current) return;
       paneColumnAnchorStartsRef.current = new Map();
       setRooms((current) =>
         sortRoomsByOrder(current.map((room) => (room.id === result.room.id ? result.room : room)))
@@ -5565,10 +7014,6 @@ export function App() {
           : result.panes.find((pane) => !pane.isMinimized)?.id ?? null
       );
       setPaneLayoutPending(false);
-      if (!keepMenuOpen) {
-        closePaneLayoutMenu();
-        setIsCollapsedPaneLayoutMenuOpen(false);
-      }
       emitAppDiagnosticsPerformance({
         category: "PERFORMANCE",
         metric: "PANE_LAYOUT",
@@ -5576,12 +7021,9 @@ export function App() {
         roomId: activeRoom.id,
         value: nextColumns ?? -1
       });
-      try {
-        await refreshRoomEvents(activeRoom.id);
-      } catch {
-        setError("Pane layout applied, but room activity could not be refreshed.");
-      }
+      void refreshRoomEvents(activeRoom.id).catch(() => {});
     } catch (layoutError) {
+      if (sequence !== paneLayoutSequenceRef.current) return;
       setRooms((current) =>
         sortRoomsByOrder(current.map((room) => (room.id === previousRoom.id ? previousRoom : room)))
       );
@@ -5610,13 +7052,15 @@ export function App() {
   }
 
   async function applyPaneSpanToAll(columnSpan: number) {
-    if (!activeRoom || paneSpanAllPending) return;
+    if (!activeRoom) return;
+    const sequence = ++paneSpanSequenceRef.current;
     const targets = visiblePanes.filter((pane) => !activeRoom || pane.roomId === activeRoom.id || !pane.roomId);
     const resolvedTargets = targets.length > 0 ? targets : visiblePanes;
     if (resolvedTargets.length === 0) return;
     const nextColumnSpan = Math.max(1, Math.min(MAX_PANE_COLUMN_SPAN, columnSpan));
     const previousPanes = panes;
     paneColumnAnchorStartsRef.current = new Map();
+    // Optimistic: update all pane widths locally in 0ms
     setPanes((current) =>
       current.map((pane) =>
         resolvedTargets.some((target) => target.id === pane.id)
@@ -5624,7 +7068,6 @@ export function App() {
           : pane
       )
     );
-    setPaneSpanAllPending(true);
     setPaneSpanAllError(null);
     try {
       const results = await Promise.allSettled(
@@ -5633,6 +7076,7 @@ export function App() {
           return api.updatePane(pane.id, { columnSpan: nextColumnSpan });
         })
       );
+      if (sequence !== paneSpanSequenceRef.current) return;
       const updatedPanes: Pane[] = [];
       let failed = 0;
       results.forEach((result, index) => {
@@ -5650,16 +7094,15 @@ export function App() {
       } else {
         closePaneSpanAllMenu();
       }
-      try {
-        await refreshRoomEvents(activeRoom.id);
-      } catch {
-        setError("Pane width applied, but room activity could not be refreshed.");
-      }
+      void refreshRoomEvents(activeRoom.id).catch(() => {});
     } catch (spanError) {
+      if (sequence !== paneSpanSequenceRef.current) return;
       setPanes(previousPanes);
       setPaneSpanAllError(spanError instanceof Error ? spanError.message : "Pane width update failed");
     } finally {
-      setPaneSpanAllPending(false);
+      if (sequence === paneSpanSequenceRef.current) {
+        setPaneSpanAllPending(false);
+      }
     }
   }
 
@@ -5719,6 +7162,87 @@ export function App() {
         ariaHasPopup: "dialog"
       },
       {
+        id: "sticky-note",
+        label: "Sticky note",
+        title: "Sticky note",
+        ariaLabel: "Sticky note",
+        icon: StickyNote,
+        onClick: () => {
+          setIsThemeMenuOpen(false);
+          setIsPaneLayoutMenuOpen(false);
+          setIsCollapsedPaneLayoutMenuOpen(false);
+          setIsPaneSpanAllMenuOpen(false);
+          setIsWorkspaceTextSizePickerOpen(false);
+          setIsVibeMusicOpen(false);
+          setLowerRailVisibilityMenu(null);
+          openStickyNote();
+        }
+      },
+      {
+        id: "widget-clock",
+        label: "Clock widget",
+        title: "Float Clock widget",
+        ariaLabel: "Clock widget",
+        icon: Clock3,
+        ariaPressed: desktopWidgets.isWidgetEnabled("clock"),
+        onClick: () => {
+          desktopWidgets.toggleWidget("clock");
+        }
+      },
+      {
+        id: "widget-countdown-timer",
+        label: "Countdown timer",
+        title: "Float Countdown Timer widget",
+        ariaLabel: "Countdown timer",
+        icon: Timer,
+        ariaPressed: desktopWidgets.isWidgetEnabled("countdown-timer"),
+        onClick: () => {
+          desktopWidgets.toggleWidget("countdown-timer");
+        }
+      },
+      {
+        id: "widget-pushup-reminder",
+        label: "Push-up reminder",
+        title: "Float Push-up Reminder widget",
+        ariaLabel: "Push-up reminder",
+        icon: Dumbbell,
+        ariaPressed: desktopWidgets.isWidgetEnabled("pushup-reminder"),
+        onClick: () => {
+          desktopWidgets.toggleWidget("pushup-reminder");
+        }
+      },
+      {
+        id: "widget-spaceapp-promo",
+        label: "SpaceApp.dev promo",
+        title: "Float SpaceApp.dev promo widget",
+        ariaLabel: "SpaceApp.dev promo",
+        icon: Rocket,
+        ariaPressed: desktopWidgets.isWidgetEnabled("spaceapp-promo"),
+        onClick: () => {
+          desktopWidgets.toggleWidget("spaceapp-promo");
+        }
+      },
+      {
+        id: "widget-streaming-metrics",
+        label: "Streaming metrics",
+        title: "Float Streaming Metrics widget",
+        ariaLabel: "Streaming metrics widget",
+        icon: Radio,
+        ariaPressed: desktopWidgets.isWidgetEnabled("streaming-metrics"),
+        onClick: () => { desktopWidgets.toggleWidget("streaming-metrics"); }
+      },
+      {
+        id: "widget-ai-quota",
+        label: "AI Quota monitor",
+        title: "Float AI Quota Monitor (Codex, Gemini, Claude)",
+        ariaLabel: "AI Quota monitor",
+        icon: Gauge,
+        ariaPressed: desktopWidgets.isWidgetEnabled("ai-quota"),
+        onClick: () => {
+          desktopWidgets.toggleWidget("ai-quota");
+        }
+      },
+      {
         id: "pane-layout",
         label: "Pane layout",
         title: "Pane layout",
@@ -5726,29 +7250,16 @@ export function App() {
         icon: PanelsTopLeft,
         onClick: () => {
           setPaneLayoutError(null);
-          setIsPaneLayoutMenuOpen((current) => !current);
+          if (isRoomToolbarHidden) {
+            setIsCollapsedPaneLayoutMenuOpen((current) => !current);
+          } else {
+            setIsPaneLayoutMenuOpen((current) => !current);
+          }
         },
         ariaControls: PANE_LAYOUT_MENU_ID,
         ariaExpanded: isPaneLayoutMenuOpen,
         ariaHasPopup: "menu",
         disabled: !activeRoom || paneLayoutPending
-      },
-      {
-        id: "pane-span-all",
-        label: "All panes width",
-        title: "Set width for all panes",
-        ariaLabel: "Set width for all panes",
-        icon: Columns3,
-        onClick: () => {
-          setPaneSpanAllError(null);
-          setIsPaneLayoutMenuOpen(false);
-          setIsPaneSpanAllMenuOpen((current) => !current);
-        },
-        ariaControls: PANE_SPAN_ALL_MENU_ID,
-        ariaExpanded: isPaneSpanAllMenuOpen,
-        ariaHasPopup: "menu",
-        disabled: !activeRoom || visiblePanes.length < 2 || paneSpanAllPending,
-        disabledReason: paneSpanAllPending ? "Applying pane widths…" : !activeRoom ? "Choose a room first" : "Requires at least two visible panes"
       },
       {
         id: "theme",
@@ -5787,11 +7298,38 @@ export function App() {
         disabledReason: !activeRoom ? "Choose a room first" : "No pane colors assigned"
       },
       ...(auth?.user?.role === "ADMIN" ? [{
+        id: "agents-dashboard",
+        label: "Agents Dashboard",
+        title: agentsDashboardSummary?.loaded
+          ? `Agents Dashboard · ${agentsDashboardSummary.total} agents (${agentsDashboardSummary.working} working, ${agentsDashboardSummary.waiting} waiting, ${agentsDashboardSummary.done} done)`
+          : "Agents Dashboard",
+        ariaLabel: "Open agents dashboard",
+        icon: LayoutDashboard,
+        onClick: () => setIsAgentsDashboardOpen(true),
+        hideable: true
+      }, {
+        id: "system-resources",
+        label: "System resources",
+        title: "Live system resources, CLI sessions, memory & CPU analysis",
+        ariaLabel: "System resources",
+        icon: Activity,
+        onClick: () => openSystemResources(),
+        hideable: true
+      }, {
+        id: "resources",
+        label: "Resources",
+        title: "Resources & account quotas",
+        ariaLabel: "Resources",
+        icon: Activity,
+        onClick: () => openSystemResources(),
+        hideable: true
+      }] : []),
+      ...(auth?.user ? [{
         id: "resource-indicators",
         label: resourceIndicatorsVisible ? "Hide resource indicators" : "Show resource indicators",
         title: "Live resource values at the top right",
         ariaLabel: resourceIndicatorsVisible ? "Hide resource indicators" : "Show resource indicators",
-        icon: Activity,
+        icon: Cpu,
         onClick: toggleResourceIndicators,
         ariaPressed: resourceIndicatorsVisible
       }] : []),
@@ -5814,6 +7352,17 @@ export function App() {
         ariaPressed: maskSensitiveData,
         hideable: false,
         dataSensitiveIgnore: true
+      },
+      {
+        id: "debug-mode",
+        label: isDebugModeActive ? "Turn off Debug (App diagnostics)" : "Turn on Debug (App diagnostics)",
+        title: isDebugModeActive ? "Turn off Debug (App diagnostics)" : "Turn on Debug (App diagnostics)",
+        ariaLabel: isDebugModeActive ? "Turn off Debug (App diagnostics)" : "Turn on Debug (App diagnostics)",
+        icon: Activity,
+        onClick: () => void toggleDebugMode(),
+        ariaPressed: isDebugModeActive,
+        disabled: debugModePending,
+        hideable: true
       },
       {
         id: "font-down",
@@ -5864,11 +7413,11 @@ export function App() {
           },
           {
             id: "server-restart",
-            label: "Server actions",
-            title: "Server actions",
-            ariaLabel: "Server restart",
+            label: "Manage",
+            title: "Manage",
+            ariaLabel: "Manage",
             icon: ServerCog,
-            onClick: () => setIsServerActionsMenuOpen((current) => !current),
+            onClick: () => openManage(),
             ariaControls: SERVER_ACTIONS_MENU_ID,
             ariaExpanded: isServerActionsMenuOpen,
             ariaHasPopup: shellMode === "mobile" ? "dialog" as const : "menu" as const,
@@ -5883,6 +7432,30 @@ export function App() {
         icon: Eye,
         onClick: () => addPane("BROWSER"),
         disabled: !selectedRoomId || panes.length >= 16
+      },
+      {
+        id: "add-files",
+        label: "File Manager",
+        title: "Add File Manager pane",
+        ariaLabel: "Add File Manager pane",
+        icon: FolderPlus,
+        onClick: () => {
+          if (!activeRoom) return;
+          void addFilesPane();
+        },
+        disabled: !activeRoom || panes.length >= 16
+      },
+      {
+        id: "add-demos",
+        label: "Demo Projects",
+        title: "Add Demo Projects pane",
+        ariaLabel: "Add Demo Projects pane",
+        icon: Boxes,
+        onClick: () => {
+          if (!activeRoom) return;
+          void addDemosPane();
+        },
+        disabled: !activeRoom || panes.length >= 16
       },
       {
         id: "add-youtube",
@@ -5930,21 +7503,42 @@ export function App() {
         disabled: false
       },
       {
+        id: "browser-fullscreen",
+        label: isBrowserFullscreen ? "Exit full screen" : "Full screen browser",
+        title: isBrowserFullscreen ? "Exit full screen (F11)" : "Full screen browser (F11)",
+        ariaLabel: isBrowserFullscreen ? "Exit full screen" : "Full screen browser",
+        icon: isBrowserFullscreen ? Minimize2 : Maximize2,
+        onClick: () => void toggleBrowserFullscreen(),
+        ariaPressed: isBrowserFullscreen,
+        disabled: false
+      },
+      {
+        id: "snip-tool",
+        label: "Snip Tool",
+        title: "Snip Tool (Capture & auto-attach to pane)",
+        ariaLabel: "Snip Tool",
+        icon: Crop,
+        onClick: () => {
+          setIsQuickLinksOpen(false);
+          setIsThemeMenuOpen(false);
+          setIsPaneLayoutMenuOpen(false);
+          setIsPaneSpanAllMenuOpen(false);
+          setIsWorkspaceTextSizePickerOpen(false);
+          setIsServerActionsMenuOpen(false);
+          setIsCliLauncherOpen(false);
+          setIsVibeMusicOpen(false);
+          setIsSnipToolOpen((current) => !current);
+        },
+        ariaPressed: isSnipToolOpen,
+        disabled: !activeRoom
+      },
+      {
         id: "clip-tool",
         label: "Clip Tool",
         title: "Clip Tool",
         ariaLabel: "Clip Tool",
         icon: Camera,
         onClick: () => void captureRoomScreen(),
-        disabled: !activeRoom
-      },
-      {
-        id: "print-window",
-        label: "Print window",
-        title: "Print window",
-        ariaLabel: "Print window",
-        icon: Printer,
-        onClick: () => runtime.platform.print(),
         disabled: !activeRoom
       },
       {
@@ -5968,11 +7562,20 @@ export function App() {
         onClick: openHelp
       },
       ...(auth?.user?.role === "ADMIN" ? [{
+        id: "demo-mode",
+        label: "Demo mode",
+        title: "Explore all Space App features with an interactive guided tour",
+        ariaLabel: "Demo mode",
+        icon: Sparkles,
+        onClick: () => setIsDemoModeActive(true),
+        ariaPressed: isDemoModeActive,
+        hideable: false
+      }, {
         id: "token-usage",
         label: "Token usage",
         title: "Token usage history by provider and model",
         ariaLabel: "Token usage",
-        icon: Gauge,
+        icon: Database,
         onClick: () => openSystemHealth("usage")
       }, {
         id: "advanced-settings",
@@ -5989,15 +7592,32 @@ export function App() {
         label: "Setup wizard",
         title: "Set up tools and connections",
         ariaLabel: "Setup wizard",
-        icon: Wrench,
-        onClick: () => setIsSetupConnectionsOpen(true)
+        icon: SlidersHorizontal,
+        onClick: () => openManage("setup-connections")
+      }, {
+        id: "system-analytics",
+        label: "System analytics",
+        title: "Live system telemetry, model performance, CPU & RAM, and CLI sessions",
+        ariaLabel: "System analytics",
+        icon: Monitor,
+        onClick: () => {
+          setIsMemoryWorkspaceOpen(false);
+          setSystemAnalyticsTab("overview");
+        }
+      }, {
+        id: "system-services",
+        label: "System services",
+        title: "Inspect and control systemd services, background workers, and timers",
+        ariaLabel: "System services",
+        icon: ServerCog,
+        onClick: () => openManage("system-services")
       }] : []),
       {
         id: "benchmark",
-        label: "Benchmark",
-        title: "Benchmark",
-        ariaLabel: "Benchmark",
-        icon: Gauge,
+        label: "Asteroids Benchmark",
+        title: "Open the Asteroids AI Championship",
+        ariaLabel: "Asteroids Benchmark",
+        icon: Crosshair,
         onClick: openBenchmark
       },
       {
@@ -6018,6 +7638,7 @@ export function App() {
         },
         ariaControls: VIBE_MUSIC_PANEL_ID,
         ariaExpanded: isVibeMusicOpen,
+        ariaPressed: isVibeMusicOpen,
         ariaHasPopup: "dialog",
         hideable: false
       },
@@ -6057,7 +7678,7 @@ export function App() {
         hideable: false
       }
       ];
-      return actions;
+      return actions.filter(action => !consolidatedResourceActions.has(action.id) && !consolidatedManageActions.has(action.id));
     },
     [
       activeRoom,
@@ -6080,8 +7701,10 @@ export function App() {
       isCompactSideSurfaceOpen,
       isServerActionsMenuOpen,
       isRoomFocusMode,
+      isBrowserFullscreen,
       isThemeMenuOpen,
       isVibeMusicOpen,
+      isSnipToolOpen,
       isWorkspaceTextSizePickerOpen,
       panes,
       paneLayoutPending,
@@ -6092,18 +7715,33 @@ export function App() {
       shellMode,
       terminalFontSize,
       toolbarVpnRoute,
-      vpnCityPending
+      vpnCityPending,
+      desktopWidgets,
+      isDebugModeActive,
+      debugModePending,
+      toggleDebugMode
     ]
   );
   const serverActionCommands: ServerActionCommand[] = auth?.user?.role === "ADMIN"
     ? [
+        {
+          id: "user-management",
+          categoryHeader: "Users & Security",
+          label: "Users & permissions",
+          description: "Manage Space users, modify user/admin roles, and inspect rooms and Google account links.",
+          icon: Users,
+          onSelect: () => {
+            userManagementTriggerRef.current = serverActionsButtonRef.current;
+            openManage("user-management");
+          }
+        },
         {
           id: "setup-connections",
           categoryHeader: "Setup & Release",
           label: "Setup & connections",
           description: "Inspect and verify live provider connections, test API credentials, and complete setup.",
           icon: LinkIcon,
-          onSelect: () => setIsSetupConnectionsOpen(true)
+          onSelect: () => openManage("setup-connections")
         },
         {
           id: "publish-space-release",
@@ -6112,7 +7750,7 @@ export function App() {
           icon: Rocket,
           onSelect: () => {
             adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
-            setAdminOperationTool("release");
+            openManage("publish-space-release");
           }
         },
         {
@@ -6140,7 +7778,7 @@ export function App() {
           icon: Wrench,
           onSelect: () => {
             adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
-            setAdminOperationTool("maintenance");
+            openManage("space-cli-maintenance");
           }
         },
         {
@@ -6154,7 +7792,7 @@ export function App() {
           title: !isCodexEnabled ? "Enable Codex in Settings" : undefined,
           onSelect: () => {
             adminCodexToolTriggerRef.current = serverActionsButtonRef.current;
-            setAdminCodexTool("speed");
+            openManage("codex-lb-speed-control");
           }
         },
         {
@@ -6169,7 +7807,7 @@ export function App() {
           title: !anyCliEnabled ? "Enable a CLI in Settings" : undefined,
           onSelect: () => {
             adminCodexToolTriggerRef.current = serverActionsButtonRef.current;
-            setAdminCodexTool("cleanup");
+            openManage("cli-session-cleanup");
           }
         },
         {
@@ -6183,7 +7821,7 @@ export function App() {
           title: !anyCliEnabled ? "Enable a CLI in Settings" : undefined,
           onSelect: () => {
             adminCodexToolTriggerRef.current = serverActionsButtonRef.current;
-            setAdminCodexTool("history");
+            openManage("codex-history-purge");
           }
         },
         {
@@ -6192,6 +7830,34 @@ export function App() {
           description: "Free system page cache and release idle runtime memory after bounded safety verification.",
           icon: RefreshCw,
           onSelect: () => toolbarMetricsRef.current?.openMemoryReclaim(serverActionsButtonRef.current)
+        },
+        {
+          id: "system-analytics",
+          categoryHeader: "Monitoring",
+          label: "System analytics",
+          description: "Live system telemetry, model performance, CPU & RAM, and CLI sessions.",
+          icon: Activity,
+          onSelect: () => {
+            setIsMemoryWorkspaceOpen(false);
+            setSystemAnalyticsTab("overview");
+          }
+        },
+        {
+          id: "system-services",
+          label: "System services",
+          description: "Inspect and control systemd services, background workers, and timers.",
+          icon: Boxes,
+          onSelect: () => openManage("system-services")
+        },
+        {
+          id: "cli-update-all",
+          label: "Update all CLIs",
+          description: "Detect and apply available updates across all CLI runtimes.",
+          icon: RefreshCw,
+          onSelect: () => {
+            adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
+            openManage("cli-update-all");
+          }
         }
       ]
     : [];
@@ -6200,17 +7866,34 @@ export function App() {
     hiddenStorageKey: roomToolbarStorageKeys.hidden,
     orderStorageKey: roomToolbarStorageKeys.order
   });
-  const roomToolbarRenderedActions = roomToolbar.visibleActions;
-  const desktopToolbarActions: IconToolbarAction[] = roomToolbar.orderedActions.map(action => action.id === "add-chat" ? {
+  const roomToolbarRenderedActions = shellMode === "mobile"
+    ? roomToolbar.visibleActions.filter((action) => action.id !== "pane-layout" && action.id !== "pane-span-all")
+    : roomToolbar.visibleActions;
+  const availableRoomActions = shellMode === "mobile"
+    ? roomToolbar.orderedActions.filter((action) => action.id !== "pane-layout" && action.id !== "pane-span-all" && action.id !== "sticky-note" && !action.id.startsWith("widget-"))
+    : roomToolbar.orderedActions;
+  const roomToolbarTouchContext = useTouchContextMenu(
+    (source) => source instanceof Element && !source.closest(".desktop-menu-drag-handle, .cli-launcher-drag-handle")
+      ? source.closest<HTMLElement>("button[data-action-id]")
+      : null,
+    ({ target, x, y }) => {
+      const action = availableRoomActions.find((item) => item.id === target.dataset.actionId);
+      if (!action || action.id === "more-actions") return;
+      roomToolbar.closeMenus();
+      roomToolbar.setActionMenu({ actionId: action.id, actionLabel: action.ariaLabel, x, y });
+    }
+  );
+  const desktopToolbarActions: IconToolbarAction[] = availableRoomActions.map(action => action.id === "add-chat" ? {
     ...action,
     onClick: () => void addPane("CHAT"),
     ariaExpanded: undefined,
     ariaControls: undefined,
     ariaHasPopup: undefined
-  } : action).concat({
-    id: "resources", label: "Resources", title: "Resources", ariaLabel: "Resources", icon: Activity,
-    onClick: () => toolbarMetricsRef.current?.openResources()
-  }, {
+  } : action).concat(
+    roomToolbar.orderedActions.some(a => a.id === "resources") ? [] : [{
+      id: "resources", label: "Resources", title: "Resources", ariaLabel: "Resources", icon: Activity,
+      onClick: () => openSystemResources()
+    }], {
     id: "rename-room", label: "Rename room", title: "Rename room", ariaLabel: "Rename room", icon: Pencil,
     disabled: !activeRoom, disabledReason: "Choose a room first", onClick: beginRoomRename
   }, {
@@ -6223,6 +7906,62 @@ export function App() {
     id: "add-harness", label: "DeepSeek Harness", title: "Open DeepSeek Harness",
     ariaLabel: "Open DeepSeek Harness", icon: Network,
     onClick: () => void addHarnessPane(), disabled: !selectedRoomId || panes.length >= 16
+  }] as IconToolbarAction[] : []), {
+    id: "live-model",
+    label: "Live voice model",
+    title:
+      liveRailStatus === "listening"
+        ? "User speaking..."
+        : liveRailStatus === "speaking"
+        ? "Agent speaking..."
+        : liveRailStatus === "active"
+        ? "Live voice active (Listening)"
+        : liveRailStatus === "connecting"
+        ? "Connecting Live voice model..."
+        : "Start Live voice conversation",
+    ariaLabel: "Live voice model",
+    icon: Mic,
+    onClick: activateLiveFromRail,
+    ariaPressed: liveRailStatus !== "idle" && liveRailStatus !== "error",
+    disabled: !selectedRoomId
+  }, {
+    id: "create",
+    label: "Create",
+    title: "Create pane",
+    ariaLabel: "Create",
+    icon: Plus,
+    onClick: () => {
+      setIsChatLauncherOpen(true);
+    },
+    disabled: !selectedRoomId || panes.length >= 16
+  }, {
+    id: "docks",
+    label: "Docks",
+    title: "Docks",
+    ariaLabel: "Docks",
+    icon: Grid2X2,
+    onClick: () => {
+      toggleSideSurface("tasks");
+    }
+  }, ...(showMinimizedBarToggle && auth?.user?.role !== "ADMIN" ? [{
+    id: "minimized-bar",
+    label: "Minimized panes",
+    title: showMinimizedBar ? "Hide minimized pane bar" : "Show minimized pane bar",
+    ariaLabel: "Minimized panes",
+    icon: Minus,
+    onClick: () => setMinimizedBarExpanded((value) => !value),
+    ariaPressed: showMinimizedBar
+  }] as IconToolbarAction[] : []), ...(auth?.user?.role === "ADMIN" ? [{
+    id: "toggle-admin-mode",
+    label: isAdminMode ? "Switch to User mode" : "Switch to Admin mode",
+    title: isAdminMode ? "Switch to User mode" : "Switch to Admin mode",
+    ariaLabel: isAdminMode ? "Switch to User mode" : "Switch to Admin mode",
+    icon: isAdminMode ? ShieldCheck : UserCheck,
+    onClick: () => {
+      setAdminModeRequested(!isAdminMode);
+      setIsServerActionsMenuOpen(false);
+      if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
+    }
   }] as IconToolbarAction[] : []));
   useEffect(() => {
     const dismiss = () => {
@@ -6240,7 +7979,7 @@ export function App() {
     window.addEventListener("space:navigation-open", dismiss);
     return () => window.removeEventListener("space:navigation-open", dismiss);
   }, [roomToolbar.closeMenus]);
-  function runDesktopAction(action: IconToolbarAction, anchor: HTMLButtonElement) {
+  function runDesktopAction(action: IconToolbarAction, anchor: HTMLButtonElement, count = 1) {
     // Submenus stay anchored to the persistent navigation trigger after the menu closes.
     const refs = {
       "server-restart": serverActionsButtonRef, "add-cli": cliLauncherButtonRef,
@@ -6250,6 +7989,7 @@ export function App() {
     };
     const targetRef = refs[action.id as keyof typeof refs];
     if (targetRef) targetRef.current = anchor;
+    if (action.id === "pane-layout" && isRoomToolbarHidden) paneLayoutCollapsedButtonRef.current = anchor;
     roomToolbar.closeMenus();
     if (action.id !== "theme") setIsThemeMenuOpen(false);
     if (action.id !== "pane-layout") setIsPaneLayoutMenuOpen(false);
@@ -6258,17 +7998,55 @@ export function App() {
     if (action.id !== "server-restart") setIsServerActionsMenuOpen(false);
     if (action.id !== "add-cli") setIsCliLauncherOpen(false);
     if (action.id !== "add-chat") setIsChatLauncherOpen(false);
-    if (action.id === "resources") toolbarMetricsRef.current?.openResources(anchor);
+    if (action.id === "system-resources") openSystemResources();
+    else if (action.id === "resources") openSystemResources();
+    else if (action.id === "server-restart") {
+      serverActionsButtonRef.current = anchor;
+      openManage();
+    } else if (count > 1) {
+      if (action.id === "add-browser") void addPane("BROWSER", undefined, count);
+      else if (action.id === "add-chat") void addPane("CHAT", undefined, count);
+      else if (action.id === "add-youtube") void addPane("YOUTUBE", undefined, count);
+      else if (action.id === "add-vnc") void addPane("VNC", undefined, count);
+      else if (action.id === "add-live") void addLivePane(count);
+      else if (action.id === "add-files") void addFilesPane(count);
+      else if (action.id === "add-demos") void addDemosPane(count);
+      else if (action.id === "add-harness") void addHarnessPane(count);
+      else action.onClick();
+    }
     else action.onClick();
   }
-  function renderDesktopCreateTools({ query, onClose, triggerRef }: { query: string; onClose: () => void; triggerRef: RefObject<HTMLButtonElement | null> }) {
+  function renderDesktopCreateTools({
+    query,
+    onClose,
+    triggerRef,
+    paneCount,
+    onPaneCountChange
+  }: {
+    query: string;
+    onClose: () => void;
+    triggerRef: RefObject<HTMLButtonElement | null>;
+    paneCount?: number;
+    onPaneCountChange?: (count: number | ((prev: number) => number)) => void;
+  }) {
     return (
-                      <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
-                        <LazyCliLauncherMenu embedded query={query} mobile={false}
-                          atPaneCap={panes.length >= 16} isCodexEnabled={isCodexEnabled}
-                          onClose={onClose} onCreate={addCliRuntimePane} onLogin={openCliRuntimeLogin}
-                          onOpenSettings={() => { onClose(); openSettingsSurface(); }} triggerRef={triggerRef} />
-                      </RecoverableSurface>
+      <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+        <LazyCliLauncherMenu
+          embedded
+          query={query}
+          mobile={false}
+          refreshOnOpen={true}
+          atPaneCap={panes.length >= 16}
+          isCodexEnabled={isCodexEnabled}
+          onClose={onClose}
+          onCreate={addCliRuntimePane}
+          onLogin={openCliRuntimeLogin}
+          onOpenSettings={() => { onClose(); openSettingsSurface(); }}
+          triggerRef={triggerRef}
+          paneCount={paneCount}
+          onPaneCountChange={onPaneCountChange}
+        />
+      </RecoverableSurface>
     );
   }
   const renderRoomToolbarAction = (action: IconToolbarAction) => {
@@ -6324,6 +8102,7 @@ export function App() {
         aria-haspopup={action.ariaHasPopup}
         aria-pressed={action.ariaPressed}
         onWheel={action.onWheel}
+        data-action-id={action.id}
         data-category-color={action.id === "category-color-filter" ? (activeRoomCategoryFilter ?? undefined) : undefined}
         {...(action.dataSensitiveIgnore ? { "data-sensitive-ignore": "true" } : {})}
         onContextMenu={(event) => {
@@ -6460,10 +8239,11 @@ export function App() {
   });
   useDismissibleToolbarLayer({
     containerRef: collapsedToolbarRef,
-    active: isRoomToolbarHidden && (isCollapsedPaneLayoutMenuOpen || isPaneSpanAllMenuOpen),
+    active: isRoomToolbarHidden && (isCollapsedPaneLayoutMenuOpen || isPaneSpanAllMenuOpen || Boolean(lowerRailVisibilityMenu)),
     onDismiss: () => {
       setIsCollapsedPaneLayoutMenuOpen(false);
       setIsPaneSpanAllMenuOpen(false);
+      setLowerRailVisibilityMenu(null);
       window.requestAnimationFrame(() => (paneSpanAllButtonRef.current ?? paneLayoutCollapsedButtonRef.current)?.focus());
     }
   });
@@ -6486,6 +8266,7 @@ export function App() {
   function beginRoomRename() {
     if (!activeRoom || roomRenamePending) return;
     setRoomNameDraft(activeRoom.name);
+    setRoomProjectPathDraft(activeRoom.projectPath ?? "");
     setRoomRenameError(null);
     setIsThemeMenuOpen(false);
     setIsWorkspaceTextSizePickerOpen(false);
@@ -6498,13 +8279,13 @@ export function App() {
     setRoomRenamePending(false);
     setRoomRenameError(null);
     setRoomNameDraft(activeRoom?.name ?? "");
+    setRoomProjectPathDraft(activeRoom?.projectPath ?? "");
   }
 
   function toggleRoomFocusMode() {
     const nextValue = !isRoomFocusMode;
     try {
       runtime.platform.localStorage.setItem(ROOM_FOCUS_MODE_STORAGE_KEY, String(nextValue));
-      hasStoredRoomFocusPreferenceRef.current = true;
     } catch {
       // Best effort only.
     }
@@ -6526,7 +8307,9 @@ export function App() {
     setRoomRenamePending(true);
     setRoomRenameError(null);
     try {
-      const updated = await api.updateRoom(activeRoom.id, { name: nextName });
+      const updated = await api.updateRoom(activeRoom.id, {
+        name: nextName
+      });
       setRooms((current) => current.map((room) => (room.id === updated.id ? updated : room)));
       setRoomNameDraft(updated.name);
       setIsRoomRenameOpen(false);
@@ -6548,17 +8331,6 @@ export function App() {
     }
   }, [activePane, isMobilePaneFocusMode, selectedRoomId, shellMode]);
   useEffect(() => {
-    if (shellMode !== "mobile") {
-      if (mobileRoomFocusDefaultAppliedRef.current && !hasStoredRoomFocusPreferenceRef.current) setIsRoomFocusMode(false);
-      mobileRoomFocusDefaultAppliedRef.current = false;
-      return;
-    }
-    if (selectedRoomId && !mobileRoomFocusDefaultAppliedRef.current && !hasStoredRoomFocusPreferenceRef.current) {
-      mobileRoomFocusDefaultAppliedRef.current = true;
-      setIsRoomFocusMode(true);
-    }
-  }, [selectedRoomId, shellMode]);
-  useEffect(() => {
     if (!auth?.isAuthenticated) {
       setCodexEnvironmentSummary(null);
       return;
@@ -6571,7 +8343,7 @@ export function App() {
       try {
         const [environment, runtimeSettings] = await Promise.allSettled([
           api.codexEnvironment(),
-          api.cliRuntimeSettings({ forceRefresh: true })
+          api.cliRuntimeSettings()
         ]);
         if (disposed) return;
         if (environment.status === "fulfilled") setCodexEnvironmentSummary(environment.value);
@@ -6586,7 +8358,7 @@ export function App() {
       if (document.visibilityState === "visible") void loadCodexEnvironmentSummary();
     };
     void loadCodexEnvironmentSummary();
-    const interval = window.setInterval(() => void loadCodexEnvironmentSummary(), 10000);
+    const interval = window.setInterval(() => void loadCodexEnvironmentSummary(), 30000);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       disposed = true;
@@ -6658,8 +8430,21 @@ export function App() {
   const paneCardOnTarget = useStableCallback(targetPaneFromUser);
   const paneCardOnMove = useStableCallback(openMovePaneDialog);
   const paneCardOnPaneUpdated = useStableCallback(handlePaneUpdated);
+  const paneCardOnOpenExisting = useStableCallback(async (pane: Pane) => {
+    await selectRoom(pane.roomId);
+    if (pane.isMinimized) {
+      await restorePane(pane);
+    } else {
+      setSelectedPaneId(pane.id);
+      setIsMobilePaneFocusMode(false);
+      pendingPaneHeaderFocusIdRef.current = pane.id;
+    }
+  });
   const paneCardOnClose = useStableCallback(closePane);
   const paneCardOnMaximize = useStableCallback(toggleMaximize);
+  const paneCardOnRestoreLayout = useStableCallback(() => {
+    void applyPaneLayoutPreset(null);
+  });
   const paneCardOnMinimize = useStableCallback(minimizePane);
   const paneCardOnMobilePaneFocusChange = useStableCallback(updateMobilePaneFocusMode);
   const paneCardOnGrowColumnSpan = useStableCallback(growPaneColumnSpan);
@@ -6668,6 +8453,12 @@ export function App() {
   const paneCardOnSplit = useStableCallback(splitPane);
   const paneCardOnTerminalBootstrapped = useStableCallback(recordRoomPaneBootstrapped);
   const paneCardOnTerminalPrefillReadyChange = useStableCallback(recordRoomTerminalPrefillReady);
+  const paneCardOnTerminalRevealReady = useStableCallback(recordTerminalRevealReady);
+  const paneCardOnDragStart = useStableCallback(handlePaneDragStart);
+  const paneCardOnDragEnd = useStableCallback(clearPaneReorderState);
+  const paneCardOnDragOver = useStableCallback(handlePaneDragOver);
+  const paneCardOnDragLeave = useStableCallback(handlePaneDragLeave);
+  const paneCardOnDrop = useStableCallback(handlePaneDrop);
 
   const navigateFullscreenPane = useCallback(
     (direction: "previous" | "next", fromPaneId?: string) => {
@@ -6689,72 +8480,123 @@ export function App() {
   const paneCardOnFullscreenNavigate = useStableCallback(navigateFullscreenPane);
 
   async function captureRoomScreen() {
-    if (!activeRoom) return;
-    const target: ClipImageTarget = {
-      roomId: activeRoom.id,
-      paneId: activePane?.id ?? null,
-      paneMode: activePane?.mode ?? null
-    };
-    setError(null);
-    setClipToolNotice(null);
-    if (runtimeKind === "demo") {
-      setClipToolNotice(DEMO_LOCAL_REPLY);
-      return;
-    }
-    if (shellMode !== "desktop") {
-      openClipImagePicker(target);
-      return;
-    }
-    if (!runtime.platform.displayMediaSupported) {
-      openClipImagePicker(target);
-      return;
-    }
+    if (!activeRoom || isCapturingScreenRef.current) return;
+    isCapturingScreenRef.current = true;
     try {
-      let stream: MediaStream;
-      try {
-        stream = await runtime.platform.getDisplayMedia({
-          video: { cursor: "always" } as MediaTrackConstraints,
-          audio: false
-        });
-      } catch (err) {
-        const name = err instanceof DOMException ? err.name : "";
-        if (name === "AbortError" || name === "NotAllowedError") return;
+      const target: ClipImageTarget = {
+        roomId: activeRoom.id,
+        paneId: activePane?.id ?? null,
+        paneMode: activePane?.mode ?? null
+      };
+      setError(null);
+      setClipToolNotice(null);
+      if (runtimeKind === "demo") {
+        setClipToolNotice(DEMO_LOCAL_REPLY);
+        return;
+      }
+      const desktopBridge = (window as any).spaceDesktop;
+      if (typeof desktopBridge?.openSnippingTool === "function") {
+        try {
+          const opened = await desktopBridge.openSnippingTool();
+          if (opened) return;
+        } catch {}
+      }
+      if (shellMode !== "desktop") {
+        openClipImagePicker(target);
+        return;
+      }
+      if (!runtime.platform.displayMediaSupported) {
         openClipImagePicker(target);
         return;
       }
       try {
-        const video = document.createElement("video");
-        video.srcObject = stream;
-        video.muted = true;
-        await video.play();
-        await new Promise((resolve) => window.requestAnimationFrame(resolve));
-        const track = stream.getVideoTracks()[0];
-        const settings = track?.getSettings?.() ?? {};
-        const width = settings.width ?? video.videoWidth ?? 1920;
-        const height = settings.height ?? video.videoHeight ?? 1080;
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext("2d");
-        if (!context) throw new Error("Screen capture canvas is unavailable.");
-        context.drawImage(video, 0, 0, width, height);
-        const blob = await new Promise<Blob>((resolve, reject) => {
-          canvas.toBlob((nextBlob) => {
-            if (nextBlob) resolve(nextBlob);
-            else reject(new Error("Screen capture PNG export failed."));
-          }, "image/png");
-        });
-        await routeClipImage(
-          new File([blob], `space-screen-capture-${Date.now()}.png`, { type: "image/png" }),
-          target
-        );
-      } finally {
-        stream.getTracks().forEach((track) => track.stop());
+        let stream: MediaStream;
+        try {
+          stream = await runtime.platform.getDisplayMedia({
+            video: { cursor: "always" } as MediaTrackConstraints,
+            audio: false
+          });
+        } catch (err) {
+          const name = err instanceof DOMException ? err.name : "";
+          if (name === "AbortError" || name === "NotAllowedError") return;
+          openClipImagePicker(target);
+          return;
+        }
+        try {
+          const video = document.createElement("video");
+          video.srcObject = stream;
+          video.muted = true;
+          await video.play();
+          await new Promise((resolve) => window.requestAnimationFrame(resolve));
+          const track = stream.getVideoTracks()[0];
+          const settings = track?.getSettings?.() ?? {};
+          const width = settings.width ?? video.videoWidth ?? 1920;
+          const height = settings.height ?? video.videoHeight ?? 1080;
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("Screen capture canvas is unavailable.");
+          context.drawImage(video, 0, 0, width, height);
+          const blob = await new Promise<Blob>((resolve, reject) => {
+            canvas.toBlob((nextBlob) => {
+              if (nextBlob) resolve(nextBlob);
+              else reject(new Error("Screen capture PNG export failed."));
+            }, "image/png");
+          });
+          await routeClipImage(
+            new File([blob], `space-screen-capture-${Date.now()}.png`, { type: "image/png" }),
+            target
+          );
+        } finally {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Screen capture failed");
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Screen capture failed");
+    } finally {
+      setTimeout(() => {
+        isCapturingScreenRef.current = false;
+      }, 1200);
     }
   }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    let lastPrtSc = 0;
+    const handlePrintScreenKey = (event: KeyboardEvent) => {
+      if (event.key === "PrintScreen" || event.code === "PrintScreen") {
+        event.preventDefault();
+        const isDesktop = shellMode === "desktop" || Boolean((window as any).spaceDesktop);
+        if (isDesktop) return;
+
+        const now = Date.now();
+        if (now - lastPrtSc > 1200) {
+          lastPrtSc = now;
+          void captureRoomScreen();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handlePrintScreenKey);
+
+    const desktopBridge = (window as any).spaceDesktop;
+    let unsubscribePrintScreen: (() => void) | undefined;
+    if (typeof desktopBridge?.onPrintScreen === "function") {
+      const unsub = desktopBridge.onPrintScreen(() => {
+        void captureRoomScreen();
+      });
+      if (typeof unsub === "function") {
+        unsubscribePrintScreen = unsub;
+      }
+    }
+
+    return () => {
+      window.removeEventListener("keydown", handlePrintScreenKey);
+      unsubscribePrintScreen?.();
+    };
+  }, [activeRoom, activePane, shellMode]);
 
   function openClipImagePicker(target: ClipImageTarget) {
     pendingClipImageTargetRef.current = target;
@@ -6896,6 +8738,11 @@ export function App() {
 
   function handlePaneDragStart(event: ReactDragEvent<HTMLElement>, pane: Pane) {
     if (paneReorderPending) return;
+    if (typeof document !== "undefined") {
+      document.querySelectorAll<HTMLDetailsElement>(".pane-title-details[open]").forEach((details) => {
+        details.open = false;
+      });
+    }
     setPaneDragData(event, pane, activeRoom);
     setDraggedPaneId(pane.id);
   }
@@ -6934,16 +8781,26 @@ export function App() {
     }
   }
 
-  async function handlePaneDrop(targetPaneId: string, position: PaneDropPosition = paneDragOverPosition) {
-    if (!draggedPaneId || draggedPaneId === targetPaneId || paneReorderPending) {
+  async function handlePaneDrop(targetPaneId: string, position: PaneDropPosition = paneDragOverPosition, anchorColumnStart?: number, targetRowIndex?: number) {
+    if (!draggedPaneId || (draggedPaneId === targetPaneId && anchorColumnStart === undefined) || paneReorderPending) {
       clearPaneReorderState();
       return;
     }
+    const movingPaneId = draggedPaneId;
     const previousPanes = panes;
-    const nextPanes = reorderPanesByTarget(previousPanes, draggedPaneId, targetPaneId, position);
+    const nextPanes = targetPaneId && targetPaneId !== movingPaneId
+      ? reorderPanesByTarget(previousPanes, movingPaneId, targetPaneId, position)
+      : previousPanes;
     clearPaneReorderState();
-    paneColumnAnchorStartsRef.current = new Map();
-    setPanes(nextPanes);
+    if (anchorColumnStart !== undefined) {
+      paneColumnAnchorStartsRef.current.set(
+        movingPaneId,
+        targetRowIndex !== undefined ? { columnStart: anchorColumnStart, rowIndex: targetRowIndex } : anchorColumnStart
+      );
+    } else {
+      paneColumnAnchorStartsRef.current.delete(movingPaneId);
+    }
+    setPanes([...nextPanes]);
     setPaneReorderPending(true);
     setError(null);
     try {
@@ -6960,10 +8817,31 @@ export function App() {
   const filteredRoomEntries = rooms.map(room => ({
     room,
     activity: workspaceRoomActivity(room.id === selectedRoomId ? panes : roomRuntimes[room.id]?.panes ?? [], paneCompletionLifecycle.panes, roomCliActivityCounts[room.id])
-  })).filter(({ room, activity }) => workspaceRoomMatches(room, roomSearch, roomFilter, activity));
-  const isRoomListFiltered = Boolean(roomSearch.trim()) || roomFilter !== "all";
+  })).filter(({ room }) => {
+    if (!isAdminMode) {
+      if (room.ownerUserId && room.ownerUserId !== auth?.user?.id) return false;
+    } else {
+      if (adminRoomFilterMode === "mine") {
+        if (room.ownerUserId && room.ownerUserId !== auth?.user?.id) return false;
+      } else if (adminRoomFilterMode === "user") {
+        if (adminSelectedUserId && room.ownerUserId !== adminSelectedUserId) return false;
+      }
+    }
+    if (roomSearch.trim()) {
+      const q = roomSearch.trim().toLowerCase();
+      const nameMatch = room.name.toLowerCase().includes(q);
+      const ownerEmail = room.ownerUserId ? userEmailById.get(room.ownerUserId) ?? "" : "";
+      return nameMatch || ownerEmail.toLowerCase().includes(q);
+    }
+    return true;
+  });
+  const isRoomListFiltered = Boolean(roomSearch.trim()) || (isAdminMode && adminRoomFilterMode !== "mine");
   const roomsSurfaceContent = (
-    <div className="side-surface-panel side-surface-room-panel">
+    <div
+      ref={roomsPanelRef}
+      className="side-surface-panel side-surface-room-panel"
+      data-show-banner={showDownloadBanner ? "true" : "false"}
+    >
       <div className="rooms-controls">
       <div className="rail-actions">
         <button
@@ -6981,19 +8859,74 @@ export function App() {
         <Search aria-hidden="true" />
         <input type="search" aria-label="Find a room" placeholder="Find a room…" value={roomSearch} onChange={event => setRoomSearch(event.target.value)} />
       </label>
-      <div className="rooms-filter" role="group" aria-label="Filter rooms">
-        {([['all', 'All'], ['running', 'Running'], ['attention', 'Needs attention']] as const).map(([value, label]) => (
-          <button key={value} type="button" aria-pressed={roomFilter === value}
-            title={value === "running" ? "Active CLI sessions or running agent turns" : value === "attention" ? "Known blocked or failed panes and unread completions" : "All rooms"}
-            onClick={() => setRoomFilter(value)}>{label}</button>
-        ))}
-      </div>
+      {isAdminMode ? (
+        <div className="rooms-admin-account-filter">
+          <div className="rooms-filter" role="group" aria-label="Filter rooms by account">
+            <button
+              type="button"
+              aria-pressed={adminRoomFilterMode === "mine"}
+              title="Show only rooms owned by your account"
+              onClick={() => setAdminRoomFilterMode("mine")}
+            >
+              My rooms
+            </button>
+            <button
+              type="button"
+              aria-pressed={adminRoomFilterMode === "all"}
+              title="Show rooms from all accounts"
+              onClick={() => setAdminRoomFilterMode("all")}
+            >
+              All accounts
+            </button>
+            <button
+              type="button"
+              aria-pressed={adminRoomFilterMode === "user"}
+              title="Show rooms for a selected account"
+              onClick={() => {
+                setAdminRoomFilterMode("user");
+                if (!adminSelectedUserId && adminUsersList.length > 0) {
+                  const otherUser = adminUsersList.find((u) => u.id !== auth?.user?.id) ?? adminUsersList[0];
+                  if (otherUser) setAdminSelectedUserId(otherUser.id);
+                }
+              }}
+            >
+              Selected account
+            </button>
+          </div>
+          {adminRoomFilterMode === "user" ? (
+            <div className="rooms-user-selector">
+              <select
+                className="rooms-account-select"
+                aria-label="Select account to view rooms"
+                value={adminSelectedUserId}
+                onChange={(e) => setAdminSelectedUserId(e.target.value)}
+              >
+                <option value="" disabled>Choose account…</option>
+                {adminUsersListWithLiveCounts.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.email || u.id} ({u.role}) — {u.roomCount ?? 0} {u.roomCount === 1 ? "room" : "rooms"}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {isRoomListFiltered ? <div className="rooms-filter-summary"><span role="status">{filteredRoomEntries.length} of {rooms.length} rooms</span>
-        <button type="button" onClick={() => { setRoomSearch(""); setRoomFilter("all"); }}>Clear filters</button></div> : null}
+        <button type="button" onClick={() => { setRoomSearch(""); if (isAdminMode) setAdminRoomFilterMode("mine"); }}>Clear filters</button></div> : null}
       </div>
-      <div className={`room-list${draggedRoomId ? " is-room-dragging" : ""}`}>
+      <div
+        className={`room-list${draggedRoomId ? " is-room-dragging" : ""}`}
+        data-room-count={filteredRoomEntries.length}
+        data-room-overflow={roomListOverflow ? "true" : "false"}
+        style={{
+          "--room-count": filteredRoomEntries.length,
+          ...(roomListMaxHeight !== null ? { "--room-list-max-height": `${roomListMaxHeight}px` } : {})
+        } as React.CSSProperties}
+      >
         {filteredRoomEntries.length === 0 ? <p className="rooms-empty" role="status">{rooms.length === 0 ? "Create a room to get started." : "No rooms match these filters."}</p> : null}
         {filteredRoomEntries.map(({ room, activity }) => {
+          const isExpanded = dockExpandedRoomId === room.id;
           // "Warm" must mean truly ready: pane data loaded AND every visible
           // terminal pane bootstrapped (socket attached). Rooms whose data is
           // loaded but whose terminals are still attaching show "Warming".
@@ -7038,6 +8971,7 @@ export function App() {
             className={[
               "room-item",
               room.id === selectedRoomId ? "selected" : "",
+              isExpanded ? "is-expanded" : "",
               draggedRoomId === room.id ? "is-dragging" : "",
               dragOverRoomId === room.id && draggedRoomId !== room.id ? "is-drop-target" : ""
             ].filter(Boolean).join(" ")}
@@ -7047,71 +8981,301 @@ export function App() {
             onPointerDown={(event) => { if (!isRoomListFiltered) handleRoomRightPointerDown(event, room.id); }}
             onContextMenu={(event) => event.preventDefault()}
           >
-            <button
-              className="room-select"
-              data-room-id={room.id}
-              onClick={() => void selectRoom(room.id, { keepCompactSurfaceOpen: true })}
-              disabled={deletePendingRoomId === room.id || roomReorderPending}
-              aria-label={`Open ${room.name}`}
-              aria-current={room.id === selectedRoomId ? "true" : undefined}
-            >
-              <span className="room-name">{room.name}</span>
-              <span className="room-badge-row">
-                <span className="room-cli-badge">
-                  CLI {roomCliActivityCounts[room.id] ?? "—"}
-                </span>
-                {roomCliPresentations.length ? (
-                  <span
-                    className="room-cli-runtime-icons"
-                    aria-label={`Active CLI types: ${roomCliPresentations.map((presentation) => presentation.shortLabel).join(", ")}`}
-                  >
-                    {roomCliPresentations.map((presentation) => (
-                      <img
-                        key={presentation.id}
-                        className="room-cli-runtime-icon"
-                        src={presentation.iconSrc}
-                        alt=""
-                        aria-hidden="true"
-                        title={presentation.shortLabel}
-                        data-terminal-runtime-brand={presentation.brand}
-                        draggable={false}
-                      />
-                    ))}
+            <div className="room-item-row">
+              <button
+                className="room-select"
+                data-room-id={room.id}
+                onClick={() => void selectRoom(room.id, { keepCompactSurfaceOpen: true })}
+                disabled={deletePendingRoomId === room.id || roomReorderPending}
+                aria-label={`Open ${room.name}`}
+                aria-current={room.id === selectedRoomId ? "true" : undefined}
+              >
+                <span className="room-name">{room.name}</span>
+                <span className="room-badge-row">
+                  {room.projectPath ? (
+                    <span
+                      className="room-project-tag"
+                      title={`Project: ${room.projectPath}`}
+                      aria-label={`Project: ${room.projectPath}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDockExpandedRoomId(current => current === room.id ? null : room.id);
+                        if (!dockProjectPathDrafts[room.id]) {
+                          setDockProjectPathDrafts(prev => ({ ...prev, [room.id]: room.projectPath || "" }));
+                        }
+                      }}
+                    >
+                      📁 {room.projectPath.split("/").filter(Boolean).pop() || room.projectPath}
+                    </span>
+                  ) : (
+                    <span
+                      className="room-project-tag is-empty"
+                      title="No project directory configured. Click chevron or tag to set."
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDockExpandedRoomId(current => current === room.id ? null : room.id);
+                        if (!dockProjectPathDrafts[room.id]) {
+                          setDockProjectPathDrafts(prev => ({ ...prev, [room.id]: "" }));
+                        }
+                      }}
+                    >
+                      📁 No project
+                    </span>
+                  )}
+                  <span className="room-cli-badge">
+                    CLI {roomCliActivityCounts[room.id] ?? "—"}
                   </span>
+                  {roomCliPresentations.length ? (
+                    <span
+                      className="room-cli-runtime-icons"
+                      aria-label={`Active CLI types: ${roomCliPresentations.map((presentation) => presentation.shortLabel).join(", ")}`}
+                    >
+                      {roomCliPresentations.map((presentation) => (
+                        <img
+                          key={presentation.id}
+                          className="room-cli-runtime-icon"
+                          src={presentation.iconSrc}
+                          alt=""
+                          aria-hidden="true"
+                          title={presentation.shortLabel}
+                          data-terminal-runtime-brand={presentation.brand}
+                          draggable={false}
+                        />
+                      ))}
+                    </span>
+                  ) : null}
+                  {activity.attention ? <span className="room-attention-badge">Needs attention</span> : null}
+                  {room.kind === "AGENT_PROOF" ? <span className="room-kind-badge">Agent Proof</span> : null}
+                  {room.kind === "CLI_RECOVERY" ? <span className="room-kind-badge">CLI Recovery</span> : null}
+                  {isAdminMode && adminRoomFilterMode !== "mine" ? (
+                    <span
+                      className={`room-owner-badge${room.ownerUserId === auth?.user?.id ? " is-mine" : ""}`}
+                      title={`Owner: ${room.ownerUserId ? userEmailById.get(room.ownerUserId) ?? room.ownerUserId : "System"}`}
+                    >
+                      {room.ownerUserId === auth?.user?.id
+                        ? "You"
+                        : (room.ownerUserId ? userEmailById.get(room.ownerUserId) ?? room.ownerUserId : "System")}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+              <button
+                type="button"
+                className={`room-dock-expand-btn${isExpanded ? " is-expanded" : ""}`}
+                title={isExpanded ? "Collapse room project details" : "Open room project settings"}
+                aria-label={isExpanded ? `Collapse ${room.name}` : `Configure project for ${room.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDockExpandedRoomId(current => current === room.id ? null : room.id);
+                  if (!dockProjectPathDrafts[room.id]) {
+                    setDockProjectPathDrafts(prev => ({ ...prev, [room.id]: room.projectPath || "" }));
+                  }
+                }}
+              >
+                <ChevronDown aria-hidden="true" />
+              </button>
+              <button
+                className="room-delete"
+                onClick={() => deleteRoom(room.id)}
+                disabled={deletePendingRoomId === room.id || roomReorderPending}
+                title={`Delete ${room.name}`}
+                aria-label={`Delete ${room.name}`}
+              >
+                <Trash2 aria-hidden="true" />
+              </button>
+            </div>
+            {isExpanded && (
+              <div className="room-dock-expansion" onClick={(e) => e.stopPropagation()}>
+                <div className="room-dock-field-header">
+                  <span className="room-dock-field-title">
+                    <Folder aria-hidden="true" /> Project Directory:
+                  </span>
+                  {room.projectPath ? (
+                    <button
+                      type="button"
+                      className="room-dock-clear-btn"
+                      disabled={dockProjectSavingRoomId === room.id}
+                      title="Clear project directory"
+                      aria-label="Clear project directory"
+                      onClick={async () => {
+                        setDockProjectSavingRoomId(room.id);
+                        try {
+                          const updated = await api.updateRoom(room.id, { name: room.name, projectPath: null });
+                          setRooms((current) => current.map((r) => (r.id === room.id ? updated : r)));
+                          setDockProjectPathDrafts((prev) => ({ ...prev, [room.id]: "" }));
+                        } finally {
+                          setDockProjectSavingRoomId(null);
+                        }
+                      }}
+                    >
+                      <X aria-hidden="true" />
+                      <span>Clear</span>
+                    </button>
+                  ) : null}
+                </div>
+                <div className="room-dock-input-row">
+                  <input
+                    type="text"
+                    className="room-dock-project-input"
+                    placeholder="e.g. /opt/spaceapp"
+                    value={dockProjectPathDrafts[room.id] ?? (room.projectPath || "")}
+                    disabled={dockProjectSavingRoomId === room.id}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setDockProjectPathDrafts((prev) => ({ ...prev, [room.id]: val }));
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void saveDockProject(room.id);
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="room-dock-save-btn"
+                    disabled={dockProjectSavingRoomId === room.id}
+                    title="Save project directory"
+                    onClick={() => void saveDockProject(room.id)}
+                  >
+                    <Save aria-hidden="true" />
+                  </button>
+                </div>
+                <div className="room-dock-presets-row">
+                  <span className="room-dock-presets-label">Presets:</span>
+                  {projectPresets.map((preset) => {
+                    const currentVal = dockProjectPathDrafts[room.id] ?? (room.projectPath || "");
+                    const isActive = currentVal === preset.path || (preset.label === "olla" && currentVal === "/srv/olla");
+                    return (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        className={`room-dock-preset-chip ${isActive ? "active" : ""}`}
+                        onClick={async () => {
+                          setDockProjectPathDrafts((prev) => ({ ...prev, [room.id]: preset.path }));
+                          await ensureProjectFolder(preset.path);
+                        }}
+                      >
+                        {preset.label}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    className="room-dock-preset-add-btn"
+                    title="Add new English preset"
+                    onClick={() => {
+                      setIsAddingPresetRoomId(isAddingPresetRoomId === room.id ? null : room.id);
+                      setNewPresetDraft("");
+                    }}
+                  >
+                    + New
+                  </button>
+                </div>
+                {isAddingPresetRoomId === room.id ? (
+                  <div className="room-dock-new-preset-box">
+                    <input
+                      type="text"
+                      className="room-dock-new-preset-input"
+                      placeholder="preset name (e.g. space3)"
+                      value={newPresetDraft}
+                      onChange={(e) => {
+                        const cleaned = e.target.value.replace(/[^a-zA-Z0-9_-]/g, "");
+                        setNewPresetDraft(cleaned);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleAddNewPreset(room.id);
+                        } else if (e.key === "Escape") {
+                          setIsAddingPresetRoomId(null);
+                          setNewPresetDraft("");
+                        }
+                      }}
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      className="room-dock-new-preset-confirm-btn"
+                      disabled={!newPresetDraft.trim()}
+                      onClick={() => void handleAddNewPreset(room.id)}
+                    >
+                      Add & Create
+                    </button>
+                    <button
+                      type="button"
+                      className="room-dock-new-preset-cancel-btn"
+                      onClick={() => {
+                        setIsAddingPresetRoomId(null);
+                        setNewPresetDraft("");
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 ) : null}
-                {activity.attention ? <span className="room-attention-badge">Needs attention</span> : null}
-                {room.kind === "AGENT_PROOF" ? <span className="room-kind-badge">Agent Proof</span> : null}
-                {room.kind === "CLI_RECOVERY" ? <span className="room-kind-badge">CLI Recovery</span> : null}
-              </span>
-            </button>
-            <button
-              className="room-delete"
-              onClick={() => deleteRoom(room.id)}
-              disabled={deletePendingRoomId === room.id || roomReorderPending}
-              title={`Delete ${room.name}`}
-              aria-label={`Delete ${room.name}`}
-            >
-              <Trash2 aria-hidden="true" />
-            </button>
+                {room.projectPath ? (
+                  <div className="room-dock-actions-row">
+                    <button
+                      type="button"
+                      className="room-dock-action-btn"
+                      onClick={async () => {
+                        await selectRoom(room.id);
+                        if (room.projectPath) {
+                          await ensureProjectFolder(room.projectPath);
+                        }
+                        const existingFiles = (room.id === selectedRoomId ? panes : roomRuntimes[room.id]?.panes ?? []).find((p) => !p.isClosed && p.mode === "FILES");
+                        if (existingFiles) {
+                          setSelectedPaneId(existingFiles.id);
+                          if (room.projectPath) {
+                            window.dispatchEvent(new CustomEvent("space:files:navigate", { detail: { path: room.projectPath } }));
+                          }
+                        } else {
+                          await addFilesPane(1, room.id);
+                        }
+                      }}
+                    >
+                      <FolderOpen aria-hidden="true" /> Files
+                    </button>
+                    <button
+                      type="button"
+                      className="room-dock-action-btn"
+                      onClick={async () => {
+                        await selectRoom(room.id);
+                        if (room.projectPath) {
+                          await ensureProjectFolder(room.projectPath);
+                        }
+                        await addRootAdminPane(room.id);
+                      }}
+                    >
+                      <Terminal aria-hidden="true" /> Terminal
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            )}
           </div>
           );
         })}
       </div>
       <div className="room-pane-composer-slot" inert={preparingRoomId ? true : undefined}>
-        <a
-          className="spaceapp-download-banner"
-          href="https://spaceapp.dev"
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="Download SpaceApp from SpaceApp.dev"
-        >
-          <img
-            src="/brand/spaceapp-open-source-banner.webp"
-            alt="SpaceApp is open source and free to download."
-            decoding="async"
-          />
-        </a>
+        {showDownloadBanner ? (
+          <a
+            className="spaceapp-download-banner"
+            href="https://spaceapp.dev"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Download SpaceApp from SpaceApp.dev"
+          >
+            <img
+              src={modernColorMode === "light" ? "/brand/spaceapp-open-source-banner-light.svg" : "/brand/spaceapp-open-source-banner.webp"}
+              alt="SpaceApp is open source and free to download."
+              decoding="async"
+            />
+          </a>
+        ) : null}
         <RoomPaneComposer
+          mobile={shellMode === "mobile"}
           activePaneCount={presentationPanes.length}
           onApply={addRoomPanes}
           onOpenSettings={openSettingsSurface}
@@ -7120,6 +9284,102 @@ export function App() {
       </div>
     </div>
   );
+
+  useLayoutEffect(() => {
+    if (activeSideSurface !== "rooms") return;
+    const panel = roomsPanelRef.current;
+    if (!panel) return;
+
+    const checkBannerFit = () => {
+      const controls = panel.querySelector<HTMLElement>(".rooms-controls");
+      const roomList = panel.querySelector<HTMLElement>(".room-list");
+      const composer = panel.querySelector<HTMLElement>(".room-pane-composer");
+      const mix = composer?.querySelector<HTMLElement>(".room-pane-mix");
+      const banner = panel.querySelector<HTMLElement>(".spaceapp-download-banner");
+
+      const availableHeight = panel.clientHeight;
+      if (availableHeight <= 0) return;
+
+      const controlsHeight = controls?.offsetHeight ?? 0;
+      const roomChildren = roomList ? (Array.from(roomList.children) as HTMLElement[]) : [];
+      let naturalRoomSpan = 0;
+      if (roomChildren.length > 0) {
+        const gapPx = 7.2; // 0.45rem gap in .room-list
+        const sumOfCards = roomChildren.reduce((acc, el) => acc + (el.offsetHeight || 70), 0);
+        naturalRoomSpan = Math.round(sumOfCards + Math.max(0, roomChildren.length - 1) * gapPx);
+      }
+
+      const isComposerCollapsed = composer?.getAttribute("data-collapsed") === "true";
+      const composerNaturalHeight = isComposerCollapsed
+        ? (composer?.offsetHeight ?? 44)
+        : (mix && composer
+            ? composer.scrollHeight - mix.clientHeight + mix.scrollHeight
+            : (composer?.scrollHeight ?? 0));
+
+      const bannerWidth = banner?.offsetWidth || (panel.clientWidth - 24);
+      const bannerHeight = banner?.offsetHeight || (Math.round(bannerWidth * 34 / 121) + 2);
+      const bannerTotalHeight = bannerHeight + 12;
+
+      // Spacing: padding (0.75rem * 2 = 24px) + grid gaps (0.75rem * 2 = 24px) = 48px
+      const panelSpacing = 48;
+      const netAvailable = Math.max(0, availableHeight - controlsHeight - panelSpacing);
+
+      // Check if everything fits with the download banner
+      const totalNeededWithBanner = controlsHeight + naturalRoomSpan + composerNaturalHeight + bannerTotalHeight + panelSpacing;
+      const bannerFits = totalNeededWithBanner <= availableHeight;
+
+      // Available height allocated for the room list:
+      const currentBannerHeight = bannerFits ? bannerTotalHeight : 0;
+      const spaceForRooms = netAvailable - composerNaturalHeight - currentBannerHeight;
+
+      // On smaller screens where composer is expanded, ensure rooms get at least minimum reasonable height
+      const composerMinHeight = isComposerCollapsed ? (composer?.offsetHeight ?? 44) : 180;
+      const effectiveAvailableForRooms = Math.max(
+        spaceForRooms,
+        Math.min(naturalRoomSpan, netAvailable - composerMinHeight)
+      );
+      const finalAvailableForRooms = Math.max(effectiveAvailableForRooms, 72);
+
+      // Overflows only when natural height exceeds available space and more than 3 rooms
+      const overflows = roomChildren.length > 3 && naturalRoomSpan > (finalAvailableForRooms + 2);
+
+      setShowDownloadBanner((prev) => (prev !== bannerFits ? bannerFits : prev));
+      setRoomListOverflow((prev) => (prev !== overflows ? overflows : prev));
+      setRoomListMaxHeight((prev) => {
+        const nextVal = overflows ? Math.round(finalAvailableForRooms) : null;
+        return prev !== nextVal ? nextVal : prev;
+      });
+
+      // Synchronously set properties on roomList DOM element to avoid visual paint flicker
+      if (roomList) {
+        roomList.setAttribute("data-room-overflow", overflows ? "true" : "false");
+        if (overflows) {
+          roomList.style.setProperty("--room-list-max-height", `${Math.round(finalAvailableForRooms)}px`);
+        } else {
+          roomList.style.removeProperty("--room-list-max-height");
+        }
+      }
+    };
+
+    checkBannerFit();
+    const rafId = typeof requestAnimationFrame !== "undefined" ? requestAnimationFrame(checkBannerFit) : null;
+
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(checkBannerFit) : null;
+    observer?.observe(panel);
+    const roomList = panel.querySelector<HTMLElement>(".room-list");
+    if (roomList) observer?.observe(roomList);
+    const composer = panel.querySelector<HTMLElement>(".room-pane-composer");
+    if (composer) observer?.observe(composer);
+    const mix = panel.querySelector<HTMLElement>(".room-pane-mix");
+    if (mix) observer?.observe(mix);
+
+    window.addEventListener("resize", checkBannerFit);
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      observer?.disconnect();
+      window.removeEventListener("resize", checkBannerFit);
+    };
+  }, [activeSideSurface, filteredRoomEntries.length, rooms.length, roomSearch, adminRoomFilterMode, adminSelectedUserId, preparingRoomId, presentationPanes.length]);
 
   function resumeAgentSessionCodexThread(threadId: string) {
     if (!activePane || !isCodexEnabled) return;
@@ -7199,9 +9459,8 @@ export function App() {
       />
     ) : activeSideSurface === "settings" ? (
       <AgentSettingsDock
-        cliSettingsContent={cliDockContent}
         adminMode={shellMode !== "desktop" || isAdminMode}
-        onOpenSetup={() => setIsSetupConnectionsOpen(true)}
+        onOpenSetup={() => openManage("setup-connections")}
         activePane={activePane}
         currentAppearance={modernAppearance}
         currentIconPack={modernIconPack}
@@ -7218,22 +9477,28 @@ export function App() {
           setSuppressNotifications(writeStoredSuppressNotifications(suppressed));
         }}
         onProviderSettingsRefresh={setProviderSettings}
-        onUiThemeApply={({ appearance, iconPack, theme }) => {
+        onUiThemeApply={async ({ appearance, iconPack, theme }) => {
           writeModernAppearance(runtime.platform.localStorage, appearance);
           writeModernIconPack(runtime.platform.localStorage, iconPack);
           writeUiTheme(runtime.platform.localStorage, theme);
+          try {
+            await api.updateUserSettings({
+              modernAppearance: appearance,
+              modernIconPack: iconPack,
+              uiTheme: theme
+            });
+          } catch {
+            // offline fallback
+          }
           runtime.platform.reloadPage();
         }}
+        auth={auth}
+        onAuthRefresh={refresh}
       />
     ) : activeSideSurface === "media" ? (
       <LazyMediaDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
     ) : activeSideSurface === "streaming" ? (
       <LazyStreamingDock />
-    ) : activeSideSurface === "agent-tools" ? (
-      <LazyAgentToolsDock
-        canManage={auth?.user?.role === "ADMIN" && (shellMode !== "desktop" || isAdminMode)}
-        refreshKey={roomEvents.at(-1)?.id ?? null}
-      />
     ) : activeSideSurface === "cli" ? (
       cliDockContent
     ) : activeSideSurface === "agent-sessions" ? (
@@ -7252,6 +9517,11 @@ export function App() {
         canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}
         activePaneLabel={activePane ? displayPaneTitle(activePane) : null}
         onInsert={insertClipboardItem}
+        onOpenStickyNote={openStickyNote}
+        onClose={() => {
+          setIsDesktopSideSurfaceOpen(false);
+          closeCompactSideSurface();
+        }}
       />
     ) : activeSideSurface === "tasks" ? (
       <LazyTaskDock
@@ -7261,8 +9531,6 @@ export function App() {
       />
     ) : activeSideSurface === "links" ? (
       <LinksPanel onOpen={openUserLink} />
-    ) : activeSideSurface === "logs" ? (
-      <LazyActivityLogDock canManage={auth?.user?.role === "ADMIN"} />
     ) : (
       <HealthDock
         readiness={readiness}
@@ -7275,6 +9543,33 @@ export function App() {
         storageReadiness={storageReadiness}
       />
     );
+
+  const targetablePanes = useMemo(() => {
+    const roomPanes = panes.filter(
+      (p) => p.roomId === activeRoom?.id && !p.isClosed && !floatingYouTubePaneIds.has(p.id)
+    );
+    const nonMinimized = roomPanes.filter((p) => !p.isMinimized);
+    return nonMinimized.length > 0 ? nonMinimized : roomPanes;
+  }, [panes, activeRoom?.id, floatingYouTubePaneIds]);
+
+  const handleSnipCapture = useStableCallback(async (file: File, targetPaneId?: string) => {
+    if (!activeRoom) return;
+    const resolvedPaneId = targetPaneId ?? activePane?.id ?? targetablePanes[0]?.id ?? null;
+    const resolvedPane = panes.find((p) => p.id === resolvedPaneId) ?? activePane ?? targetablePanes[0] ?? null;
+    if (resolvedPane) {
+      if (resolvedPane.isMinimized) {
+        await restorePane(resolvedPane);
+      } else {
+        setSelectedPaneId(resolvedPane.id);
+      }
+    }
+    const target: ClipImageTarget = {
+      roomId: activeRoom.id,
+      paneId: resolvedPane?.id ?? null,
+      paneMode: resolvedPane?.mode ?? null
+    };
+    await routeClipImage(file, target);
+  });
 
   if (!auth || !setupStatus) {
     return (
@@ -7328,6 +9623,30 @@ export function App() {
     />
   );
 
+  const snipToolOverlay = isSnipToolOpen ? (
+    <SnipToolOverlay
+      isOpen={isSnipToolOpen}
+      onClose={() => setIsSnipToolOpen(false)}
+      isMobile={shellMode === "mobile"}
+      activePaneId={activePane?.id ?? targetablePanes[0]?.id ?? null}
+      activePaneTitle={activePane ? activePane.title || activePane.mode : targetablePanes[0]?.title || null}
+      activePaneMode={activePane?.mode ?? targetablePanes[0]?.mode ?? null}
+      availablePanes={targetablePanes.map((p) => ({
+        id: p.id,
+        title: p.title || p.mode,
+        mode: p.mode
+      }))}
+      onSelectTargetPane={(paneId) => {
+        setSelectedPaneId(paneId);
+        const targetPane = panes.find((p) => p.id === paneId);
+        if (targetPane?.isMinimized) {
+          void restorePane(targetPane);
+        }
+      }}
+      onCapture={handleSnipCapture}
+    />
+  ) : null;
+
   const oskKeyboard = oskKeyboardMountedRef.current ? (
     <RecoverableSurface fallback={null}>
       <LazyOnScreenKeyboard
@@ -7341,6 +9660,27 @@ export function App() {
     </RecoverableSurface>
   ) : null;
 
+  const stickyNoteLayer = shellMode === "mobile" ? null : (
+    <StickyNoteLayer
+      windows={stickyWindows}
+      onClose={closeStickyWindow}
+      onUpdateText={(id, text) => updateStickyWindow(id, { text })}
+      onUpdateColor={(id, color) => updateStickyWindow(id, { color })}
+      onUpdatePosition={(id, x, y) => updateStickyWindow(id, { x, y })}
+      onBringToFront={bringStickyWindowToFront}
+    />
+  );
+
+  const isHeaderDockActive = !isRoomToolbarHidden && !(shellMode === "mobile" && isMobilePaneFocusMode && Boolean(activePane));
+
+  const desktopWidgetsLayer = shellMode === "mobile" ? null : (
+    <DesktopWidgetsLayer
+      widgetsController={desktopWidgets}
+      isMultiColumn={paneGridColumnCount >= 2}
+      isHeaderDockActive={isHeaderDockActive}
+    />
+  );
+
   if (auth?.isAuthenticated && appView === "benchmark") {
     const benchmarkContent = (
       <RecoverableSurface fallback={<div className="page-loading" role="status">Loading benchmark…</div>}>
@@ -7351,6 +9691,8 @@ export function App() {
       <AppIconProvider pack={modernIconPack}>
         {vibeMusicPlayer}
         {oskKeyboard}
+        {stickyNoteLayer}
+        {desktopWidgetsLayer}
         {uiTheme !== "classic" ? (
           <div
             className="modern-theme-page"
@@ -7376,28 +9718,42 @@ export function App() {
       <AppIconProvider pack={modernIconPack}>
         {vibeMusicPlayer}
         {oskKeyboard}
+        {stickyNoteLayer}
+        {desktopWidgetsLayer}
         {uiTheme !== "classic" ? (
           <div
-            className="modern-theme-page"
-            data-ui-theme="modern"
+            className={
+              uiTheme === "codex"
+                ? "modern-theme-page codex-theme-page"
+                : uiTheme === "motion"
+                  ? "modern-theme-page motion-theme-page"
+                  : "modern-theme-page"
+            }
+            data-ui-theme={uiTheme}
+            data-interface-theme={uiTheme}
             data-color-mode={modernColorMode}
             data-icon-pack={modernIconPack}
             data-room-theme={roomTheme}
           >
             {helpContent}
           </div>
-        ) : helpContent}
+        ) : (
+          <div
+            className="space-shell classic-theme-page"
+            data-ui-theme="classic"
+            data-interface-theme="classic"
+            data-room-theme={roomTheme}
+            data-icon-pack={modernIconPack}
+          >
+            {helpContent}
+          </div>
+        )}
       </AppIconProvider>
     );
   }
 
   const isMobilePaneFocused = shellMode === "mobile" && isMobilePaneFocusMode && Boolean(activePane);
-  const showMobilePaneSwitcher = shellMode === "mobile" && visiblePanes.length > 1 && !isMobilePaneFocused;
-  // Mobile keeps the bar docked (its toolbar control is hidden there); everywhere else the bar is parked.
-  const showMinimizedBar = minimizedPanes.length > 0 && (minimizedBarExpanded || shellMode === "mobile");
-  /** The bar hides behind one room toolbar button, so only render it where that button can live. */
-  const showMinimizedBarToggle = minimizedPanes.length > 0 && shellMode !== "mobile";
-  const showPaneNavigation = !isMobilePaneFocused && (showMinimizedBar || showMobilePaneSwitcher);
+  const showPaneNavigation = !isMobilePaneFocused && showMinimizedBar;
   const shellClassName = ["space-shell", `shell-${shellMode}`, isRoomFocusMode ? "room-focus-mode" : ""].filter(Boolean).join(" ");
   const workspaceClassName = ["workspace", showInlineSideSurface ? "" : "side-surface-hidden"].filter(Boolean).join(" ");
   const boardClassName = ["board", showPaneNavigation ? "has-pane-navigation" : ""].filter(Boolean).join(" ");
@@ -7434,7 +9790,7 @@ export function App() {
     const layerRenderPanes = roomCategoryFilter
       ? layerPanes.filter((pane) => pane.categoryColor === roomCategoryFilter)
       : layerPanes;
-    const layerVisiblePanes = layerRenderPanes.filter((pane) => !pane.isMinimized && !floatingYouTubePaneIds.has(pane.id));
+    const layerVisiblePanes = layerRenderPanes.filter((pane) => (shellMode === "mobile" || !pane.isMinimized) && !floatingYouTubePaneIds.has(pane.id));
     // A stored layout may outlive pane creation/closure or a shell mode change.
     // Fall back to the existing grid until it covers the current room exactly.
     const savedControlLayout = controlLayouts[roomId];
@@ -7486,9 +9842,11 @@ export function App() {
       .filter((pane) => pane.mode === "TERMINAL" && !pane.isMinimized)
       .every((pane) => prefillReadyPaneIds.has(pane.id));
     const unorderedTerminalBootstrapPaneIds = layerRenderPanes
-      .filter((pane) => pane.mode === "TERMINAL" && !pane.isMinimized)
+      .filter((pane) => pane.mode === "TERMINAL" && !pane.isMinimized && !pane.id.startsWith("pane:optimistic-"))
       .map((pane) => pane.id);
-    const priorityTerminalPaneId = layerActivePane?.mode === "TERMINAL" ? layerActivePane.id : null;
+    const priorityTerminalPaneId = layerActivePane?.mode === "TERMINAL" && !layerActivePane.id.startsWith("pane:optimistic-")
+      ? layerActivePane.id
+      : null;
     const terminalBootstrapPaneIds = priorityTerminalPaneId
       ? [
           priorityTerminalPaneId,
@@ -7498,10 +9856,17 @@ export function App() {
     const layerVisiblePaneCount = (shellMode === "mobile" || layerFullscreenLayout) && layerActivePane ? 1 : layerVisiblePanes.length;
     const layerHasMaximizedPane = shellMode !== "mobile" && layerVisiblePanes.some((pane) => pane.isMaximized);
     const layerHeight = (layerRoom?.paneLayoutHeight ?? 1) as 1 | 2 | 3 | 4;
-    const layerActualBaseRows =
-      layerPlacements.size > 0
-        ? Math.max(1, ...Array.from(layerPlacements.values(), (placement) => placement.rowIndex + 1))
-        : Math.max(1, Math.ceil(layerVisiblePanes.length / Math.max(layerColumnCount, 1)));
+    const {
+      naturalRows: layerNaturalRows,
+      naturalEmptySlots: layerNaturalEmptySlots,
+      actualBaseRows: layerCalculatedBaseRows
+    } = calculatePaneGridBaseRows({
+      placements: layerPlacements,
+      visiblePaneCount: layerVisiblePanes.length,
+      columnCount: layerColumnCount,
+      targetEmptySlots: roomExtraEmptySlots[roomId]
+    });
+    const layerActualBaseRows = layerFullscreenLayout ? 1 : layerCalculatedBaseRows;
     const layerExplicitHeight =
       layerHeight > 1 &&
       shellMode !== "mobile" &&
@@ -7522,8 +9887,31 @@ export function App() {
     );
     const layerRowPx = layerExplicitHeight ? Math.round(layerBaselineRowPx * layerHeight) : 0;
 
+    const staticEmptyGridSlots: { rowIndex: number; columnStart: number }[] = [];
+    if (shellMode !== "mobile" && (layerColumnCount > 1 || layerActualBaseRows > 1) && !layerHasMaximizedPane && layerVisiblePanes.length > 0) {
+      const occupied = Array.from({ length: layerActualBaseRows }, () => Array(layerColumnCount).fill(false));
+      for (const pane of layerVisiblePanes) {
+        const placement = layerPlacements.get(pane.id);
+        if (!placement) continue;
+        for (let c = 0; c < placement.effectiveSpan; c++) {
+          const colIdx = placement.columnStart - 1 + c;
+          const rowArr = occupied[placement.rowIndex];
+          if (rowArr && colIdx < layerColumnCount) {
+            rowArr[colIdx] = true;
+          }
+        }
+      }
+      for (let r = 0; r < layerActualBaseRows; r++) {
+        for (let c = 0; c < layerColumnCount; c++) {
+          if (!occupied[r]?.[c]) {
+            staticEmptyGridSlots.push({ rowIndex: r, columnStart: c + 1 });
+          }
+        }
+      }
+    }
+
     const emptyGridSlots: { rowIndex: number; columnStart: number; precedingPaneId: string | null }[] = [];
-    if (draggedPaneId && shellMode !== "mobile" && layerColumnCount > 1 && !layerHasMaximizedPane && layerVisiblePanes.length > 0) {
+    if (draggedPaneId && shellMode !== "mobile" && (layerColumnCount > 1 || layerActualBaseRows > 1) && !layerHasMaximizedPane && layerVisiblePanes.length > 0) {
       const occupied = Array.from({ length: layerActualBaseRows }, () => Array(layerColumnCount).fill(false));
       for (const pane of layerVisiblePanes) {
         if (pane.id === draggedPaneId) continue;
@@ -7592,7 +9980,7 @@ export function App() {
           </div>
         ) : layerPanes.length === 0 ? (
           <div
-            className="empty-state"
+            className="empty-state room-empty-state"
             role={isInteractive ? "region" : undefined}
             aria-label={isInteractive ? "Empty room quick start" : undefined}
           >
@@ -7643,14 +10031,20 @@ export function App() {
                 data-pane-layout-height={layerRoom?.paneLayoutHeight ?? 1}
                 data-fullscreen-layout={layerFullscreenLayout ? "true" : undefined}
                 style={{
-                  gridTemplateColumns: `repeat(${layerColumnCount}, minmax(0, 1fr))`,
-                  ...(layerControlLayout ? {position:"relative",display:"block",minHeight:`${Math.max(30,...layerControlLayout.placements.map(p=>p.y+p.height))*12}px`} : {}),
-                  ...(layerExplicitHeight && layerRowPx > 0
+                  gridTemplateColumns: layerFullscreenLayout
+                    ? "minmax(0, 1fr)"
+                    : `repeat(${layerColumnCount}, minmax(0, 1fr))`,
+                  ...(shellMode !== "mobile" && layerControlLayout ? {position:"relative",display:"block",minHeight:`${Math.max(30,...layerControlLayout.placements.map(p=>p.y+p.height))*12}px`} : {}),
+                  ...(shellMode !== "mobile" && layerExplicitHeight && layerRowPx > 0
                     ? {
                         gridTemplateRows: `repeat(${layerActualBaseRows}, ${layerRowPx}px)`,
                         gridAutoRows: `${layerRowPx}px`
                       }
-                    : null)
+                    : {
+                        gridTemplateRows: shellMode === "mobile" || layerFullscreenLayout
+                          ? "minmax(0, 1fr)"
+                          : `repeat(${layerActualBaseRows}, minmax(12rem, 1fr))`
+                      })
                 }}
               >
                 {layerRenderPanes.map((pane) => {
@@ -7659,8 +10053,9 @@ export function App() {
                   return (
                     <PaneCard
                       key={pane.id}
-                      controlPlacement={!pane.isMinimized ? layerControlLayout?.placements.find(p=>p.paneId===pane.id) : undefined}
-                      pane={pane}
+                      roomProjectPath={layerRoom?.projectPath}
+                      controlPlacement={shellMode !== "mobile" && !pane.isMinimized ? layerControlLayout?.placements.find(p=>p.paneId===pane.id) : undefined}
+                      pane={shellMode === "mobile" && pane.isMinimized ? { ...pane, isMinimized: false } : pane}
                       agentNumber={layerAgentNumberByPaneId.get(pane.id) ?? 1}
                       latestTurn={layerLatestTurnByPane.get(pane.id) ?? null}
                       latestCompletion={latestCompletion}
@@ -7691,14 +10086,15 @@ export function App() {
                       dragOverPaneId={paneDragOverId}
                       dragOverPosition={paneDragOverPosition}
                       paneReorderPending={paneReorderPending}
-                      onPaneDragStart={handlePaneDragStart}
-                      onPaneDragEnd={clearPaneReorderState}
-                      onPaneDragOver={handlePaneDragOver}
-                      onPaneDragLeave={handlePaneDragLeave}
-                      onPaneDrop={handlePaneDrop}
+                      onPaneDragStart={paneCardOnDragStart}
+                      onPaneDragEnd={paneCardOnDragEnd}
+                      onPaneDragOver={paneCardOnDragOver}
+                      onPaneDragLeave={paneCardOnDragLeave}
+                      onPaneDrop={paneCardOnDrop}
                       onTarget={paneCardOnTarget}
                       onMove={paneCardOnMove}
                       onPaneUpdated={paneCardOnPaneUpdated}
+                      onOpenExistingPane={paneCardOnOpenExisting}
                       onClose={paneCardOnClose}
                       onMaximize={paneCardOnMaximize}
                       onMinimize={paneCardOnMinimize}
@@ -7711,6 +10107,7 @@ export function App() {
                       fullscreenIndex={Math.max(0, layerVisiblePanes.findIndex((candidate) => candidate.id === pane.id))}
                       fullscreenCount={layerVisiblePanes.length}
                       onFullscreenNavigate={paneCardOnFullscreenNavigate}
+                      onRestoreLayout={paneCardOnRestoreLayout}
                       effectiveColumnSpan={placement?.effectiveSpan ?? 1}
                       rowSpan={1}
                       columnStart={placement?.columnStart ?? 1}
@@ -7727,17 +10124,31 @@ export function App() {
                       terminalBootstrapBarrier={terminalBootstrapBarriers.get(pane.id)}
                       shouldBootstrapTerminal={
                         !pane.id.startsWith("pane:optimistic-") &&
-                        (!pane.isMinimized || bootstrappedPaneIds.has(pane.id))
+                        (!pane.isMinimized || bootstrappedPaneIds.has(pane.id) || (shellMode === "mobile" && layerShellVisiblePaneIds.has(pane.id)))
                       }
                       prefillInitialReplay={presentationState === "hidden" && !pane.isMinimized}
                       shouldLoadHarness={shouldLoadHarnessPane(presentationState, layerTerminalPrefillReady)}
-                      revealGeneration={roomPresentationGenerationRef.current}
+                      // Only the selected room can acknowledge this reveal.
+                      // Keep unrelated resident panes memoized across switches;
+                      // recordTerminalRevealReady still rejects stale rooms.
+                      revealGeneration={isActive ? roomPresentationGenerationRef.current : 0}
                       onTerminalBootstrapped={paneCardOnTerminalBootstrapped}
                       onTerminalPrefillReadyChange={paneCardOnTerminalPrefillReadyChange}
-                      onTerminalRevealReady={recordTerminalRevealReady}
+                      onTerminalRevealReady={paneCardOnTerminalRevealReady}
                     />
                   );
                 })}
+                {!draggedPaneId && staticEmptyGridSlots.map((slot) => (
+                  <div
+                    key={`static-empty-${slot.rowIndex}-${slot.columnStart}`}
+                    className="pane-grid-empty-slot"
+                    style={{
+                      gridRow: slot.rowIndex + 1,
+                      gridColumn: slot.columnStart
+                    }}
+                    aria-hidden="true"
+                  />
+                ))}
                 {emptyGridSlots.map((slot) => {
                   const slotKey = `slot-${slot.rowIndex}-${slot.columnStart}`;
                   const isHovered = dragOverSlotKey === slotKey;
@@ -7763,10 +10174,13 @@ export function App() {
                       }}
                       onDrop={(event) => {
                         event.preventDefault();
+                        const fallbackPane = layerVisiblePanes.find((candidate) => candidate.id !== draggedPaneId);
                         if (slot.precedingPaneId) {
-                          void handlePaneDrop(slot.precedingPaneId, "after");
-                        } else if (layerVisiblePanes[0]) {
-                          void handlePaneDrop(layerVisiblePanes[0].id, "before");
+                          void handlePaneDrop(slot.precedingPaneId, "after", slot.columnStart, slot.rowIndex);
+                        } else if (fallbackPane) {
+                          void handlePaneDrop(fallbackPane.id, "before", slot.columnStart, slot.rowIndex);
+                        } else if (draggedPaneId) {
+                          void handlePaneDrop(draggedPaneId, "after", slot.columnStart, slot.rowIndex);
                         }
                       }}
                     >
@@ -7785,6 +10199,58 @@ export function App() {
     );
   }
 
+  async function reopenPane(roomId: string, paneId: string) {
+    try {
+      const pane = await api.updatePane(paneId, { isClosed: false, isMinimized: false, status: "IDLE" });
+      if (selectedRoomIdRef.current === roomId) {
+        setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
+        setSelectedPaneId(pane.id);
+        setIsMobilePaneFocusMode(false);
+        await refreshRoomEvents(roomId);
+      } else {
+        await selectRoom(roomId);
+        setSelectedPaneId(pane.id);
+        setIsMobilePaneFocusMode(false);
+      }
+      refreshToolbarSystemState();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to reopen window");
+    }
+  }
+
+  async function reopenAllDetachedPanes() {
+    try {
+      const analytics = await api.systemAnalyticsCliSessions("10m").catch(() => null);
+      const detached = analytics?.sessions.filter((s) => s.status === "RUNNING" && s.attachmentCount === 0) ?? [];
+      if (detached.length === 0) return;
+      const reopenedRoomIds = new Set<string>();
+      for (const session of detached) {
+        await api.updatePane(session.paneId, { isClosed: false, isMinimized: false, status: "IDLE" }).catch(() => null);
+        reopenedRoomIds.add(session.roomId);
+      }
+      const currentRoomId = selectedRoomIdRef.current;
+      if (currentRoomId && reopenedRoomIds.has(currentRoomId)) {
+        await loadRoomRuntime(currentRoomId);
+        await refreshRoomEvents(currentRoomId);
+      } else if (detached[0]?.roomId) {
+        await selectRoom(detached[0].roomId);
+      }
+      refreshToolbarSystemState();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to reopen detached windows");
+    }
+  }
+
+  async function closeDetachedPane(paneId: string) {
+    try {
+      await api.closePane(paneId);
+      setPanes((current) => current.filter((pane) => pane.id !== paneId));
+      refreshToolbarSystemState();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to close window");
+    }
+  }
+
   const showResourceIndicatorRail = (resourceIndicatorsVisible || showMinimizedBarToggle) && (isRoomToolbarHidden || isMobilePaneFocused);
   const renderToolbarMetrics = (hideTrigger = true) => (
     <ToolbarMetrics
@@ -7799,29 +10265,16 @@ export function App() {
       roomId={presentationRoom?.id}
       onOpenAnalytics={(tab) => {
         setIsMemoryWorkspaceOpen(false);
-        if (auth?.user?.role === "ADMIN") openSystemHealth(tab === "resources" ? "performance" : tab === "overview" ? "overview" : tab === "models" ? "usage" : "ai");
-        else setSystemAnalyticsTab(tab);
+        setSystemAnalyticsTab(tab);
       }}
       onChanged={refreshToolbarSystemState}
+      onReopenPane={reopenPane}
+      onReopenAllDetached={reopenAllDetachedPanes}
+      onCloseSession={closeDetachedPane}
     />
   );
 
-  return (
-    <AppIconProvider pack={modernIconPack}>
-      {vibeMusicPlayer}
-      {oskKeyboard}
-      <StreamingOverlayProvider active={auth.user?.role === "ADMIN"}>
-      {isSetupConnectionsOpen ? (
-        <RecoverableSurface
-          fallback={(
-            <div className="setup-connections-backdrop" role="status">
-              Loading setup &amp; connections…
-            </div>
-          )}
-        >
-          <LazySetupConnectionsWizard
-            guided={shellMode === "desktop"}
-            connectionsContent={auth?.user?.role === "ADMIN" ? (
+  const setupConnectionsContent = auth?.user?.role === "ADMIN" ? (
               <SettingsSections>
                 <SettingsDisclosure title="GitHub & Gitea" description="Connect repositories for publishing." scope="Installation" icon={GitBranch}>
                   <RecoverableSurface fallback={settingsCardLoadingFallback}><LazySourceControlPublishingCard canManage /></RecoverableSurface>
@@ -7833,9 +10286,31 @@ export function App() {
                   <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyCodexCliDefaultsCard client={api} isCodexEnabled={isCodexEnabled} /></RecoverableSurface>
                 </SettingsDisclosure>
               </SettingsSections>
-            ) : undefined}
+            ) : undefined;
+
+  return (
+    <CliShortcutUserContext.Provider value={auth.user?.id ?? null}>
+    <AppIconProvider pack={modernIconPack}>
+      <LiveSessionProvider ownerId={auth.user?.id || ""} roomId={selectedRoomId || activeRoom?.id || null} roomName={activeRoom?.name}>
+      {vibeMusicPlayer}
+      {oskKeyboard}
+      {stickyNoteLayer}
+      {desktopWidgetsLayer}
+      {snipToolOverlay}
+      <StreamingOverlayProvider active={auth.user?.role === "ADMIN"}>
+      {setupConnectionsMounted.current ? (
+        <RecoverableSurface
+          fallback={(
+            <div className="setup-connections-backdrop" role="status">
+              Loading setup &amp; connections…
+            </div>
+          )}
+        >
+          <LazySetupConnectionsWizard
+            guided={shellMode === "desktop"}
+            connectionsContent={setupConnectionsContent}
             checks={api}
-            open
+            open={isSetupConnectionsOpen}
             finish={api.finishSetup}
             loadOverview={api.setupOverview}
             onOpenChange={setIsSetupConnectionsOpen}
@@ -7843,7 +10318,7 @@ export function App() {
             onOpenMaintenance={() => {
               setIsSetupConnectionsOpen(false);
               adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
-              setAdminOperationTool("maintenance");
+              openManage("space-cli-maintenance");
             }}
             triggerRef={serverActionsButtonRef}
           />
@@ -7851,11 +10326,13 @@ export function App() {
       ) : null}
       <AppDiagnosticsGlobalIndicators />
       <SensitiveDataMask enabled={maskSensitiveData} />
+      <LiveRailSession />
       <main
       className={shellClassName}
       data-room-theme={roomTheme}
       data-sensitive-mode={maskSensitiveData ? "hidden" : undefined}
       data-ui-theme={uiTheme !== "classic" ? "modern" : undefined}
+      data-interface-theme={uiTheme}
       data-color-mode={uiTheme !== "classic" ? modernColorMode : undefined}
       data-icon-pack={modernIconPack}
       data-room-id={activeRoom?.id}
@@ -7871,10 +10348,17 @@ export function App() {
       data-warm-room-pressure="false"
       data-warm-room-overcommit="false"
       data-cli-floats-hidden={cliFloatsHidden ? "true" : "false"}
-      data-workspace-rail={(auth?.user?.role === "ADMIN" && showResourceIndicatorRail) || (isRoomToolbarHidden && !isMobilePaneFocused) ? "true" : undefined}
+      data-workspace-rail={showResourceIndicatorRail || (isRoomToolbarHidden && !isMobilePaneFocused) ? "true" : undefined}
       data-room-toolbar-hidden={isRoomToolbarHidden ? "true" : undefined}
       data-mobile-pane-focus={isMobilePaneFocused ? "true" : undefined}
+      data-browser-fullscreen={isBrowserFullscreen ? "true" : undefined}
     >
+      <DesktopWindowTitlebar
+        activeRoomName={activeRoom?.name}
+        activeRoomId={activeRoom?.id}
+        activePaneId={activePane?.id}
+        isFullscreen={isBrowserFullscreen}
+      />
       {!selectedRoomId && shellMode !== "desktop" && !isRoomFocusMode && !isMobilePaneFocused ? <header className="topbar">
         <div className="brand">
           <SpaceBrand />
@@ -7911,9 +10395,46 @@ export function App() {
           handleClipImageSelection(file);
         }}
       />
+      {watchdogAlerts.map((alert) => (
+        <div key={alert.id} className="banner bad" role="alert">
+          <div className="notice-row">
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <ShieldAlert size={16} aria-hidden="true" style={{ flexShrink: 0 }} />
+              <span>{alert.message}</span>
+            </div>
+            <button
+              type="button"
+              className="notice-close"
+              aria-label="Dismiss watchdog alert"
+              title="Dismiss watchdog alert"
+              onClick={() => setWatchdogAlerts((current) => current.filter((item) => item.id !== alert.id))}
+            >
+              <X aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      ))}
 
       <GlobalApiErrorAlert actionError={error} onDismissActionError={() => setError(null)} />
-      {storageWarning && (!isRoomFocusMode || runtimeKind === "demo") ? <div className="banner warn">{storageWarning}</div> : null}
+      {storageWarning && (!isRoomFocusMode || runtimeKind === "demo") && dismissedStorageWarning !== storageWarning ? (
+        <div className="banner warn" role="status">
+          <div className="notice-row">
+            <span>{storageWarning}</span>
+            <button
+              type="button"
+              className="notice-close"
+              aria-label="Dismiss message"
+              title="Dismiss message"
+              onClick={() => {
+                setDismissedStorageWarning(storageWarning);
+                writeStoredSessionString(DISMISSED_STORAGE_WARNING_STORAGE_KEY, storageWarning);
+              }}
+            >
+              <X aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      ) : null}
       {clipToolNotice ? (
         <div className="banner warn" role="status">
           <div className="notice-row"><span>{clipToolNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setClipToolNotice(null)}><X aria-hidden="true" /></button></div>
@@ -7927,6 +10448,16 @@ export function App() {
       {!isRoomFocusMode && clipboardNotice ? (
         <div className="banner warn" role="status">
           <div className="notice-row"><span>{clipboardNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setClipboardNotice(null)}><X aria-hidden="true" /></button></div>
+        </div>
+      ) : null}
+      {accountNotice ? (
+        <div className="banner ok" role="status">
+          <div className="notice-row"><span>{accountNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setAccountNotice(null)}><X aria-hidden="true" /></button></div>
+        </div>
+      ) : null}
+      {accountError ? (
+        <div className="banner warn" role="alert">
+          <div className="notice-row"><span>{accountError}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setAccountError(null)}><X aria-hidden="true" /></button></div>
         </div>
       ) : null}
 
@@ -7947,6 +10478,176 @@ export function App() {
         </RecoverableSurface>
       ) : null}
 
+      {auth?.user?.role === "ADMIN" && isSystemServicesDialogOpen ? (
+        <RecoverableSurface fallback={<div role="status">Loading system services…</div>}>
+          <LazySystemServicesDialog onClose={() => setIsSystemServicesDialogOpen(false)} />
+        </RecoverableSurface>
+      ) : null}
+
+      {auth?.user?.role === "ADMIN" && isUserManagementOpen ? (
+        <RecoverableSurface fallback={<div role="status">Loading user management…</div>}>
+          <LazyUserManagementDialog
+            currentUserId={auth.user?.id}
+            onClose={closeUserManagement}
+          />
+        </RecoverableSurface>
+      ) : null}
+
+      {auth?.user?.role === "ADMIN" && isDemoModeActive ? (
+        <RecoverableSurface fallback={<div role="status">Loading demo mode…</div>}>
+          <LazyDemoModeOverlay
+            isOpen={isDemoModeActive}
+            onClose={() => setIsDemoModeActive(false)}
+            onActionPreview={(actionId) => {
+              if (actionId === "surface-rooms" || actionId.startsWith("surface-")) {
+                const surface = actionId.replace("surface-", "") as SideSurface;
+                toggleSideSurface(surface);
+              } else if (actionId === "memory-workspace") {
+                setIsMemoryWorkspaceOpen(true);
+              } else if (actionId === "system-resources") {
+                openSystemResources();
+              } else if (actionId === "benchmark") {
+                openBenchmark();
+              } else if (actionId === "vibe-music") {
+                setIsVibeMusicOpen(true);
+              }
+            }}
+          />
+        </RecoverableSurface>
+      ) : null}
+
+      {auth?.user?.role === "ADMIN" && (isServerActionsMenuOpen || manageLoginPending) ? (
+        <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+          <LazyServerActionsMenu
+            actions={serverActionCommands}
+            suspended={!isServerActionsMenuOpen}
+            initialAction={manageInitialAction}
+            renderAction={(id, back) => {
+              if (id === "space-cli-maintenance" || id === "cli-update-all" || id === "publish-space-release")
+                return <LazyAdminOperationsDialog embedded initialTool={id === "publish-space-release" ? "release" : id === "cli-update-all" ? "update-all" : "maintenance"} onClose={back} />;
+              if (id === "codex-lb-speed-control" || id === "cli-session-cleanup" || id === "codex-history-purge")
+                return <LazyAdminCodexToolsDialog embedded initialTool={id === "codex-lb-speed-control" ? "speed" : id === "cli-session-cleanup" ? "cleanup" : "history"} isCodexEnabled={isCodexEnabled} anyCliEnabled={anyCliEnabled} onClose={back} />;
+              if (id === "system-services") return <LazySystemServicesDialog embedded onClose={back} />;
+              if (id === "user-management") return <LazyUserManagementDialog embedded currentUserId={auth.user?.id} onClose={back} />;
+              if (id === "setup-connections") return <LazySetupConnectionsWizard embedded open onOpenMaintenance={() => openManage("space-cli-maintenance")} connectionsContent={setupConnectionsContent} checks={api} finish={api.finishSetup} loadOverview={api.setupOverview} openLogin={async connection => {
+                  manageLoginPendingRef.current = true;
+                  setManageLoginPending(true);
+                  try { await openSetupConnectionLogin(connection); }
+                  catch (error) { manageLoginPendingRef.current = false; setManageLoginPending(false); throw error; }
+                }} onOpenChange={open => {
+                  if (open) { manageLoginPendingRef.current = false; setIsServerActionsMenuOpen(true); setManageLoginPending(false); }
+                  else if (manageLoginPendingRef.current) setIsServerActionsMenuOpen(false);
+                  else back();
+                }} />;
+              return null;
+            }}
+            mobile={shellMode === "mobile"}
+            onClose={() => setIsServerActionsMenuOpen(false)}
+            triggerRef={serverActionsButtonRef}
+          />
+        </RecoverableSurface>
+      ) : null}
+
+      {isServerRestartDialogOpen ? (
+        <div
+          className="attachment-modal server-restart-modal"
+          onClick={closeServerRestartDialog}
+        >
+          <section
+            className="attachment-modal-body server-restart-modal-body"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Restart Space server"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && !serverRestartPending) {
+                event.preventDefault();
+                closeServerRestartDialog();
+              }
+            }}
+          >
+            <header>
+              <span className="server-restart-modal-icon warning">
+                <ServerCog aria-hidden="true" />
+              </span>
+              <div>
+                <h3>Restart Space server</h3>
+                <p>Restarts space-worker.service, space-api.service, and space-web.service.</p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close Restart Space server"
+                disabled={serverRestartPending}
+                onClick={closeServerRestartDialog}
+              >
+                <X aria-hidden="true" />
+              </button>
+            </header>
+            <p>CLI and browser sessions stay protected because codex-pane-host, the admin host, and the browser host are not restarted.</p>
+            {serverRestartMessage ? <p className="server-restart-status" role="status"><span>{serverRestartMessage}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setServerRestartMessage(null)}><X aria-hidden="true" /></button></p> : null}
+            {serverRestartError ? <p className="server-restart-error" role="alert"><span>{serverRestartError}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setServerRestartError(null)}><X aria-hidden="true" /></button></p> : null}
+            <div className="server-restart-modal-actions">
+              <button type="button" autoFocus onClick={closeServerRestartDialog} disabled={serverRestartPending}>
+                Cancel
+              </button>
+              <button type="button" className="danger" onClick={() => void confirmServerRestart()} disabled={serverRestartPending}>
+                {serverRestartPending ? "Restarting..." : "Restart server"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {isCliRuntimeRestartAllDialogOpen ? (
+        <div
+          className="attachment-modal server-restart-modal"
+          onClick={closeCliRuntimeRestartAllDialog}
+        >
+          <section
+            className="attachment-modal-body server-restart-modal-body"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Restart all CLI runtimes"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && !cliRuntimeRestartAllPending) {
+                event.preventDefault();
+                closeCliRuntimeRestartAllDialog();
+              }
+            }}
+          >
+            <header>
+              <span className="server-restart-modal-icon">
+                <Terminal aria-hidden="true" />
+              </span>
+              <div>
+                <h3>Restart all CLI runtimes</h3>
+                <p>Stops and restarts the sessions of every CLI type one after another.</p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close Restart all CLI runtimes"
+                disabled={cliRuntimeRestartAllPending}
+                onClick={closeCliRuntimeRestartAllDialog}
+              >
+                <X aria-hidden="true" />
+              </button>
+            </header>
+            <p>Codex, claude, gemini, opencode, kimi, and the other CLI runtimes are restarted individually; the pane host service itself is not restarted.</p>
+            {cliRuntimeRestartAllMessage ? <p className="server-restart-status" role="status"><span>{cliRuntimeRestartAllMessage}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setCliRuntimeRestartAllMessage(null)}><X aria-hidden="true" /></button></p> : null}
+            {cliRuntimeRestartAllError ? <p className="server-restart-error" role="alert"><span>{cliRuntimeRestartAllError}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setCliRuntimeRestartAllError(null)}><X aria-hidden="true" /></button></p> : null}
+            <div className="server-restart-modal-actions">
+              <button type="button" autoFocus onClick={closeCliRuntimeRestartAllDialog} disabled={cliRuntimeRestartAllPending}>
+                Cancel
+              </button>
+              <button type="button" className="danger" onClick={() => void confirmCliRuntimeRestartAll()} disabled={cliRuntimeRestartAllPending}>
+                {cliRuntimeRestartAllPending ? "Restarting..." : "Restart all CLI runtimes"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       {isMemoryWorkspaceOpen ? (
         <MemoryWorkspaceErrorBoundary onClose={() => setIsMemoryWorkspaceOpen(false)}>
           <RecoverableSurface fallback={<div className="memory-workspace-loading" role="status">Loading memory workspace…</div>}>
@@ -7959,9 +10660,19 @@ export function App() {
         </MemoryWorkspaceErrorBoundary>
       ) : null}
       {auth.user?.role === "ADMIN" && (isRoomToolbarHidden || isMobilePaneFocused || isMemoryWorkspaceOpen || systemAnalyticsTab || !presentationRoom) ? renderToolbarMetrics(true) : null}
-      {auth.user?.role === "ADMIN" && <SystemHealth key={auth.user.id} userId={auth.user.id}
+      {auth.user?.role === "ADMIN" ? (
+        <RecoverableSurface fallback={isAgentsDashboardOpen ? <div role="status">Loading agents dashboard…</div> : null}>
+          <LazyAgentsDashboard key={auth.user.id} userId={auth.user.id} open={isAgentsDashboardOpen} rooms={rooms} completions={paneCompletionLifecycle.panes}
+            activePanes={panes} onSummaryChange={setAgentsDashboardSummary}
+            onOpenPane={paneCardOnOpenExisting} onClose={() => setIsAgentsDashboardOpen(false)} />
+        </RecoverableSurface>
+      ) : null}
+      {auth.user && <SystemHealth key={auth.user.id} userId={auth.user.id} allowChanges={shellMode !== "desktop" || isAdminMode}
+        onOpenAgentsDashboard={() => setIsAgentsDashboardOpen(true)}
+        agentsSummary={agentsDashboardSummary}
         railVisible={showResourceIndicatorRail} environment={codexEnvironmentSummary}
-        minimizedBarToggle={showMinimizedBarToggle && (isRoomToolbarHidden || isMobilePaneFocused) ? (
+        readOnly={auth.user.role !== "ADMIN"}
+        minimizedBarToggle={auth.user.role === "ADMIN" && showMinimizedBarToggle && (isRoomToolbarHidden || isMobilePaneFocused) ? (
           <MinimizedPaneBarToggle
             count={minimizedPanes.length}
             runningCount={minimizedPaneRunningCount}
@@ -7969,25 +10680,25 @@ export function App() {
             onToggle={() => setMinimizedBarExpanded((value) => !value)}
           />
         ) : undefined}
-        onManage={(panel) => toolbarMetricsRef.current?.openMetricDetails(panel)} />}
-      {systemAnalyticsTab ? (
-        <RecoverableSurface fallback={<div className="system-analytics-loading" role="status">Loading system analytics…</div>}>
-          <SystemAnalyticsErrorBoundary onClose={() => setSystemAnalyticsTab(null)}>
-            <LazySystemAnalyticsWorkspace
-              shellMode={shellMode}
-              initialTab={systemAnalyticsTab}
-              onClose={() => setSystemAnalyticsTab(null)}
-            />
-          </SystemAnalyticsErrorBoundary>
-        </RecoverableSurface>
-      ) : null}
+        onManage={auth.user.role === "ADMIN" ? (panel) => openSystemHealth(panel === "accounts" ? "ai" : panel === "cli" ? "sessions" : "provider") : undefined}
+        onReopenPane={auth.user.role === "ADMIN" ? reopenPane : undefined}
+        onReopenAllDetached={auth.user.role === "ADMIN" ? reopenAllDetachedPanes : undefined}
+        onCloseSession={auth.user.role === "ADMIN" ? closeDetachedPane : undefined} />}
+
       {!isMemoryWorkspaceOpen && !systemAnalyticsTab ? <section className={workspaceClassName}>
         {showInlineSideSurface ? (
           <aside className="side-surface side-surface-inline" aria-label={activeSideSurfaceLabel} data-surface={activeSideSurface}>
             <div className="desktop-dock-header">
               <span><strong>{activeSideSurfaceLabel}</strong><small>{desktopActionDescriptions[`surface-${activeSideSurface}`]}</small></span>
-              <button type="button" className="icon-button" aria-label={activeSideSurfaceCloseLabel}
-                onClick={() => setIsDesktopSideSurfaceOpen(false)}><X aria-hidden="true" /></button>
+              <div className="dock-nav-controls">
+                <button type="button" className="icon-button" aria-label="Previous dock" title="Previous dock"
+                  onClick={() => navigateDock("prev")}><ChevronLeft aria-hidden="true" /></button>
+                <button type="button" className="icon-button" aria-label="Next dock" title="Next dock"
+                  onClick={() => navigateDock("next")}><ChevronRight aria-hidden="true" /></button>
+                <button type="button" className="icon-button" aria-label={activeSideSurfaceCloseLabel}
+                  title={activeSideSurfaceCloseLabel}
+                  onClick={() => setIsDesktopSideSurfaceOpen(false)}><X aria-hidden="true" /></button>
+              </div>
             </div>
             <RecoverableSurface resetKey={activeSideSurface} fallback={sideSurfaceLoadingFallback}>{sideSurfaceContent}</RecoverableSurface>
           </aside>
@@ -8006,15 +10717,21 @@ export function App() {
             >
               <div className="surface-header">
                 <strong>{activeSideSurfaceLabel}</strong>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label={activeSideSurfaceCloseLabel}
-                  title={activeSideSurfaceCloseLabel}
-                  onClick={closeCompactSideSurface}
-                >
-                  <X aria-hidden="true" />
-                </button>
+                <div className="dock-nav-controls">
+                  <button type="button" className="icon-button" aria-label="Previous dock" title="Previous dock"
+                    onClick={() => navigateDock("prev")}><ChevronLeft aria-hidden="true" /></button>
+                  <button type="button" className="icon-button" aria-label="Next dock" title="Next dock"
+                    onClick={() => navigateDock("next")}><ChevronRight aria-hidden="true" /></button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label={activeSideSurfaceCloseLabel}
+                    title={activeSideSurfaceCloseLabel}
+                    onClick={closeCompactSideSurface}
+                  >
+                    <X aria-hidden="true" />
+                  </button>
+                </div>
               </div>
               <RecoverableSurface resetKey={activeSideSurface} fallback={sideSurfaceLoadingFallback}>{sideSurfaceContent}</RecoverableSurface>
             </aside>
@@ -8023,8 +10740,23 @@ export function App() {
 
         <section className={boardClassName} aria-label="Pane board">
           {!isMobilePaneFocused && isRoomToolbarHidden && !showOverlaySideSurface ? (
-            <div ref={collapsedToolbarRef} className="room-toolbar-collapsed room-toolbar-floating-controls" role="region" aria-label="Room toolbar hidden">
-              {previousRoom ? (
+            <div
+              ref={collapsedToolbarRef}
+              className="room-toolbar-collapsed room-toolbar-floating-controls"
+              role="region"
+              aria-label="Room toolbar hidden"
+              {...lowerRailTouchContext}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setIsCollapsedPaneLayoutMenuOpen(false);
+                setIsPaneSpanAllMenuOpen(false);
+                setIsWorkspaceTextSizePickerOpen(false);
+                setIsVibeMusicOpen(false);
+                setLowerRailVisibilityMenu((current) => current ? null : { x: event.clientX, y: event.clientY });
+              }}
+            >
+              {previousRoom && lowerRailVisibility.isVisible("previous") ? (
                 <button
                   type="button"
                   className="room-toolbar-visibility-button room-rail-secondary"
@@ -8036,7 +10768,7 @@ export function App() {
                   <ChevronLeft aria-hidden="true" />
                 </button>
               ) : null}
-              {nextRoom ? (
+              {nextRoom && lowerRailVisibility.isVisible("next") ? (
                 <button
                   type="button"
                   className="room-toolbar-visibility-button room-rail-secondary"
@@ -8048,99 +10780,318 @@ export function App() {
                   <ChevronRight aria-hidden="true" />
                 </button>
               ) : null}
-              <DesktopNavigation createOnly actions={desktopToolbarActions}
-                adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-                onModeChange={() => undefined} onAction={runDesktopAction}
-                renderCreateTools={renderDesktopCreateTools} />
-              <button
-                ref={paneLayoutCollapsedButtonRef}
-                type="button"
-                className="room-toolbar-visibility-button"
-                title="Pane layout"
-                data-rail-id="layout"
-                aria-label="Pane layout"
-                aria-controls="pane-layout-presets-collapsed"
-                aria-expanded={isCollapsedPaneLayoutMenuOpen}
-                aria-haspopup="menu"
-                onClick={() => {
-                  setIsThemeMenuOpen(false);
-                  setIsPaneSpanAllMenuOpen(false);
-                  setIsWorkspaceTextSizePickerOpen(false);
-                  setIsVibeMusicOpen(false);
-                  setIsPaneLayoutMenuOpen(false);
-                  setIsCollapsedPaneLayoutMenuOpen((current) => !current);
-                }}
-                disabled={!activeRoom || paneLayoutPending}
-              >
-                <PanelsTopLeft aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="room-toolbar-visibility-button room-rail-secondary"
-                title="On-screen keyboard"
-                data-rail-id="keyboard"
-                aria-label="On-screen keyboard"
-                aria-controls={OSK_PANEL_ID}
-                aria-expanded={isOskKeyboardOpen}
-                aria-haspopup="dialog"
-                onClick={() => {
-                  setIsThemeMenuOpen(false);
-                  setIsPaneLayoutMenuOpen(false);
-                  setIsCollapsedPaneLayoutMenuOpen(false);
-                  setIsPaneSpanAllMenuOpen(false);
-                  setIsWorkspaceTextSizePickerOpen(false);
-                  setIsVibeMusicOpen(false);
-                  setIsOskKeyboardOpen((current) => !current);
-                }}
-              >
-                <Keyboard aria-hidden="true" />
-              </button>
-              <button
-                ref={vibeMusicButtonRef}
-                type="button"
-                className="room-toolbar-visibility-button room-rail-secondary"
-                title="Vibe music with freeCodeCamp Code Radio"
-                data-rail-id="music"
-                aria-label="Music"
-                aria-controls={VIBE_MUSIC_PANEL_ID}
-                aria-expanded={isVibeMusicOpen}
-                aria-haspopup="dialog"
-                onClick={() => {
-                  setIsThemeMenuOpen(false);
-                  setIsPaneLayoutMenuOpen(false);
-                  setIsCollapsedPaneLayoutMenuOpen(false);
-                  setIsPaneSpanAllMenuOpen(false);
-                  setIsWorkspaceTextSizePickerOpen(false);
-                  setIsVibeMusicOpen((current) => !current);
-                }}
-              >
-                <Music2 aria-hidden="true" />
-              </button>
-              <DesktopNavigation docksOnly actions={roomToolbarActions}
-                adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-                onModeChange={() => undefined}
-                onAction={(action, anchor) => {
-                  setIsThemeMenuOpen(false);
-                  setIsPaneLayoutMenuOpen(false);
-                  setIsCollapsedPaneLayoutMenuOpen(false);
-                  setIsPaneSpanAllMenuOpen(false);
-                  setIsWorkspaceTextSizePickerOpen(false);
-                  setIsVibeMusicOpen(false);
-                  runDesktopAction(action, anchor);
-                }} />
-              <DesktopNavigation toolsOnly actions={roomToolbarActions}
-                adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-                onModeChange={() => undefined}
-                onAction={(action, anchor) => {
-                  setIsThemeMenuOpen(false);
-                  setIsPaneLayoutMenuOpen(false);
-                  setIsCollapsedPaneLayoutMenuOpen(false);
-                  setIsPaneSpanAllMenuOpen(false);
-                  setIsWorkspaceTextSizePickerOpen(false);
-                  setIsVibeMusicOpen(false);
-                  runDesktopAction(action, anchor);
-                }} />
-              {showMinimizedBarToggle && auth.user?.role !== "ADMIN" ? (
+              {lowerRailVisibility.isVisible("rooms") ? (
+                <button
+                  type="button"
+                  className={`room-toolbar-visibility-button${isSideSurfaceOpen && activeSideSurface === "rooms" ? " is-active" : ""}`}
+                  title={sideSurfaceToggleLabel("rooms")}
+                  data-rail-id="rooms"
+                  aria-label={sideSurfaceToggleLabel("rooms")}
+                  aria-pressed={isSideSurfaceOpen && activeSideSurface === "rooms"}
+                  onClick={() => {
+                    setIsThemeMenuOpen(false);
+                    setIsPaneLayoutMenuOpen(false);
+                    setIsCollapsedPaneLayoutMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
+                    setIsWorkspaceTextSizePickerOpen(false);
+                    setIsVibeMusicOpen(false);
+                    setLowerRailVisibilityMenu(null);
+                    toggleSideSurface("rooms");
+                  }}
+                >
+                  <PanelLeft aria-hidden="true" />
+                </button>
+              ) : null}
+              {lowerRailVisibility.isVisible("live-model") ? (
+                <button
+                  type="button"
+                  className={`room-toolbar-visibility-button room-live-rail-button ${
+                    isLiveRailGraphicDisabled ? "is-graphic-disabled" : ""
+                  } ${
+                    liveRailStatus === "active" || liveRailStatus === "listening" || liveRailStatus === "thinking" || liveRailStatus === "speaking" ? "is-connected" : ""
+                  } ${liveRailStatus === "listening" ? "is-listening is-user-speaking" : ""} ${
+                    liveRailStatus === "speaking" ? "is-speaking is-agent-speaking" : ""
+                  } ${liveRailStatus === "connecting" ? "is-connecting" : ""}`}
+                  title={
+                    liveRailStatus === "listening"
+                      ? "User speaking..."
+                      : liveRailStatus === "speaking"
+                      ? "Agent speaking..."
+                      : liveRailStatus === "active"
+                      ? "Live voice active (Listening)"
+                      : liveRailStatus === "connecting"
+                      ? "Connecting Live voice model..."
+                      : liveRailStatus === "thinking"
+                      ? "Live voice is thinking..."
+                      : liveRailStatus === "error"
+                      ? "Live voice disconnected. Tap to retry."
+                      : "Start Live voice conversation"
+                  }
+                  data-rail-id="live-model"
+                  data-live-status={liveRailStatus}
+                  data-graphic-disabled={isLiveRailGraphicDisabled ? "true" : undefined}
+                  aria-label={
+                    liveRailStatus === "connecting"
+                      ? "Connecting Live voice model"
+                      : liveRailStatus === "listening"
+                      ? "User speaking"
+                      : liveRailStatus === "speaking"
+                      ? "Agent speaking"
+                      : liveRailStatus === "thinking"
+                      ? "Live voice is thinking"
+                      : liveRailStatus === "error"
+                      ? "Retry Live voice conversation"
+                      : "Start Live voice conversation"
+                  }
+                  aria-pressed={liveRailStatus !== "idle" && liveRailStatus !== "error"}
+                  aria-busy={liveRailStatus === "connecting"}
+                  onClick={activateLiveFromRail}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setLiveRailContextMenu((current) => current ? null : { x: event.clientX, y: event.clientY });
+                  }}
+                  disabled={!selectedRoomId && !activeRoom && rooms.length === 0}
+                >
+                  {!isLiveRailGraphicDisabled ? (
+                    <>
+                      <span className="room-live-rail-glow" aria-hidden="true" />
+                      <span className="room-live-rail-sphere" aria-hidden="true">
+                        <span className="room-live-rail-line line-one" />
+                        <span className="room-live-rail-line line-two" />
+                        <span className="room-live-rail-line line-three" />
+                        <span className="room-live-rail-line line-four" />
+                        <span className="room-live-rail-core" />
+                      </span>
+                    </>
+                  ) : null}
+                </button>
+              ) : null}
+              {liveRailContextMenu ? (
+                <LiveRailContextMenu
+                  x={liveRailContextMenu.x}
+                  y={liveRailContextMenu.y}
+                  isGraphicDisabled={isLiveRailGraphicDisabled}
+                  onToggleGraphic={toggleLiveRailGraphic}
+                  onClose={() => setLiveRailContextMenu(null)}
+                />
+              ) : null}
+              {lowerRailVisibility.isVisible("create") ? (
+                <DesktopNavigation createOnly actions={desktopToolbarActions}
+                  adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+                  onModeChange={() => undefined} onAction={runDesktopAction}
+                  renderCreateTools={renderDesktopCreateTools}
+                  emptySlots={activeRoomEmptySlotsMetrics ?? undefined} />
+              ) : null}
+              {lowerRailVisibility.isVisible("layout") ? (
+                <button
+                  ref={paneLayoutCollapsedButtonRef}
+                  type="button"
+                  className="room-toolbar-visibility-button"
+                  title="Pane layout"
+                  data-rail-id="layout"
+                  aria-label="Pane layout"
+                  aria-controls="pane-layout-presets-collapsed"
+                  aria-expanded={isCollapsedPaneLayoutMenuOpen}
+                  aria-haspopup="menu"
+                  onClick={() => {
+                    setIsThemeMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
+                    setIsWorkspaceTextSizePickerOpen(false);
+                    setIsVibeMusicOpen(false);
+                    setIsPaneLayoutMenuOpen(false);
+                    setLowerRailVisibilityMenu(null);
+                    setIsCollapsedPaneLayoutMenuOpen((current) => !current);
+                  }}
+                  disabled={!activeRoom || paneLayoutPending}
+                >
+                  <PanelsTopLeft aria-hidden="true" />
+                </button>
+              ) : null}
+              {lowerRailVisibility.isVisible("sticky") ? (
+                <button
+                  type="button"
+                  className="room-toolbar-visibility-button room-rail-secondary"
+                  title="Sticky note"
+                  data-rail-id="sticky"
+                  aria-label="Sticky note"
+                  onClick={() => {
+                    setIsThemeMenuOpen(false);
+                    setIsPaneLayoutMenuOpen(false);
+                    setIsCollapsedPaneLayoutMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
+                    setIsWorkspaceTextSizePickerOpen(false);
+                    setIsVibeMusicOpen(false);
+                    setLowerRailVisibilityMenu(null);
+                    openStickyNote();
+                  }}
+                >
+                  <StickyNote aria-hidden="true" />
+                </button>
+              ) : null}
+              {lowerRailVisibility.isVisible("keyboard") ? (
+                <button
+                  type="button"
+                  className="room-toolbar-visibility-button room-rail-secondary"
+                  title="On-screen keyboard"
+                  data-rail-id="keyboard"
+                  aria-label="On-screen keyboard"
+                  aria-controls={OSK_PANEL_ID}
+                  aria-expanded={isOskKeyboardOpen}
+                  aria-haspopup="dialog"
+                  onClick={() => {
+                    setIsThemeMenuOpen(false);
+                    setIsPaneLayoutMenuOpen(false);
+                    setIsCollapsedPaneLayoutMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
+                    setIsWorkspaceTextSizePickerOpen(false);
+                    setIsVibeMusicOpen(false);
+                    setLowerRailVisibilityMenu(null);
+                    setIsOskKeyboardOpen((current) => !current);
+                  }}
+                >
+                  <Keyboard aria-hidden="true" />
+                </button>
+              ) : null}
+              {lowerRailVisibility.isVisible("music") ? (
+                <button
+                  ref={vibeMusicButtonRef}
+                  type="button"
+                  className="room-toolbar-visibility-button room-rail-secondary"
+                  title="Vibe music with freeCodeCamp Code Radio"
+                  data-rail-id="music"
+                  aria-label="Music"
+                  aria-controls={VIBE_MUSIC_PANEL_ID}
+                  aria-expanded={isVibeMusicOpen}
+                  aria-haspopup="dialog"
+                  onClick={() => {
+                    setIsThemeMenuOpen(false);
+                    setIsPaneLayoutMenuOpen(false);
+                    setIsCollapsedPaneLayoutMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
+                    setIsWorkspaceTextSizePickerOpen(false);
+                    setLowerRailVisibilityMenu(null);
+                    setIsVibeMusicOpen((current) => !current);
+                  }}
+                >
+                  <Music2 aria-hidden="true" />
+                </button>
+              ) : null}
+              {lowerRailVisibility.isVisible("snip-tool") ? (
+                <button
+                  type="button"
+                  className={`room-toolbar-visibility-button room-rail-secondary${isSnipToolOpen ? " is-active" : ""}`}
+                  title={isSnipToolOpen ? "Close Snip Tool" : "Snip Tool (Capture & auto-attach to pane)"}
+                  data-rail-id="snip-tool"
+                  aria-label="Snip Tool"
+                  aria-pressed={isSnipToolOpen}
+                  onClick={() => {
+                    setIsThemeMenuOpen(false);
+                    setIsPaneLayoutMenuOpen(false);
+                    setIsCollapsedPaneLayoutMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
+                    setIsWorkspaceTextSizePickerOpen(false);
+                    setIsVibeMusicOpen(false);
+                    setLowerRailVisibilityMenu(null);
+                    setIsSnipToolOpen((current) => !current);
+                  }}
+                  disabled={!activeRoom}
+                >
+                  <Crop aria-hidden="true" />
+                </button>
+              ) : null}
+              {lowerRailVisibility.isVisible("quick-links") ? (
+                <button
+                  ref={quickLinksButtonRef}
+                  type="button"
+                  className={`room-toolbar-visibility-button room-rail-secondary${isQuickLinksOpen ? " is-active" : ""}`}
+                  title="Quick Links"
+                  data-rail-id="quick-links"
+                  aria-label="Quick Links"
+                  aria-controls="quick-links-popover"
+                  aria-haspopup="dialog"
+                  aria-expanded={isQuickLinksOpen}
+                  onClick={() => {
+                    setIsThemeMenuOpen(false);
+                    setIsPaneLayoutMenuOpen(false);
+                    setIsCollapsedPaneLayoutMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
+                    setIsWorkspaceTextSizePickerOpen(false);
+                    setIsVibeMusicOpen(false);
+                    setLowerRailVisibilityMenu(null);
+                    setIsQuickLinksOpen((current) => !current);
+                  }}
+                >
+                  <Star aria-hidden="true" fill={isQuickLinksOpen ? "currentColor" : "none"} />
+                </button>
+              ) : null}
+              {lowerRailVisibility.isVisible("docks") ? (
+                <DesktopNavigation docksOnly actions={roomToolbarActions}
+                  adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+                  onModeChange={() => undefined}
+                  onAction={(action, anchor) => {
+                    setIsThemeMenuOpen(false);
+                    setIsPaneLayoutMenuOpen(false);
+                    setIsCollapsedPaneLayoutMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
+                    setIsWorkspaceTextSizePickerOpen(false);
+                    setIsVibeMusicOpen(false);
+                    setLowerRailVisibilityMenu(null);
+                    runDesktopAction(action, anchor);
+                  }} />
+              ) : null}
+              {lowerRailVisibility.isVisible("tools") ? (
+                <DesktopNavigation toolsOnly actions={desktopToolbarActions}
+                  adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+                  onModeChange={() => {
+                    setAdminModeRequested(!isAdminMode);
+                    setIsServerActionsMenuOpen(false);
+                    if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
+                  }}
+                  onAction={(action, anchor) => {
+                    setIsThemeMenuOpen(false);
+                    if (action.id !== "pane-layout") {
+                      setIsPaneLayoutMenuOpen(false);
+                      setIsCollapsedPaneLayoutMenuOpen(false);
+                    }
+                    setIsPaneSpanAllMenuOpen(false);
+                    setIsWorkspaceTextSizePickerOpen(false);
+                    if (action.id !== "vibe-music") setIsVibeMusicOpen(false);
+                    setLowerRailVisibilityMenu(null);
+                    runDesktopAction(action, anchor);
+                  }}
+                  hiddenRailIds={lowerRailVisibility.hiddenIds} />
+              ) : null}
+              {lowerRailVisibility.isVisible("displays") ? (
+                <DesktopDisplayControls
+                  variant="rail"
+                  activeRoomId={activeRoom?.id}
+                  activePaneId={activePane?.id}
+                />
+              ) : null}
+              {lowerRailVisibility.isVisible("fullscreen") ? (
+                <button
+                  type="button"
+                  className={`room-toolbar-visibility-button room-rail-secondary dock-fullscreen-toggle${isBrowserFullscreen ? " is-active" : ""}`}
+                  title={isBrowserFullscreen ? "Exit full screen (F11)" : "Full screen browser (F11)"}
+                  data-rail-id="fullscreen"
+                  aria-label={isBrowserFullscreen ? "Exit full screen" : "Full screen browser"}
+                  aria-pressed={isBrowserFullscreen}
+                  onClick={() => {
+                    setIsThemeMenuOpen(false);
+                    setIsPaneLayoutMenuOpen(false);
+                    setIsCollapsedPaneLayoutMenuOpen(false);
+                    setIsPaneSpanAllMenuOpen(false);
+                    setIsWorkspaceTextSizePickerOpen(false);
+                    setIsVibeMusicOpen(false);
+                    setLowerRailVisibilityMenu(null);
+                    void toggleBrowserFullscreen();
+                  }}
+                >
+                  {isBrowserFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+                </button>
+              ) : null}
+              {showMinimizedBarToggle && auth.user?.role !== "ADMIN" && lowerRailVisibility.isVisible("minimized-bar") ? (
                 <MinimizedPaneBarToggle
                   count={minimizedPanes.length}
                   runningCount={minimizedPaneRunningCount}
@@ -8158,15 +11109,21 @@ export function App() {
               >
                 <PanelTopOpen aria-hidden="true" />
               </button>
-              <div className="room-rail-more">
-                <DesktopNavigation workspaceOnly actions={desktopToolbarActions}
-                  adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-                  onModeChange={() => undefined} onAction={runDesktopAction} />
-              </div>
+              {lowerRailVisibility.isVisible("more") ? (
+                <div className="room-rail-more">
+                  <DesktopNavigation workspaceOnly actions={desktopToolbarActions}
+                    adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+                    onModeChange={() => {
+                      setAdminModeRequested(!isAdminMode);
+                      setIsServerActionsMenuOpen(false);
+                      if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
+                    }} onAction={runDesktopAction} />
+                </div>
+              ) : null}
               {isCollapsedPaneLayoutMenuOpen && activeRoom ? (
                 <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
                   <LazyPaneLayoutMenu
-                    automaticColumns={automaticPaneGridColumnCount}
+                    automaticColumns={layoutAutomaticPaneGridColumnCount}
                     currentColumns={activeRoom.paneLayoutColumns ?? null}
                     currentHeight={activeRoom.paneLayoutHeight ?? 1}
                     error={paneLayoutError}
@@ -8177,7 +11134,8 @@ export function App() {
                     onSelectHeight={(paneLayoutHeight) => void applyPaneLayoutPreset(undefined, paneLayoutHeight, true)}
                     pending={paneLayoutPending}
                     triggerRef={paneLayoutCollapsedButtonRef}
-                    visiblePaneCount={visiblePanes.length}
+                    visiblePaneCount={effectiveLayoutPaneCount}
+                    emptySlots={activeRoomEmptySlotsMetrics ?? undefined}
                   />
                 </RecoverableSurface>
               ) : null}
@@ -8202,6 +11160,27 @@ export function App() {
                 onChange={setTerminalFontSize}
                 onClose={() => setIsWorkspaceTextSizePickerOpen(false)}
               />
+              {lowerRailVisibilityMenu ? (
+                <RailVisibilityMenu
+                  anchorRef={collapsedToolbarRef}
+                  items={
+                    showMinimizedBarToggle && auth.user?.role !== "ADMIN"
+                      ? [
+                          ...DEFAULT_LOWER_RAIL_ITEMS.filter((item) => item.id !== "expand" && item.id !== "more"),
+                          ...railVisibilityItems(["minimized-bar"], LOWER_RAIL_LABELS, LOWER_RAIL_NON_HIDEABLE),
+                        ]
+                      : DEFAULT_LOWER_RAIL_ITEMS.filter((item) => item.id !== "expand" && item.id !== "more")
+                  }
+                  hiddenIds={lowerRailVisibility.hiddenIds}
+                  label="Rail icons"
+                  x={lowerRailVisibilityMenu.x}
+                  y={lowerRailVisibilityMenu.y}
+                  onClose={() => setLowerRailVisibilityMenu(null)}
+                  onHide={lowerRailVisibility.hide}
+                  onShow={lowerRailVisibility.show}
+                  onShowAll={lowerRailVisibility.showAll}
+                />
+              ) : null}
             </div>
           ) : null}
           {!isMobilePaneFocused && !isRoomToolbarHidden ? (
@@ -8218,13 +11197,14 @@ export function App() {
                 <button type="button" className="desktop-rooms-toggle"
                   aria-label={sideSurfaceToggleLabel("rooms")} title={sideSurfaceToggleLabel("rooms")}
                   aria-pressed={isSideSurfaceOpen && activeSideSurface === "rooms"}
-                  onClick={() => toggleSideSurface("rooms")}><PanelRight aria-hidden="true" /></button>
+                  onClick={() => toggleSideSurface("rooms")}><PanelLeft aria-hidden="true" /></button>
                 <SpaceBrand />
                 <div className="board-title-heading">
                   {isRoomRenameOpen && presentationRoom ? (
                     <form className="room-title-form" onSubmit={submitRoomRename}>
                       <input
                         aria-label="Room name"
+                        placeholder="Room name"
                         value={roomNameDraft}
                         disabled={roomRenamePending}
                         onChange={(event) => setRoomNameDraft(event.currentTarget.value)}
@@ -8236,11 +11216,18 @@ export function App() {
                         }}
                         autoFocus
                       />
-                      <button type="submit" title="Save room name" aria-label="Save room name" disabled={roomRenamePending}>
+                      <button
+                        type="submit"
+                        className="room-title-save"
+                        title="Save room name"
+                        aria-label="Save room name"
+                        disabled={roomRenamePending}
+                      >
                         <Save aria-hidden="true" />
                       </button>
                       <button
                         type="button"
+                        className="room-title-cancel"
                         title="Cancel room rename"
                         aria-label="Cancel room rename"
                         onClick={cancelRoomRename}
@@ -8250,8 +11237,46 @@ export function App() {
                       </button>
                     </form>
                   ) : (
-                    <h2>{presentationRoom?.name ?? "No room"}</h2>
+                    <>
+                      <h2 title={presentationRoom?.name ?? "No room"} onContextMenu={(event) => {
+                        if (shellMode !== "mobile") return;
+                        event.preventDefault();
+                        setRoomNamePreview(presentationRoom?.name ?? "No room");
+                      }} onTouchStart={shellMode === "mobile" ? () => {
+                        const name = presentationRoom?.name ?? "No room";
+                        roomNameHoldTimerRef.current = window.setTimeout(() => setRoomNamePreview(name), 500);
+                      } : undefined} onTouchEnd={() => {
+                        if (roomNameHoldTimerRef.current !== null) window.clearTimeout(roomNameHoldTimerRef.current);
+                      }} onTouchMove={() => {
+                        if (roomNameHoldTimerRef.current !== null) window.clearTimeout(roomNameHoldTimerRef.current);
+                      }}>{presentationRoom?.name ?? "No room"}</h2>
+                      {presentationRoom?.projectPath ? (
+                        <button
+                          type="button"
+                          className="room-project-pill"
+                          title={`Project: ${presentationRoom.projectPath} • Click to open/focus File Manager`}
+                          aria-label={`Project: ${presentationRoom.projectPath}`}
+                          onClick={async () => {
+                            const existingFilesPane = panes.find((p) => !p.isClosed && p.mode === "FILES");
+                            if (existingFilesPane) {
+                              setSelectedPaneId(existingFilesPane.id);
+                              if (presentationRoom.projectPath) {
+                                window.dispatchEvent(new CustomEvent("space:files:navigate", { detail: { path: presentationRoom.projectPath } }));
+                              }
+                            } else {
+                              await addFilesPane(1, presentationRoom.id);
+                            }
+                          }}
+                        >
+                          <Folder aria-hidden="true" />
+                          <span>{presentationRoom.projectPath.split("/").filter(Boolean).pop() || presentationRoom.projectPath}</span>
+                        </button>
+                      ) : null}
+                    </>
                   )}
+                  {roomNamePreview && shellMode === "mobile" ? (
+                    <button type="button" className="mobile-room-name-preview" role="tooltip" aria-label={`Full room name: ${roomNamePreview}. Tap to dismiss`} onClick={() => setRoomNamePreview(null)}>{roomNamePreview}</button>
+                  ) : null}
                   {presentationRoom ? (
                     <div className="board-title-controls">
                       {!isRoomRenameOpen ? (
@@ -8265,34 +11290,36 @@ export function App() {
                           <Pencil aria-hidden="true" />
                         </button>
                       ) : null}
-                      <div className="room-title-nav" role="group" aria-label="Room navigation">
-                        <button
-                          type="button"
-                          title="Previous room"
-                          aria-label="Previous room"
-                          disabled={!previousRoom}
-                          onClick={() => {
-                            if (previousRoom) {
-                              void selectRoom(previousRoom.id);
-                            }
-                          }}
-                        >
-                          <ChevronLeft aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          title="Next room"
-                          aria-label="Next room"
-                          disabled={!nextRoom}
-                          onClick={() => {
-                            if (nextRoom) {
-                              void selectRoom(nextRoom.id);
-                            }
-                          }}
-                        >
-                          <ChevronRight aria-hidden="true" />
-                        </button>
-                      </div>
+                      {userNavigableRooms.length > 1 ? (
+                        <div className="room-title-nav" role="group" aria-label="Room navigation">
+                          <button
+                            type="button"
+                            title="Previous room"
+                            aria-label="Previous room"
+                            disabled={!previousRoom}
+                            onClick={() => {
+                              if (previousRoom) {
+                                void selectRoom(previousRoom.id);
+                              }
+                            }}
+                          >
+                            <ChevronLeft aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Next room"
+                            aria-label="Next room"
+                            disabled={!nextRoom}
+                            onClick={() => {
+                              if (nextRoom) {
+                                void selectRoom(nextRoom.id);
+                              }
+                            }}
+                          >
+                            <ChevronRight aria-hidden="true" />
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -8304,7 +11331,13 @@ export function App() {
                 </div>
               ) : null}
             </div>
-            <div className="toolbar-actions" ref={roomToolbarActionsRef}>
+            <div
+              id="toolbar-docked-widgets"
+              className="toolbar-docked-widgets"
+              role="region"
+              aria-label="Docked toolbar widgets"
+            />
+            <div className="toolbar-actions" ref={roomToolbarActionsRef} {...roomToolbarTouchContext}>
               {presentationRoom ? (
                 renderToolbarMetrics()
               ) : null}
@@ -8319,16 +11352,16 @@ export function App() {
                     if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
                   }}
                   onAction={runDesktopAction}
-                  version={runtimeKind === "demo" ? <DemoVersionMeta compact /> : <AppVersionMeta compact />}
                   renderCreateTools={renderDesktopCreateTools}
+                  emptySlots={activeRoomEmptySlotsMetrics ?? undefined}
                   footer={runtimeKind === "demo" ? <DemoVersionMeta /> : <AppVersionMeta />}
                 />
               </div>
               {roomToolbar.isOverflowOpen ? (
                 shellMode === "mobile" ? (
                   <MobileActionSheet
-                    actionSections={uiTheme !== "classic" ? groupModernRoomActions(roomToolbar.orderedActions) : undefined}
-                    actions={roomToolbar.orderedActions}
+                    actionSections={uiTheme !== "classic" ? groupModernRoomActions(availableRoomActions) : undefined}
+                    actions={availableRoomActions}
                     hiddenActionIds={roomToolbar.hiddenActionIds}
                     label="Room actions"
                     onClose={roomToolbar.closeMenus}
@@ -8349,11 +11382,12 @@ export function App() {
                   />
                 ) : (
                   <DesktopActionManager
-                    actions={roomToolbar.orderedActions}
+                    actions={availableRoomActions}
                     hiddenActionIds={roomToolbar.hiddenActionIds}
                     label="Room actions"
                     onClose={roomToolbar.closeMenus}
                     onHideAction={roomToolbar.hideAction}
+                    onReorderAction={roomToolbar.moveAction}
                     onShowAction={roomToolbar.showAction}
                     popupId="room-actions-popup"
                     triggerRef={roomOverflowTriggerRef}
@@ -8361,6 +11395,7 @@ export function App() {
                 )
               ) : null}
               <div className="toolbar-actions-fixed" role="group" aria-label="Room utility controls">
+                <DesktopDisplayControls variant="toolbar" activeRoomId={activeRoom?.id} activePaneId={activePane?.id} />
                 {showMinimizedBarToggle ? (
                   <MinimizedPaneBarToggle
                     count={minimizedPanes.length}
@@ -8379,20 +11414,21 @@ export function App() {
                   <Minus aria-hidden="true" />
                 </button>
               </div>
-              {isPaneLayoutMenuOpen && activeRoom ? (
+              {shellMode !== "mobile" && isPaneLayoutMenuOpen && activeRoom ? (
                 <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
                   <LazyPaneLayoutMenu
-                    automaticColumns={automaticPaneGridColumnCount}
+                    automaticColumns={layoutAutomaticPaneGridColumnCount}
                     currentColumns={activeRoom.paneLayoutColumns ?? null}
                     currentHeight={activeRoom.paneLayoutHeight ?? 1}
                     error={paneLayoutError}
-                    maximumColumns={shellMode === "mobile" ? 1 : shellMode === "tablet" ? 2 : 4}
+                    maximumColumns={shellMode === "tablet" ? 2 : 4}
                     onClose={() => setIsPaneLayoutMenuOpen(false)}
                     onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
                     onSelectHeight={(paneLayoutHeight) => void applyPaneLayoutPreset(undefined, paneLayoutHeight, true)}
                     pending={paneLayoutPending}
                     triggerRef={paneLayoutButtonRef}
-                    visiblePaneCount={visiblePanes.length}
+                    visiblePaneCount={effectiveLayoutPaneCount}
+                    emptySlots={activeRoomEmptySlotsMetrics ?? undefined}
                   />
                 </RecoverableSurface>
               ) : null}
@@ -8413,6 +11449,7 @@ export function App() {
               {isCliLauncherOpen ? (
                 <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
                   <LazyCliLauncherMenu
+                    refreshOnOpen={true}
                     atPaneCap={panes.length >= 16}
                     isCodexEnabled={isCodexEnabled}
                     mobile={shellMode === "mobile"}
@@ -8456,114 +11493,6 @@ export function App() {
                 onChange={setTerminalFontSize}
                 onClose={() => setIsWorkspaceTextSizePickerOpen(false)}
               />
-              {auth?.user?.role === "ADMIN" && isServerActionsMenuOpen ? (
-                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
-                  <LazyServerActionsMenu
-                    actions={serverActionCommands}
-                    mobile={shellMode === "mobile"}
-                    onClose={() => setIsServerActionsMenuOpen(false)}
-                    triggerRef={serverActionsButtonRef}
-                  />
-                </RecoverableSurface>
-              ) : null}
-              {isServerRestartDialogOpen ? (
-                <div
-                  className="attachment-modal server-restart-modal"
-                  onClick={closeServerRestartDialog}
-                >
-                  <section
-                    className="attachment-modal-body server-restart-modal-body"
-                    role="dialog"
-                    aria-modal="true"
-                    aria-label="Restart Space server"
-                    onClick={(event) => event.stopPropagation()}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && !serverRestartPending) {
-                        event.preventDefault();
-                        closeServerRestartDialog();
-                      }
-                    }}
-                  >
-                    <header>
-                      <span className="server-restart-modal-icon warning">
-                        <ServerCog aria-hidden="true" />
-                      </span>
-                      <div>
-                        <h3>Restart Space server</h3>
-                        <p>Restarts space-worker.service, space-api.service, and space-web.service.</p>
-                      </div>
-                      <button
-                        type="button"
-                        aria-label="Close Restart Space server"
-                        disabled={serverRestartPending}
-                        onClick={closeServerRestartDialog}
-                      >
-                        <X aria-hidden="true" />
-                      </button>
-                    </header>
-                    <p>CLI and browser sessions stay protected because codex-pane-host, the admin host, and the browser host are not restarted.</p>
-                    {serverRestartMessage ? <p className="server-restart-status" role="status"><span>{serverRestartMessage}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setServerRestartMessage(null)}><X aria-hidden="true" /></button></p> : null}
-                    {serverRestartError ? <p className="server-restart-error" role="alert"><span>{serverRestartError}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setServerRestartError(null)}><X aria-hidden="true" /></button></p> : null}
-                    <div className="server-restart-modal-actions">
-                      <button type="button" autoFocus onClick={closeServerRestartDialog} disabled={serverRestartPending}>
-                        Cancel
-                      </button>
-                      <button type="button" className="danger" onClick={() => void confirmServerRestart()} disabled={serverRestartPending}>
-                        {serverRestartPending ? "Restarting..." : "Restart server"}
-                      </button>
-                    </div>
-                  </section>
-                </div>
-              ) : null}
-              {isCliRuntimeRestartAllDialogOpen ? (
-                <div
-                  className="attachment-modal server-restart-modal"
-                  onClick={closeCliRuntimeRestartAllDialog}
-                >
-                  <section
-                    className="attachment-modal-body server-restart-modal-body"
-                    role="dialog"
-                    aria-modal="true"
-                    aria-label="Restart all CLI runtimes"
-                    onClick={(event) => event.stopPropagation()}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && !cliRuntimeRestartAllPending) {
-                        event.preventDefault();
-                        closeCliRuntimeRestartAllDialog();
-                      }
-                    }}
-                  >
-                    <header>
-                      <span className="server-restart-modal-icon">
-                        <Terminal aria-hidden="true" />
-                      </span>
-                      <div>
-                        <h3>Restart all CLI runtimes</h3>
-                        <p>Stops and restarts the sessions of every CLI type one after another.</p>
-                      </div>
-                      <button
-                        type="button"
-                        aria-label="Close Restart all CLI runtimes"
-                        disabled={cliRuntimeRestartAllPending}
-                        onClick={closeCliRuntimeRestartAllDialog}
-                      >
-                        <X aria-hidden="true" />
-                      </button>
-                    </header>
-                    <p>Codex, claude, gemini, opencode, kimi, and the other CLI runtimes are restarted individually; the pane host service itself is not restarted.</p>
-                    {cliRuntimeRestartAllMessage ? <p className="server-restart-status" role="status"><span>{cliRuntimeRestartAllMessage}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setCliRuntimeRestartAllMessage(null)}><X aria-hidden="true" /></button></p> : null}
-                    {cliRuntimeRestartAllError ? <p className="server-restart-error" role="alert"><span>{cliRuntimeRestartAllError}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setCliRuntimeRestartAllError(null)}><X aria-hidden="true" /></button></p> : null}
-                    <div className="server-restart-modal-actions">
-                      <button type="button" autoFocus onClick={closeCliRuntimeRestartAllDialog} disabled={cliRuntimeRestartAllPending}>
-                        Cancel
-                      </button>
-                      <button type="button" className="danger" onClick={() => void confirmCliRuntimeRestartAll()} disabled={cliRuntimeRestartAllPending}>
-                        {cliRuntimeRestartAllPending ? "Restarting..." : "Restart all CLI runtimes"}
-                      </button>
-                    </div>
-                  </section>
-                </div>
-              ) : null}
               {roomToolbar.actionMenu ? (
                 <div
                   className="icon-context-menu"
@@ -8605,7 +11534,11 @@ export function App() {
           {showPaneNavigation ? (
             <div className="pane-navigation">
               {showMinimizedBar ? (
-                <section className="minimized-pane-bar" id={MINIMIZED_PANE_BAR_ID} aria-label="Minimized panes">
+                <section
+                  className={`minimized-pane-bar${minimizedBarPreviewMode ? " is-preview-mode" : ""}`}
+                  id={MINIMIZED_PANE_BAR_ID}
+                  aria-label="Minimized panes"
+                >
                   <div className="minimized-pane-items">
                     {visiblePanes.length === 0 ? (
                       <span className="all-panes-minimized" role="status">All panes minimized</span>
@@ -8613,6 +11546,17 @@ export function App() {
                     {minimizedPanes.map((pane) => {
                       const paneRunActive =
                         paneCompletionLifecycle.panes[pane.id]?.activeRunKey != null;
+                      if (minimizedBarPreviewMode) {
+                        return (
+                          <MinimizedPanePreviewCard
+                            key={pane.id}
+                            pane={pane}
+                            isRunning={paneRunActive}
+                            latestTurn={turns.find((t) => t.paneId === pane.id) ?? null}
+                            onRestore={() => void restorePane(pane)}
+                          />
+                        );
+                      }
                       return (
                         <button
                           key={pane.id}
@@ -8641,6 +11585,16 @@ export function App() {
                   <div className="minimized-pane-bar-actions">
                     <button
                       type="button"
+                      className={`minimized-preview-toggle${minimizedBarPreviewMode ? " is-active" : ""}`}
+                      aria-label={minimizedBarPreviewMode ? "Collapse pane preview" : "Expand pane preview"}
+                      title={minimizedBarPreviewMode ? "Collapse pane preview" : "Expand pane preview"}
+                      aria-pressed={minimizedBarPreviewMode}
+                      onClick={toggleMinimizedBarPreviewMode}
+                    >
+                      {minimizedBarPreviewMode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+                    </button>
+                    <button
+                      type="button"
                       className="minimize-all-panes"
                       aria-label="Minimize all visible panes"
                       title="Minimize all visible panes"
@@ -8663,7 +11617,6 @@ export function App() {
                   </div>
                 </section>
               ) : null}
-              {showMobilePaneSwitcher ? <MobilePaneSwitcher panes={visiblePanes} activePaneId={activePane?.id} onSelect={targetPaneFromUser} /> : null}
             </div>
           ) : null}
 
@@ -8696,16 +11649,38 @@ export function App() {
         ) : null}
 
       </section> : null}
-      <QuickLinksPopover open={isQuickLinksOpen} onClose={() => setIsQuickLinksOpen(false)} onOpen={openUserLink} onManage={manageLinks} />
+      <QuickLinksPopover open={isQuickLinksOpen} triggerRef={quickLinksButtonRef} onClose={() => setIsQuickLinksOpen(false)} onOpen={openUserLink} onManage={manageLinks} />
       {activeUserLink ? (
         <RecoverableSurface fallback={<div role="status">Loading dashboard…</div>}>
           <LazyEmbeddedDashboardDialog link={activeUserLink} onClose={() => setActiveUserLink(null)} />
         </RecoverableSurface>
       ) : null}
+      {liveDebugToast ? (
+        <aside
+          className={`live-debug-toast is-${liveDebugToast.type}`}
+          role="status"
+          aria-live="polite"
+          onClick={() => setLiveDebugToast(null)}
+        >
+          <span>{liveDebugToast.message}</span>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={(e) => {
+              e.stopPropagation();
+              setLiveDebugToast(null);
+            }}
+          >
+            ×
+          </button>
+        </aside>
+      ) : null}
       </main>
       <StreamingOverlay theme={uiTheme !== "classic" ? "modern" : "classic"} />
       </StreamingOverlayProvider>
+      </LiveSessionProvider>
     </AppIconProvider>
+    </CliShortcutUserContext.Provider>
   );
 }
 
@@ -8723,6 +11698,20 @@ function LoginScreen({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const authErr = params.get("authError");
+      if (authErr) {
+        setError(decodeURIComponent(authErr));
+        const newUrl = window.location.pathname;
+        window.history.replaceState({}, document.title, newUrl);
+      }
+    } catch {
+      // Ignore
+    }
+  }, []);
 
   function loginErrorMessage(err: unknown): string {
     if (err instanceof SpaceApiError && err.code === "INVALID_CREDENTIALS") {
@@ -8751,9 +11740,67 @@ function LoginScreen({
           <Lock aria-hidden="true" />
           <div>
             <h1>Space</h1>
-            <span>{auth.isSetupRequired ? "Operator setup required" : "Operator access"}</span>
+            <span>{auth.isSetupRequired ? "Operator setup required" : "Sign in to Space"}</span>
           </div>
         </div>
+
+        {auth.googleAuthEnabled ? (
+          <div className="google-auth-section" style={{ display: "grid", gap: "0.75rem", margin: "0.25rem 0" }}>
+            <a
+              href="/api/auth/google/start"
+              className="button google-login-button"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "0.65rem",
+                padding: "0.6rem 1rem",
+                borderRadius: "6px",
+                background: "#ffffff",
+                color: "#1f1f1f",
+                fontWeight: 500,
+                fontSize: "0.85rem",
+                textDecoration: "none",
+                border: "1px solid #dadce0"
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  fill="#4285F4"
+                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                />
+                <path
+                  fill="#34A853"
+                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                />
+                <path
+                  fill="#FBBC05"
+                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                />
+                <path
+                  fill="#EA4335"
+                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                />
+              </svg>
+              <span>Sign in with Google</span>
+            </a>
+            <div
+              className="login-divider"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                textAlign: "center",
+                color: "var(--room-muted, #a7a59e)",
+                fontSize: "0.72rem",
+                margin: "0.2rem 0"
+              }}
+            >
+              <div style={{ flex: 1, borderBottom: "1px solid var(--room-border, #343638)" }} />
+              <span style={{ padding: "0 0.5rem" }}>or continue with email</span>
+              <div style={{ flex: 1, borderBottom: "1px solid var(--room-border, #343638)" }} />
+            </div>
+          </div>
+        ) : null}
         <label htmlFor="operator-email">
           Email
           <input
@@ -9196,28 +12243,19 @@ function VoiceSettingsCard() {
     writeVoiceComposerSettings(next);
   }
 
+  const availableProviders: LiveAudioProviderId[] =
+    serverSettings?.providerOptions && serverSettings.providerOptions.length > 0
+      ? serverSettings.providerOptions
+      : ["google", "openai", "local", "vercel"];
+  const currentProvider = settings.provider || "google";
+  const providerDescriptor = LIVE_AUDIO_PROVIDERS[currentProvider];
+
   const languageOptions = serverSettings?.languageOptions ?? ["auto", "el", "en"];
-  const modelOptions = serverSettings?.modelOptions ?? [
-    "gpt-transcribe",
-    "gpt-live-transcribe",
-    "gpt-4o-transcribe",
-    "gpt-4o-mini-transcribe",
-    "gpt-live-1",
-    "gpt-live-1-mini",
-    "whisper-1",
-    "gpt-realtime-whisper"
-  ];
-  const voiceOptions = serverSettings?.voiceOptions ?? [
-    "alloy",
-    "ash",
-    "ballad",
-    "coral",
-    "echo",
-    "sage",
-    "shimmer",
-    "bossa",
-    "tempo"
-  ];
+  const providerModelIds = providerDescriptor?.models.map((m) => m.id);
+  const modelOptions = providerModelIds && providerModelIds.length > 0 ? providerModelIds : (serverSettings?.modelOptions ?? ["gemini-3.8-live"]);
+
+  const providerVoiceIds = providerDescriptor?.voices.map((v) => v.id);
+  const voiceOptions = providerVoiceIds && providerVoiceIds.length > 0 ? providerVoiceIds : (serverSettings?.voiceOptions ?? ["Aoede"]);
   const statusLabel = serverSettings?.enabled ? "READY" : "DISABLED";
   const statusToneValue = serverSettings?.enabled ? "ok" : "warn";
 
@@ -9257,6 +12295,28 @@ function VoiceSettingsCard() {
         checked={settings.enabled}
         onChange={(enabled) => updateVoiceSettings({ enabled })}
       />
+      <label className="settings-flat-row">
+        <span className="settings-flat-row-copy"><strong>Voice provider</strong><small>Live speech engine provider.</small></span>
+        <select
+          name="voice-input-provider"
+          value={currentProvider}
+          onChange={(event) => {
+            const provider = event.target.value as LiveAudioProviderId;
+            const desc = LIVE_AUDIO_PROVIDERS[provider];
+            updateVoiceSettings({
+              provider,
+              model: desc?.defaultModel || (provider === "google" ? "gemini-3.8-live" : "gpt-transcribe"),
+              voice: desc?.defaultVoice || (provider === "google" ? "Aoede" : "alloy")
+            });
+          }}
+        >
+          {availableProviders.map((p) => (
+            <option key={p} value={p}>
+              {LIVE_AUDIO_PROVIDERS[p]?.displayName || p}
+            </option>
+          ))}
+        </select>
+      </label>
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy"><strong>Voice model</strong><small>Audio and speech model.</small></span>
         <select name="voice-input-model" value={settings.model} onChange={(event) => updateVoiceSettings({ model: event.target.value as VoiceComposerSettings["model"] })}>
@@ -9377,9 +12437,16 @@ function VoiceSettingsCard() {
       </div>
       <div className="voice-float-settings">
         <div className="settings-flat-subheading">
-          <strong>Floating controls</strong>
-          <small>Choose which controls appear over CLI panes.</small>
+          <strong>Terminal controls</strong>
+          <small>Choose which controls appear in CLI panes.</small>
         </div>
+        <SpaceToggle
+          className="settings-flat-row settings-flat-toggle-row voice-toggle"
+          name="terminal-context-menu"
+          label="Right-click menu"
+          checked={Boolean(settings.terminalContextMenu ?? true)}
+          onChange={(terminalContextMenu) => updateVoiceSettings({ terminalContextMenu })}
+        />
         <SpaceToggle
           className="settings-flat-row settings-flat-toggle-row voice-toggle"
           name="float-voice-button"
@@ -9402,16 +12469,15 @@ function VoiceSettingsCard() {
           onChange={(terminalTurnControl) => updateVoiceSettings({ terminalTurnControl })}
         />
       </div>
-      <p className="settings-flat-note voice-settings-help">Uses OpenAI {settings.model} ({settings.voice}). Finished speech is submitted immediately.</p>
+      <p className="settings-flat-note voice-settings-help">Uses {providerDescriptor?.displayName || currentProvider} {settings.model} ({settings.voice}). Finished speech is submitted immediately.</p>
     </section>
   );
 }
 
 function AgentSettingsDock({
-  cliSettingsContent,
   adminMode,
   onOpenSetup,
-  activePane,
+  activePane: _activePane,
   canManageCliRuntimes,
   canManageDiagnostics,
   canManageSourceControl,
@@ -9425,12 +12491,13 @@ function AgentSettingsDock({
   providers,
   onUiThemeApply,
   onSuppressNotificationsChange,
-  onProviderSettingsRefresh
+  onProviderSettingsRefresh,
+  auth,
+  onAuthRefresh
 }: {
-  cliSettingsContent: ReactNode;
   adminMode: boolean;
   onOpenSetup: () => void;
-  activePane: Pane | null;
+  activePane?: Pane | null;
   canManageCliRuntimes: boolean;
   canManageDiagnostics: boolean;
   canManageSourceControl: boolean;
@@ -9445,62 +12512,13 @@ function AgentSettingsDock({
   onUiThemeApply: (selection: { appearance: ModernAppearance; iconPack: ModernIconPack; theme: UiTheme }) => void;
   onSuppressNotificationsChange: (suppressed: boolean) => void;
   onProviderSettingsRefresh: (settings: ProviderSettings) => void;
+  auth?: AuthMe | null;
+  onAuthRefresh?: () => Promise<void>;
 }) {
-  const [session, setSession] = useState<AgentPaneSession | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [providerPending, setProviderPending] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
 
-  async function loadSession(showLoading = true) {
-    if (!activePane || activePane.mode !== "CHAT") {
-      setSession(null);
-      return;
-    }
-    if (showLoading) setLoading(true);
-    setError(null);
-    try {
-      setSession(await api.agentSession(activePane.id));
-    } catch (err) {
-      setSession(null);
-      setError(err instanceof Error ? err.message : "Agent settings failed to load");
-    } finally {
-      if (showLoading) setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void loadSession();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePane?.id, activePane?.mode]);
-
   const defaultProvider = providers.find((provider) => provider.id === providerSettings?.defaultProviderId) ?? null;
-  const selectedToolIds = useMemo(() => new Set(session?.selectedToolIds ?? []), [session?.selectedToolIds]);
-  const selectedToolCount = session?.toolOptions.filter((tool) => selectedToolIds.has(tool.id) || tool.isForceOn).length ?? 0;
-  const title = activePane ? displayPaneTitle(activePane) : "Agent";
-
-  async function updateSettings(input: { selectedToolIds?: string[] | null }) {
-    if (!isCodexEnabled || !activePane || activePane.mode !== "CHAT") return;
-    setPending(true);
-    setError(null);
-    try {
-      const updated = await api.updateAgentSettings(activePane.id, input);
-      setSession(updated);
-      dispatchAgentPaneSettingsUpdated(activePane.id, updated);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Agent settings update failed");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function toggleTool(toolId: string, checked: boolean) {
-    const next = new Set(session?.selectedToolIds ?? []);
-    if (checked) next.add(toolId);
-    else next.delete(toolId);
-    await updateSettings({ selectedToolIds: Array.from(next) });
-  }
 
   async function selectDefaultProvider(providerId: string) {
     if (!isCodexEnabled || !providerId || providerId === providerSettings?.defaultProviderId) return;
@@ -9528,12 +12546,18 @@ function AgentSettingsDock({
         </span>
       </header>
 
-      {canManageCliRuntimes ? <div className="settings-setup-shortcut">
+      {adminMode && canManageCliRuntimes ? <div className="settings-setup-shortcut">
         <strong>Need to set up a tool?</strong>
         <p>The wizard guides you through tools and connections. You can return at any time.</p>
         <button type="button" onClick={onOpenSetup}>Open setup wizard</button>
       </div> : null}
-      <SettingsDisclosure title="Appearance" description="Theme, colors, and icon style." scope="This browser" icon={Palette}>
+      <SettingsDisclosure title="Account & Google" description="Link or manage your Google single sign-on connection." scope="Installation" icon={Users}>
+        <RecoverableSurface fallback={settingsCardLoadingFallback}>
+          <GoogleAccountSettingsCard auth={auth ?? null} onAuthRefresh={onAuthRefresh ?? (async () => {})} />
+        </RecoverableSurface>
+      </SettingsDisclosure>
+
+      <SettingsDisclosure title="Appearance" description="Theme, colors, and icon style." scope="Your account" icon={Palette}>
       <RecoverableSurface fallback={settingsCardLoadingFallback}>
         <LazyUiThemeSettingsCard
           currentAppearance={currentAppearance}
@@ -9544,10 +12568,11 @@ function AgentSettingsDock({
       </RecoverableSurface>
       </SettingsDisclosure>
 
-      {canManageCliRuntimes ? <SettingsDisclosure initialOpen title="CLI runtimes & workspace" description="Installed tools, room cache, and image previews." scope="Installation" icon={Terminal}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}>{cliSettingsContent}</RecoverableSurface>
-      </SettingsDisclosure> : null}
-      {canManageDiagnostics ? <SettingsDisclosure initialOpen title="Diagnostics" description="Debug events and screen recording." scope="Installation" icon={Activity}>
+      <SettingsDisclosure title="Date & time" description="Time zone, UTC reference, and 24-hour display format." scope="Your account" icon={Clock3}>
+        <DateTimeSettingsCard userId={auth?.user?.id} />
+      </SettingsDisclosure>
+
+      {canManageDiagnostics ? <SettingsDisclosure title="Diagnostics" description="Debug events and screen recording." scope="Installation" icon={Activity}>
         <AppDiagnosticsSettingsCard canManage={canManageDiagnostics} />
       </SettingsDisclosure> : null}
 
@@ -9612,104 +12637,37 @@ function AgentSettingsDock({
       </RecoverableSurface>
       </SettingsDisclosure> : null}
 
-      <SettingsDisclosure title="Voice input" description="Microphone and speech preferences." scope="This browser" icon={Mic}>
+      <SettingsDisclosure title="Plugins" description="Accounts and services your agents can act through." scope="Installation" icon={Plug}>
+        <PluginsSettingsCard />
+      </SettingsDisclosure>
+
+      <SettingsDisclosure title="Voice input" description="Microphone and speech preferences." scope="Your account" icon={Mic}>
       <VoiceSettingsCard />
       </SettingsDisclosure>
 
-      <SettingsDisclosure title="Notifications" description="Choose whether this browser shows notices." scope="This browser" icon={Bell}>
+      <SettingsDisclosure title="Keyboard autocorrection" description="Layout detection, Alt+G suggestions, audio alert, and languages." scope="Your account" icon={Keyboard}>
+        <KeyboardAutocorrectSettingsCard />
+      </SettingsDisclosure>
+
+      <SettingsDisclosure title="Notifications" description="Choose whether your account shows notices." scope="Your account" icon={Bell}>
       <section className="agent-settings-card settings-flat-card suppress-notifications-settings-card" aria-label="Notification settings">
         <div className="agent-settings-section-title settings-flat-heading">
           <Bell aria-hidden="true" />
           <span>
             <strong>Notifications</strong>
-            <small>Browser-local toast and status controls.</small>
+            <small>Account-wide toast and status controls.</small>
           </span>
         </div>
         <SpaceToggle
           className="settings-flat-row settings-flat-toggle-row suppress-notifications-toggle"
           name="suppress-notifications-enabled"
           label="Suppress all notifications"
-          detail={suppressNotifications ? "All notices are hidden in this browser." : "Notices appear normally."}
+          detail={suppressNotifications ? "All notices are hidden for your account." : "Notices appear normally."}
           checked={suppressNotifications}
           onChange={onSuppressNotificationsChange}
         />
       </section>
 
-      </SettingsDisclosure>
-      <SettingsDisclosure title="Selected agent" description="Tools and preferences for the selected Chat pane." scope="Selected pane" icon={MessageSquare}>
-      <section className="agent-settings-card settings-flat-card basic-agent-card" aria-label={activePane?.mode === "CHAT" ? `Basic settings for ${title}` : `Selected pane ${title}`}>
-        <div className="agent-settings-section-title settings-flat-heading">
-          <MessageSquare aria-hidden="true" />
-          <span>
-            <strong>Agent</strong>
-            <small>{activePane?.mode === "CHAT" ? (loading ? "Loading settings" : session?.statusReason ?? "Chat pane controls") : "Tools are available on chat panes."}</small>
-          </span>
-          {activePane?.mode === "CHAT" ? (
-            <SettingsActionMenu
-              label="Agent settings actions"
-              disabled={!isCodexEnabled || loading || pending}
-              actions={[{
-                id: "refresh",
-                label: "Refresh agent settings",
-                icon: RefreshCw,
-                onSelect: () => void loadSession()
-              }]}
-            />
-          ) : null}
-        </div>
-
-        {!activePane ? (
-          <div className="empty-mini" role="status">
-            Select a chat pane to edit tools.
-          </div>
-        ) : activePane.mode !== "CHAT" ? (
-          <div className="empty-mini" role="status">
-            {title} is not a chat pane.
-          </div>
-        ) : !session ? (
-          <div className="empty-mini" role="status">
-            Agent settings are loading.
-          </div>
-        ) : (
-          <>
-            <div className="settings-flat-subheading">
-              <strong>Tools</strong>
-              <small>{selectedToolCount}/{session.toolOptions.length} enabled</small>
-            </div>
-            <div className="agent-tool-list settings-flat-tool-list">
-              {session.toolOptions.length ? (
-                session.toolOptions.map((tool) => {
-                  const requiresAuth = tool.authType === "oauth2" && !tool.authConnected;
-                  const checked = selectedToolIds.has(tool.id) || tool.isForceOn;
-                  return (
-                    <SpaceToggle
-                      key={tool.id}
-                      className={checked ? "selected" : ""}
-                      title={!isCodexEnabled ? "Enable Codex in Settings" : requiresAuth ? `${tool.displayName} requires auth` : tool.displayName}
-                      name={`agent-tool-${tool.id}`}
-                      label={tool.displayName}
-                      checked={checked}
-                      onChange={(nextChecked) => void toggleTool(tool.id, nextChecked)}
-                      disabled={!isCodexEnabled || pending || !session.capabilities.canSelectTools || tool.isForceOn || requiresAuth}
-                    />
-                  );
-                })
-              ) : (
-                <div className="empty-mini" role="status">
-                  No tools available
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </section>
-
-      {error ? (
-        <div className="validation-result bad" role="alert">
-          <strong>AGENT_SETTINGS_ERROR</strong>
-          <small>{error}</small>
-        </div>
-      ) : null}
       </SettingsDisclosure>
       </SettingsSections>
     </div>
@@ -9775,6 +12733,7 @@ function BrowserDock({
 
 const PaneCard = memo(function PaneCard({
   pane,
+  roomProjectPath,
   controlPlacement,
   agentNumber,
   latestTurn,
@@ -9809,6 +12768,7 @@ const PaneCard = memo(function PaneCard({
   onTarget,
   onMove,
   onPaneUpdated,
+  onOpenExistingPane,
   onClose,
   onMaximize,
   onMinimize,
@@ -9821,6 +12781,7 @@ const PaneCard = memo(function PaneCard({
   fullscreenIndex,
   fullscreenCount,
   onFullscreenNavigate,
+  onRestoreLayout,
   effectiveColumnSpan,
   rowSpan,
   columnStart,
@@ -9844,6 +12805,7 @@ const PaneCard = memo(function PaneCard({
   onTerminalRevealReady
 }: {
   pane: Pane;
+  roomProjectPath?: string | null;
   controlPlacement?: {x:number;y:number;width:number;height:number};
   agentNumber: number;
   latestTurn: Turn | null;
@@ -9878,6 +12840,7 @@ const PaneCard = memo(function PaneCard({
   onTarget: (paneId: string) => void;
   onMove: (pane: Pane) => void;
   onPaneUpdated: (pane: Pane) => void;
+  onOpenExistingPane: (pane: Pane) => Promise<void>;
   onClose: (paneId: string) => void;
   onMaximize: (pane: Pane) => void;
   onMinimize: (pane: Pane) => void;
@@ -9890,6 +12853,7 @@ const PaneCard = memo(function PaneCard({
   fullscreenIndex: number;
   fullscreenCount: number;
   onFullscreenNavigate: (direction: "previous" | "next", fromPaneId?: string) => void;
+  onRestoreLayout?: () => void;
   effectiveColumnSpan: number;
   rowSpan: number;
   columnStart: number;
@@ -9945,31 +12909,59 @@ const PaneCard = memo(function PaneCard({
     return { x, y, width: defaultWidth, height: defaultHeight };
   });
   const [isPointerActive, setIsPointerActive] = useState(false);
+  const latestFloatLayoutRef = useRef(floatLayout);
+  latestFloatLayoutRef.current = floatLayout;
+
   const dragRef = useRef<{
     pointerId: number;
     startX: number;
     startY: number;
     initialX: number;
     initialY: number;
+    latestX: number;
+    latestY: number;
   } | null>(null);
   const resizeRef = useRef<{
     pointerId: number;
     startX: number;
     startY: number;
+    initialX: number;
+    initialY: number;
     initialWidth: number;
     initialHeight: number;
+    latestX: number;
+    latestY: number;
+    latestWidth: number;
+    latestHeight: number;
   } | null>(null);
   const paneArticleRef = useRef<HTMLElement | null>(null);
+
+  const youtubeDodgeShiftX = useRailMenuDodge(paneArticleRef, {
+    x: floatLayout.x,
+    y: floatLayout.y,
+    active: isFloatingYouTube,
+    isDragging: isPointerActive
+  });
+
+  useEffect(() => {
+    return () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, []);
 
   useEffect(() => {
     if (!isFloatingYouTube || !paneArticleRef.current || typeof ResizeObserver === "undefined") return;
     const el = paneArticleRef.current;
     const ro = new ResizeObserver((entries) => {
+      if (isPointerActive) return;
       for (const entry of entries) {
-        const { width, height } = entry.contentRect;
+        const target = entry.target as HTMLElement;
+        const width = target.offsetWidth || entry.contentRect.width;
+        const height = target.offsetHeight || entry.contentRect.height;
         if (width >= 200 && height >= 140) {
           setFloatLayout((prev) => {
-            if (Math.abs(prev.width - width) < 3 && Math.abs(prev.height - height) < 3) return prev;
+            if (Math.abs(prev.width - width) < 4 && Math.abs(prev.height - height) < 4) return prev;
             const updated = { ...prev, width: Math.round(width), height: Math.round(height) };
             try {
               localStorage.setItem(floatLayoutStorageKey, JSON.stringify(updated));
@@ -9981,44 +12973,87 @@ const PaneCard = memo(function PaneCard({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [isFloatingYouTube, floatLayoutStorageKey]);
+  }, [isFloatingYouTube, floatLayoutStorageKey, isPointerActive]);
 
   const handleFloatHeaderPointerDown = (e: ReactPointerEvent<HTMLElement>) => {
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest("button, input, select, textarea, a")) return;
     e.preventDefault();
     e.stopPropagation();
+    const initialVisualX = floatLayout.x - youtubeDodgeShiftX;
     setIsPointerActive(true);
-    dragRef.current = {
+    if (youtubeDodgeShiftX > 0) {
+      setFloatLayout((prev) => ({ ...prev, x: initialVisualX }));
+    }
+    const current = {
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
-      initialX: floatLayout.x,
-      initialY: floatLayout.y
+      initialX: initialVisualX,
+      initialY: floatLayout.y,
+      latestX: initialVisualX,
+      latestY: floatLayout.y
     };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  };
+    dragRef.current = current;
 
-  const handleFloatHeaderPointerMove = (e: ReactPointerEvent<HTMLElement>) => {
-    if (!dragRef.current || dragRef.current.pointerId !== e.pointerId) return;
-    const dx = e.clientX - dragRef.current.startX;
-    const dy = e.clientY - dragRef.current.startY;
-    const maxX = Math.max(0, window.innerWidth - 60);
-    const maxY = Math.max(0, window.innerHeight - 40);
-    const nextX = Math.min(maxX, Math.max(0, dragRef.current.initialX + dx));
-    const nextY = Math.min(maxY, Math.max(0, dragRef.current.initialY + dy));
-    setFloatLayout((prev) => ({ ...prev, x: nextX, y: nextY }));
-  };
+    if (paneArticleRef.current) {
+      paneArticleRef.current.style.transition = "none";
+      paneArticleRef.current.classList.add("is-pointer-active");
+    }
+    document.body.style.userSelect = "none";
 
-  const handleFloatHeaderPointerUp = (e: ReactPointerEvent<HTMLElement>) => {
-    if (!dragRef.current || dragRef.current.pointerId !== e.pointerId) return;
-    dragRef.current = null;
-    setIsPointerActive(false);
+    const onHeaderMove = (ev: PointerEvent) => {
+      if (!dragRef.current || dragRef.current.pointerId !== ev.pointerId) return;
+      const ref = dragRef.current;
+      const dx = ev.clientX - ref.startX;
+      const dy = ev.clientY - ref.startY;
+      const maxX = Math.max(0, window.innerWidth - 60);
+      const maxY = Math.max(0, window.innerHeight - 40);
+      const nextX = Math.round(Math.min(maxX, Math.max(0, ref.initialX + dx)));
+      const nextY = Math.round(Math.min(maxY, Math.max(0, ref.initialY + dy)));
+      ref.latestX = nextX;
+      ref.latestY = nextY;
+      if (paneArticleRef.current) {
+        paneArticleRef.current.style.left = `${nextX}px`;
+        paneArticleRef.current.style.top = `${nextY}px`;
+      }
+    };
+
+    const onHeaderUp = (ev: PointerEvent) => {
+      if (!dragRef.current || dragRef.current.pointerId !== ev.pointerId) return;
+      window.removeEventListener("pointermove", onHeaderMove);
+      window.removeEventListener("pointerup", onHeaderUp);
+      window.removeEventListener("pointercancel", onHeaderUp);
+
+      document.body.style.userSelect = "";
+
+      const ref = dragRef.current;
+      dragRef.current = null;
+      setIsPointerActive(false);
+
+      if (paneArticleRef.current) {
+        paneArticleRef.current.classList.remove("is-pointer-active");
+        paneArticleRef.current.style.transition = "";
+      }
+
+      const updated = {
+        ...latestFloatLayoutRef.current,
+        x: ref.latestX,
+        y: ref.latestY
+      };
+      setFloatLayout(updated);
+      latestFloatLayoutRef.current = updated;
+      try {
+        localStorage.setItem(floatLayoutStorageKey, JSON.stringify(updated));
+      } catch {}
+    };
+
+    window.addEventListener("pointermove", onHeaderMove, { passive: true });
+    window.addEventListener("pointerup", onHeaderUp);
+    window.addEventListener("pointercancel", onHeaderUp);
+
     try {
-      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
-    try {
-      localStorage.setItem(floatLayoutStorageKey, JSON.stringify(floatLayout));
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     } catch {}
   };
 
@@ -10026,48 +13061,140 @@ const PaneCard = memo(function PaneCard({
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
+    const initialVisualX = floatLayout.x - youtubeDodgeShiftX;
     setIsPointerActive(true);
-    resizeRef.current = {
+    if (youtubeDodgeShiftX > 0) {
+      setFloatLayout((prev) => ({ ...prev, x: initialVisualX }));
+    }
+    const current = {
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
+      initialX: initialVisualX,
+      initialY: floatLayout.y,
       initialWidth: floatLayout.width,
-      initialHeight: floatLayout.height
+      initialHeight: floatLayout.height,
+      latestX: initialVisualX,
+      latestY: floatLayout.y,
+      latestWidth: floatLayout.width,
+      latestHeight: floatLayout.height
     };
-    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
-  };
+    resizeRef.current = current;
 
-  const handleResizePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!resizeRef.current || resizeRef.current.pointerId !== e.pointerId) return;
-    const dw = e.clientX - resizeRef.current.startX;
-    const dh = e.clientY - resizeRef.current.startY;
-    const nextWidth = Math.max(240, Math.min(window.innerWidth - floatLayout.x, resizeRef.current.initialWidth + dw));
-    const nextHeight = Math.max(160, Math.min(window.innerHeight - floatLayout.y, resizeRef.current.initialHeight + dh));
-    setFloatLayout((prev) => ({ ...prev, width: nextWidth, height: nextHeight }));
-  };
+    if (paneArticleRef.current) {
+      paneArticleRef.current.style.transition = "none";
+      paneArticleRef.current.classList.add("is-pointer-active");
+    }
+    document.body.style.cursor = "nwse-resize";
+    document.body.style.userSelect = "none";
 
-  const handleResizePointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!resizeRef.current || resizeRef.current.pointerId !== e.pointerId) return;
-    resizeRef.current = null;
-    setIsPointerActive(false);
+    const onResizeMove = (ev: PointerEvent) => {
+      if (!resizeRef.current || resizeRef.current.pointerId !== ev.pointerId) return;
+      const ref = resizeRef.current;
+      const dw = ev.clientX - ref.startX;
+      const dh = ev.clientY - ref.startY;
+
+      const minW = 240;
+      const minH = 160;
+      const screenW = typeof window !== "undefined" ? window.innerWidth : 1920;
+      const screenH = typeof window !== "undefined" ? window.innerHeight : 1080;
+      const maxW = Math.max(minW, screenW - 16);
+      const maxH = Math.max(minH, screenH - 16);
+
+      const desiredWidth = Math.max(minW, Math.min(maxW, ref.initialWidth + dw));
+      const desiredHeight = Math.max(minH, Math.min(maxH, ref.initialHeight + dh));
+
+      const margin = 8;
+      const availRight = screenW - ref.initialX - margin;
+      const availBottom = screenH - ref.initialY - margin;
+
+      let nextX = ref.initialX;
+      let nextWidth = desiredWidth;
+      if (desiredWidth > availRight) {
+        const overflowX = desiredWidth - availRight;
+        nextX = Math.max(margin, ref.initialX - overflowX);
+        nextWidth = Math.min(screenW - nextX - margin, desiredWidth);
+      }
+
+      let nextY = ref.initialY;
+      let nextHeight = desiredHeight;
+      if (desiredHeight > availBottom) {
+        const overflowY = desiredHeight - availBottom;
+        nextY = Math.max(margin, ref.initialY - overflowY);
+        nextHeight = Math.min(screenH - nextY - margin, desiredHeight);
+      }
+
+      const finalX = Math.round(nextX);
+      const finalY = Math.round(nextY);
+      const finalW = Math.round(nextWidth);
+      const finalH = Math.round(nextHeight);
+
+      ref.latestX = finalX;
+      ref.latestY = finalY;
+      ref.latestWidth = finalW;
+      ref.latestHeight = finalH;
+
+      if (paneArticleRef.current) {
+        paneArticleRef.current.style.width = `${finalW}px`;
+        paneArticleRef.current.style.height = `${finalH}px`;
+        paneArticleRef.current.style.left = `${finalX}px`;
+        paneArticleRef.current.style.top = `${finalY}px`;
+      }
+    };
+
+    const onResizeUp = (ev: PointerEvent) => {
+      if (!resizeRef.current || resizeRef.current.pointerId !== ev.pointerId) return;
+      window.removeEventListener("pointermove", onResizeMove);
+      window.removeEventListener("pointerup", onResizeUp);
+      window.removeEventListener("pointercancel", onResizeUp);
+
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+
+      const ref = resizeRef.current;
+      resizeRef.current = null;
+      setIsPointerActive(false);
+
+      if (paneArticleRef.current) {
+        paneArticleRef.current.classList.remove("is-pointer-active");
+        paneArticleRef.current.style.transition = "";
+      }
+
+      const finalLayout = {
+        x: ref.latestX,
+        y: ref.latestY,
+        width: ref.latestWidth,
+        height: ref.latestHeight
+      };
+
+      setFloatLayout(finalLayout);
+      latestFloatLayoutRef.current = finalLayout;
+      try {
+        localStorage.setItem(floatLayoutStorageKey, JSON.stringify(finalLayout));
+      } catch {}
+    };
+
+    window.addEventListener("pointermove", onResizeMove, { passive: true });
+    window.addEventListener("pointerup", onResizeUp);
+    window.addEventListener("pointercancel", onResizeUp);
+
     try {
-      (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
-    } catch {}
-    try {
-      localStorage.setItem(floatLayoutStorageKey, JSON.stringify(floatLayout));
+      (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
     } catch {}
   };
   const title = pane.mode === "YOUTUBE" && youtubeVideoTitle ? youtubeVideoTitle : displayPaneTitle(pane);
   const isTerminalPane = pane.mode === "TERMINAL";
   const usesCompactPaneActions = isTerminalPane || pane.mode === "CHAT" || pane.mode === "HARNESS" || pane.mode === "LIVE";
   const isRootPane = pane.terminalRuntimeId === "cli:root";
-  const maximizeLabel = shellMode === "mobile"
-    ? isMobilePaneFocused
-      ? "Restore room"
-      : "Maximize pane"
-    : pane.isMaximized
-      ? "Restore pane"
-      : "Maximize pane";
+  const maximizeLabel = isFullscreenLayout
+    ? "Restore automatic layout"
+    : shellMode === "mobile"
+      ? isMobilePaneFocused
+        ? "Restore room"
+        : "Maximize pane"
+      : pane.isMaximized
+        ? "Restore pane"
+        : "Maximize pane";
   const showRestoreIcon = shellMode === "mobile" ? isMobilePaneFocused : pane.isMaximized;
   const agentTone = ((agentNumber - 1) % 8) + 1;
   const genericUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -10090,6 +13217,14 @@ const PaneCard = memo(function PaneCard({
   const [titleSavePending, setTitleSavePending] = useState(false);
   const [titleGeneratePending, setTitleGeneratePending] = useState(false);
   const [badgeMenuPosition, setBadgeMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const badgeTouchContext = useTouchContextMenu(
+    (source) => source instanceof Element ? source.closest<HTMLElement>(".pane-agent-badge") : null,
+    ({ x, y }) => {
+      if (!usesCompactPaneActions) return;
+      paneToolbar.closeMenus();
+      setBadgeMenuPosition({ x, y });
+    }
+  );
   const [categoryColorPending, setCategoryColorPending] = useState(false);
   const [resumeHistoryOpen, setResumeHistoryOpen] = useState(false);
   const [resumeHistoryMode, setResumeHistoryMode] = useState<"chat" | "cli">("cli");
@@ -10104,6 +13239,7 @@ const PaneCard = memo(function PaneCard({
   const [titleError, setTitleError] = useState<string | null>(null);
   const [isHeaderActionsStacked, setIsHeaderActionsStacked] = useState(false);
   const [modernPrimaryActionCapacity, setModernPrimaryActionCapacity] = useState<number | null>(null);
+  const [youtubeFloatFits, setYoutubeFloatFits] = useState<boolean>(true);
   const usesGenericImport = pane.mode !== "CHAT" && pane.mode !== "TERMINAL" && pane.mode !== "YOUTUBE";
   const sessionDebugInfo = terminalSessionMetadata ? formatTerminalSessionDebugInfo(terminalSessionMetadata) : null;
   const vpnRoutingPresentation = isTerminalPane
@@ -10163,10 +13299,24 @@ const PaneCard = memo(function PaneCard({
     () =>
       ({
         "--pane-column-span": String(effectiveColumnSpan),
+        ...(shellMode !== "mobile" && !isFullscreenLayout && !pane.isMaximized
+          ? {
+              gridColumn: `${columnStart} / span ${effectiveColumnSpan}`,
+              gridRow: `${rowIndex + 1} / span ${rowSpan}`
+            }
+          : null),
+        ...(isFullscreenLayout
+          ? {
+              gridColumn: "1 / -1",
+              gridRow: "1 / -1",
+              height: "100%",
+              minHeight: 0
+            }
+          : null),
         ...(controlPlacement ? {position:"absolute",left:`${controlPlacement.x}%`,top:`${controlPlacement.y*12}px`,width:`${controlPlacement.width}%`,height:`${controlPlacement.height*12}px`,minHeight:0} : {}),
         ...(rowSpan > 1 ? { "--pane-row-span": String(rowSpan) } : null)
       }) as CSSProperties,
-    [effectiveColumnSpan, rowSpan, controlPlacement]
+    [effectiveColumnSpan, columnStart, rowIndex, rowSpan, shellMode, isFullscreenLayout, pane.isMaximized, controlPlacement]
   );
   const handleTerminalBootstrapped = useCallback(
     (paneId: string) => onTerminalBootstrapped(pane.roomId, paneId),
@@ -10392,9 +13542,9 @@ const PaneCard = memo(function PaneCard({
   }
 
   function openResumeTaskHistory(mode: "chat" | "cli") {
+    if (mode === "cli") return;
     if (
       codexMutationBlocked ||
-      (mode === "cli" && !canOpenCliTaskHistory) ||
       (mode === "chat" && pane.mode !== "CHAT") ||
       resumePending
     ) return;
@@ -10439,6 +13589,11 @@ const PaneCard = memo(function PaneCard({
     try {
       if (!("taskId" in item)) throw new Error("This item is not a Space CLI task.");
       const resumed = await api.resumeCliSession(pane.id, { taskId: item.taskId });
+      if (resumed.focusExisting) {
+        await onOpenExistingPane(resumed.pane);
+        setResumeHistoryOpen(false);
+        return;
+      }
       onPaneUpdated(resumed.pane);
       dispatchTerminalPaneAction(pane.id, {
         action: "replace_session",
@@ -10701,7 +13856,7 @@ const PaneCard = memo(function PaneCard({
               icon: History,
               onClick: () => openResumeTaskHistory("cli"),
               ariaExpanded: resumeHistoryOpen,
-              disabled: resumePending,
+              disabled: true,
               hideable: false
             },
             {
@@ -10743,6 +13898,14 @@ const PaneCard = memo(function PaneCard({
               onClick: () => dispatchTerminalPaneAction(pane.id, { action: "copy" })
             },
             {
+              id: "paste",
+              label: "Paste into CLI",
+              title: "Paste clipboard text into CLI",
+              ariaLabel: `Paste into CLI ${title}`,
+              icon: Clipboard,
+              onClick: () => dispatchTerminalPaneAction(pane.id, { action: "paste" })
+            },
+            {
               id: "reconnect",
               label: "Reconnect CLI",
               title: "Reconnect CLI",
@@ -10768,6 +13931,14 @@ const PaneCard = memo(function PaneCard({
                 ariaLabel: `Copy CLI contents ${title}`,
                 icon: Copy,
                 onClick: () => dispatchTerminalPaneAction(pane.id, { action: "copy" })
+              },
+              {
+                id: "paste",
+                label: "Paste into CLI",
+                title: "Paste clipboard text into CLI",
+                ariaLabel: `Paste into CLI ${title}`,
+                icon: Clipboard,
+                onClick: () => dispatchTerminalPaneAction(pane.id, { action: "paste" })
               },
               {
                 id: "reconnect",
@@ -10858,6 +14029,48 @@ const PaneCard = memo(function PaneCard({
       }
     ];
   }
+  if (pane.mode === "DEMOS" || pane.mode === "FILES") {
+    rawPaneActions = [
+      ...(!isTerminalLoginSession ? [{
+        id: "add",
+        label: "Add pane",
+        title: "Add pane",
+        ariaLabel: `Add pane from ${title}`,
+        icon: Columns2,
+        onClick: () => onSplit(pane, "horizontal")
+      }] : []),
+      ...(!isTerminalLoginSession ? [{
+        id: "move",
+        label: "Move pane",
+        title: canMoveToAnotherRoom ? "Move pane to another room" : "Create another room before moving a pane",
+        ariaLabel: canMoveToAnotherRoom ? `Move ${title} to another room` : `Cannot move ${title} without another room`,
+        icon: ArrowRightLeft,
+        onClick: () => onMove(pane),
+        ariaExpanded: isMoveDialogOpen,
+        disabled: !canMoveToAnotherRoom
+      }] : []),
+      ...(!isTerminalLoginSession && shellMode !== "mobile" ? [
+        {
+          id: "grow-width",
+          label: "Grow pane width",
+          title: canGrowColumnSpan ? "Grow pane width" : "Already uses the available columns. Choose a multi-column layout to grow this pane.",
+          ariaLabel: "Grow pane width",
+          icon: MoveHorizontal,
+          onClick: () => void onGrowColumnSpan(pane),
+          disabled: !canGrowColumnSpan
+        },
+        {
+          id: "reset-width",
+          label: "Reset pane width",
+          title: canResetColumnSpan ? "Reset pane width" : "Pane width is already at its default.",
+          ariaLabel: "Reset pane width",
+          icon: Shrink,
+          onClick: () => void onResetColumnSpan(pane),
+          disabled: !canResetColumnSpan
+        }
+      ] : [])
+    ];
+  }
   const codexMutationActionIds = new Set([
     "new-task",
     "import",
@@ -10924,7 +14137,7 @@ const PaneCard = memo(function PaneCard({
     hiddenStorageKey: paneToolbarStorageKeys.hidden,
     orderStorageKey: paneToolbarStorageKeys.order,
     nonPersistentActionIds: pane.mode === "CHAT" ? ["chat-target"] : [],
-    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER",
+    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "FILES",
     closeOverflowOnDragStart: shellMode === "mobile"
   });
   const modernPrimaryActionLimit = modernPanePrimaryActionCount(shellMode);
@@ -10932,11 +14145,13 @@ const PaneCard = memo(function PaneCard({
   const paneToolbarPrimaryActionCount = uiTheme !== "classic"
     ? Math.min(modernPrimaryActionLimit, modernPrimaryActionCapacity ?? modernPrimaryActionLimit)
     : paneToolbarMenuActions.length;
-  const paneToolbarRenderedActions = usesCompactPaneActions
+  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "FILES"
     ? []
-    : (uiTheme !== "classic"
-        ? paneToolbarMenuActions.slice(0, paneToolbarPrimaryActionCount)
-        : paneToolbarMenuActions);
+    : pane.mode === "YOUTUBE"
+      ? (youtubeFloatFits ? paneToolbarMenuActions : [])
+      : (uiTheme !== "classic"
+          ? paneToolbarMenuActions.slice(0, paneToolbarPrimaryActionCount)
+          : paneToolbarMenuActions);
   const paneOverflowCommands: PaneOverflowCommand[] = [
     ...paneTaskCommands,
     ...(pane.mode === "YOUTUBE" ? [
@@ -10982,7 +14197,11 @@ const PaneCard = memo(function PaneCard({
       : [])
   ];
   useLayoutEffect(() => {
-    if (!isVisibleInShell || shellMode === "mobile") {
+    // Retain the last measured desktop layout while hidden. Resetting it here
+    // expands the toolbar only to collapse it again on the next room reveal.
+    // The visible pass below still measures current geometry before paint.
+    if (!isVisibleInShell) return;
+    if (shellMode === "mobile") {
       setIsHeaderActionsStacked(false);
       setModernPrimaryActionCapacity(null);
       return;
@@ -10999,8 +14218,8 @@ const PaneCard = memo(function PaneCard({
     const measureHeaderLayout = () => {
       const headerWidth = headerElement.clientWidth;
       if (headerWidth <= 0) {
-        setIsHeaderActionsStacked(false);
-        setModernPrimaryActionCapacity(null);
+        // A hidden ancestor has no usable geometry. ResizeObserver will
+        // measure again when the header receives its visible dimensions.
         return;
       }
 
@@ -11024,6 +14243,29 @@ const PaneCard = memo(function PaneCard({
       );
       const fixedInlineWidth = fixedControlsWidth + Math.max(0, fixedControls.length - 1) * fixedActionsGap;
       const badgeWidth = badgeElement.clientWidth || remToPx(2);
+      if (pane.mode === "YOUTUBE") {
+        const actionWidth = actionButtons[0]?.offsetWidth || remToPx(2.25);
+        const titleInlineWidth = titleEditOpen
+          ? remToPx(12)
+          : Math.min(
+              Math.max(measureSingleLineTitleWidth(titleTextRef.current, 8), remToPx(8)),
+              remToPx(16)
+            );
+        const fits = !paneHeaderNeedsSecondRow({
+          availableWidth: headerWidth,
+          paddingLeft,
+          paddingRight,
+          badgeWidth,
+          titleWidth: titleInlineWidth,
+          actionsWidth: actionWidth,
+          fixedWidth: fixedInlineWidth,
+          columnGap: headerGap
+        });
+        setYoutubeFloatFits(fits);
+        setIsHeaderActionsStacked(false);
+        setModernPrimaryActionCapacity(fits ? 1 : 0);
+        return;
+      }
       if (uiTheme !== "classic") {
         const nextCapacity = modernPanePrimaryActionCapacity({
           availableWidth: headerWidth,
@@ -11082,12 +14324,14 @@ const PaneCard = memo(function PaneCard({
     isTerminalPane,
     isVisibleInShell,
     modernPrimaryActionLimit,
+    pane.mode,
     paneToolbarRenderedActions.length,
     pane.title,
     shellMode,
     titleEditOpen,
     uiTheme,
-    vpnRoutingPresentation?.label
+    vpnRoutingPresentation?.label,
+    youtubeFloatFits
   ]);
   useDismissibleToolbarLayer({
     containerRef: paneHeaderRef,
@@ -11127,7 +14371,9 @@ const PaneCard = memo(function PaneCard({
         height: `${floatLayout.height}px`,
         zIndex: 1200,
         minWidth: "240px",
-        minHeight: "160px"
+        minHeight: "160px",
+        transform: youtubeDodgeShiftX > 0 ? `translateX(-${youtubeDodgeShiftX}px)` : undefined,
+        transition: isPointerActive ? "none" : "transform 0.22s cubic-bezier(0.2, 0, 0, 1)"
       } : paneCardStyle}
       onPointerDownCapture={() => onTarget(pane.id)}
       onDragOver={(event) => onPaneDragOver(event, pane.id)}
@@ -11137,7 +14383,10 @@ const PaneCard = memo(function PaneCard({
         void onPaneDrop(pane.id, dragOverPosition);
       }}
       onFocusCapture={(event) => {
-        if (event.target instanceof Element && event.target.classList.contains("xterm-helper-textarea")) return;
+        if (event.target instanceof Element && event.target.classList.contains("xterm-helper-textarea")) {
+          if (event.isTrusted) onTarget(pane.id);
+          return;
+        }
         onTarget(pane.id);
       }}
     >
@@ -11147,6 +14396,7 @@ const PaneCard = memo(function PaneCard({
           type="file"
           name="pane-import-files"
           multiple
+          accept="*/*"
           hidden
           onChange={(event) => {
             const files = event.currentTarget.files ? Array.from(event.currentTarget.files) : [];
@@ -11159,9 +14409,6 @@ const PaneCard = memo(function PaneCard({
         <header
           className="pane-card-header youtube-mini-float-header"
           onPointerDown={handleFloatHeaderPointerDown}
-          onPointerMove={handleFloatHeaderPointerMove}
-          onPointerUp={handleFloatHeaderPointerUp}
-          onPointerCancel={handleFloatHeaderPointerUp}
         >
           <GripVertical className="youtube-mini-float-drag-icon" aria-hidden="true" />
           <Youtube className="youtube-mini-float-icon" aria-hidden="true" />
@@ -11205,19 +14452,22 @@ const PaneCard = memo(function PaneCard({
       ) : (
         <header
           ref={paneHeaderRef}
-        className={isHeaderActionsStacked ? "is-actions-stacked" : undefined}
-        tabIndex={-1}
-        draggable={!paneReorderPending && !titleEditOpen}
+          className={isHeaderActionsStacked ? "is-actions-stacked" : undefined}
+          tabIndex={-1}
+          title={title}
+          draggable={!paneReorderPending && !titleEditOpen}
         onDragStart={(event) => {
           const target = event.target as HTMLElement | null;
-          if (target?.closest('button, input, form, select, textarea, details summary, .icon-context-menu, [role="menu"]')) {
+          if (target?.closest('button, input, form, select, textarea, .pane-title-detail-content, .task-title-popover, .icon-context-menu, [role="menu"]')) {
             return;
           }
+          const openDetails = paneHeaderRef.current?.querySelector<HTMLDetailsElement>('details.pane-title-details[open]');
+          if (openDetails) openDetails.open = false;
           onPaneDragStart(event, pane);
         }}
         onDragEnd={onPaneDragEnd}
       >
-        <div ref={paneBadgeRef} className="pane-header-identity">
+        <div ref={paneBadgeRef} className="pane-header-identity" {...badgeTouchContext}>
           {isMobilePaneFocused && isTarget ? <SpaceBrand /> : (
             <div
               className={`pane-agent-badge${vpnRoutingPresentation ? ` has-vpn-routing is-${vpnRoutingPresentation.tone}` : ""}${draggedPaneId === pane.id ? " is-dragging" : ""}`}
@@ -11225,9 +14475,6 @@ const PaneCard = memo(function PaneCard({
               role="img"
               aria-label={paneIdentityTitle}
               data-category-color={pane.categoryColor ?? undefined}
-              draggable={!paneReorderPending}
-              onDragStart={(event) => onPaneDragStart(event, pane)}
-              onDragEnd={onPaneDragEnd}
               onDoubleClick={() => void onToggleColumnSpan(pane)}
               onContextMenu={usesCompactPaneActions ? (event) => {
                 event.preventDefault();
@@ -11340,11 +14587,18 @@ const PaneCard = memo(function PaneCard({
                     }
                   }}
                 />
-                <button type="submit" title="Save pane title" aria-label="Save pane title" disabled={titleSavePending || titleGeneratePending}>
+                <button
+                  type="submit"
+                  className="pane-title-save"
+                  title="Save pane title"
+                  aria-label="Save pane title"
+                  disabled={titleSavePending || titleGeneratePending}
+                >
                   <Save aria-hidden="true" />
                 </button>
                 <button
                   type="button"
+                  className="pane-title-cancel"
                   title="Cancel pane title"
                   aria-label="Cancel pane title"
                   onClick={cancelTitleEdit}
@@ -11364,7 +14618,7 @@ const PaneCard = memo(function PaneCard({
           ) : null}
         </div>
         <div className="pane-actions" ref={paneActionsRef}>
-          {isFullscreenLayout && fullscreenCount > 1 && (shellMode !== "mobile" || isMobilePaneFocused) ? (
+          {isFullscreenLayout && fullscreenCount > 1 && shellMode !== "mobile" ? (
             <div className="pane-fullscreen-nav" role="group" aria-label={`Pane navigation, pane ${fullscreenIndex + 1} of ${fullscreenCount}`}>
               <button
                 type="button"
@@ -11479,7 +14733,7 @@ const PaneCard = memo(function PaneCard({
                     paneToolbar.setIsOverflowOpen(false);
                     action.onClick();
                   }}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE"}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES"}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}
                 />
@@ -11492,6 +14746,7 @@ const PaneCard = memo(function PaneCard({
                   label={`Pane actions ${title}`}
                   onClose={paneToolbar.closeMenus}
                   onHideAction={paneToolbar.hideAction}
+                  onReorderAction={paneToolbar.moveAction}
                   onRunAction={(action) => {
                     paneToolbar.setIsOverflowOpen(false);
                     action.onClick();
@@ -11507,7 +14762,7 @@ const PaneCard = memo(function PaneCard({
                       paneToolbar.showAction(actionId);
                     }
                   }}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE"}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES"}
                   preferPaneInside={pane.mode === "CHAT"}
                   primaryActionIds={uiTheme !== "classic" ? paneToolbarRenderedActions.map((action) => action.id) : undefined}
                   popupId={paneActionsPopupId}
@@ -11516,22 +14771,30 @@ const PaneCard = memo(function PaneCard({
               )
             ) : null}
           </div>
-          <button
+          {shellMode !== "mobile" ? <button
             type="button"
+            className={`pane-maximize-toggle${(showRestoreIcon || isFullscreenLayout) ? " is-active" : ""}`}
             title={maximizeLabel}
             aria-label={maximizeLabel}
-            aria-pressed={showRestoreIcon}
+            aria-pressed={showRestoreIcon || isFullscreenLayout}
             onClick={() => {
               paneToolbar.closeMenus();
-              if (shellMode === "mobile") {
-                onMobilePaneFocusChange(!isMobilePaneFocused);
+              if (isFullscreenLayout) {
+                onRestoreLayout?.();
                 return;
               }
+              onTarget(pane.id);
               onMaximize(pane);
             }}
           >
-            {showRestoreIcon ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-          </button>
+            {isFullscreenLayout ? (
+              <Grid2X2 aria-hidden="true" />
+            ) : showRestoreIcon ? (
+              <Minimize2 aria-hidden="true" />
+            ) : (
+              <Maximize2 aria-hidden="true" />
+            )}
+          </button> : null}
           {shellMode !== "mobile" ? (
             <button
               type="button"
@@ -11596,6 +14859,8 @@ const PaneCard = memo(function PaneCard({
         ) : pane.mode === "BROWSER" ? (
           <RecoverableSurface fallback={browserPaneLoadingFallback}>
             <LazyBrowserPane
+              mobile={shellMode === "mobile" || isCoarsePointer}
+              isVisible={isVisibleInShell}
               pane={pane}
               agentNumber={agentNumber}
               observerOnly={browserObserverOnly}
@@ -11621,13 +14886,21 @@ const PaneCard = memo(function PaneCard({
           </RecoverableSurface>
         ) : pane.mode === "HARNESS" && shouldLoadHarness ? (
           <RecoverableSurface fallback={browserPaneLoadingFallback}>
-            <LazyHarnessPane pane={pane} workspaceTextSize={terminalFontSize} />
+            <LazyHarnessPane pane={pane} workspaceTextSize={terminalFontSize} isVisible={isVisibleInShell} />
           </RecoverableSurface>
         ) : pane.mode === "HARNESS" ? (
           <div className="harness-pane" data-harness-deferred="true" aria-hidden="true" />
         ) : pane.mode === "LIVE" ? (
           <RecoverableSurface fallback={browserPaneLoadingFallback}>
-            <LazyLivePane pane={pane} workspaceTextSize={terminalFontSize} />
+            <LazyLivePane pane={pane} workspaceTextSize={terminalFontSize} mobile={shellMode === "mobile" || isCoarsePointer} />
+          </RecoverableSurface>
+        ) : pane.mode === "FILES" ? (
+          <RecoverableSurface fallback={browserPaneLoadingFallback} resetKey={pane.id}>
+            <LazyFilesPane pane={pane} uiTheme={uiTheme} mobile={shellMode === "mobile" || isCoarsePointer} projectPath={roomProjectPath} />
+          </RecoverableSurface>
+        ) : pane.mode === "DEMOS" ? (
+          <RecoverableSurface fallback={browserPaneLoadingFallback}>
+            <LazyDemosPane pane={pane} uiTheme={uiTheme} isVisible={isVisibleInShell} />
           </RecoverableSurface>
         ) : (
           <>
@@ -11696,9 +14969,6 @@ const PaneCard = memo(function PaneCard({
         <div
           className="youtube-mini-float-resize-handle"
           onPointerDown={handleResizePointerDown}
-          onPointerMove={handleResizePointerMove}
-          onPointerUp={handleResizePointerUp}
-          onPointerCancel={handleResizePointerUp}
           title="Drag to resize mini player"
           aria-hidden="true"
         />

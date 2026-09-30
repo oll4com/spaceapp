@@ -318,3 +318,165 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Light mode support for Admin Codex Tools (Speed Control, CLI Cleanup, History Purge) */
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-tools-dialog {
+  border-color: #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.15);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-tools-header h2 {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-tools-header p,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-tools-note,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-preview p,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-result p {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-tools-header > button {
+  border-color: #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-tools-header > button:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-tools-header > button:focus-visible {
+  border-color: #b7c6d1;
+  background: #eef3f6;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-tools-icon {
+  border-color: #8ed6ba;
+  background: #e5f5ee;
+  color: #167654;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-tools-icon.danger {
+  border-color: #fca5a5;
+  background: #fde8e8;
+  color: #c53030;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-speed-row {
+  border-color: #d2dce4;
+  background: #f7f9fb;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-speed-row small,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-preview-heading small {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-segmented button {
+  background: #f0f4f7;
+  border: 1px solid #d2dce4;
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-segmented button:hover:not(:disabled) {
+  background: #e4ebf0;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-segmented button[aria-pressed="true"] {
+  border-color: #087f74;
+  background: #e6f4f1;
+  color: #087f74;
+  font-weight: 600;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-warning {
+  border-color: #f1cf87;
+  background: #fff8e6;
+  color: #8b6516;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-counts > div {
+  border-color: #d2dce4;
+  background: #f7f9fb;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-counts dt {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-counts dd {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-confirmation {
+  border-top-color: #e1e9ee;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-confirmation label {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-confirmation code {
+  color: #c53030;
+  background: #fde8e8;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-confirmation input {
+  border-color: #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-confirmation input:focus-visible {
+  border-color: #087f74;
+  outline: 2px solid rgba(8, 127, 116, 0.24);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-primary,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-confirmation button {
+  border: 1px solid #d2dce4;
+  background: #f7f9fb;
+  color: #17232d;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-primary:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-confirmation button:hover:not(:disabled) {
+  border-color: #087f74;
+  background: #eef7f5;
+  color: #087f74;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-confirmation button.danger {
+  border-color: #fca5a5;
+  background: #fde8e8;
+  color: #c53030;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-confirmation button.danger:hover:not(:disabled) {
+  border-color: #ef4444;
+  background: #fbd5d5;
+  color: #991b1b;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-alert.success {
+  border-color: #8ed6ba;
+  background: #e5f5ee;
+  color: #167654;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-alert.error {
+  border-color: #fca5a5;
+  background: #fde8e8;
+  color: #c53030;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .admin-codex-failures {
+  color: #c53030;
+}

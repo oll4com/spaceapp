@@ -68,17 +68,23 @@ export class CliHostSessionRegistry {
   private readonly sessions = new Map<string, Promise<ManagedSession>>();
   private readonly resolvedSessions = new Map<string, ManagedSession>();
   private readonly outputBufferBytes: number;
+  private readonly inactiveSessionMs: number | null;
+  private readonly terminalSessionRetentionMs: number;
 
   constructor(
     private readonly options: {
       spawn: CliHostSpawn;
       normalizeSpawn?: (identity: CliHostIdentity, spawn: CliHostSpawnSpec) => CliHostSpawnSpec;
       outputBufferBytes?: number;
+      inactiveSessionMs?: number;
+      terminalSessionRetentionMs?: number;
       now?: () => number;
       killProcess?: (pid: number, signal: NodeJS.Signals | 0) => void;
     }
   ) {
     this.outputBufferBytes = Math.max(1024, options.outputBufferBytes ?? 8 * 1024 * 1024);
+    this.inactiveSessionMs = options.inactiveSessionMs ?? null;
+    this.terminalSessionRetentionMs = options.terminalSessionRetentionMs ?? CLI_HOST_TERMINAL_SESSION_RETENTION_MS;
   }
 
   private killProcess(pid: number, signal: NodeJS.Signals | 0): void {
@@ -244,9 +250,12 @@ export class CliHostSessionRegistry {
   }
 
   reapInactiveSessions(nowMs: number, inactiveMs: number): string[] {
-    if (resolveCliHostInactiveSessionMs(process.env.SPACE_CLI_HOST_INACTIVE_SESSION_MS) === null) return [];
+    const envLease = resolveCliHostInactiveSessionMs(process.env.SPACE_CLI_HOST_INACTIVE_SESSION_MS);
+    if (envLease === null && this.inactiveSessionMs === null && process.env.SPACE_CLI_HOST_INACTIVE_SESSION_MS !== undefined) {
+      return [];
+    }
+    const leaseMs = Math.max(1, envLease ?? this.inactiveSessionMs ?? inactiveMs);
     const reaped: string[] = [];
-    const leaseMs = Math.max(1, inactiveMs);
     for (const managed of this.resolvedSessions.values()) {
       if (managed.status !== "RUNNING" || managed.terminationRequested) continue;
       if (!this.processAlive(managed)) {
@@ -314,7 +323,7 @@ export class CliHostSessionRegistry {
     for (const managed of this.resolvedSessions.values()) {
       if (managed.status !== "EXITED" && managed.status !== "ERROR") continue;
       const endedAtMs = managed.endedAt ? Date.parse(managed.endedAt) : Number.NaN;
-      if (Number.isFinite(endedAtMs) && nowMs - endedAtMs >= CLI_HOST_TERMINAL_SESSION_RETENTION_MS) {
+      if (Number.isFinite(endedAtMs) && nowMs - endedAtMs >= this.terminalSessionRetentionMs) {
         this.resolvedSessions.delete(managed.identity.cliSessionId);
         this.sessions.delete(managed.identity.cliSessionId);
         pruned += 1;
@@ -407,6 +416,13 @@ export class CliHostSessionRegistry {
           ? "CLI process exited."
           : `CLI process exited with code ${event.exitCode}.`;
       managed.endedAt = new Date().toISOString();
+      if (managed.outputBuffer.length > 50) {
+        managed.outputBuffer = managed.outputBuffer.slice(-50);
+        managed.outputBufferBytes = managed.outputBuffer.reduce((sum, item) => sum + (item.data?.length ?? 0), 0);
+      }
+      managed.pendingHiddenEchoes = [];
+      managed.pendingHiddenTail = "";
+      managed.acceptedInputs.clear();
       const statusEvent: CliHostEvent = {
         type: "status",
         status: managed.status,

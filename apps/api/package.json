@@ -10,9 +10,10 @@
     "start": "node dist/server.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --maxWorkers=2"
   },
   "dependencies": {
+    "@ai-sdk/gateway": "4.0.87",
     "@fastify/compress": "^9.1.0",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.2.0",
@@ -45,5 +46,5 @@
     "typescript": "^5.9.3",
     "vitest": "^4.0.15"
   },
-  "license": "Apache-2.0"
+  "license": "BUSL-1.1"
 }

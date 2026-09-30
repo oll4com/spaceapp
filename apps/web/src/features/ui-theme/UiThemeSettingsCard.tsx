@@ -41,13 +41,14 @@ export function UiThemeSettingsCard({
           <option value="classic">Classic</option>
           <option value="modern">Modern</option>
           <option value="codex">Codex LB</option>
+          <option value="motion">Motion</option>
         </select>
       </label>
 
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy">
           <strong>Color mode</strong>
-          <small>Modern supports light and dark. Classic and Codex LB use dark colors.</small>
+          <small>Modern supports light and dark. Classic, Codex LB and Motion use dark colors.</small>
         </span>
         <select
           aria-label="Modern color mode"
@@ -83,6 +84,7 @@ export function UiThemeSettingsCard({
         >
           <option value="lucide">Lucide</option>
           <option value="material-rounded">Material Rounded</option>
+          <option value="motion">Motion Geometric</option>
         </select>
       </label>
     </section>

@@ -63,6 +63,9 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      - name: Require exact-candidate cross-platform installation evidence
+        run: node scripts/release-evidence.mjs
+
       - name: Enforce legal, version, and npm channel readiness
         env:
           RELEASE_VERSION: ${{ inputs.version }}

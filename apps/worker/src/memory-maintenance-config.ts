@@ -7,7 +7,8 @@ export const MEMORY_MAINTENANCE_ACTIVITY_CONCURRENCY = 1;
 export const memoryMaintenanceWorkerOptions = {
   maxConcurrentActivityTaskExecutions: MEMORY_MAINTENANCE_ACTIVITY_CONCURRENCY,
   maxConcurrentLocalActivityExecutions: MEMORY_MAINTENANCE_ACTIVITY_CONCURRENCY,
-  maxConcurrentActivityTaskPolls: MEMORY_MAINTENANCE_ACTIVITY_CONCURRENCY
+  maxConcurrentActivityTaskPolls: MEMORY_MAINTENANCE_ACTIVITY_CONCURRENCY,
+  ...({ isolateExecutionTimeout: "30s" } as Record<string, unknown>)
 } satisfies Partial<WorkerOptions>;
 
 export function memoryMaintenanceEnabled(env: NodeJS.ProcessEnv | Record<string, string | undefined>): boolean {

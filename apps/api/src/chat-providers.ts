@@ -59,6 +59,32 @@ export function cliChatRuntimeName(runtimeId: string): string {
   return cliChatRuntimeNames[runtimeId] ?? runtimeId;
 }
 
+/**
+ * Maps a Chat provider id to the CLI runtime visibility toggle that owns it.
+ * Native providers use their own id; every CLI-backed provider is itself the
+ * runtime id, so a disabled CLI can never reach the Chat pane picker.
+ */
+export function cliChatProviderRuntimeId(providerId: string): string | null {
+  if (providerId === codexChatProviderId) return "cli:codex";
+  if (providerId === opencodeChatProviderId) return "cli:opencode";
+  return providerId.startsWith("cli:") ? providerId : null;
+}
+
+/**
+ * Chat providers are offered only while their own CLI runtime toggle is on.
+ * The check runs per session read, so the picker drops a disabled CLI and
+ * restores it automatically once it is enabled again in Settings.
+ */
+export function cliChatProviderEnabledByRuntimeToggle(
+  isRuntimeEnabled: (runtimeId: string) => Promise<boolean>
+): (providerId: string) => Promise<boolean> {
+  return async (providerId: string) => {
+    const runtimeId = cliChatProviderRuntimeId(providerId);
+    if (runtimeId === null) return true;
+    return isRuntimeEnabled(runtimeId);
+  };
+}
+
 export function cliRuntimeChatProviderAdapter(options: {
   runtimeId: string;
   providerName?: string;
@@ -149,7 +175,7 @@ export function geminiModelsChatProviderAdapter(options: {
   };
 }
 
-const cliModelIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const cliModelIdentifierPattern = /^[A-Za-z0-9@~][A-Za-z0-9._:\/@+~-]*$/;
 const cliReasoningEffortPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function reasoningEffortLabel(effort: string): string {
@@ -284,13 +310,15 @@ export function opencodeChatProviderAdapter(
         }
         // Use the configured native catalog, including OpenCode Zen and Go.
         // A fixed Chat allowlist hides available models whenever that catalog changes.
-        const models = descriptors.map((descriptor, index) => {
-          const optionId = `${descriptor.providerId}/${descriptor.modelId}`;
+        const models = descriptors.flatMap((descriptor, index) => {
+          const rawId = `${descriptor.providerId}/${descriptor.modelId}`;
+          const optionId = rawId.replace(/[^A-Za-z0-9._:\/@+~-]/g, "-").replace(/^[^A-Za-z0-9@~]+/, "");
+          if (!optionId || !cliModelIdentifierPattern.test(optionId)) return [];
           const listedVariants = descriptor.variants.length > 0 ? descriptor.variants : [];
           const supportedReasoningEfforts = listedVariants.length > 0
             ? listedVariants
             : [openCodeDefaultReasoningEffort];
-          return {
+          return [{
             id: optionId,
             displayName: descriptor.displayName,
             description: descriptor.providerName ?? descriptor.providerId,
@@ -299,7 +327,7 @@ export function opencodeChatProviderAdapter(
               descriptor.defaultVariant ?? listedVariants[0] ?? openCodeDefaultReasoningEffort,
             supportedReasoningEfforts,
             reasoningOptions: listedVariants.map((reasoningEffort) => ({ reasoningEffort }))
-          };
+          }];
         });
         return {
           models,

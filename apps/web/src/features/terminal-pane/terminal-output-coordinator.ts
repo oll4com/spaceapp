@@ -503,6 +503,7 @@ export function createTerminalOutputCoordinator(options: {
   onPrefillDrained?: () => void;
   onPendingPrefillChange?: (snapshot: TerminalPendingPrefillSnapshot) => void;
   onPressure?: (pressure: TerminalOutputPressure) => void;
+  onDataEnqueued?: (data: string) => void;
   perPaneLimitBytes?: number;
   totalLimitBytes?: number;
 }) {
@@ -706,6 +707,7 @@ export function createTerminalOutputCoordinator(options: {
       requestedMode: TerminalOutputWriteMode = "VISIBLE"
     ): Promise<void> {
       if (disposed || !data) return;
+      options.onDataEnqueued?.(data);
       const bytes = textEncoder.encode(data).byteLength;
       if (!options.isWritable()) {
         const counters = activeAgentStressProofCounters();

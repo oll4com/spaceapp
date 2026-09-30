@@ -1,5 +1,27 @@
+import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pane/live-history-sync.js";
+import type { LiveRoomContext } from "@space/contracts";
+import type { MaintenancePlanRequest, MaintenanceApplyRequest } from "@space/contracts";
+import { singleFlightRequest } from "./single-flight-request.js";
 import type { TaskTitleSettings, TaskTitleCandidateStatus } from "@space/contracts";
-import type { SystemHealthSnapshot, SystemHealthHistory, SystemHealthRange } from "@space/contracts";
+import type {
+  DemoAccountsResponse,
+  DemoConnection,
+  DemoConnectionProvider,
+  DemoOperation,
+  DemoOperationListResponse,
+  DemoRun,
+  DemoSelection,
+  DemoSelectionInput,
+  DemoSheetsTarget,
+  DemoStartRunInput,
+  DemoStateResponse,
+  DemoTestRun,
+  DemoTestRunListResponse,
+  DemoVariantFileContent,
+  DemoVariantFilesResponse,
+  DemoLogsResponse
+} from "@space/contracts";
+import type { SystemHealthSnapshot, SystemHealthHistory, SystemHealthRange, SystemTopologySnapshot } from "@space/contracts";
 import type { YouTubeAccounts, YouTubeAccountSelection } from "./features/browser-pane/youtube-accounts.js";
 import type { YouTubePlayback } from "./features/browser-pane/youtube-playback.js";
 import type {
@@ -15,8 +37,11 @@ import type {
   CollaborationMode,
   AgentRuntimeRegistry,
   AdminOperationRun,
+  AdminUserItem,
+  AdminUserListResponse,
   AuditEvent,
   AuthMe,
+  AuthUser,
   BrowserEvidenceCapture,
   BrowserEvidenceViewport,
   BrowserBookmarkImportResponse,
@@ -51,6 +76,7 @@ import type {
   ListAuditChainQuery,
   AuditVerifyResponse,
   CreateClipboardItemRequest,
+  UpdatePlanProgressRequest,
   CreateTaskItemRequest,
   CreateRoomPanesRequest,
   DeleteRoomAgentFilesResponse,
@@ -108,6 +134,7 @@ import type {
   SystemAnalyticsProcessesResponse,
   SystemAnalyticsRange,
   SystemAnalyticsResourcesResponse,
+  OpencodeBenchResponse,
   CodexCliModeDefaultsResponse,
   CodexHistoryPurgeExecuteRequest,
   CodexHistoryPurgePreviewResponse,
@@ -117,6 +144,8 @@ import type {
   CodexLbSpeedDefaultsResponse,
   CodexLbSpeedTier,
   CodexUsageAccountList,
+  AntigravityUsageAccountList,
+  ApiProviderAccountList,
   CodexAppServerHandshakeCheck,
   CodexAppServerStatus,
   CodexAppServerTurnSmokeCheck,
@@ -182,6 +211,7 @@ import type {
   PaneCliWebSocketToken,
   Provider,
   ProviderSettings,
+  UserSettings,
   ProviderSwitchResponse,
   ProviderSwitchTargets,
   ProviderValidationResult,
@@ -226,6 +256,10 @@ import type {
   StreamingPlatformAccount,
   StreamingVerifyAccountResponse,
   StreamingBotActivity,
+  StreamingBotReviewedMemory,
+  StreamingModerationAction,
+  CreateStreamingBotMemoryInput,
+  UpdateStreamingBotMemoryInput,
   StreamingBotMcpExecuteResponse,
   StreamingBotSettings,
   StreamingBotStatus,
@@ -252,24 +286,37 @@ import type {
   UpdatePaneLayoutInput,
   UpdateTelegramIntegrationInput,
   UserLink,
+  UserLinkCategory,
+  InspectUserLinkResponse,
   CreateUserLinkRequest,
   UpdateUserLinkRequest,
   UpdateProviderInput,
   UpdateProviderSettingsInput,
+  UpdateUserSettingsInput,
   UpdateStreamingOverlaySettingsInput,
   VoiceRealtimeSessionRequest,
   VoiceRealtimeSessionResponse,
+  VoiceRealtimeHistoryItem,
   VoiceTranscriptionSettings,
   VoiceTranscriptionDelay,
   VoiceTranscriptionLanguage,
   VoiceTranscriptionModel,
   VoiceTranscriptionResponse,
   OpenAiModelsResponse,
-  WorkerReadiness
+  WorkerReadiness,
+  FileListResponse,
+  FileReadResponse,
+  FileSearchResponse,
+  FileDiskUsageResponse,
+  DiskStats
 } from "@space/contracts";
 import { SpaceApiError } from "./runtime/SpaceRuntime.js";
 import { reportCoreApiFailure, reportCoreApiSuccess } from "./core-api-availability.js";
 import { consumeAuthBootstrap } from "./auth-bootstrap-cache.js";
+import {
+  CLI_RUNTIME_VISIBILITY_EVENT,
+  readCliRuntimeVisibilityChange
+} from "./cli-runtime-visibility-events.js";
 
 export { SpaceApiError } from "./runtime/SpaceRuntime.js";
 
@@ -279,7 +326,7 @@ export interface LivePersonalMemoryItem {
   id: string;
   key: string;
   value: string;
-  category?: "profile" | "preference" | "fact" | "instruction" | "note";
+  category?: "core" | "profile" | "preference" | "fact" | "instruction" | "note";
   createdAt: string;
   updatedAt: string;
 }
@@ -554,6 +601,7 @@ function isUnsafeRequest(url: string, init?: RequestInit): boolean {
   const method = (init?.method ?? "GET").toUpperCase();
   return !["GET", "HEAD", "OPTIONS"].includes(method) &&
     url !== "/api/auth/login" &&
+    url !== "/api/auth/google/credential" &&
     url !== "/api/setup/claim";
 }
 
@@ -592,6 +640,14 @@ function formatHttpFailure(status: number, payload: unknown): string {
   }
   if (status === 413) {
     return "UPLOAD_TOO_LARGE: Request exceeded the live proxy or API upload size limit.";
+  }
+  if (typeof payload === "object" && payload !== null) {
+    if ("error" in payload && typeof (payload as { error: unknown }).error === "string") {
+      return (payload as { error: string }).error;
+    }
+    if ("message" in payload && typeof (payload as { message: unknown }).message === "string") {
+      return (payload as { message: string }).message;
+    }
   }
   if (typeof payload === "string") {
     const compact = payload.replace(/\s+/g, " ").trim();
@@ -707,10 +763,46 @@ async function requestWithTimeout<T>(url: string, timeoutMs: number, timeoutMess
   }
 }
 
+const cliRuntimeRegistryStorageKey = "space.cliRuntimeRegistry.cache.v1";
 const cliRuntimeRegistryCacheTtlMs = 10_000;
-const cliRuntimeRegistryStaleTtlMs = 30 * 60_000;
+const cliRuntimeRegistryStaleTtlMs = 120 * 60_000;
 const cliRuntimeRegistryRequestTimeoutMs = 8_000;
-let cliRuntimeRegistryCache: { value: AgentRuntimeRegistry; expiresAt: number; staleUntil: number } | null = null;
+
+function readStoredCliRuntimeRegistry(): AgentRuntimeRegistry | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const raw = window.localStorage?.getItem(cliRuntimeRegistryStorageKey)
+      ?? window.sessionStorage?.getItem(cliRuntimeRegistryStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AgentRuntimeRegistry;
+    if (parsed && Array.isArray(parsed.data) && parsed.data.length > 0) {
+      return parsed;
+    }
+  } catch {
+    // Ignore storage parse error
+  }
+  return null;
+}
+
+function writeStoredCliRuntimeRegistry(registry: AgentRuntimeRegistry): void {
+  try {
+    if (typeof window === "undefined") return;
+    const payload = JSON.stringify(registry);
+    window.localStorage?.setItem(cliRuntimeRegistryStorageKey, payload);
+  } catch {
+    // Session or private mode storage quota fallback.
+  }
+}
+
+const initialStoredCliRegistry = readStoredCliRuntimeRegistry();
+let cliRuntimeRegistryCache: { value: AgentRuntimeRegistry; expiresAt: number; staleUntil: number } | null =
+  initialStoredCliRegistry
+    ? {
+        value: initialStoredCliRegistry,
+        expiresAt: Date.now() + cliRuntimeRegistryCacheTtlMs,
+        staleUntil: Date.now() + cliRuntimeRegistryStaleTtlMs
+      }
+    : null;
 let cliRuntimeRegistryFlight: Promise<AgentRuntimeRegistry> | null = null;
 
 function startCliRuntimeRegistryFlight(): Promise<AgentRuntimeRegistry> {
@@ -727,6 +819,7 @@ function startCliRuntimeRegistryFlight(): Promise<AgentRuntimeRegistry> {
         expiresAt: fetchedAt + cliRuntimeRegistryCacheTtlMs,
         staleUntil: fetchedAt + cliRuntimeRegistryStaleTtlMs
       };
+      writeStoredCliRuntimeRegistry(value);
       return value;
     })
     .finally(() => {
@@ -757,8 +850,56 @@ function cliRuntimesSnapshot(): AgentRuntimeRegistry | null {
   return cliRuntimeRegistryCache?.value ?? null;
 }
 
-function invalidateCliRuntimes(): void {
-  if (cliRuntimeRegistryCache) cliRuntimeRegistryCache.expiresAt = 0;
+function applyCliRuntimeVisibility(detail?: { runtimeId?: string; enabled?: boolean }): void {
+  if (cliRuntimeRegistryCache) {
+    cliRuntimeRegistryCache.expiresAt = 0;
+    cliRuntimeRegistryCache.staleUntil = 0;
+    if (detail?.runtimeId && detail.enabled === false && Array.isArray(cliRuntimeRegistryCache.value?.data)) {
+      cliRuntimeRegistryCache.value = {
+        ...cliRuntimeRegistryCache.value,
+        data: cliRuntimeRegistryCache.value.data.filter((runtime) => runtime.id !== detail.runtimeId)
+      };
+      writeStoredCliRuntimeRegistry(cliRuntimeRegistryCache.value);
+    }
+  }
+  if (!detail || detail.enabled !== false) {
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage?.removeItem(cliRuntimeRegistryStorageKey);
+        window.sessionStorage?.removeItem(cliRuntimeRegistryStorageKey);
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+  void startCliRuntimeRegistryFlight().catch(() => undefined);
+}
+
+function invalidateCliRuntimes(change?: { runtimeId?: string; enabled?: boolean }): void {
+  if (change?.runtimeId && change.enabled !== undefined) {
+    applyCliRuntimeVisibility(change);
+    return;
+  }
+  if (cliRuntimeRegistryCache) {
+    cliRuntimeRegistryCache.expiresAt = 0;
+    cliRuntimeRegistryCache.staleUntil = 0;
+  }
+  try {
+    if (typeof window !== "undefined") {
+      window.localStorage?.removeItem(cliRuntimeRegistryStorageKey);
+      window.sessionStorage?.removeItem(cliRuntimeRegistryStorageKey);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener(CLI_RUNTIME_VISIBILITY_EVENT, (event: globalThis.Event) => {
+    const change = readCliRuntimeVisibilityChange(event);
+    if (!change) return;
+    applyCliRuntimeVisibility(change);
+  });
 }
 
 const cliRuntimeSettingsCacheTtlMs = 10_000;
@@ -840,6 +981,8 @@ function loadActiveCliSession(
   paneId: string,
   options: { includeTranscript?: boolean; compactTranscript?: boolean } = {}
 ): Promise<PaneCliSessionResponse | null> {
+  // Optimistic panes exist only in the client until createRoomPanes returns.
+  if (paneId.startsWith("pane:optimistic-")) return Promise.resolve(null);
   const includeTranscript = options.includeTranscript !== false;
   const compactTranscript = options.compactTranscript === true;
   const key = activeCliSessionFlightKey(paneId, includeTranscript, compactTranscript);
@@ -858,13 +1001,41 @@ function loadActiveCliSession(
   return flight;
 }
 
+function createDeduplicatedFlight<T>(fetcher: () => Promise<T>, ttlMs = 15_000) {
+  let cache: { value: T; expiresAt: number } | null = null;
+  let flight: Promise<T> | null = null;
+
+  return (force = false): Promise<T> => {
+    if (!force && cache && Date.now() < cache.expiresAt) {
+      return Promise.resolve(cache.value);
+    }
+    if (flight) return flight;
+    flight = fetcher()
+      .then((val) => {
+        cache = { value: val, expiresAt: Date.now() + ttlMs };
+        return val;
+      })
+      .finally(() => {
+        flight = null;
+      });
+    return flight;
+  };
+}
+
+const fetchCodexEnvironment = createDeduplicatedFlight(() => request<CodexEnvironment>("/api/codex/environment"), 15_000);
+const fetchToolbarUsageAccounts = createDeduplicatedFlight(() => request<CodexUsageAccountList>("/api/admin/codex-usage-accounts"), 15_000);
+const fetchToolbarAntigravityUsageAccounts = createDeduplicatedFlight(() => request<AntigravityUsageAccountList>("/api/admin/antigravity-usage-accounts"), 15_000);
+const fetchToolbarApiProviderAccounts = createDeduplicatedFlight(() => request<ApiProviderAccountList>("/api/admin/api-provider-accounts"), 15_000);
+const fetchToolbarCliSessions = createDeduplicatedFlight(() => request<CliSessionStats>("/api/admin/cli-sessions"), 10_000);
+
 export const api = {
   healthPing: () => request<{ ok: boolean }>("/healthz", { cache: "no-store" }),
-  systemHealth: () => request<SystemHealthSnapshot>("/api/admin/system-analytics/health", { cache: "no-store" }),
+  systemHealth: (userView = false) => request<SystemHealthSnapshot>(userView ? "/api/system-health" : "/api/admin/system-analytics/health", { cache: "no-store" }),
   systemHealthHistory: (range: SystemHealthRange) => request<SystemHealthHistory>(`/api/admin/system-analytics/health/history?range=${encodeURIComponent(range)}`),
+  systemTopology: () => request<SystemTopologySnapshot>("/api/admin/system-analytics/topology", { cache: "no-store" }),
   readyz: () => request<ReadyzPayload>("/readyz"),
   appVersion: () => request<AppVersionStatus>("/api/app/version"),
-  harnessHealth: () => request<HarnessHealth>("/api/harness/healthz"),
+  harnessHealth: () => singleFlightRequest("harness-health", () => request<HarnessHealth>("/api/harness/healthz")),
   harnessUrl: "/api/harness/",
   eventStreamUrl,
   me: () => Promise.resolve(consumeAuthBootstrap() ?? request<AuthMe>("/api/auth/me")),
@@ -916,6 +1087,24 @@ export const api = {
     resetCliRuntimeSettingsCache();
     return result;
   },
+  googleLoginWithCredential: (credential: string) => {
+    resetCliRuntimeSettingsCache();
+    return request<AuthMe>("/api/auth/google/credential", {
+      method: "POST",
+      body: JSON.stringify({ credential })
+    });
+  },
+  unlinkGoogleAccount: () =>
+    request<{ ok: true }>("/api/auth/google/unlink", {
+      method: "POST"
+    }),
+  listAdminUsers: () =>
+    request<AdminUserListResponse>("/api/admin/users"),
+  updateUserRole: (userId: string, role: AuthUser["role"]) =>
+    request<{ user: AdminUserItem }>(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
+      method: "PATCH",
+      body: JSON.stringify({ role })
+    }),
   clipboardItems: (query: { q?: string; source?: ClipboardSource; includeCompleted?: boolean; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
@@ -935,6 +1124,11 @@ export const api = {
     request<ClipboardItem>(`/api/clipboard-items/${encodeURIComponent(clipboardItemId)}`, {
       method: "PATCH",
       body: JSON.stringify({ completed })
+    }),
+  updatePlanProgress: (clipboardItemId: string, input: UpdatePlanProgressRequest) =>
+    request<ClipboardItem>(`/api/clipboard-items/${encodeURIComponent(clipboardItemId)}/progress`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
     }),
   deleteClipboardItem: (clipboardItemId: string) =>
     request<{ id: string; deleted: true }>(`/api/clipboard-items/${encodeURIComponent(clipboardItemId)}`, {
@@ -997,15 +1191,17 @@ export const api = {
     }),
   clearTaskItems: () =>
     request<{ deletedCount: number }>("/api/task-items", { method: "DELETE" }),
-  links: (query: { q?: string; isQuick?: boolean; page?: number; pageSize?: number } = {}) => {
+  links: (query: { q?: string; category?: UserLinkCategory; isQuick?: boolean; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
+    if (query.category) params.set("category", query.category);
     if (query.isQuick !== undefined) params.set("isQuick", String(query.isQuick));
     if (query.page !== undefined) params.set("page", String(query.page));
     if (query.pageSize !== undefined) params.set("pageSize", String(query.pageSize));
     const suffix = params.toString();
     return request<Paginated<UserLink>>(`/api/links${suffix ? `?${suffix}` : ""}`);
   },
+  inspectLink: (url: string) => request<InspectUserLinkResponse>(`/api/links/inspect?url=${encodeURIComponent(url)}`),
   createLink: (input: CreateUserLinkRequest) => request<UserLink>("/api/links", { method: "POST", body: JSON.stringify(input) }),
   updateLink: (linkId: string, input: UpdateUserLinkRequest) => request<UserLink>(`/api/links/${encodeURIComponent(linkId)}`, { method: "PATCH", body: JSON.stringify(input) }),
   deleteLink: (linkId: string) => request<{ id: string; deleted: true }>(`/api/links/${encodeURIComponent(linkId)}`, { method: "DELETE" }),
@@ -1029,14 +1225,23 @@ export const api = {
     }),
   disconnectTelegramIntegration: () =>
     request<TelegramIntegrationStatus>("/api/integrations/telegram", { method: "DELETE" }),
-  rooms: (query: { page?: number; pageSize?: number } = {}) => {
+  rooms: (query: { page?: number; pageSize?: number; all?: boolean; ownerUserId?: string } = {}) => {
     const params = new URLSearchParams();
     if (query.page !== undefined) params.set("page", String(query.page));
     if (query.pageSize !== undefined) params.set("pageSize", String(query.pageSize));
+    if (query.all !== undefined) params.set("all", String(query.all));
+    if (query.ownerUserId !== undefined) params.set("ownerUserId", query.ownerUserId);
     const suffix = params.toString();
     return request<Paginated<Room>>(`/api/rooms${suffix ? `?${suffix}` : ""}`);
   },
-  roomCliActivity: () => request<RoomCliActivityResponse>("/api/rooms/cli-activity"),
+  dashboardAgents: (roomId: string) => requestWithTimeout<{ data: Pane[]; activity: Record<string, "working" | "waiting" | "done" | "idle"> }>(`/api/rooms/${encodeURIComponent(roomId)}/dashboard-agents`, 15_000, "Agent activity refresh timed out."),
+  roomCliActivity: (query: { all?: boolean; ownerUserId?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (query.all !== undefined) params.set("all", String(query.all));
+    if (query.ownerUserId !== undefined) params.set("ownerUserId", query.ownerUserId);
+    const suffix = params.toString();
+    return request<RoomCliActivityResponse>(`/api/rooms/cli-activity${suffix ? `?${suffix}` : ""}`);
+  },
   createRoom: (name: string, initialPaneCount: number, reason?: string) =>
     request<Room>("/api/rooms", {
       method: "POST",
@@ -1070,6 +1275,12 @@ export const api = {
     request<Paginated<AgentPaneHistoryItem>>(`/api/rooms/${encodeURIComponent(roomId)}/agent-history`),
   roomAgent: (roomId: string) =>
     request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent`),
+  inspectRoomMission: (roomId: string) =>
+    request<{ roomId: string; snapshot: RoomAgentSession["missionSnapshot"] }>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/missions`),
+  startRoomAgentMission: (roomId: string, objective: string, clientRequestId: string) =>
+    request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/missions`, {
+      method: "POST", body: JSON.stringify({ objective, clientRequestId })
+    }),
   sendRoomAgentMessage: (roomId: string, content: string, clientRequestId: string, selectedBrowserPaneId?: string) =>
     request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/messages`, {
       method: "POST",
@@ -1079,12 +1290,12 @@ export const api = {
     request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/commands/${encodeURIComponent(clientRequestId)}/ack`, {
       method: "POST", body: JSON.stringify({ ok })
     }),
-  stopRoomAgent: (roomId: string, reason: string) =>
+  stopRoomAgent: (roomId: string, reason: string, expectedMissionId?: string) =>
     request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/stop`, {
       method: "POST",
-      body: JSON.stringify({ reason })
+      body: JSON.stringify({ reason, expectedMissionId })
     }),
-  controlRoomAgent: (roomId: string, input: { action: "PAUSE"; reason: string } | { action: "RESUME" }) =>
+  controlRoomAgent: (roomId: string, input: ({ action: "PAUSE"; reason: string } | { action: "RESUME" }) & { expectedMissionId?: string }) =>
     request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/control`, {
       method: "POST",
       body: JSON.stringify(input)
@@ -1155,14 +1366,21 @@ export const api = {
       method: "POST"
     }),
   listSystemServices: () => request<SystemServicesResponse>(`/api/system/services`),
+  resetFailedSystemServices: (unit?: string) =>
+    request<{ success: boolean; reset: string }>("/api/system/services/reset-failed", {
+      method: "POST",
+      body: JSON.stringify(unit ? { unit } : {})
+    }),
   recoveryCliTask: (paneId: string) =>
     request<CliTaskHistoryResponse>(`/api/panes/${encodeURIComponent(paneId)}/cli/recovery-task`),
   codexThread: (threadId: string, presentation?: CodexThreadPresentation) =>
     request<CodexThreadResponse>(
       `/api/codex/threads/${encodeURIComponent(threadId)}${presentation ? `?presentation=${encodeURIComponent(presentation)}` : ""}`
     ),
-  codexEnvironment: () => request<CodexEnvironment>("/api/codex/environment"),
-  toolbarUsageAccounts: () => request<CodexUsageAccountList>("/api/admin/codex-usage-accounts"),
+  codexEnvironment: (force?: boolean) => fetchCodexEnvironment(force),
+  toolbarUsageAccounts: (force?: boolean) => fetchToolbarUsageAccounts(force),
+  toolbarAntigravityUsageAccounts: (force?: boolean) => fetchToolbarAntigravityUsageAccounts(force),
+  toolbarApiProviderAccounts: (force?: boolean) => fetchToolbarApiProviderAccounts(force),
   toolbarResetCredits: () => request<CodexResetCreditAvailability>("/api/admin/codex-reset-credits"),
   redeemToolbarResetCredit: (accountId: string, idempotencyKey: string) =>
     request<CodexResetCreditRedemptionResponse>(
@@ -1172,7 +1390,7 @@ export const api = {
         body: JSON.stringify({ idempotencyKey }),
       }
     ),
-  toolbarCliSessions: () => request<CliSessionStats>("/api/admin/cli-sessions"),
+  toolbarCliSessions: (force?: boolean) => fetchToolbarCliSessions(force),
   toolbarModelStats: (_roomId: string, windowMinutes: number) =>
     request<ToolbarModelStats>(
       `/api/admin/toolbar-model-stats?windowMinutes=${encodeURIComponent(String(windowMinutes))}`
@@ -1202,6 +1420,10 @@ export const api = {
   },
   systemAnalyticsCliSessions: (range: SystemAnalyticsRange) =>
     request<SystemAnalyticsCliSessionsResponse>(`/api/admin/system-analytics/cli-sessions?range=${encodeURIComponent(range)}`),
+  opencodeBench: (range: SystemAnalyticsRange = "7d", refresh = false) =>
+    request<OpencodeBenchResponse>(`/api/admin/system-analytics/opencode-bench?range=${encodeURIComponent(range)}${refresh ? "&refresh=true" : ""}`),
+  opencodeBenchProbe: (provider: string, model: string) =>
+    request<any>(`/api/admin/system-analytics/opencode-bench/probe/${encodeURIComponent(provider)}/${encodeURIComponent(model)}`),
   reapToolbarCliSessions: () => request<CliSessionReapResponse>("/api/admin/cli-session-reaps", {
     method: "POST",
     body: JSON.stringify({})
@@ -1282,6 +1504,8 @@ export const api = {
     request<StreamingOverlaySnapshot>("/api/admin/streaming/overlay-snapshot"),
   streamingBotSettings: () =>
     request<{ settings: StreamingBotSettings; memoryCount: number }>("/api/admin/streaming/bot/settings"),
+  streamingBotModels: () =>
+    request<{ models: Array<{ kind: "API" | "CLI"; providerId: string; modelId: string; label: string; available: boolean; reason: string | null }> }>("/api/admin/streaming/bot/models"),
   updateStreamingBotSettings: (input: UpdateStreamingBotSettingsInput) =>
     request<StreamingBotSettings>("/api/admin/streaming/bot/settings", {
       method: "PATCH",
@@ -1311,6 +1535,24 @@ export const api = {
     request<{ entries: Array<{ id: string; title: string; body: string; createdAt: string }> }>(
       `/api/admin/streaming/bot/memory/search?q=${encodeURIComponent(query)}&limit=${Math.max(1, Math.min(limit, 50))}`
     ),
+  streamingBotMemory: (status: "PENDING" | "APPROVED", query = "") =>
+    request<{ entries: StreamingBotReviewedMemory[] }>(`/api/admin/streaming/bot/memory?status=${status}&q=${encodeURIComponent(query)}`),
+  createStreamingBotMemory: (input: CreateStreamingBotMemoryInput) =>
+    request<StreamingBotReviewedMemory>("/api/admin/streaming/bot/memory", { method: "POST", body: JSON.stringify(input) }),
+  updateStreamingBotMemory: (id: string, input: UpdateStreamingBotMemoryInput) =>
+    request<StreamingBotReviewedMemory>(`/api/admin/streaming/bot/memory/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteStreamingBotMemory: (id: string) =>
+    request<{ deleted: boolean }>(`/api/admin/streaming/bot/memory/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  streamingModerationActions: () =>
+    request<{ actions: StreamingModerationAction[] }>("/api/admin/streaming/bot/moderation"),
+  streamingLiveContext: () =>
+    request<{ generatedAt: string; bot: unknown; metrics: unknown[]; messages: unknown[]; targets: unknown[]; moderation: unknown[]; memory: unknown[]; knowledge: unknown[] }>("/api/admin/streaming/live-context"),
+  streamingLiveAction: (input: { action: "REPLY"; platform: "YOUTUBE" | "TWITCH"; message: string } |
+    { action: "PAUSE" } | { action: "TIMEOUT"; activityId: string; durationSeconds: 300 | 1800 } |
+    { action: "UNDO"; moderationActionId: string }) =>
+    request<{ ok: boolean; result: unknown }>("/api/admin/streaming/live-action", { method: "POST", body: JSON.stringify(input) }),
+  undoStreamingModerationAction: (id: string) =>
+    request<StreamingModerationAction>(`/api/admin/streaming/bot/moderation/${encodeURIComponent(id)}/undo`, { method: "POST", body: "{}" }),
   listCliMaintenanceRuns: () =>
     request<{ data: AdminOperationRun[] }>("/api/admin/cli-maintenance/runs"),
   getCliMaintenanceReplay: (runId: string, afterSequence = 0) =>
@@ -1336,6 +1578,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  createMaintenancePlan: (input: MaintenancePlanRequest) => request<AdminOperationRun>("/api/admin/cli-maintenance/plans", { method: "POST", body: JSON.stringify(input) }),
+  applyMaintenancePlan: (planId: string, input: MaintenanceApplyRequest) => request<AdminOperationRun>(`/api/admin/cli-maintenance/plans/${encodeURIComponent(planId)}/apply`, { method: "POST", body: JSON.stringify(input) }),
   detectCliUpdateAll: () =>
     request<CliUpdateAllDetection>("/api/admin/cli-maintenance/update-all/detect"),
   runCliUpdateAll: (input: CliUpdateAllRequest) =>
@@ -1438,16 +1682,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  sendAgentMessage: (paneId: string, content: string, selectedModelConfigId?: string | null, selectedToolIds?: string[], artifactIds?: string[]) =>
+  sendAgentMessage: (paneId: string, content: string, selectedModelConfigId?: string | null, selectedToolIds?: string[], artifactIds?: string[], clientRequestId?: string) =>
     request<AgentPaneSession>(`/api/panes/${encodeURIComponent(paneId)}/agent/messages`, {
       method: "POST",
       body: JSON.stringify({
         content,
+        ...(clientRequestId ? { clientRequestId } : {}),
         ...(selectedModelConfigId ? { selectedModelConfigId } : {}),
         ...(selectedToolIds ? { selectedToolIds } : {}),
         ...(artifactIds?.length ? { artifactIds } : {})
       })
     }),
+  prepareAgentRetry: (paneId: string) => request<{ content: string; artifacts: Artifact[] }>(
+    `/api/panes/${encodeURIComponent(paneId)}/agent/prepare-retry`, { method: "POST", body: "{}" }
+  ),
   interruptAgent: (paneId: string) =>
     request<AgentPaneSession>(`/api/panes/${encodeURIComponent(paneId)}/agent/interrupt`, {
       method: "POST",
@@ -1733,7 +1981,7 @@ export const api = {
       `/api/cli/runtime-settings/${encodeURIComponent(runtimeId)}`,
       { method: "PATCH", body: JSON.stringify(input) }
     );
-    invalidateCliRuntimes();
+    invalidateCliRuntimes({ runtimeId, enabled: result.setting.enabled });
     invalidateCliRuntimeSettings();
     return result;
   },
@@ -2327,6 +2575,12 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
+  userSettings: () => request<UserSettings>("/api/user-settings"),
+  updateUserSettings: (input: UpdateUserSettingsInput) =>
+    request<UserSettings>("/api/user-settings", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
   createProvider: (input: CreateProviderInput) =>
     request<Provider>("/api/providers", {
       method: "POST",
@@ -2339,11 +2593,24 @@ export const api = {
     }),
   voiceTranscriptionSettings: () => request<VoiceTranscriptionSettings>("/api/voice/transcription/settings"),
   openAiModels: () => request<OpenAiModelsResponse>("/api/voice/openai-models"),
+  liveAudioProviders: () => request<{ providers: any[] }>("/api/voice/providers"),
   createVoiceRealtimeCall: (input: VoiceRealtimeSessionRequest) =>
     request<VoiceRealtimeSessionResponse>("/api/voice/realtime/calls", {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  getLiveHistory: () => request<LiveHistorySnapshot>("/api/live/history"),
+  saveLiveHistory: (turns: Array<{ item: PersistedLiveTurn; epoch: number }>, expectedOwnerId: string) => request<{ receipts: Array<{ id: string; sessionId: string; accepted: boolean }> }>("/api/live/history/turns", { method: "POST", body: JSON.stringify({ turns, expectedOwnerId }) }),
+  getLiveRoomContext: (roomId: string, signal?: AbortSignal) =>
+    request<LiveRoomContext>(`/api/live/context/${encodeURIComponent(roomId)}`, { signal }),
+  getLiveRoomActivity: (roomId: string) =>
+    request<LiveRoomContext>(`/api/live/context/${encodeURIComponent(roomId)}?fresh=true`),
+  triageVoiceIntent: (query: string, roomId?: string, explicitModel?: string) =>
+    request<{ available: boolean; degraded?: boolean; reason?: string; route?: string | null; ambiguous?: number | null; model?: string | null; latencyMs?: number; intent?: string; complexity?: string; toolFamily?: string; cacheHit?: boolean }>("/api/voice/realtime/triage", {
+      method: "POST", body: JSON.stringify({ query, roomId, explicitModel })
+    }),
+  getVoiceRealtimePolicy: () =>
+    request<{ revision: string; source: "environment" | "empty"; mode: "economy" | "balanced" | "quality"; dailyBudgetUsd: number | null; models: Array<Record<string, unknown>> }>("/api/voice/realtime/policy"),
   localVoiceStatus: () => request<Record<string, unknown>>("/api/voice/local/status"),
   createLocalVoiceSession: (input: { paneId: string; language: string; opening?: string; prompt?: string }) =>
     request<Record<string, unknown>>("/api/voice/local/sessions", {
@@ -2498,18 +2765,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  getLivePersonalMemory: () => request<{ items: LivePersonalMemoryItem[] }>("/api/live/personal-memory"),
-  saveLivePersonalMemory: (input: { key: string; value: string; category?: string; id?: string }) =>
-    request<{ item: LivePersonalMemoryItem }>("/api/live/personal-memory", { method: "POST", body: JSON.stringify(input) }),
-  deleteLivePersonalMemory: (id: string) =>
-    request<{ ok: boolean }>(`/api/live/personal-memory/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  analyzeLiveAttachment: (input: { file: File; model: string; prompt?: string }) => {
+  getLivePersonalMemory: () => request<{ items: LivePersonalMemoryItem[]; revision?: number }>("/api/live/personal-memory"),
+  reviewLivePersonalMemory: () => request<{ revision: number; conflicts: Array<{ key: string; items: Array<{ id: string; key: string; value: string; category: string; updatedAt: string }> }> }>("/api/live/personal-memory/review"),
+  saveLivePersonalMemory: (input: { key: string; value: string; category?: string; id?: string; expectedRevision?: number }) =>
+    request<{ item: LivePersonalMemoryItem; revision?: number }>("/api/live/personal-memory", { method: "POST", body: JSON.stringify(input) }),
+  deleteLivePersonalMemory: (id: string, expectedRevision?: number) =>
+    request<{ ok: boolean; deletedCount?: number; revision?: number }>(`/api/live/personal-memory/${encodeURIComponent(id)}${expectedRevision === undefined ? "" : `?expectedRevision=${expectedRevision}`}`, { method: "DELETE" }),
+  analyzeLiveAttachment: (input: { file: File; model: string; prompt?: string; provider?: string }) => {
     const form = new FormData();
     form.append("file", input.file, input.file.name || "attachment");
     form.append("model", input.model);
     if (input.prompt) form.append("prompt", input.prompt);
+    if (input.provider) form.append("provider", input.provider);
     return request<{ text: string }>("/api/voice/realtime/attachments", { method: "POST", body: form });
   },
+  delegateVoiceIntent: (input: { query: string; roomId?: string; tools?: Array<Record<string, unknown>> }) =>
+    request<{ toolCall: { name: string; args: Record<string, unknown> } | null; message: string | null }>("/api/voice/realtime/delegate", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   captureScreen: (input: { roomId: string; paneId?: string | null; viewport?: BrowserEvidenceViewport }) =>
     request<BrowserEvidenceCapture & { artifact: Artifact }>(`/api/rooms/${encodeURIComponent(input.roomId)}/screen-capture`, {
       method: "POST",
@@ -2517,6 +2791,11 @@ export const api = {
         paneId: input.paneId ?? null,
         viewport: input.viewport ?? "desktop"
       })
+    }),
+  screenshotControlMcp: (roomId: string, options?: { format?: string; quality?: number; maxWidth?: number; maxHeight?: number; query?: string }) =>
+    request<{ status: string; detail: string; evidence: Record<string, unknown> }>("/api/control/v1/screenshot", {
+      method: "POST",
+      body: JSON.stringify({ roomId, ...options })
     }),
   captureBrowserEvidence: (input: { roomId: string; paneId?: string | null; viewport: BrowserEvidenceViewport }) =>
     request<BrowserEvidenceCapture>("/api/browser/evidence-smoke", {
@@ -2650,7 +2929,280 @@ export const api = {
       mode: string;
       storageWarning: string;
     }>("/api/admin"),
+  callControlMcp: async (method: string, params?: Record<string, unknown>, id?: string | number) => {
+    const doCall = () =>
+      request<any>("/api/control/v1/mcp", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: id ?? Date.now(), method, params })
+      });
+    try {
+      return await doCall();
+    } catch (err: any) {
+      if (err?.code === "UPSTREAM_UNAVAILABLE" || err?.status === 502 || err?.status === 503 || String(err?.message).includes("UPSTREAM_UNAVAILABLE")) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        return await doCall();
+      }
+      throw err;
+    }
+  },
+  executeControlMcp: async (roomId: string, actions: any[], expectedRevision?: string, waitForCompletion: boolean = true, requestId: string = `voice_${crypto.randomUUID()}`) => {
+    const doCall = () =>
+      request<any>("/api/control/v1/mcp", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: Date.now(),
+          method: "tools/call",
+          params: {
+            name: "space_execute",
+            arguments: {
+              roomId,
+              requestId,
+              expectedRevision,
+              waitForCompletion,
+              actions
+            }
+          }
+        })
+      });
+    try {
+      return await doCall();
+    } catch (err: any) {
+      if (err?.code === "UPSTREAM_UNAVAILABLE" || err?.status === 502 || err?.status === 503 || String(err?.message).includes("UPSTREAM_UNAVAILABLE")) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        return await doCall();
+      }
+      throw err;
+    }
+  },
+  inspectControlMcp: async (roomId: string, section: string = "STATE", paneId?: string) => {
+    const args: Record<string, unknown> = {
+      roomId,
+      section: section || "STATE"
+    };
+    if (typeof paneId === "string" && paneId.trim().length > 0) {
+      args.paneId = paneId.trim();
+    }
+    const doCall = () =>
+      request<any>("/api/control/v1/mcp", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: Date.now(),
+          method: "tools/call",
+          params: {
+            name: "space_inspect",
+            arguments: args
+          }
+        })
+      });
+    try {
+      return await doCall();
+    } catch (err: any) {
+      if (err?.code === "UPSTREAM_UNAVAILABLE" || err?.status === 502 || err?.status === 503 || String(err?.message).includes("UPSTREAM_UNAVAILABLE")) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        return await doCall();
+      }
+      throw err;
+    }
+  },
+  callControlMcpTool: async (name: string, args: Record<string, unknown> = {}) => {
+    const doCall = () =>
+      request<any>("/api/control/v1/mcp", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: Date.now(),
+          method: "tools/call",
+          params: {
+            name,
+            arguments: args
+          }
+        })
+      });
+    try {
+      return await doCall();
+    } catch (err: any) {
+      if (err?.code === "UPSTREAM_UNAVAILABLE" || err?.status === 502 || err?.status === 503 || String(err?.message).includes("UPSTREAM_UNAVAILABLE")) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        return await doCall();
+      }
+      throw err;
+    }
+  },
+  reportLiveVoiceLog: (payload: { roomId?: string; event: string; role?: string; text?: string; toolCall?: unknown; detail?: unknown; timestamp?: string }) =>
+    request<{ ok: boolean }>("/api/voice/realtime/logs", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }).catch(() => ({ ok: false })),
+  clearVoiceRealtimeLogs: (roomId: string) =>
+    request<{ ok: boolean; clearedRoomId?: string; epoch?: number }>(
+      `/api/voice/realtime/logs/${encodeURIComponent(roomId)}`,
+      { method: "DELETE" }
+    ).catch(() => ({ ok: false })),
+  getVoiceRealtimeHistory: (roomId: string, limit = 50) =>
+    request<{ ok: boolean; roomId: string; items: VoiceRealtimeHistoryItem[] }>(
+      `/api/voice/realtime/history/${encodeURIComponent(roomId)}?limit=${limit}`
+    ).catch(() => ({ ok: false, roomId, items: [] as VoiceRealtimeHistoryItem[] })),
+  searchVoiceRealtimeHistory: (query: string, roomId?: string, limit = 10) =>
+    request<{ ok: boolean; results: Array<Record<string, unknown>> }>(
+      "/api/voice/realtime/history/search",
+      {
+        method: "POST",
+        body: JSON.stringify({ query, roomId, limit })
+      }
+    ).catch(() => ({ ok: false, results: [] })),
+  watchesControlMcp: async (roomId: string, operation: string = "list", params: Record<string, unknown> = {}) => {
+    return request<any>("/api/control/v1/mcp", {
+      method: "POST",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: Date.now(),
+        method: "tools/call",
+        params: {
+          name: "space_watches",
+          arguments: {
+            roomId,
+            operation,
+            ...params
+          }
+        }
+      })
+    });
+  },
+  getPendingWatches: async (roomId?: string) => {
+    return request<any[]>(`/api/control/v1/watches/pending${roomId ? `?roomId=${encodeURIComponent(roomId)}` : ""}`);
+  },
+  ackWatch: async (roomId: string, id: string) => {
+    return request<any>("/api/control/v1/watches/ack", {
+      method: "POST",
+      body: JSON.stringify({ roomId, id })
+    });
+  },
+  demoState: () => request<DemoStateResponse>("/api/demo-projects/state", { cache: "no-store" }),
+  demoSaveSelection: (input: DemoSelectionInput) =>
+    request<{ selection: DemoSelection }>("/api/demo-projects/selection", { method: "PUT", body: JSON.stringify(input) }),
+  demoStartRun: (input: DemoStartRunInput) =>
+    request<{ run: DemoRun }>("/api/demo-projects/runs", { method: "POST", body: JSON.stringify(input) }),
+  demoStopRun: (runId: string) =>
+    request<{ run: DemoRun }>(`/api/demo-projects/runs/${encodeURIComponent(runId)}/stop`, { method: "POST" }),
+  demoRestartRun: (runId: string) =>
+    request<{ run: DemoRun }>(`/api/demo-projects/runs/${encodeURIComponent(runId)}/restart`, { method: "POST" }),
+  demoRunLogs: (runId: string, since = 0) =>
+    request<DemoLogsResponse>(`/api/demo-projects/runs/${encodeURIComponent(runId)}/logs?since=${since}`, { cache: "no-store" }),
+  demoVariantFiles: (variantId: string, projectId?: string) =>
+    request<DemoVariantFilesResponse>(
+      `/api/demo-projects/files?variantId=${encodeURIComponent(variantId)}${projectId ? `&projectId=${encodeURIComponent(projectId)}` : ""}`,
+      { cache: "no-store" }
+    ),
+  demoVariantFile: (variantId: string, path: string, projectId?: string) =>
+    request<DemoVariantFileContent>(
+      `/api/demo-projects/files/content?variantId=${encodeURIComponent(variantId)}&path=${encodeURIComponent(path)}${projectId ? `&projectId=${encodeURIComponent(projectId)}` : ""}`,
+      { cache: "no-store" }
+    ),
+  demoSaveConnectionSettings: (provider: DemoConnectionProvider, input: Record<string, unknown>) =>
+    request<{ connections: DemoConnection[] }>(`/api/demo-projects/connections/${provider}/settings`, {
+      method: "PUT",
+      body: JSON.stringify(input)
+    }),
+  demoAuthorizeConnection: (provider: DemoConnectionProvider) =>
+    request<{ authorizationUrl: string; expiresAt: string; redirectUri: string }>(
+      `/api/demo-projects/connections/${provider}/authorize`,
+      { method: "POST" }
+    ),
+  demoDisconnectConnection: (provider: DemoConnectionProvider) =>
+    request<{ connections: DemoConnection[] }>(`/api/demo-projects/connections/${provider}`, { method: "DELETE" }),
+  demoSelectSheet: (input: { spreadsheet: string; tab?: string | null }) =>
+    request<{ sheets: DemoSheetsTarget }>("/api/demo-projects/sheets/target", { method: "PUT", body: JSON.stringify(input) }),
+  demoCreateSheet: (input: { title?: string | null; tab?: string | null }) =>
+    request<{ sheets: DemoSheetsTarget }>("/api/demo-projects/sheets/create", { method: "POST", body: JSON.stringify(input) }),
+  demoVerifySheet: () => request<{ sheets: DemoSheetsTarget }>("/api/demo-projects/sheets/verify", { method: "POST" }),
+  demoOperations: (projectId?: string) =>
+    request<DemoOperationListResponse>(
+      `/api/demo-projects/operations${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
+      { cache: "no-store" }
+    ),
+  demoRetryOperation: (id: string) =>
+    request<{ operation: DemoOperation }>(`/api/demo-projects/operations/${encodeURIComponent(id)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({ attemptNow: true })
+    }),
+  demoAccounts: (query: { projectId: string; variantId: string; mode: "SAMPLE" | "LIVE"; search?: string; page?: number; pageSize?: number }) => {
+    const params = new URLSearchParams({
+      projectId: query.projectId,
+      variantId: query.variantId,
+      mode: query.mode,
+      page: String(query.page ?? 1),
+      pageSize: String(query.pageSize ?? 10)
+    });
+    if (query.search) params.set("search", query.search);
+    return request<DemoAccountsResponse>(`/api/demo-projects/accounts?${params.toString()}`, { cache: "no-store" });
+  },
+  demoRunTests: (input: { projectId?: string; variantId?: string }) =>
+    request<{ testRun: DemoTestRun }>("/api/demo-projects/tests/run", { method: "POST", body: JSON.stringify(input) }),
+  demoTests: (projectId?: string) =>
+    request<DemoTestRunListResponse>(
+      `/api/demo-projects/tests${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
+      { cache: "no-store" }
+    ),
   launchReadiness: () => request<LaunchReadiness>("/api/admin/launch-readiness"),
   observability: () => request<ObservabilitySnapshot>("/api/admin/observability"),
-  worker: () => request<WorkerReadiness>("/api/admin/worker")
+  worker: () => request<WorkerReadiness>("/api/admin/worker"),
+
+  // Native File Manager API
+  filesList: (query: { path?: string; showHidden?: boolean; mode?: "user" | "admin" } = {}) => {
+    const params = new URLSearchParams();
+    if (query.path) params.set("path", query.path);
+    if (query.showHidden !== undefined) params.set("showHidden", String(query.showHidden));
+    if (query.mode) params.set("mode", query.mode);
+    return request<FileListResponse>(`/api/files/list?${params.toString()}`, { cache: "no-store" });
+  },
+  filesDiskUsage: () =>
+    request<FileDiskUsageResponse>("/api/files/disk-usage", { cache: "no-store" }),
+  filesRead: (query: { path: string; mode?: "user" | "admin"; raw?: boolean }) => {
+    const params = new URLSearchParams({ path: query.path });
+    if (query.mode) params.set("mode", query.mode);
+    if (query.raw) params.set("raw", "true");
+    return request<FileReadResponse>(`/api/files/read?${params.toString()}`, { cache: "no-store" });
+  },
+  filesWrite: (input: { path: string; content: string; mode?: "user" | "admin" }) =>
+    request<{ ok: boolean; path: string; size: number; mtime: string }>("/api/files/write", {
+      method: "PUT",
+      body: JSON.stringify(input)
+    }),
+  filesCreate: (input: { path: string; type: "file" | "directory"; mode?: "user" | "admin" }) =>
+    request<{ ok: boolean; path: string; name: string; isDirectory: boolean; mtime: string }>("/api/files/create", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  filesRename: (input: { oldPath: string; newPath: string; mode?: "user" | "admin" }) =>
+    request<{ ok: boolean; oldPath: string; newPath: string }>("/api/files/rename", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  filesChmod: (input: { path: string; octalPermissions: string; mode?: "user" | "admin" }) =>
+    request<{ ok: boolean; path: string; mode: number; permissions: string; octalPermissions: string }>(
+      "/api/files/chmod",
+      {
+        method: "POST",
+        body: JSON.stringify(input)
+      }
+    ),
+  filesDelete: (input: { path: string; recursive?: boolean; mode?: "user" | "admin" }) =>
+    request<{ ok: boolean; path: string }>("/api/files/delete", {
+      method: "DELETE",
+      body: JSON.stringify(input)
+    }),
+  filesSearch: (query: { path?: string; query: string; mode?: "user" | "admin"; limit?: number }) => {
+    const params = new URLSearchParams({ query: query.query });
+    if (query.path) params.set("path", query.path);
+    if (query.mode) params.set("mode", query.mode);
+    if (query.limit) params.set("limit", String(query.limit));
+    return request<FileSearchResponse>(`/api/files/search?${params.toString()}`, { cache: "no-store" });
+  },
+  filesUpload: (formData: FormData) =>
+    request<{ ok: boolean; uploadedCount: number; files: string[] }>("/api/files/upload", {
+      method: "POST",
+      body: formData
+    })
 };

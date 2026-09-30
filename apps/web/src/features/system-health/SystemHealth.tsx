@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -15,8 +16,22 @@ import {
   UPPER_RAIL_IDS,
   useRailOrder,
 } from "../ui-theme/use-rail-order.js";
+import { RailVisibilityMenu } from "../ui-theme/RailVisibilityMenu.js";
+import {
+  DEFAULT_UPPER_RAIL_ITEMS,
+  UPPER_RAIL_HIDDEN_KEY,
+  UPPER_RAIL_NON_HIDEABLE,
+  useRailVisibility,
+  type RailVisibilityMenuState,
+} from "../ui-theme/use-rail-visibility.js";
+import { dispatchRailMenuChange } from "../rail-popover.js";
 import type {
+  AntigravityUsageAccount,
+  AntigravityUsageGroup,
   CodexEnvironment,
+  CodexUsageAccount,
+  HostMemoryDetails,
+  SystemAnalyticsCliSessionsResponse,
   SystemHealthHistory,
   SystemHealthMetric,
   SystemHealthRange,
@@ -32,6 +47,7 @@ import {
   Cpu,
   Database,
   HardDrive,
+  LayoutDashboard,
   Boxes as Layers,
   Maximize2,
   MemoryStick,
@@ -42,21 +58,30 @@ import {
   ShieldCheck,
   Terminal,
   Gauge as Wallet,
+  Sparkles,
   X,
   type LucideIcon,
 } from "../ui-theme/app-icons.js";
-import { getToolbarMetricsSnapshot } from "../toolbar-metrics/ToolbarMetrics.js";
+import { computeQuotaAggregates } from "../desktop-widgets/AiQuotaWidget.js";
+import {
+  ToolbarMetrics,
+  formatBytes,
+  formatPercent,
+  getToolbarMetricsSnapshot,
+} from "../toolbar-metrics/ToolbarMetrics.js";
+import { formatAppTime } from "../date-time-settings/date-time-settings.js";
 import { useAppVersion } from "../app-version/use-app-version.js";
+import { getAgentsIndicatorBorder, type AgentDashboardSummary } from "../agents-dashboard/dashboard-model.js";
 import { HealthChart } from "./HealthChart.js";
 import { HealthAiPanel, HealthProcessTable } from "./HealthTables.js";
 import {
   computeCodexCooldown,
   defaultHealthThresholds,
   formatHealthValue,
+  getReactivationCountdown,
   healthRailStorageKey,
   healthThresholdStorageKey,
   openSystemHealth,
-  overallHealth,
   readHealthThresholds,
   serviceTone,
   thresholdDefinitions,
@@ -70,6 +95,8 @@ import {
   useHealthTelemetry,
   type HealthTelemetry,
 } from "./use-health-telemetry.js";
+import { RecoverableSurface } from "../SurfaceErrorBoundary.js";
+const SystemTopologyMap = lazy(() => import("./SystemTopologyMap.js").then(module => ({ default: module.SystemTopologyMap })));
 import "./system-health.css";
 
 const TokenUsageWorkspace = lazy(() => import("../system-analytics/SystemAnalyticsWorkspace.js").then(module => ({ default: module.SystemAnalyticsWorkspace })));
@@ -77,6 +104,7 @@ const TokenUsageWorkspace = lazy(() => import("../system-analytics/SystemAnalyti
 const sections: Array<{ id: HealthSection; label: string; icon: LucideIcon }> =
   [
     { id: "overview", label: "Overview", icon: Activity },
+    { id: "topology", label: "Topology", icon: Network },
     { id: "performance", label: "Performance", icon: Cpu },
     { id: "processes", label: "Processes", icon: Layers },
     { id: "services", label: "Services", icon: ServerCog },
@@ -164,7 +192,7 @@ function summaryMetrics(t: HealthTelemetry): SummaryMetric[] {
       icon: Clock3,
       value: cooldown.formatted,
       tone: "warning",
-      detail: `Next Codex account available: ${cooldown.accountLabel ?? "account"} in ${cooldown.formatted}${cooldown.resetAt ? ` (${new Date(cooldown.resetAt).toLocaleTimeString()})` : ""}`,
+      detail: `Next Codex account available: ${cooldown.accountLabel ?? "account"} in ${cooldown.formatted}${cooldown.resetAt ? ` (${formatAppTime(cooldown.resetAt, { hour: "2-digit", minute: "2-digit" })})` : ""}`,
       at: cooldown.resetAt ?? undefined,
     });
   }
@@ -446,21 +474,679 @@ function ThresholdEditor({
     </form>
   );
 }
+const ACCOUNT_PROVIDER_FILTER_STORAGE_KEY = "space:health-accounts:provider-filter";
+const ACCOUNT_QUOTA_FILTER_STORAGE_KEY = "space:health-accounts:quota-filter";
+const ACCOUNT_PRO_FILTER_STORAGE_KEY = "space:health-accounts:pro-filter";
+const ACCOUNT_GEMINI_FILTER_STORAGE_KEY = "space:health-accounts:gemini-filter";
+
+function readStoredAccountProviderFilter(): "all" | "antigravity" | "codex" | "api" {
+  try {
+    const v = getSpaceRuntime().platform.localStorage.getItem(ACCOUNT_PROVIDER_FILTER_STORAGE_KEY);
+    if (v === "all" || v === "antigravity" || v === "codex" || v === "api") return v;
+  } catch {}
+  return "all";
+}
+
+function readStoredAccountQuotaFilter(): boolean {
+  try {
+    return getSpaceRuntime().platform.localStorage.getItem(ACCOUNT_QUOTA_FILTER_STORAGE_KEY) === "true";
+  } catch {}
+  return false;
+}
+
+function readStoredAccountProFilter(): boolean {
+  try {
+    return getSpaceRuntime().platform.localStorage.getItem(ACCOUNT_PRO_FILTER_STORAGE_KEY) === "true";
+  } catch {}
+  return false;
+}
+
+function readStoredAccountGeminiFilter(): boolean {
+  try {
+    return getSpaceRuntime().platform.localStorage.getItem(ACCOUNT_GEMINI_FILTER_STORAGE_KEY) === "true";
+  } catch {}
+  return false;
+}
+
+function HealthDetailAnalysis({
+  selected,
+  telemetry,
+  analyticsSessions,
+  hostMemory,
+  onReopenPane,
+  onReopenAllDetached,
+  onCloseSession,
+  reopeningSessionId,
+  reopeningAll,
+  closingSessionId,
+}: {
+  selected: string;
+  telemetry: HealthTelemetry;
+  analyticsSessions: SystemAnalyticsCliSessionsResponse | null;
+  hostMemory: HostMemoryDetails | null;
+  onReopenPane: (roomId: string, paneId: string, sessionId: string) => void;
+  onReopenAllDetached: () => void;
+  onCloseSession?: (paneId: string, sessionId: string) => void;
+  reopeningSessionId: string | null;
+  reopeningAll: boolean;
+  closingSessionId?: string | null;
+}) {
+  const [providerFilter, setProviderFilterState] = useState<"all" | "antigravity" | "codex" | "api">(readStoredAccountProviderFilter);
+  const [quotaFilter, setQuotaFilterState] = useState<boolean>(readStoredAccountQuotaFilter);
+  const [proFilter, setProFilterState] = useState<boolean>(readStoredAccountProFilter);
+  const [geminiFilter, setGeminiFilterState] = useState<boolean>(readStoredAccountGeminiFilter);
+
+  const setProviderFilter = useCallback((val: "all" | "antigravity" | "codex" | "api") => {
+    setProviderFilterState(val);
+    try {
+      getSpaceRuntime().platform.localStorage.setItem(ACCOUNT_PROVIDER_FILTER_STORAGE_KEY, val);
+    } catch {}
+  }, []);
+
+  const setQuotaFilter = useCallback((val: boolean) => {
+    setQuotaFilterState(val);
+    try {
+      getSpaceRuntime().platform.localStorage.setItem(ACCOUNT_QUOTA_FILTER_STORAGE_KEY, String(val));
+    } catch {}
+  }, []);
+
+  const setProFilter = useCallback((val: boolean) => {
+    setProFilterState(val);
+    try {
+      getSpaceRuntime().platform.localStorage.setItem(ACCOUNT_PRO_FILTER_STORAGE_KEY, String(val));
+    } catch {}
+  }, []);
+
+  const setGeminiFilter = useCallback((val: boolean) => {
+    setGeminiFilterState(val);
+    try {
+      getSpaceRuntime().platform.localStorage.setItem(ACCOUNT_GEMINI_FILTER_STORAGE_KEY, String(val));
+    } catch {}
+  }, []);
+
+  if (selected === "cli") {
+    const detachedCount = telemetry.sessions?.summary.detached ?? 0;
+    const detachedSessions = (analyticsSessions?.sessions ?? []).filter((s) => s.status === "RUNNING" && s.attachmentCount === 0);
+    const hasDetached = detachedCount > 0 || detachedSessions.length > 0;
+    return (
+      <div className="health-analysis-section">
+        <div className="health-analysis-grid">
+          <div className="health-analysis-stat"><small>Running</small><strong>{telemetry.sessions ? String(telemetry.sessions.summary.running) : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Attached</small><strong>{telemetry.sessions ? String(telemetry.sessions.summary.attached) : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Detached</small><strong>{telemetry.sessions ? String(telemetry.sessions.summary.detached) : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Cleanup eligible</small><strong>{telemetry.sessions ? String(telemetry.sessions.summary.cleanupEligible) : "—"}</strong></div>
+        </div>
+        {hasDetached && (
+          <div className="health-analysis-banner">
+            <span>{detachedCount || detachedSessions.length} detached window{(detachedCount || detachedSessions.length) === 1 ? "" : "s"}</span>
+            <button
+              type="button"
+              className="health-reopen-btn"
+              disabled={reopeningAll}
+              onClick={onReopenAllDetached}
+            >
+              {reopeningAll ? "Reopening…" : "Reopen detached"}
+            </button>
+          </div>
+        )}
+        {analyticsSessions && analyticsSessions.sessions.length > 0 && (
+          <ul className="health-analysis-list">
+            {analyticsSessions.sessions.slice(0, 8).map((session) => {
+              const isDetached = session.status === "RUNNING" && session.attachmentCount === 0;
+              const isBusy = reopeningSessionId === session.sessionId || closingSessionId === session.sessionId;
+              return (
+                <li key={session.sessionId}>
+                  <div className="health-analysis-list-item-header">
+                    <strong>{session.paneTitle} · {formatBytes(session.rssBytes)}</strong>
+                    {isDetached && (
+                      <div className="health-session-actions">
+                        <button
+                          type="button"
+                          className="health-reopen-btn"
+                          disabled={isBusy}
+                          onClick={() => onReopenPane(session.roomId, session.paneId, session.sessionId)}
+                          title={`Reopen window for ${session.paneTitle}`}
+                        >
+                          {reopeningSessionId === session.sessionId ? "Reopening…" : "Reopen"}
+                        </button>
+                        {onCloseSession && (
+                          <button
+                            type="button"
+                            className="health-close-btn"
+                            disabled={isBusy}
+                            onClick={() => onCloseSession(session.paneId, session.sessionId)}
+                            title={`Close and terminate ${session.paneTitle}`}
+                          >
+                            {closingSessionId === session.sessionId ? "Closing…" : "Close"}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <span>{session.roomName} · {session.runtimeName} · {session.attachmentCount} attachment{session.attachmentCount === 1 ? "" : "s"}{isDetached ? " · detached" : ""}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    );
+  }
+
+  if (selected === "memory") {
+    const memData = hostMemory?.memory ?? telemetry.environment?.hostStats?.memory;
+    const swapData = hostMemory?.swap ?? telemetry.environment?.hostStats?.swap;
+    const topProcs = hostMemory?.topProcesses ?? [];
+    return (
+      <div className="health-analysis-section">
+        <div className="health-analysis-grid">
+          <div className="health-analysis-stat"><small>Used RAM</small><strong>{memData && memData.usedBytes != null ? `${memData.usagePercent != null ? formatPercent(memData.usagePercent) + " · " : ""}${formatBytes(memData.usedBytes)}` : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Available RAM</small><strong>{hostMemory?.memory ? formatBytes(hostMemory.memory.availableBytes) : memData && memData.totalBytes != null && memData.usedBytes != null ? formatBytes(memData.totalBytes - memData.usedBytes) : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Swap</small><strong>{swapData && swapData.usedBytes != null ? `${swapData.usagePercent != null ? formatPercent(swapData.usagePercent) + " · " : ""}${formatBytes(swapData.usedBytes)}` : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Pressure</small><strong>{hostMemory?.pressure.isUnderPressure ? "Under pressure" : "Normal"}</strong></div>
+        </div>
+        {topProcs.length > 0 && (
+          <>
+            <strong className="health-analysis-subtitle">Top memory processes</strong>
+            <ul className="health-analysis-list">
+              {topProcs.slice(0, 5).map((proc) => (
+                <li key={proc.pid}>
+                  <div className="health-analysis-list-item-header">
+                    <strong>{proc.name}{proc.taskTitle ? ` · ${proc.taskTitle}` : ""}</strong>
+                    <span>{formatBytes(proc.rssBytes)}</span>
+                  </div>
+                  <span>PID {proc.pid} · {proc.state}</span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  if (selected === "cpu") {
+    const hostCpu = telemetry.environment?.hostStats?.cpu;
+    const topCpuProcs = hostMemory?.topCpuProcesses ?? hostMemory?.topProcesses ?? [];
+    return (
+      <div className="health-analysis-section">
+        <div className="health-analysis-grid">
+          <div className="health-analysis-stat"><small>Usage</small><strong>{formatPercent(hostCpu?.usagePercent)}</strong></div>
+          <div className="health-analysis-stat"><small>Cores</small><strong>{hostCpu?.coreCount != null ? `${hostCpu.coreCount} cores` : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Load status</small><strong>{telemetry.toneFor("cpu") === "healthy" ? "Healthy" : "Elevated"}</strong></div>
+          <div className="health-analysis-stat"><small>Host RAM</small><strong>{formatPercent(telemetry.environment?.hostStats?.memory?.usagePercent)}</strong></div>
+        </div>
+        {topCpuProcs.length > 0 && (
+          <>
+            <strong className="health-analysis-subtitle">Top CPU processes</strong>
+            <ul className="health-analysis-list">
+              {topCpuProcs.slice(0, 5).map((proc) => (
+                <li key={`cpu:${proc.pid}`}>
+                  <div className="health-analysis-list-item-header">
+                    <strong>{proc.name}{proc.taskTitle ? ` · ${proc.taskTitle}` : ""}</strong>
+                    <span>CPU {formatPercent(proc.cpuPercent)}</span>
+                  </div>
+                  <span>PID {proc.pid} · {formatBytes(proc.rssBytes)} · {proc.state}</span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  if (selected === "accounts") {
+    const allRemaining = telemetry.environment?.lbUsage?.allAccountsRemainingPercent;
+    const activeRemaining = telemetry.environment?.lbUsage?.activeAccountsRemainingPercent;
+    const antiAccounts = telemetry.antigravityAccounts?.data ?? [];
+    const codexAccounts = telemetry.accounts?.data ?? [];
+
+    const isGroupActive = (group: AntigravityUsageGroup | undefined) => {
+      if (!group) return false;
+      const week = group.weeklyRemainingPercent;
+      const fiveH = group.fiveHourRemainingPercent;
+      const weekOk = week != null && week >= 1;
+      const fiveHOk = fiveH == null || fiveH >= 1;
+      return weekOk && fiveHOk;
+    };
+
+    const isAntiAccountActive = (acc: AntigravityUsageAccount) =>
+      isGroupActive(acc.gemini) || isGroupActive(acc.claude);
+
+    const isCodexAccountActive = (acc: CodexUsageAccount) => {
+      const week = acc.weeklyRemainingPercent;
+      const fiveH = acc.fiveHourRemainingPercent;
+      const weekOk = week != null && week >= 1;
+      const fiveHOk = fiveH == null || fiveH >= 1;
+      return weekOk && fiveHOk;
+    };
+
+    const isProAntiAccount = (acc: AntigravityUsageAccount) =>
+      Boolean(acc.tier && acc.tier.toLowerCase().includes("pro"));
+
+    const isProCodexAccount = (acc: CodexUsageAccount) =>
+      Boolean(acc.planType && acc.planType.toLowerCase().includes("pro"));
+
+    const hasGeminiGroup = (acc: AntigravityUsageAccount) =>
+      quotaFilter ? isGroupActive(acc.gemini) : Boolean(acc.gemini && (acc.gemini.weeklyRemainingPercent != null || acc.gemini.fiveHourRemainingPercent != null));
+
+    const antiVisible = antiAccounts
+      .filter((acc) => !quotaFilter || (geminiFilter ? isGroupActive(acc.gemini) : isAntiAccountActive(acc)))
+      .filter((acc) => !proFilter || isProAntiAccount(acc))
+      .filter((acc) => !geminiFilter || hasGeminiGroup(acc));
+
+    const codexVisible = codexAccounts
+      .filter((acc) => !quotaFilter || isCodexAccountActive(acc));
+
+    const showAntigravity = providerFilter === "all" || providerFilter === "antigravity";
+    const showCodex = providerFilter === "all" || providerFilter === "codex";
+    const showApi = providerFilter === "all" || providerFilter === "api";
+
+    return (
+      <div className="health-analysis-section">
+        <div className="health-analysis-grid">
+          <div className="health-analysis-stat"><small>All accounts</small><strong>{formatPercent(allRemaining)}</strong></div>
+          <div className="health-analysis-stat"><small>Active accounts</small><strong>{formatPercent(activeRemaining)}</strong></div>
+        </div>
+
+        <div className="health-accounts-filter-bar">
+          <div className="health-provider-filters" role="tablist" aria-label="Provider filter">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={providerFilter === "all"}
+              className={`health-filter-btn ${providerFilter === "all" ? "is-active" : ""}`}
+              onClick={() => setProviderFilter("all")}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={providerFilter === "antigravity"}
+              className={`health-filter-btn ${providerFilter === "antigravity" ? "is-active" : ""}`}
+              onClick={() => setProviderFilter("antigravity")}
+            >
+              Antigravity
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={providerFilter === "codex"}
+              className={`health-filter-btn ${providerFilter === "codex" ? "is-active" : ""}`}
+              onClick={() => setProviderFilter("codex")}
+            >
+              Codex
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={providerFilter === "api"}
+              className={`health-filter-btn ${providerFilter === "api" ? "is-active" : ""}`}
+              onClick={() => setProviderFilter("api")}
+            >
+              API Providers
+            </button>
+          </div>
+          <button
+            type="button"
+            className={`health-quota-filter-btn ${quotaFilter ? "is-active" : ""}`}
+            onClick={() => setQuotaFilter(!quotaFilter)}
+            title="Filter accounts with 5h > 1% and week > 1%"
+          >
+            <span className="health-quota-filter-indicator" />
+            5h &amp; week &gt; 1%
+          </button>
+          {providerFilter === "antigravity" && (
+            <>
+              <button
+                type="button"
+                className={`health-quota-filter-btn ${proFilter ? "is-active" : ""}`}
+                onClick={() => setProFilter(!proFilter)}
+                title="Filter pro accounts only"
+              >
+                <span className="health-quota-filter-indicator" />
+                Pro accounts
+              </button>
+              <button
+                type="button"
+                className={`health-quota-filter-btn ${geminiFilter ? "is-active" : ""}`}
+                onClick={() => setGeminiFilter(!geminiFilter)}
+                title="Filter accounts with Gemini and hide Claude"
+              >
+                <span className="health-quota-filter-indicator" />
+                Gemini only
+              </button>
+            </>
+          )}
+        </div>
+
+        {showAntigravity && (
+          <>
+            <strong className="health-analysis-subtitle">Antigravity (Google)</strong>
+            {antiVisible.length > 0 ? (
+              <ul className="health-analysis-list is-grid-2">
+                {antiVisible.map((acc) => {
+                  const geminiActive = isGroupActive(acc.gemini);
+                  const claudeActive = isGroupActive(acc.claude);
+                  const showGemini = geminiFilter ? Boolean(acc.gemini) : (geminiActive || (!quotaFilter && !claudeActive));
+                  const showClaude = !geminiFilter && (claudeActive || (!quotaFilter && !geminiActive));
+                  const geminiCountdown = getReactivationCountdown(acc.gemini, telemetry.clock);
+                  const claudeCountdown = getReactivationCountdown(acc.claude, telemetry.clock);
+
+                  return (
+                    <li key={acc.id}>
+                      <div className="health-analysis-list-item-header">
+                        <strong title={acc.label || acc.email || ""}>{acc.label || acc.email}</strong>
+                        <span>{acc.status?.toLowerCase() === "critical" ? "Unavailable" : acc.status}</span>
+                      </div>
+                      {showGemini && (
+                        <>
+                          <span>Gemini: 5h {formatPercent(acc.gemini?.fiveHourRemainingPercent)} · week {formatPercent(acc.gemini?.weeklyRemainingPercent)}</span>
+                          {geminiCountdown && (
+                            <small className="health-account-countdown">{geminiCountdown}</small>
+                          )}
+                        </>
+                      )}
+                      {showClaude && (
+                        <>
+                          <span>Claude: 5h {formatPercent(acc.claude?.fiveHourRemainingPercent)} · week {formatPercent(acc.claude?.weeklyRemainingPercent)}</span>
+                          {claudeCountdown && (
+                            <small className="health-account-countdown">{claudeCountdown}</small>
+                          )}
+                        </>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="health-analysis-empty">No Antigravity accounts match filter.</p>
+            )}
+          </>
+        )}
+
+        {showCodex && (
+          <>
+            <strong className="health-analysis-subtitle">Codex usage</strong>
+            {codexVisible.length > 0 ? (
+              <ul className="health-analysis-list is-grid-2">
+                {codexVisible.map((acc) => {
+                  const codexCountdown = getReactivationCountdown(acc, telemetry.clock);
+                  return (
+                    <li key={acc.id}>
+                      <div className="health-analysis-list-item-header">
+                        <strong title={acc.label}>{acc.label}</strong>
+                        <span>CONNECTED</span>
+                      </div>
+                      <span>
+                        Codex: 5h {formatPercent(acc.fiveHourRemainingPercent)} · week {formatPercent(acc.weeklyRemainingPercent)}
+                      </span>
+                      {codexCountdown && (
+                        <small className="health-account-countdown">{codexCountdown}</small>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="health-analysis-empty">No Codex accounts match filter.</p>
+            )}
+          </>
+        )}
+
+        {showApi && (
+          <>
+            <strong className="health-analysis-subtitle">API Providers (DeepSeek, OpenRouter, Vercel, Google, etc.)</strong>
+            {(telemetry.apiProviderAccounts?.data?.length ?? 0) > 0 ? (
+              <ul className="health-analysis-list is-grid-2">
+                {telemetry.apiProviderAccounts?.data.map((acc) => (
+                  <li key={acc.id}>
+                    <div className="health-analysis-list-item-header">
+                      <strong title={acc.label}>{acc.label}</strong>
+                      <span
+                        className={`health-badge ${
+                          acc.status === "CONNECTED"
+                            ? "is-tier"
+                            : acc.status === "EXHAUSTED"
+                              ? "is-warning"
+                              : "is-critical"
+                        }`}
+                      >
+                        {acc.balance ?? (acc.status?.toLowerCase() === "critical" ? "Unavailable" : acc.status)}
+                      </span>
+                    </div>
+                    <span>{acc.detail ?? acc.providerId}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="health-analysis-empty">No API providers found.</p>
+            )}
+          </>
+        )}
+      </div>
+    );
+  }
+
+  if (selected === "codex-reset") {
+    const cooldown = computeCodexCooldown(telemetry.accounts, telemetry.environment, telemetry.clock);
+    return (
+      <div className="health-analysis-section">
+        <div className="health-analysis-grid">
+          <div className="health-analysis-stat"><small>Time to reset</small><strong>{cooldown?.formatted ?? "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Account</small><strong>{cooldown?.accountLabel ?? "Earliest"}</strong></div>
+        </div>
+        {cooldown?.resetAt && (
+          <div className="health-analysis-banner">
+            <span>Resets at {formatAppTime(cooldown.resetAt, { hour: "2-digit", minute: "2-digit" })}</span>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (selected === "rtt") {
+    return (
+      <div className="health-analysis-section">
+        <div className="health-analysis-grid">
+          <div className="health-analysis-stat"><small>Latency</small><strong>{telemetry.rtt?.value != null ? `${telemetry.rtt.value} ms` : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Status</small><strong>{telemetry.rtt?.failed ? "Unavailable" : (telemetry.rtt?.value ?? 0) >= 425 ? "Alert" : (telemetry.rtt?.value ?? 0) >= 300 ? "Warning" : "Good"}</strong></div>
+          <div className="health-analysis-stat"><small>Target</small><strong>Browser → API</strong></div>
+          <div className="health-analysis-stat"><small>Refresh</small><strong>Every 2–10 sec</strong></div>
+        </div>
+      </div>
+    );
+  }
+
+  if (selected === "models") {
+    const modelList = telemetry.models?.models ?? [];
+    return (
+      <div className="health-analysis-section">
+        <div className="health-analysis-grid">
+          <div className="health-analysis-stat"><small>Models</small><strong>{String(modelList.length)}</strong></div>
+          <div className="health-analysis-stat"><small>Providers</small><strong>{telemetry.models ? String(telemetry.models.providers.length) : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Active sessions</small><strong>{telemetry.models ? String(modelList.reduce((sum, m) => sum + m.activeSessions, 0)) : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Window</small><strong>Last 10 min</strong></div>
+        </div>
+        {modelList.length > 0 && (
+          <ul className="health-analysis-list">
+            {modelList.slice(0, 6).map((m) => (
+              <li key={`${m.providerId}:${m.modelId}`}>
+                <div className="health-analysis-list-item-header">
+                  <strong>{m.modelId}</strong>
+                  <span>{m.providerId}</span>
+                </div>
+                <span>{m.activeSessions} session{m.activeSessions === 1 ? "" : "s"} · {m.completedTurns} completed / {m.activeTurns} active</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  }
+
+  if (selected === "provider") {
+    const prov = telemetry.snapshot?.services.find((s) => s.id === "provider");
+    const lb = telemetry.environment?.lbUsage;
+    const snapshot = getToolbarMetricsSnapshot(telemetry.environment);
+    return (
+      <div className="health-analysis-section">
+        <div className="health-analysis-grid">
+          <div className="health-analysis-stat"><small>Active route</small><strong>{prov?.label ?? snapshot.provider}</strong></div>
+          <div className="health-analysis-stat"><small>Status</small><strong>{prov?.status ? prov.status.toUpperCase() : "OK"}</strong></div>
+          <div className="health-analysis-stat"><small>Upstream</small><strong>{lb?.upstream ?? "Direct"}</strong></div>
+          <div className="health-analysis-stat"><small>Mode</small><strong>{lb?.routeMode ?? "Default"}</strong></div>
+        </div>
+      </div>
+    );
+  }
+
+  if (selected === "swap") {
+    const swap = telemetry.environment?.hostStats?.swap;
+    const swapMetric = telemetry.metrics.find((m) => m.id === "swap");
+    return (
+      <div className="health-analysis-section">
+        <div className="health-analysis-grid">
+          <div className="health-analysis-stat"><small>Usage</small><strong>{formatHealthValue(swapMetric?.value, "PERCENT")}</strong></div>
+          <div className="health-analysis-stat"><small>Used</small><strong>{swap && swap.usedBytes != null ? formatBytes(swap.usedBytes) : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Total</small><strong>{swap && swap.totalBytes != null ? formatBytes(swap.totalBytes) : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Free</small><strong>{swap && swap.totalBytes != null && swap.usedBytes != null ? formatBytes(Math.max(0, swap.totalBytes - swap.usedBytes)) : "—"}</strong></div>
+        </div>
+      </div>
+    );
+  }
+
+  if (selected === "disk-app") {
+    const diskAppMetric = telemetry.metrics.find((m) => m.id === "disk-app");
+    return (
+      <div className="health-analysis-section">
+        <div className="health-analysis-grid">
+          <div className="health-analysis-stat"><small>Space disk</small><strong>{formatHealthValue(diskAppMetric?.value, "PERCENT")}</strong></div>
+          <div className="health-analysis-stat"><small>Mount</small><strong>/opt/spaceapp</strong></div>
+          <div className="health-analysis-stat"><small>Total</small><strong>{diskAppMetric?.total ? formatBytes(diskAppMetric.total) : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Used</small><strong>{diskAppMetric?.value != null && diskAppMetric.total ? formatBytes(diskAppMetric.total * (diskAppMetric.value / 100)) : "—"}</strong></div>
+        </div>
+      </div>
+    );
+  }
+
+  if (selected === "disk-root") {
+    const diskRootMetric = telemetry.metrics.find((m) => m.id === "disk-root");
+    return (
+      <div className="health-analysis-section">
+        <div className="health-analysis-grid">
+          <div className="health-analysis-stat"><small>Root disk</small><strong>{formatHealthValue(diskRootMetric?.value, "PERCENT")}</strong></div>
+          <div className="health-analysis-stat"><small>Mount</small><strong>/</strong></div>
+          <div className="health-analysis-stat"><small>Total</small><strong>{diskRootMetric?.total ? formatBytes(diskRootMetric.total) : "—"}</strong></div>
+          <div className="health-analysis-stat"><small>Used</small><strong>{diskRootMetric?.value != null && diskRootMetric.total ? formatBytes(diskRootMetric.total * (diskRootMetric.value / 100)) : "—"}</strong></div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function HealthResources({
   telemetry,
   selected,
   onSelect,
   onClose,
   onOpen,
+  onReopenPane,
+  onReopenAllDetached,
+  onCloseSession,
 }: {
   telemetry: HealthTelemetry;
   selected: string;
   onSelect: (id: string) => void;
   onClose: () => void;
   onOpen: (id?: string) => void;
+  onReopenPane?: (roomId: string, paneId: string) => Promise<void> | void;
+  onReopenAllDetached?: () => Promise<void> | void;
+  onCloseSession?: (paneId: string) => Promise<void> | void;
 }) {
   const ref = useRef<HTMLElement>(null);
   useDialogFocus(ref, onClose);
+  useLayoutEffect(() => {
+    dispatchRailMenuChange();
+    return () => {
+      dispatchRailMenuChange();
+    };
+  }, []);
+  const [analyticsSessions, setAnalyticsSessions] = useState<SystemAnalyticsCliSessionsResponse | null>(null);
+  const [hostMemory, setHostMemory] = useState<HostMemoryDetails | null>(null);
+  const [reopeningSessionId, setReopeningSessionId] = useState<string | null>(null);
+  const [reopeningAll, setReopeningAll] = useState(false);
+  const [closingSessionId, setClosingSessionId] = useState<string | null>(null);
+
+  const refreshSessions = () => {
+    api.systemAnalyticsCliSessions?.("10m")?.then(setAnalyticsSessions).catch(() => null);
+  };
+
+  useEffect(() => {
+    if (selected === "cli") {
+      refreshSessions();
+    }
+    if (selected === "memory" || selected === "cpu") {
+      api.toolbarHostMemory?.()?.then(setHostMemory).catch(() => null);
+    }
+  }, [selected]);
+
+  const handleReopen = async (roomId: string, paneId: string, sessionId: string) => {
+    setReopeningSessionId(sessionId);
+    try {
+      if (onReopenPane) {
+        await onReopenPane(roomId, paneId);
+      } else {
+        await api.updatePane?.(paneId, { isClosed: false, isMinimized: false, status: "IDLE" });
+      }
+      onClose();
+    } catch {
+      // ignore
+    } finally {
+      setReopeningSessionId(null);
+    }
+  };
+
+  const handleReopenAll = async () => {
+    setReopeningAll(true);
+    try {
+      if (onReopenAllDetached) {
+        await onReopenAllDetached();
+      } else {
+        const detached = analyticsSessions?.sessions.filter((s) => s.status === "RUNNING" && s.attachmentCount === 0) ?? [];
+        for (const s of detached) {
+          await api.updatePane?.(s.paneId, { isClosed: false, isMinimized: false, status: "IDLE" }).catch(() => null);
+        }
+      }
+      onClose();
+    } catch {
+      // ignore
+    } finally {
+      setReopeningAll(false);
+    }
+  };
+
+  const handleCloseSession = async (paneId: string, sessionId: string) => {
+    setClosingSessionId(sessionId);
+    try {
+      if (onCloseSession) {
+        await onCloseSession(paneId);
+      } else {
+        await api.closePane?.(paneId);
+      }
+      // Refresh sessions list after closing
+      refreshSessions();
+    } catch {
+      // ignore
+    } finally {
+      setClosingSessionId(null);
+    }
+  };
+
   const metrics = summaryMetrics(telemetry);
   for (const id of ["swap", "disk-app", "disk-root"]) {
     const m = telemetry.metrics.find((m) => m.id === id);
@@ -491,7 +1177,7 @@ function HealthResources({
     >
       <header className="health-window-header">
         <Activity aria-hidden="true" />
-        <div>
+        <div className="health-window-heading">
           <h2>Resources</h2>
           <p>Your system at a glance</p>
         </div>
@@ -518,9 +1204,21 @@ function HealthResources({
               <StatusBadge tone={item.tone} />
             </div>
             <p>{item.detail}</p>
+            <HealthDetailAnalysis
+              selected={selected}
+              telemetry={telemetry}
+              analyticsSessions={analyticsSessions}
+              hostMemory={hostMemory}
+              onReopenPane={handleReopen}
+              onReopenAllDetached={handleReopenAll}
+              onCloseSession={handleCloseSession}
+              reopeningSessionId={reopeningSessionId}
+              reopeningAll={reopeningAll}
+              closingSessionId={closingSessionId}
+            />
             <small>
               {item.at
-                ? `Updated ${new Date(item.at).toLocaleTimeString()}`
+                ? `Updated ${formatAppTime(item.at)}`
                 : "Waiting for first sample"}
             </small>
             <button
@@ -595,7 +1293,12 @@ function HealthWindow({
   thresholds,
   onThresholds,
   onManage,
+  allowChanges = true,
+  onReopenPane, onReopenAllDetached, onCloseSession,
 }: {
+  onReopenPane?: (roomId: string, paneId: string) => Promise<void> | void;
+  onReopenAllDetached?: () => Promise<void> | void;
+  onCloseSession?: (paneId: string) => Promise<void> | void;
   telemetry: HealthTelemetry;
   section: HealthSection;
   onSection: (section: HealthSection) => void;
@@ -604,6 +1307,7 @@ function HealthWindow({
   onClose: () => void;
   thresholds: HealthThresholds;
   onThresholds: (thresholds: HealthThresholds) => boolean;
+  allowChanges?: boolean;
   onManage?: (id: "accounts" | "provider" | "cli") => void;
 }) {
   const ref = useRef<HTMLElement>(null);
@@ -642,15 +1346,23 @@ function HealthWindow({
       document.removeEventListener("visibilitychange", load);
     };
   }, [range, section]);
+  // Extended per-device (disk I/O, device busy) and per-interface (rx/tx/utilization) metrics.
+  // Disabled per user preference to keep only basic metrics (CPU, Memory, Swap, Root disk, Space disk) in the Performance view,
+  // while preserving the underlying logic and code structure.
+  const ENABLE_EXTENDED_DEVICE_METRICS = false;
+  const isExtendedDeviceMetric = (id: string) =>
+    id.startsWith("disk:") ||
+    id.startsWith("network:") ||
+    id === "disk-telemetry" ||
+    id === "network-telemetry";
+
   const summary = summaryMetrics(telemetry);
   const services = telemetry.snapshot?.services ?? [];
   const signals = telemetry.metrics.filter(
-    (m) => !(m.id === "swap" && m.detail === "No swap configured"),
+    (m) =>
+      !(m.id === "swap" && m.detail === "No swap configured") &&
+      (ENABLE_EXTENDED_DEVICE_METRICS || !isExtendedDeviceMetric(m.id)),
   );
-  const overall = overallHealth([
-    ...signals.map((m) => telemetry.toneFor(m.id)),
-    ...services.map((s) => serviceTone(s, telemetry.clock)),
-  ]);
   const issues = [
     ...signals
       .filter((m) => ["warning", "critical"].includes(telemetry.toneFor(m.id)))
@@ -678,7 +1390,8 @@ function HealthWindow({
       .filter(
         (m) =>
           ["stale", "unavailable"].includes(telemetry.toneFor(m.id)) &&
-          !(m.id === "swap" && m.detail === "No swap configured"),
+          !(m.id === "swap" && m.detail === "No swap configured") &&
+          (ENABLE_EXTENDED_DEVICE_METRICS || !isExtendedDeviceMetric(m.id)),
       )
       .map((m) => m.label),
     ...services
@@ -687,12 +1400,23 @@ function HealthWindow({
       )
       .map((s) => s.label),
   ];
-  const performanceMetrics = telemetry.metrics.filter(
-    (m) => m.id !== "accounts",
-  );
+  const performanceMetrics = telemetry.metrics.filter((m) => {
+    if (m.id === "accounts") return false;
+    if (!ENABLE_EXTENDED_DEVICE_METRICS && isExtendedDeviceMetric(m.id)) {
+      return false;
+    }
+    return true;
+  });
   const metric =
     performanceMetrics.find((m) => m.id === selected) ??
     performanceMetrics.find((m) => m.id === "cpu");
+
+  useEffect(() => {
+    if (metric?.id === "rtt" && !["1m", "10m"].includes(range)) {
+      setRange("10m");
+    }
+  }, [metric?.id, range]);
+
   const chartIds =
     metric?.id.endsWith(":rx") || metric?.id.endsWith(":tx")
       ? [`${metric.id.slice(0, -3)}:rx`, `${metric.id.slice(0, -3)}:tx`]
@@ -729,7 +1453,7 @@ function HealthWindow({
             <span>
               <strong>{i.label}</strong>
               <small>{i.detail}</small>
-              <small>Since {new Date(i.since).toLocaleTimeString()}</small>
+              <small>Since {formatAppTime(i.since)}</small>
             </span>
             <StatusBadge tone={i.tone} />
           </button>
@@ -758,60 +1482,45 @@ function HealthWindow({
       <section
         ref={ref}
         tabIndex={-1}
-        className={`health-window${maximized ? " is-maximized" : ""}`}
+        className={`health-window resources-unified${maximized ? " is-maximized" : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-label="Space Health"
+        aria-label="Resources"
       >
         <header className="health-window-header">
           <span className="health-brand-icon">
             <Activity aria-hidden="true" />
           </span>
-          <div>
-            <h1>Space Health</h1>
-            <p>Server & connection monitoring</p>
+          <div className="health-window-heading">
+            <h1>Resources</h1>
+            <p>{section === "overview" ? "Your Space at a glance" : "Details & history"}</p>
           </div>
-          <StatusBadge tone={overall} />
-          <button
-            type="button"
-            aria-label={maximized ? "Restore Health size" : "Maximize Health"}
-            onClick={() => setMaximized((v) => !v)}
-          >
-            {maximized ? <Minimize2 /> : <Maximize2 />}
-          </button>
-          <button type="button" aria-label="Close Health" onClick={onClose}>
-            <X />
-          </button>
+          <div className="health-window-actions">
+            <button
+              type="button"
+              className={`health-maximize-toggle dock-fullscreen-toggle${maximized ? " is-active" : ""}`}
+              title={maximized ? "Collapse Resources" : "Expand Resources"}
+              aria-label={maximized ? "Collapse Resources" : "Expand Resources"}
+              aria-pressed={maximized}
+              onClick={() => setMaximized((v) => !v)}
+            >
+              {maximized ? <Minimize2 /> : <Maximize2 />}
+            </button>
+            <button type="button" className="health-window-close-btn" aria-label="Close Resources" onClick={onClose}>
+              <X />
+            </button>
+          </div>
         </header>
         <div className="health-window-layout">
-          <nav className="health-navigation" aria-label="Health sections">
-            {sections.map((s) => {
-              const Icon = s.icon;
-              return (
-                <button
-                  type="button"
-                  key={s.id}
-                  aria-current={section === s.id ? "page" : undefined}
-                  onClick={() => onSection(s.id)}
-                >
-                  <Icon aria-hidden="true" />
-                  <span>{s.label}</span>
-                  {s.id === "alerts" && issues.length > 0 && (
-                    <b>{issues.length}</b>
-                  )}
-                </button>
-              );
-            })}
-            <div className="health-navigation-footer">
-              <span className="health-live-dot" />
-              Live monitoring
-              <small>
-                {telemetry.snapshot
-                  ? `${telemetry.snapshot.coreCount} cores · ${Math.floor(telemetry.snapshot.uptimeSeconds / 3600)}h uptime`
-                  : "Connecting…"}
-              </small>
-            </div>
-          </nav>
+          {section !== "overview" && <nav className="resources-detail-navigation" aria-label="Resource details">
+            <button type="button" onClick={() => onSection("overview")}>← Back</button>
+            <select className="resources-detail-select" aria-label="Resource view" value={section} onChange={e => onSection(e.target.value as HealthSection)}>
+              <optgroup label="AI usage"><option value="ai">Accounts & quotas</option><option value="usage">Token usage</option><option value="models">Models</option><option value="provider">Provider routing</option></optgroup>
+              <optgroup label="Sessions"><option value="sessions">CLI sessions</option></optgroup>
+              <optgroup label="System"><option value="performance">Performance</option><option value="processes">Processes</option><option value="topology">Topology</option><option value="services">Service readiness</option><option value="analytics">Analytics & benchmarks</option></optgroup>
+              <optgroup label="Connection"><option value="connection">Connection & API</option><option value="alerts">Alerts & thresholds</option></optgroup>
+            </select>
+          </nav>}
           <main className="health-main">
             {telemetry.error && (
               <div className="health-error" role="status">
@@ -819,101 +1528,42 @@ function HealthWindow({
                 shown with their update time.
               </div>
             )}
-            {section === "overview" && (
-              <div className="health-stack">
-                <header className="health-section-heading">
-                  <div>
-                    <span className="health-eyebrow">SYSTEM OVERVIEW</span>
-                    <h2>Your Space, in real time</h2>
-                    <p>
-                      Resources, connections and service readiness in one view.
-                    </p>
-                  </div>
-                  <button type="button" onClick={() => onSection("alerts")}>
-                    {issues.length} active alerts
-                  </button>
-                </header>
-                <div className="health-overview-grid">
-                  {summary.map((m) => (
-                    <MetricCard
-                      key={m.id}
-                      item={m}
-                      telemetry={telemetry}
-                      onClick={() => {
-                        const destination = summaryDestination(m.id);
-                        onSection(destination.section);
-                        onSelect(destination.metric ?? m.id);
-                      }}
-                    />
-                  ))}
-                </div>
-                <div className="health-overview-charts">
-                  {["cpu", "memory"].map((id) => (
-                    <section className="health-panel" key={id}>
-                      <header className="health-section-heading">
-                        <h3>
-                          {id === "cpu" ? "CPU activity" : "Memory pressure"}
-                        </h3>
-                        <StatusBadge tone={telemetry.toneFor(id)} />
-                      </header>
-                      <HealthChart
-                        series={telemetry.history.filter((s) => s.id === id)}
-                        percent
-                        rangeSeconds={60}
-                        endAt={new Date(telemetry.clock).toISOString()}
-                      />
-                    </section>
-                  ))}
-                </div>
-                <section className="health-panel">
-                  <header className="health-section-heading">
-                    <div>
-                      <h3>API traffic</h3>
-                      <p>Last 5 minutes · HTTP 5xx errors</p>
-                    </div>
-                  </header>
-                  <div className="health-detail-facts">
-                    <div>
-                      <small>Requests</small>
-                      <strong>
-                        {telemetry.snapshot?.requests.requestCount ?? "—"}
-                      </strong>
-                    </div>
-                    <div>
-                      <small>Errors</small>
-                      <strong>
-                        {telemetry.snapshot?.requests.errorCount ?? "—"}
-                      </strong>
-                    </div>
-                    <div>
-                      <small>p95 response</small>
-                      <strong>
-                        {formatHealthValue(
-                          telemetry.snapshot?.requests.p95Ms,
-                          "MILLISECONDS",
-                        )}
-                      </strong>
-                    </div>
-                  </div>
-                  {telemetry.snapshot &&
-                    telemetry.snapshot.requests.requestCount < 20 && (
-                      <p className="health-coverage">
-                        At least 20 requests are needed to evaluate the recent
-                        error rate and p95.
-                      </p>
-                    )}
-                </section>
-                <section className="health-panel">
-                  <header className="health-section-heading">
-                    <h3>Attention needed</h3>
-                    <button type="button" onClick={() => onSection("alerts")}>
-                      Alert settings
-                    </button>
-                  </header>
-                  {issueList}
-                </section>
+            {section === "overview" && <div className="resources-summary">
+              {[
+                { label: "AI usage", section: "ai", icon: Wallet, value: summary.find(m => m.id === "accounts")?.value ?? "—", detail: "Routing capacity · accounts, quotas & tokens" },
+                { label: "Sessions", section: "sessions", icon: Terminal, value: summary.find(m => m.id === "cli")?.value ?? "—", detail: "Running CLI sessions" },
+                { label: "System", section: "performance", icon: Cpu, value: `CPU ${summary.find(m => m.id === "cpu")?.value ?? "—"} · RAM ${summary.find(m => m.id === "memory")?.value ?? "—"}`, detail: "Performance, storage & services" },
+                { label: "Connection", section: "connection", icon: Network, value: summary.find(m => m.id === "rtt")?.value ?? "—", detail: "Latency & API traffic" }
+              ].map(item => <button type="button" className="resources-summary-row" key={item.section} onClick={() => onSection(item.section as HealthSection)}>
+                <span className="resources-summary-icon"><item.icon aria-hidden="true" /></span>
+                <span className="resources-summary-info"><strong>{item.label}</strong><small>{item.detail}</small></span>
+                <b className="resources-summary-value">{item.value}</b>
+              </button>)}
+              <button type="button" className="resources-alert-summary" onClick={() => onSection("alerts")}>
+                {issues.length ? `${issues.length} alerts need attention` : unavailable.length ? "Some measurements are unavailable" : "Alerts & thresholds"}
+              </button>
+            </div>}
+            {section === "connection" && <section className="health-panel">
+              <h2>Connection & API</h2>
+              <div className="health-detail-facts">
+                <div><small>Round-trip latency</small><strong>{summary.find(m => m.id === "rtt")?.value ?? "—"}</strong></div>
+                <div><small>Requests · 5 minutes</small><strong>{telemetry.snapshot?.requests.requestCount ?? "—"}</strong></div>
+                <div><small>HTTP 5xx errors</small><strong>{telemetry.snapshot?.requests.errorCount ?? "—"}</strong></div>
+                <div><small>API p95</small><strong>{formatHealthValue(telemetry.snapshot?.requests.p95Ms, "MILLISECONDS")}</strong></div>
               </div>
-            )}
+              <div className="health-detail-actions">
+                <button type="button" onClick={() => { onSelect("rtt"); onSection("performance"); }}>Latency history</button>
+                <button type="button" onClick={() => onSection("services")}>Connection status</button>
+              </div>
+            </section>}
+            {["ai", "sessions", "provider", "models"].includes(section) && <ToolbarMetrics
+              presentation="embedded" allowChanges={allowChanges} sharedTelemetry={telemetry} initialPanel={section === "ai" ? "accounts" : section === "sessions" ? "cli" : section === "provider" ? "provider" : "models"}
+              environment={telemetry.environment} onReopenPane={onReopenPane} onReopenAllDetached={onReopenAllDetached} onCloseSession={onCloseSession}
+              onOpenAnalytics={tab => { onSelect(tab); onSection("analytics"); }}
+            />}
+            {section === "analytics" && <Suspense fallback={<p role="status">Loading analytics…</p>}>
+              <TokenUsageWorkspace shellMode="desktop" initialTab={["overview", "models", "resources", "sessions", "bench"].includes(selected) ? selected as "overview" | "models" | "resources" | "sessions" | "bench" : "overview"} onClose={() => onSection("overview")} />
+            </Suspense>}
             {section === "performance" && (
               <div className="health-performance-layout">
                 <nav
@@ -980,16 +1630,27 @@ function HealthWindow({
                         aria-label="History range"
                       >
                         {(Object.keys(rangeLabels) as SystemHealthRange[]).map(
-                          (r) => (
-                            <button
-                              type="button"
-                              key={r}
-                              aria-pressed={range === r}
-                              onClick={() => setRange(r)}
-                            >
-                              {rangeLabels[r]}
-                            </button>
-                          ),
+                          (r) => {
+                            const isUnsupported =
+                              metric.id === "rtt" &&
+                              !["1m", "10m"].includes(r);
+                            return (
+                              <button
+                                type="button"
+                                key={r}
+                                disabled={isUnsupported}
+                                aria-pressed={range === r && !isUnsupported}
+                                title={
+                                  isUnsupported
+                                    ? "Connection latency is measured in this browser session and retains up to 10 minutes."
+                                    : undefined
+                                }
+                                onClick={() => setRange(r)}
+                              >
+                                {rangeLabels[r]}
+                              </button>
+                            );
+                          },
                         )}
                       </div>
                       {historyError && range !== "1m" && (
@@ -1036,7 +1697,7 @@ function HealthWindow({
                       </div>
                       <p className="health-updated">
                         Updated{" "}
-                        {new Date(metric.sampledAt).toLocaleTimeString()} · Live
+                        {formatAppTime(metric.sampledAt)} · Live
                         samples every 2 seconds
                       </p>
                     </>
@@ -1047,6 +1708,11 @@ function HealthWindow({
                   )}
                 </section>
               </div>
+            )}
+            {section === "topology" && (
+              <RecoverableSurface fallback={<p className="health-empty" role="status">Loading topology…</p>}>
+                <SystemTopologyMap />
+              </RecoverableSurface>
             )}
             {section === "processes" && (
               <HealthProcessTable thresholds={thresholds} />
@@ -1081,7 +1747,7 @@ function HealthWindow({
                         ))}
                       </dl>
                       <small>
-                        Checked {new Date(s.checkedAt).toLocaleTimeString()}
+                        Checked {formatAppTime(s.checkedAt)}
                       </small>
                     </article>
                   ))}
@@ -1093,16 +1759,6 @@ function HealthWindow({
               <Suspense fallback={<p role="status">Loading token usage…</p>}>
                 <TokenUsageWorkspace shellMode="desktop" initialTab="models" modelsOnly onClose={onClose} />
               </Suspense>
-            )}
-            {section === "ai" && (
-              <HealthAiPanel
-                thresholds={thresholds}
-                now={telemetry.clock}
-                onOpenUsage={() => onSection("usage")}
-                models={telemetry.models}
-                accounts={telemetry.accounts}
-                onManage={onManage}
-              />
             )}
             {section === "alerts" && (
               <div className="health-stack">
@@ -1134,7 +1790,7 @@ function HealthWindow({
           <span>Resources 2s · Services 10s · Models 30s · Accounts 60s</span>
           <small>
             {telemetry.snapshot
-              ? `Updated ${new Date(telemetry.snapshot.sampledAt).toLocaleTimeString()}`
+              ? `Updated ${formatAppTime(telemetry.snapshot.sampledAt)}`
               : "Waiting for telemetry"}
           </small>
         </footer>
@@ -1148,14 +1804,41 @@ export function SystemHealth({
   railVisible,
   environment,
   onManage,
+  allowChanges = true,
   minimizedBarToggle,
+  onOpenAgentsDashboard,
+  agentsSummary,
+  onReopenPane,
+  onReopenAllDetached,
+  onCloseSession,
+  readOnly = false,
 }: {
   userId: string;
   railVisible: boolean;
   environment: CodexEnvironment | null;
+  allowChanges?: boolean;
   onManage?: (id: "accounts" | "provider" | "cli") => void;
   minimizedBarToggle?: ReactNode;
+  onOpenAgentsDashboard?: () => void;
+  agentsSummary?: AgentDashboardSummary | null;
+  onReopenPane?: (roomId: string, paneId: string) => Promise<void> | void;
+  onReopenAllDetached?: () => Promise<void> | void;
+  onCloseSession?: (paneId: string) => Promise<void> | void;
+  /** When true, indicator buttons are display-only: no panel opens on click. */
+  readOnly?: boolean;
 }) {
+  const [agentsLiveSummary, setAgentsLiveSummary] = useState<AgentDashboardSummary | null>(agentsSummary ?? null);
+  useEffect(() => {
+    if (agentsSummary) setAgentsLiveSummary(agentsSummary);
+  }, [agentsSummary]);
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<AgentDashboardSummary>).detail;
+      if (detail) setAgentsLiveSummary(detail);
+    };
+    window.addEventListener("space:agents-dashboard-summary", handler);
+    return () => window.removeEventListener("space:agents-dashboard-summary", handler);
+  }, []);
   const storage = getSpaceRuntime().platform.localStorage;
   const [thresholds, setThresholds] = useState(() =>
     readHealthThresholds(storage, userId),
@@ -1164,9 +1847,15 @@ export function SystemHealth({
   const [section, setSection] = useState<HealthSection>("overview");
   const [selected, setSelected] = useState("cpu");
   const [expanded, setExpanded] = useState(false);
+  const [visibilityMenu, setVisibilityMenu] = useState<RailVisibilityMenuState>(null);
   const rail = useRef<HTMLElement>(null);
   const healthRailItemsRef = useRef<HTMLDivElement | null>(null);
   const source = useRef<HTMLSpanElement>(null);
+  const upperRailVisibility = useRailVisibility(
+    UPPER_RAIL_HIDDEN_KEY,
+    UPPER_RAIL_IDS,
+    UPPER_RAIL_NON_HIDEABLE,
+  );
   useRailOrder(
     healthRailItemsRef,
     Boolean(railVisible && !open),
@@ -1176,6 +1865,12 @@ export function SystemHealth({
       group: "upper",
     },
   );
+  useEffect(() => {
+    if (!railVisible || open) setVisibilityMenu(null);
+  }, [open, railVisible]);
+  useEffect(() => {
+    dispatchRailMenuChange();
+  }, [open]);
   useLayoutEffect(() => {
     const shell = source.current?.closest<HTMLElement>(".space-shell");
     const element = rail.current;
@@ -1191,9 +1886,11 @@ export function SystemHealth({
     open === "health",
     environment,
     thresholds,
+    readOnly,
   );
   useEffect(() => {
     const listener = (event: Event) => {
+      if (readOnly) return;
       const detail = (
         event as CustomEvent<{
           section?: HealthSection;
@@ -1201,19 +1898,76 @@ export function SystemHealth({
           resources?: boolean;
         }>
       ).detail;
-      setOpen(detail?.resources ? "resources" : "health");
-      setSection(detail?.section ?? "overview");
+      setOpen("health");
+      setSection(detail?.resources && detail.metric ? (detail.metric === "cli" ? "sessions" : ["accounts", "codex-reset"].includes(detail.metric) ? "ai" : detail.metric === "rtt" ? "connection" : "performance") : detail?.section ?? "overview");
       setSelected(detail?.metric ?? "cpu");
       setExpanded(false);
     };
     window.addEventListener("space:system-health", listener);
     return () => window.removeEventListener("space:system-health", listener);
+  }, [readOnly]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const viewport = window.visualViewport;
+    let wasKeyboardOpen = false;
+
+    const checkState = () => {
+      const isMobile = window.innerWidth <= 768 || document.querySelector(".space-shell")?.getAttribute("data-shell-mode") === "mobile";
+      if (!isMobile) {
+        wasKeyboardOpen = false;
+        document.documentElement.removeAttribute("data-virtual-keyboard-open");
+        return;
+      }
+      const keyboardOpen = Boolean(viewport && viewport.height < window.innerHeight * 0.78);
+      if (keyboardOpen) {
+        if (!wasKeyboardOpen) {
+          setExpanded(false);
+          wasKeyboardOpen = true;
+        }
+        document.documentElement.setAttribute("data-virtual-keyboard-open", "true");
+      } else {
+        wasKeyboardOpen = false;
+        document.documentElement.removeAttribute("data-virtual-keyboard-open");
+      }
+    };
+
+    const handleFocus = (e: FocusEvent) => {
+      const isMobile = window.innerWidth <= 768 || document.querySelector(".space-shell")?.getAttribute("data-shell-mode") === "mobile";
+      if (!isMobile) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable || target.classList.contains("xterm-helper-textarea"))) {
+        setExpanded(false);
+        wasKeyboardOpen = true;
+        document.documentElement.setAttribute("data-virtual-keyboard-open", "true");
+      }
+    };
+
+    const handleBlur = () => {
+      setTimeout(checkState, 150);
+    };
+
+    viewport?.addEventListener("resize", checkState);
+    viewport?.addEventListener("scroll", checkState);
+    window.addEventListener("resize", checkState);
+    window.addEventListener("focusin", handleFocus);
+    window.addEventListener("focusout", handleBlur);
+
+    return () => {
+      viewport?.removeEventListener("resize", checkState);
+      viewport?.removeEventListener("scroll", checkState);
+      window.removeEventListener("resize", checkState);
+      window.removeEventListener("focusin", handleFocus);
+      window.removeEventListener("focusout", handleBlur);
+      document.documentElement.removeAttribute("data-virtual-keyboard-open");
+    };
   }, []);
-  const shell = source.current?.closest<HTMLElement>("[data-shell-mode]");
+
+  const shell = source.current?.closest<HTMLElement>("[data-shell-mode]") ?? (typeof document !== "undefined" ? document.querySelector<HTMLElement>("[data-shell-mode]") : null);
   const theme = {
     "data-ui-theme": shell?.dataset.uiTheme,
     "data-color-mode": shell?.dataset.colorMode,
     "data-room-theme": shell?.dataset.roomTheme,
+    "data-shell-mode": shell?.dataset.shellMode,
   };
   useEffect(() => {
     const dismiss = () => setOpen(null);
@@ -1230,9 +1984,131 @@ export function SystemHealth({
       return false;
     }
   };
-  const summary = summaryMetrics(telemetry).filter(
-    (m) => m.id !== "provider" && m.id !== "models",
-  );
+  const availableSummary = summaryMetrics(telemetry).filter((m) => {
+    if (readOnly) {
+      return m.id === "memory" || m.id === "cpu" || m.id === "rtt";
+    }
+    return m.id !== "provider" && m.id !== "models";
+  });
+  const summary = availableSummary.filter((m) => upperRailVisibility.isVisible(m.id));
+  const upperMenuItems = DEFAULT_UPPER_RAIL_ITEMS.filter((item) => {
+    if (readOnly) {
+      return item.id === "memory" || item.id === "cpu" || item.id === "rtt";
+    }
+    if (item.id === "minimized-bar") return Boolean(minimizedBarToggle);
+    if (item.id === "codex-reset") return availableSummary.some((metric) => metric.id === "codex-reset");
+    return true;
+  });
+
+  const accountProviders = useMemo<Array<{
+    id: string;
+    tag: string;
+    label: string;
+    value: string;
+    tone: HealthTone;
+    detail: string;
+    icon: LucideIcon;
+  }>>(() => {
+    const list: Array<{
+      id: string;
+      tag: string;
+      label: string;
+      value: string;
+      tone: HealthTone;
+      detail: string;
+      icon: LucideIcon;
+    }> = [];
+
+    const aggregates = computeQuotaAggregates(
+      telemetry.accounts,
+      telemetry.antigravityAccounts,
+      telemetry.apiProviderAccounts
+    );
+
+    // 1. Codex
+    const isCodexEnabled = telemetry.environment?.isCodexEnabled !== false;
+    if (!isCodexEnabled) {
+      list.push({
+        id: "codex",
+        tag: "CODEX",
+        label: "Codex",
+        value: "OFF",
+        tone: "disabled",
+        detail: "Codex is disabled in Settings",
+        icon: Wallet,
+      });
+    } else {
+      const activeLbPct = telemetry.environment?.lbUsage?.activeAccountsRemainingPercent;
+      const allLbPct = telemetry.environment?.lbUsage?.allAccountsRemainingPercent;
+      const computedPct = aggregates.codex.percent5h || aggregates.codex.percentWeekly;
+      const rawVal = activeLbPct != null ? activeLbPct : (computedPct || allLbPct || 0);
+      const codexVal = Math.round(rawVal);
+      const codexTone: HealthTone =
+        codexVal <= 5 ? "critical" : codexVal <= 20 ? "warning" : "healthy";
+      const activeCount = aggregates.codex.activeAccounts || (activeLbPct != null ? 3 : 0);
+      const totalCount = aggregates.codex.totalAccounts || (telemetry.environment?.lbUsage ? 4 : 0);
+      list.push({
+        id: "codex",
+        tag: "CODEX",
+        label: "Codex",
+        value: `${codexVal}%`,
+        tone: codexTone,
+        detail: `Codex active capacity: ${codexVal}% · ${activeCount}/${totalCount} accounts active`,
+        icon: Wallet,
+      });
+    }
+
+    // 2. Antigravity (AGY)
+    const hasAgyAccounts =
+      aggregates.antigravityCombined.totalAccounts > 0 ||
+      Boolean(telemetry.antigravityAccounts?.data && telemetry.antigravityAccounts.data.length > 0);
+    if (hasAgyAccounts) {
+      const agy5h = Math.round(aggregates.antigravityCombined.percent5h);
+      const agyWk = Math.round(aggregates.antigravityCombined.percentWeekly);
+      const agyVal = agy5h;
+      const agyTone: HealthTone =
+        agyVal <= 5 ? "critical" : agyVal <= 20 ? "warning" : "healthy";
+      list.push({
+        id: "antigravity",
+        tag: "AGY",
+        label: "Antigravity",
+        value: `${agyVal}%`,
+        tone: agyTone,
+        detail: `Antigravity capacity: ${agy5h}% (5h) · ${agyWk}% (weekly) · ${aggregates.antigravityCombined.activeAccounts}/${aggregates.antigravityCombined.totalAccounts} accounts active`,
+        icon: Sparkles,
+      });
+    }
+
+    // 3. API Providers
+    if (aggregates.apiProviders.totalProviders > 0) {
+      const { connectedProviders, totalBalanceUsd, totalProviders } = aggregates.apiProviders;
+      const balanceStr = totalBalanceUsd > 0 ? `$${totalBalanceUsd.toFixed(totalBalanceUsd >= 10 ? 0 : 2)}` : `${connectedProviders}/${totalProviders}`;
+      const apiTone: HealthTone =
+        connectedProviders === 0 ? "critical" : aggregates.apiProviders.exhaustedProviders > 0 ? "warning" : "healthy";
+      list.push({
+        id: "api",
+        tag: "API",
+        label: "API Providers",
+        value: balanceStr,
+        tone: apiTone,
+        detail: `API Providers: ${connectedProviders}/${totalProviders} connected · Balance: $${totalBalanceUsd.toFixed(2)}`,
+        icon: Layers,
+      });
+    }
+
+    return list;
+  }, [telemetry.accounts, telemetry.antigravityAccounts, telemetry.apiProviderAccounts, telemetry.environment]);
+
+  const [accountRotationIndex, setAccountRotationIndex] = useState(0);
+
+  useEffect(() => {
+    if (accountProviders.length <= 1) return;
+    const interval = setInterval(() => {
+      setAccountRotationIndex((prev) => (prev + 1) % accountProviders.length);
+    }, 20_000);
+    return () => clearInterval(interval);
+  }, [accountProviders.length]);
+
   return (
     <>
       <span ref={source} hidden />
@@ -1241,6 +2117,11 @@ export function SystemHealth({
           ref={rail}
           className={`health-indicator-rail${expanded ? " is-expanded" : ""}`}
           aria-label="Resource indicators"
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setVisibilityMenu((current) => current ? null : { x: event.clientX, y: event.clientY });
+          }}
         >
           <button
             className="health-rail-expander"
@@ -1256,52 +2137,144 @@ export function SystemHealth({
             <Activity aria-hidden="true" />
           </button>
           <div className="health-rail-items" ref={healthRailItemsRef}>
-            {minimizedBarToggle}
+            {!readOnly && onOpenAgentsDashboard && upperRailVisibility.isVisible("agents-dashboard") ? (() => {
+              const border = getAgentsIndicatorBorder(agentsLiveSummary);
+              const borderClass = border === "run" ? "has-run" : border === "waiting-only" ? "has-waiting-only" : border === "done-only" ? "has-done-only" : "is-idle";
+              const total = agentsLiveSummary?.loaded ? agentsLiveSummary.total : null;
+              const working = agentsLiveSummary?.working ?? 0;
+              const waiting = agentsLiveSummary?.waiting ?? 0;
+              const done = agentsLiveSummary?.done ?? 0;
+              const idle = agentsLiveSummary?.idle ?? 0;
+              const hasLiveBadges = working > 0 || waiting > 0 || done > 0;
+              const title = total !== null
+                ? `Agents Dashboard · ${total} agents\n• ${working} working\n• ${waiting} waiting for you\n• ${done} done\n• ${idle} idle`
+                : "Agents Dashboard";
+              return (
+                <button
+                  type="button"
+                  data-rail-id="agents-dashboard"
+                  data-agents-state={border}
+                  className={`health-indicator is-healthy agents-dashboard-rail-btn ${borderClass}`}
+                  title={title}
+                  aria-label="Open agents dashboard"
+                  aria-haspopup="dialog"
+                  onClick={onOpenAgentsDashboard}
+                >
+                  <div className="agents-rail-header">
+                    {!hasLiveBadges ? (
+                      <LayoutDashboard className="agents-rail-icon" aria-hidden="true" />
+                    ) : null}
+                    {working > 0 && waiting > 0 ? (
+                      <span className="agents-live-badge-group">
+                        <span className="agents-live-badge is-working" title={`${working} working`}>
+                          <i className="agents-badge-dot" />
+                          <span>{working}</span>
+                        </span>
+                        <span className="agents-live-badge is-waiting" title={`${waiting} waiting for you`}>
+                          <i className="agents-badge-dot" />
+                          <span>{waiting}</span>
+                        </span>
+                      </span>
+                    ) : working > 0 ? (
+                      <span className="agents-live-badge is-working" title={`${working} working`}>
+                        <i className="agents-badge-dot" />
+                        <span>{working}</span>
+                      </span>
+                    ) : waiting > 0 ? (
+                      <span className="agents-live-badge is-waiting" title={`${waiting} waiting for you`}>
+                        <i className="agents-badge-dot" />
+                        <span>{waiting}</span>
+                      </span>
+                    ) : done > 0 ? (
+                      <span className="agents-live-badge is-done" title={`${done} done`}>
+                        <i className="agents-badge-dot" />
+                        <span>{done}</span>
+                      </span>
+                    ) : null}
+                  </div>
+                  <strong>{total !== null ? total : "—"}</strong>
+                  {total !== null && total > 0 ? (
+                    <div className="agents-rail-bar" aria-hidden="true">
+                      {waiting > 0 && <span className="agents-bar-segment is-waiting" style={{ flexGrow: waiting }} />}
+                      {working > 0 && <span className="agents-bar-segment is-working" style={{ flexGrow: working }} />}
+                      {done > 0 && <span className="agents-bar-segment is-done" style={{ flexGrow: done }} />}
+                      {idle > 0 && <span className="agents-bar-segment is-idle" style={{ flexGrow: idle }} />}
+                    </div>
+                  ) : (
+                    <i className="health-dot" aria-hidden="true" />
+                  )}
+                </button>
+              );
+            })() : null}
+            {minimizedBarToggle && upperRailVisibility.isVisible("minimized-bar")
+              ? minimizedBarToggle
+              : null}
             {summary.map((m) => {
-              const Icon = m.icon;
-              const title = `${m.label}: ${m.value} · ${toneLabels[m.tone]}\n${m.detail}${m.at ? `\nUpdated ${new Date(m.at).toLocaleTimeString()}` : ""}`;
+              const isAccounts = m.id === "accounts";
+              const currentProvider =
+                isAccounts && accountProviders.length > 0
+                  ? accountProviders[accountRotationIndex % accountProviders.length]
+                  : null;
+              const Icon = currentProvider ? currentProvider.icon : m.icon;
+              const value = currentProvider
+                ? currentProvider.value
+                : m.tone === "unavailable"
+                  ? "—"
+                  : m.value;
+              const tone: HealthTone = currentProvider ? currentProvider.tone : m.tone;
+              const toneText = toneLabels[tone] ?? tone;
+              const title = currentProvider
+                ? `Account remaining (${currentProvider.label}): ${currentProvider.value} · ${toneText}\n${currentProvider.detail}\nRotates every 20s across all providers (${(accountRotationIndex % accountProviders.length) + 1}/${accountProviders.length})`
+                : `${m.label}: ${m.value} · ${toneLabels[m.tone]}\n${m.detail}${m.at ? `\nUpdated ${formatAppTime(m.at)}` : ""}`;
+              const ariaLabel = currentProvider
+                ? `Account remaining: ${currentProvider.label} ${currentProvider.value}, ${toneText}`
+                : `${m.label}: ${m.value}, ${toneLabels[m.tone]}`;
+
               return (
                 <button
                   type="button"
                   key={m.id}
                   data-rail-id={m.id}
-                  className={`health-indicator is-${m.tone}`}
-                  aria-label={`${m.label}: ${m.value}, ${toneLabels[m.tone]}`}
+                  className={`health-indicator is-${tone}${readOnly ? " is-read-only" : ""}`}
+                  aria-label={ariaLabel}
                   title={title}
-                  onClick={() => {
+                  onClick={readOnly ? undefined : () => {
                     setSelected(m.id);
-                    setOpen("resources");
+                    setSection(m.id === "cli" ? "sessions" : ["accounts", "codex-reset"].includes(m.id) ? "ai" : m.id === "rtt" ? "connection" : "performance");
+                    setOpen("health");
                   }}
                 >
                   <Icon aria-hidden="true" />
-                  <strong>{m.tone === "unavailable" ? "—" : m.value}</strong>
+                  {currentProvider ? (
+                    <span className="health-indicator-provider-tag">{currentProvider.tag}</span>
+                  ) : null}
+                  <strong>{m.tone === "unavailable" && !currentProvider ? "—" : value}</strong>
                   <i className="health-dot" aria-hidden="true" />
                 </button>
               );
             })}
           </div>
+          {visibilityMenu ? (
+            <RailVisibilityMenu
+              anchorRef={rail}
+              items={upperMenuItems}
+              hiddenIds={upperRailVisibility.hiddenIds}
+              label="Resource icons"
+              x={visibilityMenu.x}
+              y={visibilityMenu.y}
+              onClose={() => setVisibilityMenu(null)}
+              onHide={upperRailVisibility.hide}
+              onShow={upperRailVisibility.show}
+              onShowAll={upperRailVisibility.showAll}
+            />
+          ) : null}
         </nav>
       )}
       {open &&
         createPortal(
           <div className="health-theme-root" {...theme}>
-            {open === "resources" ? (
-              <HealthResources
-                telemetry={telemetry}
-                selected={selected}
-                onSelect={setSelected}
-                onClose={close}
-                onOpen={(id) => {
-                  const destination = id
-                    ? summaryDestination(id)
-                    : { section: "overview" as const };
-                  setSection(destination.section);
-                  setSelected(destination.metric ?? id ?? "cpu");
-                  setOpen("health");
-                }}
-              />
-            ) : (
               <HealthWindow
+                onReopenPane={onReopenPane} onReopenAllDetached={onReopenAllDetached} onCloseSession={onCloseSession}
                 telemetry={telemetry}
                 section={section}
                 onSection={setSection}
@@ -1310,6 +2283,7 @@ export function SystemHealth({
                 onClose={close}
                 thresholds={thresholds}
                 onThresholds={save}
+                allowChanges={allowChanges}
                 onManage={
                   onManage
                     ? (id) => {
@@ -1319,7 +2293,6 @@ export function SystemHealth({
                     : undefined
                 }
               />
-            )}
           </div>,
           document.body,
         )}

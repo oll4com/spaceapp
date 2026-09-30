@@ -677,5 +677,5 @@ export class PostgresStreamingRepository implements StreamingRepository {
 }
 
 function zodTiles(value: unknown): StreamingOverlayTile[] {
-  return streamingOverlayTileSchema.array().max(12).parse(value);
+  return streamingOverlayTileSchema.array().max(64).parse(value);
 }

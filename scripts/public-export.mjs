@@ -57,11 +57,17 @@ const publicDocs = new Set([
   "docs/getting-started.md",
   "docs/legal/cli-distribution-policy.json",
   "docs/operations.md",
+  "docs/installer-release-runbook.md",
   "docs/public-release.md",
   "docs/security-model.md"
 ]);
 
 const publicScripts = new Set([
+  "scripts/release-evidence.mjs",
+  "scripts/publish-prepared.mjs",
+  "scripts/tests/release-evidence.test.mjs",
+  "scripts/build-demo-projects.mjs",
+  "scripts/tests/opencode-first-run.test.mjs",
   "scripts/container-image-size-budget.mjs",
   "scripts/fix-build-permissions.mjs",
   "scripts/portable-backup.mjs",
@@ -264,9 +270,11 @@ export function isPublicExportPath(path) {
   }
   return rootFiles.has(normalized) ||
     normalized.startsWith(".github/") ||
+    normalized === "release/acceptance.json" ||
     normalized.startsWith("apps/") ||
     normalized.startsWith("packages/") ||
     normalized.startsWith("starter-memory/") ||
+    normalized.startsWith("demos/") ||
     normalized.startsWith("deploy/docker/") ||
     publicDocs.has(normalized) ||
     publicScripts.has(normalized);

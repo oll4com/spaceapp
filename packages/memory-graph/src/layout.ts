@@ -102,32 +102,45 @@ function centerPositions(positions: Map<string, MemoryGraphPosition>): void {
 
 function removeCollisions(nodes: MemoryGraphNode[], positions: Map<string, MemoryGraphPosition>): void {
   const ordered = [...nodes].sort((left, right) => left.id.localeCompare(right.id));
+  const radii = new Float64Array(ordered.length);
+  for (let i = 0; i < ordered.length; i += 1) radii[i] = nodeRadius(ordered[i]!);
+  const posArray = ordered.map((n) => positions.get(n.id)!);
+
   for (let pass = 0; pass < 48; pass += 1) {
     let moved = false;
     for (let leftIndex = 0; leftIndex < ordered.length; leftIndex += 1) {
-      const left = ordered[leftIndex]!;
-      const leftPosition = positions.get(left.id)!;
+      const leftPosition = posArray[leftIndex]!;
+      const leftRadius = radii[leftIndex]!;
       for (let rightIndex = leftIndex + 1; rightIndex < ordered.length; rightIndex += 1) {
-        const right = ordered[rightIndex]!;
-        const rightPosition = positions.get(right.id)!;
-        const minimumDistance = nodeRadius(left) + nodeRadius(right) + 0.65;
-        let dx = rightPosition.x - leftPosition.x;
-        let dy = rightPosition.y - leftPosition.y;
+        const minimumDistance = leftRadius + radii[rightIndex]! + 0.65;
+        const rightPosition = posArray[rightIndex]!;
+        const dx = rightPosition.x - leftPosition.x;
+        if (Math.abs(dx) >= minimumDistance) continue;
+        const dy = rightPosition.y - leftPosition.y;
+        if (Math.abs(dy) >= minimumDistance) continue;
         let distance = Math.hypot(dx, dy);
         if (distance >= minimumDistance) continue;
         if (distance < 0.000001) {
+          const left = ordered[leftIndex]!;
+          const right = ordered[rightIndex]!;
           const angle = stableFraction(`${left.id}\n${right.id}`) * Math.PI * 2;
-          dx = Math.cos(angle);
-          dy = Math.sin(angle);
+          const uX = Math.cos(angle);
+          const uY = Math.sin(angle);
           distance = 1;
+          const shift = (minimumDistance - distance) / 2;
+          leftPosition.x -= uX * shift;
+          leftPosition.y -= uY * shift;
+          rightPosition.x += uX * shift;
+          rightPosition.y += uY * shift;
+        } else {
+          const shift = (minimumDistance - distance) / 2;
+          const unitX = dx / distance;
+          const unitY = dy / distance;
+          leftPosition.x -= unitX * shift;
+          leftPosition.y -= unitY * shift;
+          rightPosition.x += unitX * shift;
+          rightPosition.y += unitY * shift;
         }
-        const shift = (minimumDistance - distance) / 2;
-        const unitX = dx / distance;
-        const unitY = dy / distance;
-        leftPosition.x -= unitX * shift;
-        leftPosition.y -= unitY * shift;
-        rightPosition.x += unitX * shift;
-        rightPosition.y += unitY * shift;
         moved = true;
       }
     }

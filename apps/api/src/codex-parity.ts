@@ -577,8 +577,15 @@ function isTrustedBootstrapEnvelope(value: string): boolean {
   );
 }
 
+// Codex can append image references after Space's durable marker. Only remove
+// this exact transport suffix when its trusted marker is present immediately before it.
+function stripChatTransportImages(value: string): string {
+  const candidate = value.replace(/(?:\n\n<image name=\[Image #\d+\] path="\/srv\/space\/var\/artifacts\/[^"<>\r\n]+">\s*<\/image>)+\s*$/, "");
+  return candidate !== value && trailingDurableTurnMarker.test(candidate) ? candidate : value;
+}
+
 function chatUserPrompt(payload: Record<string, unknown>): string | null {
-  const raw = rawMessageContent({ content: payload.message ?? payload.content ?? payload.text });
+  const raw = stripChatTransportImages(rawMessageContent({ content: payload.message ?? payload.content ?? payload.text }));
   const trustedGoalObjective = extractTrustedCodexGoalObjective(raw);
   const stripped = stripTrailingSpaceMarkers(trustedGoalObjective ?? raw, {
     allowEscapedDurableTurnMarker: trustedGoalObjective !== null

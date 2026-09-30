@@ -37,22 +37,11 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   assert.match(dockerfile, /await r\.json\(\)/);
   assert.match(dockerfile, /body\.ok !== true/);
   assert.match(dockerfile, /rotate-owner-setup-token\.mjs/);
-  for (const dependency of [
-    "@openai/codex@0.145.0",
-    "@google/gemini-cli@0.52.0",
-    "opencode-ai@1.18.4",
-    "@qwen-code/qwen-code@0.20.1",
-    "@moonshot-ai/kimi-code@0.29.0",
-    "@xai-official/grok@0.2.111",
-    "run-deepseek-cli@0.1.1"
-  ]) {
-    assert.match(dockerfile, new RegExp(dependency.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  }
-  assert.doesNotMatch(dockerfile, /@anthropic-ai\/claude-code/);
-  assert.match(
-    normalizedDockerfile,
-    /npm install --global --ignore-scripts --no-audit --no-fund\s+run-deepseek-cli@0\.1\.1/
-  );
+  assert.match(dockerfile, /opencode-ai@1\.18\.4/);
+  assert.doesNotMatch(dockerfile, /@openai\/codex|@google\/gemini-cli|@anthropic-ai\/claude-code|run-deepseek-cli/);
+  const installer = await readFile(join(root, "deploy/docker/provider-install.mjs"), "utf8");
+  assert.match(installer, /@openai\/codex@0\.145\.0/);
+  assert.match(installer, /Unsupported optional provider/);
   assert.doesNotMatch(dockerfile, /docker\.sock/);
   assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/LICENSE \/app\/NOTICE \/app\/THIRD_PARTY_NOTICES\.md \.\//);
 });
@@ -66,7 +55,7 @@ test("public container images identify their repository and license for GHCR", a
   );
   assert.match(
     dockerfile,
-    /^LABEL org\.opencontainers\.image\.licenses=Apache-2\.0$/m
+    /^LABEL org\.opencontainers\.image\.licenses=BUSL-1\.1$/m
   );
 });
 
@@ -77,7 +66,7 @@ test("CLI image removes the npm download cache in the same layer as bundled CLI 
 
   assert.match(
     normalizedCliStage,
-    /RUN npm install[\s\S]*run-deepseek-cli@0\.1\.1[\s\S]*&& npm cache clean --force/
+    /RUN npm install[\s\S]*opencode-ai@1\.18\.4[\s\S]*&& npm cache clean --force/
   );
 });
 
@@ -219,7 +208,7 @@ test("public CLI wrapper isolates provider state and supports protected DeepSeek
   assert.match(wrapper, /umask 077/);
   assert.match(wrapper, /deepseek\.key/);
   assert.match(wrapper, /export USER=spaceapp/);
-  assert.match(wrapper, /login\)\n\s+ensure_runtime_dirs/);
+  assert.match(wrapper, /login\)\n\s+ensure_optional_provider\n\s+ensure_runtime_dirs/);
   assert.doesNotMatch(credentialStatusBlock, /ensure_runtime_dirs/);
   assert.match(wrapper, /opencode\) exec "\$command_name" auth login/);
   assert.match(wrapper, /vendor\/claude\/node_modules\/\.bin\/claude/);

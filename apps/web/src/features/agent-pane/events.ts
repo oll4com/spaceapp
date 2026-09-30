@@ -13,6 +13,7 @@ type AgentPaneActionEventDetail =
   | "build"
   | "plan_progress"
   | "deploy"
+  | "clean_worktree"
   | "permissions"
         | "resume"
         | "copy"

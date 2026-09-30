@@ -4,7 +4,7 @@ export type RoomQuickCommand =
   | { type: "SEARCH"; query: string; engine: "GOOGLE" | "YOUTUBE"; paneId?: string }
   | { type: "MUSIC"; action: "PLAY" | "PAUSE" | "NEXT" | "PREVIOUS"; target: "AUTO" | "YOUTUBE" };
 
-const runtimes: Record<string, string> = { codex: "cli:codex", opencode: "cli:opencode", claude: "cli:claude", gemini: "cli:gemini", kimi: "cli:kimi", grok: "cli:grok", deepseek: "cli:deepseek", cursor: "cli:cursor", copilot: "cli:copilot", hermes: "cli:hermes" };
+const runtimes: Record<string, string> = { codex: "cli:codex", opencode: "cli:opencode", claude: "cli:claude", gemini: "cli:gemini", kimi: "cli:kimi", grok: "cli:grok", deepseek: "cli:deepseek", cursor: "cli:cursor", copilot: "cli:copilot", hermes: "cli:hermes", omp: "cli:omp", "oh-my-pi": "cli:omp", qoder: "cli:qoder", muse: "cli:muse", droid: "cli:droid" };
 const counts: Record<string, number> = { ενα: 1, μια: 1, εναν: 1, δυο: 2, τρια: 3, τεσσερα: 4, one: 1, two: 2, three: 3, four: 4, a: 1, an: 1 };
 export function parseRoomQuickCommand(content: string): RoomQuickCommand | null {
   const original = content.normalize("NFC").trim().replace(/[.!！]+$/u, "").trim();
@@ -19,7 +19,7 @@ export function parseRoomQuickCommand(content: string): RoomQuickCommand | null 
     if (!query || /\b(?:και μετα|and then)\b/u.test(search[2]!)) return null;
     return { type: "SEARCH", query, engine: search[1] === "youtube" ? "YOUTUBE" : "GOOGLE" };
   }
-  const open = /^(?:ανοιξε|ανοιξεις|δημιουργησε|δημιουργησεις|open|create)\s+(?:(\d{1,2}|ενα|μια|εναν|δυο|τρια|τεσσερα|one|two|three|four|a|an)\s+)?(?:(codex|opencode|claude|gemini|kimi|grok|deepseek|cursor|copilot|hermes)\s*)?(?:(cli|chat|browser|broswer|youtube)\s*)?(?:panes?|πανελ|παραθυρα|παραθυρο|τερματικα|τερματικο)?$/.exec(polite);
+  const open = /^(?:ανοιξε|ανοιξεις|δημιουργησε|δημιουργησεις|open|create)\s+(?:(\d{1,2}|ενα|μια|εναν|δυο|τρια|τεσσερα|one|two|three|four|a|an)\s+)?(?:(codex|opencode|claude|gemini|kimi|grok|deepseek|cursor|copilot|hermes|omp|oh-my-pi|qoder|muse|droid)\s*)?(?:(cli|chat|browser|broswer|youtube)\s*)?(?:panes?|πανελ|παραθυρα|παραθυρο|τερματικα|τερματικο)?$/.exec(polite);
   if (!open || (!open[2] && !open[3])) return null;
   const count = open[1] ? counts[open[1]] ?? Number(open[1]) : 1;
   if (!Number.isInteger(count) || count < 1 || count > 16) return null;

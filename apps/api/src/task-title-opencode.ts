@@ -59,7 +59,7 @@ export async function resolveNativeOpenCodeRuntime(
         );
         // These permission/step/output-limit controls were verified against this
         // native version. An unknown runtime must not silently weaken the limits.
-        if (["1.18.29", "1.18.30"].includes(version.trim())) return resolved;
+        if (["1.18.29", "1.18.30", "1.18.31"].includes(version.trim())) return resolved;
       } catch {}
     }
     return null;

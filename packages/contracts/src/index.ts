@@ -13,3 +13,11 @@ export { parseRoomQuickCommand, type RoomQuickCommand } from "./room-quick-comma
 export * from "./pane-catalog.js";
 
 export * from "./space-control.js";
+export * from "./space-decisions.js";
+export * from "./plugins.js";
+export * from "./live-audio-registry.js";
+export type { LiveRoomContext } from "./live-context.js";
+export * from "./demo-projects.js";
+export * from "./terminal-render.js";
+
+export * from "./maintenance-plan.js";

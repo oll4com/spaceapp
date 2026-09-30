@@ -100,7 +100,9 @@
 
 .osk-size-btn,
 .osk-lang-btn,
-.osk-symbol-btn {
+.osk-symbol-btn,
+.osk-shortcuts-btn,
+.osk-autocomplete-btn {
   min-width: 2rem;
   min-height: 2rem;
   display: grid;
@@ -117,8 +119,21 @@
   -webkit-touch-callout: none;
 }
 
-.osk-size-btn {
+.osk-size-btn,
+.osk-shortcuts-btn,
+.osk-autocomplete-btn {
   padding: 0;
+}
+
+.osk-shortcuts-btn,
+.osk-autocomplete-btn {
+  color: #cad3d0;
+}
+
+.osk-shortcuts-btn svg,
+.osk-autocomplete-btn svg {
+  width: 0.95rem;
+  height: 0.95rem;
 }
 
 .osk-size-btn:hover:not(:disabled),
@@ -126,16 +141,24 @@
 .osk-lang-btn:hover:not(:disabled),
 .osk-lang-btn:focus-visible,
 .osk-symbol-btn:hover:not(:disabled),
-.osk-symbol-btn:focus-visible {
+.osk-symbol-btn:focus-visible,
+.osk-shortcuts-btn:hover:not(:disabled),
+.osk-shortcuts-btn:focus-visible,
+.osk-autocomplete-btn:hover:not(:disabled),
+.osk-autocomplete-btn:focus-visible {
   border-color: var(--room-accent, #6db7aa);
   background: #26302e;
+  color: #ffffff;
 }
 
 .osk-size-btn[aria-pressed="true"],
 .osk-lang-btn[aria-pressed="true"],
-.osk-symbol-btn[aria-pressed="true"] {
+.osk-symbol-btn[aria-pressed="true"],
+.osk-shortcuts-btn[aria-pressed="true"],
+.osk-autocomplete-btn[aria-pressed="true"] {
   border-color: var(--room-accent, #6db7aa);
   background: #26302e;
+  color: var(--room-accent, #6db7aa);
 }
 
 .osk-controls .voice-input-control {
@@ -279,9 +302,61 @@
   color: #ffffff;
 }
 
-.osk-sheet .osk-size-controls {
-  display: none;
+.osk-autocomplete-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.55rem;
+  border-bottom: 1px solid #2a3032;
+  background: rgba(16, 20, 21, 0.75);
+  min-height: 2.3rem;
 }
+
+.osk-autocomplete-chip {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 32%;
+  min-height: 1.85rem;
+  padding: 0 0.6rem;
+  border: 1px solid #354044;
+  border-radius: 6px;
+  background: #192022;
+  color: #dbe4e1;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 100ms ease;
+}
+
+.osk-autocomplete-chip:hover:not(:disabled),
+.osk-autocomplete-chip:focus-visible {
+  border-color: var(--room-accent, #6db7aa);
+  background: #26302e;
+  color: #ffffff;
+}
+
+.osk-autocomplete-chip:active {
+  transform: scale(0.97);
+}
+
+.osk-autocomplete-chip.is-primary {
+  border-color: color-mix(in srgb, var(--room-accent, #6db7aa) 60%, #354044);
+  color: #6ee7b7;
+  background: #1d2825;
+}
+
+.osk-sheet .osk-size-controls { display: flex; }
 
 .osk-keys {
   min-height: 0;
@@ -348,17 +423,48 @@
   justify-content: center;
   padding: 0.75rem;
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
-  background: rgba(4, 6, 7, 0.58);
+  background: transparent;
   touch-action: manipulation;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+  pointer-events: none;
 }
 
 .osk-sheet {
-  width: min(100%, 34rem);
-  border-radius: 10px 10px 0 0;
+  position: fixed;
+  width: min(calc(100vw - 1rem), 34rem);
+  max-height: calc(100dvh - 1rem);
+  border-radius: 10px;
   box-shadow: 0 -1rem 2.8rem rgba(0, 0, 0, 0.42);
+  pointer-events: auto;
+}
+.osk-sheet .osk-key {
+  min-height: calc(2.4rem * var(--osk-mobile-scale, 1));
+  font-size: calc(0.8rem * var(--osk-mobile-scale, 1));
+  padding-inline: 0.1rem;
+}
+.osk-sheet .osk-keys {
+  gap: calc(0.3rem * var(--osk-mobile-scale, 1));
+}
+.osk-sheet .osk-row {
+  gap: 0.2rem;
+}
+.osk-sheet .osk-header { gap: 0.2rem; }
+.osk-sheet .osk-controls { margin-left: 0; gap: 0.2rem; }
+.osk-sheet .osk-size-controls { gap: 0.15rem; }
+.osk-sheet .osk-size-btn,
+.osk-sheet .osk-lang-btn,
+.osk-sheet .osk-symbol-btn,
+.osk-sheet .osk-shortcuts-btn,
+.osk-sheet .osk-autocomplete-btn,
+.osk-sheet .osk-close { min-width: 2.25rem; min-height: 2.25rem; }
+@media (max-width: 480px) {
+  .osk-sheet .osk-drag-handle > span { display: none; }
+  .osk-sheet .osk-key {
+    min-height: calc(2.4rem * var(--osk-mobile-scale, 1));
+    font-size: calc(0.8rem * var(--osk-mobile-scale, 1));
+  }
 }
 
 @media (max-width: 480px) {
@@ -386,4 +492,113 @@
     padding: 0 0.45rem;
     font-size: 0.7rem;
   }
+}
+
+/* Light mode support for On-Screen Keyboard */
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-panel {
+  border-color: #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-header {
+  border-bottom-color: #d2dce4;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-drag-handle {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-close,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-size-btn,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-lang-btn,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-symbol-btn,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-shortcuts-btn,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-autocomplete-btn {
+  border: 1px solid #d2dce4;
+  background: #f7f9fb;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-close:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-size-btn:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-lang-btn:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-symbol-btn:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-shortcuts-btn:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-autocomplete-btn:hover:not(:disabled) {
+  border-color: #b7c6d1;
+  background: #eef3f6;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-shortcuts-btn[aria-pressed="true"],
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-autocomplete-btn[aria-pressed="true"] {
+  border-color: var(--room-accent, #087568);
+  background: #e6f4ea;
+  color: var(--room-accent, #087568);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-controls .voice-input-control {
+  border: 1px solid #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-controls .voice-input-control:hover:not(:disabled) {
+  border-color: #b7c6d1;
+  background: #eef3f6;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-shortcuts-bar,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-autocomplete-bar {
+  border-bottom-color: #d2dce4;
+  background: #f7f9fb;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-chip,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-autocomplete-chip {
+  border: 1px solid #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-chip:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-chip:focus-visible,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-autocomplete-chip:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-autocomplete-chip:focus-visible {
+  border-color: var(--room-accent, #087568);
+  background: #eef3f6;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-autocomplete-chip.is-primary {
+  border-color: var(--room-accent, #087568);
+  background: #e6f4ea;
+  color: #087568;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-key {
+  border: 1px solid #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-key:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-key:focus-visible {
+  border-color: #b7c6d1;
+  background: #f0f4f7;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-key:active {
+  background: #e2e8ed;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .osk-key[data-primary="true"] {
+  border-color: var(--room-accent, #087568);
+  background: #e6f4ea;
+  color: #137333;
 }

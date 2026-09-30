@@ -1,10 +1,11 @@
 import { canStartAgentRuntimeLogin, type AgentRuntime, type AgentRuntimeRegistry } from "@space/contracts";
-import { Loader2, RefreshCw, Terminal, X } from "../ui-theme/app-icons.js";
+import { GripVertical, Loader2, Minus, Plus, RefreshCw, Terminal, X } from "../ui-theme/app-icons.js";
 import { createPortal } from "react-dom";
 import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -42,10 +43,13 @@ interface CliLauncherMenuProps {
   loadRuntimes?: () => Promise<AgentRuntimeRegistry>;
   mobile: boolean;
   onClose: () => void;
-  onCreate: (runtime: AgentRuntime) => Promise<void>;
+  onCreate: (runtime: AgentRuntime, count?: number) => Promise<void>;
   onLogin: (runtime: AgentRuntime) => Promise<void>;
   onOpenSettings?: () => void;
   triggerRef: RefObject<HTMLButtonElement | null>;
+  refreshOnOpen?: boolean;
+  paneCount?: number;
+  onPaneCountChange?: (count: number | ((prev: number) => number)) => void;
 }
 
 function enabledButtons(container: HTMLElement | null): HTMLButtonElement[] {
@@ -71,11 +75,36 @@ export function CliLauncherMenu({
   onCreate,
   onLogin,
   onOpenSettings,
-  triggerRef
+  triggerRef,
+  refreshOnOpen,
+  paneCount,
+  onPaneCountChange
 }: CliLauncherMenuProps) {
+  const shouldRefreshOnOpen = refreshOnOpen ?? !embedded;
   const popupRef = useRef<HTMLElement | null>(null);
   const closeIntentRef = useRef<"dismissal" | "activation">("dismissal");
   const requestSequenceRef = useRef(0);
+  const [internalCount, setInternalCount] = useState(1);
+  const currentCount = paneCount ?? internalCount;
+  const setCount = onPaneCountChange ?? setInternalCount;
+  const stepperRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = stepperRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.deltaY < 0) {
+        setCount((c) => Math.min(6, (typeof c === "number" ? c : 1) + 1));
+      } else if (e.deltaY > 0) {
+        setCount((c) => Math.max(1, (typeof c === "number" ? c : 1) - 1));
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => el.removeEventListener("wheel", onWheel, { capture: true });
+  }, [setCount]);
+
   const [initialRuntimeSnapshot] = useState(() => api.cliRuntimesSnapshot());
   const runtimeSnapshotAvailableRef = useRef(initialRuntimeSnapshot !== null);
   const [runtimes, setRuntimes] = useState<AgentRuntime[]>(
@@ -87,6 +116,20 @@ export function CliLauncherMenu({
   const [creatingRuntimeId, setCreatingRuntimeId] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<"CREATE" | "LOGIN" | null>(null);
   const [position, setPosition] = useState({ left: VIEWPORT_MARGIN, top: VIEWPORT_MARGIN, ready: false });
+  const CLI_LAUNCHER_ORDER_KEY = "space:create-menu-cli-order";
+  const [cliOrder, setCliOrder] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = window.localStorage.getItem(CLI_LAUNCHER_ORDER_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  const [draggedRuntimeId, setDraggedRuntimeId] = useState<string | null>(null);
+  const [dragOverRuntimeId, setDragOverRuntimeId] = useState<string | null>(null);
+  const isDraggingCliRef = useRef(false);
 
   const refreshRuntimes = useCallback(async () => {
     const requestSequence = requestSequenceRef.current + 1;
@@ -110,17 +153,20 @@ export function CliLauncherMenu({
   }, [loadRuntimes]);
 
   useEffect(() => {
+    if (!shouldRefreshOnOpen && runtimeSnapshotAvailableRef.current && runtimes.length > 0) {
+      return;
+    }
     void refreshRuntimes();
     return () => {
       requestSequenceRef.current += 1;
     };
-  }, [refreshRuntimes]);
+  }, [shouldRefreshOnOpen, refreshRuntimes]);
 
   useEffect(() => {
     const handleVisibilityChange = (event: Event) => {
       const change = readCliRuntimeVisibilityChange(event);
       if (!change) return;
-      api.invalidateCliRuntimes();
+      api.invalidateCliRuntimes(change);
       if (change.runtimeId && change.enabled === false) {
         setRuntimes((current) => current.filter((runtime) => runtime.id !== change.runtimeId));
       }
@@ -187,7 +233,7 @@ export function CliLauncherMenu({
     function handleOutsidePointer(event: PointerEvent) {
       const target = event.target as Node;
       if (popupRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
-      if (creatingRuntimeId) return;
+      if (creatingRuntimeId || isDraggingCliRef.current) return;
       closeIntentRef.current = "dismissal";
       onClose();
     }
@@ -211,7 +257,8 @@ export function CliLauncherMenu({
   async function createRuntime(runtime: AgentRuntime) {
     const authAction = canStartAgentRuntimeLogin(runtime);
     if (
-      creatingRuntimeId
+      isDraggingCliRef.current
+      || creatingRuntimeId
       || (runtime.id === "cli:codex" && !isCodexEnabled)
       || (!authAction && !isCliRuntimeTerminalLaunchable(runtime))
     ) return;
@@ -219,9 +266,10 @@ export function CliLauncherMenu({
     setPendingAction(authAction ? "LOGIN" : "CREATE");
     setCreationError(null);
     try {
-      await (authAction ? onLogin(runtime) : onCreate(runtime));
+      await (authAction ? onLogin(runtime) : currentCount > 1 ? onCreate(runtime, currentCount) : onCreate(runtime));
       setCreatingRuntimeId(null);
       setPendingAction(null);
+      setCount(1);
       closeIntentRef.current = "activation";
       onClose();
     } catch (error) {
@@ -272,6 +320,97 @@ export function CliLauncherMenu({
     buttons[nextIndex]?.focus();
   }
 
+  const orderedRuntimes = useMemo(() => {
+    const matching = runtimes.filter(
+      (runtime) =>
+        !query.trim() ||
+        `${runtime.displayName} CLI terminal ${runtime.statusReason}`.toLowerCase().includes(query.trim().toLowerCase())
+    );
+    if (!cliOrder.length || query.trim()) return matching;
+    return [...matching].sort((a, b) => {
+      const ai = cliOrder.indexOf(a.id);
+      const bi = cliOrder.indexOf(b.id);
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
+      return 0;
+    });
+  }, [runtimes, query, cliOrder]);
+
+  const dragOverRuntimeIdRef = useRef<string | null>(null);
+
+  const handleRuntimePointerDown = (event: React.PointerEvent<HTMLElement>, runtimeId: string) => {
+    if (event.button !== 0 || creatingRuntimeId || query.trim()) return;
+
+    const isHandle = (event.target as HTMLElement)?.closest(".cli-launcher-drag-handle") !== null;
+    if ((event.pointerType === "touch" || mobile) && !isHandle) return;
+
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let dragStarted = false;
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const isTouch = moveEvent.pointerType === "touch" || event.pointerType === "touch";
+      if (isTouch && !isHandle) return;
+      const dist = Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY);
+      if (!dragStarted && (isHandle ? (isTouch ? dist > 8 : dist > 2) : dist > 6)) {
+        dragStarted = true;
+        isDraggingCliRef.current = true;
+        setDraggedRuntimeId(runtimeId);
+      }
+
+      if (dragStarted) {
+        moveEvent.preventDefault();
+        const element = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+        const targetOption = element?.closest<HTMLElement>(".cli-launcher-option");
+        const targetId = targetOption?.dataset.runtimeId;
+        if (targetId && targetId !== runtimeId) {
+          dragOverRuntimeIdRef.current = targetId;
+          setDragOverRuntimeId(targetId);
+        } else {
+          dragOverRuntimeIdRef.current = null;
+          setDragOverRuntimeId(null);
+        }
+      }
+    };
+
+    const onPointerUp = (upEvent: PointerEvent) => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp, { capture: true });
+      window.removeEventListener("pointercancel", onPointerUp, { capture: true });
+
+      if (dragStarted) {
+        upEvent.preventDefault();
+        upEvent.stopPropagation();
+        const targetId = dragOverRuntimeIdRef.current;
+        if (targetId && targetId !== runtimeId) {
+          const currentOrder = orderedRuntimes.map((r) => r.id);
+          const sourceIndex = currentOrder.indexOf(runtimeId);
+          const targetIndex = currentOrder.indexOf(targetId);
+          if (sourceIndex !== -1 && targetIndex !== -1) {
+            const nextOrder = [...currentOrder];
+            nextOrder.splice(sourceIndex, 1);
+            nextOrder.splice(targetIndex, 0, runtimeId);
+            setCliOrder(nextOrder);
+            try {
+              window.localStorage.setItem(CLI_LAUNCHER_ORDER_KEY, JSON.stringify(nextOrder));
+            } catch {}
+          }
+        }
+        dragOverRuntimeIdRef.current = null;
+        setDraggedRuntimeId(null);
+        setDragOverRuntimeId(null);
+        window.setTimeout(() => {
+          isDraggingCliRef.current = false;
+        }, 120);
+      }
+    };
+
+    window.addEventListener("pointermove", onPointerMove, { passive: false });
+    window.addEventListener("pointerup", onPointerUp, { capture: true });
+    window.addEventListener("pointercancel", onPointerUp, { capture: true });
+  };
+
   const content = loading ? (
     <p className="cli-launcher-state" role="status" aria-live="polite">
       <Loader2 className="cli-launcher-spinner" aria-hidden="true" />
@@ -296,7 +435,7 @@ export function CliLauncherMenu({
     </div>
   ) : (
     <div className="cli-launcher-options">
-      {runtimes.filter(runtime => !query.trim() || `${runtime.displayName} CLI terminal ${runtime.statusReason}`.toLowerCase().includes(query.trim().toLowerCase())).map((runtime) => {
+      {orderedRuntimes.map((runtime) => {
         const presentation = cliRuntimePresentation(runtime.id);
         const isCreating = creatingRuntimeId === runtime.id;
         const launchable = isCliRuntimeTerminalLaunchable(runtime);
@@ -309,7 +448,7 @@ export function CliLauncherMenu({
           : paneCapBlocked
           ? "Full"
           : runtime.authState === "READY"
-          ? "Available"
+          ? null
           : runtime.authState === "LOGIN_REQUIRED"
             ? "Login"
             : runtime.authState === "SETUP_REQUIRED"
@@ -325,18 +464,27 @@ export function CliLauncherMenu({
           : paneCapBlocked
           ? "This room already has the maximum of 16 panes. Login retry remains available for an existing login pane."
           : runtime.statusReason;
+        const isCliDraggable = !query.trim() && !creatingRuntimeId;
+        const isDragging = draggedRuntimeId === runtime.id;
+        const isDragOver = dragOverRuntimeId === runtime.id;
         return (
           <button
             key={runtime.id}
             type="button"
             role={mobile || embedded ? undefined : "menuitem"}
-            className="cli-launcher-option"
+            className={`cli-launcher-option${isDragging ? " is-dragging" : ""}${isDragOver ? " is-drag-over" : ""}`}
             data-runtime-id={runtime.id}
             aria-label={`${authAction ? runtime.authState === "SETUP_REQUIRED" ? "Setup" : "Login" : "Add"} ${runtime.displayName}`}
             aria-describedby={statusReasonId}
             disabled={Boolean(creatingRuntimeId) || unavailable}
             title={codexBlocked ? "Enable Codex in Settings" : undefined}
-            onClick={() => void createRuntime(runtime)}
+            draggable={false}
+            onDragStart={(e) => e.preventDefault()}
+            onPointerDown={isCliDraggable ? (e) => handleRuntimePointerDown(e, runtime.id) : undefined}
+            onClick={() => {
+              if (isDraggingCliRef.current) return;
+              void createRuntime(runtime);
+            }}
           >
             {presentation ? (
               <img
@@ -353,8 +501,19 @@ export function CliLauncherMenu({
               <strong>{runtime.displayName}</strong>
               <small id={statusReasonId}>{statusReason}</small>
             </span>
-            <span className={runtime.authState === "READY" ? "cli-launcher-status" : "cli-launcher-status is-unavailable"}>
-              {isCreating ? pendingAction === "LOGIN" ? "Opening…" : "Creating…" : statusLabel}
+            <span className="cli-launcher-trailing">
+              {isCreating ? (
+                <span className={runtime.authState === "READY" ? "cli-launcher-status" : "cli-launcher-status is-unavailable"}>
+                  {pendingAction === "LOGIN" ? "Opening…" : "Creating…"}
+                </span>
+              ) : statusLabel ? (
+                <span className="cli-launcher-status is-unavailable">
+                  {statusLabel}
+                </span>
+              ) : null}
+              {isCliDraggable ? (
+                <GripVertical className="cli-launcher-drag-handle" aria-hidden="true" />
+              ) : null}
             </span>
           </button>
         );
@@ -377,10 +536,56 @@ export function CliLauncherMenu({
   );
 
   if (embedded) {
-    return <section ref={popupRef} className="cli-launcher-embedded" aria-label="CLI tools" aria-busy={Boolean(creatingRuntimeId)}>
-      <h3 className="desktop-menu-section-label">CLI tools</h3>
-      {content}{feedback}
-    </section>;
+    return (
+      <section ref={popupRef} className="cli-launcher-embedded" aria-label="CLI tools" aria-busy={Boolean(creatingRuntimeId)}>
+        <div className="cli-launcher-embedded-header">
+          <h3 className="desktop-menu-section-label">CLI tools</h3>
+          <div
+            ref={stepperRef}
+            className="cli-launcher-count-stepper"
+            role="spinbutton"
+            aria-valuenow={currentCount}
+            aria-valuemin={1}
+            aria-valuemax={6}
+            aria-label="Panes count to open"
+          >
+            <button
+              type="button"
+              className="cli-count-btn cli-count-btn-minus"
+              aria-label="Decrease pane count"
+              title="Decrease pane count"
+              disabled={currentCount <= 1 || Boolean(creatingRuntimeId)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setCount((c) => Math.max(1, (typeof c === "number" ? c : 1) - 1));
+              }}
+            >
+              <Minus aria-hidden="true" />
+            </button>
+            <span
+              className="cli-count-value"
+              title="Panes to open (1-6, scroll wheel to adjust)"
+            >
+              {currentCount}
+            </span>
+            <button
+              type="button"
+              className="cli-count-btn cli-count-btn-plus"
+              aria-label="Increase pane count"
+              title="Increase pane count"
+              disabled={currentCount >= 6 || Boolean(creatingRuntimeId)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setCount((c) => Math.min(6, (typeof c === "number" ? c : 1) + 1));
+              }}
+            >
+              <Plus aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+        {content}{feedback}
+      </section>
+    );
   }
 
   if (mobile) {

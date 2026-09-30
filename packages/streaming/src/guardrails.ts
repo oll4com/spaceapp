@@ -41,18 +41,25 @@ const MAX_MESSAGE_LENGTH = 500;
 export function isSpam(message: StreamingChatMessage, recent: StreamingChatMessage[]): boolean {
   const text = message.message.trim();
   if (text.length < MIN_MESSAGE_LENGTH || text.length > MAX_MESSAGE_LENGTH) return true;
-  const letters = [...text].filter((character) => /[A-Za-z]/.test(character));
+  const letters = [...text].filter((character) => /\p{L}/u.test(character));
   if (letters.length >= 8) {
-    const upper = letters.filter((character) => character === character.toUpperCase()).length;
+    const upper = letters.filter((character) => character !== character.toLocaleLowerCase() && character === character.toLocaleUpperCase()).length;
     if (upper / letters.length > ALL_CAPS_RATIO) return true;
   }
-  const normalized = text.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const normalized = text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
   if (normalized.length < 2) return true;
   const duplicate = recent.some((candidate) =>
-    candidate.id !== message.id && candidate.message.toLowerCase().replace(/[^a-z0-9]+/g, "") === normalized
+    candidate.id !== message.id && candidate.message.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "") === normalized
   );
   if (duplicate) return true;
   return false;
+}
+
+export function isViewerQuestion(text: string): boolean {
+  const message = text.trim();
+  return /[?？;;]/u.test(message) ||
+    /^(?:who|what|when|where|why|how|which|can|could|do|does|did|is|are|will|would|should)\b/i.test(message) ||
+    /^(?:ποιος|ποια|ποιο|πότε|που|πού|γιατί|πως|πώς|μπορεί|είναι)(?:\s|$)/iu.test(message);
 }
 
 export function messageLengthCap(platform: "YOUTUBE" | "TWITCH"): number {

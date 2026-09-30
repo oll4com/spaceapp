@@ -1,8 +1,17 @@
+import { loadCliPhotoHistory, type TerminalUploadPreview } from "./cli-photo-history.js";
 import { returnCliToBuildMode } from "./cli-build-mode.js";
 import { submitCliShortcut } from "./submit-cli-shortcut.js";
 import { CliShortcutsMenu } from "./CliShortcutsMenu.js";
-import { resolveCliModeShortcut, OSK_CLI_COMMANDS, type OskCliCommand } from "../osk-keyboard/cli-shortcuts.js";
-import { ArrowUp, BrainCircuit, Images, Loader2, Square, Terminal as TerminalIcon, X } from "../ui-theme/app-icons.js";
+import { CliPlansMenu } from "./CliPlansMenu.js";
+import { resolveCliModeShortcut, OSK_CLI_COMMANDS, OSK_ESC_COMMAND, OSK_ENTER_COMMAND, type OskCliCommand } from "../osk-keyboard/cli-shortcuts.js";
+import { ArrowUp, BrainCircuit, ChevronLeft, ChevronRight, Clipboard, Copy, Github, Images, Keyboard, Loader2, Maximize2, Square, Terminal as TerminalIcon, X } from "../ui-theme/app-icons.js";
+import { detectKeyboardLayoutMismatch, toggleKeyboardLayout, type LayoutMismatchDetection } from "../agent-pane/greek-layout-converter.js";
+import {
+  isComposerLayoutIconVisible,
+  isComposerSuggestionBarVisible,
+  playLayoutSuggestionBeep,
+  useKeyboardAutocorrectSettings
+} from "../keyboard-autocorrect/keyboard-autocorrect-settings.js";
 import { GoogleGIcon } from "../ui-theme/GoogleGIcon.js";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent } from "react";
 import { createPortal } from "react-dom";
@@ -15,6 +24,7 @@ import {
   type AgentRuntimeRegistry,
   type CliAccountProfile,
   type CliTerminalClientEventInput,
+  type ClipboardItem,
   type Pane,
   type PaneCliModelSettings,
   type PaneCliTerminalControlState,
@@ -24,6 +34,7 @@ import {
   type PaneCliTurnActivityStatus
 } from "@space/contracts";
 import { SpaceApiError, api } from "../../api.js";
+import { readStoredSuppressNotifications } from "../../notifications-settings.js";
 import {
   invalidateTerminalWidthMeasurements,
   memoizeTerminalWidthMeasurements
@@ -71,6 +82,7 @@ import {
 import { readArtifactDragPayload, resolveArtifactDragFile, type ArtifactDragPayload } from "../artifacts/artifact-drag.js";
 import { SPACE_TASK_ITEM_MIME } from "../task-dock/task-events.js";
 import {
+  SPACE_PANE_CONTEXT_MIME,
   buildPaneTaskContextBlock,
   formatPaneContextBlock,
   readPaneContextDragPayload,
@@ -80,6 +92,14 @@ import { takeCliResumeIntent } from "./cli-resume-intent.js";
 import { useVoiceInput } from "../voice-input/VoiceInputProvider.js";
 import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
 import type { VoiceInsertMode } from "../../voice-settings.js";
+import {
+  registerTerminalPreviewGetter,
+  notifyTerminalPreviewChangedThrottled,
+  extractRecentTerminalLines,
+  extractTranscriptLines,
+  seedTerminalPreviewLines,
+  appendTerminalPreviewChunk
+} from "./terminal-preview-service.js";
 
 export { isNonMutatingTerminalProtocolResponse };
 
@@ -149,7 +169,7 @@ export interface TerminalBootstrapBarrier {
 }
 
 export function createTerminalBootstrapBarrier(paneIds: readonly string[]): TerminalBootstrapBarrier {
-  const expectedPaneIds = new Set(paneIds);
+  const expectedPaneIds = new Set(paneIds.filter((id) => !id.startsWith("pane:optimistic-")));
   const currentTokens = new Map<string, symbol>();
   const arrivedPaneIds = new Set<string>();
   let joinVersion = 0;
@@ -199,6 +219,15 @@ export function createTerminalBootstrapBarrier(paneIds: readonly string[]): Term
       released = true;
       release();
     });
+  }
+
+  if (!released && typeof window !== "undefined") {
+    window.setTimeout(() => {
+      if (!released) {
+        released = true;
+        release();
+      }
+    }, 6000);
   }
 
   return {
@@ -269,7 +298,7 @@ const isModelPickerRuntime = (runtimeId: string | null | undefined): boolean =>
 const isRunCapableCliSession = (
   session: Pick<PaneCliSessionResponse["session"], "purpose" | "runtimeId"> | null | undefined
 ): boolean => Boolean(session?.purpose === "NORMAL" && session.runtimeId !== ROOT_CLI_RUNTIME_ID);
-type NativePlanRuntimeId = "cli:gemini" | "cli:qwen";
+type NativePlanRuntimeId = "cli:gemini" | "cli:qwen" | "cli:omp";
 const TERMINAL_PANE_ACTION_EVENT = "space:terminal-pane-action";
 const CLI_DEBUG_MODE_STORAGE_KEY = "space.cliDebugMode";
 const GEMINI_ACCOUNT_PROFILE_STORAGE_KEY = "space.gemini.lastAccountProfileId";
@@ -323,6 +352,38 @@ function writeLastGeminiAccountProfileId(profileId: string): void {
   }
 }
 
+function readLastCopilotAccountProfileId(): string {
+  try {
+    return getSpaceRuntime().platform.localStorage.getItem("space.cli.copilot.account-profile") || "main";
+  } catch {
+    return "main";
+  }
+}
+
+function writeLastCopilotAccountProfileId(profileId: string): void {
+  try {
+    getSpaceRuntime().platform.localStorage.setItem("space.cli.copilot.account-profile", profileId);
+  } catch {
+    void 0;
+  }
+}
+
+function readLastCursorAccountProfileId(): string {
+  try {
+    return getSpaceRuntime().platform.localStorage.getItem("space.cli.cursor.account-profile") || "main";
+  } catch {
+    return "main";
+  }
+}
+
+function writeLastCursorAccountProfileId(profileId: string): void {
+  try {
+    getSpaceRuntime().platform.localStorage.setItem("space.cli.cursor.account-profile", profileId);
+  } catch {
+    void 0;
+  }
+}
+
 type TerminalModules = {
   Terminal: typeof import("@xterm/xterm").Terminal;
   FitAddon: typeof import("@xterm/addon-fit").FitAddon;
@@ -369,13 +430,15 @@ const initialTerminalControlSnapshot: TerminalControlSnapshot = {
 };
 
 type TerminalPaneActionDetail =
-  | { paneId: string; action: "upload" | "reconnect" | "copy" | "focus" | "cancel_login" | "new_task" }
+  | { paneId: string; action: "upload" | "reconnect" | "copy" | "paste" | "focus" | "cancel_login" | "new_task" }
   | { paneId: string; action: "attach_clip_image"; file: File }
   | { paneId: string; action: "insert_text"; text: string }
   | { paneId: string; action: "keyboard_input"; text: string }
-  | { paneId: string; action: "cli_shortcut"; commandId: string }
+  | { paneId: string; action: "cli_shortcut"; commandId: string; handled?: boolean }
+  | { paneId: string; action: "switch_model"; modelId: string; reasoningEffort: string }
   | { paneId: string; action: "insert_clipboard_text"; text: string }
   | { paneId: string; action: "start_task_item"; objective: string }
+  | { paneId: string; action: "execute_plan"; plan: ClipboardItem }
   | { paneId: string; action: "ensure_plan_mode" }
   | { paneId: string; action: "enter_native_plan_mode"; runtimeId: NativePlanRuntimeId }
   | { paneId: string; action: "control_key"; key: "ctrl_c" | "shift_tab" | "escape" }
@@ -405,13 +468,6 @@ interface ClipboardDebugState {
 interface ClipboardDataSnapshot {
   summary: string;
   text: string;
-}
-
-interface TerminalUploadPreview {
-  id: string;
-  name: string;
-  path: string;
-  objectUrl: string;
 }
 
 interface HiddenInputEchoFilter {
@@ -471,7 +527,7 @@ interface BufferedTerminalSocket {
 const TERMINAL_SOCKET_PREOPEN_TIMEOUT_MS = 400;
 const TERMINAL_REPLAY_WRITE_CHUNK_SIZE = 1024 * 1024;
 const TERMINAL_SOCKET_SUPERSEDED_CLOSE_CODE = 4001;
-const TERMINAL_UPLOAD_CONTROL_TIMEOUT_MS = 2_000;
+const TERMINAL_UPLOAD_CONTROL_TIMEOUT_MS = 4_000;
 
 interface BrowserTaskScheduler {
   yield?: () => Promise<void>;
@@ -486,22 +542,39 @@ function yieldForTerminalReplay(): Promise<void> {
 export function createTerminalReplayWriteQueue(
   write: (data: string, mode: TerminalOutputWriteMode) => Promise<void>,
   yieldControl: () => Promise<void> = yieldForTerminalReplay,
-  shouldYield: () => boolean = () => true
+  shouldYield: () => boolean = () => true,
+  coalesceInitialPrefill = false
 ) {
   let tail = Promise.resolve();
   let hasWritten = false;
   let disposed = false;
+  let pendingPrefillBatch: { chunks: string[]; bytes: number; operation: Promise<void> } | null = null;
+  const encoder = new TextEncoder();
 
   return {
     enqueue(data: string, mode: TerminalOutputWriteMode = "VISIBLE"): Promise<void> {
       if (!data || disposed) return tail;
+      const batchable = coalesceInitialPrefill && mode === "PREFILL" && !shouldYield();
+      const bytes = batchable ? encoder.encode(data).byteLength : 0;
+      if (batchable && pendingPrefillBatch && pendingPrefillBatch.chunks.length < 32 &&
+          pendingPrefillBatch.bytes + bytes <= 64 * 1024) {
+        pendingPrefillBatch.chunks.push(data);
+        pendingPrefillBatch.bytes += bytes;
+        return pendingPrefillBatch.operation;
+      }
+      // A live frame seals the preceding batch; never merge across modes.
+      pendingPrefillBatch = null;
+      const batch = { chunks: [data], bytes, operation: Promise.resolve() };
       const operation = tail.then(async () => {
+        if (pendingPrefillBatch === batch) pendingPrefillBatch = null;
         if (disposed) return;
         if (hasWritten && shouldYield()) await yieldControl();
         if (disposed) return;
-        await write(data, mode);
+        await write(batch.chunks.join(""), mode);
         hasWritten = true;
       });
+      batch.operation = operation;
+      if (batchable) pendingPrefillBatch = batch;
       tail = operation;
       return operation;
     },
@@ -673,7 +746,7 @@ export function isRetryableCliReconnectError(error: unknown): boolean {
 export function buildTerminalCliSessionRequest(
   pane: Pick<Pane, "reasoningEffort" | "cwd">,
   runtimeId: string,
-  input: { accountProfileId?: string | null; modelId?: string | null; forceRestart?: boolean; resume?: boolean } = {},
+  input: { accountProfileId?: string | null; modelId?: string | null; reasoningEffort?: Pane["reasoningEffort"]; forceRestart?: boolean; resume?: boolean } = {},
   automaticReconnect = false
 ) {
   return {
@@ -683,7 +756,7 @@ export function buildTerminalCliSessionRequest(
       : {
           ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
           ...(input.accountProfileId !== undefined ? { accountProfileId: input.accountProfileId } : {}),
-          reasoningEffort: pane.reasoningEffort,
+          reasoningEffort: input.reasoningEffort ?? (runtimeId === "cli:gemini" && (!pane.reasoningEffort || pane.reasoningEffort === "medium") ? "high" : pane.reasoningEffort),
           cwd: pane.cwd,
           ...(input.forceRestart ? { forceRestart: true } : {}),
           ...(input.resume ? { resume: true } : {})
@@ -747,11 +820,13 @@ export function shouldRequestTerminalControl(input: {
   realInteraction?: boolean;
   readOnly?: boolean;
 }): boolean {
-  return !input.readOnly &&
-    input.isVisible &&
-    !input.isMinimized &&
-    input.documentVisibility === "visible" &&
-    (input.documentHasFocus || input.realInteraction === true);
+  if (input.readOnly || !input.isVisible || input.isMinimized) {
+    return false;
+  }
+  if (input.realInteraction === true) {
+    return true;
+  }
+  return input.documentVisibility === "visible" && input.documentHasFocus;
 }
 
 function isRecoverableCliSession(session: PaneCliSessionResponse["session"] | null | undefined): boolean {
@@ -787,11 +862,13 @@ function isTerminalPaneAction(detail: unknown): detail is TerminalPaneActionDeta
     file?: unknown;
     text?: unknown;
     objective?: unknown;
+    plan?: unknown;
     commandId?: unknown;
     key?: unknown;
     runtimeId?: unknown;
     session?: unknown;
     modelId?: unknown;
+    reasoningEffort?: unknown;
     memory?: { scope?: unknown; roomId?: unknown; title?: unknown; provenance?: unknown };
   };
   if (typeof maybeDetail.paneId !== "string") return false;
@@ -799,6 +876,7 @@ function isTerminalPaneAction(detail: unknown): detail is TerminalPaneActionDeta
     maybeDetail.action === "upload" ||
     maybeDetail.action === "reconnect" ||
     maybeDetail.action === "copy" ||
+    maybeDetail.action === "paste" ||
     maybeDetail.action === "focus" ||
     maybeDetail.action === "cancel_login" ||
     maybeDetail.action === "ensure_plan_mode" ||
@@ -815,16 +893,32 @@ function isTerminalPaneAction(detail: unknown): detail is TerminalPaneActionDeta
     return typeof maybeDetail.text === "string";
   }
   if (maybeDetail.action === "cli_shortcut") {
-    return OSK_CLI_COMMANDS.some((command) => command.id === maybeDetail.commandId);
+    return (
+      OSK_CLI_COMMANDS.some((command) => command.id === maybeDetail.commandId) ||
+      maybeDetail.commandId === "esc" ||
+      maybeDetail.commandId === "enter"
+    );
+  }
+  if (maybeDetail.action === "switch_model") {
+    return typeof maybeDetail.modelId === "string" && typeof maybeDetail.reasoningEffort === "string";
   }
   if (maybeDetail.action === "start_task_item") {
     return typeof maybeDetail.objective === "string";
+  }
+  if (maybeDetail.action === "execute_plan") {
+    const plan = (maybeDetail as any).plan;
+    return (
+      typeof plan === "object" &&
+      plan !== null &&
+      typeof plan.id === "string" &&
+      typeof plan.text === "string"
+    );
   }
   if (maybeDetail.action === "control_key") {
     return maybeDetail.key === "ctrl_c" || maybeDetail.key === "shift_tab" || maybeDetail.key === "escape";
   }
   if (maybeDetail.action === "enter_native_plan_mode") {
-    return maybeDetail.runtimeId === "cli:gemini" || maybeDetail.runtimeId === "cli:qwen";
+    return maybeDetail.runtimeId === "cli:gemini" || maybeDetail.runtimeId === "cli:qwen" || maybeDetail.runtimeId === "cli:omp";
   }
   if (maybeDetail.action === "replace_session") return paneCliSessionResponseSchema.safeParse(maybeDetail.session).success;
   return (
@@ -975,34 +1069,27 @@ function isEditablePasteTarget(target: EventTarget | null | undefined): boolean 
   return false;
 }
 
-function scrollTerminalViewportByTouchDelta(viewport: HTMLElement, deltaY: number): boolean {
-  const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-  if (maxScrollTop <= 0) return false;
-  const previousScrollTop = viewport.scrollTop;
-  const nextScrollTop = Math.max(0, Math.min(maxScrollTop, previousScrollTop + deltaY));
-  if (nextScrollTop === previousScrollTop) return false;
-  viewport.scrollTop = nextScrollTop;
-  return true;
-}
-
 export function encodeSgrMouseWheel(deltaY: number, col: number, row: number): string {
   const safeCol = Math.max(1, Number.isFinite(col) ? Math.floor(col) : 1);
   const safeRow = Math.max(1, Number.isFinite(row) ? Math.floor(row) : 1);
   const button = deltaY > 0 ? 65 : 64;
   return `\u001b[<${button};${safeCol};${safeRow}M`;
 }
-function scrollXtermByTouchDelta(terminal: XtermTerminal | null, deltaY: number, fontSize: number): boolean {
-  if (!terminal) return false;
-  const buffer = terminal.buffer.active;
-  if (deltaY > 0 && buffer.viewportY >= buffer.baseY) return false;
-  if (deltaY < 0 && buffer.viewportY <= 0) return false;
+export function accumulateTouchScrollLines(pendingPx: number, deltaY: number, lineHeightPx: number): { lines: number; pendingPx: number } {
+  const height = Math.max(1, lineHeightPx);
+  const total = pendingPx + deltaY;
+  const lines = Math.trunc(total / height);
+  return { lines, pendingPx: total - lines * height };
+}
 
-  const lineHeightPx = Math.max(10, Math.round(fontSize * 1.35));
-  const lineDelta =
-    deltaY > 0
-      ? Math.max(1, Math.floor(deltaY / lineHeightPx))
-      : Math.min(-1, Math.ceil(deltaY / lineHeightPx));
-  terminal.scrollLines(lineDelta);
+export function scrollXtermByTouchLines(terminal: XtermTerminal | null, lines: number): boolean {
+  if (!terminal) return false;
+  const buffer = terminal.buffer?.active;
+  if (!buffer) return false;
+  if (lines > 0 && buffer.viewportY >= buffer.baseY) return false;
+  if (lines < 0 && buffer.viewportY <= 0) return false;
+  if (lines === 0) return false;
+  terminal.scrollLines(lines);
   return true;
 }
 
@@ -1450,8 +1537,8 @@ export interface PendingTerminalInputQueue {
 export function terminalPendingInputAdmission(
   queue: PendingTerminalInputQueue,
   dataLength: number,
-  maxEntries = 32,
-  maxBytes = 16_000
+  maxEntries = 256,
+  maxBytes = 1_000_000
 ): boolean {
   if (dataLength <= 0) return true;
   return queue.length < maxEntries && queue.queuedBytes + dataLength <= maxBytes;
@@ -1481,7 +1568,7 @@ export function TerminalPane({
 }: TerminalPaneProps) {
   const voiceInput = useVoiceInput();
   const voiceOwnerId = `cli:${pane.id}`;
-  const [registry, setRegistry] = useState<AgentRuntimeRegistry | null>(null);
+  const [registry, setRegistry] = useState<AgentRuntimeRegistry | null>(() => api.cliRuntimesSnapshot());
   const [selectedRuntimeId, setSelectedRuntimeId] = useState(pane.terminalRuntimeId ?? DEFAULT_CLI_RUNTIME_ID);
   const [geminiAccountProfiles, setGeminiAccountProfiles] = useState<CliAccountProfile[]>([]);
   const [selectedGeminiAccountProfileId, setSelectedGeminiAccountProfileId] = useState(readLastGeminiAccountProfileId);
@@ -1489,6 +1576,9 @@ export function TerminalPane({
   const geminiAccountPickerRef = useRef<HTMLDivElement | null>(null);
   const geminiAccountButtonRef = useRef<HTMLButtonElement | null>(null);
   const [uploadPreviewsOpen, setUploadPreviewsOpen] = useState(false);
+  const [uploadPreviewPage, setUploadPreviewPage] = useState(0);
+  const [photoHistoryError, setPhotoHistoryError] = useState(false);
+  const [photoHistoryAttempt, setPhotoHistoryAttempt] = useState(0);
   const uploadPreviewsPickerRef = useRef<HTMLDivElement | null>(null);
   const uploadPreviewsButtonRef = useRef<HTMLButtonElement | null>(null);
   const [sessionResponse, setSessionResponse] = useState<PaneCliSessionResponse | null>(null);
@@ -1502,6 +1592,8 @@ export function TerminalPane({
   revealGenerationRef.current = revealGeneration;
   const [dismissedClipboardDebugAt, setDismissedClipboardDebugAt] = useState<string | null>(null);
   const [uploadPreviews, setUploadPreviews] = useState<TerminalUploadPreview[]>([]);
+  const previousUploadPreviewsRef = useRef<TerminalUploadPreview[]>([]);
+  const photoHistoryPaneRef = useRef(pane.id);
   const [selectedUploadPreviewId, setSelectedUploadPreviewId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -1513,6 +1605,71 @@ export function TerminalPane({
   const [terminalPrefillReady, setTerminalPrefillReady] = useState(!prefillInitialReplay);
   const [connectionAlert, setConnectionAlert] = useState<TerminalConnectionAlert | null>(null);
   const [terminalPromptDraft, setTerminalPromptDraft] = useState("");
+  const [terminalLayoutSuggestion, setTerminalLayoutSuggestion] = useState<LayoutMismatchDetection | null>(null);
+  const dismissedTerminalLayoutTextRef = useRef<string | null>(null);
+  const { settings: autocorrectSettings } = useKeyboardAutocorrectSettings();
+  const prevTerminalLayoutSuggestionRef = useRef(false);
+
+  useEffect(() => {
+    if (!autocorrectSettings.enabled) {
+      setTerminalLayoutSuggestion(null);
+      return;
+    }
+    const text = terminalPromptDraft.trim();
+    if (!text || text === dismissedTerminalLayoutTextRef.current) {
+      setTerminalLayoutSuggestion(null);
+      return;
+    }
+    const detection = detectKeyboardLayoutMismatch(text);
+    const isLangSupported = (detection.direction === "toGreek" && autocorrectSettings.supportedLanguages.includes("el")) ||
+      (detection.direction === "toQwerty" && autocorrectSettings.supportedLanguages.includes("en"));
+    if (detection.hasMismatch && detection.confidence >= 0.85 && isLangSupported) {
+      setTerminalLayoutSuggestion(detection);
+    } else {
+      setTerminalLayoutSuggestion(null);
+    }
+  }, [terminalPromptDraft, autocorrectSettings.enabled, autocorrectSettings.supportedLanguages]);
+
+  useEffect(() => {
+    if (terminalLayoutSuggestion && !prevTerminalLayoutSuggestionRef.current) {
+      if (autocorrectSettings.enabled && autocorrectSettings.soundEnabled) {
+        playLayoutSuggestionBeep();
+      }
+    }
+    prevTerminalLayoutSuggestionRef.current = Boolean(terminalLayoutSuggestion);
+  }, [terminalLayoutSuggestion, autocorrectSettings.enabled, autocorrectSettings.soundEnabled]);
+
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; selection: string } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const voiceInputRef = useRef(voiceInput);
+  voiceInputRef.current = voiceInput;
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && !contextMenuRef.current?.contains(event.target)) {
+        setContextMenu(null);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setContextMenu(null);
+        focusTerminal();
+      }
+    };
+    const handleResize = () => setContextMenu(null);
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("resize", handleResize);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [contextMenu]);
+
   const [activeCliTurn, setActiveCliTurn] = useState<ActiveCliTurn | null>(null);
   const fallbackRunRef = useRef<{ runKey: string } | null>(null);
   const [fallbackRunActive, setFallbackRunActive] = useState(false);
@@ -1589,9 +1746,11 @@ export function TerminalPane({
   const socketRef = useRef<WebSocket | null>(null);
   const bufferedSocketRef = useRef<BufferedTerminalSocket | null>(null);
   const loadRuntimesGenerationRef = useRef(0);
+  const lastActiveSessionCheckedMsRef = useRef<number>(0);
   const readySocketRef = useRef<{ socket: WebSocket; sessionId: string } | null>(null);
   const terminalControlRef = useRef<TerminalControlSnapshot>({ ...initialTerminalControlSnapshot });
   const terminalControlHeartbeatRef = useRef<number | null>(null);
+  const terminalSocketKeepaliveRef = useRef<number | null>(null);
   const terminalControlRequestPendingRef = useRef(false);
   const observerControlUpgradePendingRef = useRef(false);
   const pendingTerminalInputsRef = useRef<PendingTerminalInput[]>([]);
@@ -1627,12 +1786,13 @@ export function TerminalPane({
   });
   const clipboardDebugHistoryRef = useRef<ClipboardDebugState[]>([]);
   const lastClipboardReportRef = useRef<{ key: string; atMs: number } | null>(null);
-  const previousUploadPreviewsRef = useRef<TerminalUploadPreview[]>([]);
   const clipboardPasteAttemptRef = useRef<ClipboardPasteAttempt | null>(null);
   const clipboardAttemptTimerRef = useRef<number | null>(null);
   const lastTerminalIntentAtRef = useRef(0);
   const isVisibleRef = useRef(isVisible);
   isVisibleRef.current = isVisible;
+  const wasAtBottomRef = useRef(true);
+  const isWritingChunkRef = useRef(false);
   const terminalInstanceIdRef = useRef(`term-instance:${crypto.randomUUID()}`);
   const terminalGeometryCoordinatorRef = useRef<ReturnType<typeof createTerminalGeometryCoordinator> | null>(null);
   const terminalOutputCoordinatorRef = useRef<ReturnType<typeof createTerminalOutputCoordinator> | null>(null);
@@ -1655,6 +1815,18 @@ export function TerminalPane({
     [cliRuntimes, selectedRuntimeId]
   );
   const isGeminiRuntime = selectedRuntimeId === "cli:gemini";
+  const isCopilotRuntime = selectedRuntimeId === "cli:copilot";
+  const isCursorRuntime = selectedRuntimeId === "cli:cursor";
+  const [copilotAccountProfiles, setCopilotAccountProfiles] = useState<CliAccountProfile[]>([]);
+  const [selectedCopilotAccountProfileId, setSelectedCopilotAccountProfileId] = useState(readLastCopilotAccountProfileId);
+  const [copilotAccountMenuOpen, setCopilotAccountMenuOpen] = useState(false);
+  const copilotAccountPickerRef = useRef<HTMLDivElement | null>(null);
+  const copilotAccountButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [cursorAccountProfiles, setCursorAccountProfiles] = useState<CliAccountProfile[]>([]);
+  const [selectedCursorAccountProfileId, setSelectedCursorAccountProfileId] = useState(readLastCursorAccountProfileId);
+  const [cursorAccountMenuOpen, setCursorAccountMenuOpen] = useState(false);
+  const cursorAccountPickerRef = useRef<HTMLDivElement | null>(null);
+  const cursorAccountButtonRef = useRef<HTMLButtonElement | null>(null);
   const selectedUploadPreviewIndex = useMemo(
     () => uploadPreviews.findIndex((preview) => preview.id === selectedUploadPreviewId),
     [selectedUploadPreviewId, uploadPreviews]
@@ -1678,6 +1850,27 @@ export function TerminalPane({
     bootstrapReportedRef.current = true;
     onBootstrapped?.(pane.id);
   }
+
+  useEffect(() => {
+    return registerTerminalPreviewGetter(pane.id, () => {
+      if (terminalRef.current) {
+        return extractRecentTerminalLines(terminalRef.current, 8);
+      }
+      if (sessionResponseRef.current?.transcript) {
+        return extractTranscriptLines(sessionResponseRef.current.transcript, 8);
+      }
+      return [];
+    });
+  }, [pane.id]);
+
+  useEffect(() => {
+    if (pane.isMinimized && terminalRef.current) {
+      const currentLines = extractRecentTerminalLines(terminalRef.current, 15);
+      if (currentLines.length > 0) {
+        seedTerminalPreviewLines(pane.id, currentLines);
+      }
+    }
+  }, [pane.isMinimized, pane.id]);
 
   function settleTerminalPrefill(): void {
     const pending = terminalOutputCoordinatorRef.current?.snapshot().pendingPrefillEvents ?? 0;
@@ -1790,6 +1983,28 @@ export function TerminalPane({
     terminalControlHeartbeatRef.current = null;
   }
 
+  function clearTerminalSocketKeepalive() {
+    if (terminalSocketKeepaliveRef.current === null) return;
+    window.clearInterval(terminalSocketKeepaliveRef.current);
+    terminalSocketKeepaliveRef.current = null;
+  }
+
+  function scheduleTerminalSocketKeepalive(socket: WebSocket, sessionId: string) {
+    clearTerminalSocketKeepalive();
+    terminalSocketKeepaliveRef.current = window.setInterval(() => {
+      if (
+        socketRef.current !== socket ||
+        readySocketRef.current?.socket !== socket ||
+        readySocketRef.current.sessionId !== sessionId ||
+        socket.readyState !== WebSocket.OPEN
+      ) {
+        clearTerminalSocketKeepalive();
+        return;
+      }
+      socket.send(JSON.stringify({ type: "ping" }));
+    }, 25_000);
+  }
+
   function scheduleTerminalControlHeartbeat(socket: WebSocket, sessionId: string) {
     clearTerminalControlHeartbeat();
     const control = terminalControlRef.current;
@@ -1875,9 +2090,14 @@ export function TerminalPane({
       return "unavailable";
     }
     if (canUploadTerminalFiles()) return "ready";
-    if (!canRequestTerminalControl(true)) {
+    if (sessionResponseRef.current?.websocket?.proofScope === "READ_ONLY") {
       setNotice(null);
       setError("This terminal is live read-only in the current page.");
+      return "unavailable";
+    }
+    if (!canRequestTerminalControl(true)) {
+      setNotice(null);
+      setError("This terminal cannot receive uploads right now.");
       return "unavailable";
     }
     ensureTerminalControl(true);
@@ -1889,10 +2109,18 @@ export function TerminalPane({
     timeoutMs = TERMINAL_UPLOAD_CONTROL_TIMEOUT_MS
   ): Promise<boolean> {
     const expectedSessionId = terminalFileUploadSessionId();
-    const readiness = requestTerminalFileUploadControl();
-    if (!expectedSessionId) return false;
-    if (readiness === "ready") return true;
-    if (readiness === "unavailable") return false;
+    if (!expectedSessionId) {
+      setError("Attach a CLI session before uploading files.");
+      return false;
+    }
+    if (sessionResponseRef.current?.websocket?.proofScope === "READ_ONLY") {
+      setNotice(null);
+      setError("This terminal is live read-only in the current page.");
+      return false;
+    }
+    if (canUploadTerminalFiles()) return true;
+
+    ensureTerminalControl(true);
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (terminalFileUploadSessionId() !== expectedSessionId) {
@@ -1900,10 +2128,17 @@ export function TerminalPane({
         setError("The CLI session disconnected before the upload could start.");
         return false;
       }
-      if (canUploadTerminalFiles()) return true;
+      if (canUploadTerminalFiles()) {
+        setError(null);
+        return true;
+      }
+      if (canRequestTerminalControl(true) && !terminalControlRequestPendingRef.current) {
+        ensureTerminalControl(true);
+      }
       await new Promise((resolve) => window.setTimeout(resolve, 25));
     }
     setNotice(null);
+    terminalControlRequestPendingRef.current = false;
     setError("Terminal control is still changing. Try the upload again.");
     return false;
   }
@@ -1931,11 +2166,11 @@ export function TerminalPane({
     });
   }
 
-  function upgradeObserverForTerminalControl() {
+  function upgradeObserverForTerminalControl(realInteraction = false) {
     if (
       observerControlUpgradePendingRef.current ||
       sessionResponseRef.current?.websocket?.proofScope === "READ_ONLY" ||
-      !canRequestTerminalControl()
+      !canRequestTerminalControl(realInteraction)
     ) return;
     const socket = socketRef.current;
     const ready = readySocketRef.current;
@@ -1957,9 +2192,9 @@ export function TerminalPane({
     const ready = readySocketRef.current;
     const control = terminalControlRef.current;
     if (!socket || ready?.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
-    if (control.protocolVersion === 1 || control.state === "CONTROLLER") return;
+    if (control.protocolVersion === 1 || (control.state === "CONTROLLER" && control.leaseId)) return;
     if (control.clientMode === "OBSERVER") {
-      upgradeObserverForTerminalControl();
+      upgradeObserverForTerminalControl(realInteraction);
       return;
     }
     if (terminalControlRequestPendingRef.current) return;
@@ -1972,7 +2207,7 @@ export function TerminalPane({
       }));
       return;
     }
-    if (control.state === "AVAILABLE") {
+    if (control.state === "AVAILABLE" || (realInteraction && (control.state !== "CONTROLLER" || !control.leaseId))) {
       terminalControlRequestPendingRef.current = true;
       socket.send(JSON.stringify({ type: "control_request" }));
     }
@@ -2442,9 +2677,21 @@ export function TerminalPane({
       const clientMode = canRequestTerminalControl(false, ticket.proofScope === "READ_ONLY")
         ? "INTERACTIVE"
         : "OBSERVER";
+      const geometry = activeSession.session.terminalGeometry;
+      const initialGeometry =
+        geometry &&
+        Number.isInteger(geometry.cols) &&
+        geometry.cols >= 2 &&
+        geometry.cols <= 400 &&
+        Number.isInteger(geometry.rows) &&
+        geometry.rows >= 2 &&
+        geometry.rows <= 200
+          ? { initialCols: geometry.cols, initialRows: geometry.rows }
+          : {};
       const bufferedSocket = createBufferedTerminalSocket(ticket, {
         clientMode,
-        leaseId: terminalControlRef.current.leaseId
+        leaseId: terminalControlRef.current.leaseId,
+        ...initialGeometry
       });
       bufferedSocketRef.current = bufferedSocket;
       return bufferedSocket;
@@ -2477,7 +2724,9 @@ export function TerminalPane({
       setNotice(null);
       try {
         const activeSession = await api.activeCliSession(pane.id, { includeTranscript: false })
-          .finally(() => bootstrapParticipant?.arrive());
+          .finally(() => {
+            void bootstrapParticipant?.arrive();
+          });
         if (generation !== loadRuntimesGenerationRef.current) return;
         if (activeSession && isRecoverableCliSession(activeSession.session)) {
           restoreActiveSession(activeSession);
@@ -2515,11 +2764,14 @@ export function TerminalPane({
           }
           return activeSession;
         })
-        .finally(() => bootstrapParticipant?.arrive());
+        .finally(() => {
+          void bootstrapParticipant?.arrive();
+        });
       const [nextRegistry, activeSession] = await Promise.all([
         api.cliRuntimes({ allowStale: true }),
         activeSessionPromise
       ]);
+      lastActiveSessionCheckedMsRef.current = Date.now();
       allowEarlyPreconnect = false;
       if (generation !== loadRuntimesGenerationRef.current) return;
       setRegistry(nextRegistry);
@@ -2629,10 +2881,64 @@ export function TerminalPane({
   }, [isGeminiRuntime, observerOnly]);
 
   useEffect(() => {
+    if (!isCopilotRuntime || observerOnly) return;
+    let cancelled = false;
+    const loadAccountProfiles = () => {
+      void api.listCliAccountProfiles("cli:copilot").then((result) => {
+        if (cancelled) return;
+        setCopilotAccountProfiles(result.profiles);
+        setSelectedCopilotAccountProfileId((current) => {
+          const profileId = result.profiles.some((profile) => profile.profileId === current)
+            ? current : result.profiles[0]?.profileId ?? "main";
+          writeLastCopilotAccountProfileId(profileId);
+          return profileId;
+        });
+      }).catch(() => {
+        if (!cancelled) setCopilotAccountProfiles([]);
+      });
+    };
+    loadAccountProfiles();
+    window.addEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
+    };
+  }, [isCopilotRuntime, observerOnly]);
+
+  useEffect(() => {
+    if (!isCursorRuntime || observerOnly) return;
+    let cancelled = false;
+    const loadAccountProfiles = () => {
+      void api.listCliAccountProfiles("cli:cursor").then((result) => {
+        if (cancelled) return;
+        setCursorAccountProfiles(result.profiles);
+        setSelectedCursorAccountProfileId((current) => {
+          const profileId = result.profiles.some((profile) => profile.profileId === current)
+            ? current : result.profiles[0]?.profileId ?? "main";
+          writeLastCursorAccountProfileId(profileId);
+          return profileId;
+        });
+      }).catch(() => {
+        if (!cancelled) setCursorAccountProfiles([]);
+      });
+    };
+    loadAccountProfiles();
+    window.addEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
+    };
+  }, [isCursorRuntime, observerOnly]);
+
+  useEffect(() => {
     if (!isGeminiRuntime || !geminiAccountProfiles.length) {
       setGeminiAccountMenuOpen(false);
     }
   }, [isGeminiRuntime, geminiAccountProfiles.length]);
+
+  useEffect(() => {
+    if (!isCursorRuntime || !cursorAccountProfiles.length) setCursorAccountMenuOpen(false);
+  }, [isCursorRuntime, cursorAccountProfiles.length]);
 
   useEffect(() => {
     if (!geminiAccountMenuOpen) return;
@@ -2656,6 +2962,50 @@ export function TerminalPane({
       document.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [geminiAccountMenuOpen]);
+
+  useEffect(() => {
+    if (!copilotAccountMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (copilotAccountPickerRef.current?.contains(target)) return;
+      setCopilotAccountMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setCopilotAccountMenuOpen(false);
+      copilotAccountButtonRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [copilotAccountMenuOpen]);
+
+  useEffect(() => {
+    if (!cursorAccountMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && cursorAccountPickerRef.current?.contains(target)) return;
+      setCursorAccountMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setCursorAccountMenuOpen(false);
+      cursorAccountButtonRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [cursorAccountMenuOpen]);
 
   useEffect(() => {
     if (!uploadPreviews.length) {
@@ -2690,10 +3040,15 @@ export function TerminalPane({
 
   useEffect(() => {
     const session = sessionResponse?.session;
-    if (session?.runtimeId !== "cli:gemini") return;
-    const profileId = session.accountProfileId ?? "main";
-    setSelectedGeminiAccountProfileId(profileId);
-    writeLastGeminiAccountProfileId(profileId);
+    if (session?.runtimeId === "cli:gemini") {
+      const profileId = session.accountProfileId ?? "main";
+      setSelectedGeminiAccountProfileId(profileId);
+      writeLastGeminiAccountProfileId(profileId);
+    } else if (session?.runtimeId === "cli:copilot") {
+      const profileId = session.accountProfileId ?? "main";
+      setSelectedCopilotAccountProfileId(profileId);
+      writeLastCopilotAccountProfileId(profileId);
+    }
   }, [sessionResponse?.session.accountProfileId, sessionResponse?.session.runtimeId]);
 
   useEffect(
@@ -2712,24 +3067,41 @@ export function TerminalPane({
   );
 
   useEffect(() => {
-    const previous = previousUploadPreviewsRef.current;
-    const currentObjectUrls = new Set(uploadPreviews.map((preview) => preview.objectUrl));
-    for (const preview of previous) {
-      if (!currentObjectUrls.has(preview.objectUrl)) {
-        URL.revokeObjectURL(preview.objectUrl);
-      }
+    let current = true;
+    if (photoHistoryPaneRef.current !== pane.id) {
+      photoHistoryPaneRef.current = pane.id;
+      setUploadPreviews([]);
+      setSelectedUploadPreviewId(null);
+      setUploadPreviewPage(0);
+    }
+    setPhotoHistoryError(false);
+    void loadCliPhotoHistory(pane.roomId, pane.id, () => current).then((photos) => {
+      if (!current) return;
+      setUploadPreviews((existing) => {
+        const byId = new Map(photos.map((photo) => [photo.id, photo]));
+        // An upload may finish while history is being restored.
+        for (const photo of existing) byId.set(photo.id, photo);
+        return [...byId.values()];
+      });
+    }).catch(() => {
+      if (current) setPhotoHistoryError(true);
+    });
+    return () => { current = false; };
+  }, [pane.roomId, pane.id, photoHistoryAttempt]);
+
+  useEffect(() => {
+    const currentUrls = new Set(uploadPreviews.map((preview) => preview.objectUrl));
+    for (const preview of previousUploadPreviewsRef.current) {
+      if (preview.objectUrl.startsWith("blob:") && !currentUrls.has(preview.objectUrl)) URL.revokeObjectURL(preview.objectUrl);
     }
     previousUploadPreviewsRef.current = uploadPreviews;
   }, [uploadPreviews]);
 
-  useEffect(
-    () => () => {
-      for (const preview of previousUploadPreviewsRef.current) {
-        URL.revokeObjectURL(preview.objectUrl);
-      }
-    },
-    []
-  );
+  useEffect(() => () => {
+    for (const preview of previousUploadPreviewsRef.current) {
+      if (preview.objectUrl.startsWith("blob:")) URL.revokeObjectURL(preview.objectUrl);
+    }
+  }, []);
 
   useEffect(() => {
     if (!notice) return;
@@ -2765,20 +3137,42 @@ export function TerminalPane({
     setSelectedUploadPreviewId(null);
   }, [selectedUploadPreviewId, uploadPreviews]);
 
+  const uploadPreviewPageCount = Math.max(1, Math.ceil(uploadPreviews.length / imagePreviewLimit));
+  const currentUploadPreviewPage = Math.min(uploadPreviewPage, uploadPreviewPageCount - 1);
+  const uploadPreviewEnd = uploadPreviews.length - currentUploadPreviewPage * imagePreviewLimit;
+  const uploadPreviewStart = Math.max(0, uploadPreviewEnd - imagePreviewLimit);
+
+  function navigateUploadPreview(direction: number) {
+    if (!uploadPreviews.length) return;
+    const index = (selectedUploadPreviewIndex + direction + uploadPreviews.length) % uploadPreviews.length;
+    setSelectedUploadPreviewId(uploadPreviews[index]!.id);
+  }
+
+  const uploadPreviewIsOpen = Boolean(selectedUploadPreview);
   useEffect(() => {
-    setUploadPreviews((current) => (current.length > imagePreviewLimit ? current.slice(-imagePreviewLimit) : current));
-  }, [imagePreviewLimit]);
+    if (!uploadPreviewIsOpen) return;
+    const returnFocus = uploadPreviewReturnFocusRef.current;
+    uploadPreviewCloseRef.current?.focus({ preventScroll: true });
+    return () => {
+      if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+    };
+  }, [uploadPreviewIsOpen]);
 
   useEffect(() => {
     if (!selectedUploadPreview) return;
-    const returnFocus = uploadPreviewReturnFocusRef.current;
-    uploadPreviewCloseRef.current?.focus({ preventScroll: true });
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
         setSelectedUploadPreviewId(null);
+        return;
+      }
+      if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        navigateUploadPreview(event.key === "ArrowLeft" ? -1 : 1);
         return;
       }
       if (event.key !== "Tab") return;
@@ -2809,9 +3203,8 @@ export function TerminalPane({
     window.addEventListener("keydown", handleKeyDown, true);
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
-      if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
     };
-  }, [selectedUploadPreview]);
+  }, [selectedUploadPreview, uploadPreviews]);
 
   useEffect(() => {
     terminalFontSizeRef.current = terminalFontSize;
@@ -2827,31 +3220,64 @@ export function TerminalPane({
     if (!host || !sessionResponse?.websocket) return;
 
     let lastTouchY: number | null = null;
-    const findViewport = () => host.querySelector<HTMLElement>(".xterm-viewport");
+    let touchStartX: number | null = null;
+    let touchStartY: number | null = null;
+    let verticalGesture = false;
+    let pendingTouchPx = 0;
     const handleTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) {
         lastTouchY = null;
+        touchStartX = null;
+        touchStartY = null;
         return;
       }
       lastTouchY = event.touches[0]?.clientY ?? null;
+      touchStartY = lastTouchY;
+      touchStartX = event.touches[0]?.clientX ?? null;
+      verticalGesture = false;
+      pendingTouchPx = 0;
     };
     const handleTouchMove = (event: TouchEvent) => {
-      if (lastTouchY === null || event.touches.length !== 1) return;
+      if (lastTouchY === null || touchStartX === null || touchStartY === null || event.touches.length !== 1) return;
       const nextTouchY = event.touches[0]?.clientY;
-      if (typeof nextTouchY !== "number") return;
+      const nextTouchX = event.touches[0]?.clientX;
+      if (typeof nextTouchY !== "number" || typeof nextTouchX !== "number") return;
+      if (!verticalGesture) {
+        const totalX = nextTouchX - touchStartX;
+        const totalY = nextTouchY - touchStartY;
+        if (Math.hypot(totalX, totalY) < 8 || Math.abs(totalX) > Math.abs(totalY)) return;
+        verticalGesture = true;
+      }
       const deltaY = lastTouchY - nextTouchY;
       lastTouchY = nextTouchY;
-      if (Math.abs(deltaY) < 1) return;
-      const viewport = findViewport();
-      const didScroll =
-        (viewport ? scrollTerminalViewportByTouchDelta(viewport, deltaY) : false) ||
-        scrollXtermByTouchDelta(terminalRef.current, deltaY, terminalFontSizeRef.current);
-      if (didScroll) {
-        event.preventDefault();
+      const terminal = terminalRef.current;
+      const lineHeightPx = Math.max(10, Math.round(terminalFontSizeRef.current * 1.35));
+      if (terminal && (terminal.modes?.mouseTrackingMode ?? "none") !== "none") {
+        const accumulated = accumulateTouchScrollLines(pendingTouchPx, deltaY, lineHeightPx);
+        pendingTouchPx = accumulated.pendingPx;
+        if (accumulated.lines !== 0 && terminal.cols > 0 && terminal.rows > 0) {
+          const rect = host.getBoundingClientRect();
+          const col = Math.max(1, Math.min(terminal.cols, Math.ceil((nextTouchX - rect.left) / Math.max(1, rect.width / terminal.cols))));
+          const row = Math.max(1, Math.min(terminal.rows, Math.ceil((nextTouchY - rect.top) / Math.max(1, rect.height / terminal.rows))));
+          sendTerminalInput(encodeSgrMouseWheel(accumulated.lines, col, row).repeat(Math.abs(accumulated.lines)), "touch scroll", "hidden");
+        }
+      } else {
+        const accumulated = accumulateTouchScrollLines(pendingTouchPx, deltaY, lineHeightPx);
+        pendingTouchPx = accumulated.pendingPx;
+        if (accumulated.lines !== 0) {
+          scrollXtermByTouchLines(terminal, accumulated.lines);
+          syncTerminalViewportEvidence(host, terminal);
+        }
       }
+      event.preventDefault();
+      event.stopImmediatePropagation();
     };
     const clearTouch = () => {
       lastTouchY = null;
+      touchStartX = null;
+      touchStartY = null;
+      verticalGesture = false;
+      pendingTouchPx = 0;
     };
 
     // Full-screen TUIs such as the opencode TUI request mouse reporting
@@ -2981,8 +3407,20 @@ export function TerminalPane({
             mode === "PREFILL",
             mode
           );
+          notifyTerminalPreviewChangedThrottled(pane.id);
+          const activeBuffer = replayTerminal.buffer.active;
+          const wasAtBottom = activeBuffer
+            ? activeBuffer.baseY <= 0 || activeBuffer.viewportY >= activeBuffer.baseY - 1
+            : wasAtBottomRef.current;
+          isWritingChunkRef.current = true;
           replayTerminal.write(chunk, () => {
+            isWritingChunkRef.current = false;
             offset = end;
+            if (wasAtBottom) {
+              replayTerminal.scrollToBottom();
+              wasAtBottomRef.current = true;
+              syncTerminalViewportEvidence(terminalHost, replayTerminal);
+            }
             if (offset >= data.length) {
               done();
               return;
@@ -2990,6 +3428,7 @@ export function TerminalPane({
             void yieldForTerminalReplay().then(writeNext, done);
           });
         } catch (error) {
+          isWritingChunkRef.current = false;
           done(error);
         }
       };
@@ -3021,7 +3460,10 @@ export function TerminalPane({
         terminalHost.dataset.terminalPendingPrefillBytes =
           String(snapshot.pendingPrefillBytes);
       },
-      onPressure: reportOutputPressure
+      onPressure: reportOutputPressure,
+      onDataEnqueued: (data) => {
+        appendTerminalPreviewChunk(pane.id, data);
+      }
     });
     terminalOutputCoordinatorRef.current = outputCoordinator;
     const geometryCoordinator = createTerminalGeometryCoordinator({
@@ -3078,22 +3520,30 @@ export function TerminalPane({
           leaseId: control.protocolVersion === 2 ? control.leaseId : null
         };
       },
-      sendResize: ({ cols, rows, leaseId }) => {
+      sendResize: ({ cols, rows, leaseId, force }) => {
         const currentSocket = socket;
         if (!currentSocket || currentSocket.readyState !== WebSocket.OPEN || socketRef.current !== currentSocket) return;
         currentSocket.send(JSON.stringify({
           type: "resize",
           cols,
           rows,
+          ...(force ? { force: true } : {}),
           ...(leaseId ? { leaseId } : {})
         }));
       },
       isScrolledToBottom: () => {
         const activeBuffer = terminal?.buffer.active;
-        return Boolean(activeBuffer && activeBuffer.viewportY >= activeBuffer.baseY);
+        if (!activeBuffer) return wasAtBottomRef.current;
+        if (activeBuffer.baseY <= 0) return true;
+        return activeBuffer.viewportY >= activeBuffer.baseY - 1;
       },
       scrollToBottom: () => {
         terminal?.scrollToBottom();
+        wasAtBottomRef.current = true;
+        const viewport = terminalHost?.querySelector<HTMLElement>(".xterm-viewport");
+        if (viewport) {
+          viewport.scrollTop = viewport.scrollHeight;
+        }
         syncTerminalViewportEvidence(terminalHost, terminal);
       },
       onRepaint: (info) => {
@@ -3221,7 +3671,10 @@ export function TerminalPane({
             });
           }
         }
-        geometryCoordinator.syncVisibility();
+        // Initial page refreshes can reveal a live pane with a stale xterm
+        // canvas even though no host resize event was emitted. Use the same
+        // repair path as a manual Pane layout change before painting output.
+        geometryCoordinator.syncVisibility({ repair: true });
         // Wait for the geometry to actually land (onReady) before the first
         // visible paint — after a refresh the shell layout is still settling,
         // so a fixed frame count lets the default 100x30 grid flash. Bounded
@@ -3250,11 +3703,13 @@ export function TerminalPane({
     syncTerminalOutputVisibilityRef.current = syncOutputVisibility;
     const nativePasteTargets: EventTarget[] = [];
     const nativeCopyTargets: EventTarget[] = [];
+    const nativeContextMenuTargets: EventTarget[] = [];
     const terminalIntentTargets: Array<{ target: EventTarget; type: string; listener: EventListener }> = [];
     const replayWriteQueue = createTerminalReplayWriteQueue(
       (data, mode) => outputCoordinator.enqueue(data, undefined, mode),
       yieldForTerminalReplay,
-      () => initialReplayBuffered
+      () => initialReplayBuffered,
+      true
     );
     const handleTerminalReplayFailure = (error: unknown) => {
       if (replayFailureReported) return;
@@ -3276,7 +3731,10 @@ export function TerminalPane({
       if (countsTowardInitialPrefill) pendingInitialPrefillQueueEvents += 1;
       void replayWriteQueue.enqueue(data, mode).then(
         () => {
-          if (countsTowardInitialPrefill) pendingInitialPrefillQueueEvents -= 1;
+          if (countsTowardInitialPrefill) {
+            pendingInitialPrefillQueueEvents -= 1;
+            if (!disposed && !replayFailureReported && pendingInitialPrefillQueueEvents === 0 && initialReplayStatusReceived) settleTerminalPrefill();
+          }
         },
         (error) => {
           if (countsTowardInitialPrefill) pendingInitialPrefillQueueEvents -= 1;
@@ -3444,6 +3902,20 @@ export function TerminalPane({
       void handleTerminalCopyShortcut(selection);
     };
 
+    const nativeContextMenuListener: EventListener = (event) => {
+      if (!(event instanceof MouseEvent)) return;
+      if (voiceInputRef.current.settings.terminalContextMenu === false) return;
+      event.preventDefault();
+      event.stopPropagation();
+      markTerminalIntent();
+      const currentSelection = terminalRef.current?.getSelection?.() ?? "";
+      setContextMenu({
+        x: event.clientX,
+        y: event.clientY,
+        selection: currentSelection
+      });
+    };
+
     const nativeReasonixShortcutListener: EventListener = (event) => {
       if (!(event instanceof KeyboardEvent)) return;
       const session = sessionResponseRef.current?.session;
@@ -3510,12 +3982,26 @@ export function TerminalPane({
         return;
       }
       terminalHost.replaceChildren();
+      const sessionGeometry = terminalSessionResponse.session.terminalGeometry;
+      const initialTerminalCols =
+        sessionGeometry &&
+        Number.isInteger(sessionGeometry.cols) &&
+        sessionGeometry.cols >= 2 &&
+        sessionGeometry.cols <= 400
+          ? sessionGeometry.cols
+          : INITIAL_CLI_TERMINAL_COLS;
+      const initialTerminalRows =
+        sessionGeometry &&
+        Number.isInteger(sessionGeometry.rows) &&
+        sessionGeometry.rows >= 2 &&
+        sessionGeometry.rows <= 200
+          ? sessionGeometry.rows
+          : INITIAL_CLI_TERMINAL_ROWS;
       terminal = new Terminal({
         // Match the pane host PTY while replaying cursor-relative TUI output.
-        // Otherwise xterm reflows a 100x30 transcript through its 80x24 defaults
-        // before the browser can send the first measured resize.
-        cols: INITIAL_CLI_TERMINAL_COLS,
-        rows: INITIAL_CLI_TERMINAL_ROWS,
+        // Otherwise xterm reflows a transcript through default bounds before the browser can send the first measured resize.
+        cols: initialTerminalCols,
+        rows: initialTerminalRows,
         // xterm documents convertEol as a non-PTY compatibility option. PTY
         // termios already handles line endings, so enabling it corrupts TUI cursors.
         // https://github.com/xtermjs/xterm.js/blob/6.0.0/typings/xterm.d.ts#L48-L58
@@ -3543,9 +4029,20 @@ export function TerminalPane({
       writeParsedDisposable = replayTerminal.onWriteParsed(() => {
         terminalHost.dataset.terminalOutputParsed = "true";
         syncTerminalViewportEvidence(terminalHost, replayTerminal);
+        notifyTerminalPreviewChangedThrottled(pane.id);
         if (terminalSurfaceOpened && isVisibleRef.current) scheduleTerminalRepaint(replayTerminal);
       });
       scrollDisposable = replayTerminal.onScroll(() => {
+        const activeBuffer = replayTerminal.buffer.active;
+        if (activeBuffer) {
+          if (activeBuffer.baseY <= 0 || activeBuffer.viewportY >= activeBuffer.baseY - 1) {
+            wasAtBottomRef.current = true;
+          } else if (activeBuffer.viewportY < activeBuffer.baseY - 2) {
+            if (!isWritingChunkRef.current) {
+              wasAtBottomRef.current = false;
+            }
+          }
+        }
         syncTerminalViewportEvidence(terminalHost, replayTerminal);
       });
       const addNativePasteTarget = (target: EventTarget | null | undefined) => {
@@ -3559,6 +4056,11 @@ export function TerminalPane({
         if (!target || nativeCopyTargets.includes(target)) return;
         target.addEventListener("keydown", nativeCopyShortcutListener, { capture: true });
         nativeCopyTargets.push(target);
+      };
+      const addNativeContextMenuTarget = (target: EventTarget | null | undefined) => {
+        if (!target || nativeContextMenuTargets.includes(target)) return;
+        target.addEventListener("contextmenu", nativeContextMenuListener, { capture: true });
+        nativeContextMenuTargets.push(target);
       };
       const addTerminalIntentTarget = (target: EventTarget | null | undefined, type: string) => {
         if (!target) return;
@@ -3610,7 +4112,8 @@ export function TerminalPane({
         addNativePasteTarget(terminalDom.textarea);
         addNativeCopyTarget(terminalDom.textarea);
         addNativePasteTarget(document);
-        addNativeCopyTarget(document);
+        addNativeContextMenuTarget(terminalHost);
+        addNativeContextMenuTarget(terminalDom.element);
         window.addEventListener("keydown", nativeReasonixShortcutListener, { capture: true });
         addTerminalIntentTarget(terminalHost, "pointerdown");
         addTerminalIntentTarget(terminalHost, "focusin");
@@ -3758,6 +4261,9 @@ export function TerminalPane({
         if (!parsed.success) return;
         if (finalSocketState) return;
         const message = parsed.data;
+        if (message.type === "pong") {
+          return;
+        }
         if (message.type === "ready") {
           const matchesExpectedIdentity =
             cliReadyMatchesExpectedIdentity(message, {
@@ -3768,6 +4274,7 @@ export function TerminalPane({
           if (!matchesExpectedIdentity) {
             protocolRejected = true;
             readySocketRef.current = null;
+            clearTerminalSocketKeepalive();
             clearModelSettingsOutputRefresh(socket);
             clearReconnectTimer();
             setTerminalStatus("closed");
@@ -3776,6 +4283,7 @@ export function TerminalPane({
             return;
           }
           readySocketRef.current = { socket, sessionId: message.sessionId };
+          scheduleTerminalSocketKeepalive(socket, message.sessionId);
           terminalControlRequestPendingRef.current = false;
           if (message.protocolVersion === 2) {
             const controlState = message.controlState ??
@@ -3870,6 +4378,7 @@ export function TerminalPane({
         if (message.type === "session_replaced") {
           finalSocketState = true;
           clearReconnectTimer();
+          clearTerminalSocketKeepalive();
           reconnectAttemptRef.current = 0;
           reconnectCoordinatorRef.current.invalidateSocketGeneration(socketGeneration);
           if (readySocketRef.current?.socket === socket) readySocketRef.current = null;
@@ -3888,7 +4397,7 @@ export function TerminalPane({
             holderLeaseId: null,
             expiresAt: null
           });
-          ensureTerminalControl();
+          ensureTerminalControl(true);
           return;
         }
         if (message.type === "control_state") {
@@ -3900,7 +4409,8 @@ export function TerminalPane({
             expiresAt: message.expiresAt ?? null
           }, socket, terminalSessionResponse.session.sessionId);
           if (message.controlState === "CONTROLLER" && terminal) {
-            geometryCoordinator.handleTerminalResize(terminal.cols, terminal.rows);
+            geometryCoordinator.requestRefit({ repair: true });
+            geometryCoordinator.reconcileResize(terminal.cols, terminal.rows, true);
           }
           reportCliLifecycleEvent("CONTROL_STATE_CHANGED", "INFO", "SERVER_STATE", {
             controlState: message.controlState,
@@ -3921,7 +4431,10 @@ export function TerminalPane({
             holderLeaseId: null,
             expiresAt: message.expiresAt
           }, socket, terminalSessionResponse.session.sessionId);
-          if (terminal) geometryCoordinator.handleTerminalResize(terminal.cols, terminal.rows);
+          if (terminal) {
+            geometryCoordinator.requestRefit({ repair: true });
+            geometryCoordinator.reconcileResize(terminal.cols, terminal.rows, true);
+          }
           reportCliLifecycleEvent("CONTROL_GRANTED", "SUCCESS", "CONTROL_ACQUIRED", {
             controlState: "CONTROLLER",
             socketGeneration
@@ -4156,6 +4669,7 @@ export function TerminalPane({
       };
       const reconnectAfterDisconnect = (event: Event) => {
         clearTerminalControlHeartbeat();
+        clearTerminalSocketKeepalive();
         if (intentionalSocketParkRef.current) {
           clearReconnectTimer();
           reconnectAttemptRef.current = 0;
@@ -4280,10 +4794,19 @@ export function TerminalPane({
     });
 
     let lastHostResizeDebug = "";
+    let lastObservedHostWidth = 0;
+    let lastObservedHostHeight = 0;
     const resizeObserver = new ResizeObserver(() => {
       const hostWidth = terminalHost.clientWidth || terminalHost.getBoundingClientRect().width || 0;
       const hostHeight = terminalHost.clientHeight || terminalHost.getBoundingClientRect().height || 0;
-      const key = JSON.stringify([Math.round(hostWidth), Math.round(hostHeight), terminal?.cols ?? 0, terminal?.rows ?? 0]);
+      const roundedWidth = Math.round(hostWidth);
+      const roundedHeight = Math.round(hostHeight);
+      if (roundedWidth === lastObservedHostWidth && roundedHeight === lastObservedHostHeight) {
+        return;
+      }
+      lastObservedHostWidth = roundedWidth;
+      lastObservedHostHeight = roundedHeight;
+      const key = JSON.stringify([roundedWidth, roundedHeight, terminal?.cols ?? 0, terminal?.rows ?? 0]);
       if (key !== lastHostResizeDebug) {
         lastHostResizeDebug = key;
         emitAppDiagnosticsPerformance({
@@ -4298,6 +4821,8 @@ export function TerminalPane({
           rows: terminal?.rows ?? 0
         });
       }
+      // Standard container resize refits through the fit addon without destroying
+      // GPU texture atlases or forcing PTY nudges on every frame unless broken.
       geometryCoordinator.requestRefit({ delayedPass: false });
     });
     resizeObserver.observe(terminalHost);
@@ -4319,6 +4844,7 @@ export function TerminalPane({
       } else {
         clearTerminalControlHeartbeat();
       }
+      clearTerminalSocketKeepalive();
       replayWriteQueue.dispose();
       outputCoordinator.dispose();
       if (terminalOutputCoordinatorRef.current === outputCoordinator) {
@@ -4343,6 +4869,9 @@ export function TerminalPane({
         target.removeEventListener("keydown", nativeCopyShortcutListener, { capture: true });
       }
       window.removeEventListener("keydown", nativeReasonixShortcutListener, { capture: true });
+      for (const target of nativeContextMenuTargets) {
+        target.removeEventListener("contextmenu", nativeContextMenuListener, { capture: true });
+      }
       for (const { target, type, listener } of terminalIntentTargets) {
         target.removeEventListener(type, listener, { capture: true });
       }
@@ -4450,7 +4979,7 @@ export function TerminalPane({
   }
 
   async function requestCliSession(
-    input: { accountProfileId?: string | null; modelId?: string | null; forceRestart?: boolean; resume?: boolean } = {},
+    input: { accountProfileId?: string | null; modelId?: string | null; reasoningEffort?: Pane["reasoningEffort"]; forceRestart?: boolean; resume?: boolean } = {},
     options: { automaticReconnect?: boolean; expectedSocketGeneration?: number } = {}
   ): Promise<PaneCliSessionResponse | null> {
     if (!selectedRuntime && !options.automaticReconnect) return null;
@@ -4479,6 +5008,10 @@ export function TerminalPane({
                 selectedRuntimeForRequest!.id,
                 selectedRuntimeForRequest!.id === "cli:gemini"
                   ? { ...input, accountProfileId: input.accountProfileId ?? selectedGeminiAccountProfileId }
+                  : selectedRuntimeForRequest!.id === "cli:copilot"
+                    ? { ...input, accountProfileId: input.accountProfileId ?? selectedCopilotAccountProfileId }
+                    : selectedRuntimeForRequest!.id === "cli:cursor"
+                      ? { ...input, accountProfileId: input.accountProfileId ?? selectedCursorAccountProfileId }
                   : input
               )
             );
@@ -4656,12 +5189,16 @@ export function TerminalPane({
         settleTerminalPrefill();
         return;
       }
-      const activeSession = await api.activeCliSession(pane.id, { includeTranscript: false });
+      const nowMs = Date.now();
+      const freshPaneWindowMs = 60 * 1000;
+      const paneAgeMs = nowMs - new Date(pane.createdAt).getTime();
+      const recentlyChecked = nowMs - lastActiveSessionCheckedMsRef.current < 5_000;
+      const activeSession = recentlyChecked
+        ? null
+        : await api.activeCliSession(pane.id, { includeTranscript: false });
       if (activeSession && isRecoverableCliSession(activeSession.session) && activeSession.session.paneId === pane.id) {
         restoreActiveSession(activeSession);
       } else {
-        const freshPaneWindowMs = 60 * 1000;
-        const paneAgeMs = Date.now() - new Date(pane.createdAt).getTime();
         if (paneAgeMs <= freshPaneWindowMs) {
           await startOrReconnect();
         } else {
@@ -4795,11 +5332,13 @@ export function TerminalPane({
   }
 
   function focusTerminal() {
-    if (!isTargetRef.current) return;
     const terminal = terminalRef.current;
     terminal?.scrollToBottom();
+    wasAtBottomRef.current = true;
     syncTerminalViewportEvidence(xtermHostRef.current, terminal);
-    terminal?.focus();
+    if (isTargetRef.current) {
+      terminal?.focus();
+    }
   }
 
   function clearScheduledTerminalRepaint() {
@@ -4855,6 +5394,21 @@ export function TerminalPane({
     syncTerminalOutputVisibilityRef.current();
     if (isVisible) checkTerminalSocketHealth("reveal");
   }, [isVisible, pane.id, pane.isMinimized]);
+
+  useEffect(() => {
+    ensureTerminalControl(true);
+    const coordinator = terminalGeometryCoordinatorRef.current;
+    if (coordinator && isVisible) {
+      coordinator.requestRefit({ repair: true });
+      if (wasAtBottomRef.current) {
+        terminalRef.current?.scrollToBottom();
+        const host = xtermHostRef.current;
+        const viewport = host?.querySelector<HTMLElement>(".xterm-viewport");
+        if (viewport) viewport.scrollTop = viewport.scrollHeight;
+        syncTerminalViewportEvidence(host, terminalRef.current);
+      }
+    }
+  }, [pane.isMaximized, pane.columnSpan, isVisible]);
 
   useEffect(() => {
     if (!fullscreenLayout || isVisible) return;
@@ -5094,6 +5648,32 @@ export function TerminalPane({
         ? data.replaceAll("\0", "")
         : data;
     if (!terminalData) return true;
+
+    const MAX_TERMINAL_INPUT_CHUNK_LENGTH = 12_000;
+    if (terminalData.length > MAX_TERMINAL_INPUT_CHUNK_LENGTH) {
+      let success = true;
+      let start = 0;
+      while (start < terminalData.length) {
+        let end = Math.min(start + MAX_TERMINAL_INPUT_CHUNK_LENGTH, terminalData.length);
+        if (end < terminalData.length && /[\uD800-\uDBFF]/.test(terminalData[end - 1]!)) {
+          end -= 1;
+        }
+        const chunk = terminalData.slice(start, end);
+        const isLast = end >= terminalData.length;
+        const chunkOptions = {
+          ...options,
+          turnMarker: isLast ? options.turnMarker : undefined,
+          trackDraft: isLast ? options.trackDraft : false
+        };
+        const chunkSent = sendTerminalInput(chunk, source, display, preserveNotice, chunkOptions);
+        if (!chunkSent) {
+          success = false;
+          break;
+        }
+        start = end;
+      }
+      return success;
+    }
     const sessionId = session?.sessionId;
     const wireDisplay =
       session?.purpose === "LOGIN" ? "hidden" : display;
@@ -5129,7 +5709,11 @@ export function TerminalPane({
     const control = terminalControlRef.current;
     if (control.protocolVersion === 2 && (control.state !== "CONTROLLER" || !control.leaseId)) {
       if (!canRequestTerminalControl(true)) {
-        setNotice("This terminal is live read-only in the current page.");
+        if (sessionResponseRef.current?.websocket?.proofScope === "READ_ONLY") {
+          setNotice("This terminal is live read-only in the current page.");
+        } else {
+          setNotice("This terminal cannot receive input right now.");
+        }
         return false;
       }
       const queuedBytes = pendingTerminalInputsRef.current.reduce(
@@ -5205,7 +5789,8 @@ export function TerminalPane({
   ): boolean {
     const attachmentState = managedPromptAttachmentsRef.current;
     const activeAttachments = attachmentState.pending.filter((attachment) =>
-      terminalPromptDraftRef.current.text.includes(attachment.token)
+      terminalPromptDraftRef.current.text.includes(attachment.token) ||
+      data.includes(attachment.token)
     );
     if (activeAttachments.length) {
       const hiddenPaths = ` ${activeAttachments.map((attachment) => attachment.terminalInputPath).join(" ")} `;
@@ -5221,6 +5806,12 @@ export function TerminalPane({
     const sent = sendTerminalInput(data, source, "visible", false, options);
     if (sent) {
       managedPromptAttachmentsRef.current = { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
+      wasAtBottomRef.current = true;
+      terminalRef.current?.scrollToBottom();
+      const host = xtermHostRef.current;
+      const viewport = host?.querySelector<HTMLElement>(".xterm-viewport");
+      if (viewport) viewport.scrollTop = viewport.scrollHeight;
+      syncTerminalViewportEvidence(host, terminalRef.current);
     }
     return sent;
   }
@@ -5236,6 +5827,29 @@ export function TerminalPane({
     shortcutPendingRef.current = true;
     setShortcutPending(true);
     try {
+      if (command.id === "transcript") {
+        if (identity.runtimeId !== "cli:codex" || !isCurrent()) return;
+        if (!sendTerminalInput("\u0014", "CLI full transcript", "visible", false, { trackDraft: false })) {
+          throw new Error("Full transcript shortcut could not be sent.");
+        }
+        if (isCurrent()) focusTerminal();
+        return;
+      }
+      if (command.id === "esc") {
+        sendTerminalInput("\u001b", "CLI shortcut Esc");
+        if (isCurrent()) focusTerminal();
+        return;
+      }
+      if (command.id === "enter") {
+        const actionSession = sessionResponseRef.current?.session;
+        const turnMarker =
+          isRunCapableCliSession(actionSession)
+            ? createCliTurnMarker()
+            : undefined;
+        sendTerminalSubmit("\r", "CLI shortcut Enter", { turnMarker });
+        if (isCurrent()) focusTerminal();
+        return;
+      }
       if (command.action) {
         setNotice(null);
         setError(null);
@@ -5251,7 +5865,7 @@ export function TerminalPane({
             isCurrent,
             write: text => sendTerminalInput(text, "CLI Build mode", "visible", false, { trackDraft: false }),
             submit: text => submitCliShortcut({ ...command, text, enter: true }, {
-              isCurrent, prepare: async () => {},
+              isCurrent, runtimeId: identity.runtimeId, prepare: async () => {},
               write: value => sendTerminalInput(value, "CLI Build mode"),
               enter: () => sendTerminalInput("\r", "CLI Build mode enter")
             }),
@@ -5272,7 +5886,7 @@ export function TerminalPane({
           return;
         }
         await submitCliShortcut({ ...command, text: native.text, enter: true }, {
-          isCurrent, prepare: async () => {},
+          isCurrent, runtimeId: identity.runtimeId, prepare: async () => {},
           write: text => sendTerminalInput(text, "CLI mode shortcut"),
           enter: () => sendTerminalInput("\r", "CLI mode shortcut enter")
         });
@@ -5280,9 +5894,10 @@ export function TerminalPane({
       }
       await submitCliShortcut(command, {
         isCurrent,
+        runtimeId: identity.runtimeId,
         prepare: async () => {
           if (command.id !== "memory") return;
-          if (!isCliModelSettingsRuntime(identity.runtimeId)) return;
+          if (identity.runtimeId === OPENCODE_CLI_RUNTIME_ID || !isCliModelSettingsRuntime(identity.runtimeId)) return;
           try {
             const status = await api.cliModelSettingsStatus(pane.id);
             if (!isCurrent()) throw new Error("CLI changed before the shortcut could be sent.");
@@ -5302,19 +5917,13 @@ export function TerminalPane({
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            // All CLI shortcuts must remain usable. Low switch is best-effort: transient
-            // native-picker state, unavailable settings or missing Low support must not
-            // block "save to memory" itself. Fall back to sending with current reasoning.
-            if (
-              message.includes("still preparing its native input") ||
-              message.includes("Current model settings are unavailable") ||
-              message.includes("does not support Low") ||
-              message.includes("was not confirmed") ||
-              message.includes("OpenCode")
-            ) {
-              return;
+            if (message.includes("CLI changed before the shortcut could be sent")) {
+              throw error;
             }
-            throw error;
+            // All CLI shortcuts must remain usable. Low switch is best-effort: transient
+            // native-picker state, unavailable settings, API validation or missing Low support
+            // must not block "save to memory" itself. Fall back to sending with current reasoning.
+            return;
           }
         },
         write: (text) => sendTerminalInput(text, "CLI shortcut"),
@@ -5328,6 +5937,84 @@ export function TerminalPane({
     } finally {
       shortcutPendingRef.current = false;
       if (shortcutLiveRef.current) setShortcutPending(false);
+    }
+  }
+
+  async function handleSelectOpenPlan(plan: ClipboardItem) {
+    setNotice(null);
+    if (terminalStatus !== "attached") {
+      setError("Attach a running CLI before sending a plan to it.");
+      return;
+    }
+    const session = sessionResponseRef.current?.session;
+    const planTitle = plan.title?.trim();
+    const planText = plan.text.trim();
+
+    if (terminalPromptDraftRef.current.text.trim()) {
+      sendTerminalInput("\u0015", "clear draft before plan submit", "visible", true, { trackDraft: true });
+    }
+
+    try {
+      const asciiSlug = (planTitle || "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+      const filename = `plan-${asciiSlug || plan.id.replace(/[^a-zA-Z0-9_-]/g, "_")}.md`;
+      const planContent = planTitle && !planText.startsWith("# ")
+        ? `# ${planTitle}\n\n${planText}`
+        : planText;
+      const file = new File([planContent], filename, { type: "text/markdown" });
+
+      const uploaded = await api.uploadCliFiles({ paneId: pane.id, source: "CLIPBOARD", files: [file] });
+      const uploadedFile = uploaded.files[0];
+      if (!uploadedFile) throw new Error("Plan file upload returned no file.");
+
+      const previous = managedPromptAttachmentsRef.current;
+      const nextFileCount = previous.fileCount + 1;
+      const token = `[File #${nextFileCount}]`;
+      const attachmentPath = terminalInputPath(uploadedFile);
+
+      managedPromptAttachmentsRef.current = {
+        ...previous,
+        fileCount: nextFileCount,
+        pending: [
+          ...previous.pending,
+          { token, terminalInputPath: attachmentPath }
+        ]
+      };
+
+      const instruction = planTitle
+        ? `Implement the following plan: ${token} ("${planTitle}")\nPlan ID: ${plan.id}`
+        : `Implement the following plan: ${token}\nPlan ID: ${plan.id}`;
+
+      const turnMarker = isRunCapableCliSession(session) ? createCliTurnMarker() : undefined;
+      const sent = sendTerminalSubmit(`${instruction}\r`, "cli open plan select", {
+        ...(turnMarker ? { turnMarker } : {})
+      });
+      updateClipboardDebug(
+        sent ? "good" : "bad",
+        "open plan execution submit",
+        `selected plan ${plan.id}; title=${planTitle || "Untitled"}; token=${token}; charCount=${planText.length}; autoStart=true.`
+      );
+      if (sent) {
+        setNotice(`Sent plan: ${planTitle || "Untitled"}`);
+        focusTerminal();
+      } else {
+        setError("Attach a running CLI before sending a plan to it.");
+      }
+    } catch {
+      // Fallback to direct text submit if file upload is unavailable
+      const instruction = planTitle
+        ? `Implement the following plan:\n\n# ${planTitle}\n\n${planText}`
+        : `Implement the following plan:\n\n${planText}`;
+      const turnMarker = isRunCapableCliSession(session) ? createCliTurnMarker() : undefined;
+      const payload = `${BRACKETED_PASTE_START}${instruction}${BRACKETED_PASTE_END}\r`;
+      const sent = sendTerminalSubmit(payload, "cli open plan select fallback", {
+        ...(turnMarker ? { turnMarker } : {})
+      });
+      if (sent) {
+        setNotice(`Sent plan: ${planTitle || "Untitled"}`);
+        focusTerminal();
+      } else {
+        setError("Attach a running CLI before sending a plan to it.");
+      }
     }
   }
 
@@ -5358,12 +6045,30 @@ export function TerminalPane({
     }
     void voiceInput.start({
       id: voiceOwnerId,
+      onTranscriptDelta: () => {
+        // Live transcript preview is tracked by VoiceInputProvider and reflected in voiceStatusText
+      },
       onTranscriptComplete: (transcript) => {
         if (!submitVoiceTranscript(transcript)) {
           throw new Error("Voice transcript could not be sent to this CLI pane.");
         }
       }
     });
+  }
+
+  function applyTerminalLayoutFix() {
+    const draft = terminalPromptDraftRef.current.text || terminalPromptDraft;
+    if (!draft.trim()) return;
+    dismissedTerminalLayoutTextRef.current = null;
+    const detection = detectKeyboardLayoutMismatch(draft);
+    const replacement = (detection.hasMismatch && detection.direction === "toGreek")
+      ? detection.convertedText
+      : toggleKeyboardLayout(draft);
+    if (replacement && replacement !== draft) {
+      sendTerminalInput(`\u0015${replacement}`, "terminal layout fix", "visible", true);
+      setTerminalLayoutSuggestion(null);
+      focusTerminal();
+    }
   }
 
   function insertManagedPromptAttachments(
@@ -5477,7 +6182,7 @@ export function TerminalPane({
     modelId: string,
     reasoningEffort: string,
     _providerId: string | null = null,
-    continueActiveTurn = true
+    continueActiveTurn = false
   ): Promise<{
     current: NonNullable<PaneCliModelSettings["current"]>;
     message: string | null;
@@ -5503,7 +6208,7 @@ export function TerminalPane({
       if (!current || current.session.sessionId !== result.session.session.sessionId) return result.session;
       return { ...current, session: result.session.session };
     });
-    if (result.wasActive) {
+    if (result.interrupted) {
       clearStoredActiveCliTurn(pane.id);
       setActiveCliTurn(null);
     }
@@ -5679,18 +6384,19 @@ export function TerminalPane({
         .map(({ uploadedFile, sourceFile }) => {
           if (!uploadedFile.isImage || !sourceFile?.type.startsWith("image/")) return null;
           return {
-            id: `${uploadedFile.sessionId}:${uploadedFile.storedFilename}`,
+            id: uploadedFile.artifactId ?? `${uploadedFile.sessionId}:${uploadedFile.storedFilename}`,
             name: uploadedFile.originalFilename,
             path: uploadedFile.terminalPath,
-            objectUrl: URL.createObjectURL(sourceFile)
+            objectUrl: uploadedFile.artifactId ? api.artifactFileUrl(uploadedFile.artifactId) : URL.createObjectURL(sourceFile)
           };
         })
         .filter((preview): preview is TerminalUploadPreview => Boolean(preview));
       if (nextPreviews.length) {
+        setUploadPreviewPage(0);
         setUploadPreviews((current) => {
           const byId = new Map(current.map((preview) => [preview.id, preview]));
           for (const preview of nextPreviews) byId.set(preview.id, preview);
-          return Array.from(byId.values()).slice(-imagePreviewLimit);
+          return Array.from(byId.values());
         });
       }
       if (isCodexCliSession) {
@@ -6025,7 +6731,9 @@ export function TerminalPane({
         paneTitle: pane.title
       });
       setError(null);
-      setNotice(runtimeKind === "demo" ? DEMO_LOCAL_REPLY : "CLI selection copied.");
+      if (runtimeKind === "demo") {
+        setNotice(DEMO_LOCAL_REPLY);
+      }
       focusTerminal();
     } catch (err) {
       setNotice(null);
@@ -6103,10 +6811,10 @@ export function TerminalPane({
   }
 
   function handleTerminalDrop(event: DragEvent<HTMLElement>) {
-    event.preventDefault();
-    event.stopPropagation();
     const files = Array.from(event.dataTransfer.files);
     if (files.length) {
+      event.preventDefault();
+      event.stopPropagation();
       if (sessionResponseRef.current?.session.purpose === "LOGIN") {
         setDragActive(false);
         setError("File drop is unavailable during CLI login. Paste the authorization code as text.");
@@ -6117,11 +6825,19 @@ export function TerminalPane({
     }
     const paneContextPayload = readPaneContextDragPayload(event.dataTransfer);
     if (paneContextPayload) {
+      if (paneContextPayload.roomId === pane.roomId) {
+        setDragActive(false);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
       dropPaneContext(paneContextPayload);
       return;
     }
     const artifactPayload = readArtifactDragPayload(event.dataTransfer);
     if (artifactPayload) {
+      event.preventDefault();
+      event.stopPropagation();
       void dropArtifactFile(artifactPayload);
       return;
     }
@@ -6129,14 +6845,22 @@ export function TerminalPane({
     const clipboardTitle = event.dataTransfer.getData(SPACE_CLIPBOARD_ITEM_TITLE_MIME);
     const text = event.dataTransfer.getData("text/plain");
     if (clipboardItemId && text) {
+      event.preventDefault();
+      event.stopPropagation();
       if (clipboardTitle) {
         sendTerminalInput(`# ${clipboardTitle}\n\n`, "clipboard history drop: plan title");
       }
       void insertClipboardText(text, "clipboard history drop");
+      setDragActive(false);
+      return;
     }
     const taskItemId = event.dataTransfer.getData(SPACE_TASK_ITEM_MIME);
     if (taskItemId && text) {
+      event.preventDefault();
+      event.stopPropagation();
       void startDroppedTask(text);
+      setDragActive(false);
+      return;
     }
     setDragActive(false);
   }
@@ -6277,7 +7001,7 @@ export function TerminalPane({
           : null;
         if (!actionIdentity || !nativePlanModeActionIdentityMatches(actionIdentity)) {
           setNotice(null);
-          setError(`Attach a running ${event.detail.runtimeId === "cli:gemini" ? "Gemini" : "Qwen Code"} CLI before changing Plan mode.`);
+          setError(`Attach a running ${event.detail.runtimeId === "cli:gemini" ? "Gemini" : event.detail.runtimeId === "cli:omp" ? "Oh My Pi" : "Qwen Code"} CLI before changing Plan mode.`);
           return;
         }
         sendTerminalInput("/plan\r", `terminal action ${event.detail.runtimeId} native Plan mode`, "visible", false, {
@@ -6374,6 +7098,10 @@ export function TerminalPane({
         return;
       }
       if (event.detail.action === "attach_clip_image") {
+        markTerminalIntent();
+        paneMinimizedRef.current = false;
+        isVisibleRef.current = true;
+        ensureTerminalControl(true);
         await uploadFiles([event.detail.file], "SCREEN_CAPTURE", "Clip Tool");
         return;
       }
@@ -6431,8 +7159,20 @@ export function TerminalPane({
       }
       if (event.detail.action === "cli_shortcut") {
         const commandId = event.detail.commandId;
+        if (commandId === "esc") {
+          await runCliShortcut(OSK_ESC_COMMAND);
+          return;
+        }
+        if (commandId === "enter") {
+          await runCliShortcut(OSK_ENTER_COMMAND);
+          return;
+        }
         const command = OSK_CLI_COMMANDS.find((entry) => entry.id === commandId);
         if (command) await runCliShortcut(command);
+        return;
+      }
+      if (event.detail.action === "switch_model") {
+        await handleModelSwitch(event.detail.modelId, event.detail.reasoningEffort);
         return;
       }
       if (event.detail.action === "keyboard_input") {
@@ -6468,6 +7208,11 @@ export function TerminalPane({
         if (!sent) setError("Attach a running CLI before starting a task in it.");
         return;
       }
+      if (event.detail.action === "execute_plan") {
+        setNotice(null);
+        handleSelectOpenPlan(event.detail.plan);
+        return;
+      }
       if (event.detail.action === "focus") {
         focusTerminal();
         return;
@@ -6476,10 +7221,32 @@ export function TerminalPane({
         void copyTerminalContent();
         return;
       }
+      if (event.detail.action === "paste") {
+        void (async () => {
+          try {
+            const clipboard = getSpaceRuntime().platform.clipboard;
+            const text = await clipboard?.readText?.();
+            if (text) {
+              sendTerminalInput(text, "toolbar paste", "visible");
+              setNotice("Pasted into CLI.");
+            } else {
+              setError("No text available in clipboard to paste.");
+            }
+            focusTerminal();
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Clipboard paste failed.");
+          }
+        })();
+        return;
+      }
     }
     function handleTerminalPaneAction(event: Event) {
       if (!(event instanceof CustomEvent)) return;
-      void handleTerminalPaneActionEvent(event as CustomEvent<TerminalPaneActionDetail>).catch((error: unknown) => {
+      const customEvent = event as CustomEvent<TerminalPaneActionDetail>;
+      if (!isTerminalPaneAction(customEvent.detail) || customEvent.detail.paneId !== pane.id) return;
+      (customEvent.detail as any).handled = true;
+      customEvent.preventDefault();
+      void handleTerminalPaneActionEvent(customEvent).catch((error: unknown) => {
         setNotice(null);
         setError(error instanceof Error ? error.message : "CLI terminal action failed");
       });
@@ -6504,6 +7271,13 @@ export function TerminalPane({
       data-terminal-prefill-ready={terminalPrefillReady ? "true" : "false"}
       data-workspace-text-size={terminalFontSize}
       onKeyDownCapture={(event) => {
+        const isGKey = event.code === "KeyG" || event.key.toLowerCase() === "g" || event.key === "γ" || event.key === "Γ" || event.key === "©";
+        if (autocorrectSettings.enabled && (event.altKey || (event.ctrlKey && event.shiftKey)) && isGKey) {
+          event.preventDefault();
+          event.stopPropagation();
+          applyTerminalLayoutFix();
+          return;
+        }
         if (event.key !== "Escape" || !event.repeat) return;
         if (!(event.target instanceof Element) || !event.target.closest(".terminal-xterm")) return;
         event.preventDefault();
@@ -6513,7 +7287,10 @@ export function TerminalPane({
       onDrop={handleTerminalDrop}
       onDragOver={(event) => {
         event.preventDefault();
-        if (!isTerminalLoginSession && supportsCliFileUploads) setDragActive(true);
+        if (!isTerminalLoginSession && supportsCliFileUploads) {
+          const isSameRoomPaneDrag = event.dataTransfer.types.includes(SPACE_PANE_CONTEXT_MIME);
+          if (!isSameRoomPaneDrag) setDragActive(true);
+        }
       }}
       onDragLeave={() => setDragActive(false)}
     >
@@ -6523,6 +7300,7 @@ export function TerminalPane({
           type="file"
           name={`cli-files-${pane.id}`}
           multiple
+          accept="*/*"
           hidden
           onChange={(event) => {
             const files = event.currentTarget.files ? Array.from(event.currentTarget.files) : [];
@@ -6542,7 +7320,7 @@ export function TerminalPane({
           </div>
         </div>
       ) : null}
-      {notice && ["CLI content copied.", "CLI selection copied.", "CLI memory save requested.", "Build mode is ready. Send a task to continue."].includes(notice) ? (
+      {!readStoredSuppressNotifications() && notice && ["CLI content copied.", "CLI memory save requested.", "Build mode is ready. Send a task to continue."].includes(notice) ? (
         <div className="terminal-alert good" role="status">
           <div className="terminal-alert-head">
             <span>{notice}</span>
@@ -6619,7 +7397,19 @@ export function TerminalPane({
               >
                 <X aria-hidden="true" />
               </button>
-              <span className="terminal-upload-modal-label">{selectedUploadPreviewLabel}</span>
+              <span className="terminal-upload-modal-label" aria-live="polite">
+                {selectedUploadPreviewLabel} · {selectedUploadPreviewIndex + 1} / {uploadPreviews.length}
+              </span>
+              {uploadPreviews.length > 1 ? (
+                <>
+                  <button type="button" className="terminal-upload-modal-nav is-previous" aria-label="Previous image" onClick={() => navigateUploadPreview(-1)}>
+                    <ChevronLeft aria-hidden="true" />
+                  </button>
+                  <button type="button" className="terminal-upload-modal-nav is-next" aria-label="Next image" onClick={() => navigateUploadPreview(1)}>
+                    <ChevronRight aria-hidden="true" />
+                  </button>
+                </>
+              ) : null}
               <img src={selectedUploadPreview.objectUrl} alt={`${selectedUploadPreviewLabel} full size`} />
             </div>
           </div>,
@@ -6628,7 +7418,7 @@ export function TerminalPane({
         : null}
 
       <div className="terminal-stage">
-        {uploadPreviews.length ? (
+        {uploadPreviews.length || photoHistoryError ? (
           <div ref={uploadPreviewsPickerRef} className="terminal-upload-preview-picker">
             <button
               ref={uploadPreviewsButtonRef}
@@ -6649,9 +7439,22 @@ export function TerminalPane({
             </button>
             {uploadPreviewsOpen ? (
               <div className="terminal-upload-preview-popover" role="dialog" aria-label={`CLI photos ${pane.title}`}>
+                {photoHistoryError ? (
+                  <button type="button" className="compact-action" onClick={() => setPhotoHistoryAttempt((attempt) => attempt + 1)}>
+                    Retry loading photos
+                  </button>
+                ) : null}
+                {uploadPreviewPageCount > 1 ? (
+                  <div className="terminal-upload-pages">
+                    <button type="button" aria-label="Earlier photos" disabled={currentUploadPreviewPage >= uploadPreviewPageCount - 1} onClick={() => setUploadPreviewPage(currentUploadPreviewPage + 1)}><ChevronLeft aria-hidden="true" /></button>
+                    <span>{uploadPreviewStart + 1}–{uploadPreviewEnd} / {uploadPreviews.length}</span>
+                    <button type="button" aria-label="Later photos" disabled={currentUploadPreviewPage === 0} onClick={() => setUploadPreviewPage(currentUploadPreviewPage - 1)}><ChevronRight aria-hidden="true" /></button>
+                  </div>
+                ) : null}
                 <div className="terminal-upload-strip terminal-upload-strip-floating" aria-label={`CLI image uploads ${pane.title}`}>
-                  {uploadPreviews.map((preview, index) => (
-                    <figure key={preview.id} className="terminal-upload-preview" title={`Image ${index + 1}: ${preview.name}`}>
+                  {uploadPreviews.slice(uploadPreviewStart, uploadPreviewEnd).map((preview, offset) => {
+                    const index = uploadPreviewStart + offset;
+                    return <figure key={preview.id} className="terminal-upload-preview" title={`Image ${index + 1}: ${preview.name}`}>
                       <button
                         type="button"
                         className="terminal-upload-open"
@@ -6664,10 +7467,10 @@ export function TerminalPane({
                         <span className="terminal-upload-index" aria-hidden="true">
                           {index + 1}
                         </span>
-                        <img src={preview.objectUrl} alt={`Image ${index + 1} preview`} />
+                        <img src={preview.objectUrl} alt={`Image ${index + 1} preview`} loading="lazy" />
                       </button>
-                    </figure>
-                  ))}
+                    </figure>;
+                  })}
                 </div>
               </div>
             ) : null}
@@ -6703,7 +7506,21 @@ export function TerminalPane({
                       setSelectedGeminiAccountProfileId(profileId);
                       writeLastGeminiAccountProfileId(profileId);
                       if (sessionResponseRef.current && profileId !== currentProfileId) {
-                        void requestCliSession({ accountProfileId: profileId, forceRestart: true });
+                        const hasActiveTask = Boolean(sessionResponseRef.current?.session);
+                        const activeModelId = modelSettingsRef.current?.current?.modelId
+                          ?? sessionResponseRef.current?.session.modelId
+                          ?? pane.modelId
+                          ?? undefined;
+                        const activeReasoningEffort = (modelSettingsRef.current?.current?.reasoningEffort
+                          ?? pane.reasoningEffort
+                          ?? undefined) as Pane["reasoningEffort"];
+                        void requestCliSession({
+                          accountProfileId: profileId,
+                          modelId: activeModelId,
+                          reasoningEffort: activeReasoningEffort,
+                          forceRestart: true,
+                          resume: hasActiveTask
+                        });
                       }
                     }}
                   >
@@ -6716,8 +7533,112 @@ export function TerminalPane({
             ) : null}
           </div>
         ) : null}
+        {isCopilotRuntime && copilotAccountProfiles.length ? (
+          <div ref={copilotAccountPickerRef} className="terminal-gemini-account-picker">
+            <button
+              ref={copilotAccountButtonRef}
+              type="button"
+              className={`terminal-gemini-account-trigger${copilotAccountMenuOpen ? " is-open" : ""}`}
+              aria-label={`GitHub account for ${pane.title}`}
+              aria-haspopup="dialog"
+              aria-expanded={copilotAccountMenuOpen}
+              title={`GitHub account: ${copilotAccountProfiles.find((profile) => profile.profileId === selectedCopilotAccountProfileId)?.displayName ?? "Select account"}`}
+              disabled={pending || observerOnly}
+              onClick={() => setCopilotAccountMenuOpen((prev) => !prev)}
+            >
+              <Github size={16} aria-hidden="true" />
+            </button>
+            {copilotAccountMenuOpen ? (
+              <div className="terminal-gemini-account-popover" role="dialog" aria-label={`GitHub account for ${pane.title}`}>
+                <label className="terminal-gemini-account-popover-label">
+                  <span>GitHub account</span>
+                  <select
+                    aria-label={`GitHub account for ${pane.title}`}
+                    value={selectedCopilotAccountProfileId}
+                    disabled={pending || observerOnly}
+                    autoFocus
+                    onChange={(event) => {
+                      const profileId = event.currentTarget.value;
+                      const currentProfileId = sessionResponseRef.current?.session.accountProfileId ?? "main";
+                      setSelectedCopilotAccountProfileId(profileId);
+                      writeLastCopilotAccountProfileId(profileId);
+                      if (sessionResponseRef.current && profileId !== currentProfileId) {
+                        const hasActiveTask = Boolean(sessionResponseRef.current.session.cliTaskId);
+                        void requestCliSession({ accountProfileId: profileId, forceRestart: true, resume: hasActiveTask });
+                      }
+                    }}
+                  >
+                    {copilotAccountProfiles.map((profile) => (
+                      <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {isCursorRuntime && cursorAccountProfiles.length ? (
+          <div ref={cursorAccountPickerRef} className="terminal-gemini-account-picker">
+            <button
+              ref={cursorAccountButtonRef}
+              type="button"
+              className={`terminal-gemini-account-trigger${cursorAccountMenuOpen ? " is-open" : ""}`}
+              aria-label={`Cursor account for ${pane.title}`}
+              aria-haspopup="dialog"
+              aria-expanded={cursorAccountMenuOpen}
+              title={`Cursor account: ${cursorAccountProfiles.find((profile) => profile.profileId === selectedCursorAccountProfileId)?.displayName ?? "Select account"}`}
+              disabled={pending || observerOnly}
+              onClick={() => setCursorAccountMenuOpen((prev) => !prev)}
+            >
+              <TerminalIcon size={16} aria-hidden="true" />
+            </button>
+            {cursorAccountMenuOpen ? (
+              <div className="terminal-gemini-account-popover" role="dialog" aria-label={`Cursor account for ${pane.title}`}>
+                <label className="terminal-gemini-account-popover-label">
+                  <span>Cursor account</span>
+                  <select
+                    aria-label={`Cursor account for ${pane.title}`}
+                    value={selectedCursorAccountProfileId}
+                    disabled={pending || observerOnly}
+                    autoFocus
+                    onChange={(event) => {
+                      const profileId = event.currentTarget.value;
+                      const currentProfileId = sessionResponseRef.current?.session.accountProfileId ?? "main";
+                      setSelectedCursorAccountProfileId(profileId);
+                      writeLastCursorAccountProfileId(profileId);
+                      if (sessionResponseRef.current && profileId !== currentProfileId) {
+                        const hasActiveTask = Boolean(sessionResponseRef.current.session.cliTaskId);
+                        void requestCliSession({ accountProfileId: profileId, forceRestart: true, resume: hasActiveTask });
+                      }
+                    }}
+                  >
+                    {cursorAccountProfiles.map((profile) => (
+                      <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
-        <div ref={transcriptRef} className={`terminal-viewport ${sessionResponse?.websocket ? "live" : ""}`} role="log" aria-live="polite">
+        <div
+          ref={transcriptRef}
+          className={`terminal-viewport ${sessionResponse?.websocket ? "live" : ""}`}
+          role="log"
+          aria-live="polite"
+          onContextMenu={(event) => {
+            if (voiceInput.settings.terminalContextMenu === false) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const currentSelection = terminalRef.current?.getSelection?.() || (typeof window !== "undefined" ? window.getSelection()?.toString() ?? "" : "");
+            setContextMenu({
+              x: event.clientX,
+              y: event.clientY,
+              selection: currentSelection
+            });
+          }}
+        >
           {sessionResponse?.websocket ? (
             <div ref={xtermHostRef} className="terminal-xterm" aria-label={`Live CLI pane ${pane.title.replace(/^Terminal\b/i, "CLI")}`} />
           ) : loading ? (
@@ -6747,8 +7668,51 @@ export function TerminalPane({
                 {voiceInput.error ? <button type="button" aria-label="Dismiss voice input error" onClick={() => voiceInput.clearError(voiceOwnerId)}><X aria-hidden="true" /></button> : null}
               </div>
             ) : null}
+            {terminalLayoutSuggestion && isComposerSuggestionBarVisible(autocorrectSettings) ? (
+              <div className="codex-layout-suggestion terminal-layout-suggestion" role="status" aria-live="polite">
+                <Keyboard aria-hidden="true" style={{ width: 14, height: 14, flexShrink: 0 }} />
+                <span className="codex-layout-suggestion-label">
+                  Convert to: <strong>{terminalLayoutSuggestion.convertedText}</strong>
+                </span>
+                <button
+                  type="button"
+                  className="codex-layout-apply-btn"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={applyTerminalLayoutFix}
+                  title="Apply layout conversion (Alt+G)"
+                >
+                  Fix (Alt+G)
+                </button>
+                <button
+                  type="button"
+                  className="codex-layout-dismiss-btn"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    dismissedTerminalLayoutTextRef.current = terminalPromptDraft.trim();
+                    setTerminalLayoutSuggestion(null);
+                  }}
+                  aria-label="Dismiss layout suggestion"
+                >
+                  <X aria-hidden="true" style={{ width: 14, height: 14 }} />
+                </button>
+              </div>
+            ) : null}
             <div className="terminal-floating-controls">
-              <CliShortcutsMenu disabled={terminalStatus !== "attached" || shortcutPending} active={isVisible && !pane.isMinimized} onCommand={runCliShortcut} />
+              {isComposerLayoutIconVisible(autocorrectSettings) ? (
+                <button
+                  type="button"
+                  className={`terminal-model-chip terminal-layout-toggle ${terminalLayoutSuggestion ? "has-suggestion" : ""}`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={applyTerminalLayoutFix}
+                  title={terminalLayoutSuggestion ? `Fix layout: "${terminalLayoutSuggestion.convertedText}" (Alt+G)` : "Fix keyboard layout (Alt+G) · Convert EN ⇄ EL"}
+                  disabled={terminalStatus !== "attached" || !terminalPromptDraft.trim()}
+                  aria-label="Fix keyboard layout (Alt+G)"
+                >
+                  <Keyboard aria-hidden="true" />
+                </button>
+              ) : null}
+              <CliShortcutsMenu showTranscript={sessionResponse?.session.runtimeId === "cli:codex"} disabled={terminalStatus !== "attached" || shortcutPending} active={isVisible && !pane.isMinimized} onCommand={runCliShortcut} />
+              <CliPlansMenu disabled={terminalStatus !== "attached" || shortcutPending} active={isVisible && !pane.isMinimized} onSelectPlan={handleSelectOpenPlan} />
               {voiceInput.settings.terminalVoiceButton ? (
                 <VoiceInputButton label={pane.title.replace(/^Terminal\b/i, "CLI")} active={voiceOwned && voiceInput.status === "recording"} disabled={voiceDisabled} onClick={toggleTerminalVoiceCapture} onPrewarm={voiceInput.prewarm} />
               ) : null}
@@ -6758,10 +7722,14 @@ export function TerminalPane({
                     key={modelSettings.sessionId}
                     compact
                     allowSelectionWithoutCurrent
-                    groupNativeProviders={selectedRuntime?.id === OPENCODE_CLI_RUNTIME_ID}
+                    groupNativeProviders={selectedRuntime?.id === OPENCODE_CLI_RUNTIME_ID || selectedRuntime?.id === "cli:omp"}
                     settings={modelSettings}
                     disabled={terminalStatus !== "attached" || terminalControlState !== "CONTROLLER" ||
                       (modelSettings.controlMode === "NATIVE" && (isTurnRunning || Boolean(terminalPromptDraft.trim())))}
+                    onRefreshCatalog={async () => {
+                      const sessionId = sessionResponseRef.current?.session.sessionId;
+                      if (sessionId) await refreshModelSettings(sessionId);
+                    }}
                     onSwitch={handleModelSwitch}
                   />
                 </Suspense>
@@ -6794,6 +7762,121 @@ export function TerminalPane({
           </div>
         ) : null}
       </div>
+      {contextMenu && typeof document !== "undefined" ? (() => {
+        const targetHost = xtermHostRef.current?.closest<HTMLElement>("[data-shell-mode], .space-shell, [data-room-theme], [data-ui-theme]");
+        const currentUiTheme = targetHost?.dataset.uiTheme || (typeof document !== "undefined" ? document.body.dataset.uiTheme : undefined);
+        const currentInterfaceTheme = targetHost?.dataset.interfaceTheme || (typeof document !== "undefined" ? document.documentElement.dataset.interfaceTheme : undefined);
+        const currentRoomTheme = targetHost?.dataset.roomTheme || (typeof document !== "undefined" ? document.body.dataset.roomTheme : undefined);
+        const currentColorMode = targetHost?.dataset.colorMode || (typeof document !== "undefined" ? document.body.dataset.colorMode : undefined);
+        const contextMenuLeft = Math.max(8, Math.min(contextMenu.x, window.innerWidth - 210 - 8));
+        const contextMenuTop = Math.max(8, Math.min(contextMenu.y, window.innerHeight - 180 - 8));
+        return createPortal(
+          <div
+            ref={contextMenuRef}
+            className="icon-context-menu terminal-context-menu"
+            role="menu"
+            aria-label={`Terminal context menu ${pane.title}`}
+            data-ui-theme={currentUiTheme}
+            data-interface-theme={currentInterfaceTheme}
+            data-room-theme={currentRoomTheme}
+            data-color-mode={currentColorMode}
+            style={{ left: `${contextMenuLeft}px`, top: `${contextMenuTop}px` }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!contextMenu.selection}
+              onClick={() => {
+                setContextMenu(null);
+                if (contextMenu.selection) {
+                  void handleTerminalCopyShortcut(contextMenu.selection);
+                }
+              }}
+            >
+              <div className="terminal-context-menu-item-left">
+                <Copy aria-hidden="true" />
+                <span>Copy</span>
+              </div>
+              <kbd>Ctrl+C</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setContextMenu(null);
+                void (async () => {
+                  try {
+                    const clipboard = getSpaceRuntime().platform.clipboard;
+                    const text = await clipboard?.readText?.();
+                    if (text) {
+                      sendTerminalInput(text, "context menu paste", "visible");
+                      setNotice("Pasted into CLI.");
+                    } else {
+                      setError("No text available in clipboard to paste.");
+                    }
+                    focusTerminal();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "Clipboard paste failed.");
+                  }
+                })();
+              }}
+            >
+              <div className="terminal-context-menu-item-left">
+                <Clipboard aria-hidden="true" />
+                <span>Paste</span>
+              </div>
+              <kbd>Ctrl+V</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setContextMenu(null);
+                terminalRef.current?.selectAll();
+                setNotice("All pane text selected.");
+                focusTerminal();
+              }}
+            >
+              <div className="terminal-context-menu-item-left">
+                <Maximize2 aria-hidden="true" />
+                <span>Select all in pane</span>
+              </div>
+              <kbd>Ctrl+A</kbd>
+            </button>
+            <div className="terminal-context-menu-separator" role="separator" />
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setContextMenu(null);
+                void copyTerminalContent();
+              }}
+            >
+              <div className="terminal-context-menu-item-left">
+                <TerminalIcon aria-hidden="true" />
+                <span>Copy all contents</span>
+              </div>
+            </button>
+            {contextMenu.selection ? (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setContextMenu(null);
+                  terminalRef.current?.clearSelection();
+                  focusTerminal();
+                }}
+              >
+                <div className="terminal-context-menu-item-left">
+                  <X aria-hidden="true" />
+                  <span>Clear selection</span>
+                </div>
+              </button>
+            ) : null}
+          </div>,
+          document.body
+        );
+      })() : null}
     </section>
   );
 }

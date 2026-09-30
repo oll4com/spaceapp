@@ -40,7 +40,7 @@ interface AppDiagnosticsSettingsCardProps {
   onStopRecording?: () => void | Promise<void>;
 }
 
-function useDiagnosticsState(override?: AppDiagnosticsClientState): AppDiagnosticsClientState {
+export function useDiagnosticsState(override?: AppDiagnosticsClientState): AppDiagnosticsClientState {
   const [state, setState] = useState(() => override ?? getAppDiagnosticsClientState());
   useEffect(() => {
     if (override) {

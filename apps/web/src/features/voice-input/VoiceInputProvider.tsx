@@ -154,6 +154,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     if (Date.now() < prewarmCooldownRef.current) return;
     const promise = openVoiceRealtimeSession(
       {
+        provider: settings.provider,
         model: settings.model || serverSettings.defaultModel,
         voice: settings.voice || serverSettings.defaultVoice,
         language: settings.language,
@@ -304,6 +305,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     try {
       const handle = await openVoiceRealtimeSession(
         {
+          provider: settings.provider,
           model: settings.model || serverSettings.defaultModel,
           voice: settings.voice || serverSettings.defaultVoice,
           language: settings.language,

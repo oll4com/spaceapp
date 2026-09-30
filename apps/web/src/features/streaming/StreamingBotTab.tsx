@@ -1,8 +1,8 @@
 import type {
-  StreamingBotActivity,
   StreamingBotPlatform,
   StreamingBotSettings,
-  StreamingBotStatus
+  StreamingBotStatus,
+  StreamingPlatformAccount
 } from "@space/contracts";
 import {
   Bot,
@@ -11,7 +11,6 @@ import {
   Play,
   RefreshCw,
   Save,
-  Search,
   Send,
   Trash2
 } from "../ui-theme/app-icons.js";
@@ -25,7 +24,8 @@ interface BotTabState {
   settings: StreamingBotSettings;
   status: StreamingBotStatus;
   memoryCount: number;
-  activity: StreamingBotActivity[];
+  accounts: StreamingPlatformAccount[];
+  models: Array<{ kind: "API" | "CLI"; providerId: string; modelId: string; label: string; available: boolean; reason: string | null }>;
 }
 
 function emptyState(): BotTabState {
@@ -39,7 +39,11 @@ function emptyState(): BotTabState {
       faq: [],
       instructions: "",
       guardrails: { cooldownSeconds: 15, maxRepliesPerMinute: 5, replyToQuestionsOnly: true },
+      modelSelection: null,
+      fallbackModelSelection: null,
       memoryEnabled: true,
+      moderationEnabled: false,
+      jevEnabled: false,
       overlayTickerEnabled: false,
       updatedAt: "",
       updatedBy: null
@@ -56,7 +60,8 @@ function emptyState(): BotTabState {
       }
     },
     memoryCount: 0,
-    activity: []
+    accounts: [],
+    models: []
   };
 }
 
@@ -69,25 +74,26 @@ export function StreamingBotTab() {
   const [testMessage, setTestMessage] = useState("");
   const [testPlatform, setTestPlatform] = useState<StreamingBotPlatform>("YOUTUBE");
   const [testReply, setTestReply] = useState<string | null>(null);
-  const [memoryQuery, setMemoryQuery] = useState("");
-  const [memoryResults, setMemoryResults] = useState<Array<{ id: string; title: string; body: string; createdAt: string }>>([]);
+  const [modelQuery, setModelQuery] = useState("");
   const [dirty, setDirty] = useState(false);
   const mounted = useRef(true);
 
   const load = useCallback(async (message?: string) => {
     setLoading(true);
     try {
-      const [settingsResponse, status, activity] = await Promise.all([
+      const [settingsResponse, status, catalog, modelCatalog] = await Promise.all([
         api.streamingBotSettings(),
         api.streamingBotStatus(),
-        api.streamingBotActivity(50)
+        api.streamingCatalog(),
+        api.streamingBotModels()
       ]);
       if (!mounted.current) return;
       setState({
         settings: settingsResponse.settings,
         status,
         memoryCount: settingsResponse.memoryCount,
-        activity: activity.data
+        accounts: catalog.accounts.filter(account => account.status === "ACTIVE"),
+        models: modelCatalog.models
       });
       setError(null);
       if (message) setNotice(message);
@@ -143,7 +149,11 @@ export function StreamingBotTab() {
         faq: state.settings.faq,
         instructions: state.settings.instructions,
         guardrails: state.settings.guardrails,
+        modelSelection: state.settings.modelSelection,
+        fallbackModelSelection: state.settings.fallbackModelSelection,
         memoryEnabled: state.settings.memoryEnabled,
+        moderationEnabled: state.settings.moderationEnabled,
+        jevEnabled: state.settings.jevEnabled,
         overlayTickerEnabled: state.settings.overlayTickerEnabled
       });
       setState((current) => current ? { ...current, settings: saved } : current);
@@ -177,27 +187,6 @@ export function StreamingBotTab() {
     }
   }
 
-  async function clearMemory() {
-    await runAction("clear-memory", () => api.clearStreamingBotMemory(), "Streaming bot memory was cleared.");
-    setMemoryResults([]);
-    setMemoryQuery("");
-  }
-
-  async function searchMemory() {
-    if (!memoryQuery.trim()) return;
-    setPendingAction("search-memory");
-    setError(null);
-    try {
-      const result = await api.searchStreamingBotMemory(memoryQuery.trim(), 20);
-      setMemoryResults(result.entries);
-      setNotice(`${result.entries.length} memory entr${result.entries.length === 1 ? "y" : "ies"} found.`);
-    } catch (searchError) {
-      setError(searchError instanceof Error ? searchError.message : "Memory search failed.");
-    } finally {
-      setPendingAction(null);
-    }
-  }
-
   if (loading && !state) {
     return <div className="streaming-bot-loading" role="status"><Loader2 className="spin" aria-hidden="true" /> Loading bot settings…</div>;
   }
@@ -224,7 +213,7 @@ export function StreamingBotTab() {
           <div className="streaming-bot-overview-card">
             <span className="streaming-eyebrow">Language model</span>
             <strong>{status.llmConfigured ? (status.model ?? "Configured") : "Not configured"}</strong>
-            <small>{status.llmConfigured ? "DeepSeek V4 Flash via Codex-LB" : "Set SPACE_STREAMING_BOT_* environment variables"}</small>
+            <small>{status.llmConfigured ? "Dedicated Streaming model" : "Connect a dedicated Streaming API key and select a model"}</small>
           </div>
           <div className="streaming-bot-overview-card">
             <span className="streaming-eyebrow">YouTube quota</span>
@@ -234,7 +223,7 @@ export function StreamingBotTab() {
           <div className="streaming-bot-overview-card">
             <span className="streaming-eyebrow">Memory</span>
             <strong>{state.memoryCount} entr{state.memoryCount === 1 ? "y" : "ies"}</strong>
-            <small>Private room · streaming-bot</small>
+            <small>Separate reviewed Streaming memory</small>
           </div>
         </div>
         <div className="streaming-bot-platform-grid">
@@ -258,6 +247,16 @@ export function StreamingBotTab() {
                     platforms: { ...settings.platforms, [platform]: { ...settings.platforms[platform], enabled: checked } }
                   }))}
                 />
+                <label className="streaming-bot-field">
+                  <span>Connected account</span>
+                  <select aria-label={`${PLATFORM_LABEL[platform]} bot account`} value={platformSettings.accountId ?? ""}
+                    onChange={event => updateSettings(settings => ({ ...settings, platforms: {
+                      ...settings.platforms, [platform]: { ...settings.platforms[platform], accountId: event.target.value || null }
+                    } }))}>
+                    <option value="">Select account</option>
+                    {state.accounts.filter(account => account.provider === platform).map(account => <option key={account.id} value={account.id}>{account.displayName}</option>)}
+                  </select>
+                </label>
                 {platformStatus.live ? <small className="streaming-bot-last-poll">Last polled {platformStatus.lastPollAt ? new Date(platformStatus.lastPollAt).toLocaleTimeString() : "never"} · {platformStatus.pendingCount} pending</small> : null}
               </div>
             );
@@ -273,9 +272,15 @@ export function StreamingBotTab() {
           <SpaceToggle
             checked={settings.memoryEnabled}
             label="Bot memory"
-            detail="Facts learned are kept in a private room"
+            detail="New facts wait for operator review"
             onChange={(checked) => updateSettings((settings) => ({ ...settings, memoryEnabled: checked }))}
           />
+          <SpaceToggle checked={settings.moderationEnabled} label="Moderation active"
+            detail="Separate from bot replies; uses verified platform permissions"
+            onChange={(checked) => updateSettings((settings) => ({ ...settings, moderationEnabled: checked }))} />
+          <SpaceToggle checked={settings.jevEnabled} label="Jev fast classification"
+            detail="Optional advisory classifier; uncertain messages go to review"
+            onChange={(checked) => updateSettings((settings) => ({ ...settings, jevEnabled: checked }))} />
           <SpaceToggle
             checked={settings.overlayTickerEnabled}
             label="Overlay ticker"
@@ -287,6 +292,41 @@ export function StreamingBotTab() {
 
       {error ? <div className="streaming-message error" role="alert">{error}</div> : null}
       {notice ? <div className="streaming-message notice" role="status">{notice}</div> : null}
+
+      <section className="streaming-section" aria-labelledby="streaming-bot-model-heading">
+        <div className="streaming-section-heading"><div><span className="streaming-eyebrow">Response engine</span><h3 id="streaming-bot-model-heading">Provider &amp; model</h3></div></div>
+        <input aria-label="Search streaming models" maxLength={120} value={modelQuery} onChange={event => setModelQuery(event.target.value)} placeholder="Search providers and models…" />
+        <div className="streaming-bot-field-row">
+          <label className="streaming-bot-field"><span>Primary model</span>
+            <select aria-label="Streaming primary model" value={settings.modelSelection ? `${settings.modelSelection.kind}|${settings.modelSelection.providerId}|${settings.modelSelection.modelId}` : ""}
+              onChange={event => updateSettings(settings => ({ ...settings, modelSelection: event.target.value ? (() => {
+                const [kind, providerId, modelId] = event.target.value.split("|");
+                return { kind: kind as "API" | "CLI", providerId: providerId!, modelId: modelId! };
+              })() : null }))}>
+              <option value="">Select model</option>
+              {state.models.filter(model => model.label.toLowerCase().includes(modelQuery.toLowerCase()) || settings.modelSelection?.modelId === model.modelId)
+                .map(model => <option key={`${model.kind}|${model.providerId}|${model.modelId}`} value={`${model.kind}|${model.providerId}|${model.modelId}`} disabled={!model.available}>
+                  {model.label}{model.available ? "" : " · unavailable"}
+                </option>)}
+            </select>
+          </label>
+          <label className="streaming-bot-field"><span>Fallback model (optional)</span>
+            <select aria-label="Streaming fallback model" value={settings.fallbackModelSelection ? `${settings.fallbackModelSelection.kind}|${settings.fallbackModelSelection.providerId}|${settings.fallbackModelSelection.modelId}` : ""}
+              onChange={event => updateSettings(settings => ({ ...settings, fallbackModelSelection: event.target.value ? (() => {
+                const [kind, providerId, modelId] = event.target.value.split("|");
+                return { kind: kind as "API" | "CLI", providerId: providerId!, modelId: modelId! };
+              })() : null }))}>
+              <option value="">No fallback</option>
+              {state.models.filter(model => model.label.toLowerCase().includes(modelQuery.toLowerCase()) || settings.fallbackModelSelection?.modelId === model.modelId)
+                .map(model => <option key={`${model.kind}|${model.providerId}|${model.modelId}`} value={`${model.kind}|${model.providerId}|${model.modelId}`} disabled={!model.available}>
+                  {model.label}{model.available ? "" : " · unavailable"}
+                </option>)}
+            </select>
+          </label>
+        </div>
+        {state.models.filter(model => !model.available && model.label.toLowerCase().includes(modelQuery.toLowerCase())).slice(0, 3)
+          .map(model => <small key={`${model.kind}|${model.providerId}|${model.modelId}`}>{model.label}: {model.reason}</small>)}
+      </section>
 
       <section className="streaming-section" aria-labelledby="streaming-bot-persona-heading">
         <div className="streaming-section-heading"><div><span className="streaming-eyebrow">Identity</span><h3 id="streaming-bot-persona-heading">Persona</h3></div></div>
@@ -421,59 +461,6 @@ export function StreamingBotTab() {
           </button>
         </div>
         {testReply ? <p className="streaming-bot-test-reply" role="status">{testReply}</p> : null}
-      </section>
-
-      <section className="streaming-section" aria-labelledby="streaming-bot-memory-heading">
-        <div className="streaming-section-heading">
-          <div><span className="streaming-eyebrow">Private memory</span><h3 id="streaming-bot-memory-heading">Memory</h3></div>
-          <button type="button" className="danger" onClick={() => void clearMemory()} disabled={pendingAction !== null}>
-            {pendingAction === "clear-memory" ? <Loader2 className="spin" aria-hidden="true" /> : <Trash2 aria-hidden="true" />} Clear
-          </button>
-        </div>
-        <div className="streaming-bot-test-row">
-          <input
-            aria-label="Memory search"
-            maxLength={200}
-            value={memoryQuery}
-            onChange={(event) => setMemoryQuery(event.target.value)}
-            placeholder="Search learned facts…"
-            onKeyDown={(event) => { if (event.key === "Enter") void searchMemory(); }}
-          />
-          <button type="button" onClick={() => void searchMemory()} disabled={pendingAction !== null || !memoryQuery.trim()}>
-            {pendingAction === "search-memory" ? <Loader2 className="spin" aria-hidden="true" /> : <Search aria-hidden="true" />} Search
-          </button>
-        </div>
-        {memoryResults.length > 0 ? (
-          <ul className="streaming-bot-memory-results">
-            {memoryResults.map((entry) => (
-              <li key={entry.id}><strong>{entry.title}</strong><p>{entry.body}</p></li>
-            ))}
-          </ul>
-        ) : null}
-      </section>
-
-      <section className="streaming-section" aria-labelledby="streaming-bot-activity-heading">
-        <div className="streaming-section-heading">
-          <div><span className="streaming-eyebrow">Recent events</span><h3 id="streaming-bot-activity-heading">Activity</h3></div>
-          <button type="button" className="icon-button" aria-label="Refresh activity" title="Refresh" onClick={() => void load()} disabled={loading}>
-            <RefreshCw className={loading ? "spin" : undefined} aria-hidden="true" />
-          </button>
-        </div>
-        {state.activity.length === 0 ? <p className="streaming-empty">No activity yet. The bot logs replies and skipped messages here.</p> : (
-          <ul className="streaming-bot-activity">
-            {state.activity.map((record) => (
-              <li key={record.id} data-direction={record.direction} data-status={record.status}>
-                <span className="streaming-bot-activity-heading">
-                  <strong>{record.direction === "IN" ? "Viewer" : "Bot"} · {PLATFORM_LABEL[record.platform]}</strong>
-                  <time>{new Date(record.createdAt).toLocaleTimeString()}</time>
-                  <span className={`streaming-bot-badge ${record.status === "REPLIED" ? "ok" : ""}`}>{record.status}</span>
-                </span>
-                <p>{record.message}</p>
-                {record.reply ? <p className="streaming-bot-activity-reply">→ {record.reply}</p> : null}
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
 
       <div className="streaming-bot-actions">

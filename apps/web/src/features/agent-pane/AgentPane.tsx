@@ -1,18 +1,32 @@
-import { Crosshair, PanelRight, X } from "../ui-theme/app-icons.js";
-import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type UIEvent } from "react";
+import { ArrowUp, Crosshair, PanelRight, X } from "../ui-theme/app-icons.js";
+import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent } from "react";
 import type { AgentPaneGoal, AgentPaneSession, Artifact, CodexEnvironment, CodexThreadResponse, CollaborationMode, Pane, PaneCliModelSettings, PermissionMode } from "@space/contracts";
 import { api } from "../../api.js";
 import { dispatchArtifactsUpdated } from "../../artifact-events.js";
 import { SPACE_CLIPBOARD_ITEM_MIME, SPACE_CLIPBOARD_ITEM_TITLE_MIME, captureClipboardText, writeClipboardText } from "../clipboard-dock/clipboard-events.js";
 import { SPACE_TASK_ITEM_MIME } from "../task-dock/task-events.js";
 import { readArtifactDragPayload, resolveArtifactDragFile, type ArtifactDragPayload } from "../artifacts/artifact-drag.js";
+import { SPACE_PANE_CONTEXT_MIME } from "../pane-drag/pane-drag.js";
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
+import {
+  readAgentPaneModelSelection,
+  writeAgentPaneModelSelection,
+  type AgentPaneModelSelection
+} from "./agent-pane-model-selection.js";
+import {
+  CLI_RUNTIME_VISIBILITY_EVENT,
+  readCliRuntimeVisibilityChange
+} from "../../cli-runtime-visibility-events.js";
 import { clearAgentPaneDraft, readAgentPaneDraft, writeAgentPaneDraft } from "./agent-pane-draft.js";
+import { readChatSubmission, writeChatSubmission, submissionWasRejected, type ChatSubmission } from "./chat-submission.js";
 import { DEMO_LOCAL_REPLY } from "../../runtime/SpaceRuntime.js";
 import type { VoiceComposerSettings } from "../../voice-settings.js";
 import { useVoiceInput } from "../voice-input/VoiceInputProvider.js";
 import { CodexComposer } from "./CodexComposer.js";
-import { CodexNotification, CodexTranscript, copyableCodexTranscript } from "./CodexTranscript.js";
+import { captureLiveVisual } from "../live-pane/live-visual-capture.js";
+import type { AgentPaneModelProvider } from "@space/contracts";
+import { CodexNotification, CodexTranscript, copyableCodexTranscript, visibleChatMessages } from "./CodexTranscript.js";
+import { useTranscriptScroll } from "./useTranscriptScroll.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import {
   AGENT_PANE_ACTION_EVENT,
@@ -20,6 +34,7 @@ import {
   registerAgentPaneEventTarget
 } from "./events.js";
 import { takePendingThreadOpen } from "../terminal-pane/cli-resume-intent.js";
+import { CLEAN_WORKTREE_PROMPT } from "../osk-keyboard/cli-shortcuts.js";
 
 export { AGENT_PANE_ACTION_EVENT, AGENT_PANE_ATTACHMENTS_EVENT } from "./events.js";
 
@@ -38,6 +53,8 @@ interface AgentPaneProps {
 
 const runningStatuses: AgentPaneSession["runStatus"][] = ["QUEUED", "RUNNING", "INTERRUPTING"];
 const AGENT_PANE_SETTINGS_EVENT = "space:agent-pane-settings-updated";
+type AgentPaneModelProviderRef = Pick<AgentPaneModelProvider, "providerId" | "configIdPrefix" | "isCurrent" | "isInactive">;
+
 type AgentPaneAction =
   | "upload"
   | "plan"
@@ -45,6 +62,7 @@ type AgentPaneAction =
   | "build"
   | "plan_progress"
   | "deploy"
+  | "clean_worktree"
   | "permissions"
   | "resume"
   | "copy"
@@ -103,6 +121,7 @@ function isAgentPaneAction(detail: unknown): detail is AgentPaneActionDetail {
       maybeDetail.action === "build" ||
       maybeDetail.action === "plan_progress" ||
       maybeDetail.action === "deploy" ||
+      maybeDetail.action === "clean_worktree" ||
       maybeDetail.action === "permissions" ||
       maybeDetail.action === "resume" ||
       maybeDetail.action === "copy" ||
@@ -241,19 +260,53 @@ export function AgentPane({
   const [notice, setNotice] = useState<string | null>(null);
   const [dismissedRunError, setDismissedRunError] = useState<string | null>(null);
   const retryInFlightRef = useRef(false);
+  const sendInFlightRef = useRef(false);
+  const [unconfirmedSubmission, setUnconfirmedSubmission] = useState(() => readChatSubmission(pane.id));
+  const unconfirmedSubmissionRef = useRef(unconfirmedSubmission);
   const voiceInput = useVoiceInput();
   const voiceOwnerId = `chat:${pane.id}`;
   const [homePinned, setHomePinned] = useState(false);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const permissionsRef = useRef<HTMLElement | null>(null);
   const [goalDialogOpen, setGoalDialogOpen] = useState(false);
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const [composerRestoreKey, setComposerRestoreKey] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const turnStartedAtRef = useRef<number | null>(null);
-  const transcriptRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const visualCaptureRef = useRef<AbortController | null>(null);
   const lastSessionThreadIdRef = useRef<string | null>(null);
-  const followTranscriptRef = useRef(true);
+  const refreshModelCatalogRef = useRef<() => Promise<void>>(async () => {});
+
+  // The stored selection is `<configIdPrefix><modelId>|<effort>`; the longest prefix that
+  // matches owns it (model ids may themselves contain characters like ":").
+  function providerForConfigId(next: AgentPaneSession, configId: string | null): AgentPaneModelProviderRef | null {
+    if (!configId) return null;
+    return (next.modelProviders ?? [])
+      .filter((provider) => configId.startsWith(provider.configIdPrefix))
+      .sort((left, right) => right.configIdPrefix.length - left.configIdPrefix.length)[0] ?? null;
+  }
+
+  function rememberModelSelection(next: AgentPaneSession): void {
+    const configId = next.selectedModelConfigId;
+    if (!configId) return;
+    const provider = providerForConfigId(next, configId)
+      ?? (next.modelProviders ?? []).find((candidate) => candidate.isCurrent)
+      ?? null;
+    const raw = provider && configId.startsWith(provider.configIdPrefix)
+      ? configId.slice(provider.configIdPrefix.length)
+      : configId;
+    const separator = raw.lastIndexOf("|");
+    const modelId = separator > 0 ? raw.slice(0, separator) : raw;
+    const reasoningEffort = separator > 0 ? raw.slice(separator + 1) : "";
+    if (!modelId || !reasoningEffort) return;
+    writeAgentPaneModelSelection(pane.id, {
+      modelId,
+      reasoningEffort,
+      providerId: provider?.providerId ?? null
+    });
+  }
   const isChatEnabled = session
     ? session.modelProviders.length > 0 || session.modelOptions.length > 0
     : true;
@@ -264,11 +317,20 @@ export function AgentPane({
     isChatEnabled &&
     Boolean(session?.capabilities.canSend) &&
     !pending &&
+    !unconfirmedSubmission &&
     (trimmedPrompt.length > 0 || hasAttachments);
   const isRunning = Boolean(session && runningStatuses.includes(session.runStatus));
+  const hasTranscriptContent = isRunning || visibleChatMessages(thread?.items ?? [], session?.messages ?? []).length > 0;
+  const { transcriptRef, followTranscriptRef, handleTranscriptScroll, showJumpToLatest, jumpToLatest } = useTranscriptScroll({
+    conversationId: activeThreadId ?? session?.threadId ?? null,
+    hasContent: hasTranscriptContent,
+    contentVersion: thread?.items ?? session?.messages,
+    isVisible
+  });
   useEffect(() => {
-    if (!isVisible || pane.isMinimized) setPermissionsOpen(false);
+    if (!isVisible || pane.isMinimized) { setPermissionsOpen(false); visualCaptureRef.current?.abort(); }
   }, [isVisible, pane.isMinimized]);
+  useEffect(() => () => visualCaptureRef.current?.abort(), []);
 
   useEffect(() => {
     if (!permissionsOpen || !isVisible || pane.isMinimized) return;
@@ -296,7 +358,16 @@ export function AgentPane({
     setError(null);
     try {
       const nextSession = await api.agentSession(pane.id);
-      setSession(nextSession);
+      const remembered = readAgentPaneModelSelection(pane.id);
+      if (remembered && !nextSession.selectedModelConfigId) {
+        // The pane was closed and reopened: restore the model the operator had picked
+        // instead of silently falling back to the provider default.
+        const fallbackSession = await restoreRememberedModelSelection(remembered, nextSession);
+        setSession(fallbackSession);
+      } else {
+        setSession(nextSession);
+        rememberModelSelection(nextSession);
+      }
       recordLifecycleDebugEvent({
         type: "session_sync",
         scope: "AgentPane",
@@ -308,6 +379,30 @@ export function AgentPane({
       setError(err instanceof Error ? err.message : "Agent session failed to load");
     } finally {
       if (showLoading) setLoading(false);
+    }
+  }
+
+  // The stored selection is provider-qualified (`${configIdPrefix}${modelId}|${effort}`),
+  // so it can be re-applied directly and stays valid across pane sessions.
+  function modelSelectionConfigId(selection: AgentPaneModelSelection, current: AgentPaneSession): string {
+    const provider = (current.modelProviders ?? []).find((candidate) => candidate.providerId === selection.providerId)
+      ?? (current.modelProviders ?? []).find((candidate) => candidate.isCurrent);
+    if (!provider || provider.isInactive) return "";
+    return `${provider.configIdPrefix}${selection.modelId}|${selection.reasoningEffort}`;
+  }
+
+  async function restoreRememberedModelSelection(
+    selection: AgentPaneModelSelection,
+    current: AgentPaneSession
+  ): Promise<AgentPaneSession> {
+    const configId = modelSelectionConfigId(selection, current);
+    if (!configId || configId === current.selectedModelConfigId) return current;
+    try {
+      const updated = await api.updateAgentSettings(pane.id, { selectedModelConfigId: configId });
+      return updated;
+    } catch {
+      // A stale remembered model must never block the pane: keep the server selection.
+      return current;
     }
   }
 
@@ -359,7 +454,7 @@ export function AgentPane({
   }
 
   async function openThread(threadId: string, bindToSession = true): Promise<boolean> {
-    followTranscriptRef.current = true;
+    if (threadId !== activeThreadId) followTranscriptRef.current = true;
     setActiveThreadId(threadId);
     setHomePinned(false);
     setThreadLoading(true);
@@ -418,6 +513,24 @@ export function AgentPane({
   useEffect(() => {
     void loadSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.id]);
+
+  useEffect(() => {
+    // Keep the latest catalog refresh (with its current session guard) reachable
+    // from listeners that are installed once per pane.
+    refreshModelCatalogRef.current = refreshModelCatalog;
+  });
+
+  useEffect(() => {
+    const handleCliRuntimeVisibility = (event: Event) => {
+      // A CLI toggled in Settings changes which providers this Chat pane may
+      // offer: refresh the catalog so a disabled provider drops out of the model
+      // picker and a re-enabled one comes back without reopening the pane.
+      if (!readCliRuntimeVisibilityChange(event)) return;
+      void refreshModelCatalogRef.current().catch(() => undefined);
+    };
+    window.addEventListener(CLI_RUNTIME_VISIBILITY_EVENT, handleCliRuntimeVisibility);
+    return () => window.removeEventListener(CLI_RUNTIME_VISIBILITY_EVENT, handleCliRuntimeVisibility);
   }, [pane.id]);
 
   useEffect(() => {
@@ -524,17 +637,6 @@ export function AgentPane({
     return () => window.clearInterval(timer);
   }, [isRunning]);
 
-  useEffect(() => {
-    if (transcriptRef.current && followTranscriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-    }
-  }, [thread?.items.length, threadLoading, session?.runStatus]);
-
-  function handleTranscriptScroll(event: UIEvent<HTMLDivElement>) {
-    const element = event.currentTarget;
-    followTranscriptRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 96;
-  }
-
   async function updateCollaborationMode(collaborationMode: CollaborationMode) {
     if (!isChatEnabled || !session || pending || isRunning || !isVisible) return;
     setPending(true);
@@ -587,6 +689,7 @@ export function AgentPane({
           selectedToolIds: session.selectedToolIds ?? []
         });
         setSession(updated);
+        rememberModelSelection(updated);
         setActiveThreadId(null);
         setThread(null);
         setHomePinned(true);
@@ -595,6 +698,7 @@ export function AgentPane({
       }
       const updated = await api.updateAgentSettings(pane.id, { selectedModelConfigId });
       setSession(updated);
+      rememberModelSelection(updated);
       return updated.selectedModelConfigId;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Agent model update failed";
@@ -633,87 +737,104 @@ export function AgentPane({
     }
   }
 
-  async function submitMessage(content: string, promptToRestore = prompt): Promise<boolean> {
-    const attachmentsToSend = attachments.slice();
-    if (
-      !isChatEnabled ||
-      (!content && attachmentsToSend.length === 0) ||
-      pending ||
-      session?.capabilities.canSend === false
-    ) return false;
-    followTranscriptRef.current = true;
+  function rememberSubmission(submission: ChatSubmission | null) {
+    unconfirmedSubmissionRef.current = submission;
+    setUnconfirmedSubmission(submission);
+    return writeChatSubmission(pane.id, submission);
+  }
+
+  async function sendSubmission(submission: ChatSubmission, promptToRestore: string, clearDraft: boolean): Promise<boolean> {
+    if (sendInFlightRef.current) return false;
+    const recovering = unconfirmedSubmissionRef.current !== null;
+    sendInFlightRef.current = true;
     setPending(true);
     setHomePinned(false);
     setError(null);
-    setPrompt("");
-    if (attachmentsToSend.length) setAttachments([]);
-    clearAgentPaneDraft(pane.id);
-    try {
-      const nextSession = await api.sendAgentMessage(
-        pane.id,
-        content,
-        session?.selectedModelConfigId ?? null,
-        session?.selectedToolIds ?? [],
-        attachmentsToSend.map((artifact) => artifact.id)
-      );
-      setSession(nextSession);
+    followTranscriptRef.current = true;
+    if (!rememberSubmission(submission)) {
+      unconfirmedSubmissionRef.current = null;
+      setUnconfirmedSubmission(null);
+      setError("This browser could not save the request for recovery. Enable session storage before sending.");
+      sendInFlightRef.current = false;
+      setPending(false);
+      return false;
+    }
+    if (clearDraft) {
       setPrompt("");
+      setAttachments([]);
       clearAgentPaneDraft(pane.id);
-      if (nextSession.threadId) {
-        await openThread(nextSession.threadId, false);
-      } else if (activeThreadId) {
-        await openThread(activeThreadId, false);
+    }
+    try {
+      const nextSession = await api.sendAgentMessage(pane.id, submission.content, submission.selectedModelConfigId,
+        submission.selectedToolIds, submission.attachments.map(artifact => artifact.id), submission.clientRequestId);
+      // Submission succeeded even if the subsequent transcript read fails.
+      rememberSubmission(null);
+      setSession(nextSession);
+      setNotice("Request accepted. Its task is saved in this conversation.");
+      if (!clearDraft) {
+        setPrompt(current => current.trim() === submission.content.trim() ? "" : current);
+        setAttachments(current => current.length === submission.attachments.length &&
+          current.every((artifact, index) => artifact.id === submission.attachments[index]?.id) ? [] : current);
       }
+      if (clearDraft) clearAgentPaneDraft(pane.id);
+      const threadId = nextSession.threadId ?? activeThreadId;
+      if (threadId) void openThread(threadId, false);
       return true;
     } catch (err) {
-      setPrompt(promptToRestore);
-      if (attachmentsToSend.length) setAttachments(attachmentsToSend);
-      writeAgentPaneDraft(pane.id, { prompt: promptToRestore, attachments: attachmentsToSend });
-      setError(err instanceof Error ? err.message : "Agent message failed");
+      // A later 401/429/409 does not disprove acceptance of the original
+      // request whose acknowledgement was lost. Never discard its identity.
+      if (!recovering && submissionWasRejected(err)) rememberSubmission(null);
+      if (clearDraft) {
+        setPrompt(promptToRestore);
+        setComposerRestoreKey(current => current + 1);
+        setAttachments(submission.attachments);
+        writeAgentPaneDraft(pane.id, { prompt: promptToRestore, attachments: submission.attachments });
+      }
+      setError(err instanceof Error ? err.message : "Request confirmation failed");
       return false;
     } finally {
+      sendInFlightRef.current = false;
       setPending(false);
     }
+  }
+
+  async function checkSubmission() {
+    const submission = unconfirmedSubmissionRef.current;
+    if (!submission || pending || sendInFlightRef.current) return;
+    // This reuses the frozen request, including model/tools/files. The server
+    // returns the accepted run before considering new runtime work.
+    await sendSubmission(submission, submission.content, false);
+  }
+
+  async function submitMessage(content: string, promptToRestore = prompt): Promise<boolean> {
+    if (!isChatEnabled || (!content && attachments.length === 0) || pending || sendInFlightRef.current ||
+        unconfirmedSubmissionRef.current || session?.capabilities.canSend === false) return false;
+    return sendSubmission({ clientRequestId: crypto.randomUUID(), content,
+      selectedModelConfigId: session?.selectedModelConfigId ?? null, selectedToolIds: session?.selectedToolIds ?? [],
+      attachments: attachments.slice() }, promptToRestore, true);
   }
 
   async function submitQuickMessage(content: string, options: { selectedModelConfigId?: string | null } = {}) {
-    if (!isChatEnabled || !content.trim() || pending || session?.capabilities.canSend === false) return;
+    if (!isChatEnabled || !content.trim() || pending || sendInFlightRef.current || unconfirmedSubmissionRef.current ||
+        session?.capabilities.canSend === false) return;
     setPending(true);
-    setHomePinned(false);
     setError(null);
     try {
-      let nextSelectedModelConfigId = session?.selectedModelConfigId ?? null;
-      let nextSelectedToolIds = session?.selectedToolIds ?? [];
-      if (options.selectedModelConfigId && options.selectedModelConfigId !== nextSelectedModelConfigId) {
-        const updatedSession = await api.updateAgentSettings(pane.id, {
-          selectedModelConfigId: options.selectedModelConfigId
-        });
-        setSession(updatedSession);
-        nextSelectedModelConfigId = updatedSession.selectedModelConfigId ?? options.selectedModelConfigId;
-        nextSelectedToolIds = updatedSession.selectedToolIds ?? nextSelectedToolIds;
+      let selection = session;
+      if (options.selectedModelConfigId && options.selectedModelConfigId !== selection?.selectedModelConfigId) {
+        selection = await api.updateAgentSettings(pane.id, { selectedModelConfigId: options.selectedModelConfigId });
+        setSession(selection);
       }
-      const nextSession = await api.sendAgentMessage(
-        pane.id,
-        content.trim(),
-        nextSelectedModelConfigId,
-        nextSelectedToolIds,
-        []
-      );
-      setSession(nextSession);
-      if (nextSession.threadId) {
-        await openThread(nextSession.threadId, false);
-      } else if (activeThreadId) {
-        await openThread(activeThreadId, false);
-      }
+      await sendSubmission({ clientRequestId: crypto.randomUUID(), content: content.trim(),
+        selectedModelConfigId: selection?.selectedModelConfigId ?? null, selectedToolIds: selection?.selectedToolIds ?? [],
+        attachments: [] }, content, false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Agent quick action failed");
-    } finally {
-      setPending(false);
-    }
+    } finally { setPending(false); }
   }
 
   async function startNewTask() {
-    if (!isChatEnabled || pending || isRunning) return;
+    if (!isChatEnabled || pending || isRunning || unconfirmedSubmissionRef.current) return;
     setPending(true);
     setError(null);
     try {
@@ -725,6 +846,7 @@ export function AgentPane({
         selectedToolIds: session?.selectedToolIds ?? []
       });
       setSession(nextSession);
+      rememberModelSelection(nextSession);
       setActiveThreadId(null);
       setThread(null);
       setHomePinned(true);
@@ -754,6 +876,27 @@ export function AgentPane({
     }
   }
 
+  async function attachVisualContext(source: "screen" | "camera") {
+    if (!isChatEnabled || uploading || pending || !isVisible || pane.isMinimized) return;
+    const controller = new AbortController();
+    visualCaptureRef.current?.abort();
+    visualCaptureRef.current = controller;
+    try {
+      const captured = await captureLiveVisual(source, controller.signal);
+      if (controller.signal.aborted) return;
+      const bytes = Uint8Array.from(atob(captured.dataUrl.split(",", 2)[1] ?? ""), (character) => character.charCodeAt(0));
+      const file = new File([bytes], captured.filename, { type: "image/jpeg" });
+      await uploadFiles([file], "USER_UPLOAD");
+      setNotice(`${source === "screen" ? "Screen" : "Camera"} image attached. Review it before sending.`);
+    } catch (err) {
+      if (!controller.signal.aborted && !(err instanceof DOMException && ["AbortError", "NotAllowedError"].includes(err.name))) {
+        setError(err instanceof Error ? err.message : "Visual capture failed");
+      }
+    } finally {
+      if (visualCaptureRef.current === controller) visualCaptureRef.current = null;
+    }
+  }
+
   function clearAttachments() {
     setAttachments([]);
   }
@@ -778,28 +921,46 @@ export function AgentPane({
   }
 
   function handleDrop(event: DragEvent<HTMLElement>) {
-    event.preventDefault();
-    event.stopPropagation();
     if (!isChatEnabled) {
+      setDragActive(false);
+      return;
+    }
+    if (event.dataTransfer?.types.includes(SPACE_PANE_CONTEXT_MIME)) {
       setDragActive(false);
       return;
     }
     const files = Array.from(event.dataTransfer?.files ?? []);
     if (files.length) {
+      event.preventDefault();
+      event.stopPropagation();
       void uploadFiles(files, "DROP");
       return;
     }
     const artifactPayload = readArtifactDragPayload(event.dataTransfer ?? null);
     if (artifactPayload) {
+      event.preventDefault();
+      event.stopPropagation();
       void dropArtifactFile(artifactPayload);
       return;
     }
     const clipboardItemId = event.dataTransfer?.getData(SPACE_CLIPBOARD_ITEM_MIME) ?? "";
     const clipboardTitle = event.dataTransfer?.getData(SPACE_CLIPBOARD_ITEM_TITLE_MIME) ?? "";
     const text = event.dataTransfer?.getData("text/plain") ?? "";
-    if (clipboardItemId && text) setPrompt((current) => appendClipboardText(current, clipboardTitle ? `# ${clipboardTitle}\n\n${text}` : text));
+    if (clipboardItemId && text) {
+      event.preventDefault();
+      event.stopPropagation();
+      setPrompt((current) => appendClipboardText(current, clipboardTitle ? `# ${clipboardTitle}\n\n${text}` : text));
+      setDragActive(false);
+      return;
+    }
     const taskItemId = event.dataTransfer?.getData(SPACE_TASK_ITEM_MIME) ?? "";
-    if (taskItemId && text) setPrompt((current) => appendClipboardText(current, text));
+    if (taskItemId && text) {
+      event.preventDefault();
+      event.stopPropagation();
+      setPrompt((current) => appendClipboardText(current, text));
+      setDragActive(false);
+      return;
+    }
     setDragActive(false);
   }
 
@@ -840,9 +1001,15 @@ export function AgentPane({
         void updateCollaborationMode("default");
         return;
       }
-      if (event.detail.action === "plan_progress" || event.detail.action === "deploy") {
+      if (event.detail.action === "plan_progress" || event.detail.action === "deploy" || event.detail.action === "clean_worktree") {
         if (!isVisible || pane.isMinimized) return;
-        void submitQuickMessage(event.detail.action === "plan_progress" ? "Plan completion percentage" : "Deploy the project to Gitea and GitHub.");
+        void submitQuickMessage(
+          event.detail.action === "plan_progress"
+            ? "Plan completion percentage"
+            : event.detail.action === "deploy"
+              ? "Deploy the project to Gitea and GitHub."
+              : CLEAN_WORKTREE_PROMPT
+        );
         return;
       }
       if (event.detail.action === "toggle_plan") {
@@ -944,51 +1111,33 @@ export function AgentPane({
           ? voiceInput.preview || "Transcribing"
           : voiceInput.error;
 
-  function lastUserPrompt(): string | null {
-    const messages = session?.messages ?? [];
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message && message.role === "user" && message.content.trim()) return message.content;
-    }
-    return null;
-  }
-
   async function retryLatestError() {
-    if (retryInFlightRef.current) return;
-    setError(null);
-    setCodexError(null);
-    setDismissedRunError(null);
-    const retryPrompt = lastUserPrompt();
-    if (!retryPrompt) {
-      setNotice("Nothing to retry: this Chat pane has no user request recorded yet.");
-      void loadSession(false);
-      if (activeThreadId) void openThread(activeThreadId, false);
+    if (unconfirmedSubmissionRef.current) { await checkSubmission(); return; }
+    if (retryInFlightRef.current || pending || isRunning) return;
+    if (prompt.trim() || attachments.length) {
+      setNotice("Your draft is still here. Review it before sending; no task was started.");
+      setComposerFocusRequest(current => current + 1);
       return;
     }
-    if (pending || isRunning || session?.capabilities.canSend === false) {
-      setNotice("Retry is unavailable while this Chat pane is not accepting new messages.");
+    if (session?.capabilities.canSend === false) {
+      setNotice("Another attempt is unavailable while this Chat pane is not accepting new messages.");
       return;
     }
     retryInFlightRef.current = true;
     setPending(true);
-    setNotice("Retrying the last request…");
+    setError(null);
     try {
-      const nextSession = await api.sendAgentMessage(
-        pane.id,
-        retryPrompt,
-        session?.selectedModelConfigId ?? null,
-        session?.selectedToolIds ?? [],
-        []
-      );
-      setSession(nextSession);
-      setNotice("Retried the last request.");
-      if (nextSession.threadId) {
-        await openThread(nextSession.threadId, false);
-      } else if (activeThreadId) {
-        await openThread(activeThreadId, false);
-      }
+      const original = await api.prepareAgentRetry(pane.id);
+      setPrompt(original.content);
+      setComposerRestoreKey(current => current + 1);
+      setAttachments(original.artifacts);
+      writeAgentPaneDraft(pane.id, { prompt: original.content, attachments: original.artifacts });
+      setComposerFocusRequest(current => current + 1);
+      setCodexError(null);
+      setDismissedRunError(runError);
+      setNotice("Original request and files restored. Review them before sending a new attempt; earlier actions may already have completed.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Retry failed");
+      setError(err instanceof Error ? err.message : "The original request could not be restored.");
     } finally {
       retryInFlightRef.current = false;
       setPending(false);
@@ -1002,12 +1151,14 @@ export function AgentPane({
       data-codex-enabled={isCodexEnabled ? "true" : "false"}
       data-chat-enabled={isChatEnabled ? "true" : "false"}
       data-workspace-text-size={workspaceTextSize}
+      data-room-agent-visible={isVisible && !pane.isMinimized ? "true" : "false"}
       style={{ "--codex-workspace-text-size": `${workspaceTextSize}px` } as CSSProperties}
       onPasteCapture={isChatEnabled ? handlePaste : undefined}
       onDrop={isChatEnabled ? handleDrop : undefined}
       onDragOver={(event) => {
         event.preventDefault();
-        if (isChatEnabled) setDragActive(true);
+        const isSameRoomPaneDrag = event.dataTransfer.types.includes(SPACE_PANE_CONTEXT_MIME);
+        if (isChatEnabled && !isSameRoomPaneDrag) setDragActive(true);
       }}
       onDragLeave={() => setDragActive(false)}
     >
@@ -1016,6 +1167,7 @@ export function AgentPane({
         type="file"
         name={`agent-files-${pane.id}`}
         multiple
+        accept="*/*"
         hidden
         disabled={!isChatEnabled}
         onChange={(event) => {
@@ -1055,30 +1207,45 @@ export function AgentPane({
             <span>Plan mode on</span>
           </button>
         ) : null}
-        <div
-          ref={transcriptRef}
-          className={`codex-transcript-scroll${session?.collaborationMode === "plan" ? " has-plan-mode" : ""}`}
-          onScroll={handleTranscriptScroll}
-        >
-          <CodexTranscript
-            items={thread?.items ?? []}
-            messages={session?.messages ?? []}
-            isRunning={isRunning}
-            loading={threadLoading || loading}
-            elapsedSeconds={elapsedSeconds}
-            providerName={session?.binding.selectedProviderName ?? "Codex"}
-          />
+        <div className="chat-transcript-region">
+          <div
+            ref={transcriptRef}
+            className={`codex-transcript-scroll${session?.collaborationMode === "plan" ? " has-plan-mode" : ""}`}
+            onScroll={handleTranscriptScroll}
+          >
+            <CodexTranscript
+              items={thread?.items ?? []}
+              messages={session?.messages ?? []}
+              latestRun={session?.latestRun && (!activeThreadId || session.latestRun.threadId === activeThreadId || (isRunning && !session.latestRun.threadId)) ? session.latestRun : null}
+              isRunning={isRunning}
+              loading={threadLoading || loading}
+              elapsedSeconds={elapsedSeconds}
+              providerName={session?.binding.selectedProviderName ?? "Codex"}
+              goal={session?.goal && session.goal.threadId === session.threadId ? session.goal : null}
+              failureMessage={runErrorMessage}
+              runStatus={session?.runStatus ?? "RUNNING"}
+              onAsk={isChatEnabled ? () => setComposerFocusRequest((current) => current + 1) : undefined}
+              onSetGoal={isChatEnabled ? () => setGoalDialogOpen(true) : undefined}
+            />
+          </div>
+        {showJumpToLatest ? <button type="button" className="chat-jump-latest" onClick={jumpToLatest}><ArrowUp aria-hidden="true" />Jump to latest</button> : null}
         </div>
         <div className="codex-notification-stack">
           {session?.binding.status === "BLOCKED" ? (
             <CodexNotification tone="warning" message={session.statusReason} />
           ) : null}
+          {unconfirmedSubmission ? <CodexNotification tone={pending ? "info" : "warning"}
+            title={pending ? "Confirming request" : "Check submission"}
+            message={pending ? "Confirming your request…" : "Request confirmation is missing. Check the saved request before sending anything else. This uses the same submission and does not start a second task."}
+            onRetry={checkSubmission} retryLabel="Check submission" retryDisabled={pending} /> : null}
           {notice ? <CodexNotification tone="info" message={notice} onDismiss={() => setNotice(null)} /> : null}
-          {error || codexError || runError ? (
+          {!unconfirmedSubmission && (error || codexError || runError) ? (
             <CodexNotification
               tone="error"
               message={error ?? codexError ?? runError ?? "Codex error"}
-              onRetry={retryLatestError}
+              onRetry={unconfirmedSubmission ? undefined : retryLatestError}
+              retryLabel="Review request"
+              retryDisabled={pending}
               onDismiss={() => {
                 if (error) setError(null);
                 if (codexError) setCodexError(null);
@@ -1101,17 +1268,22 @@ export function AgentPane({
           isVisible={isVisible}
           onShortcut={command => {
             if (command.action === "build") void updateCollaborationMode("default");
-            if (command.id === "plan_progress" || command.id === "deploy") void submitQuickMessage(command.text);
+            if (command.id === "plan_progress" || command.id === "deploy" || command.id === "clean_worktree") void submitQuickMessage(command.text);
             if (command.action === "permissions") setPermissionsOpen(true);
             if (command.action === "plan") void updateCollaborationMode(session?.collaborationMode === "plan" ? "default" : "plan");
           }}
-          disabledReason={isChatEnabled ? null : chatDisabledReason}
+          disabledReason={unconfirmedSubmission ? "Check the unconfirmed submission first" : isChatEnabled ? null : chatDisabledReason}
           prompt={prompt}
+          focusRequestKey={composerFocusRequest}
+          restorePromptKey={composerRestoreKey}
           onPromptChange={setPrompt}
           attachments={attachments}
           onRemoveAttachment={(artifactId) => setAttachments((current) => current.filter((artifact) => artifact.id !== artifactId))}
           onClearAttachments={clearAttachments}
           onVoice={toggleVoiceCapture}
+          onAddFiles={() => fileInputRef.current?.click()}
+          onSetGoal={() => setGoalDialogOpen(true)}
+          onVisualContext={(source) => void attachVisualContext(source)}
           onVoicePrewarm={voiceInput.prewarm}
           voiceActive={voiceOwned && voiceInput.status === "recording"}
           voiceDisabled={voiceDisabled}

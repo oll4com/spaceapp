@@ -17,6 +17,7 @@ import type {
   CodexLbSpeedDefaultsResponse,
   CodexResetCreditAvailability,
   CodexUsageAccountList,
+  AntigravityUsageAccountList,
   Event,
   HostMemoryDetails,
   LaunchReadiness,
@@ -80,6 +81,7 @@ export type DemoFixture = {
   skills: Skill[];
   codexEnvironment: CodexEnvironment;
   codexUsageAccounts: CodexUsageAccountList;
+  antigravityUsageAccounts: AntigravityUsageAccountList;
   codexResetCredits: CodexResetCreditAvailability;
   cliSessionStats: CliSessionStats;
   modelStats: ToolbarModelStats;
@@ -693,6 +695,11 @@ export function createDemoFixture(): DemoFixture {
       source: "AGENT_NOTE",
       title: null,
       isCompleted: false,
+      executionStatus: "PLANNED",
+      progressPercentage: 0,
+      activeAgent: null,
+      steps: [],
+      lastProgressAt: null,
       roomId: rooms[0]!.id,
       paneId: "pane:demo-chat",
       paneTitle: "Product Copilot",
@@ -706,6 +713,48 @@ export function createDemoFixture(): DemoFixture {
       source: "PLAN",
       title: "Demo rollout plan",
       isCompleted: false,
+      executionStatus: "IN_PROGRESS",
+      progressPercentage: 33,
+      activeAgent: "codex",
+      steps: [
+        {
+          id: "step-1",
+          order: 1,
+          title: "Enable the feature flag",
+          status: "COMPLETED",
+          progress: 100,
+          agent: "codex",
+          notes: null,
+          proof: "flag enabled",
+          startedAt: DEMO_FIXED_AT,
+          completedAt: DEMO_FIXED_AT
+        },
+        {
+          id: "step-2",
+          order: 2,
+          title: "Run scoped tests",
+          status: "IN_PROGRESS",
+          progress: 0,
+          agent: "codex",
+          notes: null,
+          proof: null,
+          startedAt: DEMO_FIXED_AT,
+          completedAt: null
+        },
+        {
+          id: "step-3",
+          order: 3,
+          title: "Deploy and verify",
+          status: "PENDING",
+          progress: 0,
+          agent: null,
+          notes: null,
+          proof: null,
+          startedAt: null,
+          completedAt: null
+        }
+      ],
+      lastProgressAt: DEMO_FIXED_AT,
       roomId: rooms[0]!.id,
       paneId: "pane:demo-chat",
       paneTitle: "Product Copilot",
@@ -955,6 +1004,59 @@ export function createDemoFixture(): DemoFixture {
       isStale: false,
       error: null,
       checkedAt: DEMO_FIXED_AT
+    },
+    antigravityUsageAccounts: {
+      data: [
+        {
+          id: "account:demo-in1",
+          label: "Profile in1",
+          email: "demo-in1@gmail.com",
+          tier: "Google AI Pro",
+          status: "CONNECTED",
+          gemini: {
+            displayName: "Gemini Models",
+            fiveHourRemainingPercent: 96,
+            fiveHourResetAt: "2026-08-02T18:00:00.000Z",
+            weeklyRemainingPercent: 90,
+            weeklyResetAt: "2026-08-08T18:00:00.000Z",
+          },
+          claude: {
+            displayName: "Claude and GPT models",
+            fiveHourRemainingPercent: 95,
+            fiveHourResetAt: "2026-08-02T18:00:00.000Z",
+            weeklyRemainingPercent: 88,
+            weeklyResetAt: "2026-08-08T18:00:00.000Z",
+          },
+          sampledAt: DEMO_FIXED_AT,
+        },
+        {
+          id: "account:demo-7",
+          label: "Profile 7",
+          email: "demo-7@gmail.com",
+          tier: "Google AI Ultra",
+          status: "CONNECTED",
+          gemini: {
+            displayName: "Gemini Models",
+            fiveHourRemainingPercent: 100,
+            fiveHourResetAt: "2026-08-02T19:00:00.000Z",
+            weeklyRemainingPercent: 98,
+            weeklyResetAt: "2026-08-08T19:00:00.000Z",
+          },
+          claude: {
+            displayName: "Claude and GPT models",
+            fiveHourRemainingPercent: 100,
+            fiveHourResetAt: "2026-08-02T19:00:00.000Z",
+            weeklyRemainingPercent: 95,
+            weeklyResetAt: "2026-08-08T19:00:00.000Z",
+          },
+          sampledAt: DEMO_FIXED_AT,
+        },
+      ],
+      pagination: { page: 1, pageSize: 2, totalItems: 2, totalPages: 1 },
+      source: "deterministic-demo-fixture",
+      isStale: false,
+      error: null,
+      checkedAt: DEMO_FIXED_AT,
     },
     codexResetCredits: {
       data: [{ accountId: "account:demo-public", availableCreditCount: 2 }],

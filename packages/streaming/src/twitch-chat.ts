@@ -92,6 +92,29 @@ export class TwitchChatConnector {
     return id;
   }
 
+  async timeoutUser(token: StreamingTokenSet, broadcasterId: string, moderatorId: string, userId: string, durationSeconds: 300 | 1800, reason: string): Promise<void> {
+    const url = new URL("https://api.twitch.tv/helix/moderation/bans");
+    url.search = new URLSearchParams({ broadcaster_id: broadcasterId, moderator_id: moderatorId }).toString();
+    const payload = await this.requestJson(url.toString(), { method: "POST",
+      headers: { ...bearerHeaders(token, this.clientId), "content-type": "application/json" },
+      body: JSON.stringify({ data: { user_id: userId, duration: durationSeconds, reason: reason.slice(0, 500) } }) });
+    const data = asArray(payload.data)[0];
+    if (!data || stringValue(asRecord(data).user_id) !== userId) {
+      throw new StreamingProviderError("TWITCH_TIMEOUT_INVALID", "Twitch did not confirm the timeout.", false);
+    }
+  }
+
+  async undoTimeout(token: StreamingTokenSet, broadcasterId: string, moderatorId: string, userId: string): Promise<void> {
+    const url = new URL("https://api.twitch.tv/helix/moderation/bans");
+    url.search = new URLSearchParams({ broadcaster_id: broadcasterId, moderator_id: moderatorId, user_id: userId }).toString();
+    const response = await this.fetchImpl(url.toString(), { method: "DELETE", headers: bearerHeaders(token, this.clientId), signal: AbortSignal.timeout(15_000) });
+    if (response.status !== 204) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new StreamingProviderError(`TWITCH_HTTP_${response.status}`, `Twitch returned HTTP ${response.status}.`, response.status >= 500, response.status);
+    }
+    await response.body?.cancel().catch(() => undefined);
+  }
+
   private async requestJson(url: string, init: RequestInit): Promise<Record<string, unknown>> {
     let response: Response;
     try {

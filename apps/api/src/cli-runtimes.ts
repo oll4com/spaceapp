@@ -50,12 +50,16 @@ export function credentialSmokeTimeoutForRuntime(runtimeId: string): number {
   return longCredentialSmokeRuntimeIds.has(runtimeId) ? 190_000 : 130_000;
 }
 
-function controlledCredentialEnvironment(): NodeJS.ProcessEnv {
+function controlledCredentialEnvironment(
+  environment: Readonly<Record<string, string>> = {}
+): NodeJS.ProcessEnv {
   return {
+    HOME: process.env.HOME ?? "/var/lib/spaceapp-user",
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",
     PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    TERM: "xterm-256color"
+    TERM: "xterm-256color",
+    ...environment
   };
 }
 
@@ -228,7 +232,7 @@ export async function observeCliRuntimeCredential(runtime: AgentRuntime): Promis
       [definition.credentialObservationAction],
       {
         encoding: "utf8",
-        env: controlledCredentialEnvironment(),
+        env: controlledCredentialEnvironment(definition.environment),
         timeout: credentialObservationTimeoutMs,
         maxBuffer: 256
       }
@@ -264,7 +268,7 @@ export async function checkCliRuntimeCredential(
   try {
     const { stdout } = await execute(runtime.detectedCommandPath, ["credential-smoke"], {
       encoding: "utf8",
-      env: controlledCredentialEnvironment(),
+      env: controlledCredentialEnvironment(definition.environment),
       timeout: credentialSmokeTimeoutForRuntime(runtime.id),
       maxBuffer: 1_024
     });

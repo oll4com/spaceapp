@@ -552,6 +552,11 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
   useEffect(() => {
     if (!controlLease) return;
     const interval = window.setInterval(() => {
+      if (Date.parse(controlLease.expiresAt) <= Date.now()) {
+        setControlLease(null);
+        setHandoff(false);
+        return;
+      }
       api.heartbeatBrowserControl(pane.id, { leaseId: controlLease.leaseId, ttlSeconds: 60 })
         .then((next) => {
           if (next.lease.status === "ACTIVE") {
@@ -561,7 +566,12 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
             setHandoff(false);
           }
         })
-        .catch(() => undefined);
+        .catch((error: unknown) => {
+          if (typeof error === "object" && error !== null && "status" in error && error.status === 409) {
+            setControlLease(null);
+            setHandoff(false);
+          }
+        });
     }, 15_000);
     return () => window.clearInterval(interval);
   }, [controlLease?.leaseId, pane.id]);

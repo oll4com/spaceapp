@@ -54,7 +54,7 @@ export function ToolRoutingSettings() {
     <label>Runtime
       <select value={runtimeId} onChange={(event) => { setRuntimeId(event.target.value); setModelId("*"); }}>
         <option value="*">All runtimes</option>
-        {["cli:codex", "cli:claude", "cli:opencode", "cli:reasonix", "cli:deepseek", "cli:gemini", "cli:qwen", "cli:kimi", "cli:grok", "cli:cursor", "cli:copilot", "cli:autohand", "cli:harness", "cli:hermes"].map((id) => <option key={id} value={id}>{id.replace("cli:", "")}</option>)}
+        {["cli:codex", "cli:claude", "cli:opencode", "cli:reasonix", "cli:deepseek", "cli:gemini", "cli:qwen", "cli:kimi", "cli:grok", "cli:cursor", "cli:copilot", "cli:autohand", "cli:harness", "cli:hermes", "cli:omp", "cli:qoder", "cli:muse", "cli:droid"].map((id) => <option key={id} value={id}>{id.replace("cli:", "")}</option>)}
       </select>
     </label>
     <label>Model

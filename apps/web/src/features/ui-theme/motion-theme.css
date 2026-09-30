@@ -1,0 +1,638 @@
+/* Motion theme inspired by https://motion.dev */
+:root[data-interface-theme="motion"] {
+  --font-sans: "TASA Orbiter", "Geist Sans", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "Geist Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+:root[data-interface-theme="motion"] [data-ui-theme="modern"] {
+  --modern-bg: #08090a;
+  --modern-surface: #0d1011;
+  --modern-surface-raised: #141718;
+  --modern-surface-soft: #1a1e20;
+  --modern-border: #232729;
+  --modern-border-strong: #394044;
+  --modern-text: #f4f4f0;
+  --modern-muted: #9fa4a2;
+  --modern-faint: #6c7371;
+  --modern-accent: #ffe600;
+  --modern-accent-strong: #fff04d;
+  --modern-accent-soft: rgba(255, 230, 0, 0.14);
+  --modern-on-accent: #0a0c0b;
+  --modern-terminal: #060708;
+  --modern-terminal-text: #f4f4f0;
+  --modern-terminal-muted: #8b9290;
+  --modern-danger: #fb7185;
+  --modern-danger-soft: rgba(251, 113, 133, 0.14);
+  --modern-warning: #f59e0b;
+  --modern-warning-soft: rgba(245, 158, 11, 0.14);
+  --modern-success: #5ed986;
+  --modern-success-soft: rgba(94, 217, 134, 0.14);
+  --modern-shadow: 0 16px 48px rgba(0, 0, 0, 0.65);
+  --modern-card-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
+  --room-accent: var(--modern-accent);
+  color-scheme: dark;
+}
+
+:root[data-interface-theme="motion"] body,
+:root[data-interface-theme="motion"] .space-shell {
+  font-family: var(--font-sans);
+}
+
+:root[data-interface-theme="motion"] .space-shell[data-ui-theme="modern"],
+.modern-theme-page.motion-theme-page {
+  background-color: #08090a;
+  background-image:
+    radial-gradient(ellipse 75% 35% at 50% -8%, rgba(255, 230, 0, 0.35), transparent 72%),
+    radial-gradient(ellipse 40% 36% at 8% 22%, rgba(94, 217, 134, 0.22), transparent 60%),
+    radial-gradient(ellipse 45% 40% at 50% 32%, rgba(56, 189, 248, 0.18), transparent 62%),
+    radial-gradient(ellipse 50% 40% at 88% 26%, rgba(192, 132, 252, 0.22), transparent 62%),
+    radial-gradient(ellipse 35% 30% at 94% 48%, rgba(251, 113, 133, 0.16), transparent 55%),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22640%22%20height%3D%22400%22%20viewBox%3D%220%200%20640%20400%22%3E%3Cstyle%3Etext%7Bfont-family%3Aui-monospace%2CSFMono-Regular%2CConsolas%2Cmonospace%3Bfont-size%3A12px%3Bfont-weight%3A600%3Bletter-spacing%3A6px%3Bfill%3Argba(255%2C255%2C255%2C0.22)%3B%7D%3C%2Fstyle%3E%3Ctext%20x%3D%2216%22%20y%3D%2222%22%3E%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%2243%22%3E%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%2264%22%3E%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%2285%22%3E%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22106%22%3E%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22127%22%3E%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22148%22%3E%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22169%22%3E%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22190%22%3E-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22211%22%3E-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22232%22%3E-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22253%22%3E-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22274%22%3E%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22295%22%3E%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22316%22%3E%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22337%22%3E%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22358%22%3E%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%3C%2Ftext%3E%3Ctext%20x%3D%2216%22%20y%3D%22379%22%3E%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%20%2B%20%2B%20%2B%20%2F%20%2F%20%2F%20%2F%20-%20-%20-%20-%20%3D%20%3D%20%3D%20%3D%20%7C%20%7C%20%7C%20%7C%20%5C%20%5C%20%5C%20%5C%20%2B%3C%2Ftext%3E%3C%2Fsvg%3E");
+  background-attachment: fixed;
+  background-repeat: repeat;
+  background-size: auto, auto, auto, auto, auto, 640px 400px;
+}
+
+:root[data-interface-theme="motion"] .space-shell .board {
+  background: transparent;
+}
+
+:root[data-interface-theme="motion"] .space-shell .topbar,
+:root[data-interface-theme="motion"] .space-shell .board-toolbar {
+  background: #ffe600;
+  color: #0a0c0b;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.18);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+}
+
+:root[data-interface-theme="motion"] .space-shell :is(.topbar, .board-toolbar) :is(button, a, select, span, strong, small, h2) {
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell :is(.topbar, .board-toolbar) svg {
+  color: #0a0c0b;
+  stroke: #0a0c0b;
+}
+:root[data-interface-theme="motion"] .space-shell .board-toolbar .toolbar-actions-fixed > .room-toolbar-visibility-button {
+  background: rgba(0, 0, 0, 0.09);
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  color: #0a0c0b;
+}
+:root[data-interface-theme="motion"] .space-shell .board-toolbar .toolbar-actions-fixed > .room-toolbar-visibility-button svg {
+  color: currentColor;
+  stroke: currentColor;
+}
+:root[data-interface-theme="motion"] .space-shell .board-toolbar .toolbar-actions-fixed > .room-toolbar-visibility-button:is(:hover, [aria-expanded="true"]):not(:disabled) {
+  background: #0a0c0b;
+  border-color: #0a0c0b;
+  color: #ffe600;
+}
+:root[data-interface-theme="motion"] .space-shell .board-toolbar .toolbar-actions-fixed > .room-toolbar-visibility-button:is(:hover, [aria-expanded="true"]):not(:disabled) svg {
+  color: #ffe600;
+  stroke: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .minimized-pane-bar-toggle .minimized-pane-bar-toggle-count {
+  background: #0a0c0b;
+  color: #ffe600 !important;
+  border: 1px solid rgba(255, 230, 0, 0.45);
+}
+:root[data-interface-theme="motion"] .space-shell .minimized-pane-bar-toggle .minimized-pane-bar-toggle-run {
+  background: #0a0c0b;
+  color: #ffe600 !important;
+}
+
+:root[data-interface-theme="motion"] .space-shell :is(.topbar, .board-toolbar) button:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.12);
+  border-color: rgba(0, 0, 0, 0.22);
+  color: #0a0c0b;
+  border-radius: 6px;
+}
+
+:root[data-interface-theme="motion"] .space-shell .topbar .brand {
+  color: #0a0c0b;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+:root[data-interface-theme="motion"] .space-shell .topbar .brand .space-brand-text-fallback {
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-navigation > button {
+  background: rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  color: #0a0c0b;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-navigation > button:is(:hover, [aria-expanded="true"], [aria-pressed="true"]) {
+  background: #0a0c0b;
+  border-color: #0a0c0b;
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-navigation > button:is(:hover, [aria-expanded="true"], [aria-pressed="true"]) svg {
+  color: #ffe600;
+  stroke: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-rooms-toggle {
+  background: rgba(0, 0, 0, 0.1);
+  border-color: rgba(0, 0, 0, 0.2);
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-rooms-toggle:is(:hover, [aria-pressed="true"]):not(:disabled) {
+  background: #0a0c0b;
+  border-color: #0a0c0b;
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-rooms-toggle:is(:hover, [aria-pressed="true"]):not(:disabled) svg {
+  color: #ffe600 !important;
+  stroke: #ffe600 !important;
+}
+
+:root[data-interface-theme="motion"] .space-shell .board-title-heading {
+  gap: 0.625rem;
+  align-items: center;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-title-edit {
+  color: #0a0c0b;
+  background: rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 5px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  flex: 0 0 22px;
+  padding: 0;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-title-edit svg {
+  color: #0a0c0b;
+  stroke: #0a0c0b;
+  width: 12px;
+  height: 12px;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-title-edit:hover:not(:disabled),
+:root[data-interface-theme="motion"] .space-shell .room-title-edit:focus-visible {
+  background: #0a0c0b;
+  border-color: #0a0c0b;
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-title-edit:hover:not(:disabled) svg,
+:root[data-interface-theme="motion"] .space-shell .room-title-edit:focus-visible svg {
+  color: #ffe600 !important;
+  stroke: #ffe600 !important;
+}
+
+:root[data-interface-theme="motion"] .space-shell .board-toolbar .room-title-form input {
+  background: rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(0, 0, 0, 0.22);
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .board-toolbar .room-title-form input:focus {
+  background: #ffffff;
+  border-color: #0a0c0b;
+  color: #0a0c0b;
+  box-shadow: 0 0 0 1px #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .board-toolbar .room-title-form button {
+  background: rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  color: #0a0c0b;
+  border-radius: 6px;
+}
+
+:root[data-interface-theme="motion"] .space-shell .board-toolbar .room-title-form button svg {
+  color: #0a0c0b;
+  stroke: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .board-toolbar .room-title-form button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-title-nav button:disabled {
+  opacity: 0.22 !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  color: #0a0c0b !important;
+  box-shadow: none !important;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-title-nav button:disabled svg {
+  color: #0a0c0b !important;
+  stroke: #0a0c0b !important;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-project-pill {
+  background: rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  color: #0a0c0b;
+  font-weight: 600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-project-pill svg {
+  color: #0a0c0b;
+  stroke: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-project-pill:hover {
+  background: #0a0c0b;
+  border-color: #0a0c0b;
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-project-pill:hover svg {
+  color: #ffe600 !important;
+  stroke: #ffe600 !important;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-expand-btn {
+  background: rgba(255, 255, 255, 0.06);
+  color: #8c969a;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-expand-btn:hover {
+  background: rgba(255, 230, 0, 0.16);
+  border-color: rgba(255, 230, 0, 0.4);
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-expansion {
+  background: rgba(0, 0, 0, 0.38);
+  border-top-color: rgba(255, 230, 0, 0.2);
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-field-title {
+  color: #c4ccce;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-field-title svg {
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-clear-btn {
+  background: rgba(255, 60, 60, 0.14);
+  border: 1px solid rgba(255, 60, 60, 0.38);
+  color: #ff6b7a;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-clear-btn:hover:not(:disabled) {
+  background: #ff4d4d;
+  border-color: #ff4d4d;
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-clear-btn:hover:not(:disabled) svg {
+  color: #0a0c0b;
+  stroke: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-project-input {
+  background: #000000;
+  border-color: rgba(255, 230, 0, 0.35);
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-project-input:focus {
+  border-color: #ffe600;
+  box-shadow: 0 0 0 1px #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-save-btn {
+  background: #ffe600;
+  border-color: #ffe600;
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-save-btn:hover:not(:disabled) {
+  background: #fff066;
+  border-color: #fff066;
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-save-btn svg {
+  color: #0a0c0b;
+  stroke: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-preset-chip {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: #c4ccce;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-preset-chip:hover {
+  background: rgba(255, 230, 0, 0.2);
+  border-color: rgba(255, 230, 0, 0.6);
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-preset-chip.active {
+  background: #ffe600;
+  border-color: #ffe600;
+  color: #0a0c0b;
+  font-weight: 700;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-preset-add-btn {
+  background: rgba(255, 230, 0, 0.08);
+  border-color: rgba(255, 230, 0, 0.4);
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-preset-add-btn:hover {
+  background: #ffe600;
+  border-color: #ffe600;
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-new-preset-box {
+  background: #000000;
+  border-color: rgba(255, 230, 0, 0.4);
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-new-preset-input {
+  background: #0d0f0e;
+  border-color: rgba(255, 230, 0, 0.3);
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-new-preset-input:focus {
+  border-color: #ffe600;
+  box-shadow: 0 0 0 1px #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-new-preset-confirm-btn {
+  background: #ffe600;
+  border-color: #ffe600;
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-new-preset-confirm-btn:hover:not(:disabled) {
+  background: #fff066;
+  border-color: #fff066;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-action-btn {
+  background: rgba(255, 230, 0, 0.12);
+  border-color: rgba(255, 230, 0, 0.35);
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-action-btn:hover {
+  background: #ffe600;
+  border-color: #ffe600;
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-action-btn:hover svg {
+  color: #0a0c0b;
+  stroke: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-project-tag {
+  background: rgba(255, 230, 0, 0.14);
+  color: #ffe600;
+  border: 1px solid rgba(255, 230, 0, 0.35);
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-project-tag:hover {
+  background: rgba(255, 230, 0, 0.25);
+  border-color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-project-tag.is-empty {
+  background: rgba(255, 255, 255, 0.05);
+  color: #8c969a;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-project-tag.is-empty:hover {
+  border-color: rgba(255, 230, 0, 0.4);
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-navigation .desktop-mode-switch {
+  background: #0a0c0b;
+  border-color: #0a0c0b;
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-navigation .desktop-mode-switch :is(span, svg) {
+  color: #ffe600 !important;
+  stroke: #ffe600 !important;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-navigation .desktop-mode-switch:hover:not(:disabled) {
+  background: #191d1e;
+  border-color: #ffe600;
+  color: #fff04d;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-navigation .desktop-mode-switch:hover:not(:disabled) :is(span, svg) {
+  color: #fff04d !important;
+  stroke: #fff04d !important;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-navigation .desktop-mode-switch[aria-pressed="true"] {
+  background: #ffe600;
+  border-color: #0a0c0b;
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .desktop-navigation .desktop-mode-switch[aria-pressed="true"] :is(span, svg) {
+  color: #0a0c0b !important;
+  stroke: #0a0c0b !important;
+}
+
+:root[data-interface-theme="motion"] .space-shell .topbar-meta a,
+:root[data-interface-theme="motion"] .space-shell .topbar-meta .topbar-meta-version {
+  border-color: rgba(0, 0, 0, 0.22);
+  color: #0a0c0b;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+:root[data-interface-theme="motion"] .space-shell .topbar .topbar-summary small {
+  color: rgba(10, 12, 11, 0.75);
+}
+
+:root[data-interface-theme="motion"] .space-shell .board-title-row h2 {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: #0a0c0b;
+}
+
+:root[data-interface-theme="motion"] .space-shell .pane-card,
+:root[data-interface-theme="motion"] .space-shell .side-surface {
+  background: #0d1011;
+  border: 1px solid var(--modern-border);
+  border-radius: 12px;
+}
+
+:root[data-interface-theme="motion"] .space-shell .pane-card > header {
+  background: #111416;
+  border-bottom-color: var(--modern-border);
+}
+
+:root[data-interface-theme="motion"] .space-shell .pane-card.is-target {
+  border-color: #ffe600;
+  box-shadow: 0 0 0 1px #ffe600, 0 14px 40px rgba(255, 230, 0, 0.09);
+}
+
+:root[data-interface-theme="motion"] .space-shell .pane-card.is-target > header {
+  border-bottom-color: rgba(255, 230, 0, 0.35);
+}
+
+:root[data-interface-theme="motion"] .space-shell .pane-card .room-cli-badge,
+:root[data-interface-theme="motion"] .space-shell .pane-card-title small {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+:root[data-interface-theme="motion"] .space-shell button.primary,
+:root[data-interface-theme="motion"] .space-shell .primary-action,
+:root[data-interface-theme="motion"] .space-shell .codex-send:not(:disabled) {
+  background: #ffe600;
+  color: #0a0c0b;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  border: 1px solid #ffe600;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+:root[data-interface-theme="motion"] .space-shell button.primary:hover:not(:disabled),
+:root[data-interface-theme="motion"] .space-shell .primary-action:hover:not(:disabled),
+:root[data-interface-theme="motion"] .space-shell .codex-send:hover:not(:disabled) {
+  background: #fff04d;
+  color: #0a0c0b;
+  transform: translateY(-1px);
+}
+
+:root[data-interface-theme="motion"] .space-shell .terminal-pane {
+  background: var(--modern-terminal);
+}
+
+:root[data-interface-theme="motion"] .space-shell .terminal-viewport {
+  font-family: var(--font-mono);
+}
+
+:root[data-interface-theme="motion"] .help-page .help-section,
+:root[data-interface-theme="motion"] .help-page .help-navigation,
+:root[data-interface-theme="motion"] .help-page .help-entry {
+  background: #0d1011;
+  border-color: var(--modern-border);
+  border-radius: 12px;
+}
+
+:root[data-interface-theme="motion"] .help-page .help-header {
+  background: #111416;
+  border-bottom-color: var(--modern-border);
+}
+
+[data-icon-pack="motion"] svg,
+:root[data-interface-theme="motion"] svg {
+  stroke-width: 1.8px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+:root[data-interface-theme="motion"] button:hover:not(:disabled) > svg {
+  color: var(--modern-accent);
+}
+
+/* Motion Theme CLI Shortcuts Popover */
+:root[data-interface-theme="motion"] .terminal-shortcuts-popover,
+.terminal-shortcuts-popover[data-interface-theme="motion"] {
+  font-family: var(--font-sans);
+  border-radius: 16px;
+  border-color: #282e31;
+  background: rgba(14, 17, 18, 0.97);
+  color: #f4f4f0;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.75), 0 0 28px rgba(255, 230, 0, 0.08);
+}
+
+:root[data-interface-theme="motion"] .terminal-shortcuts-popover button,
+.terminal-shortcuts-popover[data-interface-theme="motion"] button {
+  border-radius: 10px;
+  border-color: #232729;
+  background: #151819;
+  color: #f4f4f0;
+  font-family: inherit;
+}
+
+:root[data-interface-theme="motion"] .terminal-shortcuts-popover .terminal-shortcut-label svg,
+.terminal-shortcuts-popover[data-interface-theme="motion"] .terminal-shortcut-label svg {
+  color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .terminal-shortcuts-popover button:hover,
+:root[data-interface-theme="motion"] .terminal-shortcuts-popover button:focus-visible,
+.terminal-shortcuts-popover[data-interface-theme="motion"] button:hover,
+.terminal-shortcuts-popover[data-interface-theme="motion"] button:focus-visible {
+  border-color: #ffe600;
+  background: color-mix(in srgb, #ffe600 15%, #151819 85%);
+  color: #ffffff;
+  box-shadow: 0 2px 14px rgba(255, 230, 0, 0.25);
+}
+
+:root[data-interface-theme="motion"] .terminal-shortcuts-popover button:hover .terminal-shortcut-label svg,
+:root[data-interface-theme="motion"] .terminal-shortcuts-popover button:focus-visible .terminal-shortcut-label svg,
+.terminal-shortcuts-popover[data-interface-theme="motion"] button:hover .terminal-shortcut-label svg,
+.terminal-shortcuts-popover[data-interface-theme="motion"] button:focus-visible .terminal-shortcut-label svg {
+  color: #fff04d;
+  transform: scale(1.1);
+}
+
+:root[data-interface-theme="motion"] .terminal-shortcuts-popover kbd,
+.terminal-shortcuts-popover[data-interface-theme="motion"] kbd {
+  color: #9fa4a2;
+}
+
+:root[data-interface-theme="motion"] .terminal-shortcuts-key-group button[data-shortcut="enter"],
+.terminal-shortcuts-popover[data-interface-theme="motion"] .terminal-shortcuts-key-group button[data-shortcut="enter"] {
+  border-color: rgba(255, 230, 0, 0.45);
+  color: #ffe600;
+  font-weight: 700;
+}
+
+/* Toolbar controls share the same hover/open contrast, including their icons. */
+:root[data-interface-theme="motion"] .space-shell .board-toolbar :is(
+  .desktop-navigation > button, .desktop-rooms-toggle, .room-title-edit,
+  .room-title-nav button, .toolbar-actions-fixed > button,
+  .room-title-form button
+):is(:hover, :focus-visible, [aria-expanded="true"], [aria-pressed="true"]):not(:disabled) {
+  background: #0a0c0b;
+  border-color: #0a0c0b;
+  color: #ffe600;
+}
+:root[data-interface-theme="motion"] .space-shell .board-toolbar :is(
+  .desktop-navigation > button, .desktop-rooms-toggle, .room-title-edit,
+  .room-title-nav button, .toolbar-actions-fixed > button,
+  .room-title-form button
+):is(:hover, :focus-visible, [aria-expanded="true"], [aria-pressed="true"]):not(:disabled) :is(svg, span) {
+  color: #ffe600 !important;
+  stroke: #ffe600 !important;
+}

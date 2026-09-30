@@ -14,6 +14,7 @@ import {
 } from "@space/contracts";
 import {
   redactMemoryText,
+  SpaceNotFoundError,
   type SpaceStore,
   type SpaceEventBus,
 } from "@space/runtime";
@@ -29,6 +30,18 @@ import {
   TaskTitleProviders,
   TitleProviderFailure,
 } from "./task-title-providers.js";
+
+/** Fixed categories only: never log provider messages, prompts, URLs or SQL. */
+export function taskTitleFailureCode(error: unknown): string {
+  if (error instanceof SpaceNotFoundError) return "NOT_FOUND";
+  if (error instanceof TitleProviderFailure) return "PROVIDER_REJECTED";
+  if (error instanceof Error && error.name === "TimeoutError") return "TIMEOUT";
+  if (error instanceof Error && error.name === "AbortError") return "CANCELLED";
+  const code = error && typeof error === "object" && "code" in error ? error.code : null;
+  if (["40001", "40P01", "23505"].includes(String(code))) return "STORE_CONFLICT";
+  if (["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "08006", "57P01", "53300"].includes(String(code))) return "STORE_UNAVAILABLE";
+  return "UNEXPECTED";
+}
 
 export interface TaskTitleContext {
   key: string;
@@ -172,6 +185,8 @@ export class TaskTitleService {
   private timer: ReturnType<typeof setInterval> | null = null;
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
   private work: Promise<void> | null = null;
+  private retryAt = 0;
+  private consecutiveFailures = 0;
   private stopped = false;
   private abort = new AbortController();
   constructor(
@@ -212,6 +227,19 @@ export class TaskTitleService {
   ) {}
   private now() {
     return this.options.now?.() ?? new Date();
+  }
+  private async paneIfPresent(paneId: string): Promise<Pane | null> {
+    try {
+      return await this.options.store.getPane(paneId);
+    } catch (error) {
+      if (error instanceof SpaceNotFoundError) return null;
+      throw error;
+    }
+  }
+  private async targetWasDeleted(paneId: string, error: unknown) {
+    // A missing related session or a failed store read is still an error.
+    return error instanceof SpaceNotFoundError &&
+      (await this.paneIfPresent(paneId)) === null;
   }
   notify(paneId: string) {
     if (!this.dirty.has(paneId))
@@ -256,47 +284,66 @@ export class TaskTitleService {
     });
     return this.reconciliation;
   }
+  private async panesIfRoomPresent(roomId: string): Promise<Pane[]> {
+    try {
+      return await this.options.store.listPanes(roomId);
+    } catch (error) {
+      if (!(error instanceof SpaceNotFoundError)) throw error;
+      try {
+        await this.options.store.getRoom(roomId);
+      } catch (roomError) {
+        if (roomError instanceof SpaceNotFoundError) return [];
+        throw roomError;
+      }
+      throw error;
+    }
+  }
   private async reconcileActive() {
     const seen = new Set<string>();
     const rooms = await this.options.store.listRooms();
     for (const room of rooms) {
-      for (const pane of await this.options.store.listPanes(room.id)) {
-        if (this.stopped) return;
-        if (
-          pane.isClosed ||
-          !["TERMINAL", "CHAT", "HARNESS"].includes(pane.mode)
-        )
-          continue;
-        if (pane.mode === "HARNESS") {
-          this.notify(pane.id);
-          continue;
-        }
-        const session =
-          pane.mode === "CHAT"
-            ? await this.options.store.getActiveSpaceAgentSession(pane.id)
-            : await this.options.store.getActivePaneCliSession(pane.id);
-        if (!session) continue;
-        seen.add(pane.id);
-        const chunks =
-          pane.mode === "CHAT"
-            ? await this.options.store.listSpaceAgentMessages(
-                session.sessionId,
-                1,
-              )
-            : await this.options.store.listPaneCliTranscriptChunks(
-                session.sessionId,
-                1,
-              );
-        const stamp = `${session.sessionId}:${chunks.at(-1)?.createdAt ?? ""}`;
-        if (
-          this.versions.get(pane.id) !== stamp ||
-          !pane.taskMetadata ||
-          ["cli:codex", "cli:opencode", "cli:qwen", "cli:hermes"].includes(
-            pane.terminalRuntimeId ?? "",
+      for (const pane of await this.panesIfRoomPresent(room.id)) {
+        try {
+          if (this.stopped) return;
+          if (
+            pane.isClosed ||
+            !["TERMINAL", "CHAT", "HARNESS"].includes(pane.mode)
           )
-        ) {
-          this.versions.set(pane.id, stamp);
-          this.notify(pane.id);
+            continue;
+          if (pane.mode === "HARNESS") {
+            this.notify(pane.id);
+            continue;
+          }
+          const session =
+            pane.mode === "CHAT"
+              ? await this.options.store.getActiveSpaceAgentSession(pane.id)
+              : await this.options.store.getActivePaneCliSession(pane.id);
+          if (!session) continue;
+          seen.add(pane.id);
+          const chunks =
+            pane.mode === "CHAT"
+              ? await this.options.store.listSpaceAgentMessages(
+                  session.sessionId,
+                  1,
+                )
+              : await this.options.store.listPaneCliTranscriptChunks(
+                  session.sessionId,
+                  1,
+                );
+          const stamp = `${session.sessionId}:${chunks.at(-1)?.createdAt ?? ""}`;
+          if (
+            this.versions.get(pane.id) !== stamp ||
+            !pane.taskMetadata ||
+            ["cli:codex", "cli:opencode", "cli:qwen", "cli:hermes"].includes(
+              pane.terminalRuntimeId ?? "",
+            )
+          ) {
+            this.versions.set(pane.id, stamp);
+            this.notify(pane.id);
+          }
+        } catch (error) {
+          // A pane may close between listing it and reading its session.
+          if (!(await this.targetWasDeleted(pane.id, error))) throw error;
         }
       }
     }
@@ -307,8 +354,8 @@ export class TaskTitleService {
   async context(paneId: string): Promise<TaskTitleContext | null> {
     if (this.options.loadContext) return this.options.loadContext(paneId);
     const { store, codex } = this.options;
-    const pane = await store.getPane(paneId);
-    if (pane.isClosed || pane.terminalRuntimeId === "cli:root") return null;
+    const pane = await this.paneIfPresent(paneId);
+    if (!pane || pane.isClosed || pane.terminalRuntimeId === "cli:root") return null;
     let sessionId: string,
       runtimeId: string,
       nativeId: string | null = null,
@@ -782,7 +829,8 @@ export class TaskTitleService {
       await this.project(updated);
   }
   private async project(state: TaskTitleState) {
-    const pane = await this.options.store.getPane(state.paneId);
+    const pane = await this.paneIfPresent(state.paneId);
+    if (!pane) return;
     const active =
       pane.mode === "HARNESS"
         ? {
@@ -897,9 +945,20 @@ export class TaskTitleService {
   async tick(): Promise<void> {
     if (this.stopped) return;
     if (this.work) return this.work;
-    this.work = this.run().finally(() => {
-      this.work = null;
-    });
+    if (this.now().getTime() < this.retryAt) return;
+    this.work = this.run()
+      .then(() => {
+        this.consecutiveFailures = 0;
+        this.retryAt = 0;
+      })
+      .catch((error) => {
+        this.consecutiveFailures = Math.min(this.consecutiveFailures + 1, 5);
+        this.retryAt = this.now().getTime() + Math.min(60_000, 5_000 * 2 ** (this.consecutiveFailures - 1));
+        throw error;
+      })
+      .finally(() => {
+        this.work = null;
+      });
     return this.work;
   }
   private async run() {
@@ -910,14 +969,15 @@ export class TaskTitleService {
         try {
           await this.observe(paneId);
         } catch (e) {
-          this.options.onError?.(e);
+          if (!(await this.targetWasDeleted(paneId, e)))
+            this.options.onError?.(e);
         }
       }
     const lease = await this.options.repository.claim(this.now().toISOString());
     if (!lease) return;
     const state = lease.state;
-    const policy = await this.options.repository.getSettings();
     try {
+      const policy = await this.options.repository.getSettings();
       const context = await this.context(state.paneId);
       if (
         !context ||
@@ -1067,9 +1127,11 @@ export class TaskTitleService {
       if (await this.options.repository.finish(lease, state))
         await this.project(state);
     } catch (error) {
-      state.dueAt = new Date(this.now().getTime() + 300_000).toISOString();
+      const deleted = await this.targetWasDeleted(state.paneId, error);
+      // Retain the task's history, but retire work whose pane was removed.
+      state.dueAt = deleted ? null : new Date(this.now().getTime() + 300_000).toISOString();
       await this.options.repository.finish(lease, state);
-      this.options.onError?.(error);
+      if (!deleted) this.options.onError?.(error);
     }
   }
 }

@@ -1,30 +1,199 @@
-import { useEffect, useLayoutEffect, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState, type RefObject } from "react";
+
+export const RAIL_MENU_CHANGE_EVENT = "space:rail-menu:change";
+
+export function dispatchRailMenuChange(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(RAIL_MENU_CHANGE_EVENT));
+  }
+}
+
+export const RAIL_POPOVER_SELECTORS = [
+  ".desktop-navigation-menu",
+  ".toolbar-floating-menu",
+  ".quick-links-popover",
+  ".vibe-music-popover",
+  ".osk-popover",
+  ".workspace-text-size-picker",
+  ".resources-drawer",
+  ".health-resources",
+  ".health-window",
+  ".toolbar-metric-panel",
+  ".theme-menu",
+  ".room-theme-menu",
+  ".server-actions-menu",
+  ".desktop-action-manager",
+  '[data-rail-popover="true"]',
+  '[data-menu-dodge="true"]'
+].join(", ");
+
+/** Calculates how many pixels to the left a floating window needs to dodge an overlapping rail menu. */
+export function calculateRailDodgeShift(
+  winRect: { left: number; top: number; width: number; height: number },
+  margin = 12
+): number {
+  if (typeof document === "undefined") return 0;
+
+  const winLeft = winRect.left;
+  const winTop = winRect.top;
+  const winWidth = winRect.width || 290;
+  const winHeight = winRect.height || 220;
+  const winRight = winLeft + winWidth;
+  const winBottom = winTop + winHeight;
+
+  let maxShift = 0;
+  const menuElements = document.querySelectorAll<HTMLElement>(RAIL_POPOVER_SELECTORS);
+
+  for (let i = 0; i < menuElements.length; i++) {
+    const el = menuElements[i];
+    if (!el) continue;
+
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+
+    // Check 2D bounding box overlap
+    const isOverlappingY = winTop < rect.bottom && winBottom > rect.top;
+    const isOverlappingX = winLeft < rect.right && winRight > rect.left;
+
+    if (isOverlappingY && isOverlappingX) {
+      const desiredShift = (winRight - rect.left) + margin;
+      const maxAllowedShift = Math.max(0, winLeft - 16);
+      const shift = Math.min(desiredShift, maxAllowedShift);
+      if (shift > maxShift) {
+        maxShift = shift;
+      }
+    }
+  }
+
+  return maxShift;
+}
+
+export interface UseRailMenuDodgeOptions {
+  x: number;
+  y: number;
+  isDragging?: boolean;
+  active?: boolean;
+  margin?: number;
+}
+
+/** Hook that returns horizontal displacement (translateX) so a float window dodges any open rail menu. */
+export function useRailMenuDodge(
+  elementRef: RefObject<HTMLElement | null>,
+  options: UseRailMenuDodgeOptions
+): number {
+  const { x, y, isDragging = false, active = true, margin = 12 } = options;
+  const [shiftX, setShiftX] = useState(0);
+
+  const check = useCallback(() => {
+    if (!active || isDragging) {
+      setShiftX(0);
+      return;
+    }
+    const el = elementRef.current;
+    const rect = el ? el.getBoundingClientRect() : null;
+    const width = rect?.width || 290;
+    const height = rect?.height || 220;
+
+    const nextShift = calculateRailDodgeShift(
+      { left: x, top: y, width, height },
+      margin
+    );
+    setShiftX((prev) => (prev !== nextShift ? nextShift : prev));
+  }, [x, y, isDragging, active, margin, elementRef]);
+
+  useLayoutEffect(() => {
+    if (!active) {
+      setShiftX(0);
+      return;
+    }
+
+    check();
+
+    const onMenuChange = () => {
+      check();
+    };
+
+    window.addEventListener(RAIL_MENU_CHANGE_EVENT, onMenuChange);
+    window.addEventListener("space:navigation-open", onMenuChange);
+    window.addEventListener("resize", onMenuChange);
+
+    let pointerFrame: number | null = null;
+    const onPointer = () => {
+      if (pointerFrame !== null) return;
+      if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+        pointerFrame = window.requestAnimationFrame(() => {
+          pointerFrame = null;
+          check();
+        });
+      } else {
+        check();
+      }
+    };
+    window.addEventListener("pointerdown", onPointer, true);
+
+    const bodyObserver = typeof MutationObserver !== "undefined"
+      ? new MutationObserver(() => {
+          check();
+        })
+      : null;
+
+    if (bodyObserver && typeof document !== "undefined") {
+      bodyObserver.observe(document.body, { childList: true, subtree: false });
+    }
+
+    return () => {
+      if (pointerFrame !== null) {
+        if (typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+          window.cancelAnimationFrame(pointerFrame);
+        }
+      }
+      window.removeEventListener(RAIL_MENU_CHANGE_EVENT, onMenuChange);
+      window.removeEventListener("space:navigation-open", onMenuChange);
+      window.removeEventListener("resize", onMenuChange);
+      window.removeEventListener("pointerdown", onPointer, true);
+      bodyObserver?.disconnect();
+    };
+  }, [check, active]);
+
+  return active && !isDragging ? shiftX : 0;
+}
 
 /** Every rail popup shares the rail's left edge and bottom inset. */
 export function railPopoverPosition(trigger: HTMLElement | null, width: number) {
-  const rail = trigger?.closest<HTMLElement>(".room-toolbar-floating-controls");
+  const rail = trigger?.closest<HTMLElement>(".room-toolbar-floating-controls")
+    ?? (trigger?.closest(".desktop-navigation, .icon-overflow-menu, .server-actions-menu") ? document.querySelector<HTMLElement>(".room-toolbar-floating-controls") : null)
+    ?? (document.querySelector<HTMLElement>(".room-toolbar-floating-controls")?.offsetParent ? document.querySelector<HTMLElement>(".room-toolbar-floating-controls") : null)
+    ?? document.querySelector<HTMLElement>(".room-toolbar-floating-controls");
   if (!rail) return null;
   const rect = rail.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
   const viewport = window.visualViewport;
   const top = (viewport?.offsetTop ?? 0) + 8;
   const bottom = Math.min(rect.bottom, (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight) - 8);
   return { left: Math.max(8, rect.left - width - 8), bottom: Math.max(8, window.innerHeight - bottom), maxHeight: Math.max(100, bottom - top) };
 }
 
-export function useRailPopover(panel: RefObject<HTMLElement | null>, trigger: RefObject<HTMLButtonElement | null>) {
+export function useRailPopover(panel: RefObject<HTMLElement | null>, trigger?: RefObject<HTMLButtonElement | null> | null) {
   useLayoutEffect(() => {
     const node = panel.current;
     if (!node) return;
     const update = () => {
-      const position = railPopoverPosition(trigger.current, node.getBoundingClientRect().width);
-      if (position) Object.assign(node.style, { position: "fixed", top: "auto", right: "auto", left: `${position.left}px`, bottom: `${position.bottom}px`, maxHeight: `${position.maxHeight}px` });
+      const position = railPopoverPosition(trigger?.current ?? null, node.getBoundingClientRect().width);
+      if (position) {
+        Object.assign(node.style, { position: "fixed", top: "auto", right: "auto", left: `${position.left}px`, bottom: `${position.bottom}px`, maxHeight: `${position.maxHeight}px` });
+        dispatchRailMenuChange();
+      }
     };
     update();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
     observer?.observe(node);
-    if (trigger.current) observer?.observe(trigger.current);
+    if (trigger?.current) observer?.observe(trigger.current);
     window.addEventListener("resize", update);
-    return () => { observer?.disconnect(); window.removeEventListener("resize", update); };
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", update);
+      dispatchRailMenuChange();
+    };
   }, [panel, trigger]);
 }
 
@@ -51,7 +220,7 @@ export function useMenuWheel(panel: RefObject<HTMLElement | null>, selector: str
     };
     const wheel = (event: WheelEvent) => {
       if (anywhere && wheelMenuStack.filter(menu => menu.isConnected).at(-1) !== node) return;
-      if (event.ctrlKey || event.altKey || !event.deltaY || event.target instanceof Element && event.target.closest('select, input[type="range"], [role="slider"]')) return;
+      if (event.ctrlKey || event.altKey || !event.deltaY || event.target instanceof Element && event.target.closest('select, input[type="range"], [role="slider"], [role="spinbutton"], .cli-launcher-count-stepper')) return;
       const options = items();
       if (!options.length) return;
       event.preventDefault();

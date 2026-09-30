@@ -9,6 +9,7 @@ export async function submitCliShortcut(command: OskCliCommand, target: {
   prepare: () => Promise<void>;
   write: (text: string) => boolean;
   enter: () => boolean;
+  runtimeId?: string;
 }) {
   const assertCurrent = () => {
     if (!target.isCurrent()) throw new Error("CLI connection or room changed. Shortcut cancelled.");

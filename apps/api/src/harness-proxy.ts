@@ -1,5 +1,6 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { harnessSharedEventsBootstrap } from "./harness-shared-events.js";
+import { createHash, randomUUID } from "node:crypto";
 import type { Duplex } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { SpaceApiConfig } from "./config.js";
@@ -115,7 +116,7 @@ function rewriteHarnessHtml(body: string, paneSessionId?: string): string {
     out = out.replace(rule.pattern, rule.replacement);
   }
   if (paneSessionId) {
-    const bootstrap = harnessPaneStorageBootstrap(paneSessionId);
+    const bootstrap = harnessPaneStorageBootstrap(paneSessionId) + harnessSharedEventsBootstrap;
     out = /<head(?:\s[^>]*)?>/i.test(out)
       ? out.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${bootstrap}`)
       : `${bootstrap}${out}`;
@@ -167,14 +168,19 @@ function callHarnessRpc(
         response.on("end", () => {
           try {
             const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
-              result?: { ok?: boolean; value?: unknown };
+              result?: { ok?: boolean; value?: unknown; error?: { code?: string; message?: string } };
             };
             if (
               (response.statusCode ?? 500) < 200 ||
               (response.statusCode ?? 500) >= 300 ||
               body.result?.ok !== true
             ) {
-              reject(new Error("Harness RPC failed."));
+              const errorMessage = body.result?.error?.message || "Harness RPC failed.";
+              const err = new Error(errorMessage);
+              if (body.result?.error?.code) {
+                (err as { code?: string }).code = body.result.error.code;
+              }
+              reject(err);
               return;
             }
             resolve(body.result.value);
@@ -263,22 +269,48 @@ export async function renameHarnessTaskTitle(
     throw new Error("Harness title read-back did not match.");
 }
 
-async function ensureHarnessPaneSession(target: URL, sessionId: string, timeoutMs: number): Promise<void> {
+async function ensureHarnessPaneSession(
+  target: URL,
+  sessionId: string,
+  timeoutMs: number,
+  workspacePath = HARNESS_DEFAULT_WORKSPACE
+): Promise<string> {
   const workspaceResult = await callHarnessRpc(
     target,
     "workspace.create",
-    { path: HARNESS_DEFAULT_WORKSPACE },
+    { path: workspacePath },
     timeoutMs
   ) as { workspace?: { workspaceId?: string } };
   const workspaceId = workspaceResult.workspace?.workspaceId;
   if (!workspaceId) throw new Error("Harness workspace creation failed.");
-  const sessionResult = await callHarnessRpc(
-    target,
-    "session.create",
-    { sessionId, workspaceId },
-    timeoutMs
-  ) as { sessionId?: string };
-  if (sessionResult.sessionId !== sessionId) throw new Error("Harness pane session creation failed.");
+
+  try {
+    const sessionResult = await callHarnessRpc(
+      target,
+      "session.create",
+      { sessionId, workspaceId },
+      timeoutMs
+    ) as { sessionId?: string };
+    if (sessionResult.sessionId === sessionId) return sessionId;
+  } catch (error: any) {
+    if (
+      error?.code === "session-conflict" ||
+      String(error?.message).includes("session-conflict") ||
+      String(error?.message).includes("already exists with cwd")
+    ) {
+      const hash = createHash("sha256").update(workspacePath).digest("hex").slice(0, 8);
+      const fallbackSessionId = `${sessionId}-${hash}`;
+      const fallbackResult = await callHarnessRpc(
+        target,
+        "session.create",
+        { sessionId: fallbackSessionId, workspaceId },
+        timeoutMs
+      ) as { sessionId?: string };
+      if (fallbackResult.sessionId === fallbackSessionId) return fallbackSessionId;
+    }
+    throw error;
+  }
+  return sessionId;
 }
 
 export function isHarnessUpgradePath(rawUrl: string | undefined): boolean {
@@ -306,8 +338,8 @@ function harnessLoopbackAuthority(target: URL): string {
   return target.port ? `127.0.0.1:${target.port}` : "127.0.0.1";
 }
 
-function sendProxyError(reply: FastifyReply, statusCode: number, code: string, message: string): void {
-  void reply.code(statusCode).send({
+function sendProxyError(reply: FastifyReply, statusCode: number, code: string, message: string): FastifyReply {
+  return reply.code(statusCode).send({
     error: {
       code,
       message,
@@ -345,75 +377,96 @@ function proxyToHarness(
   extraHeaders?: Record<string, string | string[] | number | undefined>,
   body?: unknown,
   paneSessionId?: string
-): void {
-  const serializedBody =
-    body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body);
-  const upstream = http.request(
-    {
-      protocol: target.protocol,
-      hostname: target.hostname,
-      port: target.port,
-      method: request.method,
-      path: pathname,
-      headers: buildUpstreamHeaders(request, target, {
-        ...(serializedBody !== undefined ? { "content-length": Buffer.byteLength(serializedBody) } : {}),
-        ...extraHeaders
-      }),
-      timeout: timeoutMs
-    },
-    (upstreamResponse) => {
-      const contentType = upstreamResponse.headers["content-type"];
-      const isHtml =
-        typeof contentType === "string" &&
-        (contentType.includes("text/html") || contentType.includes("application/xhtml+xml"));
+): Promise<FastifyReply | void> {
+  return new Promise<FastifyReply | void>((resolve) => {
+    const serializedBody =
+      body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body);
+    const upstream = http.request(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port,
+        method: request.method,
+        path: pathname,
+        headers: buildUpstreamHeaders(request, target, {
+          ...(serializedBody !== undefined ? { "content-length": Buffer.byteLength(serializedBody) } : {}),
+          ...extraHeaders
+        }),
+        timeout: timeoutMs
+      },
+      (upstreamResponse) => {
+        const contentType = upstreamResponse.headers["content-type"];
+        const isHtml =
+          typeof contentType === "string" &&
+          (contentType.includes("text/html") || contentType.includes("application/xhtml+xml"));
 
-      const responseHeaders: Record<string, string | string[] | number | undefined> = {};
-      for (const [name, value] of Object.entries(upstreamResponse.headers)) {
-        if (stripHopByHop(name) && value !== undefined) {
-          responseHeaders[name] = value;
-        }
-      }
-      responseHeaders["x-frame-options"] = "SAMEORIGIN";
-      const staticCacheControl = harnessStaticCacheControl(pathname, request.method);
-      if (staticCacheControl) responseHeaders["cache-control"] = staticCacheControl;
-
-      if (isHtml && (request.method === "GET" || request.method === "HEAD")) {
-        responseHeaders["cache-control"] = "no-store";
-        const chunks: Buffer[] = [];
-        upstreamResponse.on("data", (chunk: Buffer) => chunks.push(chunk));
-        upstreamResponse.on("end", () => {
-          if (reply.sent) return;
-          const raw = Buffer.concat(chunks).toString("utf8");
-          const rewritten = request.method === "HEAD" ? raw : rewriteHarnessHtml(raw, paneSessionId);
-          const length = Buffer.byteLength(rewritten);
-          responseHeaders["content-length"] = length;
-          void reply.code(upstreamResponse.statusCode ?? 200).headers(responseHeaders).send(rewritten);
-        });
-        upstreamResponse.on("error", () => {
-          if (!reply.sent) {
-            sendProxyError(reply, 502, "HARNESS_UNAVAILABLE", "The Harness upstream is unavailable.");
+        const responseHeaders: Record<string, string | string[] | number | undefined> = {};
+        for (const [name, value] of Object.entries(upstreamResponse.headers)) {
+          if (stripHopByHop(name) && value !== undefined) {
+            responseHeaders[name] = value;
           }
-        });
-        return;
+        }
+        responseHeaders["x-frame-options"] = "SAMEORIGIN";
+        const staticCacheControl = harnessStaticCacheControl(pathname, request.method);
+        if (staticCacheControl) responseHeaders["cache-control"] = staticCacheControl;
+
+        if (isHtml && (request.method === "GET" || request.method === "HEAD")) {
+          responseHeaders["cache-control"] = "no-store";
+          const chunks: Buffer[] = [];
+          upstreamResponse.on("data", (chunk: Buffer) => chunks.push(chunk));
+          upstreamResponse.on("end", () => {
+            if (reply.sent) {
+              resolve();
+              return;
+            }
+            const raw = Buffer.concat(chunks).toString("utf8");
+            const rewritten = request.method === "HEAD" ? "" : rewriteHarnessHtml(raw, paneSessionId);
+            delete responseHeaders["content-length"];
+            resolve(reply.code(upstreamResponse.statusCode ?? 200).headers(responseHeaders).send(rewritten));
+          });
+          upstreamResponse.on("error", () => {
+            if (!reply.sent) {
+              resolve(sendProxyError(reply, 502, "HARNESS_UNAVAILABLE", "The Harness upstream is unavailable."));
+            } else {
+              resolve();
+            }
+          });
+          return;
+        }
+
+        if (reply.sent) {
+          resolve();
+          return;
+        }
+        resolve(reply.code(upstreamResponse.statusCode ?? 502).headers(responseHeaders).send(upstreamResponse));
       }
+    );
 
-      void reply.code(upstreamResponse.statusCode ?? 502).headers(responseHeaders).send(upstreamResponse);
-    }
-  );
+    upstream.once("timeout", () => {
+      upstream.destroy();
+      if (!reply.sent) {
+        resolve(sendProxyError(reply, 504, "HARNESS_TIMEOUT", "The Harness upstream timed out."));
+      } else {
+        resolve();
+      }
+    });
+    upstream.once("error", () => {
+      if (!reply.sent) {
+        resolve(sendProxyError(reply, 502, "HARNESS_UNAVAILABLE", "The Harness upstream is unavailable."));
+      } else {
+        resolve();
+      }
+    });
 
-  upstream.once("timeout", () => upstream.destroy());
-  upstream.once("error", () => {
-    if (!reply.sent) {
-      sendProxyError(reply, 502, "HARNESS_UNAVAILABLE", "The Harness upstream is unavailable.");
+    if (serializedBody !== undefined) {
+      upstream.write(serializedBody);
+      upstream.end();
+    } else if (request.method === "GET" || request.method === "HEAD") {
+      upstream.end();
+    } else {
+      request.raw.pipe(upstream);
     }
   });
-
-  if (serializedBody !== undefined) {
-    upstream.write(serializedBody);
-    upstream.end();
-  } else {
-    request.raw.pipe(upstream);
-  }
 }
 
 function proxyHarnessUpgrade(
@@ -493,7 +546,16 @@ function proxyHarnessUpgrade(
   upstream.end();
 }
 
-export function registerHarnessRoutes(app: FastifyInstance, config: SpaceApiConfig): void {
+export interface HarnessStoreWorkspaceResolver {
+  getPane(id: string): Promise<{ cwd?: string | null; roomId?: string } | null> | { cwd?: string | null; roomId?: string } | null;
+  getRoom(id: string): Promise<{ projectPath?: string | null } | null> | { projectPath?: string | null } | null;
+}
+
+export function registerHarnessRoutes(
+  app: FastifyInstance,
+  config: SpaceApiConfig,
+  store?: HarnessStoreWorkspaceResolver | null
+): void {
   const harnessUpgradeHandler: (request: http.IncomingMessage, socket: Duplex, head: Buffer) => void = (
     request,
     socket,
@@ -548,7 +610,7 @@ export function registerHarnessRoutes(app: FastifyInstance, config: SpaceApiConf
     };
   });
 
-  app.all("/api/harness/*", (request, reply) => {
+  app.all("/api/harness/*", async (request, reply) => {
     if (!config.harnessEnabled) {
       return sendProxyError(reply, 404, "HARNESS_DISABLED", "The Harness pane is disabled.");
     }
@@ -558,20 +620,38 @@ export function registerHarnessRoutes(app: FastifyInstance, config: SpaceApiConf
       ? harnessPaneSessionId(request.url)
       : null;
     if (!paneSessionId) {
-      proxyToHarness(request, reply, target, pathname, config.harnessProxyTimeoutMs);
-      return;
+      return proxyToHarness(request, reply, target, pathname, config.harnessProxyTimeoutMs);
     }
-    void ensureHarnessPaneSession(target, paneSessionId, config.harnessProxyTimeoutMs)
-      .then(() => {
-        if (!reply.sent) {
-          proxyToHarness(request, reply, target, pathname, config.harnessProxyTimeoutMs, undefined, undefined, paneSessionId);
+
+    let workspacePath = HARNESS_DEFAULT_WORKSPACE;
+    const url = new URL(request.url, "http://space.local");
+    const rawPaneId = url.searchParams.get("spacePane");
+    if (rawPaneId && SPACE_PANE_ID_PATTERN.test(rawPaneId) && store) {
+      try {
+        const pane = await store.getPane(rawPaneId);
+        if (pane?.cwd && pane.cwd.startsWith("/") && pane.cwd !== "/etc") {
+          workspacePath = pane.cwd;
+        } else if (pane?.roomId) {
+          const room = await store.getRoom(pane.roomId);
+          if (room?.projectPath && room.projectPath.startsWith("/")) {
+            workspacePath = room.projectPath;
+          }
         }
-      })
-      .catch(() => {
-        if (!reply.sent) {
-          sendProxyError(reply, 502, "HARNESS_PANE_SESSION_UNAVAILABLE", "The Harness pane session is unavailable.");
-        }
-      });
+      } catch {
+        // Fall back to default workspace
+      }
+    }
+
+    try {
+      const effectiveSessionId = await ensureHarnessPaneSession(target, paneSessionId, config.harnessProxyTimeoutMs, workspacePath);
+      if (!reply.sent) {
+        return await proxyToHarness(request, reply, target, pathname, config.harnessProxyTimeoutMs, undefined, undefined, effectiveSessionId);
+      }
+    } catch {
+      if (!reply.sent) {
+        return sendProxyError(reply, 502, "HARNESS_PANE_SESSION_UNAVAILABLE", "The Harness pane session is unavailable.");
+      }
+    }
   });
 
   for (const pathname of HARNESS_ROOT_HTTP_PATHS) {
@@ -580,7 +660,7 @@ export function registerHarnessRoutes(app: FastifyInstance, config: SpaceApiConf
         return sendProxyError(reply, 404, "HARNESS_DISABLED", "The Harness pane is disabled.");
       }
       const target = new URL(config.harnessOrigin);
-      proxyToHarness(request, reply, target, request.url, config.harnessProxyTimeoutMs, {
+      return proxyToHarness(request, reply, target, request.url, config.harnessProxyTimeoutMs, {
         "x-forwarded-prefix": "/"
       }, request.body);
     });
@@ -597,7 +677,7 @@ export function registerHarnessRoutes(app: FastifyInstance, config: SpaceApiConf
     const target = new URL(config.harnessOrigin);
     const queryIndex = request.url.indexOf("?");
     const query = queryIndex >= 0 ? request.url.slice(queryIndex) : "";
-    proxyToHarness(request, reply, target, `/api/${method}${query}`, config.harnessProxyTimeoutMs, {
+    return proxyToHarness(request, reply, target, `/api/${method}${query}`, config.harnessProxyTimeoutMs, {
       "x-forwarded-prefix": "/api"
     }, request.body);
   });

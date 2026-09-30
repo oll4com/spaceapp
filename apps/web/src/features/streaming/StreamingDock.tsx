@@ -21,7 +21,9 @@ import {
   RefreshCw,
   Save,
   Trash2,
-  Youtube
+  Youtube,
+  Discord,
+  XSocialIcon
 } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SpaceApiError, api } from "../../api.js";
@@ -32,25 +34,34 @@ import {
   useStreamingOverlay
 } from "./StreamingOverlay.js";
 import { StreamingBotTab } from "./StreamingBotTab.js";
+import { StreamingMemoryTab } from "./StreamingMemoryTab.js";
+import { StreamingModerationTab } from "./StreamingModerationTab.js";
+import { StreamingActivityTab } from "./StreamingActivityTab.js";
+import { streamingCapabilities } from "./streaming-capabilities.js";
 import "./streaming.css";
 
 type StreamingDraft = Pick<StreamingOverlaySettings, "tiles" | "customTextEnabled" | "customText"> & {
   expectedVersion: number;
 };
 
-const PROVIDERS: StreamingOAuthProvider[] = ["YOUTUBE", "TWITCH", "TIKTOK"];
+const PROVIDERS: StreamingOAuthProvider[] = ["YOUTUBE", "TWITCH", "TIKTOK", "X", "DISCORD"];
 const PERIODS: StreamingAnalyticsPeriod[] = [7, 28, 90];
 
 function providerLabel(provider: StreamingProvider): string {
   if (provider === "YOUTUBE") return "YouTube";
   if (provider === "TWITCH") return "Twitch";
   if (provider === "TIKTOK") return "TikTok";
+  if (provider === "X") return "X";
+  if (provider === "DISCORD") return "Discord";
   return "Space";
 }
 
 function ProviderIcon({ provider }: { provider: StreamingOAuthProvider }) {
-  const Icon = provider === "YOUTUBE" ? Youtube : provider === "TWITCH" ? Radio : Music2;
-  return <Icon aria-hidden="true" />;
+  if (provider === "YOUTUBE") return <Youtube aria-hidden="true" />;
+  if (provider === "TWITCH") return <Radio aria-hidden="true" />;
+  if (provider === "TIKTOK") return <Music2 aria-hidden="true" />;
+  if (provider === "X") return <XSocialIcon aria-hidden="true" />;
+  return <Discord aria-hidden="true" />;
 }
 
 function settingsDraft(settings: StreamingOverlaySettings): StreamingDraft {
@@ -123,7 +134,7 @@ function draftPreview(
 
 export function StreamingDock() {
   const runtime = getSpaceRuntime();
-  const [activeTab, setActiveTab] = useState<"overlay" | "bot">("overlay");
+  const [activeTab, setActiveTab] = useState<"overview" | "bot" | "memory" | "moderation" | "display" | "activity">("overview");
   const {
     enabled,
     setEnabled,
@@ -141,6 +152,56 @@ export function StreamingDock() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const mounted = useRef(true);
+  const savingRef = useRef(false);
+  const queuedDraftRef = useRef<StreamingDraft | null>(null);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasUnsavedChangesRef = useRef(false);
+
+  const saveDraftDirect = useCallback(async (targetDraft: StreamingDraft) => {
+    if (savingRef.current) {
+      queuedDraftRef.current = targetDraft;
+      return;
+    }
+    savingRef.current = true;
+    setPendingAction("save");
+    setError(null);
+    try {
+      const saved = await api.updateStreamingOverlaySettings({
+        expectedVersion: targetDraft.expectedVersion,
+        tiles: targetDraft.tiles,
+        customTextEnabled: targetDraft.customTextEnabled,
+        customText: targetDraft.customText
+      });
+      hasUnsavedChangesRef.current = false;
+      const nextDraft = settingsDraft(saved);
+      setDraft(nextDraft);
+      setCatalog((current) => current ? { ...current, settings: saved } : current);
+      setNotice("Overlay settings saved.");
+      await refreshSnapshot();
+    } catch (saveError) {
+      if (saveError instanceof SpaceApiError && saveError.status === 409) {
+        await loadCatalog("A newer overlay version was loaded. Review it before saving again.");
+      } else {
+        setError(saveError instanceof Error ? saveError.message : "The streaming overlay could not be saved.");
+      }
+    } finally {
+      savingRef.current = false;
+      setPendingAction(null);
+      if (queuedDraftRef.current) {
+        const next = queuedDraftRef.current;
+        queuedDraftRef.current = null;
+        void saveDraftDirect(next);
+      }
+    }
+  }, [refreshSnapshot]);
+
+  const scheduleAutoSave = useCallback((newDraft: StreamingDraft) => {
+    hasUnsavedChangesRef.current = true;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      void saveDraftDirect(newDraft);
+    }, 400);
+  }, [saveDraftDirect]);
 
   const loadCatalog = useCallback(async (message?: string) => {
     setLoading(true);
@@ -148,7 +209,13 @@ export function StreamingDock() {
       const next = await api.streamingCatalog();
       if (!mounted.current) return;
       setCatalog(next);
-      setDraft(settingsDraft(next.settings));
+      setDraft((current) => {
+        if (!current) return settingsDraft(next.settings);
+        if (hasUnsavedChangesRef.current || savingRef.current) {
+          return { ...current, expectedVersion: next.settings.version };
+        }
+        return settingsDraft(next.settings);
+      });
       setError(null);
       if (message) setNotice(message);
     } catch (loadError) {
@@ -164,6 +231,7 @@ export function StreamingDock() {
     void loadCatalog();
     return () => {
       mounted.current = false;
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
       setPreviewActive(false);
     };
   }, [loadCatalog, setPreviewActive]);
@@ -176,10 +244,26 @@ export function StreamingDock() {
       if (!PROVIDERS.includes(data.provider as StreamingOAuthProvider)) return;
       const label = providerLabel(data.provider as StreamingOAuthProvider);
       void loadCatalog(data.ok ? `${label} connection completed.` : `${label} connection did not complete.`);
+      void refreshSnapshot();
+    }
+    function handleStorage(event: StorageEvent) {
+      if (event.key !== "space.streaming.oauth" || !event.newValue) return;
+      try {
+        const data = JSON.parse(event.newValue) as { provider?: unknown; ok?: unknown };
+        if (typeof data.ok === "boolean" && PROVIDERS.includes(data.provider as StreamingOAuthProvider)) {
+          const label = providerLabel(data.provider as StreamingOAuthProvider);
+          void loadCatalog(data.ok ? `${label} connection completed.` : `${label} connection did not complete.`);
+          void refreshSnapshot();
+        }
+      } catch {}
     }
     window.addEventListener("message", handleOAuthMessage);
-    return () => window.removeEventListener("message", handleOAuthMessage);
-  }, [loadCatalog]);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener("message", handleOAuthMessage);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [loadCatalog, refreshSnapshot]);
 
   const metricsByKey = useMemo(
     () => new Map(catalog?.metrics.map((metric) => [metric.key, metric]) ?? []),
@@ -190,8 +274,21 @@ export function StreamingDock() {
     [catalog?.accounts]
   );
 
+  const isDirty = useMemo(() => {
+    if (!catalog || !draft) return false;
+    const original = settingsDraft(catalog.settings);
+    return JSON.stringify(original.tiles) !== JSON.stringify(draft.tiles)
+      || original.customTextEnabled !== draft.customTextEnabled
+      || original.customText !== draft.customText;
+  }, [catalog, draft]);
+
   function setDraftTiles(updater: (tiles: StreamingOverlayTile[]) => StreamingOverlayTile[]) {
-    setDraft((current) => current ? { ...current, tiles: updater(current.tiles) } : current);
+    setDraft((current) => {
+      if (!current) return current;
+      const nextDraft = { ...current, tiles: updater(current.tiles) };
+      scheduleAutoSave(nextDraft);
+      return nextDraft;
+    });
     setNotice(null);
   }
 
@@ -203,8 +300,8 @@ export function StreamingDock() {
       setDraftTiles((tiles) => tiles.filter((_, tileIndex) => tileIndex !== index));
       return;
     }
-    if (draft.tiles.length >= 12) {
-      setError("The overlay can show at most 12 metric tiles.");
+    if (draft.tiles.length >= 64) {
+      setError("The overlay can show at most 64 metric tiles.");
       return;
     }
     setError(null);
@@ -219,6 +316,111 @@ export function StreamingDock() {
   function updateTilePeriod(index: number, analyticsPeriod: StreamingAnalyticsPeriod) {
     setDraftTiles((tiles) => tiles.map((tile, tileIndex) => tileIndex === index ? { ...tile, analyticsPeriod } : tile));
   }
+
+  function toggleAllAccountMetrics(account: StreamingPlatformAccount) {
+    if (!draft || !catalog) return;
+    const metrics = accountMetrics(catalog, account);
+    const allSelected = metrics.every((metric) =>
+      draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000${account.id}`)
+    );
+
+    if (allSelected) {
+      setDraftTiles((tiles) => tiles.filter((tile) => tile.accountId !== account.id));
+    } else {
+      const existingIdentities = new Set(draft.tiles.map(tileIdentity));
+      const toAdd: StreamingOverlayTile[] = [];
+      for (const metric of metrics) {
+        const id = `${metric.key}\u0000${account.id}`;
+        if (!existingIdentities.has(id)) {
+          toAdd.push({
+            metricKey: metric.key,
+            accountId: account.id,
+            ...(metric.analyticsPeriod ? { analyticsPeriod: account.analyticsPeriod ?? 28 } : {})
+          });
+        }
+      }
+      if (draft.tiles.length + toAdd.length > 64) {
+        setError("The overlay can show at most 64 metric tiles.");
+        return;
+      }
+      setError(null);
+      setDraftTiles((tiles) => [...tiles, ...toAdd]);
+    }
+  }
+
+  function toggleAllSpaceMetrics() {
+    if (!draft || !catalog) return;
+    const spaceMetrics = catalog.metrics.filter((metric) => metric.provider === "SPACE");
+    const allSelected = spaceMetrics.every((metric) =>
+      draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000SPACE`)
+    );
+
+    if (allSelected) {
+      setDraftTiles((tiles) => tiles.filter((tile) => tile.accountId !== null));
+    } else {
+      const existingIdentities = new Set(draft.tiles.map(tileIdentity));
+      const toAdd: StreamingOverlayTile[] = [];
+      for (const metric of spaceMetrics) {
+        const id = `${metric.key}\u0000SPACE`;
+        if (!existingIdentities.has(id)) {
+          toAdd.push({
+            metricKey: metric.key,
+            accountId: null
+          });
+        }
+      }
+      if (draft.tiles.length + toAdd.length > 64) {
+        setError("The overlay can show at most 64 metric tiles.");
+        return;
+      }
+      setError(null);
+      setDraftTiles((tiles) => [...tiles, ...toAdd]);
+    }
+  }
+
+  function toggleAllProviderMetrics() {
+    if (!draft || !catalog) return;
+    const allTargetTiles: StreamingOverlayTile[] = [];
+    for (const account of catalog.accounts) {
+      const metrics = accountMetrics(catalog, account);
+      for (const metric of metrics) {
+        allTargetTiles.push({
+          metricKey: metric.key,
+          accountId: account.id,
+          ...(metric.analyticsPeriod ? { analyticsPeriod: account.analyticsPeriod ?? 28 } : {})
+        });
+      }
+    }
+    const allSelected = allTargetTiles.length > 0 && allTargetTiles.every((target) =>
+      draft.tiles.some((tile) => tileIdentity(tile) === tileIdentity(target))
+    );
+
+    if (allSelected) {
+      setDraftTiles((tiles) => tiles.filter((tile) => tile.accountId === null));
+    } else {
+      const existingIdentities = new Set(draft.tiles.map(tileIdentity));
+      const toAdd = allTargetTiles.filter((target) => !existingIdentities.has(tileIdentity(target)));
+      if (draft.tiles.length + toAdd.length > 64) {
+        setError("The overlay can show at most 64 metric tiles.");
+        return;
+      }
+      setError(null);
+      setDraftTiles((tiles) => [...tiles, ...toAdd]);
+    }
+  }
+
+  const allProviderMetricsSelected = useMemo(() => {
+    if (!catalog || !draft || catalog.accounts.length === 0) return false;
+    for (const account of catalog.accounts) {
+      const metrics = accountMetrics(catalog, account);
+      for (const metric of metrics) {
+        if (!draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000${account.id}`)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }, [catalog, draft]);
 
   async function runAction(key: string, action: () => Promise<unknown>, success: string) {
     setPendingAction(key);
@@ -257,29 +459,8 @@ export function StreamingDock() {
 
   async function saveOverlay() {
     if (!draft) return;
-    setPendingAction("save");
-    setError(null);
-    setNotice(null);
-    try {
-      const saved = await api.updateStreamingOverlaySettings({
-        expectedVersion: draft.expectedVersion,
-        tiles: draft.tiles,
-        customTextEnabled: draft.customTextEnabled,
-        customText: draft.customText
-      });
-      setDraft(settingsDraft(saved));
-      setCatalog((current) => current ? { ...current, settings: saved } : current);
-      setNotice("The global streaming overlay was saved.");
-      await refreshSnapshot();
-    } catch (saveError) {
-      if (saveError instanceof SpaceApiError && saveError.status === 409) {
-        await loadCatalog("A newer overlay version was loaded. Review it before saving again.");
-      } else {
-        setError(saveError instanceof Error ? saveError.message : "The streaming overlay could not be saved.");
-      }
-    } finally {
-      setPendingAction(null);
-    }
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    await saveDraftDirect(draft);
   }
 
   if (loading && !catalog) {
@@ -310,11 +491,17 @@ export function StreamingDock() {
         </button>
       </header>
       <nav className="streaming-dock-tabs" aria-label="Streaming dock sections">
-        <button type="button" className={activeTab === "overlay" ? "active" : ""} onClick={() => setActiveTab("overlay")}>Overlay</button>
+        <button type="button" className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")}>Overview</button>
         <button type="button" className={activeTab === "bot" ? "active" : ""} onClick={() => setActiveTab("bot")}>Bot</button>
+        <button type="button" className={activeTab === "memory" ? "active" : ""} onClick={() => setActiveTab("memory")}>Memory</button>
+        <button type="button" className={activeTab === "moderation" ? "active" : ""} onClick={() => setActiveTab("moderation")}>Moderation</button>
+        <button type="button" className={activeTab === "display" ? "active" : ""} onClick={() => setActiveTab("display")}>Display</button>
+        <button type="button" className={activeTab === "activity" ? "active" : ""} onClick={() => setActiveTab("activity")}>Activity</button>
       </nav>
 
-      {activeTab === "bot" ? <StreamingBotTab /> : (<>
+      {activeTab === "bot" ? <StreamingBotTab /> : activeTab === "memory" ? <StreamingMemoryTab /> :
+        activeTab === "moderation" ? <StreamingModerationTab /> : activeTab === "activity" ? <StreamingActivityTab /> : (<>
+      {activeTab === "display" ? (
       <section className="streaming-session-card" aria-labelledby="streaming-session-heading">
         <div>
           <h3 id="streaming-session-heading">This window</h3>
@@ -327,13 +514,33 @@ export function StreamingDock() {
           onChange={setEnabled}
         />
       </section>
+      ) : null}
 
       {error ? <div className="streaming-message error" role="alert">{error}</div> : null}
       {notice ? <div className="streaming-message notice" role="status">{notice}</div> : null}
+      {isDirty ? (
+        <div className="streaming-unsaved-banner" role="status">
+          <span>Unsaved overlay changes</span>
+          <button type="button" onClick={() => void saveOverlay()} disabled={pendingAction !== null}>
+            {pendingAction === "save" ? <Loader2 className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />} Save now
+          </button>
+        </div>
+      ) : null}
 
+      {activeTab === "overview" ? <>
       <section className="streaming-section" aria-labelledby="streaming-providers-heading">
         <div className="streaming-section-heading">
-          <div><span className="streaming-eyebrow">Official connections</span><h3 id="streaming-providers-heading">Providers</h3></div>
+          <div><span className="streaming-eyebrow">Official connections</span><h3 id="streaming-providers-heading">Providers <small>{draft.tiles.length}/64</small></h3></div>
+          {catalog.accounts.length > 0 ? (
+            <button
+              type="button"
+              className="streaming-select-all-button"
+              onClick={toggleAllProviderMetrics}
+              aria-label={allProviderMetricsSelected ? "Deselect all provider metrics" : "All provider metrics"}
+            >
+              {allProviderMetricsSelected ? "Deselect all" : "All provider metrics"}
+            </button>
+          ) : null}
         </div>
         <div className="streaming-provider-list">
           {PROVIDERS.map((provider) => {
@@ -356,37 +563,69 @@ export function StreamingDock() {
 
                 {accounts.length === 0 ? <p className="streaming-empty">No connected accounts.</p> : (
                   <ul className="streaming-account-list">
-                    {accounts.map((account) => (
-                      <li key={account.id} className="streaming-account-card">
-                        <div className="streaming-account-heading">
-                          <div><strong>{account.displayName}</strong><span>{account.badge} · {account.status}</span></div>
-                          <div className="streaming-inline-actions">
-                            <button type="button" onClick={() => void runAction(`verify:${account.id}`, () => api.verifyStreamingAccount(account.id), `${account.displayName} was verified.`)} disabled={pendingAction !== null}>
-                              <CheckCircle2 aria-hidden="true" /> Verify
-                            </button>
-                            <button type="button" className="danger" onClick={() => void runAction(`remove:${account.id}`, () => api.removeStreamingAccount(account.id), `${account.displayName} was removed.`)} disabled={pendingAction !== null}>
-                              <Trash2 aria-hidden="true" /> Remove account
-                            </button>
+                    {accounts.map((account) => {
+                      const capabilities = streamingCapabilities(account, authorizations.find(item => item.id === account.authorizationId));
+                      const allSelected = accountMetrics(catalog, account).every((metric) =>
+                        draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000${account.id}`)
+                      );
+                      return (
+                        <li key={account.id} className="streaming-account-card">
+                          <div className="streaming-account-heading">
+                            <div><strong>{account.displayName}</strong><span>{account.badge} · {account.status}</span></div>
+                            <div className="streaming-inline-actions">
+                              <button type="button" onClick={() => void runAction(`verify:${account.id}`, () => api.verifyStreamingAccount(account.id), `${account.displayName} was verified.`)} disabled={pendingAction !== null}>
+                                <CheckCircle2 aria-hidden="true" /> Verify
+                              </button>
+                              <button type="button" className="danger" onClick={() => void runAction(`remove:${account.id}`, () => api.removeStreamingAccount(account.id), `${account.displayName} was removed.`)} disabled={pendingAction !== null}>
+                                <Trash2 aria-hidden="true" /> Remove account
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                        {account.safeErrorMessage ? <div className="streaming-safe-error"><code>{account.safeErrorCode}</code><span>{account.safeErrorMessage}</span></div> : null}
-                        <fieldset className="streaming-metric-options">
-                          <legend>Metrics for {account.displayName}</legend>
-                          {accountMetrics(catalog, account).map((metric) => {
-                            const checked = draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000${account.id}`);
-                            return (
-                              <SpaceToggle
-                                key={metric.key}
-                                checked={checked}
-                                label={metric.label}
-                                detail={metric.category.toLowerCase()}
-                                onChange={() => toggleMetric(metric, account)}
-                              />
-                            );
-                          })}
-                        </fieldset>
-                      </li>
-                    ))}
+                          <div className="streaming-inline-actions streaming-capability-badges" aria-label={`Capabilities for ${account.displayName}`}>
+                            <span className={`streaming-bot-badge ${capabilities.metrics ? "ok" : ""}`}>Metrics {capabilities.metrics ? "ready" : "unavailable"}</span>
+                            <span className={`streaming-bot-badge ${capabilities.readChat ? "ok" : ""}`}>Chat {capabilities.readChat ? "ready" : "unavailable"}</span>
+                            <span className={`streaming-bot-badge ${capabilities.reply ? "ok" : ""}`}>Replies {capabilities.reply ? "ready" : "unavailable"}</span>
+                            <span className={`streaming-bot-badge ${capabilities.moderate ? "ok" : ""}`}>Moderation {capabilities.moderate ? "ready" : "unavailable"}</span>
+                          </div>
+                          {capabilities.reason ? <small>{capabilities.reason}</small> : null}
+                          {account.safeErrorMessage ? <div className="streaming-safe-error"><code>{account.safeErrorCode}</code><span>{account.safeErrorMessage}</span></div> : null}
+                          <fieldset className="streaming-metric-options" aria-label={`Metrics for ${account.displayName}`}>
+                            <div className="streaming-metric-header">
+                              <span className="streaming-metric-title">Metrics for {account.displayName}</span>
+                              <button
+                                type="button"
+                                className="streaming-select-all-button"
+                                onClick={() => toggleAllAccountMetrics(account)}
+                              >
+                                {allSelected ? "Deselect all" : "All metrics"}
+                              </button>
+                            </div>
+                            {accountMetrics(catalog, account).map((metric) => {
+                              const checked = draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000${account.id}`);
+                              return (
+                                <SpaceToggle
+                                  key={metric.key}
+                                  checked={checked}
+                                  label={metric.label}
+                                  detail={metric.category.toLowerCase()}
+                                  onChange={() => toggleMetric(metric, account)}
+                                />
+                              );
+                            })}
+                            {isDirty ? (
+                              <button
+                                type="button"
+                                className="streaming-quick-save"
+                                onClick={() => void saveOverlay()}
+                                disabled={pendingAction !== null}
+                              >
+                                {pendingAction === "save" ? <Loader2 className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />} Save changes
+                              </button>
+                            ) : null}
+                          </fieldset>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
 
@@ -411,8 +650,19 @@ export function StreamingDock() {
 
       <section className="streaming-section" aria-labelledby="streaming-space-heading">
         <div className="streaming-section-heading"><div><span className="streaming-eyebrow">Built in</span><h3 id="streaming-space-heading">Space metrics</h3></div></div>
-        <fieldset className="streaming-metric-options streaming-space-options">
-          <legend>Metrics from this Space installation</legend>
+        <fieldset className="streaming-metric-options streaming-space-options" aria-label="Metrics from this Space installation">
+          <div className="streaming-metric-header">
+            <span className="streaming-metric-title">Metrics from this Space installation</span>
+            <button
+              type="button"
+              className="streaming-select-all-button"
+              onClick={toggleAllSpaceMetrics}
+            >
+              {catalog.metrics.filter((metric) => metric.provider === "SPACE").every((metric) =>
+                draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000SPACE`)
+              ) ? "Deselect all" : "All metrics"}
+            </button>
+          </div>
           {catalog.metrics.filter((metric) => metric.provider === "SPACE").map((metric) => (
             <SpaceToggle
               key={metric.key}
@@ -423,11 +673,13 @@ export function StreamingDock() {
           ))}
         </fieldset>
       </section>
+      </> : null}
 
+      {activeTab === "display" ? (
       <section className="streaming-section" aria-labelledby="streaming-layout-heading">
         <div className="streaming-section-heading">
           <div><span className="streaming-eyebrow">Global order</span><h3 id="streaming-layout-heading">Overlay layout</h3></div>
-          <strong className={draft.tiles.length >= 12 ? "at-limit" : ""}>{draft.tiles.length}/12</strong>
+          <strong className={draft.tiles.length >= 64 ? "at-limit" : ""}>{draft.tiles.length}/64</strong>
         </div>
         {draft.tiles.length === 0 ? <p className="streaming-empty">Select metrics above to build the overlay.</p> : (
           <ol className="streaming-layout-list" aria-label="Streaming overlay tile order">
@@ -448,18 +700,20 @@ export function StreamingDock() {
                 >
                   <GripVertical aria-label={`Drag ${metric?.label ?? tile.metricKey}`} />
                   <div><strong>{metric?.label ?? tile.metricKey}</strong><span>{account?.badge ?? "Space"}</span></div>
-                  {metric?.analyticsPeriod ? (
-                    <label className="streaming-period-select">
-                      <span>Period</span>
-                      <select value={tile.analyticsPeriod ?? 28} onChange={(event) => updateTilePeriod(index, Number(event.target.value) as StreamingAnalyticsPeriod)}>
-                        {PERIODS.map((period) => <option value={period} key={period}>{period} days</option>)}
-                      </select>
-                    </label>
-                  ) : null}
-                  <div className="streaming-order-actions">
-                    <button type="button" aria-label={`Move ${metric?.label ?? tile.metricKey} earlier`} onClick={() => setDraftTiles((tiles) => moveItem(tiles, index, index - 1))} disabled={index === 0}><ChevronLeft aria-hidden="true" /></button>
-                    <button type="button" aria-label={`Move ${metric?.label ?? tile.metricKey} later`} onClick={() => setDraftTiles((tiles) => moveItem(tiles, index, index + 1))} disabled={index === draft.tiles.length - 1}><ChevronRight aria-hidden="true" /></button>
-                    <button type="button" aria-label={`Remove ${metric?.label ?? tile.metricKey}`} onClick={() => setDraftTiles((tiles) => tiles.filter((_, tileIndex) => tileIndex !== index))}><Trash2 aria-hidden="true" /></button>
+                  <div className="streaming-layout-row-controls">
+                    {metric?.analyticsPeriod ? (
+                      <label className="streaming-period-select">
+                        <span>Period</span>
+                        <select value={tile.analyticsPeriod ?? 28} onChange={(event) => updateTilePeriod(index, Number(event.target.value) as StreamingAnalyticsPeriod)}>
+                          {PERIODS.map((period) => <option value={period} key={period}>{period} days</option>)}
+                        </select>
+                      </label>
+                    ) : null}
+                    <div className="streaming-order-actions">
+                      <button type="button" aria-label={`Move ${metric?.label ?? tile.metricKey} earlier`} onClick={() => setDraftTiles((tiles) => moveItem(tiles, index, index - 1))} disabled={index === 0}><ChevronLeft aria-hidden="true" /></button>
+                      <button type="button" aria-label={`Move ${metric?.label ?? tile.metricKey} later`} onClick={() => setDraftTiles((tiles) => moveItem(tiles, index, index + 1))} disabled={index === draft.tiles.length - 1}><ChevronRight aria-hidden="true" /></button>
+                      <button type="button" aria-label={`Remove ${metric?.label ?? tile.metricKey}`} onClick={() => setDraftTiles((tiles) => tiles.filter((_, tileIndex) => tileIndex !== index))}><Trash2 aria-hidden="true" /></button>
+                    </div>
                   </div>
                 </li>
               );
@@ -471,9 +725,31 @@ export function StreamingDock() {
           <SpaceToggle
             checked={draft.customTextEnabled}
             label="Custom footer text"
-            onChange={(checked) => setDraft((current) => current ? { ...current, customTextEnabled: checked } : current)}
+            onChange={(checked) => {
+              setDraft((current) => {
+                if (!current) return current;
+                const nextDraft = { ...current, customTextEnabled: checked };
+                scheduleAutoSave(nextDraft);
+                return nextDraft;
+              });
+            }}
           />
-          <textarea aria-label="Streaming overlay custom text" rows={2} maxLength={160} value={draft.customText} onChange={(event) => setDraft((current) => current ? { ...current, customText: twoLineText(event.target.value) } : current)} placeholder="Optional two-line message" />
+          <textarea
+            aria-label="Streaming overlay custom text"
+            rows={2}
+            maxLength={160}
+            value={draft.customText}
+            onChange={(event) => {
+              const text = twoLineText(event.target.value);
+              setDraft((current) => {
+                if (!current) return current;
+                const nextDraft = { ...current, customText: text };
+                scheduleAutoSave(nextDraft);
+                return nextDraft;
+              });
+            }}
+            placeholder="Optional two-line message"
+          />
           <small>{draft.customText.length}/160 · maximum two lines</small>
         </div>
 
@@ -491,10 +767,11 @@ export function StreamingDock() {
           </div>
         ) : null}
 
-        <button type="button" className="streaming-save-button" onClick={() => void saveOverlay()} disabled={pendingAction !== null || draft.tiles.length > 12}>
+        <button type="button" className="streaming-save-button" onClick={() => void saveOverlay()} disabled={pendingAction !== null || draft.tiles.length > 64}>
           {pendingAction === "save" ? <Loader2 className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />} Save overlay
         </button>
       </section>
+      ) : null}
       </>)}
     </div>
   );

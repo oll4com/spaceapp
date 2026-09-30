@@ -45,7 +45,7 @@ import {
   type StreamingTokenSet
 } from "./streaming-providers.js";
 
-const providerList: StreamingOAuthProvider[] = ["YOUTUBE", "TWITCH", "TIKTOK"];
+const providerList: StreamingOAuthProvider[] = ["YOUTUBE", "TWITCH", "TIKTOK", "X", "DISCORD"];
 const oauthAttemptTtlMs = 10 * 60 * 1000;
 
 export class StreamingServiceError extends Error {
@@ -156,7 +156,16 @@ function metricDefinition(key: StreamingMetricKey) {
   return definition;
 }
 
-type ProviderMetricGroup = "YOUTUBE_CHANNEL" | "YOUTUBE_LIVE" | "YOUTUBE_ANALYTICS" | "TWITCH_CHANNEL" | "TWITCH_LIVE" | "TIKTOK_PROFILE";
+type ProviderMetricGroup =
+  | "YOUTUBE_CHANNEL"
+  | "YOUTUBE_LIVE"
+  | "YOUTUBE_ANALYTICS"
+  | "TWITCH_CHANNEL"
+  | "TWITCH_LIVE"
+  | "TIKTOK_PROFILE"
+  | "X_PROFILE"
+  | "X_LIVE"
+  | "DISCORD_GUILD";
 
 function metricGroup(key: StreamingMetricKey): ProviderMetricGroup | "SPACE" {
   if (key.startsWith("space.")) return "SPACE";
@@ -165,6 +174,10 @@ function metricGroup(key: StreamingMetricKey): ProviderMetricGroup | "SPACE" {
   if (key.startsWith("youtube.analytics.")) return "YOUTUBE_ANALYTICS";
   if (key === "twitch.concurrent_viewers" || key === "twitch.live_duration") return "TWITCH_LIVE";
   if (key.startsWith("twitch.")) return "TWITCH_CHANNEL";
+  if (key.startsWith("tiktok.")) return "TIKTOK_PROFILE";
+  if (key === "x.live.viewers") return "X_LIVE";
+  if (key.startsWith("x.")) return "X_PROFILE";
+  if (key.startsWith("discord.")) return "DISCORD_GUILD";
   return "TIKTOK_PROFILE";
 }
 
@@ -173,9 +186,12 @@ function groupTtl(group: ProviderMetricGroup): number {
     case "YOUTUBE_LIVE": return 60_000;
     case "TWITCH_LIVE": return 15_000;
     case "YOUTUBE_ANALYTICS": return 15 * 60_000;
+    case "X_LIVE": return 60_000;
+    case "DISCORD_GUILD": return 30_000;
     case "YOUTUBE_CHANNEL":
     case "TWITCH_CHANNEL":
     case "TIKTOK_PROFILE":
+    case "X_PROFILE":
       return 5 * 60_000;
   }
 }
@@ -218,12 +234,59 @@ export class StreamingService {
     ]);
     const accountCount = new Map<string, number>();
     for (const account of accounts) accountCount.set(account.authorizationId, (accountCount.get(account.authorizationId) ?? 0) + 1);
+
+    const accountsById = new Map(accounts.map((a) => [a.id, a]));
+    const activeAccountsByProvider = new Map<StreamingOAuthProvider, StreamingPlatformAccountRecord[]>();
+    for (const account of accounts) {
+      if (account.status !== "DISCONNECTED") {
+        const list = activeAccountsByProvider.get(account.provider) ?? [];
+        list.push(account);
+        activeAccountsByProvider.set(account.provider, list);
+      }
+    }
+
+    const cleanTiles: StreamingOverlayTile[] = [];
+    const seenIdentities = new Set<string>();
+    for (const tile of settings.tiles) {
+      const definition = metricDefinition(tile.metricKey);
+      if (definition.provider === "SPACE") {
+        const id = `${tile.metricKey}\u0000SPACE`;
+        if (!seenIdentities.has(id)) {
+          seenIdentities.add(id);
+          cleanTiles.push({ ...tile, accountId: null });
+        }
+        continue;
+      }
+      let acc = tile.accountId ? accountsById.get(tile.accountId) : null;
+      if (!acc || acc.provider !== definition.provider || acc.status === "DISCONNECTED") {
+        const candidates = activeAccountsByProvider.get(definition.provider);
+        if (candidates && candidates.length === 1) {
+          acc = candidates[0]!;
+        }
+      }
+      if (acc) {
+        const id = `${tile.metricKey}\u0000${acc.id}`;
+        if (!seenIdentities.has(id)) {
+          seenIdentities.add(id);
+          cleanTiles.push({
+            metricKey: tile.metricKey,
+            accountId: acc.id,
+            ...(definition.analyticsPeriod ? { analyticsPeriod: tile.analyticsPeriod ?? acc.analyticsPeriod ?? 28 } : {})
+          });
+        }
+      }
+    }
+
+    const effectiveSettings = cleanTiles.length !== settings.tiles.length || cleanTiles.some((t, i) => t.accountId !== settings.tiles[i]?.accountId)
+      ? { ...settings, tiles: cleanTiles }
+      : settings;
+
     return streamingCatalogResponseSchema.parse({
       providers,
       metrics: streamingMetricDefinitions,
       authorizations: authorizations.map((authorization) => publicAuthorization(authorization, accountCount.get(authorization.id) ?? 0)),
       accounts: accounts.map(publicAccount),
-      settings
+      settings: effectiveSettings
     });
   }
 
@@ -372,6 +435,19 @@ export class StreamingService {
     const deleted = await this.options.repository.deleteAccount(accountId);
     if (!deleted) throw new StreamingServiceError("ACCOUNT_NOT_FOUND", "The streaming account was not found.", 404);
     this.invalidateAccount(accountId);
+    try {
+      const current = await this.options.repository.getOverlaySettings();
+      const pruned = current.tiles.filter((t) => t.accountId !== accountId);
+      if (pruned.length !== current.tiles.length) {
+        await this.options.repository.updateOverlaySettings({
+          ...current,
+          tiles: pruned,
+          expectedVersion: current.version,
+          updatedAt: this.now().toISOString(),
+          updatedBy: "system:account-removed"
+        });
+      }
+    } catch {}
     return publicAccount(deleted);
   }
 
@@ -385,6 +461,20 @@ export class StreamingService {
       await this.options.repository.deleteAuthorization(authorization.id);
       await this.options.credentialStore.deleteCredential(authorization.credentialRef);
       accounts.forEach((account) => this.invalidateAccount(account.id));
+      const accountIds = new Set(accounts.map((a) => a.id));
+      try {
+        const current = await this.options.repository.getOverlaySettings();
+        const pruned = current.tiles.filter((t) => !t.accountId || !accountIds.has(t.accountId));
+        if (pruned.length !== current.tiles.length) {
+          await this.options.repository.updateOverlaySettings({
+            ...current,
+            tiles: pruned,
+            expectedVersion: current.version,
+            updatedAt: this.now().toISOString(),
+            updatedBy: "system:auth-disconnected"
+          });
+        }
+      } catch {}
       return streamingDisconnectAuthorizationResponseSchema.parse({
         authorizationId,
         status: "REVOKED",
@@ -406,16 +496,56 @@ export class StreamingService {
   async updateOverlaySettings(input: UpdateStreamingOverlaySettingsInput, updatedBy: string): Promise<StreamingOverlaySettings> {
     const parsed = updateStreamingOverlaySettingsInputSchema.parse(input);
     const accounts = new Map((await this.options.repository.listAccounts()).map((account) => [account.id, account]));
-    for (const tile of parsed.tiles) {
-      const definition = metricDefinition(tile.metricKey);
-      if (definition.provider === "SPACE") continue;
-      const account = tile.accountId ? accounts.get(tile.accountId) : null;
-      if (!account || account.provider !== definition.provider || account.status === "DISCONNECTED") {
-        throw new StreamingServiceError("OVERLAY_ACCOUNT_INVALID", `The account for ${definition.label} is unavailable.`, 422);
+    const activeAccountsByProvider = new Map<StreamingOAuthProvider, StreamingPlatformAccountRecord[]>();
+    for (const account of accounts.values()) {
+      if (account.status !== "DISCONNECTED") {
+        const list = activeAccountsByProvider.get(account.provider) ?? [];
+        list.push(account);
+        activeAccountsByProvider.set(account.provider, list);
       }
     }
+
+    const sanitizedTiles: StreamingOverlayTile[] = [];
+    const seenIdentities = new Set<string>();
+
+    for (const tile of parsed.tiles) {
+      const definition = metricDefinition(tile.metricKey);
+      if (definition.provider === "SPACE") {
+        const identity = `${tile.metricKey}\u0000SPACE`;
+        if (!seenIdentities.has(identity)) {
+          seenIdentities.add(identity);
+          sanitizedTiles.push({ ...tile, accountId: null });
+        }
+        continue;
+      }
+
+      let account = tile.accountId ? accounts.get(tile.accountId) : null;
+      if (!account || account.provider !== definition.provider || account.status === "DISCONNECTED") {
+        const candidates = activeAccountsByProvider.get(definition.provider);
+        if (candidates && candidates.length === 1) {
+          account = candidates[0]!;
+        } else {
+          // Gracefully omit orphan tiles whose account was disconnected
+          continue;
+        }
+      }
+
+      const identity = `${tile.metricKey}\u0000${account.id}`;
+      if (!seenIdentities.has(identity)) {
+        seenIdentities.add(identity);
+        sanitizedTiles.push({
+          metricKey: tile.metricKey,
+          accountId: account.id,
+          ...(definition.analyticsPeriod ? { analyticsPeriod: tile.analyticsPeriod ?? account.analyticsPeriod ?? 28 } : {})
+        });
+      }
+    }
+
     return this.options.repository.updateOverlaySettings({
-      ...parsed,
+      expectedVersion: parsed.expectedVersion,
+      tiles: sanitizedTiles,
+      customTextEnabled: parsed.customTextEnabled,
+      customText: parsed.customText,
       updatedBy,
       updatedAt: this.now().toISOString()
     });

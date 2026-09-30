@@ -412,3 +412,678 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.toolbar-metric-provider-tabs {
+  display: flex;
+  gap: 0.35rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid #2a2f31;
+  margin-bottom: 0.35rem;
+}
+
+.toolbar-metric-tab-btn {
+  flex: 1;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #333a3c;
+  border-radius: 6px;
+  background: #171b1c;
+  color: #a2a8ab;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.15s ease;
+}
+
+.toolbar-metric-tab-btn:hover {
+  background: #202628;
+  color: #f1ece2;
+  border-color: #4a5457;
+}
+
+.toolbar-metric-tab-btn.is-active {
+  background: #1d2b29;
+  border-color: #467970;
+  color: #79cbbb;
+  font-weight: 600;
+}
+
+.toolbar-metric-provider-section {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.toolbar-metric-provider-section > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.toolbar-metric-provider-section > header strong {
+  font-size: 0.8rem;
+  color: #f1ece2;
+}
+
+.toolbar-metric-provider-section > header small {
+  font-size: 0.65rem;
+  color: #889290;
+}
+
+.toolbar-metric-account-card {
+  border: 1px solid #262c2e;
+  border-radius: 6px;
+  background: #131617;
+  padding: 0.45rem;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.toolbar-metric-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.toolbar-metric-badge.is-active {
+  background: rgba(35, 120, 95, 0.25);
+  border: 1px solid #2a6353;
+  color: #6fd1b8;
+}
+
+.toolbar-metric-badge.is-warning {
+  background: rgba(180, 115, 20, 0.22);
+  border: 1px solid #6b4d1b;
+  color: #e5b058;
+}
+
+.toolbar-metric-badge.is-critical {
+  background: rgba(180, 35, 45, 0.22);
+  border: 1px solid #75282f;
+  color: #ff7582;
+}
+
+.toolbar-metric-quotas {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin-top: 0.2rem;
+  padding-top: 0.3rem;
+  border-top: 1px solid #1f2425;
+}
+
+.toolbar-metric-quota-item {
+  display: grid;
+  gap: 0.1rem;
+  font-size: 0.7rem;
+}
+
+.toolbar-metric-quota-item.is-gemini {
+  grid-column: 1;
+}
+
+.toolbar-metric-quota-item.is-claude {
+  grid-column: 2;
+}
+
+.toolbar-metric-subtext {
+  font-size: 0.62rem;
+  color: #838e8b;
+}
+
+.toolbar-metric-dim {
+  font-size: 0.68rem;
+  color: #727a78;
+  font-style: italic;
+}
+
+.toolbar-metric-quota-val {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  font-weight: 700;
+  padding: 0.05rem 0.25rem;
+  border-radius: 4px;
+  line-height: 1.2;
+}
+
+.toolbar-metric-quota-val.is-critical {
+  background: rgba(180, 35, 45, 0.22);
+  border: 1px solid #75282f;
+  color: #ff7582;
+}
+
+.toolbar-metric-quota-val.is-warning {
+  background: rgba(180, 115, 20, 0.22);
+  border: 1px solid #6b4d1b;
+  color: #f2be55;
+}
+
+.toolbar-metric-quota-val.is-healthy {
+  background: rgba(59, 130, 246, 0.18);
+  border: 1px solid #1e40af;
+  color: #93c5fd;
+}
+
+.toolbar-metric-quota-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.toolbar-metric-subtext.is-critical {
+  color: #ff9da7;
+}
+
+.toolbar-metric-subtext.is-warning {
+  color: #e5b058;
+}
+
+.toolbar-metric-detached-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.4rem 0;
+  padding: 0.4rem 0.6rem;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: var(--room-text, #f4efe5);
+}
+
+.toolbar-metric-reopen-all-btn {
+  flex: none;
+  background: #2563eb;
+  color: #fff;
+  border: 0;
+  border-radius: 5px;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.toolbar-metric-reopen-all-btn:hover:not(:disabled),
+.toolbar-metric-reopen-all-btn:focus-visible {
+  background: #1d4ed8;
+  outline: none;
+}
+
+.toolbar-metric-reopen-all-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar-metric-session-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  width: 100%;
+}
+
+.toolbar-metric-reopen-btn {
+  flex: none;
+  border: 1px solid #3b82f6;
+  border-radius: 5px;
+  background: #1e3a8a;
+  color: #93c5fd;
+  padding: 0.18rem 0.45rem;
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.toolbar-metric-reopen-btn:hover:not(:disabled),
+.toolbar-metric-reopen-btn:focus-visible {
+  border-color: #60a5fa;
+  background: #2563eb;
+  color: #fff;
+  outline: none;
+}
+
+.toolbar-metric-reopen-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar-metric-close-btn {
+  flex: none;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 5px;
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  padding: 0.18rem 0.45rem;
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.toolbar-metric-close-btn:hover:not(:disabled),
+.toolbar-metric-close-btn:focus-visible {
+  border-color: #ef4444;
+  background: #dc2626;
+  color: #fff;
+  outline: none;
+}
+
+.toolbar-metric-close-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Light mode support for Toolbar Metrics & Resources Drawer */
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-trigger {
+  border-color: #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-trigger:hover,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-trigger:focus-visible {
+  border-color: #087f74;
+  background: #f0f7f6;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-trigger[aria-expanded="true"],
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-trigger[aria-expanded="true"]:hover,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-trigger[aria-expanded="true"]:focus-visible {
+  border-color: #087f74;
+  background: #eef7f5;
+  box-shadow: inset 0 0 0 1px #087f74;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-provider-tabs {
+  border-bottom-color: #e1e9ee;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-tab-btn {
+  border-color: #d2dce4;
+  background: #f0f4f7;
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-tab-btn:hover {
+  background: #e4ebf0;
+  color: #17232d;
+  border-color: #b7c6d1;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-tab-btn.is-active {
+  background: #e6f4f1;
+  border-color: #087f74;
+  color: #087f74;
+  font-weight: 600;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-provider-section > header strong {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-provider-section > header small {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-account-card {
+  border-color: #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-account-heading button {
+  border-color: #d2dce4;
+  background: #f7f9fb;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-account-heading button:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-account-heading button:focus-visible {
+  border-color: #087f74;
+  background: #eef7f5;
+  color: #087f74;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-quotas {
+  border-top-color: #e1e9ee;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-quota-item {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-subtext {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dim {
+  color: #7b8a97;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-quota-val {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-quota-val.is-warning {
+  background: #fff3d6;
+  border: 1px solid #f1cf87;
+  color: #8b6516;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-quota-val.is-critical {
+  background: #fde8e8;
+  border: 1px solid #fca5a5;
+  color: #c53030;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-subtext.is-warning {
+  color: #8b6516;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-subtext.is-critical {
+  color: #c53030;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-badge.is-active {
+  background: #e5f5ee;
+  border: 1px solid #8ed6ba;
+  color: #167654;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-badge.is-warning {
+  background: #fff3d6;
+  border: 1px solid #f1cf87;
+  color: #8b6516;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-badge.is-critical {
+  background: #fde8e8;
+  border: 1px solid #fca5a5;
+  color: #c53030;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-panel {
+  border-color: #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.12);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-panel > header strong {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-panel > header small,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-note,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-list span,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-provider-menu small {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-row {
+  border-color: #d2dce4;
+  background: #f7f9fb;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-row span {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-row strong {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-list li {
+  border-top-color: #e1e9ee;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-list strong,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-subtitle {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-open-analysis {
+  border-color: #087f74;
+  background: #eef7f5;
+  color: #087f74;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-open-analysis:hover,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-open-analysis:focus-visible {
+  border-color: #006c63;
+  background: #d7ede9;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-provider-menu button {
+  border-color: #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-provider-menu button:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-provider-menu button:focus-visible {
+  border-color: #087f74;
+  background: #eef7f5;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog {
+  border-color: #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.15);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog header strong {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog header button {
+  border-color: #d2dce4;
+  background: #ffffff;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog header button:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog header button:focus-visible {
+  border-color: #b7c6d1;
+  background: #eef3f6;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog-copy p {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog-actions button {
+  border-color: #d2dce4;
+  background: #f7f9fb;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog-actions button:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog-actions button:focus-visible {
+  border-color: #087f74;
+  background: #eef7f5;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog-actions button.danger {
+  border-color: #fca5a5;
+  background: #fde8e8;
+  color: #c53030;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog-actions button.danger:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-dialog-actions button.danger:focus-visible {
+  border-color: #ef4444;
+  background: #fbd5d5;
+  color: #991b1b;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-action-status {
+  border-color: #8ed6ba;
+  background: #e5f5ee;
+  color: #167654;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.1);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-session-header {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-reopen-btn {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-reopen-btn:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-reopen-btn:focus-visible {
+  border-color: #60a5fa;
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-close-btn {
+  border-color: #fca5a5;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-close-btn:hover:not(:disabled),
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .toolbar-metric-close-btn:focus-visible {
+  border-color: #ef4444;
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .mobile-system-metrics {
+  border-color: #d2dce4;
+  background: #ffffff;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .mobile-system-metrics > strong {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .mobile-system-metrics li {
+  border-color: #d2dce4;
+  background: #f7f9fb;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .mobile-system-metrics li small {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .mobile-system-metrics li strong {
+  color: #17232d;
+}
+
+/* Quota period and filter buttons */
+.resources-quota-window {
+  display: flex;
+  gap: 6px;
+  margin: 12px 0 8px;
+}
+
+.resources-quota-window button {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.resources-quota-window button:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.resources-quota-window button[aria-pressed="true"],
+.resources-quota-window button.is-active {
+  border: 1.5px solid #53cbb5;
+  box-shadow: 0 0 0 1.5px #53cbb5;
+  background: rgba(83, 203, 181, 0.16);
+  color: #53cbb5;
+  font-weight: 600;
+}
+
+.resources-quota-filters {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 12px;
+  flex-wrap: wrap;
+}
+
+.resources-quota-filters button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #c9d1d9;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.resources-quota-filters button:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #ffffff;
+}
+
+.resources-quota-filters button[aria-pressed="true"],
+.resources-quota-filters button.is-active {
+  border: 1.5px solid #53cbb5;
+  box-shadow: 0 0 0 1.5px #53cbb5;
+  background: rgba(83, 203, 181, 0.16);
+  color: #53cbb5;
+  font-weight: 600;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-window button,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-filters button {
+  background: #f0f4f7;
+  border-color: #d2dce4;
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-window button:hover,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-filters button:hover {
+  background: #e4ecf1;
+  border-color: #b0c2ce;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-window button[aria-pressed="true"],
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-window button.is-active,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-filters button[aria-pressed="true"],
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-filters button.is-active {
+  background: rgba(8, 127, 116, 0.12);
+  border-color: #087f74;
+  box-shadow: 0 0 0 1.5px #087f74;
+  color: #087f74;
+}
+

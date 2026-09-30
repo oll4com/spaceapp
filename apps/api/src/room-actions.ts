@@ -20,6 +20,9 @@ import { unavailableRoomTaskEvaluator, type RoomTaskEvaluator } from "./room-tas
 import type { RoomPaneController } from "./room-pane-control.js";
 import { summarizeNativeTasks } from "./room-task-telemetry.js";
 import { isCliRuntimeTerminalLaunchable } from "./cli-runtimes.js";
+import { executeDurableRoomControl, RetryableRoomControlError, UnconfirmedRoomControlError } from "./room-control-execution.js";
+import { resolveMissionControlTarget, missionControlGuard, activeMissionStatuses, type RoomMissionControlTarget } from "./room-mission-control.js";
+import type { DecisionsService } from "./decisions-service.js";
 
 function actionType(request: SpaceAgentRoomActionRequest): RoomAgentActionType {
   switch (request.action.type) {
@@ -140,10 +143,10 @@ function readCliSendCheckpoint(evidence: Record<string, unknown>): CliSendCheckp
 export function createRoomActionExecutor(options: {
   store: SpaceStore;
   paneController?: RoomPaneController;
-  control?: (roomId:string,tool:string,args:Record<string,unknown>)=>Promise<unknown>;
+  control?: (roomId:string,tool:string,args:Record<string,unknown>,missionId?:string)=>Promise<unknown>;
   enqueueAction?: (actionId: string, bridge: SpaceAgentRoomActionBridgeRequest, traceId: string) => Promise<void>;
   cliTerminalManager: Pick<CliTerminalManager, "sendInput" | "getTurnActivity" | "interrupt"> &
-    Partial<Pick<CliTerminalManager, "ensurePaneControlReady" | "getCurrentTurnActivity" | "listRuntimes">>;
+    Partial<Pick<CliTerminalManager, "ensurePaneControlReady" | "getCurrentTurnActivity" | "getTurnFinalResult" | "listRuntimes">>;
   spaceAgentAdapter: SpaceAgentAdapter;
   browserSessionManager: BrowserSessionManager;
   roomPlanInventoryProvider?: RoomPlanInventoryProvider;
@@ -158,6 +161,7 @@ export function createRoomActionExecutor(options: {
   cliEscapeRecoveryGraceMs?: number;
   isCliRuntimeEnabled?: (runtimeId: string) => Promise<boolean>;
   assertCliRuntimeEnabled?: (runtimeId: string) => Promise<void>;
+  decisionsService?: DecisionsService;
 }) {
   const { store, cliTerminalManager, spaceAgentAdapter, browserSessionManager, roomPlanInventoryProvider } = options;
   const taskEvaluator = options.taskEvaluator ?? unavailableRoomTaskEvaluator;
@@ -260,8 +264,6 @@ export function createRoomActionExecutor(options: {
     let turnId = initialTurnId;
     let lastRolloutActivityAtMs = markerAtMs;
     let escapedStall = false;
-    let observedRunning = false;
-    let idleObservations = 0;
     while (Date.now() - startedAtMs < actionTimeoutMs) {
       await assertActionCanContinue(bridge, actionId);
       let activity = await cliTerminalManager.getTurnActivity(sessionId, marker, {
@@ -289,9 +291,7 @@ export function createRoomActionExecutor(options: {
         const tasks = observation.tasks.filter((task) => task.title.includes(marker) || (task.timing.startedAt && Date.parse(task.timing.startedAt) >= markerAtMs));
         if (tasks.some((task) => task.status === "INTERRUPTED")) throw new Error("The native task was interrupted; input will not be resent.");
         if (tasks.length && tasks.every((task) => task.status === "COMPLETED") && observation.state !== "RUNNING") return { status: "COMPLETED", turnId: tasks.at(-1)!.taskId };
-        if (observation.state === "RUNNING") observedRunning = true;
-        idleObservations = observation.state === "IDLE" && observedRunning ? idleObservations + 1 : 0;
-        if (idleObservations >= 3 && !observation.runtimeId?.includes("opencode")) return { status: "COMPLETED", turnId: null };
+        // Idle is a process state, not native evidence that this prompt completed.
         if (["EXITED", "ERROR", "WAITING_FOR_INPUT"].includes(observation.state)) throw new Error(`Pane requires attention: ${observation.state}. Input will not be resent.`);
         await delay(pollIntervalMs); continue;
       }
@@ -368,22 +368,25 @@ export function createRoomActionExecutor(options: {
     throw new Error("Chat pane did not provide completion evidence before the Room Agent timeout.");
   }
 
-  async function finalPaneResult(pane: Pane, sinceMs: number): Promise<string> {
+  async function finalPaneResult(pane: Pane, evidence: Record<string, unknown>): Promise<string | null> {
     if (pane.mode === "TERMINAL") {
-      const session = await store.getActivePaneCliSession(pane.id);
-      if (!session || session.purpose !== "NORMAL") return "CLI task completed without a readable final transcript.";
-      const chunks = await store.listPaneCliTranscriptChunks(session.sessionId);
-      return redactMemoryText(chunks.filter((chunk) => Date.parse(chunk.createdAt) >= sinceMs).slice(-20).map((chunk) => chunk.content).join("\n")).slice(-12_000) ||
-        "CLI task completed without textual output.";
+      const checkpoint = readCliSendCheckpoint(evidence);
+      if (!checkpoint?.turnId || !cliTerminalManager.getTurnFinalResult) return null;
+      const session = await store.getPaneCliSession(checkpoint.sessionId);
+      if (session?.paneId !== pane.id || session.purpose !== "NORMAL") return null;
+      const text = await cliTerminalManager.getTurnFinalResult(checkpoint.sessionId, checkpoint.turnId);
+      return text?.trim() ? redactMemoryText(text).slice(-12_000) : null;
     }
     if (pane.mode === "CHAT") {
+      const checkpoint = evidence.chatSend as Record<string, unknown> | undefined;
+      if (typeof checkpoint?.sessionId !== "string" || typeof checkpoint.responseMessageId !== "string") return null;
       const session = await store.getActiveSpaceAgentSession(pane.id);
-      if (!session) return "Chat task completed without a readable final response.";
-      const messages = await store.listSpaceAgentMessages(session.sessionId, 20);
-      return redactMemoryText(messages.filter((message) => message.role === "assistant" && Date.parse(message.createdAt) >= sinceMs).map((message) => message.content).join("\n")).slice(-12_000) ||
-        "Chat task completed without textual output.";
+      if (session?.sessionId !== checkpoint.sessionId) return null;
+      const messages = await store.listSpaceAgentMessages(session.sessionId, 500);
+      const response = messages.find(message => message.messageId === checkpoint.responseMessageId && message.role === "assistant" && message.status === "COMPLETED");
+      return response?.content.trim() ? redactMemoryText(response.content).slice(-12_000) : null;
     }
-    return "Task completed with browser evidence only.";
+    return null;
   }
 
   async function sendToPane(input: {
@@ -610,7 +613,11 @@ export function createRoomActionExecutor(options: {
         );
       const firstResponseAt = firstOutput?.createdAt ?? null;
       return {
-        ...(options.paneController ? summarizeNativeTasks((await options.paneController.inspect(pane)).tasks, checkpoint.markerAtMs, nowIso()) : {}),
+        // Completion is a one-shot evidence boundary. A cached observation may
+        // predate this short turn even though the native marker already ended.
+        ...(options.paneController ? summarizeNativeTasks((await options.paneController.inspect(pane, { fresh: true })).tasks
+          .filter(task => !completed.turnId || task.taskId === completed.turnId || task.modelsUsed.some(usage => usage.turnId === completed.turnId)),
+          checkpoint.markerAtMs, nowIso()) : {}),
         cliSend: checkpoint,
         paneId: pane.id,
         mode: pane.mode,
@@ -742,7 +749,22 @@ export function createRoomActionExecutor(options: {
     switch (request.action.type) {
       case "control": {
         if (!options.control) throw new Error("Space control is unavailable.");
-        return { control: await options.control(bridge.roomId, request.action.tool, request.action.arguments) };
+        if (request.action.tool === "space_execute") return executeDurableRoomControl({
+          actionId,
+          arguments: request.action.arguments,
+          evidence,
+          control: (tool, args) => options.control!(bridge.roomId, tool, args, bridge.missionId),
+          cancelOperation: (operationId) => options.control!(bridge.roomId, "space_operations", {
+            roomId: bridge.roomId,
+            operation: "cancel",
+            id: operationId
+          }, bridge.missionId),
+          checkpoint: async (next) => { await store.updateRoomAgentAction(actionId, { evidence: next }, traceId); },
+          assertCanContinue: () => assertActionCanContinue(bridge, actionId),
+          pollIntervalMs,
+          timeoutMs: actionTimeoutMs
+        });
+        return { control: await options.control(bridge.roomId, request.action.tool, request.action.arguments, bridge.missionId) };
       }
       case "catalog": {
         if (!options.paneController) throw new Error("Pane controller is unavailable.");
@@ -1308,9 +1330,12 @@ export function createRoomActionExecutor(options: {
                 }) : [],
                 verificationSummary: "Pane supplied durable completion evidence; isolated quality evaluation is running."
               }, traceId);
-              const evaluation = await taskEvaluator.evaluate({
+              const finalResult = await finalPaneResult(pane, result.evidence);
+              const evaluation = finalResult === null ? {
+                available: false as const, reason: "The exact completed native turn has no readable final response; quality was not evaluated.", attempts: 0
+              } : await taskEvaluator.evaluate({
                 instruction: redactMemoryText(step.instruction),
-                finalResult: await finalPaneResult(pane, Date.parse(startedAt)),
+                finalResult,
                 completionEvidence: redactMemoryText(JSON.stringify(result.evidence)).slice(0, 12_000)
               });
               const qualityScore = evaluation.available ? evaluation.qualityScore : null;
@@ -1639,14 +1664,12 @@ export function createRoomActionExecutor(options: {
       idempotencyKey: key,
       actionType: actionType(request),
       status: "QUEUED",
-      requestPayload: { ...request, _roomBackgroundRoot: Boolean(options.enqueueAction && !bridge.backgroundExecution &&
-        ["send", "orchestrate", "open_types", "configure_pane", "cli_command"].includes(request.action.type)) },
+      requestPayload: { ...request, _roomBackgroundRoot: Boolean(options.enqueueAction && !bridge.backgroundExecution && isBackgroundAction(request)) },
       evidence: {},
       attemptCount: 0,
       statusReason: "Room action queued."
     }, traceId);
-    if (options.enqueueAction && !bridge.backgroundExecution &&
-          ["send", "orchestrate", "open_types", "configure_pane", "cli_command"].includes(request.action.type)) {
+    if (options.enqueueAction && !bridge.backgroundExecution && isBackgroundAction(request)) {
         await options.enqueueAction(action.actionId, { ...bridge, actions: [request], actionIndex: index }, traceId);
         return { request, status: "EXECUTED", statusReason: "Room action queued; execution is pending.",
           paneId: action.paneId, missionId: bridge.missionId, evidence: { phase: "QUEUED", actionId: action.actionId } };
@@ -1681,6 +1704,12 @@ export function createRoomActionExecutor(options: {
         evidence: completed.evidence
       };
     } catch (error) {
+      // Keep the durable action RUNNING. Temporal retries this bridge against the
+      // same control key after lost replies/API restarts; never create a new key.
+      if (error instanceof RetryableRoomControlError) {
+        if (action.attemptCount < 2) throw error;
+        error = new UnconfirmedRoomControlError("Control recovery attempts were exhausted. Inspect the persisted operation before continuing; it was not repeated under a new key.");
+      }
       const stopped = await actionInMission(bridge.missionId, action.actionId);
       if (stopped?.status === "BLOCKED") {
         return {
@@ -1717,22 +1746,46 @@ export function createRoomActionExecutor(options: {
         ? (error as { errorCode?: unknown }).errorCode
         : null;
       const latestEvidence = stopped?.evidence ?? action.evidence;
-      const failureEvidence = error instanceof RecoverableCliTurnError
-        ? { ...latestEvidence, failureCode: error.code }
-        : featureErrorCode === "CLI_RUNTIME_DISABLED"
-          ? { ...latestEvidence, failureCode: "CLI_RUNTIME_DISABLED" }
-          : databaseErrorCode === "40P01"
-          ? { ...latestEvidence, failureCode: "DATABASE_DEADLOCK" }
-          : latestEvidence;
+      let recovery: unknown = undefined;
+      if (options.decisionsService) {
+        try {
+          const actionAny = request.action as Record<string, unknown> | null;
+          const taskDescription = typeof actionAny?.instruction === "string"
+            ? actionAny.instruction
+            : typeof actionAny?.command === "string"
+            ? actionAny.command
+            : typeof actionAny?.input === "string"
+            ? actionAny.input
+            : request.toolId;
+          recovery = await options.decisionsService.selectRecoveryAction({
+            task: taskDescription,
+            failedCommand: request.toolId,
+            errorSnippet: reason,
+            attemptCount: action.attemptCount
+          });
+        } catch {
+          // Graceful fallback
+        }
+      }
+      const failureEvidence = {
+        ...(error instanceof RecoverableCliTurnError
+          ? { ...latestEvidence, failureCode: error.code }
+          : featureErrorCode === "CLI_RUNTIME_DISABLED"
+            ? { ...latestEvidence, failureCode: "CLI_RUNTIME_DISABLED" }
+            : databaseErrorCode === "40P01"
+            ? { ...latestEvidence, failureCode: "DATABASE_DEADLOCK" }
+            : latestEvidence),
+        ...(recovery ? { recovery } : {})
+      };
       const failed = await store.updateRoomAgentAction(action.actionId, {
-        status: "FAILED",
+        status: error instanceof UnconfirmedRoomControlError ? "BLOCKED" : "FAILED",
         evidence: failureEvidence,
         statusReason: reason,
         completedAt: nowIso()
       }, traceId);
       return {
         request,
-        status: "FAILED",
+        status: failed.status === "BLOCKED" ? "BLOCKED" : "FAILED",
         statusReason: failed.statusReason,
         paneId: failed.paneId,
         missionId: bridge.missionId,
@@ -1742,6 +1795,10 @@ export function createRoomActionExecutor(options: {
   }
 
   const actionFlights = new Map<string, Promise<SpaceAgentRoomActionBridgeResult>>();
+  function isBackgroundAction(request: SpaceAgentRoomActionRequest) {
+    return ["send", "orchestrate", "open_types", "configure_pane", "cli_command"].includes(request.action.type) ||
+      (request.action.type === "control" && request.action.tool === "space_execute");
+  }
   async function executeOne(bridge: SpaceAgentRoomActionBridgeRequest, request: SpaceAgentRoomActionRequest, traceId: string, index: string) {
     const key = `${bridge.backgroundExecution ? "background" : "foreground"}:${idempotencyKey(bridge.missionId, index, request, bridge.requestId ?? traceId)}`;
     const existing = actionFlights.get(key);
@@ -1753,27 +1810,38 @@ export function createRoomActionExecutor(options: {
 
   async function execute(bridge: SpaceAgentRoomActionBridgeRequest, traceId: string) {
     await assertMissionRunning(bridge);
-    const results = [];
+    const results: SpaceAgentRoomActionBridgeResult[] = [];
+    let prerequisite: SpaceAgentRoomActionBridgeResult | undefined;
     for (let index = 0; index < bridge.actions.length; index += 1) {
-      results.push(await executeOne(bridge, bridge.actions[index]!, traceId, (bridge.actionIndex ? `${bridge.actionIndex}${index ? `.${index}` : ""}` : String(index))));
+      const request = bridge.actions[index]!;
+      if (prerequisite) {
+        results.push({ request, status: "BLOCKED", paneId: actionPaneId(request), missionId: bridge.missionId,
+          statusReason: "Not submitted: a preceding action has not reached verified completion. Inspect it before continuing.",
+          evidence: { phase: "NOT_SUBMITTED", prerequisiteStatus: prerequisite.status, prerequisiteEvidence: prerequisite.evidence } });
+        continue;
+      }
+      const result = await executeOne(bridge, request, traceId, (bridge.actionIndex ? `${bridge.actionIndex}${index ? `.${index}` : ""}` : String(index)));
+      results.push(result);
+      if (result.status !== "EXECUTED" || (request.action.type === "control" && result.evidence.phase === "QUEUED")) prerequisite = result;
     }
     return spaceAgentRoomActionBridgeResponseSchema.parse({ id: "space-agent-room-action-bridge", results });
   }
 
-  async function stopMission(roomId: string, reason: string, traceId: string) {
-    const mission = (await store.listRoomAgentMissions(roomId)).find(
-      (candidate) => candidate.status === "RUNNING" || candidate.status === "PAUSED"
-    ) ?? null;
+  async function stopMission(roomId: string, reason: string, traceId: string, target?: RoomMissionControlTarget) {
+    const mission = await resolveMissionControlTarget(store, roomId, target,
+      target?.expectedMissionId ? [...activeMissionStatuses, "INTERRUPTED"] : activeMissionStatuses);
     if (!mission) return { missionId: null, interruptedPaneIds: [] as string[] };
+    // A retry must never interrupt a pane that has since started different work.
+    if (mission.status === "INTERRUPTED") return { missionId: mission.id, interruptedPaneIds: [] as string[] };
     await store.updateRoomAgentMission(mission.id, {
       status: "INTERRUPTED",
       statusReason: reason,
       completedAt: nowIso()
-    }, traceId);
+    }, traceId, missionControlGuard(mission));
     const actions = (await store.listRoomAgentActions(mission.id)).filter(
       (action) => action.status === "QUEUED" || action.status === "RUNNING"
     );
-    const paneIds = Array.from(new Set(actions.flatMap((action) => (action.paneId ? [action.paneId] : []))));
+    const paneIds = Array.from(new Set(actions.flatMap((action) => (action.status === "RUNNING" && action.paneId ? [action.paneId] : []))));
     await Promise.all(
       actions.map((action) =>
         store.updateRoomAgentAction(action.actionId, {
@@ -1783,31 +1851,43 @@ export function createRoomActionExecutor(options: {
         }, traceId)
       )
     );
-    const agentPane = await store.getOrCreateRoomAgentPane(roomId, traceId);
-    await Promise.all(
-      paneIds.map((paneId) => interruptPane(roomId, agentPane.id, paneId, reason, traceId))
-    );
+    for (const run of await store.listRoomAgentTaskRuns(mission.id)) {
+      if (run.status === "QUEUED") await store.upsertRoomAgentTaskRun({ ...run,
+        status: "BLOCKED", state: "INTERRUPTED", verificationSummary: "Mission stopped before this step was submitted.", completedAt: nowIso()
+      }, traceId);
+    }
+    if (paneIds.length) {
+      const session = await store.getSpaceAgentSession(mission.sessionId);
+      if (!session) throw new Error("Mission agent session is unavailable; no pane interruption was attempted.");
+      await Promise.all(paneIds.map(paneId => interruptPane(roomId, session.paneId, paneId, reason, traceId, false)));
+    }
     return { missionId: mission.id, interruptedPaneIds: paneIds };
   }
 
-  async function pauseMission(roomId: string, reason: string, traceId: string) {
-    const mission = (await store.listRoomAgentMissions(roomId)).find((candidate) => candidate.status === "RUNNING") ?? null;
+  async function pauseMission(roomId: string, reason: string, traceId: string, target?: RoomMissionControlTarget) {
+    const mission = await resolveMissionControlTarget(store, roomId, target);
     if (!mission) return { missionId: null, interruptedPaneIds: [] as string[] };
+    if (mission.status === "PAUSED") return { missionId: mission.id, interruptedPaneIds: [] as string[] };
     await store.updateRoomAgentMission(mission.id, {
       status: "PAUSED",
       pausedAt: nowIso(),
-      statusReason: reason
-    }, traceId);
+      statusReason: reason,
+      executionState: { ...mission.executionState, controlPauseOrigin: mission.status }
+    }, traceId, missionControlGuard(mission));
     const actions = (await store.listRoomAgentActions(mission.id)).filter((action) => action.status === "RUNNING");
     const paneIds = Array.from(new Set(actions.flatMap((action) => (action.paneId ? [action.paneId] : []))));
-    const agentPane = await store.getOrCreateRoomAgentPane(roomId, traceId);
-    await Promise.all(paneIds.map((paneId) => interruptPane(roomId, agentPane.id, paneId, reason, traceId, false)));
+    if (paneIds.length) {
+      const session = await store.getSpaceAgentSession(mission.sessionId);
+      if (!session) throw new Error("Mission agent session is unavailable; no pane interruption was attempted.");
+      await Promise.all(paneIds.map(paneId => interruptPane(roomId, session.paneId, paneId, reason, traceId, false)));
+    }
     return { missionId: mission.id, interruptedPaneIds: paneIds };
   }
 
-  async function resumeMission(roomId: string, traceId: string) {
-    const mission = (await store.listRoomAgentMissions(roomId)).find((candidate) => candidate.status === "PAUSED") ?? null;
+  async function resumeMission(roomId: string, traceId: string, target?: RoomMissionControlTarget) {
+    const mission = await resolveMissionControlTarget(store, roomId, target);
     if (!mission) return { missionId: null };
+    if (mission.status !== "PAUSED") return { missionId: mission.id };
     const timestamp = nowIso();
     const pausedDurationMs = mission.pausedAt
       ? Math.max(0, Date.parse(timestamp) - Date.parse(mission.pausedAt))
@@ -1818,7 +1898,7 @@ export function createRoomActionExecutor(options: {
       : null;
     const pendingStatus = pendingCompletion?.status;
     if (pendingCompletion && (pendingStatus === "COMPLETED" || pendingStatus === "FAILED" || pendingStatus === "INTERRUPTED")) {
-      const { pendingCompletion: _completed, ...executionState } = mission.executionState;
+      const { pendingCompletion: _completed, controlPauseOrigin: _origin, ...executionState } = mission.executionState;
       await store.updateRoomAgentMission(mission.id, {
         status: pendingStatus,
         currentPaneId: null,
@@ -1830,16 +1910,18 @@ export function createRoomActionExecutor(options: {
         statusReason: typeof pendingCompletion.statusReason === "string"
           ? pendingCompletion.statusReason
           : "Room Agent goal finished while paused."
-      }, traceId);
+      }, traceId, missionControlGuard(mission));
       return { missionId: mission.id };
     }
+    const { controlPauseOrigin, ...executionState } = mission.executionState;
     await store.updateRoomAgentMission(mission.id, {
-      status: "RUNNING",
+      status: controlPauseOrigin === "QUEUED" ? "QUEUED" : "RUNNING",
       pausedAt: null,
       totalPausedMs: mission.totalPausedMs + pausedDurationMs,
       lastProgressAt: timestamp,
-      statusReason: "Room Agent goal resumed by operator."
-    }, traceId);
+      statusReason: "Room Agent goal resumed by operator.",
+      executionState
+    }, traceId, missionControlGuard(mission));
     return { missionId: mission.id };
   }
 

@@ -27,7 +27,7 @@ describe("streaming provider adapters", () => {
     const scopes = url.searchParams.get("scope")?.split(" ") ?? [];
     expect(scopes).toContain("https://www.googleapis.com/auth/youtube.readonly");
     expect(scopes).toContain("https://www.googleapis.com/auth/yt-analytics.readonly");
-    expect(scopes.join(" ")).not.toMatch(/youtube\.force-ssl|youtube\.upload|broadcast/i);
+    expect(scopes.join(" ")).not.toMatch(/youtube\.upload|broadcast/i);
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 

@@ -131,6 +131,29 @@ export async function loadCliVpnRoutingStatus(force = false): Promise<CliVpnRout
   return inFlightStatus;
 }
 
+export function cliVpnRoutingStatusKey(status: CliVpnRoutingStatus): string {
+  const applications = status.applications
+    .map((application) => `${application.runtimeId}:${application.effectiveMode}:${application.appliedSessionIds.length}:${application.restartRequiredSessionIds.length}`)
+    .join(",");
+  return [
+    status.vpnSupported,
+    status.selectedRoute,
+    status.connectionStatus,
+    status.egressIpv4 ?? "",
+    status.egressIpv6 ?? "",
+    applications
+  ].join("|");
+}
+
+export async function refreshCliVpnRoutingStatus(): Promise<CliVpnRoutingStatus> {
+  const previousKey = cachedStatus ? cliVpnRoutingStatusKey(cachedStatus) : null;
+  const status = await loadCliVpnRoutingStatus(true);
+  if (previousKey === null || previousKey !== cliVpnRoutingStatusKey(status)) {
+    publishCliVpnRoutingStatus(status);
+  }
+  return status;
+}
+
 export function resetCliVpnRoutingStatusForTests(): void {
   invalidateCliVpnRoutingStatus();
   inFlightStatus = null;

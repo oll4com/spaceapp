@@ -1,3 +1,4 @@
+import { RecommendedMaintenance, type RecommendedMaintenanceClient } from "./RecommendedMaintenance.js";
 import type {
   AdminOperationRun,
   CliMaintenanceRequest,
@@ -28,7 +29,7 @@ import "./admin-operations.css";
 
 export type AdminOperationTool = "maintenance" | "release" | "update-all";
 
-export interface AdminOperationsClient {
+export interface AdminOperationsClient extends Partial<RecommendedMaintenanceClient> {
   listCliMaintenanceRuns(): Promise<{ data: AdminOperationRun[] }>;
   getCliMaintenanceReplay(runId: string, afterSequence?: number): Promise<CliMaintenanceReplayPayload>;
   openCliMaintenanceStream(runId: string, afterSequence?: number): EventSource | null;
@@ -45,15 +46,18 @@ export interface AdminOperationsClient {
 export function AdminOperationsDialog({
   client = api,
   initialTool,
+  embedded = false,
   onClose
 }: {
   client?: AdminOperationsClient;
   initialTool: AdminOperationTool;
+  embedded?: boolean;
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
   const [activeTool, setActiveTool] = useState<AdminOperationTool>(initialTool);
 
   const title = activeTool === "maintenance"
@@ -62,7 +66,7 @@ export function AdminOperationsDialog({
       ? "Update all CLI types"
       : "Publish Space release";
   const description = activeTool === "maintenance"
-    ? "Repair Space and every managed CLI with live stages, durable history, safe rollback and provider-login handoff."
+    ? "Check enabled tools, review recommended changes and follow the recorded results."
     : activeTool === "update-all"
       ? "Detect every Space CLI type and update all managed types, including disabled ones, while preserving each custom procedure."
       : "Preview and publish the clean live Space version to the fixed Gitea and GitHub repositories.";
@@ -79,6 +83,7 @@ export function AdminOperationsDialog({
 
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key === "Escape") {
+      event.stopPropagation();
       if (!busy) {
         event.preventDefault();
         close();
@@ -102,14 +107,14 @@ export function AdminOperationsDialog({
   }
 
   return (
-    <div className="admin-operations-backdrop" onMouseDown={(event) => {
+    <div className={`admin-operations-backdrop${embedded ? " manage-embedded" : ""}`} onMouseDown={(event) => {
       if (event.target === event.currentTarget) close();
     }}>
       <section
         ref={dialogRef}
         className="admin-operations-dialog"
-        role="dialog"
-        aria-modal="true"
+        role={embedded ? "region" : "dialog"}
+        aria-modal={embedded ? undefined : true}
         aria-label={title}
         aria-busy={busy}
         onKeyDown={handleKeyDown}
@@ -151,7 +156,12 @@ export function AdminOperationsDialog({
           </button>
         </header>
         {activeTool === "maintenance"
-          ? <MaintenancePanel client={client} onBusyChange={setBusy} />
+          ? <>
+              {!advanced && client.createMaintenancePlan && client.applyMaintenancePlan && <RecommendedMaintenance client={client as AdminOperationsClient & RecommendedMaintenanceClient} onBusyChange={setBusy} />}
+              {client.createMaintenancePlan && client.applyMaintenancePlan
+                ? <details open={advanced} onToggle={event => setAdvanced(event.currentTarget.open)}><summary onClick={event => { if (busy) event.preventDefault(); }}>Advanced repair, history &amp; exports</summary>{advanced && <MaintenancePanel client={client} onBusyChange={setBusy} />}</details>
+                : <MaintenancePanel client={client} onBusyChange={setBusy} />}
+            </>
           : activeTool === "update-all"
             ? <CliUpdateAllPanel client={client} onBusyChange={setBusy} />
             : <ReleasePanel client={client} onBusyChange={setBusy} />}

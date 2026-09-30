@@ -7,11 +7,13 @@ export interface StreamingChatMessage {
   authorId: string | null;
   message: string;
   publishedAt: string;
+  protectedAccount?: boolean;
 }
 
 export interface StreamingChatPage {
   messages: StreamingChatMessage[];
   nextCursor: string | null;
+  pollingIntervalMillis?: number;
 }
 
 export interface LiveBroadcastInfo {
@@ -95,12 +97,14 @@ export class YouTubeChatConnector {
         author,
         authorId,
         message,
-        publishedAt
+        publishedAt,
+        protectedAccount: authorDetails.isChatOwner === true || authorDetails.isChatModerator === true
       }];
     });
     return {
       messages,
-      nextCursor: stringValue(payload.nextPageToken)
+      nextCursor: stringValue(payload.nextPageToken),
+      pollingIntervalMillis: typeof payload.pollingIntervalMillis === "number" ? payload.pollingIntervalMillis : undefined
     };
   }
 
@@ -121,6 +125,38 @@ export class YouTubeChatConnector {
     const id = stringValue(payload.id);
     if (!id) throw new StreamingProviderError("YOUTUBE_SEND_INVALID", "YouTube did not return a message id.", false);
     return id;
+  }
+
+  async timeoutUser(token: StreamingTokenSet, liveChatId: string, channelId: string, durationSeconds: 300 | 1800): Promise<string> {
+    const url = new URL("https://www.googleapis.com/youtube/v3/liveChat/bans");
+    url.search = formBody({ part: "snippet" }).toString();
+    const payload = await this.requestJson(url.toString(), {
+      method: "POST", headers: { ...bearerHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ snippet: { liveChatId, type: "temporary", banDurationSeconds: durationSeconds,
+        bannedUserDetails: { channelId } } })
+    });
+    const id = stringValue(payload.id);
+    if (!id) throw new StreamingProviderError("YOUTUBE_TIMEOUT_INVALID", "YouTube did not confirm the timeout.", false);
+    return id;
+  }
+
+  async deleteChatMessage(token: StreamingTokenSet, messageId: string): Promise<void> {
+    await this.requestNoContent(`https://www.googleapis.com/youtube/v3/liveChat/messages?id=${encodeURIComponent(messageId)}`,
+      { method: "DELETE", headers: bearerHeaders(token) });
+  }
+
+  async undoTimeout(token: StreamingTokenSet, banId: string): Promise<void> {
+    await this.requestNoContent(`https://www.googleapis.com/youtube/v3/liveChat/bans?id=${encodeURIComponent(banId)}`,
+      { method: "DELETE", headers: bearerHeaders(token) });
+  }
+
+  private async requestNoContent(url: string, init: RequestInit): Promise<void> {
+    const response = await this.fetchImpl(url, { ...init, signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new StreamingProviderError(`YOUTUBE_HTTP_${response.status}`, `YouTube returned HTTP ${response.status}.`, response.status >= 500, response.status);
+    }
+    await response.body?.cancel().catch(() => undefined);
   }
 
   private async requestJson(url: string, init: RequestInit): Promise<Record<string, unknown>> {

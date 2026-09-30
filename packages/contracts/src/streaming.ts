@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-export const streamingProviderSchema = z.enum(["YOUTUBE", "TWITCH", "TIKTOK", "SPACE"]);
-export const streamingOAuthProviderSchema = z.enum(["YOUTUBE", "TWITCH", "TIKTOK"]);
+export const streamingProviderSchema = z.enum(["YOUTUBE", "TWITCH", "TIKTOK", "X", "DISCORD", "SPACE"]);
+export const streamingOAuthProviderSchema = z.enum(["YOUTUBE", "TWITCH", "TIKTOK", "X", "DISCORD"]);
 export const streamingProviderReadinessStatusSchema = z.enum(["READY", "UNCONFIGURED", "ERROR"]);
 export const streamingAuthorizationStatusSchema = z.enum(["ACTIVE", "REVOKE_PENDING", "REVOKED", "ERROR"]);
 export const streamingAccountStatusSchema = z.enum(["ACTIVE", "ERROR", "DISCONNECTED"]);
@@ -32,7 +32,12 @@ export const streamingMetricKeySchema = z.enum([
   "twitch.live_duration",
   "tiktok.followers",
   "tiktok.total_likes",
-  "tiktok.public_videos"
+  "tiktok.public_videos",
+  "x.followers",
+  "x.posts",
+  "x.live.viewers",
+  "discord.total_members",
+  "discord.online_members"
 ]);
 
 export const streamingMetricDefinitionSchema = z.object({
@@ -67,7 +72,12 @@ export const streamingMetricDefinitions = [
   { key: "twitch.live_duration", provider: "TWITCH", label: "Live duration", category: "LIVE", analyticsPeriod: false },
   { key: "tiktok.followers", provider: "TIKTOK", label: "Followers", category: "PROFILE", analyticsPeriod: false },
   { key: "tiktok.total_likes", provider: "TIKTOK", label: "Total likes", category: "PROFILE", analyticsPeriod: false },
-  { key: "tiktok.public_videos", provider: "TIKTOK", label: "Public videos", category: "PROFILE", analyticsPeriod: false }
+  { key: "tiktok.public_videos", provider: "TIKTOK", label: "Public videos", category: "PROFILE", analyticsPeriod: false },
+  { key: "x.followers", provider: "X", label: "Followers", category: "CHANNEL", analyticsPeriod: false },
+  { key: "x.posts", provider: "X", label: "Posts", category: "CHANNEL", analyticsPeriod: false },
+  { key: "x.live.viewers", provider: "X", label: "Live viewers", category: "LIVE", analyticsPeriod: false },
+  { key: "discord.total_members", provider: "DISCORD", label: "Server members", category: "CHANNEL", analyticsPeriod: false },
+  { key: "discord.online_members", provider: "DISCORD", label: "Online members", category: "LIVE", analyticsPeriod: false }
 ] as const satisfies readonly z.input<typeof streamingMetricDefinitionSchema>[];
 
 const metricProviderByKey = new Map(streamingMetricDefinitions.map((metric) => [metric.key, metric.provider]));
@@ -100,7 +110,7 @@ export const defaultStreamingOverlayTiles = [
 
 export const streamingOverlaySettingsSchema = z.object({
   version: z.number().int().positive(),
-  tiles: z.array(streamingOverlayTileSchema).max(12),
+  tiles: z.array(streamingOverlayTileSchema).max(64),
   customTextEnabled: z.boolean(),
   customText: z.string().max(160),
   updatedAt: z.string().datetime(),
@@ -109,7 +119,7 @@ export const streamingOverlaySettingsSchema = z.object({
 
 export const updateStreamingOverlaySettingsInputSchema = z.object({
   expectedVersion: z.number().int().positive(),
-  tiles: z.array(streamingOverlayTileSchema).max(12),
+  tiles: z.array(streamingOverlayTileSchema).max(64),
   customTextEnabled: z.boolean(),
   customText: z.string().max(160)
 }).strict().superRefine((settings, context) => {
@@ -161,7 +171,7 @@ export const streamingPlatformAccountSchema = z.object({
 }).strict();
 
 export const streamingCatalogResponseSchema = z.object({
-  providers: z.array(streamingProviderReadinessSchema).length(3),
+  providers: z.array(streamingProviderReadinessSchema).length(5),
   metrics: z.array(streamingMetricDefinitionSchema).min(1).max(40),
   authorizations: z.array(streamingAuthorizationSchema).max(100),
   accounts: z.array(streamingPlatformAccountSchema).max(200),
@@ -207,7 +217,7 @@ export type StreamingBotTickerItem = z.infer<typeof streamingBotTickerItemSchema
 export const streamingOverlaySnapshotSchema = z.object({
   generatedAt: z.string().datetime(),
   settingsVersion: z.number().int().positive(),
-  tiles: z.array(streamingMetricTileSnapshotSchema).max(12),
+  tiles: z.array(streamingMetricTileSnapshotSchema).max(64),
   customTextEnabled: z.boolean(),
   customText: z.string().max(160),
   botTickerEnabled: z.boolean().default(false),
@@ -264,6 +274,12 @@ export const streamingBotGuardrailsSchema = z.object({
   replyToQuestionsOnly: z.boolean()
 }).strict();
 
+export const streamingBotModelSelectionSchema = z.object({
+  kind: z.enum(["API", "CLI"]),
+  providerId: z.string().min(1).max(120),
+  modelId: z.string().min(1).max(160)
+}).strict();
+
 export const streamingBotSettingsSchema = z.object({
   version: z.number().int().positive(),
   enabled: z.boolean(),
@@ -276,7 +292,11 @@ export const streamingBotSettingsSchema = z.object({
   faq: z.array(streamingBotFaqSchema).max(30),
   instructions: z.string().max(4000),
   guardrails: streamingBotGuardrailsSchema,
+  modelSelection: streamingBotModelSelectionSchema.nullable().default(null),
+  fallbackModelSelection: streamingBotModelSelectionSchema.nullable().default(null),
   memoryEnabled: z.boolean(),
+  moderationEnabled: z.boolean().default(false),
+  jevEnabled: z.boolean().default(false),
   overlayTickerEnabled: z.boolean(),
   updatedAt: z.string().datetime(),
   updatedBy: z.string().min(1).max(200).nullable()
@@ -294,7 +314,11 @@ export const updateStreamingBotSettingsInputSchema = z.object({
   faq: z.array(streamingBotFaqSchema).max(30),
   instructions: z.string().max(4000),
   guardrails: streamingBotGuardrailsSchema,
+  modelSelection: streamingBotModelSelectionSchema.nullable().default(null),
+  fallbackModelSelection: streamingBotModelSelectionSchema.nullable().default(null),
   memoryEnabled: z.boolean(),
+  moderationEnabled: z.boolean().default(false),
+  jevEnabled: z.boolean().default(false),
   overlayTickerEnabled: z.boolean()
 }).strict();
 
@@ -317,7 +341,11 @@ export const defaultStreamingBotSettings = {
     maxRepliesPerMinute: 5,
     replyToQuestionsOnly: true
   },
+  modelSelection: null,
+  fallbackModelSelection: null,
   memoryEnabled: true,
+  moderationEnabled: false,
+  jevEnabled: false,
   overlayTickerEnabled: false,
   updatedAt: "",
   updatedBy: null
@@ -354,6 +382,11 @@ export const streamingBotActivityDirectionSchema = z.enum(["IN", "OUT"]);
 export const streamingBotActivitySchema = z.object({
   id: z.string().min(1).max(200),
   platform: streamingBotPlatformSchema,
+  accountId: z.string().max(200).nullable(),
+  channelId: z.string().max(300).nullable(),
+  authorId: z.string().max(300).nullable(),
+  messageId: z.string().max(300).nullable(),
+  protectedAccount: z.boolean(),
   direction: streamingBotActivityDirectionSchema,
   author: z.string().max(300).nullable(),
   message: z.string().max(2000),
@@ -368,6 +401,46 @@ export const streamingBotMemoryEntrySchema = z.object({
   body: z.string().min(1).max(10000),
   createdAt: z.string().datetime()
 }).strict();
+
+export const streamingBotReviewedMemorySchema = z.object({
+  id: z.string().min(1).max(200),
+  title: z.string().min(1).max(160),
+  body: z.string().min(1).max(10000),
+  status: z.enum(["PENDING", "APPROVED"]),
+  source: z.enum(["OPERATOR", "BOT", "LEGACY"]),
+  version: z.number().int().positive(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+}).strict();
+
+export const streamingModerationActionSchema = z.object({
+  id: z.string().min(1).max(200),
+  platform: z.enum(["YOUTUBE", "TWITCH", "DISCORD"]),
+  accountId: z.string().min(1).max(200),
+  channelId: z.string().min(1).max(300),
+  userId: z.string().min(1).max(300),
+  messageId: z.string().min(1).max(300),
+  decision: z.enum(["ALLOW", "REVIEW", "WARN", "TIMEOUT_5M", "TIMEOUT_30M"]),
+  reason: z.string().min(1).max(100),
+  durationSeconds: z.number().int().positive().nullable(),
+  result: z.enum(["PENDING", "SUCCEEDED", "FAILED", "UNAVAILABLE", "REVIEW", "UNDONE"]),
+  platformActionId: z.string().nullable(),
+  safeErrorCode: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+}).strict();
+
+export const createStreamingBotMemoryInputSchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  body: z.string().trim().min(1).max(10000)
+}).strict();
+
+export const updateStreamingBotMemoryInputSchema = z.object({
+  expectedVersion: z.number().int().positive(),
+  title: z.string().trim().min(1).max(160).optional(),
+  body: z.string().trim().min(1).max(10000).optional(),
+  status: z.enum(["PENDING", "APPROVED"]).optional()
+}).strict().refine(value => value.title !== undefined || value.body !== undefined || value.status !== undefined);
 
 export const streamingBotTestInputSchema = z.object({
   platform: streamingBotPlatformSchema,
@@ -394,6 +467,7 @@ export type StreamingBotFact = z.infer<typeof streamingBotFactSchema>;
 export type StreamingBotFaq = z.infer<typeof streamingBotFaqSchema>;
 export type StreamingBotPlatformSettings = z.infer<typeof streamingBotPlatformSettingsSchema>;
 export type StreamingBotGuardrails = z.infer<typeof streamingBotGuardrailsSchema>;
+export type StreamingBotModelSelection = z.infer<typeof streamingBotModelSelectionSchema>;
 export type StreamingBotSettings = z.infer<typeof streamingBotSettingsSchema>;
 export type UpdateStreamingBotSettingsInput = z.infer<typeof updateStreamingBotSettingsInputSchema>;
 export type StreamingBotPlatformStatus = z.infer<typeof streamingBotPlatformStatusSchema>;
@@ -402,6 +476,10 @@ export type StreamingBotActivityStatus = z.infer<typeof streamingBotActivityStat
 export type StreamingBotActivityDirection = z.infer<typeof streamingBotActivityDirectionSchema>;
 export type StreamingBotActivity = z.infer<typeof streamingBotActivitySchema>;
 export type StreamingBotMemoryEntry = z.infer<typeof streamingBotMemoryEntrySchema>;
+export type StreamingBotReviewedMemory = z.infer<typeof streamingBotReviewedMemorySchema>;
+export type StreamingModerationAction = z.infer<typeof streamingModerationActionSchema>;
+export type CreateStreamingBotMemoryInput = z.infer<typeof createStreamingBotMemoryInputSchema>;
+export type UpdateStreamingBotMemoryInput = z.infer<typeof updateStreamingBotMemoryInputSchema>;
 export type StreamingBotTestInput = z.infer<typeof streamingBotTestInputSchema>;
 export type StreamingBotMcpExecuteInput = z.infer<typeof streamingBotMcpExecuteInputSchema>;
 export type StreamingBotMcpExecuteResponse = z.infer<typeof streamingBotMcpExecuteResponseSchema>;

@@ -10,6 +10,7 @@ import {
 import "./setup-connections.css";
 
 interface SetupConnectionsWizardProps {
+  embedded?: boolean;
   guided?: boolean;
   connectionsContent?: ReactNode;
   checks: SetupConnectionChecksClient;
@@ -33,6 +34,7 @@ function formatElapsed(totalSeconds: number): string {
 
 export function SetupConnectionsWizard({
   guided = false,
+  embedded = false,
   connectionsContent,
   checks,
   open,
@@ -86,13 +88,14 @@ export function SetupConnectionsWizard({
     ? toolConnections.filter(connection => connection.id === "cli:opencode")
     : toolConnections;
 
-  return createPortal(
-    <div className="setup-connections-backdrop" onClick={wizard.dismiss}>
+  const content = (
+    <div className={`setup-connections-backdrop${embedded ? " manage-embedded" : ""}`} onClick={wizard.dismiss}>
       <section
         ref={wizard.dialogRef}
         className="setup-connections-dialog"
-        role="dialog"
-        aria-modal="true"
+        role={embedded ? "region" : "dialog"}
+        aria-busy={wizard.finishPending}
+        aria-modal={embedded ? undefined : true}
         aria-labelledby="setup-connections-title"
         onClick={(event) => event.stopPropagation()}
         onKeyDown={wizard.handleKeyDown}
@@ -238,6 +241,10 @@ export function SetupConnectionsWizard({
         </div>
         </div>
 
+        {embedded && connectionsContent ? <details onToggle={event => { if (event.currentTarget.open) setConnectionsVisited(true); }}>
+          <summary>Optional connections &amp; defaults</summary>
+          {connectionsVisited ? connectionsContent : null}
+        </details> : null}
         {guided ? <div hidden={step !== 2} className="setup-guide-connections">
           <h3>Optional connections & defaults</h3>
           <p>Open only what you want to configure. These settings are also available under Admin → Advanced settings.</p>
@@ -266,7 +273,7 @@ export function SetupConnectionsWizard({
           </button>
         </footer>
       </section>
-    </div>,
-    document.body
+    </div>
   );
+  return embedded ? content : createPortal(content, document.body);
 }

@@ -34,6 +34,7 @@ export interface OpenCodeServerControl {
   serverHost?: string;
   serverUsername: string;
   serverPassword: string;
+  directory?: string;
   updatedAt: string;
 }
 
@@ -106,6 +107,9 @@ export async function readOpenCodeServerControl(
     ) {
       return null;
     }
+    const directory = typeof control.directory === "string" && control.directory.trim().length > 0
+      ? control.directory.trim()
+      : undefined;
     return {
       version: 1,
       spaceSessionId,
@@ -114,6 +118,7 @@ export async function readOpenCodeServerControl(
       serverHost,
       serverUsername,
       serverPassword,
+      directory,
       updatedAt: typeof control.updatedAt === "string" ? control.updatedAt : new Date(0).toISOString()
     };
   } catch (error) {
@@ -298,14 +303,28 @@ type OpenCodeSessionStatus = { type: "idle" } | { type: "retry"; attempt: number
 
 export async function fetchOpenCodeSessionIsTurnActive(
   control: OpenCodeServerControl,
-  nativeSessionId: string
+  nativeSessionId: string,
+  directory?: string
 ): Promise<boolean> {
   try {
-    const response = await openCodeServerFetch(control, "/session/status");
+    const dir = directory ?? control.directory ?? "/etc";
+    const path = `/session/status?directory=${encodeURIComponent(dir)}`;
+    const response = await openCodeServerFetch(control, path);
     if (!response.ok) return false;
     const statuses = (await response.json()) as Record<string, OpenCodeSessionStatus>;
     const status = statuses?.[nativeSessionId];
-    return status?.type === "busy" || status?.type === "retry";
+    if (status?.type === "busy" || status?.type === "retry") return true;
+    if (status?.type === "idle") return false;
+    // Fallback: if not found under specified directory, check without query parameter
+    if (!statuses || !(nativeSessionId in statuses)) {
+      const fallbackResponse = await openCodeServerFetch(control, "/session/status");
+      if (fallbackResponse.ok) {
+        const fallbackStatuses = (await fallbackResponse.json()) as Record<string, OpenCodeSessionStatus>;
+        const fbStatus = fallbackStatuses?.[nativeSessionId];
+        return fbStatus?.type === "busy" || fbStatus?.type === "retry";
+      }
+    }
+    return false;
   } catch {
     return false;
   }
@@ -518,7 +537,7 @@ export class OpenCodeSilentStopRecovery {
 
   private async waitForIdle(sessionID: string): Promise<boolean> {
     for (let attempt = 0; attempt < this.idlePollAttempts; attempt += 1) {
-      const response = await this.request("/session/status");
+      const response = await this.request(`/session/status${recoveryQuery(this.directory)}`);
       if (!response.ok) throw new Error(`OpenCode session status failed with HTTP ${response.status}.`);
       const statuses = await response.json() as Record<string, OpenCodeSessionStatus>;
       const status = statuses?.[sessionID];

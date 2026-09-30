@@ -7,10 +7,13 @@ export function normalizeRootSpawn(identity: CliHostIdentity, requested: CliHost
   if (identity.runtimeId !== rootRuntimeId) {
     throw new CliHostError("CLI_HOST_RUNTIME_FORBIDDEN", `Admin CLI host refuses runtime ${identity.runtimeId}.`);
   }
+  const effectiveCwd = typeof requested.cwd === "string" && requested.cwd.trim().startsWith("/")
+    ? requested.cwd.trim()
+    : "/etc";
   return {
     command: "/bin/bash",
     args: ["--login"],
-    cwd: "/etc",
+    cwd: effectiveCwd,
     env: {
       COLORTERM: "truecolor",
       HOME: "/root",

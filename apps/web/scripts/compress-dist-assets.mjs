@@ -40,6 +40,11 @@ for (const filePath of files) {
   if (!compressibleExtensions.has(path.extname(filePath))) continue;
   const fileStats = await stat(filePath);
   if (fileStats.size < minimumBytes) continue;
+  const [brStat, gzStat] = await Promise.all([
+    stat(`${filePath}.br`).catch(() => null),
+    stat(`${filePath}.gz`).catch(() => null)
+  ]);
+  if (brStat && gzStat && brStat.mtimeMs >= fileStats.mtimeMs && gzStat.mtimeMs >= fileStats.mtimeMs) continue;
   const source = await readFile(filePath);
   const [brotliOutput, gzipOutput] = await Promise.all([
     brotli(source, {

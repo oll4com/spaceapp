@@ -2,7 +2,10 @@ import { BrainCircuit, Check, ChevronLeft } from "../ui-theme/app-icons.js";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AgentPaneModelProvider, PaneCliModelSettings } from "@space/contracts";
 
+type Selection = { modelId: string; reasoningEffort: string; providerId: string | null };
+
 const MODEL_POPOVER_MAX_HEIGHT_PX = 31 * 16;
+const QUICK_MODEL_RESULT_LIMIT = 20;
 const MODEL_POPOVER_GAP_PX = 11;
 const MODEL_POPOVER_BOUNDARY_INSET_PX = 8;
 
@@ -63,6 +66,7 @@ export function CodexModelPicker({
     providerId: string | null;
   } | null>(null);
   const [quickProviderKey, setQuickProviderKey] = useState<string | null>(null);
+  const [quickSearch, setQuickSearch] = useState("");
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(settings.current);
   const [popoverMaxHeight, setPopoverMaxHeight] = useState<number | null>(null);
@@ -72,6 +76,9 @@ export function CodexModelPicker({
   const collapseTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const switchGenerationRef = useRef(0);
+  const switchingRef = useRef(false);
+  const queuedSelectionRef = useRef<Selection | null>(null);
+  const requestedSelectionRef = useRef<Selection | null>(null);
   const hasProviders = providers.length > 1;
   const currentSettings = settings.current;
   const currentProviderId = providers.find((provider) => provider.isCurrent)?.providerId ?? null;
@@ -111,12 +118,29 @@ export function CodexModelPicker({
     }
     return [...groups.values()];
   });
+  const displayedCurrent = compact ? draft ?? effectiveCurrent : effectiveCurrent;
+  const displayedProviderId = compact ? draft?.providerId ?? confirmedProviderId : confirmedProviderId;
   const confirmedGroup = providerGroups.find(group =>
-    (!hasProviders || group.provider.providerId === confirmedProviderId) &&
-    group.models.some(model => model.id === effectiveCurrent?.modelId));
+    (!hasProviders || group.provider.providerId === displayedProviderId) &&
+    group.models.some(model => model.id === displayedCurrent?.modelId));
   const quickGroup = providerGroups.find(group => group.key === quickProviderKey) ?? confirmedGroup ?? providerGroups[0];
   const quickModels = quickGroup?.models ?? [];
   const quickShowsCurrent = Boolean(quickGroup && quickGroup.key === confirmedGroup?.key);
+  // A native catalog can advertise hundreds of models (Reasonix currently
+  // returns 320). Keep the list scannable, search over the whole catalog, and
+  // never drop the selected model out of the rendered options.
+  const quickQuery = quickSearch.trim().toLowerCase();
+  const quickSearchMatches = quickQuery
+    ? quickModels.filter(model =>
+        model.displayName.toLowerCase().includes(quickQuery) || model.id.toLowerCase().includes(quickQuery))
+    : quickModels;
+  const quickVisibleModels = quickQuery
+    ? quickSearchMatches.slice(0, QUICK_MODEL_RESULT_LIMIT)
+    : quickModels.slice(0, QUICK_MODEL_RESULT_LIMIT);
+  const quickHiddenModelCount = quickModels.length - quickVisibleModels.length;
+  const quickCurrentModel = displayedCurrent ? quickModels.find(model => model.id === displayedCurrent.modelId) ?? null : null;
+  const quickCurrentOutsideList = Boolean(
+    quickCurrentModel && !quickVisibleModels.some(model => model.id === quickCurrentModel.id));
 
   async function refreshCatalog() {
     if (!onRefreshCatalog || refreshing) return;
@@ -168,7 +192,7 @@ export function CodexModelPicker({
 
   useEffect(() => {
     setConfirmed(currentSettings);
-    if (compact && currentSettings && !switching) {
+    if (compact && currentSettings && !switchingRef.current) {
       setDraft({ ...currentSettings, providerId: null });
     }
   }, [currentSettings?.modelId, currentSettings?.reasoningEffort]);
@@ -179,6 +203,7 @@ export function CodexModelPicker({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      queuedSelectionRef.current = null;
       switchGenerationRef.current += 1;
       clearCollapseTimer();
     };
@@ -186,11 +211,11 @@ export function CodexModelPicker({
 
   useEffect(() => {
     if (!open) return;
-    const activeSettings = effectiveCurrentRef.current;
+    const activeSettings = switchingRef.current ? requestedSelectionRef.current ?? effectiveCurrentRef.current : effectiveCurrentRef.current;
     setDraft({
       modelId: activeSettings?.modelId ?? "",
       reasoningEffort: activeSettings?.reasoningEffort ?? "",
-      providerId: null
+      providerId: switchingRef.current ? requestedSelectionRef.current?.providerId ?? null : null
     });
     setFeedback(null);
     resetSteps();
@@ -254,7 +279,10 @@ export function CodexModelPicker({
     };
   }, [open]);
 
-  if (!currentSettings && (!allowSelectionWithoutCurrent || settings.models.length === 0)) {
+  // Providers that can actually be selected, even when the current provider reported
+  // no catalog at all: the picker must still open so the user can switch away.
+  const hasSelectableProviderModels = providers.some(provider => provider.models.length > 0);
+  if (!currentSettings && (!allowSelectionWithoutCurrent || (settings.models.length === 0 && !hasSelectableProviderModels))) {
     return (
       <div className="terminal-model-picker">
         <button
@@ -276,8 +304,11 @@ export function CodexModelPicker({
     : selectedModel;
   const reasoningOptions: Array<{ reasoningEffort: string; description?: string }> =
     draftedModel?.reasoningOptions ?? draftedModel?.supportedReasoningEfforts.map((reasoningEffort) => ({ reasoningEffort })) ?? [];
-  const currentModelOption = current
-    ? confirmedModels.find((model) => model.id === current.modelId) ?? null
+  const displayedModels = hasProviders
+    ? providers.find(provider => provider.providerId === displayedProviderId)?.models ?? settings.models
+    : settings.models;
+  const currentModelOption = displayedCurrent
+    ? displayedModels.find((model) => model.id === displayedCurrent.modelId) ?? null
     : null;
   const activeReasoningOptions: Array<{ reasoningEffort: string; description?: string }> =
     currentModelOption?.reasoningOptions ?? currentModelOption?.supportedReasoningEfforts.map((reasoningEffort) => ({ reasoningEffort })) ?? [];
@@ -326,12 +357,57 @@ export function CodexModelPicker({
     setFeedback(null);
   }
 
+  // Keep controls responsive while one request is in flight. Coalesce only
+  // later selections, so a slow response cannot overwrite the user's latest choice.
+  async function applyCompact(selection: Selection) {
+    const confirmedCurrent = effectiveCurrentRef.current;
+    if (!switchingRef.current && confirmedCurrent && selection.modelId === confirmedCurrent.modelId &&
+        selection.reasoningEffort === confirmedCurrent.reasoningEffort &&
+        (selection.providerId === null || selection.providerId === confirmedProviderId)) return;
+    requestedSelectionRef.current = selection;
+    queuedSelectionRef.current = selection;
+    setDraft(selection);
+    setFeedback(null);
+    if (switchingRef.current) return;
+    switchingRef.current = true;
+    setSwitching(true);
+    try {
+      while (mountedRef.current && queuedSelectionRef.current) {
+        const next = queuedSelectionRef.current;
+        queuedSelectionRef.current = null;
+        try {
+          const outcome = await onSwitch(next.modelId, next.reasoningEffort, next.providerId);
+          if (!mountedRef.current) return;
+          effectiveCurrentRef.current = outcome.current;
+          setConfirmed(outcome.current);
+          if (next.providerId !== null) setConfirmedProviderId(next.providerId);
+          if (requestedSelectionRef.current === next) {
+            setDraft(previous => previous?.modelId === next.modelId && previous.reasoningEffort === next.reasoningEffort
+              ? { ...outcome.current, providerId: next.providerId } : previous);
+            setFeedback(outcome.message ? { message: outcome.message, tone: "good" } : null);
+          }
+        } catch (error) {
+          if (!mountedRef.current) return;
+          if (!queuedSelectionRef.current) {
+            setDraft(effectiveCurrentRef.current ? { ...effectiveCurrentRef.current, providerId: null } : null);
+            setFeedback({ message: error instanceof Error ? error.message : "Model settings could not be changed.", tone: "bad" });
+          }
+        }
+      }
+    } finally {
+      switchingRef.current = false;
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
   async function apply(modelId: string, effort: string, providerId: string | null) {
-    if (disabled || switching) return;
+    if (disabled) return;
+    if (compact) return applyCompact({ modelId, reasoningEffort: effort, providerId });
+    if (switching) return;
     const selection = { modelId, reasoningEffort: effort, providerId };
-    const sameProvider = providerId === null || providerId === (compact ? confirmedProviderId : currentProviderId);
+    const sameProvider = providerId === null || providerId === currentProviderId;
     if (sameProvider && current && modelId === current.modelId && effort === current.reasoningEffort) {
-      if (!compact) completeSelection(selection);
+      completeSelection(selection);
       return;
     }
     const generation = switchGenerationRef.current + 1;
@@ -341,17 +417,9 @@ export function CodexModelPicker({
     try {
       const outcome = await onSwitch(modelId, effort, providerId);
       if (!mountedRef.current || switchGenerationRef.current !== generation) return;
-      if (compact) {
-        if (providerId !== null) setConfirmedProviderId(providerId);
-        setConfirmed(outcome.current);
-        setDraft({ ...outcome.current, providerId });
-        setFeedback(outcome.message ? { message: outcome.message, tone: "good" } : null);
-      } else {
-        completeSelection(outcome.current);
-      }
+      completeSelection(outcome.current);
     } catch (error) {
       if (!mountedRef.current || switchGenerationRef.current !== generation) return;
-      if (compact && effectiveCurrentRef.current) setDraft({ ...effectiveCurrentRef.current, providerId: null });
       setFeedback({
         message: error instanceof Error ? error.message : "Model settings could not be changed.",
         tone: "bad"
@@ -391,7 +459,13 @@ export function CodexModelPicker({
           ref={popoverRef}
           className={`terminal-model-popover${compact ? " terminal-model-popover-quick" : ""}`}
           role="dialog"
+          aria-busy={switching}
           aria-label="Model and reasoning"
+          onKeyDown={event => {
+            event.stopPropagation();
+            if (event.key === "Enter" && (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement)) event.preventDefault();
+          }}
+          onKeyUp={event => event.stopPropagation()}
           style={popoverMaxHeight === null ? undefined : { maxHeight: `${popoverMaxHeight}px` }}
         >
           {compact ? (
@@ -400,56 +474,81 @@ export function CodexModelPicker({
                 <label className="terminal-quick-provider-field">
                   <span>Provider</span>
                   <select className="terminal-quick-model-select" aria-label="Provider"
-                    value={quickGroup?.key ?? ""} disabled={disabled || switching || refreshing}
+                    value={quickGroup?.key ?? ""} disabled={disabled}
                     onChange={event => setQuickProviderKey(event.target.value)}>
                     {providerGroups.map(group => <option key={group.key} value={group.key}
                       disabled={!group.models.length}>{group.label}{!group.models.length ? ` — ${group.provider.statusReason ?? "No models available"}` : ""}</option>)}
                   </select>
                 </label>
               ) : null}
+              {quickModels.length > QUICK_MODEL_RESULT_LIMIT || quickQuery ? (
+                <input
+                  type="search"
+                  className="terminal-quick-model-search"
+                  aria-label="Search models"
+                  placeholder={`Search ${quickModels.length} models…`}
+                  value={quickSearch}
+                  disabled={disabled}
+                  onChange={event => setQuickSearch(event.target.value)}
+                />
+              ) : null}
               <select
                 className="terminal-quick-model-select"
                 aria-label="Model"
-                value={quickShowsCurrent ? current?.modelId ?? "" : ""}
-                disabled={disabled || switching || refreshing || !quickModels.length}
+                value={quickShowsCurrent ? displayedCurrent?.modelId ?? "" : ""}
+                disabled={disabled || !quickVisibleModels.length}
                 onChange={(event) => {
                   const model = quickModels.find(entry => entry.id === event.target.value);
                   const providerId = hasProviders ? quickGroup?.provider.providerId ?? null : null;
                   if (model) void apply(model.id, model.defaultReasoningEffort, providerId);
                 }}
               >
-                {!quickShowsCurrent ? <option value="" disabled>Select model</option> : null}
-                {quickModels.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}
+                {!quickShowsCurrent ? <option value="" disabled>{quickQuery && !quickSearchMatches.length ? "No matching model" : "Select model"}</option> : null}
+                {quickCurrentOutsideList && quickCurrentModel ? <option value={quickCurrentModel.id}>{quickCurrentModel.displayName}</option> : null}
+                {quickVisibleModels.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}
               </select>
+              {quickQuery && quickSearchMatches.length > QUICK_MODEL_RESULT_LIMIT ? (
+                <div role="status" className="terminal-quick-model-count">
+                  Showing {QUICK_MODEL_RESULT_LIMIT} of {quickSearchMatches.length} matches — keep typing to narrow.
+                </div>
+              ) : quickHiddenModelCount > 0 ? (
+                <div role="status" className="terminal-quick-model-count">
+                  Showing {quickVisibleModels.length} of {quickModels.length} models — search to find the rest.
+                </div>
+              ) : null}
               {refreshing ? <div role="status">Refreshing models…</div> : null}
-              {activeReasoningOptions.length > 0 && current && quickShowsCurrent ? (
+              {switching ? <div role="status">Applying selection…</div> : null}
+              {activeReasoningOptions.length > 0 && displayedCurrent && quickShowsCurrent ? (
                 <div className="terminal-quick-effort">
                   <strong>
                     Reasoning{" "}
-                    <span>{reasoningEffortLabel(draft?.reasoningEffort ?? current.reasoningEffort)}</span>
+                    <span>{reasoningEffortLabel(draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort)}</span>
                   </strong>
                   <input
                     type="range"
                     aria-label="Reasoning effort"
-                    aria-valuetext={reasoningEffortLabel(draft?.reasoningEffort ?? current.reasoningEffort)}
-                    style={{ background: `linear-gradient(to right, #3385ff ${100 * Math.max(0, activeReasoningOptions.findIndex((option) => option.reasoningEffort === (draft?.reasoningEffort ?? current.reasoningEffort))) / Math.max(1, activeReasoningOptions.length - 1)}%, #505050 0)` }}
+                    aria-valuetext={reasoningEffortLabel(draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort)}
+                    style={{ background: `linear-gradient(to right, var(--model-slider-fill, #3385ff) ${100 * Math.max(0, activeReasoningOptions.findIndex((option) => option.reasoningEffort === (draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort))) / Math.max(1, activeReasoningOptions.length - 1)}%, var(--model-slider-track, #505050) 0)` }}
                     min={0}
                     max={Math.max(0, activeReasoningOptions.length - 1)}
                     step={1}
-                    value={Math.max(0, activeReasoningOptions.findIndex((option) => option.reasoningEffort === (draft?.reasoningEffort ?? current.reasoningEffort)))}
-                    disabled={disabled || switching || refreshing || activeReasoningOptions.length < 2}
+                    value={Math.max(0, activeReasoningOptions.findIndex((option) => option.reasoningEffort === (draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort)))}
+                    disabled={disabled || activeReasoningOptions.length < 2}
                     onChange={(event) => {
                       const effort = activeReasoningOptions[Number(event.target.value)]?.reasoningEffort;
-                      if (effort) setDraft({ ...current, reasoningEffort: effort, providerId: null });
+                      if (effort) setDraft({ ...displayedCurrent, reasoningEffort: effort, providerId: displayedProviderId });
                     }}
+                    onPointerDown={event => event.currentTarget.setPointerCapture?.(event.pointerId)}
+                    onPointerCancel={() => setDraft(switchingRef.current ? requestedSelectionRef.current :
+                      effectiveCurrentRef.current ? { ...effectiveCurrentRef.current, providerId: confirmedProviderId } : null)}
                     onPointerUp={(event) => {
                       const effort = activeReasoningOptions[Number(event.currentTarget.value)]?.reasoningEffort;
-                      if (effort) void apply(current.modelId, effort, hasProviders ? confirmedProviderId : null);
+                      if (effort) void apply(displayedCurrent.modelId, effort, hasProviders ? displayedProviderId : null);
                     }}
                     onKeyUp={(event) => {
                       if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) return;
                       const effort = activeReasoningOptions[Number(event.currentTarget.value)]?.reasoningEffort;
-                      if (effort) void apply(current.modelId, effort, hasProviders ? confirmedProviderId : null);
+                      if (effort) void apply(displayedCurrent.modelId, effort, hasProviders ? displayedProviderId : null);
                     }}
                   />
                   <div className="terminal-quick-effort-labels" aria-hidden="true">
@@ -478,13 +577,13 @@ export function CodexModelPicker({
                       role="radio"
                       aria-checked={selected}
                       className={selected ? "is-selected" : ""}
-                      disabled={disabled || switching || provider.models.length === 0}
+                      disabled={disabled || switching || provider.isInactive === true || provider.models.length === 0}
                       title={provider.statusReason ?? undefined}
                       onClick={() => selectProvider(provider.providerId)}
                     >
                       <span className="terminal-model-provider-label">
-                        <span>{provider.providerName}</span>
-                        {provider.models.length === 0 && provider.statusReason ? (
+                        <span>{provider.providerName}{provider.isInactive ? " · unavailable" : ""}</span>
+                        {(provider.isInactive || provider.models.length === 0) && provider.statusReason ? (
                           <small className="terminal-model-provider-reason">{provider.statusReason}</small>
                         ) : null}
                       </span>

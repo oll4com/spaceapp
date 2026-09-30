@@ -1,3 +1,4 @@
+import { usePanePolling } from "../../use-pane-polling.js";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { Pane } from "@space/contracts";
@@ -7,9 +8,10 @@ import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
 interface HarnessPaneProps {
   pane: Pane;
   workspaceTextSize: number;
+  isVisible?: boolean;
 }
 
-export function HarnessPane({ pane, workspaceTextSize }: HarnessPaneProps) {
+export function HarnessPane({ pane, workspaceTextSize, isVisible = true }: HarnessPaneProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const watchdogRef = useRef<number | null>(null);
   const readSelectedSessionRef = useRef<(() => void) | null>(null);
@@ -105,26 +107,17 @@ export function HarnessPane({ pane, workspaceTextSize }: HarnessPaneProps) {
     };
   }, [pane.id, pane.mode, pane.title]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function check() {
-      setChecking(true);
-      try {
-        const result = await api.harnessHealth();
-        if (!cancelled) setHealth({ ok: result.ok, status: result.status });
-      } catch {
-        if (!cancelled) setHealth({ ok: false, status: 0 });
-      } finally {
-        if (!cancelled) setChecking(false);
-      }
+  usePanePolling(async (signal) => {
+    setChecking(true);
+    try {
+      const result = await api.harnessHealth();
+      if (!signal.aborted) setHealth({ ok: result.ok, status: result.status });
+    } catch {
+      if (!signal.aborted) setHealth({ ok: false, status: 0 });
+    } finally {
+      if (!signal.aborted) setChecking(false);
     }
-    void check();
-    const interval = window.setInterval(() => void check(), 15000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [pane.id]);
+  }, 15_000, isVisible && !pane.isMinimized);
 
   useEffect(
     () => () => {

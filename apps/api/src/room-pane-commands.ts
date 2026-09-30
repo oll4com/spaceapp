@@ -6,6 +6,8 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 
+export interface SkippedPaneType { typeId: string; label: string; reason: string }
+
 export interface RoomPaneCatalogEntry {
   definition: PaneType;
   available: boolean;
@@ -18,10 +20,15 @@ export function createRoomPaneCommands(options: {
   discover(): Promise<AgentRuntimeRegistry>;
   enabledRuntimeIds(): Promise<string[]>;
   harnessAvailable(): Promise<boolean>;
+  checkGeminiQuota?(): Promise<{ allowed: boolean; reason?: string }>;
 }) {
-  async function catalog(): Promise<RoomPaneCatalogEntry[]> {
-    const [registry, enabledIds, harness] = await Promise.all([
-      options.discover(), options.enabledRuntimeIds(), options.harnessAvailable()
+  async function catalog(opts?: { needGemini?: boolean; needHarness?: boolean }): Promise<RoomPaneCatalogEntry[]> {
+    const needGemini = opts?.needGemini ?? true;
+    const needHarness = opts?.needHarness ?? true;
+    const [registry, enabledIds, harness, geminiQuota] = await Promise.all([
+      options.discover(), options.enabledRuntimeIds(),
+      needHarness ? options.harnessAvailable() : Promise.resolve(true),
+      needGemini && options.checkGeminiQuota ? options.checkGeminiQuota().catch(() => ({ allowed: true })) : Promise.resolve({ allowed: true })
     ]);
     const runtimes = new Map(registry.data.map(runtime => [runtime.id, runtime]));
     const enabled = new Set(enabledIds);
@@ -32,6 +39,8 @@ export function createRoomPaneCommands(options: {
         if (!enabled.has(definition.runtimeId)) reason = "Runtime is disabled.";
         else if (!runtime?.capabilities.includes("CLI") || !isAgentRuntimeReady(runtime))
           reason = runtime?.statusReason || "Runtime is not available.";
+        else if (definition.typeId === "gemini" && geminiQuota && !geminiQuota.allowed)
+          reason = ("reason" in geminiQuota && geminiQuota.reason) ? geminiQuota.reason : "Google account quota is exhausted.";
       } else if (definition.mode === "CHAT" && !enabled.has("cli:codex")) reason = "Chat runtime is disabled.";
       else if (definition.mode === "HARNESS" && !harness) reason = "DeepSeek Harness is unavailable.";
       return { definition, available: reason === null, reason, preparedCount: 0 };
@@ -39,7 +48,18 @@ export function createRoomPaneCommands(options: {
   }
 
   async function resolve(roomId: string, items: RoomPaneBatchItem[]): Promise<CreatePaneInput[]> {
-    const entries = await catalog();
+    const needGemini = items.some((item) => item.mode === "TERMINAL" && item.terminalRuntimeId === "cli:gemini");
+    const needHarness = items.some((item) => item.mode === "HARNESS");
+    const entries = await catalog({ needGemini, needHarness });
+    let roomCwd = "/etc";
+    try {
+      const targetRoom = await options.store.getRoom(roomId);
+      if (targetRoom?.projectPath) {
+        roomCwd = targetRoom.projectPath;
+      }
+    } catch {
+      // Default to /etc if room not found
+    }
     return items.map(item => {
       const entry = entries.find(({ definition }) => definition.mode === item.mode &&
         (item.mode !== "TERMINAL" || definition.runtimeId === item.terminalRuntimeId));
@@ -49,7 +69,8 @@ export function createRoomPaneCommands(options: {
       return { roomId, title: item.mode === "TERMINAL"
         ? `${entry.definition.label} CLI` : item.mode === "HARNESS" ? "Harness" : entry.definition.label,
         mode: item.mode,
-        ...(item.mode === "TERMINAL" ? { terminalRuntimeId: item.terminalRuntimeId, cwd: "/etc" } : {}),
+        ...(item.mode === "TERMINAL" ? { terminalRuntimeId: item.terminalRuntimeId, cwd: roomCwd } : {}),
+        ...(item.mode === "FILES" ? { cwd: roomCwd !== "/etc" ? roomCwd : undefined } : {}),
         ...(item.mode === "VNC" && item.vncTarget ? { vncTarget: item.vncTarget } : {}) };
     });
   }
@@ -70,7 +91,7 @@ export function createRoomPaneCommands(options: {
         : { mode: definition.mode }));
     const inputs = await resolve(roomId, items);
     const panes = await options.store.createPanes(inputs, traceId, claim);
-    return { roomId, requestId: command.requestId, data: panes };
+    return { roomId, requestId: command.requestId, data: panes, skipped: [] as SkippedPaneType[] };
   }
   return { catalog, resolve, execute, version: PANE_CATALOG_VERSION };
 }

@@ -4,10 +4,15 @@ import {
   Download,
   Eye,
   File,
+  FileVideo,
   FolderOpen,
+  Images,
+  Loader2,
   Maximize2,
   Minimize2,
+  Music2,
   RefreshCw,
+  Search,
   Trash2,
   Upload,
   X
@@ -15,6 +20,7 @@ import {
 import { api } from "../../api.js";
 import { ARTIFACTS_UPDATED_EVENT, dispatchArtifactsUpdated, isArtifactsUpdatedDetail } from "../../artifact-events.js";
 import { setArtifactDragData } from "../artifacts/artifact-drag.js";
+import { formatAppDateTime } from "../date-time-settings/date-time-settings.js";
 
 interface AgentFilesDockProps {
   activeRoom: Room | null;
@@ -54,6 +60,19 @@ function bytesToHex(bytes: ArrayBuffer): string {
   return Array.from(new Uint8Array(bytes), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(",")[1] ?? "";
+      resolve(base64);
+    };
+    reader.onerror = () => reject(new Error("Failed to encode file for download"));
+    reader.readAsDataURL(blob);
+  });
+}
+
 function windowsAgentFileSavePicker(entry: AgentFileEntry): AgentFileSavePicker | null {
   if (entry.previewKind !== "DOCX") return null;
   const platform = `${navigator.platform ?? ""} ${navigator.userAgent ?? ""}`;
@@ -72,10 +91,7 @@ function formatBytes(bytes: number): string {
 function formatTimestamp(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown date";
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(date);
+  return formatAppDateTime(date);
 }
 
 function metadataString(artifact: Artifact, key: string): string | null {
@@ -165,6 +181,7 @@ function agentFileEntries(artifacts: Artifact[]): AgentFileEntry[] {
 export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDockProps) {
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [clearingAll, setClearingAll] = useState(false);
@@ -176,17 +193,27 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState("ALL");
   const loadSequence = useRef(0);
   const previewSequence = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const activeRoomId = useRef<string | null>(activeRoom?.id ?? null);
   activeRoomId.current = activeRoom?.id ?? null;
   const entries = useMemo(() => agentFileEntries(artifacts), [artifacts]);
+  const filteredEntries = useMemo(() => {
+    const search = query.trim().toLocaleLowerCase();
+    return entries.filter((entry) =>
+      (!search || entry.filename.toLocaleLowerCase().includes(search)) &&
+      (typeFilter === "ALL" || entry.previewKind === typeFilter)
+    );
+  }, [entries, query, typeFilter]);
 
   async function loadAgentFiles(roomId: string) {
     if (activeRoomId.current !== roomId) return;
     const sequence = ++loadSequence.current;
     setLoading(true);
+    setLoadFailed(false);
     setError(null);
     try {
       const firstPage = await api.artifacts({
@@ -197,6 +224,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
       });
       const loaded = [...firstPage.data];
       for (let page = 2; page <= firstPage.pagination.totalPages; page += 1) {
+        if (sequence !== loadSequence.current || activeRoomId.current !== roomId) return;
         const payload = await api.artifacts({
           roomId,
           collection: "AGENT_FILES",
@@ -211,23 +239,33 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
     } catch (loadError) {
       if (sequence !== loadSequence.current || activeRoomId.current !== roomId) return;
       setError(loadError instanceof Error ? loadError.message : "Agent Files load failed");
+      setLoadFailed(true);
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
   }
 
   useEffect(() => {
-    if (!activeRoom) {
+    setArtifacts([]);
+    setSelected(null);
+    setTextPreview(null);
+    setPreviewError(null);
+    setPreviewLoading(false);
+    setLoading(false);
+    setLoadFailed(false);
+    setError(null);
+    setQuery("");
+    setTypeFilter("ALL");
+    setDragOver(false);
+    if (!activeRoom) setIsFullscreen(false);
+    return () => {
       loadSequence.current += 1;
       previewSequence.current += 1;
-      setArtifacts([]);
-      setSelected(null);
-      setTextPreview(null);
-      setPreviewError(null);
-      setIsFullscreen(false);
-      setError(null);
-      return;
-    }
+    };
+  }, [activeRoom?.id]);
+
+  useEffect(() => {
+    if (!activeRoom) return;
     void loadAgentFiles(activeRoom.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRoom?.id, refreshKey]);
@@ -358,6 +396,15 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
         await writable.close();
         return;
       }
+
+      // If native Space App bridge is available, save directly to device Downloads
+      const spaceNative = (window as unknown as { SpaceNative?: { saveFile?: (b64: string, name: string, mime: string) => boolean } }).SpaceNative;
+      if (typeof spaceNative?.saveFile === "function") {
+        const base64 = await blobToBase64(blob);
+        const saved = spaceNative.saveFile(base64, entry.filename, entry.artifact.mimeType);
+        if (saved) return;
+      }
+
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
@@ -379,30 +426,33 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
     }
     setClearingAll(true);
     setError(null);
+    const roomId = activeRoom.id;
     try {
-      const result = await api.deleteRoomAgentFiles(activeRoom.id);
+      const result = await api.deleteRoomAgentFiles(roomId);
+      if (activeRoomId.current !== roomId) return;
       closePreview();
-      await loadAgentFiles(activeRoom.id);
-      if (result.failedCount > 0) {
+      await loadAgentFiles(roomId);
+      if (activeRoomId.current === roomId && result.failedCount > 0) {
         setError(`${result.failedCount} Agent File${result.failedCount === 1 ? "" : "s"} could not be deleted.`);
       }
     } catch (clearError) {
-      setError(clearError instanceof Error ? clearError.message : "Agent Files clear failed");
+      if (activeRoomId.current === roomId) setError(clearError instanceof Error ? clearError.message : "Agent Files clear failed");
     } finally {
       setClearingAll(false);
     }
   }
 
   async function uploadFiles(files: File[]) {
-    if (!activeRoom || !files.length) return;
+    if (!activeRoom || !files.length || uploading) return;
+    const roomId = activeRoom.id;
     setUploading(true);
     setError(null);
     try {
-      const uploaded = await api.uploadAgentFiles({ roomId: activeRoom.id, files });
-      setArtifacts((current) => mergeAgentFiles(current, uploaded.artifacts));
-      dispatchArtifactsUpdated(activeRoom.id, uploaded.artifacts);
+      const uploaded = await api.uploadAgentFiles({ roomId, files });
+      if (activeRoomId.current === roomId) setArtifacts((current) => mergeAgentFiles(current, uploaded.artifacts));
+      dispatchArtifactsUpdated(roomId, uploaded.artifacts);
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "Agent Files upload failed");
+      if (activeRoomId.current === roomId) setError(uploadError instanceof Error ? uploadError.message : "Agent Files upload failed");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -481,7 +531,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
               <Upload aria-hidden="true" />
             </button>
             <button
-              className="icon-action"
+              className={`icon-action dock-fullscreen-toggle${isFullscreen ? " is-active" : ""}`}
               onClick={() => setIsFullscreen((current) => !current)}
               aria-label={isFullscreen ? "Exit Agent Files fullscreen" : "Maximize Agent Files"}
               title={isFullscreen ? "Exit Agent Files fullscreen" : "Maximize Agent Files"}
@@ -505,7 +555,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
               aria-label="Refresh Agent Files"
               title="Refresh Agent Files"
             >
-              <RefreshCw aria-hidden="true" />
+              <RefreshCw className={loading ? "agent-files-spinner" : undefined} aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -513,12 +563,32 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
         <section className="agent-files-summary" aria-label="Room Agent Files summary">
           <FolderOpen aria-hidden="true" />
           <span>
-            <strong>{activeRoom ? `${entries.length} agent-created file${entries.length === 1 ? "" : "s"}` : "No room selected"}</strong>
-            <small>Final deliverables published by agents stay here until you delete them. Drag files here or use the upload button to add your own.</small>
+            <strong>{activeRoom ? loading && !entries.length ? "Loading files…" : loadFailed && !entries.length ? "Files unavailable" : `${entries.length} file${entries.length === 1 ? "" : "s"} in this room` : "No room selected"}</strong>
+            <small>Agent deliverables and your uploads, together. Preview, download or drag a file into a pane.</small>
           </span>
         </section>
 
-        {error ? <div className="banner bad">{error}</div> : null}
+        {activeRoom ? (
+          <div className="agent-files-filters" role="search" aria-label="Find Agent Files">
+            <label className="agent-files-search">
+              <Search aria-hidden="true" />
+              <input type="search" aria-label="Search Agent Files" placeholder="Search files…" value={query} onChange={(event) => setQuery(event.target.value)} />
+            </label>
+            <select aria-label="Filter Agent Files by type" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+              <option value="ALL">All types</option>
+              <option value="IMAGE">Images</option>
+              <option value="PDF">PDFs</option>
+              <option value="DOCX">Documents</option>
+              <option value="TEXT">Text & code</option>
+              <option value="VIDEO">Videos</option>
+              <option value="AUDIO">Audio</option>
+              <option value="NONE">Other files</option>
+            </select>
+            {query || typeFilter !== "ALL" ? <small className="agent-files-result-count" role="status">{filteredEntries.length} of {entries.length} files</small> : null}
+          </div>
+        ) : null}
+
+        {error ? <div className="banner bad" role="alert">{error}</div> : null}
         {uploading ? <div className="banner" role="status">Uploading files…</div> : null}
 
         {!activeRoom ? (
@@ -526,9 +596,11 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
             <FolderOpen aria-hidden="true" />
             <span>Select a room to view its Agent Files.</span>
           </div>
-        ) : entries.length ? (
-          <div className={["agent-files-list", isFullscreen ? "is-gallery" : ""].filter(Boolean).join(" ")} role="list" aria-label="Room Agent Files">
-            {entries.map((entry) => (
+        ) : loading && !entries.length ? (
+          <div className="empty-state" role="status"><Loader2 className="agent-files-spinner" aria-hidden="true" /><span>Loading Agent Files…</span></div>
+        ) : filteredEntries.length ? (
+          <div className={["agent-files-list", isFullscreen ? "is-gallery" : ""].filter(Boolean).join(" ")} role="list" aria-label="Room Agent Files" aria-busy={loading}>
+            {filteredEntries.map((entry) => (
               <article
                 className="agent-file-card"
                 role="listitem"
@@ -544,7 +616,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
                   aria-label={`Preview ${entry.filename}`}
                   title={`Preview ${entry.filename}`}
                 >
-                  <File aria-hidden="true" />
+                  {entry.previewKind === "IMAGE" ? <Images aria-hidden="true" /> : entry.previewKind === "VIDEO" ? <FileVideo aria-hidden="true" /> : entry.previewKind === "AUDIO" ? <Music2 aria-hidden="true" /> : <File aria-hidden="true" />}
                   <span className="agent-file-preview-chip"><Eye aria-hidden="true" /></span>
                 </button>
                 <div className="agent-file-card-body">
@@ -557,11 +629,11 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
                     className="agent-file-action"
                     type="button"
                     onClick={() => void downloadAgentFile(entry)}
-                    disabled={downloadingId === entry.artifact.id || clearingAll}
+                    disabled={Boolean(downloadingId) || clearingAll}
                     aria-label={`Download ${entry.filename}`}
                     title={`Download and verify ${entry.filename}`}
                   >
-                    <Download aria-hidden="true" />
+                    {downloadingId === entry.artifact.id ? <Loader2 className="agent-files-spinner" aria-hidden="true" /> : <Download aria-hidden="true" />}
                   </button>
                   <button
                     className="agent-file-action"
@@ -576,10 +648,19 @@ export function AgentFilesDock({ activeRoom, refreshKey = null }: AgentFilesDock
               </article>
             ))}
           </div>
+        ) : query || typeFilter !== "ALL" ? (
+          <div className="empty-state" role="status">
+            <Search aria-hidden="true" />
+            <span>No files match your search.</span>
+            <button type="button" onClick={() => { setQuery(""); setTypeFilter("ALL"); }}>Clear filters</button>
+          </div>
+        ) : loadFailed ? (
+          <div className="empty-state"><span>Files could not be loaded.</span><button type="button" onClick={() => void loadAgentFiles(activeRoom.id)}>Try again</button></div>
         ) : (
           <div className={["empty-state", dragOver ? "is-dragover" : ""].filter(Boolean).join(" ")} role="status">
             <Upload aria-hidden="true" />
             <span>Drop files here or use the upload button to add files to this room.</span>
+            <button type="button" disabled={uploading || clearingAll} onClick={() => fileInputRef.current?.click()}>Upload files</button>
           </div>
         )}
 

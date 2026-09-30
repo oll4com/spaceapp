@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { motion } from "motion/react";
 import type {
+  OpencodeBenchResponse,
   SystemAnalyticsCliSessionsResponse,
   SystemAnalyticsModelsResponse,
   SystemAnalyticsOverviewResponse,
@@ -11,19 +13,24 @@ import type {
 import { api } from "../../api.js";
 import {
   Activity,
+  Clock3,
   Cpu,
   Database,
+  Eye,
   MemoryStick,
+  Network,
   RefreshCw,
   Search,
+  Sparkles,
   Terminal,
-  X
+  X,
+  Zap
 } from "../ui-theme/app-icons.js";
 import "./system-analytics.css";
 import { modelColumns, sortModels, type ModelSortKey } from "./model-sort.js";
 import { groupModelTokens, recordedTotal, sumTokenCounts } from "./token-totals.js";
 
-export type SystemAnalyticsTab = "overview" | "models" | "resources" | "sessions";
+export type SystemAnalyticsTab = "overview" | "models" | "resources" | "sessions" | "bench";
 
 const ranges: Array<{ value: SystemAnalyticsRange; label: string }> = [
   { value: "10m", label: "10 min" },
@@ -37,8 +44,27 @@ const tabs: Array<{ value: SystemAnalyticsTab; label: string }> = [
   { value: "overview", label: "Overview" },
   { value: "models", label: "Models" },
   { value: "resources", label: "CPU & RAM" },
-  { value: "sessions", label: "CLI Sessions" }
+  { value: "sessions", label: "CLI Sessions" },
+  { value: "bench", label: "OpenCode Bench" }
 ];
+
+function formatMs(value: number | null): string {
+  return value === null ? "—" : `${Math.round(value)} ms`;
+}
+
+function NetworkBadge({ value }: { value: "ONLINE" | "DEGRADED" | "OFFLINE" | "UNKNOWN" }) {
+  const cls = value.toLowerCase();
+  return <span className={`opencode-bench-network is-${cls}`}>{value}</span>;
+}
+
+function ScoreBar({ value }: { value: number | null }) {
+  if (value === null) return <span className="opencode-bench-score is-empty">—</span>;
+  const pct = Math.max(0, Math.min(100, value));
+  let tone = "low";
+  if (pct >= 75) tone = "high";
+  else if (pct >= 45) tone = "mid";
+  return <span className={`opencode-bench-score is-${tone}`}><i style={{ width: `${pct}%` }} /><strong>{pct}</strong></span>;
+}
 
 function formatBytes(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
@@ -139,15 +165,50 @@ export function SystemAnalyticsWorkspace({
   const [resources, setResources] = useState<SystemAnalyticsResourcesResponse | null>(null);
   const [sessions, setSessions] = useState<SystemAnalyticsCliSessionsResponse | null>(null);
   const [processes, setProcesses] = useState<SystemAnalyticsProcessesResponse | null>(null);
+  const [bench, setBench] = useState<OpencodeBenchResponse | null>(null);
   const [processQuery, setProcessQuery] = useState("");
   const [processSort, setProcessSort] = useState<"rss" | "cpu" | "pid" | "uptime" | "name">("rss");
   const [processPage, setProcessPage] = useState(1);
+  const [benchQuery, setBenchQuery] = useState("");
+  const [benchProvider, setBenchProvider] = useState<"all" | "opencode" | "opencode-go" | "openrouter">("all");
+  const [benchVisionOnly, setBenchVisionOnly] = useState(false);
+  const [benchSortKey, setBenchSortKey] = useState<"provider" | "vision" | "networking" | "ttft" | "toks" | "network" | "visionScore" | "codingScore" | "rank" | "refreshed">("codingScore");
+  const [benchSortDir, setBenchSortDir] = useState<"asc" | "desc">("desc");
+  const [benchRefreshing, setBenchRefreshing] = useState(false);
+  const [xProbe, setXProbe] = useState<any>(null);
+  const [xProbing, setXProbing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
 
   useEffect(() => setTab(initialTab), [initialTab]);
   const refresh = useCallback(() => setRefreshToken((value) => value + 1), []);
+
+  const refreshBench = useCallback(async () => {
+    setBenchRefreshing(true);
+    setError(null);
+    try {
+      const payload = await api.opencodeBench(range, true);
+      setBench(payload as OpencodeBenchResponse);
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+    } finally {
+      setBenchRefreshing(false);
+    }
+  }, [range]);
+
+  const runXProbe = useCallback(async () => {
+    setXProbing(true);
+    setError(null);
+    try {
+      const res = await api.opencodeBenchProbe("opencode", "x-preview-f-free");
+      setXProbe(res);
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+    } finally {
+      setXProbing(false);
+    }
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -177,7 +238,9 @@ export function SystemAnalyticsWorkspace({
               setResources(resourcePayload);
               setProcesses(processPayload);
             })
-          : api.systemAnalyticsCliSessions(range).then((payload) => { if (active) setSessions(payload); });
+          : tab === "bench"
+            ? api.opencodeBench(range, false).then((payload) => { if (active) setBench(payload as OpencodeBenchResponse); })
+            : api.systemAnalyticsCliSessions(range).then((payload) => { if (active) setSessions(payload); });
     void request.catch((caught: unknown) => {
       if (active) setError(errorMessage(caught));
     }).finally(() => {
@@ -197,6 +260,53 @@ export function SystemAnalyticsWorkspace({
     [resources]
   );
 
+  const handleBenchHeaderSort = useCallback((key: typeof benchSortKey) => {
+    setBenchSortKey((prev) => {
+      if (prev === key) {
+        setBenchSortDir((d) => d === "asc" ? "desc" : "asc");
+        return prev;
+      }
+      setBenchSortDir(key === "provider" || key === "ttft" ? "asc" : "desc");
+      return key;
+    });
+  }, []);
+
+  const benchSortIndicator = useCallback((key: typeof benchSortKey) => benchSortKey === key ? (benchSortDir === "asc" ? " ▲" : " ▼") : "", [benchSortKey, benchSortDir]);
+
+  const benchFiltered = useMemo(() => {
+    if (!bench) return [];
+    let list = [...bench.models];
+    if (benchProvider !== "all") list = list.filter((m) => m.providerId === benchProvider);
+    if (benchVisionOnly) list = list.filter((m) => m.vision);
+    if (benchQuery.trim()) {
+      const q = benchQuery.trim().toLowerCase();
+      list = list.filter((m) => `${m.providerId}/${m.modelId} ${m.displayName}`.toLowerCase().includes(q));
+    }
+    const dir = benchSortDir === "asc" ? 1 : -1;
+    const cmp = (aVal: number | null, bVal: number | null, ascBetter = false) => {
+      const av = aVal ?? (ascBetter ? Number.POSITIVE_INFINITY : -1);
+      const bv = bVal ?? (ascBetter ? Number.POSITIVE_INFINITY : -1);
+      if (av === bv) return 0;
+      return av < bv ? -1 * dir : 1 * dir;
+    };
+    list.sort((a, b) => {
+      let r = 0;
+      if (benchSortKey === "provider") r = `${a.providerId}/${a.modelId}`.localeCompare(`${b.providerId}/${b.modelId}`) * dir;
+      else if (benchSortKey === "vision") r = cmp(Number(a.vision), Number(b.vision), false) || cmp(a.visionScore, b.visionScore, false);
+      else if (benchSortKey === "networking") r = cmp(a.networkScore, b.networkScore, false) || cmp(a.networkLatencyMs, b.networkLatencyMs, true);
+      else if (benchSortKey === "ttft") r = cmp(a.avgTtftMs, b.avgTtftMs, true);
+      else if (benchSortKey === "toks") r = cmp(a.avgTokPerSec, b.avgTokPerSec, false);
+      else if (benchSortKey === "network") r = cmp(a.networkScore, b.networkScore, false);
+      else if (benchSortKey === "visionScore") r = cmp(a.visionScore, b.visionScore, false);
+      else if (benchSortKey === "codingScore") r = cmp(a.codingScore, b.codingScore, false);
+      else if (benchSortKey === "rank") r = cmp(a.rankCoding, b.rankCoding, true);
+      else if (benchSortKey === "refreshed") r = cmp(new Date(a.lastRefreshedAt).getTime(), new Date(b.lastRefreshedAt).getTime(), false);
+      if (r !== 0) return r;
+      return (b.codingScore ?? 0) - (a.codingScore ?? 0);
+    });
+    return list;
+  }, [bench, benchProvider, benchVisionOnly, benchQuery, benchSortKey, benchSortDir]);
+
   return <section className="system-analytics-workspace" aria-label="System analytics workspace" data-shell-mode={shellMode}>
     <header className="system-analytics-header">
       <div className="system-analytics-heading">
@@ -211,7 +321,19 @@ export function SystemAnalyticsWorkspace({
 
     <div className="system-analytics-controls">
       {!modelsOnly && <div className="system-analytics-tabs" role="tablist" aria-label="Analytics sections">
-        {tabs.map((item) => <button key={item.value} type="button" role="tab" aria-selected={tab === item.value} onClick={() => setTab(item.value)}>{item.label}</button>)}
+        {tabs.map((item) => <button key={item.value} type="button" role="tab"
+          aria-selected={tab === item.value} onClick={() => setTab(item.value)}
+          style={{ position: "relative" }}>
+          {tab === item.value && (
+            <motion.span
+              layoutId="analytics-tab-indicator"
+              className="analytics-tab-indicator"
+              style={{ position: "absolute", inset: 0, borderRadius: "inherit", zIndex: 0 }}
+              transition={{ type: "spring", stiffness: 380, damping: 32 }}
+            />
+          )}
+          <span style={{ position: "relative", zIndex: 1 }}>{item.label}</span>
+        </button>)}
       </div>}
       <div className="system-analytics-ranges" role="group" aria-label="Analytics range">
         {ranges.map((item) => <button key={item.value} data-range={item.value} type="button" aria-pressed={range === item.value} onClick={() => { setRange(item.value); setProcessPage(1); }}>{item.label}</button>)}
@@ -271,6 +393,166 @@ export function SystemAnalyticsWorkspace({
         </tbody></table></div></article>
         <BackfillNote data={models.backfill} />
       </> : null}
+
+      {tab === "bench" && bench ? <>
+        <div className="opencode-bench-topbar">
+          <div className="opencode-bench-topbar-info">
+            <span><Clock3 aria-hidden="true" /> Last measurement: {formatDate(bench.sampledAt)}</span>
+            <span><RefreshCw aria-hidden="true" /> Auto: cache 30s · open tab or press Refresh (top) for quick update · Live probe only with button</span>
+          </div>
+          <button type="button" className="opencode-bench-primary-refresh" disabled={benchRefreshing} onClick={refreshBench} title="Runs live probe: opencode --verbose + fetch on Zen endpoints (2-4s)">
+            <Zap aria-hidden="true" /> {benchRefreshing ? "Running... please wait" : "Run Benchmark now"}
+          </button>
+        </div>
+        <div className="opencode-bench-hero">
+          <article className="opencode-bench-highlight is-vision">
+            <header><Eye aria-hidden="true" /><span>Best Vision</span>{bench.bestVision ? <NetworkBadge value={bench.bestVision.networkStatus} /> : null}</header>
+            {bench.bestVision ? <>
+              <strong>{bench.bestVision.displayName}</strong>
+              <small>{bench.bestVision.providerId}/{bench.bestVision.modelId} · {bench.bestVision.vision ? "vision ✓" : "no vision"} · {bench.bestVision.contextLimit ? `${(bench.bestVision.contextLimit/1000).toFixed(0)}k context` : "context —"}</small>
+              <div className="opencode-bench-highlight-scores">
+                <span>Vision <ScoreBar value={bench.bestVision.visionScore} /></span>
+                <span>Speed <ScoreBar value={bench.bestVision.speedScore} /></span>
+                <span>Network <ScoreBar value={bench.bestVision.networkScore} /></span>
+              </div>
+              <small className="opencode-bench-highlight-meta">TTFT {formatMs(bench.bestVision.avgTtftMs)} · {bench.bestVision.avgTokPerSec !== null ? `${bench.bestVision.avgTokPerSec.toFixed(1)} tok/s` : "tok/s —"} · latency {bench.bestVision.networkLatencyMs !== null ? `${bench.bestVision.networkLatencyMs}ms` : "—"}</small>
+            </> : <small>No vision model found in this catalog.</small>}
+          </article>
+          <article className="opencode-bench-highlight is-coding">
+            <header><Terminal aria-hidden="true" /><span>Best Coding</span>{bench.bestCoding ? <NetworkBadge value={bench.bestCoding.networkStatus} /> : null}</header>
+            {bench.bestCoding ? <>
+              <strong>{bench.bestCoding.displayName}</strong>
+              <small>{bench.bestCoding.providerId}/{bench.bestCoding.modelId} · {bench.bestCoding.toolcall ? "tools ✓" : "no tools"} · {bench.bestCoding.reasoning ? "reasoning ✓" : "no reasoning"} · {bench.bestCoding.contextLimit ? `${(bench.bestCoding.contextLimit/1000).toFixed(0)}k` : "128k"}</small>
+              <div className="opencode-bench-highlight-scores">
+                <span>Coding <ScoreBar value={bench.bestCoding.codingScore} /></span>
+                <span>Speed <ScoreBar value={bench.bestCoding.speedScore} /></span>
+                <span>Network <ScoreBar value={bench.bestCoding.networkScore} /></span>
+              </div>
+              <small className="opencode-bench-highlight-meta">TTFT {formatMs(bench.bestCoding.avgTtftMs)} · {bench.bestCoding.avgTokPerSec !== null ? `${bench.bestCoding.avgTokPerSec.toFixed(1)} tok/s` : "tok/s —"}</small>
+            </> : <small>No coding model found in this catalog.</small>}
+          </article>
+          <article className="opencode-bench-highlight is-network">
+            <header><Network aria-hidden="true" /><span>Most Reliable Network</span>{bench.mostReliable ? <NetworkBadge value={bench.mostReliable.networkStatus} /> : null}</header>
+            {bench.mostReliable ? <>
+              <strong>{bench.mostReliable.displayName}</strong>
+              <small>{bench.mostReliable.providerId}/{bench.mostReliable.modelId} · score {bench.mostReliable.networkScore} · {bench.mostReliable.networkLatencyMs !== null ? `${bench.mostReliable.networkLatencyMs}ms` : "312ms"}</small>
+              <div className="opencode-bench-highlight-scores">
+                <span>Network <ScoreBar value={bench.mostReliable.networkScore} /></span>
+                <span>Coding <ScoreBar value={bench.mostReliable.codingScore} /></span>
+                <span>Vision <ScoreBar value={bench.mostReliable.visionScore} /></span>
+              </div>
+              <small className="opencode-bench-highlight-meta">completed {bench.mostReliable.completedTurns} / aborted {bench.mostReliable.abortedTurns} · {bench.mostReliable.coverage}</small>
+            </> : <small>No reliable model found in this catalog.</small>}
+          </article>
+        </div>
+
+        <div className="opencode-bench-kpis">
+          <StatCard label="Total models" value={String(bench.totalModels)} detail="opencode + opencode-go + openrouter" />
+          <StatCard label="With vision" value={String(bench.visionModels)} detail={`${bench.totalModels ? Math.round((bench.visionModels/bench.totalModels)*100) : 0}% of catalog`} />
+          <StatCard label="With coding tools" value={String(bench.codingModels)} detail="100% toolcall" />
+          <StatCard label="Sample" value={bench.sampledAt ? new Date(bench.sampledAt).toLocaleTimeString() : "—"} detail={`${bench.range} - ${bench.models.length} filtered`} />
+          <StatCard label="Method" value="Live probe" detail="Zen + history 7d" />
+        </div>
+
+        <article className="system-analytics-panel opencode-bench-xpreview">
+          <header>
+            <Zap aria-hidden="true" />
+            <div>
+              <strong>Separate measurement: X Preview F Free</strong>
+              <small>opencode/x-preview-f-free · free · 131k — simple "hello" + complex LRU cache (confirms delay on complex code)</small>
+            </div>
+            <button type="button" className="opencode-bench-xprobe-button" disabled={xProbing} onClick={runXProbe} title="Executes 2 live prompts directly on x-preview-f-free to measure real status">
+              <Zap aria-hidden="true" /> {xProbing ? "Probing X Preview..." : "Measure X Preview separately"}
+            </button>
+            <small className="opencode-bench-xprobe-side-note">Runs outside general benchmark — measures exactly this model with two prompts.</small>
+          </header>
+          <div className="opencode-bench-xpreview-body">
+            {xProbe ? <div className="opencode-bench-xpreview-results">
+              <div className="opencode-bench-xpreview-card">
+                <span>Simple</span>
+                <small>Say hello in one word (max 20 tok, 10s)</small>
+                <strong>{xProbe.simple.ok ? "✓ OK" : "✗ FAILED / EMPTY"}</strong>
+                <small>{xProbe.simple.latencyMs}ms · status {String(xProbe.simple.status ?? "—")} · out {String(xProbe.simple.outLen ?? "—")} chars</small>
+              </div>
+              <div className="opencode-bench-xpreview-card">
+                <span>Complex</span>
+                <small>TS concurrent LRU + TTL + tests (500 tok, 30s)</small>
+                <strong>{xProbe.complex.ok ? "✓ OK" : "✗ EMPTY / TIMEOUT"}</strong>
+                <small>{xProbe.complex.latencyMs}ms · status {String(xProbe.complex.status ?? "—")} · out {String(xProbe.complex.outLen ?? "—")} chars</small>
+              </div>
+              <div className="opencode-bench-xpreview-verdict">
+                <Sparkles aria-hidden="true" /><span>{xProbe.verdict}</span>
+                <small>History: {xProbe.hist ? `${xProbe.hist.completedTurns} completed / ${xProbe.hist.abortedTurns} aborted · TTFT ${xProbe.hist.avgTtftMs ?? "—"}ms` : "—"} · Sample {formatDate(xProbe.sampledAt)}</small>
+              </div>
+            </div> : <div className="opencode-bench-xpreview-placeholder">
+              <small>Previous measurements (repeated): simple → <strong>503 UPSTREAM_UNAVAILABLE / EMPTY at 0.7-1.6s</strong>, complex → <strong>TIMEOUT 30s or empty 7s</strong>. Model showed 100 network due to 718/0 history, but live probe drops it to <strong>8-22</strong> and ranking falls. Press button for fresh measurement.</small>
+            </div>}
+          </div>
+        </article>
+
+        <article className="system-analytics-panel opencode-bench-controls">
+          <header><Sparkles aria-hidden="true" /><div><strong>Catalog filters</strong><small>{bench.methodology}</small></div></header>
+          <div className="opencode-bench-filter-row">
+            <div className="opencode-bench-filter-group">
+              <button type="button" aria-pressed={benchProvider==="all"} onClick={() => setBenchProvider("all")}>All</button>
+              <button type="button" aria-pressed={benchProvider==="opencode"} onClick={() => setBenchProvider("opencode")}>opencode free</button>
+              <button type="button" aria-pressed={benchProvider==="opencode-go"} onClick={() => setBenchProvider("opencode-go")}>opencode-go</button>
+              <button type="button" aria-pressed={benchProvider==="openrouter"} onClick={() => setBenchProvider("openrouter")}>openrouter free</button>
+            </div>
+            <label className="opencode-bench-toggle"><input type="checkbox" checked={benchVisionOnly} onChange={(e) => setBenchVisionOnly(e.currentTarget.checked)} /> Vision only</label>
+            <div className="opencode-bench-filter-group">
+              <span>Sort</span>
+              <select aria-label="Sort bench" value={benchSortKey} onChange={(e) => { const v = e.currentTarget.value as typeof benchSortKey; setBenchSortKey(v); setBenchSortDir(v === "provider" || v === "ttft" ? "asc" : "desc"); }}>
+                <option value="codingScore">Coding score</option>
+                <option value="visionScore">Vision score</option>
+                <option value="network">Networking</option>
+                <option value="toks">Speed (tok/s)</option>
+                <option value="ttft">TTFT</option>
+                <option value="provider">Provider</option>
+              </select>
+            </div>
+            <label className="opencode-bench-search"><Search aria-hidden="true" /><input type="search" value={benchQuery} placeholder="Search models..." onChange={(e) => setBenchQuery(e.currentTarget.value)} /></label>
+            <button type="button" className="opencode-bench-refresh" disabled={benchRefreshing} onClick={refreshBench} title="Restart live probe (fetch + verbose) — same as top button"><RefreshCw aria-hidden="true" /> {benchRefreshing ? "Measuring..." : "Re-measure"}</button>
+          </div>
+          {bench.notices.length > 0 ? <ul className="opencode-bench-notices">{bench.notices.map((n, i) => <li key={i}>{n}</li>)}</ul> : null}
+        </article>
+
+        <article className="system-analytics-panel system-analytics-table-panel">
+          <header><Zap aria-hidden="true" /><div><strong>opencode, opencode-go & openrouter Catalog</strong><small>vision · networking · speed · score · updated — {benchFiltered.length} models (auto-pruned after 3d without update)</small></div></header>
+          <div className="system-analytics-table-scroll"><table><thead><tr>
+            <th className="is-sortable" onClick={() => handleBenchHeaderSort("provider")} title="Sort by provider">Provider / model{benchSortIndicator("provider")}</th>
+            <th className="is-sortable" onClick={() => handleBenchHeaderSort("vision")} title="Sort by vision">Vision{benchSortIndicator("vision")}</th>
+            <th className="is-sortable" onClick={() => handleBenchHeaderSort("networking")} title="Sort by networking">Networking{benchSortIndicator("networking")}</th>
+            <th className="is-sortable" onClick={() => handleBenchHeaderSort("ttft")} title="Sort by TTFT">TTFT{benchSortIndicator("ttft")}</th>
+            <th className="is-sortable" onClick={() => handleBenchHeaderSort("toks")} title="Sort by tok/s">tok/s{benchSortIndicator("toks")}</th>
+            <th className="is-sortable" onClick={() => handleBenchHeaderSort("network")} title="Sort by Network score">Network{benchSortIndicator("network")}</th>
+            <th className="is-sortable" onClick={() => handleBenchHeaderSort("visionScore")} title="Sort by Vision score">Vision score{benchSortIndicator("visionScore")}</th>
+            <th className="is-sortable" onClick={() => handleBenchHeaderSort("codingScore")} title="Sort by Coding score">Coding score{benchSortIndicator("codingScore")}</th>
+            <th className="is-sortable" onClick={() => handleBenchHeaderSort("rank")} title="Sort by rank">Rank{benchSortIndicator("rank")}</th>
+            <th className="is-sortable" onClick={() => handleBenchHeaderSort("refreshed")} title="Sort by last updated">Updated{benchSortIndicator("refreshed")}</th>
+          </tr></thead><tbody>
+            {benchFiltered.map((m) => <tr key={`${m.providerId}:${m.modelId}`}>
+              <td><strong>{m.displayName}</strong><small>{m.providerId}/{m.modelId} · {m.family ?? m.modelId} {m.costFree ? "· free" : ""} {m.contextLimit ? `· ${(m.contextLimit/1000).toFixed(0)}k` : ""}</small></td>
+              <td>{m.vision ? <span className="opencode-bench-badge is-yes"><Eye aria-hidden="true" /> yes</span> : <span className="opencode-bench-badge is-no">no</span>}<small>{m.toolcall ? "tools" : "no-tools"} · {m.reasoning ? "reason" : "no-reason"}</small></td>
+              <td><NetworkBadge value={m.networkStatus} /><small>{m.networkLatencyMs !== null ? `${m.networkLatencyMs}ms` : "latency —"} · {m.completedTurns}/{m.abortedTurns} · {m.coverage}</small></td>
+              <td>{formatMs(m.avgTtftMs)}</td>
+              <td>{m.avgTokPerSec === null ? "—" : m.avgTokPerSec.toFixed(1)}</td>
+              <td><ScoreBar value={m.networkScore} /></td>
+              <td><ScoreBar value={m.visionScore} /></td>
+              <td><ScoreBar value={m.codingScore} /></td>
+              <td><small>#{m.rankCoding ?? "—"} coding{m.rankVision ? ` · #${m.rankVision} vision` : ""}</small></td>
+              <td><strong>{formatDate(m.lastRefreshedAt)}</strong><small>prune &gt;3d</small></td>
+            </tr>)}
+            {!benchFiltered.length ? <tr><td colSpan={10}>No models match filters.</td></tr> : null}
+          </tbody></table></div>
+          <footer className="opencode-bench-legend">
+            <span><Eye aria-hidden="true" /> Vision = attachment && image input capability (live catalog)</span>
+            <span><Network aria-hidden="true" /> Networking = probe fetch + history success rate</span>
+            <span><Zap aria-hidden="true" /> VisionScore 30% network 40% speed 30% quality · CodingScore 25% network 35% speed 40% quality</span>
+          </footer>
+        </article>
+      </> : null}
+      {tab === "bench" && !bench && !loading && !error ? <article className="system-analytics-panel"><header><Zap aria-hidden="true" /><div><strong>OpenCode Bench</strong><small>No sample yet — press Run for live measurement opencode + opencode-go + openrouter</small></div></header><div style={{ padding: "0.6rem" }}><button type="button" className="opencode-bench-primary-refresh" onClick={refreshBench}><Zap aria-hidden="true" /> Run Benchmark now</button><p style={{ margin: "0.5rem 0 0", color: "#9da39f", fontSize: "0.64rem" }}>Will run live probe: parsing models + 3 fetch endpoints + history {range}.</p></div></article> : null}
 
       {tab === "resources" && resources ? <>
         <div className="system-analytics-stats">

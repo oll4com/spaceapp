@@ -63,6 +63,9 @@ export {
 export type {
   CreateStreamingBotActivityInput,
   StreamingBotActivityRecord,
+  StreamingBotMemoryRecord,
+  StreamingBotMemoryInput,
+  StreamingModerationActionRecord,
   StreamingBotChatStateRecord,
   StreamingBotQuotaRecord,
   StreamingBotRepository
@@ -71,3 +74,6 @@ export type {
 export * from "./task-title-repository.js";
 
 export * from "./space-control-repository.js";
+export * from "./live-memory-repository.js";
+export * from "./demo-projects-repository.js";
+export * from "./live-history-repository.js";

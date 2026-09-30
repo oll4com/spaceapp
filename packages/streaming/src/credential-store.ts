@@ -12,7 +12,9 @@ export interface StreamingProviderClient {
 const providerFilename: Record<StreamingOAuthProvider, string> = {
   YOUTUBE: "youtube-client.json",
   TWITCH: "twitch-client.json",
-  TIKTOK: "tiktok-client.json"
+  TIKTOK: "tiktok-client.json",
+  X: "x-client.json",
+  DISCORD: "discord-client.json"
 };
 
 export const streamingProviderScopes: Record<StreamingOAuthProvider, string[]> = {
@@ -26,11 +28,14 @@ export const streamingProviderScopes: Record<StreamingOAuthProvider, string[]> =
     "channel:read:subscriptions",
     "chat:read",
     "chat:edit",
-    "chat:send",
+    "user:write:chat",
     "user:read:chat",
+    "moderator:manage:banned_users",
     "channel:moderate"
   ],
-  TIKTOK: ["user.info.basic", "user.info.stats"]
+  TIKTOK: ["user.info.basic", "user.info.stats"],
+  X: ["tweet.read", "users.read", "offline.access"],
+  DISCORD: ["identify", "guilds"]
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,6 +1,22 @@
-import { MessageSquare, MessageSquareX, Send } from "../ui-theme/app-icons.js";
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { Keyboard, MessageSquare, MessageSquareX, Send } from "../ui-theme/app-icons.js";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { SharedChatMessage } from "@space/contracts";
+import {
+  convertTextRange,
+  createGreekInputState,
+  detectKeyboardLayoutMismatch,
+  handleEnglishKeyInput,
+  handleGreekKeyInput,
+  insertTextAtCursor,
+  toggleKeyboardLayout,
+  type LayoutMismatchDetection
+} from "../agent-pane/greek-layout-converter.js";
+import {
+  isComposerLayoutIconVisible,
+  isComposerSuggestionBarVisible,
+  playLayoutSuggestionBeep,
+  useKeyboardAutocorrectSettings
+} from "../keyboard-autocorrect/keyboard-autocorrect-settings.js";
 import { api } from "../../api.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
@@ -35,6 +51,41 @@ export function SharedChatDock() {
   const [sending, setSending] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [layoutSuggestion, setLayoutSuggestion] = useState<LayoutMismatchDetection | null>(null);
+  const [typingLayoutMode, setTypingLayoutMode] = useState<"el" | "en" | null>(null);
+  const greekTypingMode = typingLayoutMode === "el";
+  const greekInputStateRef = useRef(createGreekInputState(false));
+
+  const setTypingMode = useCallback((mode: "el" | "en" | null) => {
+    setTypingLayoutMode(mode);
+    greekInputStateRef.current.enabled = mode === "el";
+    if (mode) {
+      try {
+        const desktop = (window as any).spaceDesktop;
+        if (typeof desktop?.switchKeyboardLayout === "function") {
+          desktop.switchKeyboardLayout(mode).catch(() => {});
+        }
+      } catch {}
+    }
+  }, []);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const { settings: autocorrectSettings } = useKeyboardAutocorrectSettings();
+  const prevLayoutSuggestionRef = useRef(false);
+
+  useEffect(() => {
+    if (layoutSuggestion && !prevLayoutSuggestionRef.current) {
+      if (autocorrectSettings.enabled && autocorrectSettings.soundEnabled) {
+        playLayoutSuggestionBeep();
+      }
+    }
+    prevLayoutSuggestionRef.current = Boolean(layoutSuggestion);
+  }, [layoutSuggestion, autocorrectSettings.enabled, autocorrectSettings.soundEnabled]);
+
+  useEffect(() => {
+    if (!autocorrectSettings.enabled) {
+      setLayoutSuggestion(null);
+    }
+  }, [autocorrectSettings.enabled]);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => {
@@ -74,15 +125,20 @@ export function SharedChatDock() {
     return () => socket.close();
   }, [runtime.kind, refresh]);
 
-  const send = async (event: FormEvent) => {
-    event.preventDefault();
-    const content = draft.trim();
+  const send = async (event?: FormEvent) => {
+    event?.preventDefault();
+    let content = draft.trim();
+    const layoutCheck = detectKeyboardLayoutMismatch(content);
+    if (layoutCheck.hasMismatch && layoutCheck.confidence >= 0.90 && layoutCheck.direction === "toGreek") {
+      content = layoutCheck.convertedText.trim();
+    }
     if (!content || sending) return;
     setSending(true);
     setError(null);
     try {
       const message = await api.sendSharedChatMessage({ senderLabel: "operator", content, kind: "message", metadata: {} });
       setDraft("");
+      setLayoutSuggestion(null);
       setMessages((current) => [message, ...current]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to send the message.");
@@ -182,10 +238,97 @@ export function SharedChatDock() {
 
       <form className="shared-chat-composer" onSubmit={(event) => void send(event)}>
         <label htmlFor="shared-chat-message">Message the room</label>
+        {layoutSuggestion && isComposerSuggestionBarVisible(autocorrectSettings) ? (
+          <div className="codex-layout-suggestion" role="status" aria-live="polite" style={{ marginBottom: 6 }}>
+            <Keyboard aria-hidden="true" style={{ width: 14, height: 14, flexShrink: 0 }} />
+            <span className="codex-layout-suggestion-label">
+              Wrong layout? Convert to: <strong>{layoutSuggestion.convertedText.length > 40 ? layoutSuggestion.convertedText.slice(0, 40) + "…" : layoutSuggestion.convertedText}</strong>
+            </span>
+            <button
+              type="button"
+              className="codex-layout-apply-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setDraft(layoutSuggestion.convertedText);
+                setLayoutSuggestion(null);
+                const isGreekTarget = /[\u0370-\u03FF]/.test(layoutSuggestion.convertedText);
+                setTypingMode(isGreekTarget ? "el" : "en");
+                composerRef.current?.focus();
+              }}
+              title="Apply layout conversion (Alt+G)"
+            >
+              Fix (Alt+G)
+            </button>
+          </div>
+        ) : null}
         <textarea
           id="shared-chat-message"
+          ref={composerRef}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            const val = event.target.value;
+            setDraft(val);
+            if (!autocorrectSettings.enabled) {
+              setLayoutSuggestion(null);
+              return;
+            }
+            const detection = detectKeyboardLayoutMismatch(val);
+            const isLangSupported = (detection.direction === "toGreek" && autocorrectSettings.supportedLanguages.includes("el")) ||
+              (detection.direction === "toQwerty" && autocorrectSettings.supportedLanguages.includes("en"));
+            if (detection.hasMismatch && detection.confidence >= 0.85 && isLangSupported) {
+              setLayoutSuggestion(detection);
+            } else {
+              setLayoutSuggestion(null);
+            }
+          }}
+          onKeyDown={(event) => {
+            const isGKey = event.code === "KeyG" || event.key.toLowerCase() === "g" || event.key === "γ" || event.key === "Γ" || event.key === "©";
+            if (autocorrectSettings.enabled && (event.altKey || (event.ctrlKey && event.shiftKey)) && isGKey) {
+              event.preventDefault();
+              const textarea = event.currentTarget;
+              if (layoutSuggestion || draft.trim()) {
+                const selStart = textarea.selectionStart ?? 0;
+                const selEnd = textarea.selectionEnd ?? 0;
+                const converted = layoutSuggestion
+                  ? layoutSuggestion.convertedText
+                  : convertTextRange(draft, selStart, selEnd, "toggle").newText;
+                const changed = converted !== draft;
+                setDraft(converted);
+                setLayoutSuggestion(null);
+                if (changed) {
+                  const isGreekTarget = /[\u0370-\u03FF]/.test(converted);
+                  setTypingMode(isGreekTarget ? "el" : "en");
+                } else {
+                  const nextMode = typingLayoutMode === "el" ? "en" : "el";
+                  setTypingMode(nextMode);
+                }
+              } else {
+                const nextMode = typingLayoutMode === "el" ? "en" : "el";
+                setTypingMode(nextMode);
+              }
+              return;
+            }
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              void send(event);
+              return;
+            }
+            if (typingLayoutMode === "el" && greekInputStateRef.current.enabled && composerRef.current) {
+              const textarea = composerRef.current;
+              const handled = handleGreekKeyInput(event, greekInputStateRef.current, (char) => {
+                insertTextAtCursor(textarea, char);
+                setDraft(textarea.value);
+              });
+              if (handled) return;
+            } else if (typingLayoutMode === "en" && composerRef.current) {
+              const textarea = composerRef.current;
+              const handled = handleEnglishKeyInput(event, (char) => {
+                insertTextAtCursor(textarea, char);
+                setDraft(textarea.value);
+              });
+              if (handled) return;
+            }
+          }}
           placeholder="Message all agents… Deepseek only wakes with an explicit @deepseek."
           rows={3}
           maxLength={20_000}
@@ -198,6 +341,54 @@ export function SharedChatDock() {
           data-enable-grammarly="false"
         />
         <div className="shared-chat-composer-actions">
+          {isComposerLayoutIconVisible(autocorrectSettings) ? (
+            <button
+              type="button"
+              className={`codex-layout-toggle ${layoutSuggestion ? "has-suggestion" : ""} ${typingLayoutMode === "el" ? "is-greek-active" : ""} ${typingLayoutMode === "en" ? "is-english-active" : ""}`}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                const textarea = composerRef.current;
+                const selStart = textarea?.selectionStart ?? 0;
+                const selEnd = textarea?.selectionEnd ?? 0;
+                if (layoutSuggestion || draft.trim()) {
+                  const converted = layoutSuggestion
+                    ? layoutSuggestion.convertedText
+                    : convertTextRange(draft, selStart, selEnd, "toggle").newText;
+                  const changed = converted !== draft;
+                  setDraft(converted);
+                  setLayoutSuggestion(null);
+                  if (changed) {
+                    const isGreekTarget = /[\u0370-\u03FF]/.test(converted);
+                    setTypingMode(isGreekTarget ? "el" : "en");
+                  } else {
+                    const nextMode = typingLayoutMode === "el" ? "en" : "el";
+                    setTypingMode(nextMode);
+                  }
+                } else {
+                  const nextMode = typingLayoutMode === "el" ? "en" : "el";
+                  setTypingMode(nextMode);
+                }
+                textarea?.focus();
+              }}
+              title={
+                layoutSuggestion
+                  ? `Fix layout: "${layoutSuggestion.convertedText}" (Alt+G)`
+                  : typingLayoutMode === "el"
+                    ? "Keyboard layout: Greek (EL) active · Press Alt+G to switch to English"
+                    : typingLayoutMode === "en"
+                      ? "Keyboard layout: English (EN) active · Press Alt+G to switch to Greek"
+                      : "Fix keyboard layout (Alt+G) · Convert EN ⇄ EL"
+              }
+              aria-label="Fix keyboard layout (Alt+G)"
+            >
+              <Keyboard aria-hidden="true" />
+              {typingLayoutMode === "el" ? (
+                <span className="codex-layout-badge" aria-label="Greek layout active">EL</span>
+              ) : typingLayoutMode === "en" ? (
+                <span className="codex-layout-badge is-en" aria-label="English layout active">EN</span>
+              ) : null}
+            </button>
+          ) : null}
           <small>All messages stay recorded in the immutable audit file.</small>
           <button type="submit" className="shared-chat-send" disabled={sending || !draft.trim()}>
             <Send aria-hidden="true" />

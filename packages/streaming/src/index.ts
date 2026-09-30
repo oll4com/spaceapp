@@ -8,13 +8,16 @@ export {
 export type { StreamingTokenSet } from "./token-manager.js";
 export { StreamingProviderError } from "./errors.js";
 export { YouTubeChatConnector } from "./youtube-chat.js";
+export { YouTubeLiveChatStream } from "./youtube-stream.js";
 export type { StreamingChatMessage, StreamingChatPage, LiveBroadcastInfo } from "./youtube-chat.js";
 export { TwitchChatConnector } from "./twitch-chat.js";
+export { TwitchEventSubChat } from "./twitch-eventsub.js";
 export type { TwitchChatConnectorOptions } from "./twitch-chat.js";
 export {
   ReplyRateLimiter,
   canReply,
   isSpam,
+  isViewerQuestion,
   messageLengthCap,
   truncateReply,
   youtubeReplyBudget
@@ -22,6 +25,14 @@ export {
 export type { GuardrailContext, ReplyBudget } from "./guardrails.js";
 export { buildBotSystemPrompt, buildRecentExchange } from "./prompts.js";
 export type { BotPromptContext } from "./prompts.js";
+export { formatStreamingBotLiveMetrics } from "./live-metrics.js";
+export { PUBLIC_SPACEAPP_KNOWLEDGE, publicSpaceappContext, searchPublicSpaceappKnowledge } from "./public-knowledge.js";
+export type { PublicSpaceappFact } from "./public-knowledge.js";
+export { asksForOperatorPrivateData, containsSensitiveDisclosure, PRIVATE_DATA_REFUSAL } from "./privacy.js";
+export { decideStreamingModeration } from "./moderation.js";
+export type { ModerationDecision, ModerationInput, ModerationResult } from "./moderation.js";
+export { resolveStreamingBotModel, streamingBotModelOptions } from "./model-selection.js";
+export type { StreamingBotModelOption } from "./model-selection.js";
 export {
   BOT_MEMORY_PROVENANCE,
   BOT_MEMORY_ROOM_ID,

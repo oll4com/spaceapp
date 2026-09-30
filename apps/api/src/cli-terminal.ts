@@ -1,10 +1,12 @@
+import { findCodexWriterThreads } from "./codex-thread-writer.js";
+import { loadGeminiNativeTurns, geminiTurnActivity } from "./gemini-native-turns.js";
 import { issueControlToken } from "./space-control-token.js";
 import { projectRoomTerminalScreen, restoreRoomTerminalGeometry } from "./room-terminal-screen.js";
 import { readRoomHostScreen, readRoomHostScreenSnapshot } from "./room-host-screen.js";
 import { randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -71,7 +73,9 @@ import {
 } from "./cli-parity.js";
 import { findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
 import { findCliRunLifecycleAdapter } from "./cli-run-lifecycle-adapters.js";
+import { isCliRenderProofSession } from "./cli-render-proof-fixture.js";
 import { opencodeNativeSessionIdPattern } from "./opencode-native-session.js";
+import { reasonixNativeSessionRefPattern } from "./reasonix-native-session.js";
 import {
   activeCliSessionObserverRuntime,
   isCliRuntimeTerminalLaunchable
@@ -79,6 +83,7 @@ import {
 import {
   findCurrentCodexCliTurnActivity,
   findRecentCodexCliTurnActivity,
+  findCodexCliTurnFinalResult,
   findRecentNullAgentMessageDiagnostic,
   type CodexCliTurnActivity
 } from "./codex-rollout-diagnostics.js";
@@ -134,11 +139,21 @@ function delay(ms: number): Promise<void> {
 
 function codexStartupProgressIndex(output: string): number {
   const normalized = output.replace(codexControlAnsiPattern, "").toLowerCase();
-  return Math.max(
+  let progressIndex = Math.max(
     normalized.lastIndexOf("starting mcp servers"),
     normalized.lastIndexOf("reconnecting"),
     normalized.lastIndexOf("connecting")
   );
+  for (const match of normalized.matchAll(/starting mcp servers\s*\((\d+)\/(\d+)\)/g)) {
+    if (match.index !== undefined) {
+      const current = Number.parseInt(match[1]!, 10);
+      const total = Number.parseInt(match[2]!, 10);
+      if (current < total) {
+        return Number.MAX_SAFE_INTEGER;
+      }
+    }
+  }
+  return progressIndex;
 }
 
 function latestCodexModelState(output: string): {
@@ -152,14 +167,28 @@ function latestCodexModelState(output: string): {
   const latestScreen = normalized.slice(latestHeaderIndex);
   let state: { status: string; headerEndIndex: number; normalizedOutput: string } | null = null;
   for (const match of latestScreen.matchAll(
-    /\bmodel:\s*([a-z0-9][a-z0-9._:-]*)(?:\s+[a-z0-9][a-z0-9._:-]*)?\s+\/(?:[ \t]*\r?\n[ \t]*)?model\b/g
+    /\bmodel:\s*([a-z0-9][a-z0-9._:-]*)(?:\s+([a-z0-9][a-z0-9._:-]*))?(?:\s+[·•]\s*\S+)?(?:\s+\/(?:[ \t]*\r?\n[ \t]*)?model\b)?/g
   )) {
     if (!match[1] || match.index === undefined) continue;
+    const isLoa = match[1] === "loading" || match[1].startsWith("loa");
     state = {
-      status: match[1],
+      status: isLoa ? "loading" : match[1],
       headerEndIndex: latestHeaderIndex + match.index + match[0].length,
       normalizedOutput: normalized
     };
+  }
+  if (!state) {
+    for (const match of latestScreen.matchAll(
+      /\b([a-z0-9][a-z0-9._:-]{2,})\s+([a-z0-9][a-z0-9._-]{0,79})\s*[·•]\s*\S+/g
+    )) {
+      if (!match[1] || match.index === undefined) continue;
+      if (match[1] === "openai" || match[1] === "starting" || match[1] === "model") continue;
+      state = {
+        status: match[1],
+        headerEndIndex: latestHeaderIndex + match.index + match[0].length,
+        normalizedOutput: normalized
+      };
+    }
   }
   return state;
 }
@@ -183,6 +212,14 @@ export function codexInputReady(output: string): boolean {
   const promptIndex = modelState.normalizedOutput.lastIndexOf("›");
   return promptIndex > modelState.headerEndIndex &&
     promptIndex > codexStartupProgressIndex(modelState.normalizedOutput);
+}
+
+export function geminiInputReady(output: string): boolean {
+  const text = output.replace(codexControlAnsiPattern, "").toLowerCase();
+  const composer = text.lastIndexOf("? for shortcuts");
+  // A PTY or an authentication spinner can echo input before the native TUI
+  // owns it. The composer footer is emitted only after that handoff.
+  return composer >= 0 && composer > Math.max(text.lastIndexOf("signing in"), text.lastIndexOf("not signed in"));
 }
 
 function qwenAuthBootstrapReady(output: string): boolean {
@@ -263,6 +300,7 @@ interface ManagedCliSession {
   controlQueue: Promise<void>;
   controlOutput: string;
   controlOutputRevision: number;
+  codexModelControlGeometry?: boolean;
   roomScreenCols: number;
   roomScreenRows: number;
   roomScreenGeometryKnown: boolean;
@@ -493,6 +531,8 @@ export interface CliEnvironmentContext {
   cwd?: string | null;
   sessionAllocatedMonotonicNs?: string | null;
   accountProfileId?: string | null;
+  modelId?: string | null;
+  reasoningEffort?: string | null;
 }
 
 interface CliTerminalConnection {
@@ -558,6 +598,7 @@ export interface CliTerminalManagerTelemetryEvent {
 }
 
 export interface CliHostGateway {
+  ping?(): Promise<{ ok: boolean; hostPid: number; startedAt: string; buildCommit: string | null; sessionCount?: number }>;
   health(): Promise<CliHostHealth>;
   inspect(identity: CliHostIdentity): Promise<CliHostSessionSummary | null>;
   attach(input: CliHostAttachInput, listener?: CliHostEventListener): Promise<CliHostAttachResult>;
@@ -732,6 +773,37 @@ function normalizedLocale(value: string | undefined): string {
   return value;
 }
 
+let passwdUidCache: Map<string, string> | null = null;
+
+function uidForUser(user: string): string | null {
+  if (!passwdUidCache) {
+    passwdUidCache = new Map();
+    try {
+      for (const line of readFileSync("/etc/passwd", "utf8").split(/\r?\n/)) {
+        const fields = line.split(":");
+        if (fields.length >= 3 && fields[0] && /^[0-9]+$/.test(fields[2] ?? "")) {
+          passwdUidCache.set(fields[0], fields[2]!);
+        }
+      }
+    } catch {
+      return null;
+    }
+  }
+  return passwdUidCache.get(user) ?? null;
+}
+
+function desktopSecretServiceEnvironment(user: string): Record<string, string | undefined> {
+  const uid = uidForUser(user);
+  if (!uid) return {};
+  const runtimeDir = `/run/user/${uid}`;
+  const busPath = `${runtimeDir}/bus`;
+  if (!existsSync(busPath)) return {};
+  return {
+    DBUS_SESSION_BUS_ADDRESS: `unix:path=${busPath}`,
+    XDG_RUNTIME_DIR: runtimeDir
+  };
+}
+
 export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironmentContext = {}): Record<string, string | undefined> {
   if (context.runtimeId === "cli:root") {
     const agentFilesToken = context.purpose === "LOGIN" ? null : issueCliAgentFilesToken(config, context);
@@ -793,16 +865,28 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
     TMPDIR: tempDir,
     USER: user
   };
+  if (directOperatorParity) {
+    Object.assign(env, desktopSecretServiceEnvironment(user));
+  }
+  if (context.cwd && context.cwd !== "/opt/spaceapp" && context.cwd.startsWith("/opt/spaceapp/")) {
+    env.GIT_CEILING_DIRECTORIES = "/opt/spaceapp";
+  }
   if (home) {
     if (runtimeDescriptor) Object.assign(env, runtimeDescriptor.environment);
     else env.CODEX_HOME = home;
   }
   if (
-    context.runtimeId === "cli:gemini" &&
+    (context.runtimeId === "cli:gemini" || context.runtimeId === "cli:copilot" || context.runtimeId === "cli:cursor") &&
     context.accountProfileId &&
     context.accountProfileId !== "main"
   ) {
-    env.SPACE_GEMINI_ACCOUNT_PROFILE = context.accountProfileId;
+    if (context.runtimeId === "cli:gemini") env.SPACE_GEMINI_ACCOUNT_PROFILE = context.accountProfileId;
+    if (context.runtimeId === "cli:copilot") env.SPACE_COPILOT_ACCOUNT_PROFILE = context.accountProfileId;
+    if (context.runtimeId === "cli:cursor") env.SPACE_CURSOR_ACCOUNT_PROFILE = context.accountProfileId;
+  }
+  if (context.runtimeId === "cli:gemini") {
+    if (context.modelId) env.SPACE_GEMINI_MODEL = context.modelId;
+    if (context.reasoningEffort) env.SPACE_GEMINI_EFFORT = context.reasoningEffort;
   }
   if (runtimeDescriptor?.loginBootstrapRuntimeEnv && config.cliLoginBootstrap[runtimeDescriptor.key]) {
     env[runtimeDescriptor.loginBootstrapRuntimeEnv] = "1";
@@ -854,6 +938,17 @@ export function buildCliSpawnArgs(runtime: AgentRuntime, session?: CliSpawnSessi
     opencodeNativeSessionIdPattern.test(session.nativeTaskRef)
   ) {
     return ["--session", session.nativeTaskRef];
+  }
+  if (
+    session?.launchMode === "RESUME" &&
+    runtime.id === "cli:deepseek" &&
+    session.nativeTaskRef &&
+    reasonixNativeSessionRefPattern.test(session.nativeTaskRef)
+  ) {
+    // Reasonix resolves `--resume <ref>` against its legacy JSONL session store,
+    // the only store its own resume resolver enumerates (it writes new sessions
+    // into its linear/v4 store). See reasonix-native-session.ts.
+    return ["--resume", session.nativeTaskRef];
   }
   if (session?.launchMode === "RESUME" && runtimeDescriptor?.nativeResumeArgs) {
     return [...runtimeDescriptor.nativeResumeArgs];
@@ -946,6 +1041,7 @@ export async function findSafeCodexThreadId(input: FindSafeCodexThreadIdInput): 
   if (!input.cwd) return null;
   const codexHome = input.codexHome ?? codexDirectParityCodexHome;
   const stateDbPath = join(codexHome, "state_5.sqlite");
+  const writerThreads = await findCodexWriterThreads({ ...input, codexHome });
   const rolloutRoot = `${join(codexHome, "space-codex-homes", safeCodexRuntimeKey(input.paneId, input.sessionId), "sessions")}/`;
   const quotedRolloutRoot = sqliteQuote(rolloutRoot);
   const sql = `
@@ -955,7 +1051,9 @@ export async function findSafeCodexThreadId(input: FindSafeCodexThreadIdInput): 
       AND coalesce(archived, 0) = 0
       AND thread_source = 'user'
       AND agent_path IS NULL
-      AND substr(rollout_path, 1, length(${quotedRolloutRoot})) = ${quotedRolloutRoot}
+      AND ${writerThreads.length
+        ? `id IN (${writerThreads.map(sqliteQuote).join(", ")})`
+        : `substr(rollout_path, 1, length(${quotedRolloutRoot})) = ${quotedRolloutRoot}`}
     ORDER BY
       coalesce(recency_at_ms, updated_at_ms, created_at_ms, 0) DESC,
       coalesce(updated_at_ms, created_at_ms, 0) DESC,
@@ -1112,6 +1210,14 @@ export class CliTerminalManager {
     }
   }
 
+  hostPing(runtimeId = "cli:codex"): Promise<boolean> {
+    const host = this.hostForRuntime(runtimeId);
+    if (host.ping) {
+      return host.ping().then((res) => res?.ok === true);
+    }
+    return host.health().then(() => true);
+  }
+
   hostHealth(runtimeId = "cli:codex"): Promise<CliHostHealth> {
     return this.hostForRuntime(runtimeId).health();
   }
@@ -1231,12 +1337,16 @@ export class CliTerminalManager {
     managed.qwenAuthBootstrapTimer.unref?.();
   }
 
-  private controlledCredentialActionEnvironment(): NodeJS.ProcessEnv {
+  private controlledCredentialActionEnvironment(
+    environment: Readonly<Record<string, string>> = {}
+  ): NodeJS.ProcessEnv {
     return {
+      HOME: process.env.HOME ?? "/var/lib/spaceapp-user",
       LANG: "C.UTF-8",
       LC_ALL: "C.UTF-8",
       PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      TERM: "xterm-256color"
+      TERM: "xterm-256color",
+      ...environment
     };
   }
 
@@ -1247,7 +1357,7 @@ export class CliTerminalManager {
       const launch = buildCliProcessLaunch(this.options.config, runtime, [descriptor.credentialObservationAction]);
       const { stdout } = await execFileAsync(launch.command, launch.args, {
         encoding: "utf8",
-        env: this.controlledCredentialActionEnvironment(),
+        env: this.controlledCredentialActionEnvironment(descriptor.environment),
         timeout: cliCredentialObservationTimeoutMs,
         maxBuffer: 256
       });
@@ -1272,7 +1382,7 @@ export class CliTerminalManager {
       const launch = buildCliProcessLaunch(this.options.config, runtime, ["credential-smoke"]);
       const { stdout } = await execFileAsync(launch.command, launch.args, {
         encoding: "utf8",
-        env: this.controlledCredentialActionEnvironment(),
+        env: this.controlledCredentialActionEnvironment(descriptor.environment),
         timeout: cliCredentialSmokeTimeoutMs,
         maxBuffer: 1_024
       });
@@ -1615,7 +1725,7 @@ export class CliTerminalManager {
   async ensurePaneTransportReady(
     pane: Pane,
     traceId: string,
-    selection: { modelId?: string | null; reasoningEffort?: string } = {}
+    selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null } = {}
   ): Promise<PaneCliSession> {
     if (pane.mode !== "TERMINAL") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
     const runtimeId = pane.terminalRuntimeId ?? "cli:codex";
@@ -1659,12 +1769,19 @@ export class CliTerminalManager {
           await this.options.store.updatePane(pane.id, { modelId, reasoningEffort }, traceId);
         }
       }
-      const cwd = isDirectOperatorParityRuntime(runtime.id)
-        ? resolveDirectOperatorParityCwd(pane.cwd, this.options.config.cliWorkspaceRoot)
-        : pane.cwd ?? this.options.config.cliWorkspaceRoot;
-      if (!isDirectOperatorParityRuntime(runtime.id)) {
-        await mkdir(cwd, { recursive: true, mode: 0o750 });
+      let targetPaneCwd = pane.cwd;
+      if (!targetPaneCwd || targetPaneCwd === "/etc") {
+        try {
+          const room = await this.options.store.getRoom(pane.roomId);
+          if (room?.projectPath) targetPaneCwd = room.projectPath;
+        } catch {}
       }
+      const cwd = isDirectOperatorParityRuntime(runtime.id)
+        ? resolveDirectOperatorParityCwd(targetPaneCwd, this.options.config.cliWorkspaceRoot)
+        : targetPaneCwd ?? this.options.config.cliWorkspaceRoot;
+      try {
+        await mkdir(cwd, { recursive: true, mode: 0o750 });
+      } catch {}
       const allocatedAtNs = process.hrtime.bigint();
       session = await this.options.store.createPaneCliSession({
         paneId: pane.id,
@@ -1677,6 +1794,7 @@ export class CliTerminalManager {
         launchMode: "FRESH",
         cwd,
         codexThreadId: null,
+        accountProfileId: selection.accountProfileId ?? null,
         status: "IDLE",
         statusReason: "CLI session allocated by Room Agent; preparing the independent pane host."
       }, traceId);
@@ -1772,8 +1890,12 @@ export class CliTerminalManager {
     return true;
   }
 
-  async ensurePaneControlReady(pane: Pane, traceId: string): Promise<PaneCliSession> {
-    const session = await this.ensurePaneTransportReady(pane, traceId);
+  async ensurePaneControlReady(
+    pane: Pane,
+    traceId: string,
+    selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null } = {}
+  ): Promise<PaneCliSession> {
+    const session = await this.ensurePaneTransportReady(pane, traceId, selection);
     const managed = this.sessions.get(session.sessionId);
     if (!managed) throw new SpaceConflictError(`CLI session ${session.sessionId} detached before it became ready for input.`);
     await this.waitForInputReady(managed);
@@ -1928,7 +2050,14 @@ export class CliTerminalManager {
           throw new SpaceConflictError("Codex terminal input was not accepted during model control.");
         }
       };
+      const expandMenu = managed.roomScreenCols < 100 || managed.roomScreenRows < 30;
       try {
+        if (expandMenu) {
+          managed.codexModelControlGeometry = true;
+          await host.resize(managed.identity, managed.attachmentId,
+            Math.max(100, managed.roomScreenCols), Math.max(30, managed.roomScreenRows));
+          await delay(codexModelNavigationRepaintSettleMs);
+        }
         for (const step of navigation) {
           if (step.type === "command") {
             managed.controlOutput = "";
@@ -1970,6 +2099,14 @@ export class CliTerminalManager {
         await sendHiddenInput("\u001b\u001b\u001b").catch(() => undefined);
         if (error instanceof SpaceConflictError) throw error;
         throw new SpaceConflictError("Codex did not apply the requested native model settings.");
+      } finally {
+        if (expandMenu) {
+          managed.codexModelControlGeometry = false;
+          if (!managed.closed) {
+            await host.resize(managed.identity, managed.attachmentId,
+              managed.roomScreenCols, managed.roomScreenRows);
+          }
+        }
       }
     });
     managed.controlQueue = operation.catch(() => undefined);
@@ -1983,8 +2120,16 @@ export class CliTerminalManager {
   ): Promise<PaneCliTurnActivityResponse & { lastActivityAtMs?: number }> {
     const unavailable = { marker, status: "UNAVAILABLE" as const, turnId: null };
     let managed = this.sessions.get(sessionId);
+    const persisted = managed && managed.runtimeId !== "cli:gemini" ? null : await this.options.store.getPaneCliSession(sessionId);
+    if (persisted?.runtimeId === "cli:gemini") {
+      if (persisted.purpose !== "NORMAL" || !persisted.isActive || persisted.status === "EXITED") return unavailable;
+      const tracked = recovery ?? this.sessions.get(sessionId)?.turnMarkers.get(marker);
+      if (!tracked) return unavailable;
+      const native = await this.readGeminiTurns(persisted);
+      return native ? geminiTurnActivity(native.turns, marker, tracked) : unavailable;
+    }
     if ((!managed || managed.closed) && recovery) {
-      const session = await this.options.store.getPaneCliSession(sessionId);
+      const session = persisted ?? await this.options.store.getPaneCliSession(sessionId);
       if (!session || !session.isActive || session.status === "EXITED") return unavailable;
       const registry = await this.options.discoverRuntimes();
       const runtime = registry.data.find((candidate) => candidate.id === session.runtimeId);
@@ -2032,6 +2177,23 @@ export class CliTerminalManager {
     } catch {
       return unavailable;
     }
+  }
+
+  async getTurnFinalResult(sessionId: string, turnId: string): Promise<string | null> {
+    const session = await this.options.store.getPaneCliSession(sessionId);
+    if (session?.runtimeId === "cli:gemini" && session.purpose === "NORMAL" && session.isActive) {
+      const native = await this.readGeminiTurns(session);
+      return native?.turns.find(turn => turn.taskId === turnId && turn.status === "COMPLETED")?.finalResponse ?? null;
+    }
+    if (!session || session.purpose !== "NORMAL" || !isCodexDirectParityRuntime(session.runtimeId)) return null;
+    const threadId = session.codexThreadId ?? this.sessions.get(sessionId)?.codexThreadId;
+    if (!threadId) return null;
+    return findCodexCliTurnFinalResult({ codexHome: codexDirectParityCodexHome, threadId, turnId });
+  }
+
+  private async readGeminiTurns(session: PaneCliSession) {
+    const host = await this.inspectSessionHost(session).catch(() => null);
+    return loadGeminiNativeTurns({ paneId: session.paneId, sessionId: session.sessionId, rootPid: host?.pid ?? null }).catch(() => null);
   }
 
   async getCurrentTurnActivity(sessionId: string): Promise<CodexCliTurnActivity> {
@@ -2142,6 +2304,10 @@ export class CliTerminalManager {
       });
     }
 
+    // Synthetic proof sessions may attach only to their already running fixture.
+    // A missing host process must never launch the real Codex/Gemini/OpenCode CLI.
+    const syntheticRenderProof = await isCliRenderProofSession(this.options.store, session);
+
     let attach: ManagedCliSessionAttach;
     try {
       attach = await this.getOrSpawnSession(
@@ -2152,7 +2318,7 @@ export class CliTerminalManager {
         input.initialCols !== undefined && input.initialRows !== undefined
           ? { cols: input.initialCols, rows: input.initialRows }
           : undefined,
-        { existingOnly: readOnlyObserver }
+        { existingOnly: readOnlyObserver || syntheticRenderProof }
       );
     } catch (error) {
       if (!(error instanceof CliLoginConnectionReconciledError)) throw error;
@@ -2355,7 +2521,7 @@ export class CliTerminalManager {
     const inspected = await this.inspectHostSession(hostClient, baseIdentity);
     if (!inspected && options.existingOnly) {
       throw new SpaceNotFoundError(
-        `Running CLI host session ${session.sessionId} was not found for a read-only observer.`
+        `Running CLI host session ${session.sessionId} was not found for an existing-only attachment.`
       );
     }
     const restoredTransport = inspected?.status === "RUNNING";
@@ -2403,7 +2569,9 @@ export class CliTerminalManager {
       purpose: session.purpose,
       cwd: session.cwd ?? this.options.config.cliWorkspaceRoot,
       sessionAllocatedMonotonicNs: inspected ? undefined : this.sessionAllocationMonotonicNs(session.sessionId),
-      accountProfileId: session.accountProfileId
+      accountProfileId: session.accountProfileId,
+      modelId: boundSession.modelId,
+      reasoningEffort: boundSession.reasoningEffort
     });
     if (env.TMPDIR && !isDirectOperatorParityRuntime(session.runtimeId)) {
       await mkdir(env.TMPDIR, { recursive: true });
@@ -2426,23 +2594,25 @@ export class CliTerminalManager {
     const afterSequence = inspected
       ? await this.options.store.getPaneCliHostOutputCursor(session.sessionId, inspected.generationId)
       : -1;
-    const processLaunch = buildCliProcessLaunch(
+    // Existing host sessions attach without launching a provider. In particular,
+    // synthetic proof PTYs intentionally have no provider model to validate.
+    const processLaunch = inspected ? undefined : buildCliProcessLaunch(
       this.options.config,
       runtime,
       buildCliSpawnArgs(runtime, spawnSession)
     );
     const attachInput: CliHostAttachInput = {
       identity,
-      spawn: inspected
-        ? undefined
-        : {
+      spawn: processLaunch
+        ? {
             command: processLaunch.command,
             args: processLaunch.args,
             cwd: session.cwd ?? this.options.config.cliWorkspaceRoot,
             env,
             cols: initialGeometry?.cols ?? 100,
             rows: initialGeometry?.rows ?? 30
-          },
+          }
+        : undefined,
       afterSequence
     };
     let replayContinuity: ManagedCliSessionAttach["replayContinuity"] = "COMPLETE";
@@ -2463,8 +2633,9 @@ export class CliTerminalManager {
     this.sessionAllocations.delete(session.sessionId);
     const eventsAfterReplay = [...hostAttach.replay, ...pendingHostEvents];
     pendingHostEvents.splice(0, pendingHostEvents.length, ...eventsAfterReplay);
-    const restoredInputReady =
-      !isCodexDirectParityRuntime(session.runtimeId) ||
+    const restoredInputReady = session.runtimeId === "cli:gemini"
+      ? Boolean(inspected && geminiInputReady(startupOutput))
+      : !isCodexDirectParityRuntime(session.runtimeId) ||
       Boolean(
         inspected &&
         !codexStartupBusy(startupOutput) &&
@@ -3165,6 +3336,10 @@ export class CliTerminalManager {
       this.send(socket, { type: "error", code: "BAD_MESSAGE", message: "WebSocket message failed schema validation." });
       return;
     }
+    if (parsed.data.type === "ping") {
+      this.send(socket, { type: "pong" });
+      return;
+    }
     if (
       parsed.data.type === "control_upgrade" ||
       parsed.data.type === "control_request" ||
@@ -3231,12 +3406,24 @@ export class CliTerminalManager {
       const message = parsed.data;
       if (!await this.authorizeHostMutation(managed, socket, client, message.leaseId, "resize")) return;
       const geometryChanged = !managed.roomScreenGeometryKnown || managed.roomScreenCols !== message.cols || managed.roomScreenRows !== message.rows;
+      if (!managed.codexModelControlGeometry && !geometryChanged && message.force) {
+        const nudgeCols = message.cols > 10 ? message.cols - 1 : message.cols + 1;
+        await this.withFreshHostAttachment(managed, () =>
+          this.hostForRuntime(managed.runtimeId, managed.sessionId).resize(
+            managed.identity,
+            managed.attachmentId,
+            nudgeCols,
+            message.rows
+          )
+        ).catch(() => null);
+        await new Promise((resolve) => setTimeout(resolve, 35));
+      }
       await this.withFreshHostAttachment(managed, () =>
         this.hostForRuntime(managed.runtimeId, managed.sessionId).resize(
           managed.identity,
           managed.attachmentId,
-          message.cols,
-          message.rows
+          managed.codexModelControlGeometry ? Math.max(100, message.cols) : message.cols,
+          managed.codexModelControlGeometry ? Math.max(30, message.rows) : message.rows
         )
       );
       managed.roomScreenCols = message.cols;
@@ -3958,6 +4145,17 @@ export class CliTerminalManager {
   }
 
   private async waitForInputReady(managed: ManagedCliSession): Promise<void> {
+    if (managed.runtimeId === "cli:gemini" && !managed.inputReady) {
+      const deadline = Date.now() + (this.options.startupReadyTimeoutMs ?? cliStartupReadyTimeoutMs);
+      while (!managed.closed && Date.now() < deadline) {
+        if (geminiInputReady(managed.startupOutput + managed.controlOutput)) {
+          managed.inputReady = true;
+          return;
+        }
+        await delay(25);
+      }
+      throw new SpaceConflictError("Gemini has not opened its native composer; no input was sent. Wait for sign-in and try again.");
+    }
     if (managed.inputReady || !isCodexDirectParityRuntime(managed.runtimeId)) return;
     const timeoutMs = this.options.startupReadyTimeoutMs ?? cliStartupReadyTimeoutMs;
     if (timeoutMs <= 0) return;

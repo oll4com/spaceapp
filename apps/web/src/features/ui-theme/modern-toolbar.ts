@@ -28,13 +28,15 @@ const viewActionIds = new Set([
   "category-color-filter",
   "cli-floats",
   "sensitive-data",
-  "font-down"
+  "font-down",
+  "browser-fullscreen"
 ]);
 
 const toolActionIds = new Set([
   "memory-workspace",
   "quick-links",
-  "clip-tool"
+  "clip-tool",
+  "debug-mode"
 ]);
 
 export function modernRoomActionGroup(actionId: string): ModernRoomActionGroup {

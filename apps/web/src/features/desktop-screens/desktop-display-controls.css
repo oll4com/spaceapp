@@ -1,0 +1,298 @@
+.desktop-display-controls {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  -webkit-app-region: no-drag;
+}
+
+.desktop-display-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  height: var(--toolbar-control-size, 2.25rem);
+  padding: 0 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--room-border, #343638);
+  background: var(--room-surface-soft, #161b22);
+  color: var(--room-text, #e6edf3);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  -webkit-app-region: no-drag;
+}
+
+.desktop-display-trigger:hover {
+  background: var(--room-surface-hover, #21262d);
+  border-color: var(--room-accent, #58a6ff);
+}
+
+.desktop-display-trigger.is-active {
+  background: var(--room-accent-soft, rgba(88, 166, 255, 0.15));
+  border-color: var(--room-accent, #58a6ff);
+  color: var(--room-accent, #58a6ff);
+}
+
+.desktop-display-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--room-accent, #58a6ff);
+  color: #0d1117;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.desktop-display-controls[data-variant="rail"] {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--toolbar-control-size, 2.25rem);
+  height: var(--toolbar-control-size, 2.25rem);
+}
+
+.desktop-display-controls[data-variant="rail"] .desktop-display-trigger {
+  width: var(--toolbar-control-size, 2.25rem);
+  height: var(--toolbar-control-size, 2.25rem);
+  padding: 0;
+  border-radius: var(--toolbar-button-radius, 8px);
+}
+
+.desktop-display-controls[data-variant="rail"] .desktop-display-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 0.95rem;
+  height: 0.95rem;
+  padding: 0 0.2rem;
+  font-size: 0.65rem;
+}
+
+.desktop-display-controls[data-variant="rail"] .desktop-display-popover {
+  position: fixed;
+  right: 56px;
+  bottom: 80px;
+  top: auto;
+  z-index: 100000;
+}
+
+.desktop-display-controls[data-variant="titlebar"] {
+  -webkit-app-region: no-drag;
+}
+
+.desktop-display-controls[data-variant="titlebar"] .desktop-display-trigger {
+  height: 24px;
+  padding: 0 6px;
+  font-size: 0.75rem;
+  border-radius: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.desktop-display-controls[data-variant="titlebar"] .desktop-display-popover {
+  left: 0;
+  right: auto;
+  top: calc(100% + 6px);
+}
+
+.desktop-display-notice {
+  padding: 10px 12px;
+  background: rgba(210, 153, 34, 0.15);
+  border: 1px solid rgba(210, 153, 34, 0.4);
+  border-radius: 8px;
+  font-size: 0.78rem;
+  color: #e6edf3;
+}
+
+.desktop-display-notice strong {
+  display: block;
+  color: #f0883e;
+  margin-bottom: 4px;
+  font-size: 0.82rem;
+}
+
+.desktop-display-notice p {
+  margin: 0;
+  color: #8b949e;
+  line-height: 1.4;
+}
+
+.desktop-display-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 340px;
+  max-width: 90vw;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  z-index: 100000;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  color: #e6edf3;
+  -webkit-app-region: no-drag;
+}
+
+.desktop-display-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #30363d;
+  padding-bottom: 0.65rem;
+}
+
+.desktop-display-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.desktop-display-header small {
+  color: #8b949e;
+  font-size: 0.75rem;
+}
+
+.desktop-display-quick-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.desktop-display-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.55rem 0.85rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+}
+
+.desktop-display-action-btn.primary {
+  background: #238636;
+  color: #ffffff;
+  border-color: #2ea043;
+}
+
+.desktop-display-action-btn.primary:hover:not(:disabled) {
+  background: #2ea043;
+}
+
+.desktop-display-action-btn.secondary {
+  background: #21262d;
+  color: #c9d1d9;
+  border-color: #30363d;
+}
+
+.desktop-display-action-btn.secondary:hover:not(:disabled) {
+  background: #30363d;
+  color: #ffffff;
+}
+
+.desktop-display-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.desktop-display-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.desktop-display-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.65rem;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+}
+
+.desktop-display-card.is-primary {
+  border-left: 3px solid #58a6ff;
+}
+
+.desktop-display-card.is-portrait {
+  border-left: 3px solid #bc8cff;
+}
+
+.desktop-display-card.is-top {
+  border-left: 3px solid #3fb950;
+}
+
+.desktop-display-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.desktop-display-card-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.desktop-display-card-meta {
+  font-size: 0.72rem;
+  color: #8b949e;
+}
+
+.desktop-display-tag {
+  font-size: 0.68rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  background: #21262d;
+  color: #c9d1d9;
+}
+
+.desktop-display-card-buttons {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.2rem;
+}
+
+.desktop-display-mini-btn {
+  flex: 1;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.74rem;
+  border-radius: 6px;
+  border: 1px solid #30363d;
+  background: #21262d;
+  color: #c9d1d9;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  transition: all 0.15s ease;
+}
+
+.desktop-display-mini-btn:hover {
+  background: #30363d;
+  color: #ffffff;
+  border-color: #58a6ff;
+}

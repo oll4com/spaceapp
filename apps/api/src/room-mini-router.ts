@@ -2,6 +2,7 @@ import { z } from "zod";
 import { roomControlActionSchema, paneCountsSchema, paneTypeIdSchema, type RoomMiniRoute } from "@space/contracts";
 import { SpaceFeatureDisabledError } from "@space/runtime";
 import type { RoomPaneCatalogEntry } from "./room-pane-commands.js";
+import type { DecisionsService } from "./decisions-service.js";
 
 export const ROOM_MINI_MODEL = "gpt-5.4-mini";
 const groupsSchema = z.object({ groups: z.array(z.object({ typeId: paneTypeIdSchema, count: z.number().int().min(1).max(16) }).strict()).min(1).max(16) }).strict();
@@ -35,11 +36,35 @@ export function createRoomMiniRouter(options: {
   apiKey: string | null;
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
+  decisionsService?: DecisionsService;
 }) {
   const request = options.fetch ?? globalThis.fetch;
   return {
     async route(content: string, catalog: RoomPaneCatalogEntry[], availableSlots: number, roomState?: unknown) {
       const started = performance.now();
+      if (options.decisionsService) {
+        try {
+          const triage = await options.decisionsService.triagePrompt(content);
+          if (triage.available) {
+            const isAmbiguous = (triage.answers.is_ambiguous as any)?.noul;
+            if (typeof isAmbiguous === "number" && isAmbiguous > 0.65) {
+              return {
+                action: { type: "CLARIFY" as const, reason: "Prompt is underspecified or ambiguous. Clarification is required." },
+                model: triage.model ?? "typesafe/jev-1.13",
+                durationMs: performance.now() - started
+              };
+            }
+            const route = (triage.answers.route as any)?.choice;
+            if (route === "clarify") {
+              return {
+                action: { type: "CLARIFY" as const, reason: "Request requires clarification." },
+                model: triage.model ?? "typesafe/jev-1.13",
+                durationMs: performance.now() - started
+              };
+            }
+          }
+        } catch {}
+      }
       if (!options.baseUrl || !options.apiKey) throw new SpaceFeatureDisabledError("ROOM_MINI_NOT_CONFIGURED", "GPT-5.4 mini router is not configured in the authorized model integration.");
       if (!content.trim() || content.length > 8000) throw new Error("Room command must contain 1 through 8000 characters.");
       const slots = Math.min(16, Math.max(0, Math.floor(availableSlots)));

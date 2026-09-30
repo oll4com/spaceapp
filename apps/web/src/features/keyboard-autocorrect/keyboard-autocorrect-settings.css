@@ -1,0 +1,98 @@
+.keyboard-autocorrect-settings-card {
+  gap: 0;
+}
+
+.keyboard-autocorrect-settings-card .settings-flat-heading strong {
+  overflow: hidden;
+  overflow-wrap: normal;
+  word-break: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.keyboard-autocorrect-settings-card .settings-flat-heading-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.keyboard-autocorrect-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 6px;
+  border: 1px solid var(--room-border, #343638);
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.05));
+  color: var(--room-muted, #a7a59e);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.keyboard-autocorrect-reset-btn:hover {
+  color: var(--room-text, #f4efe5);
+  background: var(--room-surface-hover, rgba(255, 255, 255, 0.1));
+  border-color: var(--room-accent, #6db7aa);
+}
+
+.keyboard-autocorrect-reset-btn svg {
+  width: 0.88rem;
+  height: 0.88rem;
+}
+
+.keyboard-autocorrect-test-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+  min-height: 2rem;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.76rem;
+  font-weight: 550;
+  border-radius: 6px;
+  border: 1px solid var(--room-border, #343638);
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.05));
+  color: var(--room-text, #f4efe5);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.keyboard-autocorrect-test-btn:hover {
+  background: var(--room-surface-hover, rgba(255, 255, 255, 0.1));
+  border-color: var(--room-accent, #6db7aa);
+  color: #fff;
+}
+
+.keyboard-autocorrect-test-btn:active {
+  transform: scale(0.98);
+}
+
+.keyboard-autocorrect-test-btn svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  color: var(--room-accent, #6db7aa);
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.keyboard-autocorrect-test-btn svg.is-playing {
+  color: #4ade80;
+  animation: sound-pulse 0.4s ease infinite alternate;
+}
+
+@keyframes sound-pulse {
+  0% { transform: scale(1); }
+  100% { transform: scale(1.25); }
+}
+
+@media (max-width: 420px) {
+  .keyboard-autocorrect-settings-card .settings-flat-row.keyboard-autocorrect-sound-preview-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .keyboard-autocorrect-test-btn {
+    width: auto;
+    min-width: 6.5rem;
+  }
+}

@@ -1,17 +1,20 @@
 import { railPopoverPosition, useMenuWheel } from "../rail-popover.js";
 import { OSK_CLI_COMMANDS, type OskCliCommand } from "./cli-shortcuts.js";
-import { Keyboard, X } from "../ui-theme/app-icons.js";
+import { Keyboard, X, Zap, Sparkles } from "../ui-theme/app-icons.js";
+import { OSK_AUTOCOMPLETE_STORAGE_KEY, getAutocompleteSuggestions } from "./osk-autocomplete.js";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
 import { useOptionalVoiceInput } from "../voice-input/VoiceInputProvider.js";
+import type { RoomTheme } from "../room-theme/RoomThemeMenu.js";
 import "./osk-keyboard.css";
 
 export const OSK_PANEL_ID = "space-osk-keyboard";
 export const OSK_POSITION_STORAGE_KEY = "space.osk.position";
 export const OSK_SCALE_STORAGE_KEY = "space.osk.scale";
 export const OSK_LANG_STORAGE_KEY = "space.osk.lang";
+export { OSK_AUTOCOMPLETE_STORAGE_KEY, getAutocompleteSuggestions } from "./osk-autocomplete.js";
 
 const VIEWPORT_MARGIN_PX = 8;
 const DEFAULT_PANEL_WIDTH_PX = 620;
@@ -43,7 +46,7 @@ export type OnScreenKeyboardInput = {
   terminalData: string;
 };
 
-export { OSK_CLI_COMMANDS, type OskCliCommand } from "./cli-shortcuts.js";
+export { OSK_CLI_COMMANDS, OSK_ESC_COMMAND, OSK_ENTER_COMMAND, type OskCliCommand } from "./cli-shortcuts.js";
 
 const LETTER_ROWS: OskKey[][] = [
   ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"].map((value) => ({ id: value, kind: "char", label: value, value, code: `Digit${value}` })),
@@ -237,6 +240,24 @@ function persistLang(lang: OskLanguage) {
   }
 }
 
+function readStoredAutocomplete(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const raw = getSpaceRuntime().platform.localStorage.getItem(OSK_AUTOCOMPLETE_STORAGE_KEY);
+    return raw === "true";
+  } catch {
+    return false;
+  }
+}
+
+function persistAutocomplete(enabled: boolean) {
+  try {
+    getSpaceRuntime().platform.localStorage.setItem(OSK_AUTOCOMPLETE_STORAGE_KEY, String(enabled));
+  } catch {
+    // Autocomplete persistence is best effort only.
+  }
+}
+
 function isEditableElement(element: Element | null): boolean {
   return Boolean(
     element &&
@@ -373,14 +394,18 @@ export function OnScreenKeyboard({
   onInput,
   onShortcut,
   onOpenChange,
-  roomTheme
+  roomTheme,
+  defaultShowShortcuts = false,
+  defaultAutocomplete
 }: {
   mobile: boolean;
   open: boolean;
   onInput?: (input: OnScreenKeyboardInput) => boolean;
   onShortcut?: (command: OskCliCommand) => boolean;
   onOpenChange: (open: boolean) => void;
-  roomTheme: "graphite" | "forest" | "copper" | "steel" | "contrast";
+  roomTheme: RoomTheme;
+  defaultShowShortcuts?: boolean;
+  defaultAutocomplete?: boolean;
 }) {
   const panelRef = useRef<HTMLElement | null>(null);
   useMenuWheel(panelRef, ".osk-chip", open);
@@ -388,9 +413,60 @@ export function OnScreenKeyboard({
   const latestPositionRef = useRef<{ left: number; top: number } | null>(null);
   const [shiftHeld, setShiftHeld] = useState(false);
   const [symbolLayer, setSymbolLayer] = useState(false);
+  const [shortcutsVisible, setShortcutsVisible] = useState(defaultShowShortcuts);
+  const [autocompleteEnabled, setAutocompleteEnabled] = useState<boolean>(() => defaultAutocomplete ?? readStoredAutocomplete());
+  const [wordBuffer, setWordBuffer] = useState<string>("");
   const [scale, setScale] = useState<number>(() => readStoredScale());
   const [lang, setLang] = useState<OskLanguage>(() => readStoredLang());
   const [position, setPosition] = useState<PanelPosition>(() => readStoredPosition() ?? { left: VIEWPORT_MARGIN_PX, top: VIEWPORT_MARGIN_PX, ready: false });
+
+  const toggleShortcuts = useCallback(() => {
+    setShortcutsVisible((current) => !current);
+  }, []);
+
+  const toggleAutocomplete = useCallback(() => {
+    setAutocompleteEnabled((current) => {
+      const next = !current;
+      persistAutocomplete(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!open) {
+      setShortcutsVisible(defaultShowShortcuts);
+      setWordBuffer("");
+    }
+  }, [open, defaultShowShortcuts]);
+
+  useEffect(() => {
+    setWordBuffer("");
+  }, [lang]);
+
+  const applySuggestion = useCallback((suggestion: string) => {
+    if (!suggestion) return;
+    const current = wordBuffer;
+    const textToInsert = suggestion + " ";
+
+    if (current && suggestion.toLowerCase().startsWith(current.toLowerCase())) {
+      const suffix = suggestion.slice(current.length) + " ";
+      sendTextToInputOrFocused(suffix, onInput);
+    } else {
+      const target = typeof document !== "undefined" ? document.activeElement : null;
+      if (target && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) && current) {
+        const end = target.selectionStart ?? target.value.length;
+        const start = Math.max(0, end - current.length);
+        target.setRangeText(textToInsert, start, end, "end");
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+      } else {
+        const backspaces = current ? "\u007f".repeat(current.length) : "";
+        sendTextToInputOrFocused(backspaces + textToInsert, onInput);
+      }
+    }
+    setWordBuffer("");
+  }, [wordBuffer, onInput]);
+
+  const suggestions = autocompleteEnabled ? getAutocompleteSuggestions(wordBuffer, lang, 3) : [];
 
   const voiceInput = useOptionalVoiceInput();
   const voiceOwnerId = "osk-keyboard";
@@ -579,6 +655,20 @@ export function OnScreenKeyboard({
       setShiftHeld((current) => !current);
       return;
     }
+
+    if (oskKey.kind === "char") {
+      const ch = oskKey.value;
+      if (/^[\p{L}\p{N}_/-]$/u.test(ch)) {
+        setWordBuffer((prev) => prev + ch);
+      } else {
+        setWordBuffer("");
+      }
+    } else if (oskKey.kind === "backspace") {
+      setWordBuffer((prev) => prev.slice(0, -1));
+    } else if (oskKey.kind === "space" || oskKey.kind === "enter" || oskKey.kind === "escape") {
+      setWordBuffer("");
+    }
+
     const input = resolveKeyboardInput(oskKey, shiftHeld);
     if (onInput?.(input)) return;
     sendKeyToFocusedElement(oskKey, input);
@@ -597,8 +687,13 @@ export function OnScreenKeyboard({
     setSymbolLayer((current) => !current);
   }, []);
 
-  const panelStyle: CSSProperties | undefined = mobile
-    ? undefined
+  const panelStyle: CSSProperties = mobile
+    ? {
+        left: `${position.left}px`,
+        top: `${position.top}px`,
+        visibility: position.ready ? "visible" : "hidden",
+        "--osk-mobile-scale": scale
+      } as CSSProperties
     : {
         left: `${position.left}px`,
         top: `${position.top}px`,
@@ -624,7 +719,7 @@ export function OnScreenKeyboard({
       className={mobile ? "osk-panel osk-sheet osk-theme" : "osk-panel osk-popover osk-theme"}
       data-room-theme={roomTheme}
       role="dialog"
-      aria-modal={mobile ? "true" : undefined}
+      aria-modal={undefined}
       aria-label="On-screen keyboard"
       style={panelStyle}
       onClick={(event) => event.stopPropagation()}
@@ -672,6 +767,26 @@ export function OnScreenKeyboard({
           </div>
           <button
             type="button"
+            className="osk-shortcuts-btn"
+            aria-label={shortcutsVisible ? "Hide CLI shortcuts" : "Show CLI shortcuts"}
+            aria-pressed={shortcutsVisible}
+            title={shortcutsVisible ? "Hide CLI shortcuts" : "Show CLI shortcuts"}
+            onClick={toggleShortcuts}
+          >
+            <Zap aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="osk-autocomplete-btn"
+            aria-label={autocompleteEnabled ? "Disable word autocompletion" : "Enable word autocompletion"}
+            aria-pressed={autocompleteEnabled}
+            title={autocompleteEnabled ? "Disable word autocompletion" : "Enable word autocompletion"}
+            onClick={toggleAutocomplete}
+          >
+            <Sparkles aria-hidden="true" />
+          </button>
+          <button
+            type="button"
             className="osk-symbol-btn"
             aria-label={symbolLayer ? "Switch to letters" : "Switch to symbols"}
             aria-pressed={symbolLayer}
@@ -703,7 +818,7 @@ export function OnScreenKeyboard({
           <span className="osk-voice-text">{voiceStatusText}</span>
         </div>
       ) : null}
-      <div className="osk-shortcuts-bar" role="toolbar" aria-label="CLI shortcuts">
+      {shortcutsVisible ? <div className="osk-shortcuts-bar" role="toolbar" aria-label="CLI shortcuts">
         {OSK_CLI_COMMANDS.map((cmd) => (
           <button
             key={cmd.id}
@@ -717,7 +832,22 @@ export function OnScreenKeyboard({
             {cmd.label}
           </button>
         ))}
-      </div>
+      </div> : null}
+      {autocompleteEnabled && suggestions.length > 0 ? (
+        <div className="osk-autocomplete-bar" role="toolbar" aria-label="Word suggestions">
+          {suggestions.map((suggestion, index) => (
+            <button
+              key={suggestion}
+              type="button"
+              className={`osk-autocomplete-chip${index === 0 ? " is-primary" : ""}`}
+              data-suggestion={suggestion}
+              onClick={() => applySuggestion(suggestion)}
+            >
+              {suggestion}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="osk-keys" aria-label="Keyboard keys">
         {rows.map((row, rowIndex) => (
           <div className="osk-row" role="row" aria-label={`Keyboard row ${rowIndex + 1}`} key={rowIndex}>

@@ -36,6 +36,7 @@ async function mount() {
   if (route === "demo") {
     await import("./features/ui-theme/modern-theme.css");
     await import("./features/ui-theme/codex-theme.css");
+    await import("./features/ui-theme/motion-theme.css");
     const { DemoSpaceApp } = await import("./demo/DemoSpaceApp.js");
     root.render(<StrictMode><SurfaceErrorBoundary><DemoSpaceApp /></SurfaceErrorBoundary></StrictMode>);
     return route;
@@ -47,6 +48,7 @@ async function mount() {
   if (readUiTheme(window.localStorage) !== "classic") {
     await import("./features/ui-theme/modern-theme.css");
     await import("./features/ui-theme/codex-theme.css");
+    await import("./features/ui-theme/motion-theme.css");
   }
   root.render(<StrictMode><SurfaceErrorBoundary><LiveSpaceApp /></SurfaceErrorBoundary></StrictMode>);
   return route;

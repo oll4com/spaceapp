@@ -9,6 +9,7 @@ import type {
   CliHostEventListener,
   CliHostIdentity,
   CliHostInputResult,
+  CliHostPingResult,
   CliHostReapResult,
   CliHostSessionSummary
 } from "./types.js";
@@ -38,6 +39,10 @@ export class CliHostClient {
   private readonly earlyEvents = new Map<string, CliHostEvent[]>();
 
   constructor(private readonly options: { socketPath: string; onTransportClosed?: () => void }) {}
+
+  async ping(): Promise<CliHostPingResult> {
+    return this.request("ping", {}) as Promise<CliHostPingResult>;
+  }
 
   async health(): Promise<CliHostHealth> {
     return this.request("inspect", {}) as Promise<CliHostHealth>;

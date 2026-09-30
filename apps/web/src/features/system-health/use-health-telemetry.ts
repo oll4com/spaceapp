@@ -3,6 +3,8 @@ import type {
   CliSessionStats,
   CodexEnvironment,
   CodexUsageAccountList,
+  AntigravityUsageAccountList,
+  ApiProviderAccountList,
   SystemAnalyticsModelsResponse,
   SystemHealthMetric,
   SystemHealthSeries,
@@ -24,6 +26,7 @@ export function useHealthTelemetry(
   detailed: boolean,
   initialEnvironment: CodexEnvironment | null,
   thresholds: HealthThresholds,
+  readOnly?: boolean,
 ) {
   const [snapshot, setSnapshot] = useState<SystemHealthSnapshot | null>(null);
   const [environment, setEnvironment] = useState(initialEnvironment);
@@ -31,6 +34,10 @@ export function useHealthTelemetry(
     null,
   );
   const [accounts, setAccounts] = useState<CodexUsageAccountList | null>(null);
+  const [antigravityAccounts, setAntigravityAccounts] =
+    useState<AntigravityUsageAccountList | null>(null);
+  const [apiProviderAccounts, setApiProviderAccounts] =
+    useState<ApiProviderAccountList | null>(null);
   const [sessions, setSessions] = useState<CliSessionStats | null>(null);
   const [rtt, setRtt] = useState<{
     value: number | null;
@@ -121,8 +128,8 @@ export function useHealthTelemetry(
       setClock(Date.now());
       load(
         "health",
-        detailedRef.current ? 1500 : 9000,
-        () => api.systemHealth(),
+        detailedRef.current ? 2000 : 9000,
+        () => api.systemHealth(Boolean(readOnly)),
         (next) => {
           setSnapshot(next);
           setError(false);
@@ -132,7 +139,7 @@ export function useHealthTelemetry(
       );
       load(
         "rtt",
-        detailedRef.current ? 1500 : 9000,
+        detailedRef.current ? 2000 : 9000,
         async () => {
           if (getSpaceRuntimeKind() === "demo") return 42;
           const start = performance.now();
@@ -157,15 +164,29 @@ export function useHealthTelemetry(
         () =>
           setRtt({ value: null, at: new Date().toISOString(), failed: true }),
       );
-      load("sessions", 9000, () => api.toolbarCliSessions(), setSessions);
-      load("models", 29_000, () => api.systemAnalyticsModels("10m"), setModels);
-      const cooldown = computeCodexCooldown(accountsRef.current, environment, Date.now());
-      if (cooldown && cooldown.secondsRemaining <= 0) {
-        resourcesRef.current.delete("accounts");
+      if (!readOnly) {
+        load("sessions", 9000, () => api.toolbarCliSessions(), setSessions);
+        load("models", 29_000, () => api.systemAnalyticsModels("10m"), setModels);
+        const cooldown = computeCodexCooldown(accountsRef.current, environment, Date.now());
+        if (cooldown && cooldown.secondsRemaining <= 0) {
+          resourcesRef.current.delete("accounts");
+        }
+        const accountsTtl = cooldown ? 12_000 : 59_000;
+        load("accounts", accountsTtl, () => api.toolbarUsageAccounts(), setAccounts);
+        load(
+          "antigravityAccounts",
+          59_000,
+          () => api.toolbarAntigravityUsageAccounts(),
+          setAntigravityAccounts,
+        );
+        load(
+          "apiProviderAccounts",
+          30_000,
+          () => api.toolbarApiProviderAccounts(),
+          setApiProviderAccounts,
+        );
+        load("environment", 59_000, () => api.codexEnvironment(), setEnvironment);
       }
-      const accountsTtl = cooldown ? 12_000 : 59_000;
-      load("accounts", accountsTtl, () => api.toolbarUsageAccounts(), setAccounts);
-      load("environment", 59_000, () => api.codexEnvironment(), setEnvironment);
     };
     sample();
     const timer = window.setInterval(sample, 2000);
@@ -194,7 +215,10 @@ export function useHealthTelemetry(
       sampledAt: rtt.at,
       detail: "Browser–Space HTTP round trip, including transport overhead",
     });
-  const remaining = environment?.lbUsage?.allAccountsRemainingPercent ?? null;
+  const remaining =
+    environment?.lbUsage?.activeAccountsRemainingPercent ??
+    environment?.lbUsage?.allAccountsRemainingPercent ??
+    null;
   if (environment)
     metrics.push({
       id: "accounts",
@@ -235,6 +259,8 @@ export function useHealthTelemetry(
     environment,
     models,
     accounts,
+    antigravityAccounts,
+    apiProviderAccounts,
     sessions,
     rtt,
     error,

@@ -2,12 +2,23 @@ import { AsteroidsEngine, type Controls } from "./engine.js";
 import { SPACE_LOGO_TILES } from "./SpaceappMark.js";
 import type { ArcadePalette } from "./theme.js";
 
-export function createRenderer(canvas: HTMLCanvasElement, game: AsteroidsEngine) {
+const DEFAULT_PALETTE: ArcadePalette = {
+  text: "#e6edf3",
+  muted: "#7d8590",
+  surface: "#161b22",
+  accent: "#58a6ff",
+  warning: "#d29922",
+  danger: "#f85149",
+  border: "#30363d",
+  watermark: "rgba(255, 255, 255, 0.15)",
+};
+
+export function createRenderer(canvas: HTMLCanvasElement, game: AsteroidsEngine, options: { watermark?: boolean } = {}) {
   // Transparency preserves the exact workspace background, including gradients.
   const ctx = canvas.getContext("2d", { alpha: true });
   if (!ctx) return null;
   let ratio = 1;
-  let palette: ArcadePalette;
+  let palette: ArcadePalette = DEFAULT_PALETTE;
   // Fixed star positions, no allocations or gradients in the animation loop.
   const stars = Array.from({ length: 110 }, (_, i) => ({ x: ((i * 137.508) % 997) / 997, y: ((i * 271.79) % 991) / 991, r: i % 5 === 0 ? 1.5 : .7, layer: i % 3 }));
   const resize = (width: number, height: number) => {
@@ -16,7 +27,7 @@ export function createRenderer(canvas: HTMLCanvasElement, game: AsteroidsEngine)
     canvas.width = Math.round(game.width * ratio); canvas.height = Math.round(game.height * ratio);
   };
   const draw = (controls: Controls, reducedMotion: boolean) => {
-    if (!palette) return;
+    if (!palette) palette = DEFAULT_PALETTE;
     const { width: w, height: h } = game;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     ctx.clearRect(0, 0, w, h);
@@ -40,14 +51,16 @@ export function createRenderer(canvas: HTMLCanvasElement, game: AsteroidsEngine)
       }
       ctx.stroke(); ctx.globalAlpha = 1;
     }
-    // The actual Space mark replaces the orbital circle; four bounded strokes.
-    const logoScale = Math.min(w, h) * .9 / 512;
-    ctx.save(); ctx.translate(w * .5, h * .5); ctx.scale(logoScale, logoScale); ctx.translate(-256, -256);
-    ctx.strokeStyle = palette.watermark; ctx.lineWidth = 2.5;
-    for (const tile of SPACE_LOGO_TILES) {
-      ctx.beginPath(); ctx.roundRect(tile.x, tile.y, tile.size, tile.size, tile.radius); ctx.stroke();
+    if (options.watermark !== false) {
+      const logoScale = Math.min(w, h) * .62 / 512;
+      ctx.save(); ctx.translate(w * .5, h * .5); ctx.scale(logoScale, logoScale); ctx.translate(-256, -256);
+      ctx.strokeStyle = palette.watermark; ctx.lineWidth = 2.5; ctx.globalAlpha = .22;
+      for (const tile of SPACE_LOGO_TILES) {
+        ctx.beginPath(); ctx.roundRect(tile.x, tile.y, tile.size, tile.size, tile.radius); ctx.stroke();
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
     }
-    ctx.restore();
     ctx.save();
     if (!reducedMotion && game.shake) ctx.translate(Math.sin(game.elapsed * 80) * game.shake, Math.cos(game.elapsed * 65) * game.shake);
     for (const rock of game.rocks) {

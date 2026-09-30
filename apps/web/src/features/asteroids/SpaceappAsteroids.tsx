@@ -4,6 +4,13 @@ import { ArcadeAudio } from "./audio.js";
 import { createRenderer } from "./render.js";
 import { emptyDirector, updateDirector } from "./director.js";
 import { fetchAIModifier } from "./ai-director.js";
+import {
+  nextPilotControls,
+  JEV_MODEL_ID,
+  JEV_TACTICAL_PROFILE,
+  type TacticalProfile,
+  type LivePilotDirective,
+} from "./ai-pilot.js";
 import { DIFFICULTY_ORDER, difficultyById, isInfernoFire, readDifficulty, stepDifficulty, writeDifficulty, type DifficultyId } from "./difficulty.js";
 import { getSectorDef } from "./sectors.js";
 import { Pause, Play, Music2, VolumeX } from "../ui-theme/app-icons.js";
@@ -35,12 +42,19 @@ export default function SpaceappAsteroids({ onClose }: { onClose: () => void }) 
   const pausedRef = useRef(false), musicRef = useRef(false);
   const director = useRef(emptyDirector());
   const aiRef = useRef<"local" | "adaptive">(readAI());
+  const pilotRef = useRef(false);
   const lastDirector = useRef(0);
   const baseStats = useRef({ fired: 0, deaths: 0 });
   const [hud, setHud] = useState(() => snapshot(new AsteroidsEngine(800, 600), readAI()));
   const [paused, setPaused] = useState(false), [music, setMusic] = useState(false), [audioUnavailable, setAudioUnavailable] = useState(false);
   const [best, setBest] = useState(readBest), [unsupported, setUnsupported] = useState(false);
   const [aiMode, setAiMode] = useState<"local" | "adaptive">(readAI);
+  const [pilot, setPilot] = useState(false);
+  const [liveDirective, setLiveDirective] = useState<LivePilotDirective | null>(null);
+  const jevProfileRef = useRef<TacticalProfile>({ ...JEV_TACTICAL_PROFILE });
+  const jevDirectiveRef = useRef<LivePilotDirective | null>(null);
+  const lastJevDirectivePoll = useRef(0);
+  const jevDirectiveInFlight = useRef(false);
   const [difficultyId, setDifficultyId] = useState<DifficultyId>(readDifficulty);
   const [difficultyNotice, setDifficultyNotice] = useState("");
   const [progress, setProgress] = useState(readProgress);
@@ -50,6 +64,7 @@ export default function SpaceappAsteroids({ onClose }: { onClose: () => void }) 
   const bestRef = useRef(best);
   const progressRef = useRef(progress);
   aiRef.current = aiMode;
+  pilotRef.current = pilot;
   const clearInput = () => { keys.current.clear(); pointers.current.clear(); controls.current = emptyControls(); };
   const syncInput = () => {
     const next = emptyControls();
@@ -75,6 +90,40 @@ export default function SpaceappAsteroids({ onClose }: { onClose: () => void }) 
       runtime.current?.game.setInfernoFire(isInfernoFire(difficultyRef.current, next));
       return next;
     });
+    focusGame();
+  };
+  const togglePilot = () => {
+    setPilot((current) => {
+      const next = !current;
+      if (next) {
+        fetch("/api/asteroids/benchmark/tactics", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ modelId: JEV_MODEL_ID }),
+        })
+          .then((r) => r.json())
+          .then((d: { aggression?: number; precision?: number; mobility?: number; leadAiming?: number; tactic?: string }) => {
+            if (d && d.aggression) {
+              jevProfileRef.current = {
+                aggression: d.aggression,
+                precision: d.precision ?? 0.95,
+                mobility: d.mobility ?? 0.95,
+                leadAiming: d.leadAiming ?? 0.92,
+                targetPreference: "threat",
+                tactic: d.tactic ?? JEV_TACTICAL_PROFILE.tactic,
+                source: "model",
+              };
+            }
+          })
+          .catch(() => {});
+      } else {
+        jevDirectiveRef.current = null;
+        setLiveDirective(null);
+      }
+      return next;
+    });
+    clearInput();
     focusGame();
   };
   const announceDifficulty = (id: DifficultyId) => {
@@ -139,7 +188,85 @@ export default function SpaceappAsteroids({ onClose }: { onClose: () => void }) 
       // Cap rendering to 60 Hz on high-refresh displays.
       if (previous && time - previous < 15) { schedule(); return; }
       const dt = previous ? (time - previous) / 1000 : 1 / 60; previous = time;
-      game.step(dt, controls.current);
+
+      // Real-time neural guidance polling for Jev Pilot
+      if (pilotRef.current && game.phase === "playing") {
+        const now = time;
+        if (now - lastJevDirectivePoll.current >= 750 && !jevDirectiveInFlight.current) {
+          lastJevDirectivePoll.current = now;
+          jevDirectiveInFlight.current = true;
+
+          let closestDist = 9999;
+          let closestType = "rock";
+          let closestAngle = 0;
+
+          for (const r of game.rocks) {
+            const dx = ((r.x - game.ship.x + game.width / 2) % game.width + game.width) % game.width - game.width / 2;
+            const dy = ((r.y - game.ship.y + game.height / 2) % game.height + game.height) % game.height - game.height / 2;
+            const d = Math.hypot(dx, dy);
+            if (d < closestDist) {
+              closestDist = d;
+              closestType = r.boss ? "boss" : "rock";
+              closestAngle = Math.atan2(dy, dx);
+            }
+          }
+
+          for (const e of game.enemies) {
+            const dx = ((e.x - game.ship.x + game.width / 2) % game.width + game.width) % game.width - game.width / 2;
+            const dy = ((e.y - game.ship.y + game.height / 2) % game.height + game.height) % game.height - game.height / 2;
+            const d = Math.hypot(dx, dy);
+            if (d < closestDist) {
+              closestDist = d;
+              closestType = e.elite ? "elite" : "enemy";
+              closestAngle = Math.atan2(dy, dx);
+            }
+          }
+
+          let hazardDelta = closestAngle - game.ship.angle;
+          while (hazardDelta > Math.PI) hazardDelta -= Math.PI * 2;
+          while (hazardDelta < -Math.PI) hazardDelta += Math.PI * 2;
+
+          const telemetry = {
+            distanceToClosestHazard: closestDist === 9999 ? 300 : Math.round(closestDist),
+            hazardType: closestType,
+            hazardAngleDelta: Math.round(hazardDelta * 100) / 100,
+            rocksCount: game.rocks.length,
+            enemiesCount: game.enemies.length,
+            hullHp: game.lives,
+            shieldCharges: game.shield,
+            bombsAvailable: game.bombs,
+            isImmune: game.ship.immunity > 0,
+            speed: Math.round(Math.hypot(game.ship.vx, game.ship.vy)),
+            elapsedSeconds: Math.round(game.elapsed),
+          };
+
+          fetch("/api/asteroids/benchmark/live-directive", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({ modelId: JEV_MODEL_ID, telemetry }),
+          })
+            .then((r) => r.json())
+            .then((res: { directive?: LivePilotDirective }) => {
+              if (res?.directive) {
+                jevDirectiveRef.current = res.directive;
+                setLiveDirective(res.directive);
+                game.logDirective(`JEV: ${res.directive.radioCallout} (${res.directive.latencyMs}ms)`);
+              }
+            })
+            .catch(() => {})
+            .finally(() => {
+              jevDirectiveInFlight.current = false;
+            });
+        }
+      }
+
+      const activePilotProfile: TacticalProfile = {
+        ...jevProfileRef.current,
+        liveDirective: jevDirectiveRef.current,
+      };
+
+      game.step(dt, pilotRef.current ? nextPilotControls(game, activePilotProfile) : controls.current);
       controls.current.bomb = false; controls.current.swap = false;
       draw();
       // Local director at 2Hz + optional LLM events.
@@ -170,6 +297,8 @@ export default function SpaceappAsteroids({ onClose }: { onClose: () => void }) 
     const observer = new ResizeObserver(resize); observer.observe(surface); resize(); focusGame();
     const suspend = () => {
       clearInput();
+      jevDirectiveRef.current = null;
+      setLiveDirective(null);
       if (game.phase === "playing") { pausedRef.current = true; setPaused(true); }
       stop(); audio.pause(); saveBest();
     };
@@ -189,6 +318,8 @@ export default function SpaceappAsteroids({ onClose }: { onClose: () => void }) 
   const begin = (startSector?: number) => {
     const rt = runtime.current; if (!rt) return;
     clearInput(); pausedRef.current = false; setPaused(false);
+    jevDirectiveRef.current = null;
+    setLiveDirective(null);
     rt.game.start(startSector ?? 1); director.current = emptyDirector(); baseStats.current = { fired: 0, deaths: 0 };
     rt.game.setDifficulty(difficultyRef.current);
     rt.game.setInfernoFire(isInfernoFire(difficultyRef.current, aiRef.current));
@@ -255,9 +386,17 @@ export default function SpaceappAsteroids({ onClose }: { onClose: () => void }) 
         <div className="asteroids-actions">
           <button type="button" aria-label={music ? "Turn music off" : "Turn music on"} title={music ? "Music on · click to mute" : "Music off · click to enable"} aria-pressed={music} onClick={() => void toggleMusic()}>{music ? <Music2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}</button>
           <button type="button" aria-label={`AI director ${aiMode}`} title={`AI director: ${aiMode} · click to switch`} aria-pressed={aiMode === "adaptive"} onClick={toggleAI}>AI</button>
+          <button type="button" aria-label={pilot ? "Disable Jev AI pilot" : "Enable Jev AI pilot"} title={pilot ? "TypeSafe Jev AI pilot ON (Live neural guidance) · click to take control" : "Let TypeSafe Jev pilot this ship (Real-time neural guidance)"} aria-pressed={pilot} className={pilot ? "asteroids-pilot-active" : undefined} onClick={togglePilot}>{pilot ? "JEV PILOT" : "PILOT (JEV)"}</button>
           {hud.phase === "playing" && <button type="button" className="asteroids-pause" aria-label={paused ? "Resume game" : "Pause game"} title={paused ? "Resume game (P)" : "Pause game (P)"} onClick={() => setPause(!pausedRef.current)}>{paused ? <Play aria-hidden="true" /> : <Pause aria-hidden="true" />}</button>}
         </div>
       </header>
+      {pilot && liveDirective && hud.phase === "playing" && !paused && (
+        <div className="asteroids-jev-directive-banner" role="status" aria-live="polite">
+          <span className="asteroids-jev-pulse">●</span>
+          {liveDirective.radioCallout}
+          <small>({liveDirective.latencyMs}ms)</small>
+        </div>
+      )}
       {hud.bossHp > 0 && hud.phase === "playing" && <div className="asteroids-boss-bar" role="status" aria-label="Boss integrity"><span>BOSS {hud.bossHp}</span><i style={{ width: `${Math.min(100, hud.bossHp * 2)}%` }} /></div>}
       {audioUnavailable && <p className="asteroids-audio-notice" role="status">Audio is unavailable in this browser.</p>}
       {unsupported ? <div className="asteroids-overlay"><div className="asteroids-panel"><h1>Canvas is unavailable</h1><p>Try a browser with Canvas 2D support.</p></div></div> : hud.phase === "ready" ? (
@@ -311,7 +450,7 @@ export default function SpaceappAsteroids({ onClose }: { onClose: () => void }) 
         </aside>}
         {hud.thrustHint && <div className="asteroids-thrust-hint" role="status"><strong>Hold W / ↑ to fly forward</strong><span>A / D turn your ship · hold the ↑ touch button to thrust</span></div>}
       </>}
-      <footer className="asteroids-footer"><span>SECTOR <b>{String(hud.sector).padStart(2, "0")}</b><i>/ {hud.name}</i></span><span aria-label={`${hud.lives} hull remaining`}>HULL <b className="asteroids-hull">{"◆".repeat(hud.lives)}{"◇".repeat(Math.max(0, 3 - hud.lives))}</b></span><span>{hud.rapid > 0 ? `RAPID ${hud.rapid}s` : hud.shield ? `SHIELD Lv${hud.shieldLevel} · ×${hud.shield}` : hud.dash ? `DASH ${hud.dash}s` : "DASH READY"}</span><span>WEAPON <b>{hud.weapon} {hud.weaponLevel > 0 ? `Lv${hud.weaponLevel}` : ""}</b><i>/ BOMB ×{hud.bombs}</i></span><span className="asteroids-difficulty">LEVEL <button type="button" aria-label="Easier difficulty" title="Easier difficulty ([)" onClick={() => applyDifficultyStep(-1)}>−</button><b aria-live="polite">{hud.difficulty} ×{hud.scoreMul}</b><button type="button" aria-label="Harder difficulty" title="Harder difficulty (])" onClick={() => applyDifficultyStep(1)}>+</button></span><span>AI <b>{hud.infernoFire ? "INFERNO FIRE" : hud.ai.toUpperCase()}</b></span></footer>
+      <footer className="asteroids-footer"><span>SECTOR <b>{String(hud.sector).padStart(2, "0")}</b><i>/ {hud.name}</i></span><span aria-label={`${hud.lives} hull remaining`}>HULL <b className="asteroids-hull">{"◆".repeat(hud.lives)}{"◇".repeat(Math.max(0, 3 - hud.lives))}</b></span><span>{hud.rapid > 0 ? `RAPID ${hud.rapid}s` : hud.shield ? `SHIELD Lv${hud.shieldLevel} · ×${hud.shield}` : hud.dash ? `DASH ${hud.dash}s` : "DASH READY"}</span><span>WEAPON <b>{hud.weapon} {hud.weaponLevel > 0 ? `Lv${hud.weaponLevel}` : ""}</b><i>/ BOMB ×{hud.bombs}</i></span><span className="asteroids-difficulty">LEVEL <button type="button" aria-label="Easier difficulty" title="Easier difficulty ([)" onClick={() => applyDifficultyStep(-1)}>−</button><b aria-live="polite">{hud.difficulty} ×{hud.scoreMul}</b><button type="button" aria-label="Harder difficulty" title="Harder difficulty (])" onClick={() => applyDifficultyStep(1)}>+</button></span><span>AI <b>{hud.infernoFire ? "INFERNO FIRE" : hud.ai.toUpperCase()}</b></span>{pilot && <span className="asteroids-pilot-tag">PILOT <b>JEV 1.13 (LIVE)</b></span>}</footer>
       {hud.phase === "playing" && !paused && <div className="asteroids-touch" aria-label="Flight controls">
         <div>{([["left", "↶", "Turn left"], ["thrust", "↑", "Thrust"], ["right", "↷", "Turn right"]] as const).map(([action, label, name]) => <button key={action} type="button" aria-label={name} onPointerDown={e => pointerDown(e, action)} onPointerUp={pointerUp} onPointerCancel={pointerUp} onLostPointerCapture={pointerUp}>{label}</button>)}</div>
         <div>

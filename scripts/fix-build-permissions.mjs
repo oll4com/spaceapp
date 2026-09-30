@@ -9,6 +9,7 @@ const targets = [
   "apps/worker/dist",
   "packages/browser-host/dist",
   "packages/contracts/dist",
+  "packages/memory-graph/dist",
   "packages/codex-app-server/dist",
   "packages/runtime/dist",
   "packages/db/dist",

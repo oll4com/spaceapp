@@ -456,7 +456,7 @@ function defaultModelForProvider(providerId: string | null | undefined): string 
     case "codex-lb":
       return "gpt-5.6-sol";
     case "google":
-      return "gemini-2.5-flash";
+      return "gemini-3.8-flash";
     case "hermes":
       return "hermes-3-llama-3.1-8b";
     case "opencode":
@@ -763,9 +763,9 @@ export class SystemAnalyticsService {
     if (!force && this.metadata && this.metadata.expiresAt > nowMs) return this.metadata;
     const rooms = await this.store.listRooms();
     const panes = (await Promise.all(rooms.map((room) => this.store.listPanes(room.id, true)))).flat();
-    const active = (await Promise.all(
-      cliToggleRuntimeIds.map((runtimeId) => Promise.resolve(this.store.listActivePaneCliSessions(runtimeId)).catch(() => []))
-    )).flat();
+    const active = await Promise.resolve(
+      this.store.listActivePaneCliSessionsForRuntimes(cliToggleRuntimeIds)
+    ).catch(() => []);
     this.metadata = {
       rooms: new Map(rooms.map((room) => [room.id, room])),
       panes: new Map(panes.map((pane) => [pane.id, pane])),
@@ -1013,7 +1013,7 @@ export class SystemAnalyticsService {
             let totalTokensOut = 0;
             let firstUserTime: number | null = null;
             let lastModelTime: number | null = null;
-            let detectedModel = "gemini-2.5-flash";
+            let detectedModel = "gemini-3.8-flash";
 
             for (const line of lines) {
               try {
@@ -1860,7 +1860,10 @@ export class SystemAnalyticsService {
       .filter((session) => {
         if (seen.has(session.sessionId)) return false;
         seen.add(session.sessionId);
-        const endMs = session.endedAt ? Date.parse(session.endedAt) : this.now().getTime();
+        const live = liveBySession.get(session.sessionId);
+        const endMs = session.endedAt
+          ? Date.parse(session.endedAt)
+          : (live ? this.now().getTime() : Date.parse(session.updatedAt || session.startedAt));
         return endMs >= sinceMs;
       });
     const sessions: SystemAnalyticsCliSession[] = allSessions.map((session) => {

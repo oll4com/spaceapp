@@ -1,5 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { MemoryGraphSnapshot, MemoryGraphSource } from "@space/memory-graph";
 
 export interface MemoryGraphApiService {
@@ -17,6 +19,7 @@ interface CreateMemoryGraphServiceOptions {
   indexPath: string;
   monthlyPath: string;
   now?: () => Date;
+  buildArchiveSnapshot?: (input: { previousSnapshot: MemoryGraphSnapshot | null }) => Promise<MemoryGraphSnapshot>;
 }
 
 function isCurrentSnapshot(snapshot: MemoryGraphSnapshot | null): snapshot is MemoryGraphSnapshot {
@@ -70,12 +73,43 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
       rootDir: options.rootDir,
       filename: graph.ALL_MONTHS_SNAPSHOT_FILENAME
     });
-    const built = graph.buildMemoryGraphSnapshot({
-      sources: await readArchiveSources(),
-      generatedAt: (options.now?.() ?? new Date()).toISOString(),
-      previousSnapshot
+    if (options.buildArchiveSnapshot) {
+      const built = await options.buildArchiveSnapshot({ previousSnapshot });
+      await store.write(built);
+      return built;
+    }
+    return buildArchiveSnapshotOutOfProcess(graph.ALL_MONTHS_SNAPSHOT_FILENAME);
+  };
+  // The all-months build walks every canonical source and can take minutes, so it must never run on
+  // the API event loop: the build runs in a child process and the request only waits for its result.
+  const buildArchiveSnapshotOutOfProcess = async (filename: string): Promise<MemoryGraphSnapshot> => {
+    const graph = await loadGraphModule();
+    const cli = fileURLToPath(new URL("./archive-build-cli.js", import.meta.resolve("@space/memory-graph")));
+    const status = await new Promise<number>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        cli,
+        "--memory-dir", memoryDir,
+        "--index", options.indexPath,
+        "--root", options.rootDir,
+        "--filename", filename,
+        "--generated-at", (options.now?.() ?? new Date()).toISOString()
+      ], { stdio: ["ignore", "ignore", "pipe"] });
+      let stderr = "";
+      child.stderr?.on("data", (chunk: Buffer) => {
+        if (stderr.length < 2000) stderr += chunk.toString("utf8");
+      });
+      child.once("error", reject);
+      child.once("exit", (code) => {
+        if (code === 0) resolve(0);
+        else reject(new Error(stderr.trim() || `Memory archive build exited with code ${code ?? "null"}.`));
+      });
     });
-    await store.write(built);
+    if (status !== 0) throw new Error("Memory archive build failed.");
+    const built = await graph.createMemoryGraphSnapshotStore({
+      rootDir: options.rootDir,
+      filename
+    }).read();
+    if (!built || !isCurrentSnapshot(built)) throw new Error("Memory archive snapshot is unavailable after its build.");
     return built;
   };
   const readSources = async (): Promise<MemoryGraphSource[]> => [
@@ -122,6 +156,9 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
         archiveSnapshot = persisted;
         return archiveSnapshot;
       }
+      // An unusable persisted archive snapshot must not rebuild on every request: serve the last
+      // good in-memory build while a single shared build finishes out of process.
+      if (isCurrentSnapshot(archiveSnapshot)) return archiveSnapshot;
       archiveBuild ??= buildAndPersistArchiveSnapshot(persisted).finally(() => { archiveBuild = null; });
       archiveSnapshot = await archiveBuild;
       return archiveSnapshot;

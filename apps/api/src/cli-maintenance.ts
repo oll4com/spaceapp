@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import {
   cliMaintenanceRequestSchema,
+  maintenancePlanRequestSchema, maintenanceApplyRequestSchema, maintenancePlanSchema,
+  type MaintenancePlanRequest, type MaintenanceApplyRequest,
   cliToggleRuntimeIdSchema,
   cliUpdateAllDetectionSchema,
   cliUpdateAllRequestSchema,
@@ -24,6 +26,8 @@ const dispatcherCommand = "/usr/bin/sudo";
 const dispatcherExecutable = "/opt/spaceapp/bin/space-cli-maintenance-dispatcher";
 const activeStatuses = new Set(["QUEUED", "RUNNING"]);
 const cliOperationTypes = new Set([
+  "CLI_MAINTENANCE_PLAN",
+  "CLI_MAINTENANCE_APPLY",
   "CLI_MAINTENANCE_CHECK",
   "CLI_MAINTENANCE_UPDATE",
   "CLI_MAINTENANCE_REPAIR"
@@ -77,6 +81,7 @@ function optionalVersion(value: unknown): string | null {
 export class CliMaintenanceError extends Error {
   constructor(
     readonly code:
+      | "MAINTENANCE_PLAN_INVALID"
       | "CLI_MAINTENANCE_IN_PROGRESS"
       | "CLI_MAINTENANCE_DISPATCH_FAILED"
       | "CLI_MAINTENANCE_REPAIR_DISABLED",
@@ -326,6 +331,66 @@ export class CliMaintenanceManager {
     this.now = options.now ?? (() => new Date());
   }
 
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.admissionQueue.then(operation, operation);
+    this.admissionQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  createPlan(input: MaintenancePlanRequest, actorUserId: string): Promise<AdminOperationRun> {
+    return this.enqueue(async () => {
+      const parsed = maintenancePlanRequestSchema.parse(input);
+      const settings = await this.options.store.listCliRuntimeSettings();
+      return this.createPlannedRun("CLI_MAINTENANCE_PLAN", actorUserId, {
+        scope: parsed.scope,
+        runtimeIds: settings.filter(s => parsed.scope === "all" || s.enabled).map(s => s.runtimeId)
+      }, "Checking Space and CLI maintenance recommendations.");
+    });
+  }
+
+  applyPlan(planId: string, input: MaintenanceApplyRequest, actorUserId: string): Promise<AdminOperationRun> {
+    return this.enqueue(async () => {
+      const parsed = maintenanceApplyRequestSchema.parse(input);
+      const runs = await this.options.store.listAdminOperationRuns(500);
+      const existing = runs.find(r => r.operationType === "CLI_MAINTENANCE_APPLY" &&
+        (r.result.planId === planId || (r.actorUserId === actorUserId && r.result.idempotencyKey === parsed.idempotencyKey)));
+      if (existing) {
+        if (existing.actorUserId !== actorUserId || existing.result.planId !== planId ||
+          JSON.stringify(existing.result.selectedActionIds) !== JSON.stringify(parsed.selectedActionIds))
+          throw new CliMaintenanceError("MAINTENANCE_PLAN_INVALID", "This plan was already submitted with different selections. Run a new check.", 409);
+        return existing;
+      }
+      const source = await this.getStoredRun(idSchema.parse(planId));
+      const plan = maintenancePlanSchema.safeParse(source.result.plan);
+      if (source.operationType !== "CLI_MAINTENANCE_PLAN" || source.status !== "SUCCEEDED" ||
+          source.actorUserId !== actorUserId || !plan.success ||
+          parsed.selectedActionIds.some(id => !plan.data.actions.some(a => a.id === id)))
+        throw new CliMaintenanceError("MAINTENANCE_PLAN_INVALID", "The reviewed maintenance plan is unavailable. Run a new check.", 409);
+      if (this.options.repairEnabled !== true)
+        throw new CliMaintenanceError("CLI_MAINTENANCE_REPAIR_DISABLED", "Maintenance application is disabled until the compatibility rollout is enabled.", 503);
+      const settings = await this.options.store.listCliRuntimeSettings();
+      if (plan.data.scope === "enabled" && parsed.selectedActionIds.some(id => !settings.some(s => s.runtimeId === id && s.enabled)))
+        throw new CliMaintenanceError("MAINTENANCE_PLAN_INVALID", "Enabled tools changed. Run a new check.", 409);
+      return this.createPlannedRun("CLI_MAINTENANCE_APPLY", actorUserId, {
+        planId, scope: plan.data.scope, idempotencyKey: parsed.idempotencyKey, selectedActionIds: parsed.selectedActionIds,
+        actions: plan.data.actions.filter(a => parsed.selectedActionIds.includes(a.id))
+      }, "Queued the reviewed maintenance actions.");
+    });
+  }
+
+  private async createPlannedRun(operationType: AdminOperationRun["operationType"], actorUserId: string,
+    result: Record<string, unknown>, summary: string): Promise<AdminOperationRun> {
+    const active = (await this.options.store.listAdminOperationRuns(500)).find(r => cliOperationTypes.has(r.operationType) && activeStatuses.has(r.status));
+    if (active) throw new CliMaintenanceError("CLI_MAINTENANCE_IN_PROGRESS", "A maintenance operation is already in progress.", 409);
+    const run = await this.options.store.createAdminOperationRun({ operationType, actorUserId: idSchema.parse(actorUserId), result, summary });
+    try { await this.dispatcher.dispatch(run.id); }
+    catch {
+      await this.options.store.updateAdminOperationRun(run.id, { status: "FAILED", summary: "Maintenance could not be dispatched.", finishedAt: this.now().toISOString() });
+      throw new CliMaintenanceError("CLI_MAINTENANCE_DISPATCH_FAILED", "Maintenance could not be dispatched.", 503);
+    }
+    return run;
+  }
+
   start(input: CliMaintenanceRequest, actorUserId: string): Promise<AdminOperationRun> {
     const operation = this.admissionQueue.then(
       () => this.startExclusive(input, actorUserId),
@@ -432,7 +497,7 @@ export class CliMaintenanceManager {
         .map((setting) => setting.runtimeId)
     );
     const runs = (await this.options.store.listAdminOperationRuns(500))
-      .filter((run) => run.operationType === "CLI_MAINTENANCE_REPAIR");
+      .filter((run) => ["CLI_MAINTENANCE_REPAIR", "CLI_MAINTENANCE_APPLY"].includes(run.operationType));
     const handoffs = (
       await Promise.all(runs.map((run) => this.options.store.listCliMaintenanceAuthHandoffs(run.id)))
     ).flat();
@@ -448,7 +513,7 @@ export class CliMaintenanceManager {
   async completeAuthHandoffsForRuntime(runtimeId: string): Promise<CliMaintenanceAuthHandoff[]> {
     const parsedRuntimeId = cliToggleRuntimeIdSchema.parse(runtimeId);
     const runs = (await this.options.store.listAdminOperationRuns(500))
-      .filter((run) => run.operationType === "CLI_MAINTENANCE_REPAIR");
+      .filter((run) => ["CLI_MAINTENANCE_REPAIR", "CLI_MAINTENANCE_APPLY"].includes(run.operationType));
     const completed: CliMaintenanceAuthHandoff[] = [];
 
     for (const listedRun of runs) {

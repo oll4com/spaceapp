@@ -13,6 +13,7 @@ import {
   type RefObject
 } from "react";
 import type { UserLink } from "@space/contracts";
+import type { RoomTheme } from "../room-theme/RoomThemeMenu.js";
 import { api } from "../../api.js";
 import { APP_DIAGNOSTICS_STATE_EVENT, getAppDiagnosticsClientState } from "../../app-diagnostics/app-diagnostics-bootstrap.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
@@ -68,7 +69,7 @@ type VibeMusicPlayerProps = {
   onOpenChange: (open: boolean) => void;
   onOpenYouTube?: (url: string) => void;
   persistVolume?: boolean;
-  roomTheme: "graphite" | "forest" | "copper" | "steel" | "contrast";
+  roomTheme: RoomTheme;
   triggerRef: RefObject<HTMLButtonElement | null>;
 };
 
@@ -296,6 +297,7 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
   const runtime = getSpaceRuntime();
   const [reloadPlayback] = useState(() => readReloadPlayback(shouldPersistVolume));
   const [resumeBlocked, setResumeBlocked] = useState(false);
+  const [mobilePlaylistOpen, setMobilePlaylistOpen] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   useMenuWheel(panelRef, "button:not(:disabled)", open, triggerRef);
@@ -384,7 +386,6 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
     const next = [...debugLogRef.current.slice(-59), entry];
     debugLogRef.current = next;
     setDebugLog(next);
-    console.debug(`[VibeMusic] ${entry}`);
   }, []);
 
   useEffect(() => {
@@ -1065,19 +1066,29 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
           const until=Date.now()+4000;
           while(Date.now()<until){const after=youtubePlayerRef.current?.getVideoId();if(after&&after!==before)return true;await new Promise(r=>setTimeout(r,50));}return false;
         }
+        if (command.action === "PAUSE") {
+          if (source === "playlist") youtubePlayerRef.current?.pause();
+          else disconnect();
+          return true;
+        }
         if (source === "playlist") {
           if (command.action === "PLAY" && playlistStatus !== "playing") togglePlaylistPlayback();
-          if (command.action === "PAUSE") youtubePlayerRef.current?.pause();
         } else {
           if (command.action === "PLAY" && status !== "playing") startPlayback();
-          if (command.action === "PAUSE") disconnect();
         }
-        const until = Date.now() + 8000;
+        const until = Date.now() + 5000;
         while (Date.now() < until) {
           const state = directPlaybackState.current;
           const playing = state.source === "playlist" ? state.playlistStatus === "playing" : state.status === "playing";
           if (playing === (command.action === "PLAY")) return true;
+          if (command.action === "PLAY" && (state.status === "connecting" || state.playlistStatus === "connecting") && Date.now() > until - 500) {
+            return true;
+          }
           await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        const finalState = directPlaybackState.current;
+        if (command.action === "PLAY" && (finalState.status === "connecting" || finalState.playlistStatus === "connecting")) {
+          return true;
         }
         return false;
       }
@@ -1604,8 +1615,20 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
             ) : null}
             {playlistStatus === "unsupported" ? <p className="vibe-music-error" role="alert">This link is not a YouTube playlist</p> : null}
             <div className="vibe-music-playlist-picker">
-              <label className="vibe-music-playlist-picker-label" htmlFor="vibe-music-playlist-select">Playlist</label>
-              <select
+              {mobile ? <span className="vibe-music-playlist-picker-label">Playlist</span> : <label className="vibe-music-playlist-picker-label" htmlFor="vibe-music-playlist-select">Playlist</label>}
+              {mobile ? <div className="vibe-music-mobile-picker">
+                <button type="button" className="vibe-music-mobile-picker-trigger" aria-expanded={mobilePlaylistOpen} aria-controls="vibe-music-mobile-playlists" onClick={() => setMobilePlaylistOpen((value) => !value)}>
+                  {selectedMusicLink?.title ?? "Select a playlist…"}
+                </button>
+                {mobilePlaylistOpen ? <div id="vibe-music-mobile-playlists" className="vibe-music-mobile-playlists" role="group" aria-label="Music library playlists">
+                  {musicLinks.map((link) => <button key={link.id} type="button" aria-pressed={link.id === selectedLinkId} onClick={() => {
+                    pushDebug("selectPlaylist", { linkId: link.id, found: true, url: link.url });
+                    setSelectedLinkId(link.id);
+                    setMobilePlaylistOpen(false);
+                    startPlaylist(link, playlistStatus === "playing" || playlistStatus === "connecting");
+                  }}>{link.title}</button>)}
+                </div> : null}
+              </div> : <select
                 id="vibe-music-playlist-select"
                 aria-label="Music library playlist"
                 value={selectedLinkId ?? ""}
@@ -1621,7 +1644,7 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
                 {musicLinks.map((link) => (
                   <option key={link.id} value={link.id}>{link.title}</option>
                 ))}
-              </select>
+              </select>}
               <button
                 type="button"
                 className="vibe-music-player-aux vibe-music-delete-link"

@@ -3,12 +3,14 @@ import { ChevronRight, type LucideIcon } from "../ui-theme/app-icons.js";
 import "./settings-disclosure.css";
 
 const SectionsContext = createContext<{
-  active: string | null;
+  active: string | null | undefined;
   setActive: (id: string | null) => void;
 } | null>(null);
 
 export function SettingsSections({ children }: { children: ReactNode }) {
-  const [active, setActive] = useState<string | null>(null);
+  // `undefined` means no section has been interacted with yet; `null` means
+  // the user explicitly closed the initially open section.
+  const [active, setActive] = useState<string | null | undefined>(undefined);
   return <SectionsContext.Provider value={{ active, setActive }}>{children}</SectionsContext.Provider>;
 }
 
@@ -18,7 +20,7 @@ export function SettingsDisclosure({ title, description, scope, icon: Icon, chil
   initialOpen?: boolean;
   title: string;
   description: string;
-  scope: "This browser" | "Selected pane" | "Installation" | "New sessions";
+  scope: "Your account" | "This browser" | "Selected pane" | "Installation" | "New sessions";
   icon: LucideIcon;
   children: ReactNode;
 }) {
@@ -26,7 +28,7 @@ export function SettingsDisclosure({ title, description, scope, icon: Icon, chil
   const sections = useContext(SectionsContext);
   const [localOpen, setLocalOpen] = useState(initialOpen);
   const [visited, setVisited] = useState(initialOpen);
-  const open = sections ? (sections.active === id || (sections.active === null && initialOpen)) : localOpen;
+  const open = sections ? (sections.active === undefined ? initialOpen : sections.active === id) : localOpen;
   return (
     <section className="settings-disclosure" data-open={open} hidden={hidden}>
       <h3>

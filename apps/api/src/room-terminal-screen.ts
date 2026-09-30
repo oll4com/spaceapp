@@ -32,7 +32,10 @@ export async function projectRoomTerminalScreen(chunks: string[], cols = 100, ro
 }
 
 export function roomTerminalState(screen: string): "RUNNING" | "IDLE" | "WAITING_FOR_INPUT" | "UNKNOWN" {
-  if (/esc(?:ape)?\s+to\s+(?:interrupt|cancel)|thinking[.…]|working[.…]|ctrl\+c to interrupt/i.test(screen)) return "RUNNING";
+  if (
+    /esc(?:ape)?\s+(?:to\s+)?(?:interrupt|cancel)|thought\s+for\s+\d+s?|thinking[.…]|(?:[\u2800-\u28ff•●*o-]\s*working\b|\bworking\s*(?:[·•]\s*\d+[a-z]*|[.…]))|ctrl\+c to interrupt|running\s+(?:background\s+)?(?:command|task|subagent|process)[.…]?/i.test(screen) ||
+    /(?:^|\n)\s*[•●*o-]?\s*\[(?:\d{1,2}:\d{2}:\d{2}(?:\s*[ap]m)?|task-[a-z0-9_-]+|\d+)\]\s+[^\n]+?\brunning(?:\s*\([^)]*\))?\s*$/im.test(screen)
+  ) return "RUNNING";
   if (/select (?:a |an )?(?:session|model|option)|enter to (?:confirm|select)|allow (?:once|always)|approve this|do you want to proceed/i.test(screen)) return "WAITING_FOR_INPUT";
   if (/(?:^|\n)\s*[❯›>]\s*[^\n]*$/m.test(screen) || /(?:ask anything|type your message|send a message)/i.test(screen)) return "IDLE";
   return "UNKNOWN";
@@ -95,6 +98,11 @@ export function roomTerminalMode(runtimeId: string, screen: string, advertisedMo
     if (promptAt >= 0 && /^›\s*ask codex to do anything$/.test(footer[promptAt]!) &&
       controls.some(line => /^gpt-[\w.-]+\s+\w+\s*[·•]\s*\//.test(line))) return "default";
     return null;
+  }
+  if (runtimeId === "cli:deepseek") {
+    const match = text.match(/\[\s*(workspace|read-only|yolo|plan)\s*[·•]\s*ready/i);
+    if (match?.[1]) return match[1].toLowerCase();
+    return text.match(/\b(workspace|read-only|yolo|plan)\b/i)?.[1]?.toLowerCase() ?? null;
   }
   return text.match(/\b(plan|build|default|auto|yolo|ask|auto edit)\s*(?:mode|on)\b/i)?.[1]?.toLowerCase() ?? null;
 }

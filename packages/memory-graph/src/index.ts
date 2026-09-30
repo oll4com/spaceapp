@@ -12,7 +12,13 @@ export {
 } from "./evaluation.js";
 export { evaluateMemoryPerformanceGates, type MemoryPerformanceGateInput } from "./performance-gates.js";
 export { createMemoryGraphSnapshotStore, type MemoryGraphSnapshotStore } from "./snapshot-store.js";
-export const ALL_MONTHS_SNAPSHOT_FILENAME = "snapshot-all-months.json";
+export {
+  ALL_MONTHS_SNAPSHOT_FILENAME,
+  MONTHLY_MEMORY_FILE_PATTERN,
+  buildMemoryGraphArchiveSnapshot,
+  listMonthlyMemorySourcePaths,
+  readMemoryGraphArchiveSources
+} from "./archive-build.js";
 export type {
   MemoryGraphEdge,
   MemoryGraphEdgeOrigin,

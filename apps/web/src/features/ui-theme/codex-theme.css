@@ -32,3 +32,64 @@
 :root[data-interface-theme="codex"] .space-shell .board-toolbar {
   background: var(--modern-bg);
 }
+:root[data-interface-theme="codex"] .help-page .help-section,
+:root[data-interface-theme="codex"] .help-page .help-navigation,
+:root[data-interface-theme="codex"] .help-page .help-entry {
+  border-radius: 14px;
+}
+:root[data-interface-theme="codex"] .help-page .help-header {
+  background: var(--modern-surface);
+  border-bottom-color: var(--modern-border);
+}
+
+/* Codex LB CLI Shortcuts Popover */
+:root[data-interface-theme="codex"] .terminal-shortcuts-popover,
+.terminal-shortcuts-popover[data-interface-theme="codex"] {
+  border-radius: 14px;
+  border-color: #303030;
+  background: rgba(20, 20, 20, 0.98);
+  color: #f5f5f5;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+}
+
+:root[data-interface-theme="codex"] .terminal-shortcuts-popover button,
+.terminal-shortcuts-popover[data-interface-theme="codex"] button {
+  border-radius: 9px;
+  border-color: #303030;
+  background: #191919;
+  color: #f5f5f5;
+}
+
+:root[data-interface-theme="codex"] .terminal-shortcuts-popover .terminal-shortcut-label svg,
+.terminal-shortcuts-popover[data-interface-theme="codex"] .terminal-shortcut-label svg {
+  color: #82aaff;
+}
+
+:root[data-interface-theme="codex"] .terminal-shortcuts-popover button:hover,
+:root[data-interface-theme="codex"] .terminal-shortcuts-popover button:focus-visible,
+.terminal-shortcuts-popover[data-interface-theme="codex"] button:hover,
+.terminal-shortcuts-popover[data-interface-theme="codex"] button:focus-visible {
+  border-color: #82aaff;
+  background: color-mix(in srgb, #82aaff 15%, #191919 85%);
+  color: #ffffff;
+  box-shadow: 0 2px 10px rgba(130, 170, 255, 0.22);
+}
+
+:root[data-interface-theme="codex"] .terminal-shortcuts-popover button:hover .terminal-shortcut-label svg,
+:root[data-interface-theme="codex"] .terminal-shortcuts-popover button:focus-visible .terminal-shortcut-label svg,
+.terminal-shortcuts-popover[data-interface-theme="codex"] button:hover .terminal-shortcut-label svg,
+.terminal-shortcuts-popover[data-interface-theme="codex"] button:focus-visible .terminal-shortcut-label svg {
+  color: #ffffff;
+}
+
+:root[data-interface-theme="codex"] .terminal-shortcuts-popover kbd,
+.terminal-shortcuts-popover[data-interface-theme="codex"] kbd {
+  color: #888888;
+}
+
+:root[data-interface-theme="codex"] .terminal-shortcuts-key-group button[data-shortcut="enter"],
+.terminal-shortcuts-popover[data-interface-theme="codex"] .terminal-shortcuts-key-group button[data-shortcut="enter"] {
+  border-color: rgba(130, 170, 255, 0.4);
+  color: #82aaff;
+}
+

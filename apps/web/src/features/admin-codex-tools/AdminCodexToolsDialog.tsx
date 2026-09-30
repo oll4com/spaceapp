@@ -132,11 +132,13 @@ function CleanupResultSummary({ result }: { result: CliSessionCleanupResponse })
 
 export function AdminCodexToolsDialog({
   client = defaultClient,
+  embedded = false,
   initialTool,
   isCodexEnabled = true,
   anyCliEnabled = true,
   onClose
 }: {
+  embedded?: boolean;
   client?: AdminCodexToolsClient;
   initialTool: AdminCodexTool;
   isCodexEnabled?: boolean;
@@ -295,14 +297,14 @@ export function AdminCodexToolsDialog({
   const HeaderIcon = isSpeed ? Gauge : Trash2;
 
   return (
-    <div className="admin-codex-tools-backdrop" onMouseDown={(event) => {
+    <div className={`admin-codex-tools-backdrop${embedded ? " manage-embedded" : ""}`} onMouseDown={(event) => {
       if (event.target === event.currentTarget) close();
     }}>
       <section
         ref={dialogRef}
         className="admin-codex-tools-dialog"
-        role="dialog"
-        aria-modal="true"
+        role={embedded ? "region" : "dialog"}
+        aria-modal={embedded ? undefined : true}
         aria-label={title}
         aria-busy={busy}
         onKeyDown={handleKeyDown}
