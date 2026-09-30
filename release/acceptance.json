@@ -1,0 +1,252 @@
+{
+  "schemaVersion": 1,
+  "candidateDigest": "43f246de14af485035a814e458a2d4e7ae8c1e2fda5a885412b92a27c119a26f",
+  "sourceCommit": "728173c929a5932fd6927d615e855da36ed25cda",
+  "launcherVersion": "1.0.24",
+  "runtimeVersion": "1.0.24",
+  "createdAt": "2026-09-30T10:19:47.575Z",
+  "checks": [
+    {
+      "platform": "linux",
+      "scenario": "fresh-install",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-fresh-install.json",
+      "artifactSha256": "4c889277091851affeb4243bd4d1b8eec228f6dd4e1c3751fa65cf27dc2b4395",
+      "ownerUi": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "upgrade",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-upgrade.json",
+      "artifactSha256": "3824ce7888fdbb3982b29aa546962f36f59efebc7d0222d6137256c685272a34",
+      "dataPreserved": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "repair",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-repair.json",
+      "artifactSha256": "8411174289798a3d8368d2b0d21c034d31c74959453dfd7d4f7ccf79ee7df7cb",
+      "dataPreserved": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "docker-stopped",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-docker-stopped.json",
+      "artifactSha256": "45605f36489c4248e6a9e28301a897f6864d8b3a11598d14f7b3a74163cfeb49",
+      "dataPreserved": true,
+      "dockerInitiallyStopped": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "first-agent",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "ses_f0e2f88b9ffeLDncAtumI4UZIx",
+      "responseObserved": true,
+      "freeModel": true,
+      "modelId": "opencode/longcat-2.5-preview-free",
+      "cleanupVerified": true,
+      "artifact": "linux-first-agent.json",
+      "artifactSha256": "88184cde0c3583b1345a1546ea26c5b71305aae4931c496f6fc5887d8f94efdb"
+    },
+    {
+      "platform": "windows",
+      "scenario": "fresh-install",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-fresh-install.json",
+      "artifactSha256": "5e71311fd933507883a946eae63f44642abb2160d47c8dec9380b71fa92dbb93",
+      "ownerUi": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "upgrade",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-upgrade.json",
+      "artifactSha256": "69eae5cff462c67046981e8ecd9e7d676377ed35527914f501529bf3af487a07",
+      "dataPreserved": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "repair",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-repair.json",
+      "artifactSha256": "e6f624d26358a95b185ce66f302e8bb066afe3ffa188d3575069fe9eddaef8ef",
+      "dataPreserved": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "docker-stopped",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-docker-stopped.json",
+      "artifactSha256": "5d5f68e2494712975ec8c9e60405aad183373831733a65606a4666d9ad8619ee",
+      "dataPreserved": true,
+      "dockerInitiallyStopped": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "first-agent",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "ses_f0e3106b2ffetgNA5tJkWJ5QFa",
+      "responseObserved": true,
+      "freeModel": true,
+      "modelId": "opencode/mimo-v2.6-flash-free",
+      "cleanupVerified": true,
+      "artifact": "windows-first-agent.json",
+      "artifactSha256": "c8291744bb4f1f81a69502f066b1293a7894d4910351bbd03dba4490138c8a91",
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "fresh-install",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-fresh-install.json",
+      "artifactSha256": "609dd21cddbebc93ff14f7fe218b88e8ff6f41f2ff3a3af81f259b6f7b215813",
+      "ownerUi": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "upgrade",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-upgrade.json",
+      "artifactSha256": "bc106790d38114046cdefc01820f0d8bc47d657ea7d6df13bdf024576001d7df",
+      "dataPreserved": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "repair",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-repair.json",
+      "artifactSha256": "533bd84aada5e2e6dee4964a8039ac35c507e8141b4fbaf39ed0c43ea53895e4",
+      "dataPreserved": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "docker-stopped",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-docker-stopped.json",
+      "artifactSha256": "2a3f5712884c6d6159d0b725be23d05323fd7cb6705c781546db784f09dda38d",
+      "dataPreserved": true,
+      "dockerInitiallyStopped": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "first-agent",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "ses_f0e3a95bcffeEOOCN9iWz4bumq",
+      "responseObserved": true,
+      "freeModel": true,
+      "modelId": "opencode/big-pickle",
+      "cleanupVerified": true,
+      "artifact": "macos-first-agent.json",
+      "artifactSha256": "dc77bb285c557d5449cbde0bbfdd01240803f950662460a7b3a38b685c4ecb6d"
+    }
+  ],
+  "supplementary": [
+    {
+      "platform": "linux",
+      "scenario": "doctor-fix",
+      "pass": true,
+      "artifact": "linux-doctor-fix.json",
+      "artifactSha256": "1283d2b1943c5ada549a1bc8b9d23741052634f9d548ffe02e5cf5e43f81b8f2"
+    },
+    {
+      "platform": "windows",
+      "scenario": "doctor-fix",
+      "pass": true,
+      "artifact": "windows-doctor-fix.json",
+      "artifactSha256": "fa6e577f3f732778d02d42d791a3b5d9ea790712c77c41d4e4905fc89df65d3d"
+    },
+    {
+      "platform": "macos",
+      "scenario": "doctor-fix",
+      "pass": true,
+      "artifact": "macos-doctor-fix.json",
+      "artifactSha256": "d5a7ac2faa19d70819d35b340690ec251a75e21445eb7fa3348e5476b2d088ac"
+    },
+    {
+      "platform": "macos",
+      "scenario": "docker-absent",
+      "testedVersion": "1.0.20",
+      "priorPrerequisiteProof": true,
+      "pass": true,
+      "artifact": "macos-docker-absent.json",
+      "artifactSha256": "eb7406fe8d2645639903d424ab7f09a1f04fedb055f6baeb29daa57ea5be9e4b"
+    },
+    {
+      "platform": "windows",
+      "scenario": "automatic-browser",
+      "pass": true,
+      "artifact": "windows-automatic-browser.json",
+      "artifactSha256": "590bf4e13957dc643683ab89d33583466bce6bde133c53c80394814eb8d5c87d"
+    },
+    {
+      "platform": "macos",
+      "scenario": "automatic-browser",
+      "pass": true,
+      "artifact": "macos-automatic-browser.json",
+      "artifactSha256": "81ee09a7f529921744c6f6f34501e7d064c4f1ab7b9bc7d427a7c692fdc1ccc1"
+    }
+  ],
+  "limitations": [
+    "VM hosts are x86_64. ARM64 container validation remains a release workflow gate.",
+    "Fresh installer timings use preloaded local candidate images; they exclude network image downloads.",
+    "Earlier 1.0.22 macOS proof required a harness permission correction. The corrected UID10001 harness is used for this candidate.",
+    "npm next publication, environment approval and latest promotion have not yet completed.",
+    "Linux light-profile proof initially exhausted the 1536 MiB CLI limit with two test OpenCode TUIs. Acceptance reuses the automatic onboarding pane in an owned proof room and captures the native catalog before the TUI. One first-agent task passed without additional OOM kills; concurrent OpenCode capacity is not accepted by this test.",
+    "Windows and macOS automatic browser screenshots verify an exact installer rerun after fixing disconnected/stale lab capture; they are not screenshots of the initial fresh-install opener."
+  ]
+}
