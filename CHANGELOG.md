@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.23] - 2026-09-30
+
+- Update the server and bundled npm dependencies to fix the vulnerabilities rejected by the release pipeline.
+
 ## [1.0.22] - 2026-09-30
 
 - Reject real Google OAuth credentials while allowing short example placeholders in the settings form.

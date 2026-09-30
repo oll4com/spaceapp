@@ -21,7 +21,7 @@ LABEL org.opencontainers.image.licenses=BUSL-1.1
 RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSION}" \
     && install -d /tmp/npm-security-patches \
     && npm pack --ignore-scripts --no-audit --no-fund --pack-destination /tmp/npm-security-patches \
-      brace-expansion@5.0.9 tar@7.5.21 ip-address@10.3.1 undici@6.28.0 \
+      brace-expansion@5.0.12 tar@7.5.21 ip-address@10.7.1 undici@6.28.1 \
     && rm -rf \
       /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
       /usr/local/lib/node_modules/npm/node_modules/tar \
@@ -32,13 +32,13 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
       /usr/local/lib/node_modules/npm/node_modules/tar \
       /usr/local/lib/node_modules/npm/node_modules/ip-address \
       /usr/local/lib/node_modules/npm/node_modules/undici \
-    && tar -xzf /tmp/npm-security-patches/brace-expansion-5.0.9.tgz \
+    && tar -xzf /tmp/npm-security-patches/brace-expansion-5.0.12.tgz \
       -C /usr/local/lib/node_modules/npm/node_modules/brace-expansion --strip-components=1 \
     && tar -xzf /tmp/npm-security-patches/tar-7.5.21.tgz \
       -C /usr/local/lib/node_modules/npm/node_modules/tar --strip-components=1 \
-    && tar -xzf /tmp/npm-security-patches/ip-address-10.3.1.tgz \
+    && tar -xzf /tmp/npm-security-patches/ip-address-10.7.1.tgz \
       -C /usr/local/lib/node_modules/npm/node_modules/ip-address --strip-components=1 \
-    && tar -xzf /tmp/npm-security-patches/undici-6.28.0.tgz \
+    && tar -xzf /tmp/npm-security-patches/undici-6.28.1.tgz \
       -C /usr/local/lib/node_modules/npm/node_modules/undici --strip-components=1 \
     && rm -rf /tmp/npm-security-patches \
     && npm cache clean --force \
