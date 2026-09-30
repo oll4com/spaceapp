@@ -22,6 +22,11 @@ All commits go directly to main. The live host and public installer are separate
 
 ## Test the exact candidate
 
+Build and load the candidate images into each runner before publication. Pass
+`--local-images` to the launcher to require those images without downloading
+registry versions; a missing image must fail. For the lab driver, set
+`SPACEAPP_DEVTEST_LOCAL_IMAGES=1`.
+
 Use the configured dedicated lab runners. Never run reset tests on a real user's
 machine. Record source digest, package SHA256, image digests, actual exit codes,
 start/end times and retained evidence. Keep secrets out of reports.

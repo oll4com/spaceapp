@@ -432,6 +432,7 @@ test("public community files include support and structured contribution intake"
 
 test("third-party notices cover every pinned CLI and the experimental DeepSeek boundary", async () => {
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const optionalProviders = await readFile(join(root, "deploy/docker/provider-install.mjs"), "utf8");
   const notices = await readFile(join(root, "THIRD_PARTY_NOTICES.md"), "utf8");
   const packages = [
     "@openai/codex@0.145.0",
@@ -446,10 +447,10 @@ test("third-party notices cover every pinned CLI and the experimental DeepSeek b
   ];
 
   for (const packageSpec of packages) {
-    assert.match(dockerfile, new RegExp(packageSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(packageSpec.startsWith("opencode-ai") ? dockerfile : optionalProviders, new RegExp(packageSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.match(notices, new RegExp(packageSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.match(dockerfile, /downloads\.cursor\.com\/lab\/2026\.07\.23-e383d2b\/linux\/\$\{cursor_arch\}\/agent-cli-package\.tar\.gz/);
+  assert.match(optionalProviders, /downloads\.cursor\.com\/lab\/2026\.07\.23-e383d2b\/linux\/\$\{process\.arch\}\/agent-cli-package\.tar\.gz/);
   assert.match(notices, /2026\.07\.23-e383d2b/);
   assert.match(notices, /@anysphere\/agent-cli-runtime/);
   assert.doesNotMatch(dockerfile, /@anthropic-ai\/claude-code/);
