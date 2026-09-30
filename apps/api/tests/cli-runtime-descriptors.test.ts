@@ -59,7 +59,7 @@ describe("CLI runtime descriptors", () => {
       missingAuthState,
       loginAction
     }))).toEqual([
-      { id: "cli:opencode", authMode: "MANAGED", missingAuthState: "UNAVAILABLE", loginAction: null },
+      { id: "cli:opencode", authMode: "NONE", missingAuthState: "UNAVAILABLE", loginAction: null },
       { id: "cli:codex", authMode: "DEVICE_CODE", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:claude", authMode: "BROWSER_OAUTH", missingAuthState: "LOGIN_REQUIRED", loginAction: "login" },
       { id: "cli:gemini", authMode: "NONE", missingAuthState: "UNAVAILABLE", loginAction: null },
@@ -100,7 +100,7 @@ describe("CLI runtime descriptors", () => {
       commandName: "opencode-vscode-parity",
       commandEnv: "SPACE_CLI_OPENCODE_COMMAND",
       credentialSmokeEnv: "SPACE_CLI_OPENCODE_CREDENTIAL_SMOKE",
-      authMode: "MANAGED",
+      authMode: "NONE",
       missingAuthState: "UNAVAILABLE",
       loginAction: null,
       credentialObservationAction: "credential-observation",

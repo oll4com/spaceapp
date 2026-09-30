@@ -57,7 +57,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     commandName: "opencode-vscode-parity",
     commandEnv: "SPACE_CLI_OPENCODE_COMMAND",
     credentialSmokeEnv: "SPACE_CLI_OPENCODE_CREDENTIAL_SMOKE",
-    authMode: "MANAGED",
+    authMode: "NONE",
     missingAuthState: "UNAVAILABLE",
     missingAuthReason: "OpenCode managed credentials have not been verified by the operator.",
     loginAction: null,
@@ -75,7 +75,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     },
     nativeResumeArgs: ["--continue"],
     defaultModelId: null,
-    credentialVerifiedReason: "OpenCode CLI direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
+    credentialVerifiedReason: "OpenCode is available without credentials. A working free model is checked on first launch.",
     loginBootstrapReason: null
   },
   {

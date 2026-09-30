@@ -273,7 +273,9 @@ export function applyPublicOverlay(path, text) {
   }
   if (["apps/api/src/cli-runtime-descriptors.ts", "apps/api/tests/cli-runtime-descriptors.test.ts"].includes(path)) {
     // First-run native discovery selects an available free model; never pin a retired default.
-    return text.replace(/defaultModelId: "(?:opencode\/)?big-pickle"/g, 'defaultModelId: null');
+    const dynamic = text.replace(/defaultModelId: "(?:opencode\/)?big-pickle"/g, 'defaultModelId: null');
+    return dynamic.replace('{ id: "cli:opencode", authMode: "MANAGED"', '{ id: "cli:opencode", authMode: "NONE"').replace(/(key: "opencode",[\s\S]*?)authMode: "MANAGED"/, '$1authMode: "NONE"')
+      .replace('OpenCode CLI direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.', 'OpenCode is available without credentials. A working free model is checked on first launch.');
   }
   return text;
 }
