@@ -260,7 +260,18 @@ export function sanitizePublicText(input) {
 
 export function applyPublicOverlay(path, text) {
   if (path === ".gitignore" && !text.includes("run-spaceapp-*.tgz")) return `${text}\nrun-spaceapp-*.tgz\n`;
-  if (path === "apps/api/src/cli-runtime-descriptors.ts") {
+  if (path === "apps/api/tests/setup.test.ts") {
+    return text.replace('expect(login.cookies[0]?.name).toBe("space_session")', 'expect(login.cookies.find(cookie => cookie.name === "space_session")?.value).toBeTruthy()');
+  }
+  if (path === "apps/api/src/app.ts") {
+    const start = text.indexOf('    if (!user && !request.cookies["space_logged_out"]');
+    if (start !== -1) {
+      const end = text.indexOf('    if (user && store.getControlActor)', start);
+      if (end === -1) throw new Error('Review changed auth bootstrap before public export');
+      return text.slice(0, start) + text.slice(end);
+    }
+  }
+  if (["apps/api/src/cli-runtime-descriptors.ts", "apps/api/tests/cli-runtime-descriptors.test.ts"].includes(path)) {
     // First-run native discovery selects an available free model; never pin a retired default.
     return text.replace(/defaultModelId: "(?:opencode\/)?big-pickle"/g, 'defaultModelId: null');
   }

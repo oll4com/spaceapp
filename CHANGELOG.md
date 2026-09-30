@@ -5,6 +5,14 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.14] - 2026-09-30
+
+- Keep public owner authentication mandatory after setup; preserve this rule on source sync.
+- Verify non-empty database checkpoints, pause writers during snapshot, restore secrets and check recovery readiness.
+- Start stopped Docker during install/repair; support preloaded images for lab acceptance.
+- Install optional provider CLIs on first use and discover a working free OpenCode model.
+
+
 ## [1.0.13] - 2026-09-30
 
 - ship latest sanitized Space app source @ 3fc3d38778 (913 files, sanitized);

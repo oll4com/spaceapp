@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
+  applyPublicOverlay,
   auditPublicTree,
   createPublicExport,
   isPublicExportPath,
@@ -216,4 +217,13 @@ test("public export binds worktree bytes to the declared Git object", async () =
     /does not match/i
   );
   await assert.rejects(() => stat(outputRoot), /ENOENT/);
+});
+
+test("public overlay preserves dynamic model discovery and removes anonymous owner login", () => {
+  assert.equal(applyPublicOverlay("apps/api/src/cli-runtime-descriptors.ts", 'defaultModelId: "big-pickle"'), 'defaultModelId: null');
+  const bootstrap='before\n    if (!user && !request.cookies["space_logged_out"]) { user = owner; }\n    if (user && store.getControlActor) after';
+  const publicAuth=applyPublicOverlay("apps/api/src/app.ts", bootstrap);
+  assert.doesNotMatch(publicAuth, /user = owner/);
+  assert.match(publicAuth, /if \(user && store.getControlActor\)/);
+  assert.throws(() => applyPublicOverlay("apps/api/src/app.ts", bootstrap.split('    if (user &&')[0]), /Review changed auth/);
 });

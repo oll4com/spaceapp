@@ -76,7 +76,7 @@ describe("first-owner setup", () => {
             isSetupRequired: false
           });
         }
-        if (url === "/api/rooms") {
+        if (url.split("?")[0] === "/api/rooms") {
           return new Promise<Response>(() => undefined);
         }
         throw new Error(`Unexpected request: ${url}`);
@@ -86,7 +86,7 @@ describe("first-owner setup", () => {
     render(<LiveSpaceApp />);
 
     await waitFor(() => {
-      expect(requests).toContain("/api/rooms");
+      expect(requests.some(url => url.split("?")[0] === "/api/rooms")).toBe(true);
     });
     expect(requests).not.toContain("/api/setup/status");
   });
@@ -275,7 +275,7 @@ describe("first-owner setup", () => {
             connections: []
           });
         }
-        if (url === "/api/rooms") {
+        if (url.split("?")[0] === "/api/rooms") {
           return new Promise<Response>(() => undefined);
         }
         throw new Error(`Unexpected request: ${url}`);

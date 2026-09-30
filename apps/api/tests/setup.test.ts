@@ -259,6 +259,8 @@ describe("public single-owner setup API", () => {
       isSetupRequired: false
     });
 
+    expect(claimedAuth.cookies.some(cookie => cookie.name === "space_session")).toBe(false);
+
     const login = await app.inject({
       method: "POST",
       url: "/api/auth/login",
@@ -268,7 +270,7 @@ describe("public single-owner setup API", () => {
       }
     });
     expect(login.statusCode).toBe(200);
-    expect(login.cookies[0]?.name).toBe("space_session");
+    expect(login.cookies.find(cookie => cookie.name === "space_session")?.value).toBeTruthy();
 
     const legacyLogin = await app.inject({
       method: "POST",

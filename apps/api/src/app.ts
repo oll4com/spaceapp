@@ -7671,35 +7671,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       ? { setupRequired: false }
       : await store.getOwnerSetupStatus();
     let user = request.user;
-    if (!user && !request.cookies["space_logged_out"] && !(request.query as Record<string, string>)?.login && !setupStatus.setupRequired) {
-      let defaultActor: AuthUser | null = null;
-      if (store.getControlActor) {
-        defaultActor = (await store.getControlActor("user:operator")) as AuthUser | null;
-      }
-      if (!defaultActor && store.getOwnerCredentials) {
-        const creds = await store.getOwnerCredentials();
-        if (creds?.user) defaultActor = creds.user;
-      }
-      if (defaultActor) {
-        user = {
-          id: defaultActor.id,
-          email: defaultActor.email,
-          role: defaultActor.role,
-          googleId: defaultActor.googleId ?? null,
-          avatarUrl: defaultActor.avatarUrl ?? null
-        };
-        if (auth.sessionSecret) {
-          const token = signSession(user, auth.sessionSecret);
-          reply.setCookie(cookieName, token, {
-            httpOnly: true,
-            secure: auth.secureCookies,
-            sameSite: "lax",
-            path: "/",
-            maxAge: operatorSessionTtlSeconds
-          });
-        }
-      }
-    }
     if (user && store.getControlActor) {
       const dbActor = await store.getControlActor(user.id);
       if (dbActor) {

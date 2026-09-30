@@ -90,7 +90,7 @@ describe("CLI runtime descriptors", () => {
     expect(cliRunLifecycleAdapters.every((adapter) => adapter.tracksRunStarts)).toBe(true);
   });
 
-  it("defines OpenCode as the first setup connection with the free DeepSeek V4 Flash default model", () => {
+  it("defines OpenCode as the first setup connection with native first-run model selection", () => {
     expect(cliRuntimeDescriptors[0]).toMatchObject({
       key: "opencode",
       id: "cli:opencode",
@@ -114,7 +114,7 @@ describe("CLI runtime descriptors", () => {
         XDG_STATE_HOME: "/var/lib/spaceapp-user/.codex/space-opencode/state"
       },
       nativeResumeArgs: ["--continue"],
-      defaultModelId: "big-pickle"
+      defaultModelId: null
     });
   });
 
