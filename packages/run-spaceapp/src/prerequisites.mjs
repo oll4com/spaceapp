@@ -522,12 +522,12 @@ async function ensureMacDocker({
     stderr.write("Docker Desktop is installed, but SpaceApp could not start it.\n");
     return { code: launchCode, reexecuted: false };
   }
-  if (await waitForDocker({ execute, sleep })) {
+  if (await waitForDocker({ execute, sleep, attempts: 300 })) {
     stdout.write("Docker Desktop is ready.\n");
     return { code: 0, reexecuted: false };
   }
   stderr.write(
-    `Docker Desktop was installed but did not become ready. Complete any Docker Desktop prompt, then run "${UNIVERSAL_INSTALL_COMMAND}" again.\n`
+    `Docker Desktop did not become ready after 10 minutes. Complete any Docker Desktop prompt, then run "${UNIVERSAL_INSTALL_COMMAND}" again.\n`
   );
   return { code: 1, reexecuted: false };
 }
@@ -1069,7 +1069,7 @@ function launchDetachedCommand(spec) {
       if (spec.operation === "start-docker-desktop") {
         child = spawn("powershell.exe", windowsPowerShellArgs(spec.operation), options);
       } else if (spec.operation === "open-docker-desktop") {
-        child = spawn("open", ["-a", "Docker"], options);
+        child = spawn("open", ["-a", "/Applications/Docker.app"], options);
       } else {
         resolve(1);
         return;
@@ -1080,9 +1080,15 @@ function launchDetachedCommand(spec) {
     }
     child.once("error", () => resolve(1));
     child.once("spawn", () => {
+      // macOS open exits after Launch Services accepts or rejects the launch.
+      // Spawning the utility alone is not evidence that it opened Docker.
+      if (spec.operation === "open-docker-desktop") return;
       child.unref();
       resolve(0);
     });
+    if (spec.operation === "open-docker-desktop") {
+      child.once("exit", (code, signal) => resolve(code ?? (signal ? 1 : 0)));
+    }
   });
 }
 

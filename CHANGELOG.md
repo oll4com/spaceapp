@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.20] - 2026-09-30
+
+- Open the installed macOS Docker application by absolute path, report native launch rejection, and allow ten minutes for first engine startup.
+
 ## [1.0.19] - 2026-09-30
 
 - Describe verified checkpoints and data-preserving recovery accurately in install and update confirmations.
