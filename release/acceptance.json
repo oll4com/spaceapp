@@ -1,0 +1,339 @@
+{
+  "schemaVersion": 1,
+  "candidateDigest": "f9cd53db3c643adcad4270d9c43071664de2377955a08299c4a5c4b00cc6d93e",
+  "sourceCommit": "93a5aadf4ae3867b5a503cfa54cbfc11081c9270",
+  "launcherVersion": "1.0.30",
+  "runtimeVersion": "1.0.30",
+  "createdAt": "2026-09-30T15:20:25.029Z",
+  "checks": [
+    {
+      "platform": "linux",
+      "scenario": "fresh-install",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-fresh-install.json",
+      "artifactSha256": "857a6f50efdc8da5dc5e17608cfd68597aa7502529c8d0cc4e5007a99b558ddd",
+      "ownerUi": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "upgrade",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-upgrade.json",
+      "artifactSha256": "68200fe7fbf5fdd2a8e1cf16e8a30f964a2dffa8450aea0b10078ef8f696ea20",
+      "dataPreserved": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "repair",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-repair.json",
+      "artifactSha256": "0f75ba9dff0df6251c96f0684ce08a5dce2d1efbd45169a5029117b37173cb2d",
+      "dataPreserved": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "docker-stopped",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-docker-stopped.json",
+      "artifactSha256": "1d368a3eb4e319e47c56e76a9f65e9e1f93c2a09a36a2730b830cd1647ba1546",
+      "dataPreserved": true,
+      "dockerInitiallyStopped": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "first-agent",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "ses_f0d5a4cd9ffeZCVdC1VtR0MZDZ",
+      "responseObserved": true,
+      "freeModel": true,
+      "modelId": "opencode/longcat-2.5-preview-free",
+      "cleanupVerified": true,
+      "artifact": "linux-first-agent.json",
+      "artifactSha256": "798c90b4ff5f61f2fbb75c1b20037f53e122032fd8553bc750dad8b48b19932c"
+    },
+    {
+      "platform": "windows",
+      "scenario": "fresh-install",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-fresh-install.json",
+      "artifactSha256": "de78709c23de6e9d9cfcfb2c3100f8062939c705867fe14196eb8d6a5fbbe520",
+      "ownerUi": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "upgrade",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-upgrade.json",
+      "artifactSha256": "f08d4ffe58e42914eddfc8ee5280d3b40e67bbdc350346a82e2e8dc36523ba3a",
+      "dataPreserved": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "repair",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-repair.json",
+      "artifactSha256": "fe96cbbfa9c110c5b89b01b058748f7e917b12a5a55b87bf382041ee9b0eda65",
+      "dataPreserved": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "docker-stopped",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-docker-stopped.json",
+      "artifactSha256": "809c66e5c1595516ab5c0899308df9d9d52974381d4a6c68fa262f206bf2bde0",
+      "dataPreserved": true,
+      "dockerInitiallyStopped": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "first-agent",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "ses_f0d50b9d1ffeuzDCmNhD1xaX51",
+      "responseObserved": true,
+      "freeModel": true,
+      "modelId": "opencode/longcat-2.5-preview-free",
+      "cleanupVerified": true,
+      "artifact": "windows-first-agent.json",
+      "artifactSha256": "dcc00e909523729c1adfe3da8fce28b133585b96d424176092a6c25234779f5a",
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "fresh-install",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-fresh-install.json",
+      "artifactSha256": "b094ebd235bf4601ef5a3264c129c658146b69a08ef2f2c93a8f2a493a36f29c",
+      "ownerUi": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "upgrade",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-upgrade.json",
+      "artifactSha256": "d1c01fea33bf082948dde623e7f157ac01c6cce4bab3ca195fd8624f1d05694e",
+      "dataPreserved": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "repair",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-repair.json",
+      "artifactSha256": "6e3518b097855624f8cceb129c163e0732d935621537478f26a4a273b6c7f097",
+      "dataPreserved": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "docker-stopped",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-docker-stopped.json",
+      "artifactSha256": "a04ff562706ebbd16a3efc61647cc7a49715e9d388a32ef09d086cde6e1e7334",
+      "dataPreserved": true,
+      "dockerInitiallyStopped": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "first-agent",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "ses_f0d43c9a9ffeZnPCdnDQiZcjLj",
+      "responseObserved": true,
+      "freeModel": true,
+      "modelId": "opencode/longcat-2.5-preview-free",
+      "cleanupVerified": true,
+      "artifact": "macos-first-agent.json",
+      "artifactSha256": "776f889f4b5977e4c7479726a3eba5d4121d0ddce69f5c9e1510c65398babcd1"
+    },
+    {
+      "platform": "linux",
+      "scenario": "profiles",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "profilesObserved": [
+        "small",
+        "medium",
+        "large",
+        "small"
+      ],
+      "dataPreserved": true,
+      "artifact": "linux-profiles.json",
+      "artifactSha256": "7382fa00529ca20532c16093d2119753745a67ae49745d147b9067e6ae2a4783"
+    },
+    {
+      "platform": "windows",
+      "scenario": "profiles",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "profilesObserved": [
+        "small",
+        "medium",
+        "large",
+        "small"
+      ],
+      "dataPreserved": true,
+      "interactiveDesktop": true,
+      "artifact": "windows-profiles.json",
+      "artifactSha256": "fc81459f0c6d2f4f2eb8bb02cd1663ab42628f51be920b187f75502df7a664c9"
+    },
+    {
+      "platform": "macos",
+      "scenario": "profiles",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "profilesObserved": [
+        "small",
+        "medium",
+        "large",
+        "small"
+      ],
+      "dataPreserved": true,
+      "artifact": "macos-profiles.json",
+      "artifactSha256": "08f8ad536009732e6fccffaab587667767bd3029b16e7e6d4762175787c55db4"
+    }
+  ],
+  "supplementary": [
+    {
+      "platform": "windows",
+      "scenario": "automatic-browser",
+      "pass": true,
+      "uiOpened": true,
+      "interactiveDesktop": true,
+      "artifact": "windows-automatic-browser.json",
+      "artifactSha256": "2bc6c812681d66b5546135585c88d852e184d2cf6425872e5b1b70ebcf4aad76"
+    },
+    {
+      "platform": "linux",
+      "scenario": "original-runtime-restored",
+      "pass": true,
+      "artifact": "linux-original-restored.json",
+      "artifactSha256": "24f9befb02ed5c5254baf9486c0b2579601f273ba4e6d8d7286cda37e8031406"
+    },
+    {
+      "platform": "windows",
+      "scenario": "original-runtime-restored",
+      "pass": true,
+      "artifact": "windows-original-restored.json",
+      "artifactSha256": "b274e858c24d2ff936887f34e99e6364f570d0d9b1bf9eacc33afa566d51752e"
+    },
+    {
+      "platform": "macos",
+      "scenario": "original-runtime-restored",
+      "pass": true,
+      "artifact": "macos-original-restored.json",
+      "artifactSha256": "1c966e8c0a1c003ed7fbf34c4b292d2328b74da9eacf2e28164af7cb5a6c804f"
+    },
+    {
+      "platform": "linux",
+      "scenario": "doctor-fix",
+      "pass": true,
+      "artifact": "linux-doctor-fix.json",
+      "artifactSha256": "4d0f9acf1ced41158e10c92b8be2bd49a6994284cebb691b0378f73f4253c10b"
+    },
+    {
+      "platform": "windows",
+      "scenario": "doctor-fix",
+      "pass": true,
+      "artifact": "windows-doctor-fix.json",
+      "artifactSha256": "71efc509e9f595126d400a7cce8dac37d06aa75935fecbd6ee2b657401d2865e"
+    },
+    {
+      "platform": "macos",
+      "scenario": "doctor-fix",
+      "pass": true,
+      "artifact": "macos-doctor-fix.json",
+      "artifactSha256": "fa47fd961a7142ffee12b9a9afba4fa10501912ab8fcc3b8c2cbf1db03ee8da8"
+    },
+    {
+      "platform": "linux",
+      "scenario": "two-native-panes",
+      "pass": true,
+      "artifact": "linux-two-native-panes.json",
+      "artifactSha256": "dfddd85201f82d367649e65a011cdb0690d95978351ee35803ab62f5286a7aa9"
+    },
+    {
+      "platform": "windows",
+      "scenario": "two-native-panes",
+      "pass": true,
+      "artifact": "windows-two-native-panes.json",
+      "artifactSha256": "b98487706068b5c2fe8a08a7ebaa34c00135c5ddee612b0722114a4e3b1e3328"
+    },
+    {
+      "platform": "macos",
+      "scenario": "two-native-panes",
+      "pass": true,
+      "artifact": "macos-two-native-panes.json",
+      "artifactSha256": "4781151faa7b696b40ed89c5f09fc16fc8540a41d264cca3305bf816a5856a35"
+    },
+    {
+      "platform": "macos",
+      "scenario": "docker-absent",
+      "testedVersion": "1.0.20",
+      "priorPrerequisiteProof": true,
+      "pass": true,
+      "artifact": "macos-docker-absent.json",
+      "artifactSha256": "eb7406fe8d2645639903d424ab7f09a1f04fedb055f6baeb29daa57ea5be9e4b"
+    }
+  ],
+  "limitations": [
+    "VM hosts are x86_64. ARM64 container validation remains a release workflow gate.",
+    "Fresh installer timings use preloaded local candidate images; they exclude network image downloads.",
+    "First-agent proofs run as UID10001. Free-model catalogs are captured before opening the native TUI.",
+    "npm next publication, environment approval and latest promotion have not yet completed."
+  ]
+}
