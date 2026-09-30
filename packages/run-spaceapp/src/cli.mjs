@@ -1058,7 +1058,7 @@ async function planInteractiveSetup({
       { label: "Run doctor diagnostics (read-only)", value: "doctor" },
       { label: "Repair the runtime (recreate containers from the current configuration)", value: "repair" },
       { label: "Cancel", value: "cancel" }
-    ]);
+    ], {defaultIndex:1, answerKey:"action"});
     if (choice === "cancel") {
       stdout.write("Cancelled. No changes were made.\n");
       return { exit: 0 };
@@ -1068,7 +1068,9 @@ async function planInteractiveSetup({
     }
     await applyApprovedConfigRepairs(root, rawExisting);
     const config = await loadExistingInstallation(root);
-    return { exit: await repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch }) };
+    const code = await repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch });
+    if(code === 0 && !parsed.noOpen) await openBrowser(`http://${config.bindHost}:${config.port}`, platform, execute, {stdin,stdout,stderr});
+    return {exit:code};
   }
 
   if (path === "downgrade") {
