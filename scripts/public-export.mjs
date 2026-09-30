@@ -114,6 +114,15 @@ const publicPackageTests = new Set([
 ]);
 
 const publicBinaryFiles = new Map([
+  ["apps/web/public/brand/spaceapp-bg-ascii-orbital-optimized.gif", "42e0be38c08a14c7affca0cdb77583a2d015156a0ca741bef093ddf79078ebcc"],
+  ["apps/web/public/brand/spaceapp-bg-ascii-orbital.gif", "2fcddf4f10b823cb579fc9971551b322380269d097654b4a90fba8a51ba7a254"],
+  ["apps/web/public/brand/spaceapp-bg-ascii-v1.jpg", "b2bbbdcc8c374358e05b0c463f25d614d4fe05effa77f905fce4ca97d1444bca"],
+  ["apps/web/public/brand/spaceapp-bg-ascii-v1.png", "cfe185b32afcbca1700ef3704fd6ba802410c8ad19fb88fd11ee2d44f9f0d06c"],
+  ["apps/web/public/brand/spaceapp-bg-ascii-v2.gif", "2fcddf4f10b823cb579fc9971551b322380269d097654b4a90fba8a51ba7a254"],
+  ["apps/web/public/brand/spaceapp-bg-ascii-v2.jpg", "027a06230ad6b18a66c07ac981267547d0fac21ed24f86a19aef93aef324a367"],
+  ["apps/web/public/brand/spaceapp-bg-ascii-v2.png", "e1d1239925ae8a08da95b3f0b0e50cb46bd5eb55e4f6395c348f34aaabce8fb3"],
+  ["apps/web/public/brand/spaceapp-bg-ascii-v3.jpg", "89e618a534eabbe01e6037ce7f532c93b624df786e776a64445f6aa29a522b1b"],
+  ["apps/web/public/brand/spaceapp-bg-ascii-v3.png", "822b24344c7c9ebf3cb0908218cd90adff13c99bcdaec07523bdd198d5a202f8"],
   [
     "apps/web/src/assets/hermes-agent.png",
     "f56dc7e9cd3320d7fad604d081af6a98c9bcb245311276e08563b62b1925cb1d"
