@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.21] - 2026-09-30
+
+- Require owner-supplied Antigravity OAuth client settings and reject embedded Google OAuth clients in public exports.
+
 ## [1.0.20] - 2026-09-30
 
 - Open the installed macOS Docker application by absolute path, report native launch rejection, and allow ten minutes for first engine startup.

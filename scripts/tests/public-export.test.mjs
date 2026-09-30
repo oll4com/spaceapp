@@ -227,3 +227,19 @@ test("public overlay preserves dynamic model discovery and removes anonymous own
   assert.match(publicAuth, /if \(user && store.getControlActor\)/);
   assert.throws(() => applyPublicOverlay("apps/api/src/app.ts", bootstrap.split('    if (user &&')[0]), /Review changed auth/);
 });
+
+test('public overlay replaces embedded Antigravity OAuth clients with owner environment settings', () => {
+  const source=['export const ANTIGRAVITY_CLIENT_ID = "embedded-client";','export const ANTIGRAVITY_CLIENT_SECRET = "embedded-secret";'].join('\n');
+  const result=applyPublicOverlay('apps/api/src/antigravity-usage-services.ts',source);
+  assert.ok(result.includes('process.env.ANTIGRAVITY_CLIENT_ID ?? ""'));
+  assert.ok(result.includes('process.env.ANTIGRAVITY_CLIENT_SECRET ?? ""'));
+  assert.ok(!result.includes('embedded-'));
+});
+
+test('public audit rejects Google OAuth clients before publication', async () => {
+  const root=await mkdtemp(join(tmpdir(),'spaceapp-oauth-audit-'));
+  await writeFile(join(root,'unsafe.ts'),['123456789012-syntheticclient123456.apps.', 'googleusercontent.com ', 'GO', 'CSPX-syntheticSecret0123456789'].join(''));
+  const findings=(await auditPublicTree(root)).findings.map(x=>x.rule);
+  assert.ok(findings.includes('google-oauth-client-id'));
+  assert.ok(findings.includes('google-oauth-client-secret'));
+});

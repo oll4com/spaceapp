@@ -241,6 +241,14 @@ const contentRules = [
     pattern: new RegExp(joined("AI", "za[0-9A-Za-z_-]{35}"))
   },
   {
+    rule: "google-oauth-client-id",
+    pattern: new RegExp(joined("[0-9]{6,}-[A-Za-z0-9_-]{10,}\\.apps\\.", "googleusercontent\\.com"))
+  },
+  {
+    rule: "google-oauth-client-secret",
+    pattern: new RegExp(joined("GO", "CSPX-[A-Za-z0-9_-]{10,}"))
+  },
+  {
     rule: "aws-access-key",
     pattern: new RegExp(joined("AK", "IA[0-9A-Z]{16}"))
   },
@@ -259,6 +267,12 @@ export function sanitizePublicText(input) {
 }
 
 export function applyPublicOverlay(path, text) {
+  if (path === "apps/api/src/antigravity-usage-services.ts") {
+    // Provider OAuth values must be owner-supplied; never export embedded clients.
+    return text.replace(/(export const (ANTIGRAVITY_CLIENT_(?:ID|SECRET))\s*=\s*)["'][^"'\r\n]*["'](\s*;)/g,
+      (_, declaration, name, suffix) => `${declaration}process.env.${name} ?? ""${suffix}`);
+  }
+
   if (path === ".gitignore" && !text.includes("run-spaceapp-*.tgz")) return `${text}\nrun-spaceapp-*.tgz\n`;
   if (path === "apps/api/tests/setup.test.ts") {
     return text.replace('expect(login.cookies[0]?.name).toBe("space_session")', 'expect(login.cookies.find(cookie => cookie.name === "space_session")?.value).toBeTruthy()');
