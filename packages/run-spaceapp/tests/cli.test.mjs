@@ -901,7 +901,7 @@ test("install enables, preserves, and removes Linux host-root access without del
   );
   assert.equal(await readFile(join(root, "compose.host-access.yml"), "utf8"), "services: {}\n");
   assert.match(isolateOutput.value(), /Access: host-root -> isolated/);
-  assert.equal(installArgs[1].requestedAccessMode, "isolated");
+  assert.equal(installArgs.at(-1).requestedAccessMode, "isolated");
   assert.equal(await readFile(join(root, "secrets", "session-secret"), "utf8"), secretBefore);
 });
 

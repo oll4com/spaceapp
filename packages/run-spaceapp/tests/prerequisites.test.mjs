@@ -943,3 +943,14 @@ test("Docker downloads abort after a bounded timeout", async (context) => {
     /timed out/i
   );
 });
+
+test('Linux waits for a stopped engine to become ready without unnecessarily changing groups', async()=>{
+  let probes=0;let started=false;let sleeps=0;const calls=[];
+  const result=await ensureDockerAvailable({platform:'linux',env:{USER:'tester'},stdout:capture().stream,stderr:capture().stream,
+    sleep:async()=>{sleeps++;},
+    execute:async(spec)=>{calls.push(spec);if(spec.command==='sudo'){started=true;return 0;}if(spec.args[0]==='info')return started&&++probes>=3?0:1;return 0;}
+  });
+  assert.equal(result.code,0);assert.ok(sleeps>=2);
+  assert.ok(calls.some(s=>s.args.includes('systemctl')));
+  assert.ok(!calls.some(s=>s.args.includes('usermod')));
+});

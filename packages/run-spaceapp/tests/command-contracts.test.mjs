@@ -102,6 +102,7 @@ test("init and the default update target the pinned runtime image version", asyn
     new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
+    "--version", "version", "info",
     "pull",
     "--force-recreate"
   ]);

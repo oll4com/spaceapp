@@ -388,7 +388,7 @@ export async function run(argv, {
   }
   if (command === "repair" || command === "doctor" && args.includes("--fix")) {
     if (args.some((arg) => !["--dry-run", "--fix"].includes(arg))) throw new Error("Usage: repair [--dry-run] or doctor --fix");
-    return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, dryRun: args.includes("--dry-run") });
+    return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch, dryRun: args.includes("--dry-run") });
   }
   const config = await loadConfig(root);
   if (commandNeedsRuntimeFiles(command, args)) {
@@ -609,7 +609,7 @@ async function installCommand(args, {
     stdout,
     stderr,
     execute,
-    inspectResources
+    inspectResources, request, sleep, ensureDocker, env, arch
   });
   if (wizard.exit !== undefined) {
     return wizard.exit;
@@ -961,7 +961,8 @@ async function planInteractiveSetup({
   stdout,
   stderr,
   execute,
-  inspectResources
+  inspectResources,
+  request, sleep, ensureDocker, env, arch
 }) {
   const parsed = parseInstallArgs(args);
   const rawExisting = await readRawConfig(root);
@@ -1067,7 +1068,7 @@ async function planInteractiveSetup({
     }
     await applyApprovedConfigRepairs(root, rawExisting);
     const config = await loadExistingInstallation(root);
-    return { exit: await repairRuntime({ root, config, platform, stdin, stdout, stderr, execute }) };
+    return { exit: await repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch }) };
   }
 
   if (path === "downgrade") {
@@ -1179,7 +1180,7 @@ async function offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, 
   }
 }
 
-async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, dryRun = false }) {
+async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, dryRun = false, ensureDocker = ensureDockerAvailable, env = process.env, arch = process.arch }) {
   const raw = await readRawConfig(root);
   const plan = planConfigRepairs(raw);
   if (dryRun) {
@@ -1192,6 +1193,9 @@ async function repairRuntime({ root, config, platform, stdin, stdout, stderr, ex
     "Repair configuration and recreate the current runtime without deleting data.",
     ...plan.actions.map((action) => action.detail)
   ])) return 1;
+  const prerequisites = await ensureDocker({platform, arch, env, stdin, stdout, stderr, execute, sleep: sleep || wait,
+    installArgs: {root,requestedProfile:repaired.profile,requestedAccessMode:repaired.accessMode,noOpen:true,autoConfirm:true}});
+  if(prerequisites.reexecuted || prerequisites.code !== 0) return prerequisites.code;
   config = repaired;
   await saveConfig(root, config);
   await writeRuntimeFiles(root, config);
@@ -1963,7 +1967,7 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
         return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources: inspectSystemResources });
       }
     }
-    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute });
+    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep });
   }
   if (path === "downgrade") {
     if (!continuation) {

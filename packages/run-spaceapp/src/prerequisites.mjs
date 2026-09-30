@@ -540,6 +540,7 @@ async function ensureLinuxDocker({
   stderr,
   execute,
   download,
+  sleep,
   osRelease,
   installArgs
 }) {
@@ -571,7 +572,7 @@ async function ensureLinuxDocker({
     stderr.write("Docker Engine was installed, but its system service could not be started.\n");
     return { code: startCode, reexecuted: false };
   }
-  if (await dockerIsReady(execute)) {
+  if (await waitForDocker({ execute, sleep, attempts: 15 })) {
     stdout.write("Docker Engine is ready.\n");
     return { code: 0, reexecuted: false };
   }
