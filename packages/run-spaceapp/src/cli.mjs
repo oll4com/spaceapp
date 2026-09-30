@@ -61,6 +61,7 @@ import {
 const APPLICATION_READY_WAIT_MINUTES = 10;
 const APPLICATION_READY_WAIT_MS = APPLICATION_READY_WAIT_MINUTES * 60 * 1_000;
 const APPLICATION_READY_POLL_MS = 2_000;
+const APPLICATION_READY_ATTEMPT_TIMEOUT_MS = 5_000;
 const APPLICATION_READY_MAX_ATTEMPTS = APPLICATION_READY_WAIT_MS / APPLICATION_READY_POLL_MS;
 const APPLICATION_READY_PROGRESS_ATTEMPTS = 30_000 / APPLICATION_READY_POLL_MS;
 const APPLICATION_READY_LOG_INTERVAL_SECONDS = 120;
@@ -772,6 +773,7 @@ async function installCommand(args, {
       url,
       request,
       sleep,
+      attemptTimeoutMs: Number(env.SPACEAPP_READY_ATTEMPT_TIMEOUT_MS) || APPLICATION_READY_ATTEMPT_TIMEOUT_MS,
       onProgress: async ({ elapsedSeconds }) => {
         stdout.write(
           `Still waiting for SpaceApp services (${elapsedSeconds} seconds elapsed; ` +
@@ -896,7 +898,8 @@ async function installCommand(args, {
               token: setupToken,
               email: ownerEmail,
               password: ownerPassword
-            })
+            }),
+            signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(10_000) : undefined
           });
           const claimData = claimRes && typeof claimRes.json === "function"
             ? await claimRes.json().catch(() => null)
@@ -2095,7 +2098,8 @@ async function waitForApplicationReady({
   request,
   sleep,
   onProgress,
-  maxAttempts = APPLICATION_READY_MAX_ATTEMPTS
+  maxAttempts = APPLICATION_READY_MAX_ATTEMPTS,
+  attemptTimeoutMs = APPLICATION_READY_ATTEMPT_TIMEOUT_MS
 }) {
   if (typeof request !== "function") {
     throw new Error("SpaceApp readiness requires a Fetch-compatible request function.");
@@ -2104,12 +2108,19 @@ async function waitForApplicationReady({
   const timeout = setTimeout(() => controller.abort(), APPLICATION_READY_WAIT_MS);
   try {
     for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
+      const attemptController = new AbortController();
+      const attemptTimeout = setTimeout(
+        () => attemptController.abort(),
+        attemptTimeoutMs
+      );
+      const onOverallAbort = () => attemptController.abort();
+      controller.signal.addEventListener("abort", onOverallAbort, { once: true });
       try {
         const response = await request(`${url}/readyz`, {
           method: "GET",
           headers: { accept: "application/json" },
           redirect: "error",
-          signal: controller.signal
+          signal: attemptController.signal
         });
         if (response?.ok) {
           const payload = await response.json();
@@ -2121,6 +2132,9 @@ async function waitForApplicationReady({
         if (controller.signal.aborted) {
           return false;
         }
+      } finally {
+        clearTimeout(attemptTimeout);
+        controller.signal.removeEventListener("abort", onOverallAbort);
       }
       if (attempt < maxAttempts && !controller.signal.aborted) {
         await sleep(APPLICATION_READY_POLL_MS);

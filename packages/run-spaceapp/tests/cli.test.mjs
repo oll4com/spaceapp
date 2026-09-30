@@ -335,6 +335,54 @@ test("install waits for readiness, rotates an unclaimed token, and prints exact 
   assert.equal(stderr.value(), "");
 });
 
+test("install recovers when an initial readiness HTTP request times out", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-readiness-timeout-"));
+  await initializeInstallation(root, { version: "0.1.23", profile: "light" });
+  const stdout = capture();
+  const stderr = capture();
+  let readinessAttempts = 0;
+
+  assert.equal(await run(["install", "--no-open"], {
+    home: root,
+    installRoot: root,
+    platform: "linux",
+    arch: "x64",
+    env: { SPACEAPP_HOME: root, SPACEAPP_READY_ATTEMPT_TIMEOUT_MS: "25" },
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: ttyStdin("y"),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null,
+    sleep: async () => {},
+    execute: async () => 0,
+    request: async (url, options = {}) => {
+      if (url.endsWith("/readyz")) {
+        readinessAttempts += 1;
+        if (readinessAttempts === 1) {
+          return new Promise((_resolve, reject) => {
+            if (options.signal) {
+              options.signal.addEventListener("abort", () => {
+                const err = new Error("The operation was aborted");
+                err.name = "AbortError";
+                reject(err);
+              }, { once: true });
+            }
+          });
+        }
+        return jsonResponse({ ok: true });
+      }
+      if (url.endsWith("/api/setup/status")) {
+        return jsonResponse({ setupRequired: false, expiresAt: null });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    }
+  }), 0);
+
+  assert.equal(readinessAttempts, 2);
+  assert.match(stdout.value(), /SpaceApp is ready at http:\/\/127\.0\.0\.1:4911/);
+});
+
 test("install retains the host token and prints no secret when database rotation fails", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-install-token-rejected-"));
   await initializeInstallation(root, { version: "0.1.23", profile: "light" });
