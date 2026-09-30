@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createWriteStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { once } from "node:events";
 import { PromptController } from "./prompt-controller.mjs";
@@ -759,9 +759,8 @@ async function installCommand(args, {
         execute
       });
       if (upgradeCheckpoint) {
-        const restored = await restoreCheckpoint(root, upgradeCheckpoint, {stdin,stdout,stderr,execute,config:existingConfig,request,sleep});
-        if(!restored) stderr.write(`RECOVERY_REQUIRED: checkpoint retained at ${upgradeCheckpoint.path}\n`);
-        else stderr.write("The previous SpaceApp runtime and access mode were restored from the verified checkpoint.\n");
+        await retainFailedUpgrade(root, upgradeCheckpoint,
+          {...result.config,accessMode:existingConfig.accessMode}, {stdin,stdout,stderr,execute});
       } else await restoreRuntimeAfterFailedInstall({
         root,
         stagedStateRoot,
@@ -1325,12 +1324,7 @@ async function performUpdate({
     return 0;
   } catch (error) {
     stderr.write(`SpaceApp update failed: ${error?.message || String(error)}\n`);
-    const restored = !checkpoint || await restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, execute, config, request, sleep });
-    if (!restored) {
-      stderr.write(
-        `Automatic restore failed. The checkpoint remains available at ${checkpoint.path} for manual recovery. System state: RECOVERY_REQUIRED\n`
-      );
-    }
+    if(checkpoint) await retainFailedUpgrade(root, checkpoint, updated, {stdin,stdout,stderr,execute});
     return 1;
   } finally {
     await rm(stagedRoot, {recursive: true, force: true});
@@ -1454,6 +1448,21 @@ async function verifyCheckpoint(checkpoint) {
   return true;
 }
 
+async function retainFailedUpgrade(root, checkpoint, attemptedConfig, io) {
+  // A partially started runtime may already have accepted owner writes. Never
+  // replace its database automatically with an older snapshot.
+  const stopCode = await io.execute(composeCommand("stopForRestore", root, attemptedConfig),
+    {stdin:null,stdout:io.stdout,stderr:io.stderr}).catch(()=>1);
+  await commitInstallation(root, attemptedConfig);
+  const recovery = {status:"RECOVERY_REQUIRED",failedAt:new Date().toISOString(),
+    previousVersion:checkpoint.manifest.version,attemptedVersion:attemptedConfig.version,
+    checkpointPath:checkpoint.path,databasePreserved:true,writersStopped:stopCode===0};
+  await writeFile(join(checkpoint.path,"recovery.json"),`${JSON.stringify(recovery,null,2)}\n`,{mode:0o600});
+  io.stderr.write(`RECOVERY_REQUIRED: the current database and volumes were retained. Checkpoint: ${checkpoint.path}\n`);
+  if(stopCode!==0)io.stderr.write("Could not stop all application writers. No database restore was attempted.\n");
+  io.stderr.write(`Run "${UNIVERSAL_COMMAND} doctor --fix" to repair the attempted version. Restoring older data requires an explicit recovery decision.\n`);
+}
+
 async function markCheckpointVerified(checkpoint) {
   await writeFile(
     join(checkpoint.path, "verified.json"),
@@ -1476,56 +1485,6 @@ async function pruneCheckpoints(currentPath) {
   while (verified.length > CHECKPOINT_KEEP_COUNT) {
     await rm(verified.shift(), { recursive: true, force: true });
   }
-}
-
-async function restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, execute, config, request, sleep }) {
-  if (!checkpoint) {
-    stderr.write("No checkpoint was available for restore.\n");
-    return false;
-  }
-  const verified = await verifyCheckpoint(checkpoint);
-  if (!verified) {
-    stderr.write(`Checkpoint ${checkpoint.id} failed verification; it remains at ${checkpoint.path} for manual recovery.\n`);
-    return false;
-  }
-  stdout.write(`Restoring checkpoint ${checkpoint.id}...\n`);
-  const stopCode = await execute(
-    composeCommand("stopForRestore", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
-    { stdin: null, stdout: null, stderr }
-  ).catch(() => 1);
-  if (stopCode !== 0) {
-    stderr.write("Cannot restore while SpaceApp writers may still be active. Checkpoint retained.\n");
-    return false;
-  }
-  const fileNames = ["config.json", "runtime.env", "compose.yml", "compose.workspaces.yml", "compose.host-access.yml"];
-  for (const fileName of fileNames) {
-    await copyFile(join(checkpoint.path, fileName), join(root, fileName));
-  }
-  await cpDirectory(join(checkpoint.path, "secrets"), join(root, "secrets"));
-  const restored = await loadConfig(root);
-  const dumpPath = join(checkpoint.path, "postgres.dump");
-  const dumpStream = createReadStream(dumpPath);
-  await once(dumpStream, "open");
-  let dbCode;
-  try {
-    dbCode = await execute(
-      composeCommand("checkpointRestore", root, { profile: restored.profile, companionsEnabled: restored.companionsEnabled }),
-      { stdin: dumpStream, stdout, stderr }
-    );
-  } finally {
-    dumpStream.destroy();
-  }
-  if (dbCode !== 0) {
-    stderr.write(`Checkpoint database restore failed with Docker exit ${dbCode}. Checkpoint remains at ${checkpoint.path}.\n`);
-    return false;
-  }
-  const upCode = await execute(
-    composeCommand("up", root, { profile: restored.profile, companionsEnabled: restored.companionsEnabled }),
-    { stdin, stdout, stderr }
-  );
-  if (upCode !== 0) return false;
-  if (typeof request !== "function") return true;
-  return waitForReadiness({url: `http://${restored.bindHost}:${restored.port}`, request, sleep: sleep || wait});
 }
 
 async function requireChangeApproval(stdin, stdout, stderr, lines) {

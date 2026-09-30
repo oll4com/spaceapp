@@ -297,7 +297,7 @@ test("a downgrade update requires the typed DOWNGRADE confirmation", async () =>
   assert.equal(await readFile(join(root, "config.json"), "utf8"), before);
 });
 
-test("update creates a verified checkpoint before cutover and restores it when the runtime start fails", async () => {
+test("update retains a verified checkpoint and current database when runtime start partially fails", async () => {
   const failingRoot = await mkdtemp(join(tmpdir(), "spaceapp-checkpoint-failure-"));
   await initializeInstallation(failingRoot, { version: "0.1.14", profile: "light" });
   const before = await readFile(join(failingRoot, "config.json"), "utf8");
@@ -319,10 +319,13 @@ test("update creates a verified checkpoint before cutover and restores it when t
     }
   }), 1);
   assert.match(stderr.value(), /Runtime start failed with Docker exit 42/);
-  assert.match(stdout.value(), /Restoring checkpoint/i);
-  assert.equal(await readFile(join(failingRoot, "config.json"), "utf8"), before);
+  assert.match(stderr.value(), /RECOVERY_REQUIRED/);
+  assert.notEqual(await readFile(join(failingRoot, "config.json"), "utf8"), before);
+  assert.ok(!calls.includes("spaceapp")); // No psql checkpoint restore.
   const checkpoints = (await readdir(join(failingRoot, "checkpoints"))).filter((name) => name.includes("spaceapp-checkpoint-"));
   assert.equal(checkpoints.length, 1);
+  const recovery=JSON.parse(await readFile(join(failingRoot,"checkpoints",checkpoints[0],"recovery.json"),"utf8"));
+  assert.equal(recovery.databasePreserved,true);
   await assert.rejects(() => readFile(join(failingRoot, "checkpoints", checkpoints[0], "verified.json"), "utf8"));
 });
 

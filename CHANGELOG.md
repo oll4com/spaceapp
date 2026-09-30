@@ -5,6 +5,11 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.16] - 2026-09-30
+
+- Preserve the current database after a partially failed upgrade; retain its verified checkpoint for explicit recovery.
+- Open the bundled OpenCode without managed credentials and select a working free model at first launch.
+
 ## [1.0.14] - 2026-09-30
 
 - Keep public owner authentication mandatory after setup; preserve this rule on source sync.

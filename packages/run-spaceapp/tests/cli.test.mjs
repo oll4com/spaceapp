@@ -1074,7 +1074,7 @@ test("a failed upgrade preserves the committed installation state", async () => 
   }
 });
 
-test("Docker, readiness, and browser-cleanup failures preserve the committed installation state", async () => {
+test("failures before cutover preserve configuration; failures after cutover retain current data for repair", async () => {
   for (const failure of ["pull", "up", "readiness", "browser-cleanup"]) {
     const root = await mkdtemp(join(tmpdir(), `spaceapp-cli-${failure}-failure-`));
     await initializeInstallation(root, {
@@ -1131,8 +1131,10 @@ test("Docker, readiness, and browser-cleanup failures preserve the committed ins
       failure === "pull" ? 41 : failure === "up" ? 42 : failure === "browser-cleanup" ? 43 : 1
     );
     for (const [path, content] of committedState) {
-      assert.equal(await readFile(join(root, path), "utf8"), content);
+      if(failure==='pull'||path==='secrets/setup-token')assert.equal(await readFile(join(root, path), "utf8"), content);
     }
+    const actual=JSON.parse(await readFile(join(root,'config.json'),'utf8'));
+    assert.equal(actual.version,failure==='pull'?'0.1.10':RUNTIME_VERSION);
     assert.equal(stagedStateRoots.has(root), failure !== "pull");
     const temporaryStateRoots = [...stagedStateRoots].filter(
       (stateRoot) => stateRoot !== root
@@ -1144,7 +1146,7 @@ test("Docker, readiness, and browser-cleanup failures preserve the committed ins
   }
 });
 
-test("a failed host-root activation restores the previous isolated runtime", async () => {
+test("a failed host-root upgrade retains current data and repairs using the previous isolated access mode", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-host-root-rollback-"));
   await initializeInstallation(root, {
     version: "0.1.14",
@@ -1181,14 +1183,13 @@ test("a failed host-root activation restores the previous isolated runtime", asy
   });
 
   assert.equal(code, 42);
-  assert.deepEqual(upAccessModes, ["host-root", "isolated"]);
+  assert.deepEqual(upAccessModes, ["host-root"]);
   assert.notEqual(upStateRoots[0], root);
-  assert.equal(upStateRoots[1], root);
   assert.equal(
     (JSON.parse(await readFile(join(root, "config.json"), "utf8"))).accessMode,
     "isolated"
   );
-  assert.match(stderr.value(), /previous SpaceApp runtime and access mode were restored/i);
+  assert.match(stderr.value(), /RECOVERY_REQUIRED/i);
 });
 
 test("a failed clean host-root install stops the partially started runtime", async () => {
@@ -1936,4 +1937,3 @@ test("doctor reports PASS for 8 GiB disk when light profile is selected", async 
 
   assert.match(stdout.value(), /PASS Free disk: 8 GiB available; 7 GiB required/);
 });
-

@@ -76,6 +76,14 @@ the light profile by default, pulls the matching images, and recreates the
 stack without deleting application data, workspaces, credentials, secrets, or
 persistent Docker volumes.
 
+Before changing versions, the launcher pauses application writers and verifies
+a checkpoint of the database, configuration, and secrets. If startup or
+readiness fails after cutover, it stops application writers, retains the current
+database and all volumes, and reports `RECOVERY_REQUIRED`. It never automatically
+replaces current data with an older checkpoint: the new runtime may already
+have accepted owner changes. Run `doctor --fix` to repair the attempted version.
+Use an explicit restore only after deciding how to preserve any newer changes.
+
 Before updating:
 
 ```bash
