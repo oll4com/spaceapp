@@ -24,6 +24,21 @@ export function completionSucceeded(result) {
   const events=result.stdout.split('\n').flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
   return !events.some(e=>e.type==='error')&&events.some(e=>e.type==='text'&&e.part?.text?.includes('SPACEAPP_READY'))&&events.some(e=>e.type==='step_finish');
 }
+export function withBootstrap(config) {
+  if(config.instructions!==undefined&&!Array.isArray(config.instructions))throw new Error('OpenCode instructions must be an array; existing settings were preserved.');
+  const instructions=[...new Set([...(config.instructions??[]),
+    '/etc/AGENTS.md','/etc/spaceapp-installation-guide.md','/var/lib/spaceapp/memory/*.md'])];
+  const next={...config,instructions};
+  // Respect an owner's explicit permission policy. Fresh installs authorize
+  // only their shared private memory directory; other external paths still ask.
+  if(config.permission===undefined || (typeof config.permission==='object' &&
+      config.permission!==null && !('*' in config.permission) &&
+      !('external_directory' in config.permission))) {
+    next.permission={...(config.permission??{}),external_directory:{
+      '*':'ask','/var/lib/spaceapp/memory':'allow','/var/lib/spaceapp/memory/*':'allow'}};
+  }
+  return next;
+}
 export async function selectWorkingFreeModel({env=process.env,executeNative=execute}={}) {
   const directory=await mkdtemp(join(tmpdir(),'spaceapp-free-model-'));
   const isolated={PATH:env.PATH,LANG:env.LANG,USER:env.USER,HOME:directory,XDG_CONFIG_HOME:join(directory,'config'),XDG_DATA_HOME:join(directory,'data'),XDG_CACHE_HOME:join(directory,'cache'),XDG_STATE_HOME:join(directory,'state')};
@@ -62,13 +77,16 @@ export async function configureFirstRun(env=process.env) {
   try {
     const previous=await readFile(path,'utf8').catch(error=>{if(error.code!=='ENOENT')throw error;return null;});
     const config=previous===null?{}:JSON.parse(previous);
-    if(config.model)return; // Preserve an owner's choice, including a paid provider.
-    const model=await selectWorkingFreeModel({env});
+    const model=config.model?null:await selectWorkingFreeModel({env});
+    const next=withBootstrap(model?{...config,model:model.id}:config);
+    if(JSON.stringify(next)===JSON.stringify(config))return;
     const current=await readFile(path,'utf8').catch(error=>{if(error.code!=='ENOENT')throw error;return null;});
     if(current!==previous)throw new Error('OpenCode configuration changed during discovery. Retry to preserve your settings.');
-    await writeFile(path,JSON.stringify({...config,model:model.id},null,2),{mode:0o600,flag:previous===null?'wx':'w'});
-    const memory='/var/lib/spaceapp/memory';await mkdir(memory,{recursive:true});
-    await writeFile(join(memory,'installation-model.json'),JSON.stringify(model,null,2),{mode:0o600});
+    await writeFile(path,JSON.stringify(next,null,2),{mode:0o600,flag:previous===null?'wx':'w'});
+    if(model) {
+      const memory='/var/lib/spaceapp/memory';await mkdir(memory,{recursive:true});
+      await writeFile(join(memory,'installation-model.json'),JSON.stringify(model,null,2),{mode:0o600});
+    }
   } finally { await rm(lock,{recursive:true,force:true}); }
 }
 if(process.argv[1]===fileURLToPath(import.meta.url)) configureFirstRun().catch(e=>{process.stderr.write(e.message+'\n');process.exitCode=1;});

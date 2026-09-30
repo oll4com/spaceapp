@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseCatalog,completionSucceeded,selectWorkingFreeModel} from '../../deploy/docker/opencode-first-run.mjs';
+import {parseCatalog,completionSucceeded,selectWorkingFreeModel,withBootstrap} from '../../deploy/docker/opencode-first-run.mjs';
 const entry=(id,cost=0)=>`opencode/${id}\n${JSON.stringify({id,providerID:'opencode',name:id,status:'active',cost:{input:cost,output:cost},capabilities:{toolcall:true},release_date:'2026-09-01'},null,2)}`;
 test('only native explicitly zero-priced tool models are eligible',()=>{
  assert.deepEqual(parseCatalog(entry('free')+'\n'+entry('paid',1)).map(x=>x.id),['opencode/free']);
@@ -18,4 +18,21 @@ test('unavailable free model falls through to another free model without provide
  return {code:0,stdout:'{"type":"text","part":{"text":"SPACEAPP_READY"}}\n{"type":"step_finish"}'};
  }});
  assert.equal(selected.id,'opencode/working');assert.equal(calls.length,3);
+});
+
+test('bootstrap loads installation memory and authorizes only its external directory',()=>{
+ const c=withBootstrap({model:'owner/model',instructions:['/owner/rules.md']});
+ assert.equal(c.model,'owner/model');
+ assert.ok(c.instructions.includes('/owner/rules.md'));
+ assert.ok(c.instructions.includes('/var/lib/spaceapp/memory/*.md'));
+ assert.equal(c.permission.external_directory['*'],'ask');
+ assert.equal(c.permission.external_directory['/var/lib/spaceapp/memory/*'],'allow');
+ assert.deepEqual(withBootstrap(c),c);
+});
+test('an explicit owner permission policy is preserved, including global denial',()=>{
+ for(const permission of ['deny',{'*':'deny'},{external_directory:'deny'},{external_directory:{'*':'deny'}}]){
+  const c=withBootstrap({model:'owner/model',permission});
+  assert.deepEqual(c.permission,permission);
+ }
+ assert.throws(()=>withBootstrap({instructions:'invalid'}),/existing settings were preserved/);
 });

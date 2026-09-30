@@ -5,6 +5,11 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.17] - 2026-09-30
+
+- Load installation instructions and durable memory into OpenCode automatically; authorize only the private memory directory while preserving owner permission policies.
+- Explain the free OpenCode first step before optional provider credentials.
+
 ## [1.0.16] - 2026-09-30
 
 - Preserve the current database after a partially failed upgrade; retain its verified checkpoint for explicit recovery.

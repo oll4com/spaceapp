@@ -962,7 +962,8 @@ async function installCommand(args, {
       stdout.write(`If it expires, run: ${UNIVERSAL_COMMAND} owner rotate-setup-token\n`);
     }
     stdout.write(
-      `Next: add CLI credentials with "${UNIVERSAL_COMMAND} credentials set <provider>".\n`
+      "Next: open the Getting Started room and use OpenCode. A working free model is selected on first launch.\n" +
+      `Optional providers: "${UNIVERSAL_COMMAND} credentials set <provider>".\n`
     );
     if (noOpen) return 0;
     const openCode = await openBrowser(url, platform, execute, { stdin, stdout, stderr });
