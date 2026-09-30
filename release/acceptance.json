@@ -1,0 +1,234 @@
+{
+  "schemaVersion": 1,
+  "candidateDigest": "d6692a22bb59f77c0e528beaaa65613d860fb0c6706232497ee4188e850e1b7c",
+  "sourceCommit": "82b0b873a978efdde336a05b51cf6f03fc5e78a5",
+  "launcherVersion": "1.0.20",
+  "runtimeVersion": "1.0.20",
+  "createdAt": "2026-09-30T07:41:34.747Z",
+  "checks": [
+    {
+      "platform": "linux",
+      "scenario": "fresh-install",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-fresh-install.json",
+      "artifactSha256": "31170ea790f1ce2a9ab211944af5a4d57d02346f8301fd441f1a8ad73e679ef7",
+      "ownerUi": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "upgrade",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-upgrade.json",
+      "artifactSha256": "87b228a2eda7e9c290ad96ee7867f4b20605930fb90768a0a474155cb20f2bc9",
+      "dataPreserved": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "repair",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-repair.json",
+      "artifactSha256": "598d08e234166ceb304ed2bb7983923b4a64fc269732a510a46e5b16efc12b57",
+      "dataPreserved": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "docker-stopped",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "linux-docker-stopped.json",
+      "artifactSha256": "c98881bb6ab8b9cfac5da2b72118b174f165071a9e95bb19e3d515f36307cb9d",
+      "dataPreserved": true,
+      "dockerInitiallyStopped": true
+    },
+    {
+      "platform": "linux",
+      "scenario": "first-agent",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "ses_f0ee851c1ffeD67Me6aajqifNj",
+      "responseObserved": true,
+      "freeModel": true,
+      "modelId": "opencode/longcat-2.5-preview-free",
+      "cleanupVerified": true,
+      "artifact": "linux-first-agent.json",
+      "artifactSha256": "ec3df1a0e3702debfad78ae2523b9dc4baf88c95036988a0a258a159f124872b"
+    },
+    {
+      "platform": "windows",
+      "scenario": "fresh-install",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-fresh-install.json",
+      "artifactSha256": "6509cc196ae05ef9dbf620e60d3eaf71da1cc40d4e1ab15ad61bcc5e2900d157",
+      "ownerUi": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "upgrade",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-upgrade.json",
+      "artifactSha256": "9ae981533aca0aeceb13aafa54bb6e153f766dc1c92836694f314e293efd1a22",
+      "dataPreserved": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "repair",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-repair.json",
+      "artifactSha256": "12f33d3acecd74198fc68120c10c1bdc10d3015f6928e268aebc5b843f233e7d",
+      "dataPreserved": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "docker-stopped",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "windows-docker-stopped.json",
+      "artifactSha256": "120ff72103477188d10fe0f4e42c07e81eacc7b25e8f50941ca05509fc9baaf5",
+      "dataPreserved": true,
+      "dockerInitiallyStopped": true,
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "windows",
+      "scenario": "first-agent",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "ses_f0ed7b21cffemhuLD3IQWbB16U",
+      "responseObserved": true,
+      "freeModel": true,
+      "modelId": "opencode/big-pickle",
+      "cleanupVerified": true,
+      "artifact": "windows-first-agent.json",
+      "artifactSha256": "536abfe68a7c9fbf287dbadf821e6b10c97737fe8ba38d4b898816fa1bfcac0f",
+      "interactiveDesktop": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "fresh-install",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-fresh-install.json",
+      "artifactSha256": "622280b9a596c67f6beeada6c42a5c7aa23513c8c7f96a885717c3476964cbb6",
+      "ownerUi": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "upgrade",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-upgrade.json",
+      "artifactSha256": "8887390e3192e53abab853504401095ee11244fe5f2689a3a2b73c580bef79cf",
+      "dataPreserved": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "repair",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-repair.json",
+      "artifactSha256": "f312e155cf1d757862e3329d3aba9bee283e3a5856a6767df804a79720ff4dff",
+      "dataPreserved": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "docker-stopped",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "artifact": "macos-docker-stopped.json",
+      "artifactSha256": "cdf0b4d3d2ca4c3620936d05c0f2510ab3266393958156aca5dfb8f18bc73175",
+      "dataPreserved": true,
+      "dockerInitiallyStopped": true
+    },
+    {
+      "platform": "macos",
+      "scenario": "first-agent",
+      "pass": true,
+      "executed": true,
+      "exitCode": 0,
+      "ready": true,
+      "uiOpened": true,
+      "nativeTaskId": "ses_f0ecefd0dffeHculaUvPOvissJ",
+      "responseObserved": true,
+      "freeModel": true,
+      "modelId": "opencode/longcat-2.5-preview-free",
+      "cleanupVerified": true,
+      "artifact": "macos-first-agent.json",
+      "artifactSha256": "dd786b720d1b80a9669751ade22d27718f039788cfaf795d60a16e852a64df7f"
+    }
+  ],
+  "supplementary": [
+    {
+      "platform": "linux",
+      "scenario": "doctor-fix",
+      "pass": true,
+      "artifact": "linux-doctor-fix.json",
+      "artifactSha256": "ec0e6e23ee6c6031843cec2060f8a28fd77983440f287a230ddbcf4adc5dd9bf"
+    },
+    {
+      "platform": "windows",
+      "scenario": "doctor-fix",
+      "pass": true,
+      "artifact": "windows-doctor-fix.json",
+      "artifactSha256": "3aa329ddf2cff00591a8d946b885f591274f5a619520ebf2adcaf3882de7340d"
+    },
+    {
+      "platform": "macos",
+      "scenario": "doctor-fix",
+      "pass": true,
+      "artifact": "macos-doctor-fix.json",
+      "artifactSha256": "3a42f31fe462c01a6163577bd87bab0b67d82cd7f3bfd670e613d9b06b6e2bbc"
+    },
+    {
+      "platform": "macos",
+      "scenario": "docker-absent",
+      "pass": true,
+      "artifact": "macos-docker-absent.json",
+      "artifactSha256": "eb7406fe8d2645639903d424ab7f09a1f04fedb055f6baeb29daa57ea5be9e4b"
+    }
+  ],
+  "limitations": [
+    "VM hosts are x86_64. ARM64 container validation remains a release workflow gate.",
+    "Fresh installer timings use preloaded local candidate images; they exclude network image downloads.",
+    "Windows native TUI used another zero-cost active catalog model than bootstrap discovery. Both completed real requests.",
+    "npm next publication, environment approval and latest promotion have not yet completed."
+  ]
+}
