@@ -93,7 +93,7 @@ test("init and the default update target the pinned runtime image version", asyn
     new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
   );
 
-  assert.equal(await run(["update"], { ...options, stdin: ttyStdin("2") }), 0);
+  assert.equal(await run(["update"], { ...options, stdin: ttyStdin("2", "y") }), 0);
   config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
   assert.equal(config.version, RUNTIME_VERSION);
   assert.equal(config.previousVersion, null);

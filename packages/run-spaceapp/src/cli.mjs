@@ -117,37 +117,44 @@ export async function withHeadlessDockerConfig(platform, spec, run) {
   }
 }
 
+function approvedAutomation(stdin) {
+  const controller = stdin?._spaceappPromptController;
+  return controller?.nonInteractive === true && controller.answers.confirm === true;
+}
+
 function interactiveAvailable(stdin) {
   return Boolean(stdin?.isTTY && typeof stdin?.setRawMode === "function");
 }
 
-async function promptYesNo(stdin, stdout, question, { defaultYes = false } = {}) {
+async function promptYesNo(stdin, stdout, question, { defaultYes = false, answerKey = null } = {}) {
   for (;;) {
-    const answer = (await readSecret(stdin, stdout, `${question} [${defaultYes ? "Y/n" : "y/N"}] `, { mask: false })).trim().toLowerCase();
+    const answer = (await readSecret(stdin, stdout, `${question} [${defaultYes ? "Y/n" : "y/N"}] `, { mask: false, answerKey, defaultValue: defaultYes ? "y" : "n" })).trim().toLowerCase();
     if (answer === "") {
       return defaultYes;
     }
-    if (answer === "y" || answer === "yes") {
+    if (answer === "y" || answer === "yes" || answer === "true") {
       return true;
     }
-    if (answer === "n" || answer === "no") {
+    if (answer === "n" || answer === "no" || answer === "false") {
       return false;
     }
     stdout.write("Please answer y or n.\n");
   }
 }
 
-async function promptChoice(stdin, stdout, question, options, { defaultIndex = 0 } = {}) {
+async function promptChoice(stdin, stdout, question, options, { defaultIndex = 0, answerKey = null } = {}) {
   stdout.write(`${question}\n`);
   options.forEach((option, index) => {
     stdout.write(`  [${index + 1}] ${option.label}\n`);
   });
   for (;;) {
-    const answer = (await readSecret(stdin, stdout, `Select 1-${options.length} [${defaultIndex + 1}]: `, { mask: false })).trim();
+    const answer = (await readSecret(stdin, stdout, `Select 1-${options.length} [${defaultIndex + 1}]: `, { mask: false, answerKey, defaultValue: String(defaultIndex + 1) })).trim();
     if (answer === "") {
       return options[defaultIndex].value;
     }
-    const index = Number.parseInt(answer, 10);
+    const byValue = options.find((option) => option.value === answer);
+    if (byValue) return byValue.value;
+    const index = /^\d+$/.test(answer) ? Number(answer) : NaN;
     if (Number.isInteger(index) && index >= 1 && index <= options.length) {
       return options[index - 1].value;
     }
@@ -160,7 +167,7 @@ async function finalConfirmation(stdin, stdout, lines) {
   for (const line of lines) {
     stdout.write(`  - ${line}\n`);
   }
-  const approved = await promptYesNo(stdin, stdout, "Apply this plan?", { defaultYes: false });
+  const approved = await promptYesNo(stdin, stdout, "Apply this plan?", { defaultYes: false, answerKey: "confirm" });
   if (!approved) {
     stdout.write("Cancelled. No changes were made.\n");
   }
@@ -314,6 +321,10 @@ export async function run(argv, {
   const [command = "help", ...args] = filteredArgv;
   const root = resolveSpaceAppHome({ env, platform });
 
+  if (["help", "--help", "-h"].includes(command) || args.includes("--help") || args.includes("-h")) {
+    stdout.write(helpText());
+    return 0;
+  }
   if (command !== "install") {
     await prepareDockerPath({ platform, env });
   }
@@ -371,6 +382,14 @@ export async function run(argv, {
     return 0;
   }
 
+  if (command === "doctor" && !args.includes("--fix")) {
+    assertNoArgs(args, "doctor");
+    return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources });
+  }
+  if (command === "repair" || command === "doctor" && args.includes("--fix")) {
+    if (args.some((arg) => !["--dry-run", "--fix"].includes(arg))) throw new Error("Usage: repair [--dry-run] or doctor --fix");
+    return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, dryRun: args.includes("--dry-run") });
+  }
   const config = await loadConfig(root);
   if (commandNeedsRuntimeFiles(command, args)) {
     await writeRuntimeFiles(root, config);
@@ -887,31 +906,7 @@ async function installCommand(args, {
         return await failAfterRuntimeMutation(1);
       }
 
-      if (typeof request === "function") {
-        const ownerEmail = env.SPACEAPP_OWNER_EMAIL || "pirniramon7@gmail.com";
-        const ownerPassword = randomBytes(24).toString("base64url");
-        try {
-          const claimRes = await request(`${url}/api/setup/claim`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              token: setupToken,
-              email: ownerEmail,
-              password: ownerPassword
-            }),
-            signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(10_000) : undefined
-          });
-          const claimData = claimRes && typeof claimRes.json === "function"
-            ? await claimRes.json().catch(() => null)
-            : null;
-          if (claimRes && (claimRes.status === 200 || claimRes.status === 201) && claimData?.user?.id) {
-            stdout.write(`Initial SpaceApp owner pre-installed: ${ownerEmail}\n`);
-            setupToken = null;
-            const credsPath = join(root, "secrets", "owner-credentials.json");
-            await atomicWrite(credsPath, JSON.stringify({ email: ownerEmail, password: ownerPassword }, null, 2), 0o600);
-          }
-        } catch {}
-      }
+
     }
 
     await commitInstallation(root, result.config);
@@ -975,7 +970,7 @@ async function planInteractiveSetup({
   const interactive = interactiveAvailable(stdin);
   const continuation = await readRunOnceContinuation(root, { platform, runtimeVersion });
 
-  if (!interactive && !continuation) {
+  if (!interactive && !continuation && !approvedAutomation(stdin)) {
     stderr.write(
       "SpaceApp setup changes require an interactive terminal (TTY). " +
       "Re-run from a terminal, or continue an approved Windows RunOnce plan.\n"
@@ -1008,13 +1003,13 @@ async function planInteractiveSetup({
       { label: `auto (light profile on this system; ${formatGibibytes(resources.totalMemoryBytes)} GiB detected)`, value: "auto" },
       { label: "light (smaller footprint)", value: "light" },
       { label: "standard (full features, incl. managed browser)", value: "standard" }
-    ], { defaultIndex: ["auto", "light", "standard"].indexOf(parsed.requestedProfile) });
+    ], { defaultIndex: ["auto", "light", "standard"].indexOf(parsed.requestedProfile), answerKey: "profile" });
     const accessChoice = await promptChoice(stdin, stdout, "Which access mode?", [
       { label: "isolated (recommended; no host access)", value: "isolated" },
       { label: "host-root (Linux only; CLI sessions can read and modify the whole host)", value: "host-root" }
-    ], { defaultIndex: parsed.requestedAccessMode === "host-root" ? 1 : 0 });
-    const companionsChoice = await promptYesNo(stdin, stdout, "Enable companion integrations (Claude Code, browser companions)?", { defaultYes: parsed.companionsEnabled });
-    const telemetryChoice = await promptYesNo(stdin, stdout, "Enable anonymous usage telemetry?", { defaultYes: false });
+    ], { defaultIndex: parsed.requestedAccessMode === "host-root" ? 1 : 0, answerKey: "access" });
+    const companionsChoice = await promptYesNo(stdin, stdout, "Enable companion integrations (Claude Code, browser companions)?", { defaultYes: parsed.companionsEnabled, answerKey: "companions" });
+    const telemetryChoice = await promptYesNo(stdin, stdout, "Enable anonymous usage telemetry?", { defaultYes: false, answerKey: "telemetry" });
     let dockerChoice = true;
     if (platform === "win32") {
       const dockerProbe = await detectDockerAvailable({ execute });
@@ -1022,7 +1017,7 @@ async function planInteractiveSetup({
         dockerChoice = await promptYesNo(stdin, stdout, "Docker Engine was not detected. Include automatic Docker installation?", { defaultYes: true });
       }
     }
-    const openBrowserChoice = await promptYesNo(stdin, stdout, "Open the web application when installation completes?", { defaultYes: !parsed.noOpen });
+    const openBrowserChoice = await promptYesNo(stdin, stdout, "Open the web application when installation completes?", { defaultYes: !parsed.noOpen, answerKey: "open" });
 
     const { resolved } = resolveProfileChoice(profileChoice);
     const approved = await finalConfirmation(stdin, stdout, [
@@ -1185,15 +1180,20 @@ async function offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, 
 }
 
 async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, dryRun = false }) {
-  const plan = await planConfigRepairs(root);
+  const raw = await readRawConfig(root);
+  const plan = planConfigRepairs(raw);
   if (dryRun) {
     stdout.write(`Config repairs planned: ${JSON.stringify(plan)}\n`);
     return 0;
   }
-  if (plan.length > 0) {
-    await applyConfigRepairs(root, plan);
-    stdout.write(`Applied ${plan.length} config repair(s).\n`);
-  }
+  if (!raw) throw new Error(`No installation found. Run "${UNIVERSAL_COMMAND} install" first.`);
+  const repaired = applyConfigRepairs(raw);
+  if (!await requireChangeApproval(stdin, stdout, stderr, [
+    "Repair configuration and recreate the current runtime without deleting data.",
+    ...plan.actions.map((action) => action.detail)
+  ])) return 1;
+  config = repaired;
+  await saveConfig(root, config);
   await writeRuntimeFiles(root, config);
   const pullCode = await withHeadlessDockerConfig(
     platform,
@@ -1465,7 +1465,7 @@ async function restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, exec
 }
 
 async function requireChangeApproval(stdin, stdout, stderr, lines) {
-  if (!interactiveAvailable(stdin)) {
+  if (!interactiveAvailable(stdin) && !approvedAutomation(stdin)) {
     stderr.write("This change requires an interactive terminal (TTY). No changes were made.\n");
     return false;
   }
@@ -1934,7 +1934,7 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
   const path = upgradePath(config.version, targetVersion);
   const interactive = interactiveAvailable(stdin);
   const continuation = await readRunOnceContinuation(root, { platform, runtimeVersion: targetVersion });
-  if (!interactive && !continuation) {
+  if (!interactive && !continuation && !approvedAutomation(stdin)) {
     stderr.write(
       "SpaceApp update changes require an interactive terminal (TTY). " +
       "Re-run from a terminal, or continue an approved Windows RunOnce plan.\n"
@@ -2024,6 +2024,7 @@ async function doctor({
   profile,
   dockerReady = false
 }) {
+  const configuration = profile ? { ok: true, detail: "Prepared installation configuration" } : await loadConfig(root).then(() => ({ ok: true, detail: root })).catch((error) => ({ ok: false, detail: `${error.message}. Run install for a new setup, or doctor --fix for an existing setup.` }));
   const detectedResources = resources ?? await inspectResources(root);
   let resolvedProfile = profile;
   if (!resolvedProfile) {
@@ -2040,7 +2041,7 @@ async function doctor({
   }
   const checks = [
     { name: "Node.js", ok: Number(process.versions.node.split(".")[0]) >= 20, detail: process.version },
-    { name: "Configuration", ok: true, detail: root },
+    { name: "Configuration", ...configuration },
     ...installResourceChecks(detectedResources, resolvedProfile)
   ];
   const dockerResults = [];
@@ -2200,9 +2201,9 @@ async function executeWithDockerDiagnostics(execute, spec, io, { platform, stder
   return code;
 }
 
-export async function readSecret(stdin, stdout, prompt, { mask = true } = {}) {
+export async function readSecret(stdin, stdout, prompt, { mask = true, answerKey = null, defaultValue = "" } = {}) {
   const controller = stdin?._spaceappPromptController || new PromptController({ stdin, stdout });
-  return await controller.readLine(prompt, { mask });
+  return await controller.readLine(prompt, { mask, answerKey, defaultValue });
 }
 
 export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
@@ -2366,7 +2367,7 @@ Usage: ${UNIVERSAL_COMMAND} <command>
   repair [--dry-run]                Verify and repair configuration and runtime files
   up | down | status | logs         Manage the Docker application
   open                              Open the local web application
-  doctor                            Check resources, Docker, Compose, and engine
+  doctor [--fix]                    Diagnose; --fix repairs existing config and runtime
   support-bundle                    Generate a diagnostic bundle JSON for support
   update [version] | rollback       Update or roll back images
   backup | restore                  Back up or restore persistent state
@@ -2387,10 +2388,21 @@ Options:
   --json                            Output structured JSON where supported
   --log-file <file>                 Append all execution logs to specified file
   --non-interactive                 Run non-interactively, failing on missing input
-  --answers <json|path>             Pre-seed answers for automated installation
+  --answers <json|path>             Pre-seed answers; automation requires confirm:true
+
+Quick start: install (light profile, OpenCode first, browser opens on completion).
+Windows PowerShell: use npx.cmd if script execution policy blocks npx.ps1.
+The npx command requires Node.js 20.11+ installed; Docker is installed if missing.
+Data lives in SPACEAPP_HOME (config/secrets) and persistent Docker volumes.
+Use backup before major changes; uninstall preserves data unless --purge-data.
+Never use factory-reset to solve an ordinary installation problem.
+
+Automation: --non-interactive --answers '{"confirm":true,"profile":"light","access":"isolated","companions":false,"telemetry":false,"open":false}'
+For shells with different quoting, save that JSON to a file and pass --answers file.json.
+Use help or <command> --help from any directory, including before installation.
 
 Interactive setup wizard: install, reinstall, update, init, rollback, repair,
 factory-reset, and uninstall ask questions and require a final confirmation
-before any change. Command flags pre-select answers but never skip the confirmation.
+before any change. Command flags pre-select answers; unattended changes require explicit confirm:true.
 `;
 }

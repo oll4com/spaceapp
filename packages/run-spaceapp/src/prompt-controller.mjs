@@ -24,8 +24,10 @@ export class PromptController {
 
     if (answersFile) {
       try {
-        const content = readFileSync(answersFile, "utf8");
-        this.answers = { ...this.answers, ...JSON.parse(content) };
+        const content = answersFile.trim().startsWith("{") ? answersFile : readFileSync(answersFile, "utf8");
+        const parsed = JSON.parse(content);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Answers must be a JSON object");
+        this.answers = { ...this.answers, ...parsed };
       } catch (err) {
         throw new Error(`Failed to parse answers file ${answersFile}: ${err.message}`);
       }

@@ -246,7 +246,7 @@ test("init emits a one-time setup token without placing it in config", async () 
   assert.doesNotMatch(second.value(), /One-time setup token:/);
 });
 
-test("the launcher prepares the trusted Docker Desktop CLI path before every command", async () => {
+test("help works without preparing Docker or modifying its environment", async () => {
   let calls = 0;
   assert.equal(await run(["help"], {
     env: { PATH: "/usr/bin" },
@@ -258,7 +258,7 @@ test("the launcher prepares the trusted Docker Desktop CLI path before every com
       return "/Applications/Docker.app/Contents/Resources/bin";
     }
   }), 0);
-  assert.equal(calls, 1);
+  assert.equal(calls, 0);
 });
 
 test("install waits for readiness, rotates an unclaimed token, and prints exact paste instructions last", async () => {
@@ -652,7 +652,7 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   const second = capture();
   assert.equal(await run(["install", "--profile", "auto", "--no-open"], {
     ...options,
-    stdin: ttyStdin("2"),
+    stdin: ttyStdin("2", "y"),
     stdout: second.stream
   }), 0);
   assert.match(second.value(), /runtime repaired/i);
@@ -879,7 +879,7 @@ test("install enables, preserves, and removes Linux host-root access without del
   const refreshWarning = capture();
   assert.equal(await run(["install", "--no-open"], {
     ...options,
-    stdin: ttyStdin("2"),
+    stdin: ttyStdin("2", "y"),
     stdout: refreshOutput.stream,
     stderr: refreshWarning.stream
   }), 0);
@@ -1003,7 +1003,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   const refreshCallStart = calls.length;
   assert.equal(await run(["install", "--no-open"], {
     ...options,
-    stdin: ttyStdin("2"),
+    stdin: ttyStdin("2", "y"),
     stdout: refreshOutput.stream
   }), 0);
   const refreshedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
