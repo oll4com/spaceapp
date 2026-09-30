@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.31] - 2026-09-30
+
+- Remove dependency JavaScript/CSS source maps from runtime images after compilation to keep AMD64 and ARM64 within the existing image size budgets.
+
 ## [1.0.30] - 2026-09-30
 
 - Wait for Temporal's default namespace before starting workflow workers, and restart workflow initialization when enabling a larger profile.

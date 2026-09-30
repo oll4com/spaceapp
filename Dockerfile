@@ -8,7 +8,8 @@ RUN apt-get update \
 COPY . .
 RUN npm ci --no-audit --no-fund \
     && npm run build \
-    && npm prune --omit=dev
+    && npm prune --omit=dev \
+    && find node_modules -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
 
 FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS runtime-base
 ARG TARGETARCH
