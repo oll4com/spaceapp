@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.26] - 2026-09-30
+
+- Make the mocked update contract test independent of any real SpaceApp listener on the test machine.
+
 ## [1.0.25] - 2026-09-30
 
 - Allow 2 GiB for the light CLI service so two native OpenCode panes can initialize without exhausting the previous 1536 MiB limit.
