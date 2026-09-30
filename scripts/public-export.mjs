@@ -255,7 +255,7 @@ export function sanitizePublicText(input) {
 export function isPublicExportPath(path) {
   const normalized = path.replaceAll("\\", "/");
   // Client binary releases are distributed separately, never inside the server installer.
-  if (/^apps\/(desktop|mobile)\//.test(normalized)) return false;
+  if (/^apps\/(desktop|mobile)\//.test(normalized) || normalized.startsWith("apps/web/public/downloads/")) return false;
   if (normalized.includes("/tests/")) {
     return publicScripts.has(normalized) ||
       normalized.startsWith("packages/run-spaceapp/tests/") ||
