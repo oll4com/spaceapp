@@ -16,12 +16,13 @@ export function validateEvidence(evidence,{digest,version,runtime,now=Date.now()
   const age=now-Date.parse(evidence?.createdAt);
   if(!Number.isFinite(age)||age<0||age>7*86400000)failures.push('Evidence must be at most seven days old');
   for(const platform of ['linux','windows','macos']) {
-    for(const scenario of ['fresh-install','upgrade','repair','docker-stopped','first-agent']) {
+    for(const scenario of ['fresh-install','upgrade','repair','docker-stopped','first-agent','profiles']) {
       const proof=evidence?.checks?.find(x=>x.platform===platform&&x.scenario===scenario);
       if(!proof||proof.pass!==true||proof.executed!==true||proof.exitCode!==0||proof.ready!==true||!proof.artifactSha256?.match(/^[a-f0-9]{64}$/)) {failures.push(`${platform}/${scenario}: missing real successful proof`);continue;}
       if(['upgrade','repair','docker-stopped'].includes(scenario)&&proof.dataPreserved!==true)failures.push(`${platform}/${scenario}: data preservation missing`);
       if(scenario==='docker-stopped'&&proof.dockerInitiallyStopped!==true)failures.push(`${platform}: stopped Docker not exercised`);
       if(scenario==='first-agent'&&(!proof.nativeTaskId||proof.responseObserved!==true||proof.uiOpened!==true||proof.freeModel!==true))failures.push(`${platform}: first agent execution incomplete`);
+      if(scenario==='profiles'&&(!['small','medium','large'].every(profile=>proof.profilesObserved?.includes(profile))||proof.dataPreserved!==true))failures.push(`${platform}: three profile transitions and data preservation required`);
       if(platform==='windows'&&proof.interactiveDesktop!==true)failures.push(`windows/${scenario}: graphical sign-in required`);
     }
   }

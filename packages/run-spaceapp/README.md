@@ -15,8 +15,8 @@ separately:
 npm install -g run-spaceapp
 ```
 
-The launcher requires Node.js 20.11 or newer, 4 CPUs, 8 GB RAM, and 15 GiB free
-disk. Keep `@latest` in the command so npm resolves the current release instead
+The smallest profile requires Node.js 20.11 or newer, 4 CPUs, 8 GB-class RAM
+(7 GiB usable), and 6.5 GiB free for a fresh installation. Keep `@latest` in the command so npm resolves the current release instead
 of matching an existing local launcher. If Docker is missing, the universal
 install command automatically installs it from official Docker sources on
 Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and CentOS, or with native
@@ -40,9 +40,27 @@ work: during image pulls the launcher switches Docker to a temporary
 credential-free config so Docker Desktop's graphical credential helper is never
 invoked outside an interactive logon.
 
-The launcher defaults to the `light` profile on every system. Run
-`npx --yes run-spaceapp@latest install --profile standard` explicitly when
-managed Chromium is required and the host has the recommended resources.
+The launcher selects `small`, `medium`, or `large` automatically using CPU,
+RAM and free disk. Docker's CPU and RAM allocation is checked as well.
+
+| Profile | CPU | Usable RAM | Fresh free space | Services |
+| --- | --- | --- | --- | --- |
+| small | 4 | 7 GiB | 6.5 GiB | SpaceApp, OpenCode, PostgreSQL |
+| medium | 4 | 11 GiB | 8 GiB | small + background workflow/integration workers |
+| large | 8 | 15 GiB | 11 GiB | medium + managed Chromium, larger limits |
+
+Use `install --profile small|medium|large` to choose explicitly. Existing
+`light` and `standard` profiles remain compatible. Upgrades preserve the installed
+profile unless you explicitly choose another one. Companions and additional AI
+CLIs remain optional and can be installed when needed.
+
+An upgrade checks **additional** space: missing image layers, the database
+checkpoint and 0.5 GiB headroom. Cached target images require no extra image space.
+Shared layers are excluded when public registry metadata is available; otherwise
+a conservative estimate is shown. Space is checked again after pulling and
+before pausing writers. Existing data is kept in place; the launcher never deletes
+images, backups or volumes to free space. Separate Docker disk capacity is checked
+when measurable and its availability is reported.
 
 ### First-install telemetry
 

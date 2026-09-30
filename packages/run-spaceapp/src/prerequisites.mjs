@@ -851,7 +851,7 @@ function linuxReentryCommand({
   requestedAccessMode,
   noOpen = false
 } = {}) {
-  if (!["auto", "light", "standard"].includes(requestedProfile)) {
+  if (!["auto", "small", "medium", "large", "light", "standard"].includes(requestedProfile)) {
     throw new Error("Invalid SpaceApp profile for Docker group re-entry.");
   }
   const entrypoint = fileURLToPath(new URL("../bin/spaceapp.mjs", import.meta.url));
@@ -875,7 +875,7 @@ export function windowsResumeScript({
   requestedAccessMode,
   noOpen = false
 } = {}) {
-  if (!["auto", "light", "standard"].includes(requestedProfile)) {
+  if (!["auto", "small", "medium", "large", "light", "standard"].includes(requestedProfile)) {
     throw new Error("Invalid SpaceApp profile for Windows resume.");
   }
   if (typeof noOpen !== "boolean") {

@@ -3,7 +3,7 @@ import process from "node:process";
 
 const services = [
   ["api", "apps/api/dist/server.js"],
-  ["worker", "apps/worker/dist/worker.js"],
+  ...(process.env.SPACEAPP_WORKFLOWS_ENABLED === "false" ? [] : [["worker", "apps/worker/dist/worker.js"]]),
   ["web", "apps/web/server.mjs"]
 ];
 const children = new Map();

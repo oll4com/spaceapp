@@ -340,8 +340,9 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
   assert.match(gettingStarted, /Restricted/);
   assert.match(gettingStarted, /npx\.cmd/);
   assert.match(gettingStarted, /8 GB/);
-  assert.match(gettingStarted, /15 GiB/);
-  assert.match(gettingStarted, /--profile light/);
+  assert.match(gettingStarted, /6\.5 GiB/);
+  for (const profile of ["small", "medium", "large"]) assert.match(gettingStarted, new RegExp(`--profile ${profile}`));
+  assert.match(gettingStarted, /Upgrades require only missing image layers/);
   assert.match(gettingStarted, /does\s+not preallocate/i);
   assert.match(gettingStarted, /WSL2/);
   assert.match(gettingStarted, /Windows Package Manager/);

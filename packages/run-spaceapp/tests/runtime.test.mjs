@@ -71,8 +71,8 @@ test("compose actions map to fixed commands and never invoke a shell", () => {
   ]);
   const removeBrowser = composeCommand("removeBrowser", home, { profile: "standard" });
   assert.deepEqual(
-    removeBrowser.args.slice(-6),
-    ["--profile", "standard", "rm", "--stop", "--force", "spaceapp-browser"]
+    removeBrowser.args.slice(-8),
+    ["--profile", "standard", "--profile", "workflows", "rm", "--stop", "--force", "spaceapp-browser"]
   );
   assert.equal(removeBrowser.args.includes("--volumes"), false);
   assert.throws(() => composeCommand("arbitrary", home), /unsupported/i);
@@ -90,6 +90,7 @@ test("compose project identity is stable for the same installation root", () => 
       "-f", join(home, "compose.workspaces.yml"),
       "-f", join(home, "compose.host-access.yml"),
       "--profile", "standard",
+      "--profile", "workflows",
       "up", "-d", "--remove-orphans"
     ]
   });
@@ -113,10 +114,11 @@ test("compose activates the optional browser only for the standard profile", () 
   const standard = composeCommand("up", home, { profile: "standard" });
   const light = composeCommand("up", home, { profile: "light" });
 
-  assert.deepEqual(standard.args.slice(-5), ["--profile", "standard", "up", "-d", "--remove-orphans"]);
+  assert.deepEqual(standard.args.slice(-7), ["--profile", "standard", "--profile", "workflows", "up", "-d", "--remove-orphans"]);
   assert.equal(standard.args.includes("--profile"), true);
-  assert.equal(light.args.includes("--profile"), false);
-  assert.throws(() => composeCommand("up", home, { profile: "full" }), /light or standard/i);
+  assert.equal(light.args.includes("standard"), false);
+  assert.equal(light.args.includes("workflows"), true);
+  assert.throws(() => composeCommand("up", home, { profile: "full" }), /small, medium, large, light, or standard/i);
 });
 
 test("runtime env applies bounded light and standard resource settings without secrets", () => {
@@ -151,7 +153,7 @@ test("compose activates the companions profile only when companions are enabled"
     withCompanions.args.slice(-5),
     ["--profile", "companions", "up", "-d", "--remove-orphans"]
   );
-  assert.equal(withoutCompanions.args.includes("--profile"), false);
+  assert.equal(withoutCompanions.args.includes("companions"), false);
 });
 
 test("runtime env exposes the companions toggle without leaking credentials", () => {

@@ -11,7 +11,7 @@ Minimum:
 
 - 4 CPU cores;
 - 8 GB system RAM;
-- 15 GiB free disk;
+- 6.5 GiB free disk for the small fresh-install profile;
 - Node.js 20.11 or newer.
 
 Recommended for browser sessions and several simultaneous CLI panes:
@@ -90,21 +90,28 @@ not install a second full virtual machine.
 
 The universal install command defaults to `--profile auto`:
 
-| Profile | Selection | Included services | Resource posture |
-| --- | --- | --- | --- |
-| `light` | automatic default, or explicit | core, every bundled CLI, PostgreSQL, Temporal | supported on an 8 GB host; managed Chromium omitted |
-| `standard` | explicit opt-in only | light services plus managed Chromium | recommended with 16 GB RAM |
+| Profile | Services | CPU | Usable RAM | Fresh free disk |
+| --- | --- | --- | --- | --- |
+| `small` | core, OpenCode, PostgreSQL | 4 | 7 GiB | 6.5 GiB |
+| `medium` | small + Temporal/background integration workers | 4 | 11 GiB | 8 GiB |
+| `large` | medium + managed Chromium, larger resource limits | 8 | 15 GiB | 11 GiB |
 
-Choose explicitly when needed:
+Auto chooses the largest profile that fits all three resources, then checks
+Docker's allocation. Existing installations preserve their profile during an
+upgrade. `light` and `standard` keep compatibility settings for older installs.
+Additional providers and companions install only when requested.
 
 ```bash
-npx --yes run-spaceapp@latest install --profile light
-npx --yes run-spaceapp@latest install --profile standard
+npx --yes run-spaceapp@latest install --profile small
+npx --yes run-spaceapp@latest install --profile medium
+npx --yes run-spaceapp@latest install --profile large
 ```
 
-The light limits are 2 GiB each for core and the CLI service, and 768 MiB
-each for PostgreSQL and Temporal. These are upper bounds, not memory reserved
-at startup.
+Small limits core and CLI to 2 GiB each and PostgreSQL to 768 MiB. Medium adds
+background workflow/integration workers; large adds managed browser automation.
+Small disables those background services, including automatic Telegram delivery
+and streaming bot workers. Room/pane budgets and UI behavior are unchanged.
+Limits are upper bounds, not memory reserved at startup.
 
 ## Linux host access
 
@@ -150,10 +157,16 @@ this is not required for the first install.
 
 ## Disk usage
 
-The installer checks for 15 GiB of free space before pulling images. It does
-not preallocate 15 GiB, a 40 GB disk, or any other fixed amount. Docker stores
-only downloaded layers, writable container data, volumes, and backups. Core
-and CLI images share layers, so Docker stores those shared bytes once.
+Fresh installations use profile-specific free-space checks (6.5/8/11 GiB).
+The installer does not preallocate this space.
+Upgrades require only missing image layers, a database checkpoint and 0.5 GiB
+headroom. Target images already cached need no extra image space. Registry layer
+metadata excludes shared layers when available; offline/unknown metadata uses a
+conservative estimate. The launcher checks space again after pull and before
+cutover. Existing workspaces and volumes are retained in place, never duplicated
+or deleted for space. Docker's separate disk capacity is checked when measurable;
+an unavailable measurement is reported. Data size and optional companions can
+increase the requirement.
 
 On Windows and macOS, the number shown as Docker Desktop's disk limit is a
 maximum, not an immediate allocation: the managed sparse virtual disk grows as

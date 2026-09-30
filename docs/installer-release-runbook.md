@@ -44,6 +44,11 @@ start/end times and retained evidence. Keep secrets out of reports.
   native task/session id and completed response. A pane opening is insufficient.
 - Linux, Windows and macOS must each have real evidence. Missing runners are
   UNTESTED, never PASS. ARM64 image build validation is separate from host UX.
+- Profiles: execute small, medium and large transitions on each dedicated runner;
+  verify readiness, expected services/resource limits, and preserved secrets,
+  database marker and workspace. Exercise auto selection with bounded resource
+  tests. Low-disk upgrade checks must distinguish cached and missing images,
+  checkpoint size, and space lost after pull; unit simulations are labeled as such.
 
 Create `release/acceptance.json` (schema 1) with `candidateDigest` from
 `candidateDigest()` in `scripts/release-evidence.mjs`, launcher/runtime versions,
@@ -52,6 +57,8 @@ UTC `createdAt`, and `checks` per platform/scenario. Each check carries `pass`,
 stopped-Docker also require `dataPreserved`; stopped-Docker requires
 `dockerInitiallyStopped`; first-agent requires `nativeTaskId`, `responseObserved`,
 `uiOpened` and `freeModel`; Windows also requires `interactiveDesktop`.
+The profiles scenario also requires `profilesObserved` containing all three
+sizes and `dataPreserved`. A new installer profile cannot ship using old evidence.
 
 The digest excludes only acceptance.json, so committing evidence does not change
 the candidate identity. A code, dependency, workflow, Dockerfile or version change

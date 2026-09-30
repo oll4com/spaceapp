@@ -26,8 +26,8 @@ import {
   initializeInstallation,
   inspectSystemResources,
   installResourceChecks,
+  profileRuntimeSettings,
   loadConfig,
-  MIN_INSTALL_FREE_DISK_BYTES_STANDARD,
   planConfigRepairs,
   prepareInstallation,
   removeCredential,
@@ -43,6 +43,7 @@ import {
   writeRuntimeFiles,
   writeSetupToken
 } from "./index.mjs";
+import { inspectStoragePlan, storageChecks } from "./storage.mjs";
 import {
   ensureDockerAvailable,
   prepareDockerCliPath,
@@ -406,7 +407,7 @@ export async function run(argv, {
   }
   if (command === "repair" || command === "doctor" && args.includes("--fix")) {
     if (args.some((arg) => !["--dry-run", "--fix"].includes(arg))) throw new Error("Usage: repair [--dry-run] or doctor --fix");
-    return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch, dryRun: args.includes("--dry-run") });
+    return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch, inspectResources, dryRun: args.includes("--dry-run") });
   }
   const config = await loadConfig(root);
   if (commandNeedsRuntimeFiles(command, args)) {
@@ -479,7 +480,8 @@ export async function run(argv, {
       stderr,
       execute: runtimeExecute,
       request,
-      sleep
+      sleep,
+      inspectResources, ensureDocker, env, arch
     });
   }
   if (command === "rollback") {
@@ -654,7 +656,8 @@ async function installCommand(args, {
   }
   await prepareDockerPath({ platform, env });
   const resources = await inspectResources(root);
-  const profile = resolveInstallProfile(requestedProfile, resources.totalMemoryBytes);
+  let profile = requestedProfile === "auto" && existingConfig
+    ? existingConfig.profile : resolveInstallProfile(requestedProfile, resources);
   if (accessMode === "host-root") {
     stderr.write(
       "WARNING: host-root access lets SpaceApp CLI sessions read and modify the entire Linux host through /host, including credentials and system files.\n"
@@ -687,7 +690,8 @@ async function installCommand(args, {
     `Selected profile: ${profile} (${formatGibibytes(resources.totalMemoryBytes)} GiB system memory detected).\n`
   );
   stdout.write(`SpaceApp installation root: ${root}\n`);
-  if (installResourceChecks(resources, profile).some((check) => !check.ok)) {
+  const operation = existingConfig ? (existingConfig.version === runtimeVersion ? "repair" : "upgrade") : "fresh";
+  if (installResourceChecks(resources, profile, { operation }).some((check) => !check.ok)) {
     const doctorCode = await doctor({
       root,
       platform,
@@ -697,7 +701,7 @@ async function installCommand(args, {
       stdin,
       inspectResources,
       resources,
-      profile
+      profile, operation
     });
     stderr.write(
       `Installation stopped before downloading images. Fix the failed checks and run "${UNIVERSAL_COMMAND} install" again.\n`
@@ -725,6 +729,16 @@ async function installCommand(args, {
     return prerequisiteResult.code;
   }
 
+  let storagePlan = await inspectStoragePlan({ root, config: result.config, existingConfig, resources, execute, operation });
+  if (requestedProfile === "auto" && !existingConfig) {
+    const engineProfile = resolveInstallProfile("auto", storagePlan.resources);
+    if (engineProfile !== profile) {
+      profile = engineProfile;
+      result.config = { ...result.config, profile };
+      stdout.write(`Docker resources select profile: ${profile}.\n`);
+      storagePlan = await inspectStoragePlan({ root, config: result.config, resources: storagePlan.resources, execute, operation });
+    }
+  }
   const doctorCode = await doctor({
     root,
     platform,
@@ -735,7 +749,7 @@ async function installCommand(args, {
     inspectResources,
     resources,
     profile,
-    dockerReady: true
+    dockerReady: true, operation, storagePlan
   });
   if (doctorCode !== 0) {
     stderr.write(
@@ -797,6 +811,8 @@ async function installCommand(args, {
       )
     );
     if (pullCode !== 0) return pullCode;
+    if (await verifyStorage({ root, config: result.config, existingConfig, operation,
+      inspectResources, execute, stdout, stderr }) !== 0) return 1;
     if(existingConfig && existingConfig.version !== result.config.version) {
       upgradeCheckpoint = await createQuiescedCheckpoint(root, existingConfig, {stdin,stdout,stderr,execute,platform});
     }
@@ -902,7 +918,7 @@ async function installCommand(args, {
       }
     }
 
-    if (profile === "light") {
+    if (!profileRuntimeSettings(profile).browserEnabled) {
       const removeBrowserCode = await executeWithDockerDiagnostics(
         execute,
         composeCommand("removeBrowser", root, {
@@ -914,10 +930,14 @@ async function installCommand(args, {
       );
       if (removeBrowserCode !== 0) {
         stderr.write(
-          "SpaceApp is ready, but the managed browser container could not be removed for the light profile.\n"
+          "SpaceApp is ready, but the inactive managed browser container could not be removed.\n"
         );
         return await failAfterRuntimeMutation(removeBrowserCode);
       }
+    }
+    if (!profileRuntimeSettings(profile).temporalEnabled) {
+      const cleanupCode = await execute(composeCommand("removeTemporal", root, { profile: "medium", stateRoot: stagedStateRoot }), { stdin, stdout, stderr });
+      if (cleanupCode !== 0) return await failAfterRuntimeMutation(cleanupCode);
     }
 
     if (setupToken) {
@@ -1008,7 +1028,8 @@ async function planInteractiveSetup({
 
   const resources = await inspectResources(root);
   const resolveProfileChoice = (choice) => {
-    const resolved = resolveInstallProfile(choice, resources.totalMemoryBytes);
+    const resolved = choice === "auto" && rawExisting?.profile
+      ? rawExisting.profile : resolveInstallProfile(choice, resources);
     return { resolved, display: choice === "auto" ? `auto (${resolved})` : resolved };
   };
 
@@ -1028,10 +1049,13 @@ async function planInteractiveSetup({
 
   if (path === "fresh") {
     const profileChoice = await promptChoice(stdin, stdout, "Which installation profile?", [
-      { label: `auto (light profile on this system; ${formatGibibytes(resources.totalMemoryBytes)} GiB detected)`, value: "auto" },
-      { label: "light (smaller footprint)", value: "light" },
-      { label: "standard (full features, incl. managed browser)", value: "standard" }
-    ], { defaultIndex: ["auto", "light", "standard"].indexOf(parsed.requestedProfile), answerKey: "profile" });
+      { label: `auto (${resolveProfileChoice("auto").resolved}; ${resources.cpuCount} CPUs, ${formatGibibytes(resources.totalMemoryBytes)} GiB RAM, ${formatGibibytes(resources.freeDiskBytes)} GiB free)`, value: "auto" },
+      { label: "small (SpaceApp + OpenCode; no background workflows or managed browser)", value: "small" },
+      { label: "medium (background workflows and integration workers)", value: "medium" },
+      { label: "large (workflows + managed browser; larger resource limits)", value: "large" },
+      { label: "light (legacy compatibility)", value: "light" },
+      { label: "standard (legacy compatibility)", value: "standard" }
+    ], { defaultIndex: Math.max(0, ["auto", "small", "medium", "large", "light", "standard"].indexOf(parsed.requestedProfile)), answerKey: "profile" });
     const accessChoice = await promptChoice(stdin, stdout, "Which access mode?", [
       { label: "isolated (recommended; no host access)", value: "isolated" },
       { label: "host-root (Linux only; CLI sessions can read and modify the whole host)", value: "host-root" }
@@ -1095,7 +1119,7 @@ async function planInteractiveSetup({
     }
     await applyApprovedConfigRepairs(root, rawExisting);
     const config = await loadExistingInstallation(root);
-    const code = await repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch });
+    const code = await repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch, inspectResources });
     if(code === 0 && !parsed.noOpen) await openBrowser(`http://${config.bindHost}:${config.port}`, platform, execute, {stdin,stdout,stderr});
     return {exit:code};
   }
@@ -1209,7 +1233,7 @@ async function offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, 
   }
 }
 
-async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, dryRun = false, ensureDocker = ensureDockerAvailable, env = process.env, arch = process.arch }) {
+async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, dryRun = false, ensureDocker = ensureDockerAvailable, env = process.env, arch = process.arch, inspectResources = inspectSystemResources }) {
   const raw = await readRawConfig(root);
   const plan = planConfigRepairs(raw);
   if (dryRun) {
@@ -1226,6 +1250,7 @@ async function repairRuntime({ root, config, platform, stdin, stdout, stderr, ex
     installArgs: {root,requestedProfile:repaired.profile,requestedAccessMode:repaired.accessMode,noOpen:true,autoConfirm:true}});
   if(prerequisites.reexecuted || prerequisites.code !== 0) return prerequisites.code;
   config = repaired;
+  if (await verifyStorage({ root, config, existingConfig: config, operation: "repair", inspectResources, execute, stdout, stderr }) !== 0) return 1;
   await saveConfig(root, config);
   await writeRuntimeFiles(root, config);
   const pullCode = await withHeadlessDockerConfig(
@@ -1237,6 +1262,7 @@ async function repairRuntime({ root, config, platform, stdin, stdout, stderr, ex
     writeWindowsCredentialHint(platform, stderr);
     return pullCode;
   }
+  if (await verifyStorage({ root, config, existingConfig: config, operation: "repair", inspectResources, execute, stdout, stderr }) !== 0) return 1;
   const upCode = await execute(
     composeCommand("repair", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
     { stdin, stdout, stderr }
@@ -1274,7 +1300,8 @@ async function performUpdate({
   execute,
   preserveRecreate,
   request,
-  sleep
+  sleep,
+  inspectResources = inspectSystemResources
 }) {
   const updated = targetVersion === config.version
     ? config
@@ -1296,6 +1323,7 @@ async function performUpdate({
       writeWindowsCredentialHint(platform, stderr);
       throw new Error(`Image pull failed with Docker exit ${pullCode}.`);
     }
+    if (await verifyStorage({ root, config: updated, existingConfig: config, operation: "upgrade", inspectResources, execute, stdout, stderr }) !== 0) return 1;
     checkpoint = await createQuiescedCheckpoint(root, config, {stdin, stdout, stderr, execute, platform});
     await writeRuntimeFiles(root, updated);
     const upCode = await execute(
@@ -1633,18 +1661,18 @@ function parseInstallArgs(args) {
       continue;
     }
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
     );
   }
   if (
-    !["auto", "light", "standard"].includes(requestedProfile) ||
+    !["auto", "small", "medium", "large", "light", "standard"].includes(requestedProfile) ||
     (
       requestedAccessMode !== undefined &&
       !["isolated", "host-root"].includes(requestedAccessMode)
     )
   ) {
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
     );
   }
   return { requestedProfile, requestedAccessMode, noOpen, companionsEnabled };
@@ -1953,7 +1981,7 @@ async function factoryResetCommand({
   return 0;
 }
 
-async function updateCommand(args, { root, config, version, platform, stdin, stdout, stderr, execute, request, sleep }) {
+async function updateCommand(args, { root, config, version, platform, stdin, stdout, stderr, execute, request, sleep, inspectResources = inspectSystemResources, ensureDocker = ensureDockerAvailable, env = process.env, arch = process.arch }) {
   if (args.length > 1) {
     throw new Error(`Usage: ${UNIVERSAL_COMMAND} update [version]`);
   }
@@ -1987,7 +2015,7 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
         return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources: inspectSystemResources });
       }
     }
-    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep });
+    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, inspectResources, ensureDocker, env, arch });
   }
   if (path === "downgrade") {
     if (!continuation) {
@@ -2026,6 +2054,13 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
       return 0;
     }
   }
+  const prerequisites = await ensureDocker({ platform, arch, env, stdin, stdout, stderr, execute,
+    installArgs: { root, requestedProfile: config.profile, noOpen: true, autoConfirm: true } });
+  if (prerequisites.reexecuted || prerequisites.code !== 0) return prerequisites.code;
+  const resources = await inspectResources(root);
+  const storagePlan = await inspectStoragePlan({ root, config: { ...config, version: targetVersion }, existingConfig: config, resources, execute, operation: "upgrade" });
+  if (await doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources, resources,
+    profile: config.profile, dockerReady: true, operation: "upgrade", storagePlan }) !== 0) return 1;
   return performUpdate({
     root,
     config,
@@ -2037,8 +2072,21 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
     execute,
     request,
     sleep,
+    inspectResources,
     preserveRecreate: path === "preserve-recreate"
   });
+}
+
+async function verifyStorage({ root, config, existingConfig, operation, inspectResources, execute, stdout, stderr }) {
+  const resources = await inspectResources(root);
+  const plan = await inspectStoragePlan({ root, config, existingConfig, operation, resources, execute });
+  const checks = storageChecks(plan, resources);
+  for (const check of checks) (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
+  if (checks.some((check) => !check.ok)) {
+    stderr.write("Insufficient additional storage. Existing data and runtime have not been replaced; free space and retry.\n");
+    return 1;
+  }
+  return 0;
 }
 
 async function doctor({
@@ -2051,6 +2099,8 @@ async function doctor({
   inspectResources,
   resources,
   profile,
+  operation,
+  storagePlan,
   dockerReady = false
 }) {
   const configuration = profile ? { ok: true, detail: "Prepared installation configuration" } : await loadConfig(root).then(() => ({ ok: true, detail: root })).catch((error) => ({ ok: false, detail: `${error.message}. Run install for a new setup, or doctor --fix for an existing setup.` }));
@@ -2060,18 +2110,21 @@ async function doctor({
     const existingConfig = await loadConfig(root).catch(() => null);
     if (existingConfig?.profile) {
       resolvedProfile = existingConfig.profile;
-    } else if (detectedResources?.freeDiskBytes < MIN_INSTALL_FREE_DISK_BYTES_STANDARD) {
-      resolvedProfile = "light";
     } else if (detectedResources?.totalMemoryBytes) {
-      resolvedProfile = resolveInstallProfile("auto", detectedResources.totalMemoryBytes);
+      resolvedProfile = resolveInstallProfile("auto", detectedResources);
     } else {
       resolvedProfile = "light";
     }
   }
+  operation ??= await loadConfig(root).then(() => "maintenance").catch(() => "fresh");
+  const resourceChecks = installResourceChecks(storagePlan?.resources ?? detectedResources, resolvedProfile, {
+    operation, ...(storagePlan ? { requiredDiskBytes: storagePlan.requiredDiskBytes } : {})
+  });
   const checks = [
     { name: "Node.js", ok: Number(process.versions.node.split(".")[0]) >= 20, detail: process.version },
     { name: "Configuration", ...configuration },
-    ...installResourceChecks(detectedResources, resolvedProfile)
+    ...resourceChecks.filter((check) => !storagePlan || check.name !== "Free disk"),
+    ...(storagePlan ? storageChecks(storagePlan, detectedResources) : [])
   ];
   const dockerResults = [];
   for (const probe of [
@@ -2259,23 +2312,28 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
       ? process.env
       : validateCommandEnvironment(spec.env);
     const background = spec.command === 'xdg-open' && spec.background === true;
-    let launchTimer;
+    let launchTimer, commandTimer;
     const child = spawnTrustedCommand(spec, {
       env: commandEnv,
       shell: false,
       detached: background,
-      stdio: background ? ['ignore','ignore','ignore'] : [input === undefined ? (stdin || "inherit") : "pipe", stdout || "ignore", stderr || "ignore"]
+      stdio: background ? ['ignore','ignore','ignore'] : [input === undefined ? (stdin || "inherit") : "pipe", stdout && typeof stdout.fd !== "number" ? "pipe" : stdout || "ignore", stderr && typeof stderr.fd !== "number" ? "pipe" : stderr || "ignore"]
     });
+    if (!background && child.stdout && stdout) child.stdout.pipe(stdout, { end: false });
+    if (!background && child.stderr && stderr) child.stderr.pipe(stderr, { end: false });
+    if (Number.isFinite(spec.timeoutMs) && spec.timeoutMs > 0) commandTimer = setTimeout(() => child.kill(), spec.timeoutMs);
     child.once("error", (error) => {
       clearTimeout(launchTimer);
+      clearTimeout(commandTimer);
       if (error?.code === "ENOENT") {
         resolve(127);
       } else {
         reject(error);
       }
     });
-    child.once("exit", (code, signal) => {
+    child.once("close", (code, signal) => {
       clearTimeout(launchTimer);
+      clearTimeout(commandTimer);
       resolve(code ?? (signal ? 1 : 0));
     });
     if(background)launchTimer=setTimeout(()=>{child.unref();resolve(0);},750);
@@ -2395,9 +2453,9 @@ Usage: ${UNIVERSAL_COMMAND} <command>
        spaceapp <command>             Optional global launcher
 
   init                              Create a local SpaceApp installation
-  install [--profile auto|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
+  install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
                                     Install prerequisites, initialize, and start
-  reinstall [--keep-data] [--profile auto|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
+  reinstall [--keep-data] [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
                                     Clean reinstallation preserving data and credentials
   repair [--dry-run]                Verify and repair configuration and runtime files
   up | down | status | logs         Manage the Docker application
@@ -2428,14 +2486,26 @@ Options:
   --non-interactive                 Run non-interactively, failing on missing input
   --answers <json|path>             Pre-seed answers; automation requires confirm:true
 
-Quick start: install (light profile, OpenCode first, browser opens on completion).
+Profiles (auto uses CPU, RAM and free disk, then checks Docker resources):
+  small:  4 CPUs, 7 GiB usable RAM, 6.5 GiB fresh space; SpaceApp + OpenCode.
+          Background integration workers and managed browser are disabled.
+  medium: 4 CPUs, 11 GiB usable RAM, 8 GiB fresh space; adds background workers.
+  large:  8 CPUs, 15 GiB usable RAM, 11 GiB fresh space; adds managed browser.
+  light/standard: compatibility settings for existing installations.
+Upgrades keep the installed profile unless you explicitly choose another one.
+Upgrade space: missing layers + database checkpoint + 0.5 GiB reserve.
+Cached target images need no extra image space; existing data stays in place.
+Unknown layer sizes use a conservative estimate; space is rechecked after pull.
+No automatic deletion of images, volumes, workspaces, or backups to free space.
+
+Quick start: install (automatic profile, OpenCode first, browser opens on completion).
 Windows PowerShell: use npx.cmd if script execution policy blocks npx.ps1.
 The npx command requires Node.js 20.11+ installed; Docker is installed if missing.
 Data lives in SPACEAPP_HOME (config/secrets) and persistent Docker volumes.
 Use backup before major changes; uninstall preserves data unless --purge-data.
 Never use factory-reset to solve an ordinary installation problem.
 
-Automation: --non-interactive --answers '{"confirm":true,"profile":"light","access":"isolated","companions":false,"telemetry":false,"open":false}'
+Automation: --non-interactive --answers '{"confirm":true,"profile":"auto","access":"isolated","companions":false,"telemetry":false,"open":false}'
 For shells with different quoting, save that JSON to a file and pass --answers file.json.
 Use help or <command> --help from any directory, including before installation.
 

@@ -8,6 +8,7 @@ import {
   commitInstallation,
   createDefaultConfig,
   initializeInstallation,
+  inspectSystemResources,
   loadConfig,
   prepareInstallation,
   renderHostAccessCompose,
@@ -54,15 +55,18 @@ test("install access defaults to isolated and host-root remains explicit", () =>
   assert.throws(() => resolveInstallAccessMode("root", "isolated"), /isolated or host-root/i);
 });
 
-test("auto profile defaults to light at every supported memory size and standard stays explicit", () => {
-  const gibibyte = 1024 ** 3;
-
-  assert.equal(resolveInstallProfile("auto", 8 * gibibyte), "light");
-  assert.equal(resolveInstallProfile("auto", 12 * gibibyte), "light");
-  assert.equal(resolveInstallProfile("auto", 64 * gibibyte), "light");
-  assert.equal(resolveInstallProfile("light", 64 * gibibyte), "light");
-  assert.equal(resolveInstallProfile("standard", 8 * gibibyte), "standard");
-  assert.throws(() => resolveInstallProfile("full", 16 * gibibyte), /auto, light, or standard/i);
+test("automatic profile selection uses CPU, memory and disk while legacy choices stay valid", () => {
+  const GiB = 1024 ** 3;
+  const resources = {cpuCount:8, totalMemoryBytes:16*GiB, freeDiskBytes:20*GiB};
+  assert.equal(resolveInstallProfile("auto", resources), "large");
+  assert.equal(resolveInstallProfile("auto", {...resources,cpuCount:4}), "medium");
+  assert.equal(resolveInstallProfile("auto", {...resources,totalMemoryBytes:8*GiB}), "small");
+  assert.equal(resolveInstallProfile("auto", {...resources,freeDiskBytes:7*GiB}), "small");
+  assert.equal(resolveInstallProfile("auto", {...resources,freeDiskBytes:8*GiB}), "medium");
+  assert.equal(resolveInstallProfile("auto", 64*GiB), "small");
+  assert.equal(resolveInstallProfile("light", resources), "light");
+  assert.equal(resolveInstallProfile("standard", resources), "standard");
+  assert.throws(() => resolveInstallProfile("full", resources), /auto, small, medium, large, light, or standard/i);
 });
 
 test("loads legacy full and core profiles through the stable schema migration", async () => {
@@ -224,9 +228,9 @@ test("initialization resolves the auto profile on a clean install", async () => 
     accessMode: "host-root"
   });
 
-  assert.equal(result.config.profile, "light");
+  assert.equal(result.config.profile, resolveInstallProfile("auto", await inspectSystemResources(root)));
   assert.equal(result.config.accessMode, "host-root");
-  assert.equal((await loadConfig(root)).profile, "light");
+  assert.equal((await loadConfig(root)).profile, result.config.profile);
   assert.match(
     await readFile(join(root, "compose.host-access.yml"), "utf8"),
     /SPACEAPP_CLI_HOST_ROOT_ACCESS: "true"/

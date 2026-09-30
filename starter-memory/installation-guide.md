@@ -9,9 +9,13 @@ evidence that setup is complete. Verify state and record only observed outcomes.
    must already exist to run npx. The installer can set up Docker; Windows may
    need an administrator prompt, WSL reboot and interactive sign-in. Never promise
    a fixed installation time: download size, network and machine speed vary.
-2. The light profile starts core, OpenCode CLI, PostgreSQL and Temporal. Browser
-   automation and companions can be enabled later. Do not reinstall optional
-   tools just to complete the basic checklist.
+2. Auto selects small/medium/large from CPU, RAM and free disk. Small starts core,
+   OpenCode and PostgreSQL; medium adds background workflow/integration workers;
+   large adds the managed browser. Small disables automatic Telegram delivery and
+   streaming bot workers. Legacy light/standard settings survive updates. Extra
+   providers and companions install on demand. Do not install optional tools just
+   to complete the basic checklist. Updates measure additional image/checkpoint
+   space, not the full fresh-install requirement. Never delete data to free space.
 3. The browser opens at the printed local address after readiness succeeds.
    If first-owner setup appears, the owner chooses their own email and password
    using the one-time token shown in the host terminal. Never copy this token,

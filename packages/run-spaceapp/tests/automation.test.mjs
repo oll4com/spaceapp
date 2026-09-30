@@ -87,13 +87,13 @@ test('failed upgrade retains writes made after cutover and preserves its checkpo
     f.calls.push(spec);
     if(spec.args?.includes('pg_dump'))io.stdout.write('-- PostgreSQL database dump\nSELECT 1;\n');
     if(spec.args?.includes('up') && ++ups===1){await writeFile(secret,'changed-during-failed-upgrade');return 17;}
-    if(spec.args?.includes('psql'))throw new Error('automatic database restore would lose new writes');
+    if(spec.args?.includes('ON_ERROR_STOP=1'))throw new Error('automatic database restore would lose new writes');
     return 0;
   };
   assert.equal(await run(['install','--non-interactive','--answers','{"confirm":true,"open":false}'],f.options),17);
   assert.equal(await readFile(secret,'utf8'),'changed-during-failed-upgrade');
   assert.notEqual(JSON.parse(await readFile(join(f.root,'config.json'),'utf8')).version,'0.1.29');
-  assert.ok(!f.calls.some(x=>x.args?.includes('psql')));
+  assert.ok(!f.calls.some(x=>x.args?.includes('ON_ERROR_STOP=1')));
   assert.ok(!f.calls.some(x=>x.args?.includes('down')));
   assert.match(f.out.text(),/RECOVERY_REQUIRED/);
   const stop=f.calls.findIndex(x=>x.args?.includes('stop'));

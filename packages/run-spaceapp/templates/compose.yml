@@ -30,6 +30,7 @@ services:
       SPACE_WEB_PORT: 4911
       SPACE_API_ORIGIN: http://127.0.0.1:4910
       SPACE_TEMPORAL_ADDRESS: temporal:7233
+      SPACEAPP_WORKFLOWS_ENABLED: "${SPACEAPP_WORKFLOWS_ENABLED}"
       SPACE_MEMORY_ROOT: /var/lib/spaceapp/memory
       SPACE_STARTER_MEMORY_ROOT: /opt/spaceapp/starter-memory
       SPACE_MEMORY_GRAPH_ROOT: /var/lib/spaceapp/memory-graph
@@ -71,6 +72,7 @@ services:
         condition: service_healthy
       temporal:
         condition: service_healthy
+        required: false
       spaceapp-cli:
         condition: service_started
     networks:
@@ -178,6 +180,7 @@ services:
 
   temporal:
     image: temporalio/auto-setup:1.29.1
+    profiles: ["workflows"]
     restart: unless-stopped
     mem_limit: "${SPACEAPP_TEMPORAL_MEMORY_LIMIT}"
     cpus: "${SPACEAPP_TEMPORAL_CPU_LIMIT}"

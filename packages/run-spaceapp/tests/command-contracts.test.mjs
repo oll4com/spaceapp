@@ -115,7 +115,7 @@ test("init and the default update target the pinned runtime image version", asyn
     await readFile(join(root, "runtime.env"), "utf8"),
     new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
   );
-  assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
+  assert.deepEqual(calls.filter(spec => !spec.timeoutMs).map((spec) => spec.args.at(-1)), [
     "--version", "version", "info",
     "pull",
     "--force-recreate"
@@ -191,8 +191,8 @@ test("up, down, status, logs, backup, and open delegate to their fixed native co
   }
   assert.deepEqual(calls.map((spec) => spec.args.slice(-3)), [
     ["up", "-d", "--remove-orphans"],
-    ["-f", join(root, "compose.host-access.yml"), "down"],
-    ["-f", join(root, "compose.host-access.yml"), "ps"],
+    ["--profile", "workflows", "down"],
+    ["--profile", "workflows", "ps"],
     ["logs", "--tail", "200"],
     ["spaceapp-core", "node", "scripts/portable-backup.mjs"]
   ]);
@@ -297,7 +297,8 @@ test("update and rollback persist version state only after both Docker operation
     ),
     { version: RUNTIME_VERSION, previousVersion: "0.1.6" }
   );
-  assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
+  assert.deepEqual(calls.filter(spec => !spec.timeoutMs).map((spec) => spec.args.at(-1)), [
+    "--version", "version", "info",
     "pull",
     "spaceapp-browser",
     "spaceapp",

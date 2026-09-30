@@ -5,6 +5,12 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.28] - 2026-09-30
+
+- Choose small, medium or large from CPU, RAM and disk, check Docker allocations, and keep existing profiles on upgrades.
+- Omit Temporal/background workers and managed Chromium from small; retain legacy profiles and optional providers.
+- Check incremental upgrade storage using cached/shared image layers, database checkpoint size and headroom; recheck before cutover without deleting user data.
+
 ## [1.0.27] - 2026-09-30
 
 - Wait for the upgraded application to become ready before verifying its checkpoint and reporting success; preserve current data and recovery information if readiness fails.

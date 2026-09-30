@@ -633,10 +633,10 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   };
 
   assert.equal(await run(["install", "--profile", "auto", "--no-open"], options), 0);
-  assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
-  assert.match(stdout.value(), /Selected profile: light.*7\.7 GiB/i);
+  assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "small");
+  assert.match(stdout.value(), /Selected profile: small.*7\.7 GiB/i);
   assert.match(stdout.value(), /SpaceApp is ready at http:\/\/127\.0\.0\.1:4911/);
-  assert.deepEqual(calls.map((call) => [
+  assert.deepEqual(calls.filter(call => !call.timeoutMs).map((call) => [
     call.command,
     ...call.args.slice(-2).map((argument) =>
       argument.endsWith("compose.host-access.yml") ? "compose.host-access.yml" : argument
@@ -648,9 +648,10 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
     ["docker", "compose.host-access.yml", "pull"],
     ["docker", "-d", "--remove-orphans"],
     ["docker", "scripts/rotate-owner-setup-token.mjs", "--stdin"],
-    ["docker", "--force", "spaceapp-browser"]
+    ["docker", "--force", "spaceapp-browser"],
+    ["docker", "--force", "temporal"]
   ]);
-  assert.doesNotMatch(calls.map((call) => `${call.command} ${call.args.join(" ")}`).join("\n"), /xdg-open/);
+  assert.doesNotMatch(calls.filter(call => !call.timeoutMs).map((call) => `${call.command} ${call.args.join(" ")}`).join("\n"), /xdg-open/);
   assert.equal(calls.find((call) => call.args.includes("pull")).args.includes("--profile"), false);
 
   const second = capture();
@@ -660,7 +661,7 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
     stdout: second.stream
   }), 0);
   assert.match(second.value(), /runtime repaired/i);
-  assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "light");
+  assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "small");
 });
 
 test("host-root install is rejected on non-Linux hosts before Docker or installation state", async () => {
@@ -824,9 +825,9 @@ test("the matching x64 candidate enables Linux host-root through the normal inst
 
   assert.deepEqual(calls, {
     prepareDockerPath: 1,
-    inspectResources: 2,
+    inspectResources: 3,
     ensureDocker: 1,
-    execute: 3
+    execute: 12
   });
   assert.equal(
     JSON.parse(await readFile(join(root, "config.json"), "utf8")).accessMode,
@@ -973,7 +974,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
     }
   };
 
-  assert.equal(await run(["install", "--no-open"], options), 0);
+  assert.equal(await run(["install", "--profile", "light", "--no-open"], options), 0);
 
   const upgradedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
   assert.equal(upgradedConfig.version, RUNTIME_VERSION);
@@ -993,10 +994,10 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
   assert.ok(browserCleanup, "light upgrades must remove a browser container left by the standard profile");
   assert.deepEqual(
     browserCleanup.args.slice(browserCleanup.args.indexOf("--profile"), -4),
-    ["--profile", "standard"],
+    ["--profile", "standard", "--profile", "workflows"],
     "browser cleanup must activate the service's standard Compose profile"
   );
-  for (const spec of calls) {
+  for (const spec of calls.filter(spec => spec.args.includes("compose"))) {
     assert.equal(spec.args[spec.args.indexOf("--project-name") + 1], projectBefore);
   }
   assert.match(stdout.value(), new RegExp(`Launcher version: ${CURRENT_VERSION}`));
@@ -1006,7 +1007,7 @@ test("Windows launcher .2 upgrades a 0.1.10 standard install to runtime .2 light
 
   const refreshOutput = capture();
   const refreshCallStart = calls.length;
-  assert.equal(await run(["install", "--no-open"], {
+  assert.equal(await run(["install", "--profile", "light", "--no-open"], {
     ...options,
     stdin: ttyStdin("2", "y"),
     stdout: refreshOutput.stream
@@ -1094,7 +1095,7 @@ test("failures before cutover preserve configuration; failures after cutover ret
     ));
     const stagedStateRoots = new Set();
 
-    const code = await run(["install", "--no-open"], {
+    const code = await run(["install", "--profile", "light", "--no-open"], {
       env: { SPACEAPP_HOME: root },
       platform: "linux",
       stdout: capture().stream,
@@ -1114,7 +1115,7 @@ test("failures before cutover preserve configuration; failures after cutover ret
       if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
         const envFileIndex = spec.args.indexOf("--env-file");
         if (envFileIndex !== -1) {
-          stagedStateRoots.add(dirname(spec.args[envFileIndex + 1]));
+          if (!spec.timeoutMs) stagedStateRoots.add(dirname(spec.args[envFileIndex + 1]));
         }
         if (failure === "pull" && spec.args.at(-1) === "pull") return 41;
         if (failure === "up" && spec.args.includes("--remove-orphans")) return 42;
@@ -1910,7 +1911,7 @@ test("install succeeds on 8 GiB disk for light profile and automatically starts 
 
   assert.ok(ensureDockerCalled);
   assert.ok(autoConfirmPassed);
-  assert.match(stdout.value(), /PASS Free disk: 8 GiB available; 7 GiB required/);
+  assert.match(stdout.value(), /PASS Free disk: 8\.00 GiB available; 7\.[0-9]+ GiB required/);
   assert.match(stdout.value(), /SpaceApp is ready at http:\/\/127\.0\.0\.1:4911/);
 });
 
@@ -1935,5 +1936,5 @@ test("doctor reports PASS for 8 GiB disk when light profile is selected", async 
 
   assert.equal(await run(["doctor"], options), 0);
 
-  assert.match(stdout.value(), /PASS Free disk: 8 GiB available; 7 GiB required/);
+  assert.match(stdout.value(), /PASS Free disk: 8 GiB available; 0\.5 GiB required additionally for maintenance/);
 });

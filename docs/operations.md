@@ -71,8 +71,8 @@ Docker host.
 ## Update
 
 The universal install command is also the preferred update command. It resolves
-the latest launcher, records the previously installed SpaceApp version, selects
-the light profile by default, pulls the matching images, and recreates the
+the latest launcher, records the previously installed SpaceApp version, preserves
+the existing profile, checks additional space, pulls the matching images, and recreates the
 stack without deleting application data, workspaces, credentials, secrets, or
 persistent Docker volumes.
 

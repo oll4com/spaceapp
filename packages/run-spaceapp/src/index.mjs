@@ -20,16 +20,38 @@ import {
 import { UNIVERSAL_COMMAND } from "./package-info.mjs";
 
 const CONFIG_SCHEMA_VERSION = 4;
-const MIN_INSTALL_CPU_COUNT = 4;
-const MIN_INSTALL_MEMORY_BYTES = 7 * 1024 ** 3;
-const MIN_INSTALL_MEMORY_LABEL = "7 GiB usable (8 GB-class system)";
 const CONTAINER_SECRET_MODE = 0o644;
 export const MIN_INSTALL_FREE_DISK_BYTES_STANDARD = 15 * 1024 ** 3;
 export const MIN_INSTALL_FREE_DISK_BYTES_LIGHT = 7 * 1024 ** 3;
 export const MIN_INSTALL_FREE_DISK_BYTES = MIN_INSTALL_FREE_DISK_BYTES_STANDARD;
 const PROFILE_RUNTIME_SETTINGS = Object.freeze({
+  small: Object.freeze({
+    browserEnabled: false, temporalEnabled: false,
+    coreMemoryLimit: "2g", coreCpuLimit: "2.0",
+    cliMemoryLimit: "2g", cliCpuLimit: "1.5",
+    browserMemoryLimit: "1536m", browserCpuLimit: "1.5",
+    postgresMemoryLimit: "768m", postgresCpuLimit: "1.0",
+    temporalMemoryLimit: "768m", temporalCpuLimit: "1.0"
+  }),
+  medium: Object.freeze({
+    browserEnabled: false, temporalEnabled: true,
+    coreMemoryLimit: "3g", coreCpuLimit: "3.0",
+    cliMemoryLimit: "3g", cliCpuLimit: "2.0",
+    browserMemoryLimit: "1536m", browserCpuLimit: "1.5",
+    postgresMemoryLimit: "1g", postgresCpuLimit: "1.0",
+    temporalMemoryLimit: "768m", temporalCpuLimit: "1.0"
+  }),
+  large: Object.freeze({
+    browserEnabled: true, temporalEnabled: true,
+    coreMemoryLimit: "4g", coreCpuLimit: "4.0",
+    cliMemoryLimit: "4g", cliCpuLimit: "3.0",
+    browserMemoryLimit: "2g", browserCpuLimit: "2.0",
+    postgresMemoryLimit: "1g", postgresCpuLimit: "2.0",
+    temporalMemoryLimit: "1g", temporalCpuLimit: "2.0"
+  }),
   light: Object.freeze({
     browserEnabled: false,
+    temporalEnabled: true,
     coreMemoryLimit: "2g",
     coreCpuLimit: "2.0",
     cliMemoryLimit: "2g",
@@ -43,6 +65,7 @@ const PROFILE_RUNTIME_SETTINGS = Object.freeze({
   }),
   standard: Object.freeze({
     browserEnabled: true,
+    temporalEnabled: true,
     coreMemoryLimit: "4g",
     coreCpuLimit: "4.0",
     cliMemoryLimit: "3g",
@@ -55,6 +78,21 @@ const PROFILE_RUNTIME_SETTINGS = Object.freeze({
     temporalCpuLimit: "2.0"
   })
 });
+export const INSTALL_PROFILES = Object.freeze(["small", "medium", "large", "light", "standard"]);
+export const PROFILE_REQUIREMENTS = Object.freeze({
+  small: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 6.5 * 1024 ** 3 },
+  medium: { cpuCount: 4, memoryBytes: 11 * 1024 ** 3, freshDiskBytes: 8 * 1024 ** 3 },
+  large: { cpuCount: 8, memoryBytes: 15 * 1024 ** 3, freshDiskBytes: 11 * 1024 ** 3 },
+  // Existing installations keep their settings and background integrations.
+  light: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 8 * 1024 ** 3 },
+  standard: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 11 * 1024 ** 3 }
+});
+
+export function profileRuntimeSettings(profile) {
+  const settings = PROFILE_RUNTIME_SETTINGS[profile];
+  if (!settings) throw new Error("Install profile must be small, medium, large, light, or standard.");
+  return settings;
+}
 const SECRET_FIELD = /password|secret|token|api.?key|credential/i;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const BACKUP_ID_PATTERN = /^spaceapp-backup-\d{8}T\d{9}Z$/;
@@ -101,17 +139,23 @@ export function resolveSpaceAppHome({
   return resolve(env.XDG_CONFIG_HOME || join(home, ".config"), "spaceapp");
 }
 
-export function resolveInstallProfile(requestedProfile, totalMemoryBytes) {
-  if (requestedProfile === "light" || requestedProfile === "standard") {
+export function resolveInstallProfile(requestedProfile, resources) {
+  if (INSTALL_PROFILES.includes(requestedProfile)) {
     return requestedProfile;
   }
   if (requestedProfile !== "auto") {
-    throw new Error("Install profile must be auto, light, or standard.");
+    throw new Error("Install profile must be auto, small, medium, large, light, or standard.");
   }
+  const totalMemoryBytes = typeof resources === "number" ? resources : resources?.totalMemoryBytes;
   if (!Number.isFinite(totalMemoryBytes) || totalMemoryBytes <= 0) {
     throw new Error("Total system memory must be available for automatic profile selection.");
   }
-  return "light";
+  // Memory-only callers cannot safely choose a larger footprint.
+  if (typeof resources === "number") return "small";
+  for (const profile of ["large", "medium", "small"]) {
+    if (installResourceChecks(resources, profile).every((check) => check.ok)) return profile;
+  }
+  return "small";
 }
 
 export function resolveInstallAccessMode(requestedMode, existingMode = "isolated") {
@@ -200,32 +244,37 @@ export async function inspectSystemResources(root) {
   };
 }
 
-export function installResourceChecks(resources, profile = "light") {
+export function installResourceChecks(resources, profile = "small", { requiredDiskBytes, operation = "fresh" } = {}) {
   const cpuCount = Number(resources?.cpuCount);
   const totalMemoryBytes = Number(resources?.totalMemoryBytes);
   const freeDiskBytes = Number(resources?.freeDiskBytes);
   if (![cpuCount, totalMemoryBytes, freeDiskBytes].every((value) => Number.isFinite(value) && value >= 0)) {
     throw new Error("System CPU, memory, and free-disk information is required.");
   }
-  const minFreeDisk = profile === "standard"
-    ? MIN_INSTALL_FREE_DISK_BYTES_STANDARD
-    : MIN_INSTALL_FREE_DISK_BYTES_LIGHT;
+  const requirements = PROFILE_REQUIREMENTS[profile];
+  if (!requirements) throw new Error("Unknown installation profile.");
+  const minFreeDisk = requiredDiskBytes ?? (operation === "fresh" ? requirements.freshDiskBytes : 512 * 1024 ** 2);
+  const engineMemoryBytes = { small: 3, medium: 5, large: 7, light: 3, standard: 3 }[profile] * 1024 ** 3;
   return [
     {
       name: "CPU",
-      ok: cpuCount >= MIN_INSTALL_CPU_COUNT,
-      detail: `${cpuCount} available; ${MIN_INSTALL_CPU_COUNT} required`
+      ok: cpuCount >= requirements.cpuCount,
+      detail: `${cpuCount} available; ${requirements.cpuCount} required`
     },
     {
       name: "Memory",
-      ok: totalMemoryBytes >= MIN_INSTALL_MEMORY_BYTES,
-      detail: `${formatGibibytes(totalMemoryBytes)} GiB available; ${MIN_INSTALL_MEMORY_LABEL} required`
+      ok: totalMemoryBytes >= requirements.memoryBytes,
+      detail: `${formatGibibytes(totalMemoryBytes)} GiB available; ${formatGibibytes(requirements.memoryBytes)} GiB usable${requirements.memoryBytes === 7 * 1024 ** 3 ? " (8 GB-class system)" : ""} required`
     },
     {
       name: "Free disk",
       ok: freeDiskBytes >= minFreeDisk,
-      detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(minFreeDisk)} GiB required`
-    }
+      detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(minFreeDisk)} GiB required${operation === "fresh" ? "" : " additionally for " + operation}`
+    },
+    ...(resources.engineMemoryBytes > 0 ? [{ name: "Docker memory", ok: resources.engineMemoryBytes >= engineMemoryBytes,
+      detail: `${formatGibibytes(resources.engineMemoryBytes)} GiB allocated; ${formatGibibytes(engineMemoryBytes)} GiB required for ${profile}` }] : []),
+    ...(resources.engineCpuCount > 0 ? [{ name: "Docker CPU", ok: resources.engineCpuCount >= 4,
+      detail: `${resources.engineCpuCount} allocated; 4 required` }] : [])
   ];
 }
 
@@ -236,8 +285,8 @@ export function createDefaultConfig({
   companionsEnabled = false
 }) {
   assertVersion(version);
-  if (profile !== "light" && profile !== "standard") {
-    throw new Error("Default config requires a resolved light or standard profile.");
+  if (!INSTALL_PROFILES.includes(profile)) {
+    throw new Error("Default config requires a resolved installation profile.");
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
   return {
@@ -282,8 +331,8 @@ export function validateConfig(config) {
   if (typeof config.telemetry !== "boolean") {
     throw new Error("telemetry must be boolean.");
   }
-  if (!["light", "standard"].includes(config.profile)) {
-    throw new Error("profile must be light or standard.");
+  if (!INSTALL_PROFILES.includes(config.profile)) {
+    throw new Error("profile must be small, medium, large, light, or standard.");
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
@@ -492,6 +541,7 @@ export function renderRuntimeEnv(config) {
     `SPACEAPP_TELEMETRY=${config.telemetry}`,
     `SPACEAPP_PROFILE=${safeEnv(config.profile)}`,
     `SPACEAPP_BROWSER_ENABLED=${settings.browserEnabled}`,
+    `SPACEAPP_WORKFLOWS_ENABLED=${settings.temporalEnabled}`,
     `SPACEAPP_CORE_MEMORY_LIMIT=${settings.coreMemoryLimit}`,
     `SPACEAPP_CORE_CPU_LIMIT=${settings.coreCpuLimit}`,
     `SPACEAPP_CLI_MEMORY_LIMIT=${settings.cliMemoryLimit}`,
@@ -562,9 +612,7 @@ export function composeCommand(action, root, options = {}) {
   const stateRoot = options.stateRoot ?? root;
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
-  if (profile !== "light" && profile !== "standard") {
-    throw new Error("Compose profile must be light or standard.");
-  }
+  const settings = profileRuntimeSettings(profile);
   const base = [
     "compose",
     "--project-name", composeProjectName(root),
@@ -573,7 +621,8 @@ export function composeCommand(action, root, options = {}) {
     "-f", join(stateRoot, "compose.yml"),
     "-f", join(stateRoot, "compose.workspaces.yml"),
     "-f", join(stateRoot, "compose.host-access.yml"),
-    ...(profile === "standard" ? ["--profile", "standard"] : []),
+    ...(settings.browserEnabled ? ["--profile", "standard"] : []),
+    ...(settings.temporalEnabled ? ["--profile", "workflows"] : []),
     ...(options.companionsEnabled ? ["--profile", "companions"] : [])
   ];
   const actions = {
@@ -622,6 +671,9 @@ export function composeCommand(action, root, options = {}) {
       "--stdin"
     ],
     removeBrowser: ["rm", "--stop", "--force", "spaceapp-browser"],
+    removeTemporal: ["rm", "--stop", "--force", "temporal"],
+    databaseSize: ["exec", "-T", "postgres", "psql", "-U", "spaceapp", "-d", "spaceapp", "-Atc", "SELECT pg_database_size(current_database())"],
+    storageFree: ["exec", "-T", "spaceapp-core", "node", "-e", "const fs=require('node:fs');const s=fs.statfsSync('/var/lib/spaceapp');console.log(Number(s.bavail)*Number(s.bsize))"],
     purge: ["down", "--volumes", "--remove-orphans"],
     repair: ["up", "-d", "--remove-orphans", "--force-recreate"],
     checkpointDump: ["exec", "-T", "postgres", "pg_dump", "-c", "--if-exists", "-U", "spaceapp", "-d", "spaceapp"],
@@ -706,7 +758,7 @@ export async function prepareInstallation(root, {
   ]);
   const resolvedProfile = profile === undefined
     ? undefined
-    : resolveInstallProfile(profile, totalmem());
+    : resolveInstallProfile(profile, profile === "auto" ? await inspectSystemResources(root) : totalmem());
   let config;
   try {
     config = await loadConfig(root);

@@ -490,7 +490,7 @@ test("update preserves recovery data and fails when the new application never be
   assert.equal(checks, 301);
   assert.match(stderr.value(), /readiness check timed out/);
   assert.match(stderr.value(), /RECOVERY_REQUIRED/);
-  assert.equal(calls.some(args => args.includes("psql")), false);
+  assert.equal(calls.some(args => args.includes("ON_ERROR_STOP=1")), false);
   const id = (await readdir(join(root, "checkpoints")))[0];
   const recovery = JSON.parse(await readFile(join(root, "checkpoints", id, "recovery.json")));
   assert.equal(recovery.databasePreserved, true);
