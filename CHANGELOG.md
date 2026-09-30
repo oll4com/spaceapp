@@ -5,6 +5,11 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.30] - 2026-09-30
+
+- Wait for Temporal's default namespace before starting workflow workers, and restart workflow initialization when enabling a larger profile.
+- Remove inactive workflow/browser containers during repair and failed-install recovery while preserving their data volumes.
+
 ## [1.0.29] - 2026-09-30
 
 - Make readiness explicitly recognize disabled background workers in the small public profile, while still requiring enabled workers and preserving live/private defaults.

@@ -145,6 +145,7 @@ test("public Compose runs without host Docker access or development credentials"
   );
   assert.match(compose, /spaceapp-workspaces:\/workspaces/);
   assert.match(compose, /exec \/etc\/temporal\/entrypoint\.sh autosetup/);
+  assert.match(compose, /cluster health.*&& temporal operator namespace describe --namespace default/);
   assert.doesNotMatch(compose, /space-dev|dev-only|docker\.sock/);
   assert.doesNotMatch(compose, /\/srv\/space|\/home\/spaceapp-user|\/etc\/docs|olla\.gr|Legacy/i);
   assert.doesNotMatch(compose, /POSTGRES_PASSWORD:\s*\S+/);

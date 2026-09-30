@@ -672,6 +672,7 @@ export function composeCommand(action, root, options = {}) {
     ],
     removeBrowser: ["rm", "--stop", "--force", "spaceapp-browser"],
     removeTemporal: ["rm", "--stop", "--force", "temporal"],
+    enableTemporal: ["up", "-d", "--force-recreate", "temporal"],
     databaseSize: ["exec", "-T", "postgres", "psql", "-U", "spaceapp", "-d", "spaceapp", "-Atc", "SELECT pg_database_size(current_database())"],
     storageFree: ["exec", "-T", "spaceapp-core", "node", "-e", "const fs=require('node:fs');const s=fs.statfsSync('/var/lib/spaceapp');console.log(Number(s.bavail)*Number(s.bsize))"],
     purge: ["down", "--volumes", "--remove-orphans"],

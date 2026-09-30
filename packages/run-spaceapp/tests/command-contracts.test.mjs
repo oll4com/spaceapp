@@ -118,7 +118,8 @@ test("init and the default update target the pinned runtime image version", asyn
   assert.deepEqual(calls.filter(spec => !spec.timeoutMs).map((spec) => spec.args.at(-1)), [
     "--version", "version", "info",
     "pull",
-    "--force-recreate"
+    "--force-recreate",
+    "spaceapp-browser"
   ]);
 });
 

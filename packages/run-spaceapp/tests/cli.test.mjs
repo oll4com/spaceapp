@@ -664,6 +664,55 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
   assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "small");
 });
 
+test("enabling workflows reinitializes a retained Temporal container before starting the worker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-enable-workflows-"));
+  await initializeInstallation(root, {version: RUNTIME_VERSION, profile: "small"});
+  const secret = await readFile(join(root, "secrets", "session-secret"));
+  let temporalReinitialized = false;
+  let workerStartObserved = false;
+  assert.equal(await run(["install", "--profile", "medium", "--no-open"], {
+    env: {SPACEAPP_HOME: root}, platform: "linux", stdin: ttyStdin("y"),
+    stdout: capture().stream, stderr: capture().stream,
+    inspectResources: async () => ({cpuCount: 8, totalMemoryBytes: 16 * 1024**3, freeDiskBytes: 20 * 1024**3}),
+    ensureDocker: async () => ({code: 0, reexecuted: false}),
+    request: readyUnclaimedRequest, sleep: async () => {},
+    execute: async spec => {
+      if (spec.args?.slice(-4).join(" ") === "up -d --force-recreate temporal") temporalReinitialized = true;
+      if (spec.args?.slice(-3).join(" ") === "up -d --remove-orphans") {
+        assert.equal(temporalReinitialized, true, "namespace initialization must run before the worker starts");
+        workerStartObserved = true;
+      }
+      return 0;
+    }
+  }), 0);
+  assert.equal(workerStartObserved, true);
+  assert.equal(JSON.parse(await readFile(join(root, "config.json"), "utf8")).profile, "medium");
+  assert.deepEqual(await readFile(join(root, "secrets", "session-secret")), secret);
+});
+
+test("small repair removes disabled workflow services while preserving secrets and workspaces", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-small-repair-"));
+  const initialized = await initializeInstallation(root, {version: RUNTIME_VERSION, profile: "small"});
+  const workspace = await mkdtemp(join(tmpdir(), "spaceapp-retained-work-"));
+  await saveConfig(root, await addWorkspace(initialized.config, workspace));
+  const before = await readFile(join(root, "secrets", "session-secret"));
+  const workspaces = JSON.parse(await readFile(join(root, "config.json"), "utf8")).workspaces;
+  const calls = [];
+  assert.equal(await run(["repair"], {
+    env: {SPACEAPP_HOME: root}, platform: "linux", stdin: ttyStdin("y"),
+    stdout: capture().stream, stderr: capture().stream,
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({code: 0, reexecuted: false}),
+    request: readyUnclaimedRequest, sleep: async () => {},
+    execute: async spec => {calls.push(spec);return 0;}
+  }), 0);
+  assert.ok(calls.some(spec => spec.args?.slice(-4).join(" ") === "rm --stop --force temporal"));
+  assert.ok(calls.some(spec => spec.args?.slice(-4).join(" ") === "rm --stop --force spaceapp-browser"));
+  assert.ok(calls.every(spec => !spec.args?.includes("--volumes")));
+  assert.deepEqual(await readFile(join(root, "secrets", "session-secret")), before);
+  assert.deepEqual(JSON.parse(await readFile(join(root, "config.json"), "utf8")).workspaces, workspaces);
+});
+
 test("host-root install is rejected on non-Linux hosts before Docker or installation state", async () => {
   for (const platform of ["darwin", "win32"]) {
     const root = await mkdtemp(join(tmpdir(), `spaceapp-cli-host-root-${platform}-`));

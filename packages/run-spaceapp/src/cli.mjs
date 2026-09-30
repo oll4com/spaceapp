@@ -817,6 +817,12 @@ async function installCommand(args, {
       upgradeCheckpoint = await createQuiescedCheckpoint(root, existingConfig, {stdin,stdout,stderr,execute,platform});
     }
     runtimeMutationAttempted = true;
+    if (existingConfig && !profileRuntimeSettings(existingConfig.profile).temporalEnabled &&
+        profileRuntimeSettings(profile).temporalEnabled) {
+      const temporalCode = await executeWithDockerDiagnostics(execute,
+        stagedComposeCommand("enableTemporal"), { stdin, stdout, stderr }, { platform, stderr });
+      if (temporalCode !== 0) return await failAfterRuntimeMutation(temporalCode);
+    }
     const upCode = await executeWithDockerDiagnostics(
       execute,
       stagedComposeCommand("up"),
@@ -918,27 +924,9 @@ async function installCommand(args, {
       }
     }
 
-    if (!profileRuntimeSettings(profile).browserEnabled) {
-      const removeBrowserCode = await executeWithDockerDiagnostics(
-        execute,
-        composeCommand("removeBrowser", root, {
-          profile: "standard",
-          stateRoot: stagedStateRoot
-        }),
-        { stdin, stdout, stderr },
-        { platform, stderr }
-      );
-      if (removeBrowserCode !== 0) {
-        stderr.write(
-          "SpaceApp is ready, but the inactive managed browser container could not be removed.\n"
-        );
-        return await failAfterRuntimeMutation(removeBrowserCode);
-      }
-    }
-    if (!profileRuntimeSettings(profile).temporalEnabled) {
-      const cleanupCode = await execute(composeCommand("removeTemporal", root, { profile: "medium", stateRoot: stagedStateRoot }), { stdin, stdout, stderr });
-      if (cleanupCode !== 0) return await failAfterRuntimeMutation(cleanupCode);
-    }
+    const cleanupCode = await removeInactiveProfileServices({root, config: result.config,
+      stateRoot: stagedStateRoot, execute, stdin, stdout, stderr});
+    if (cleanupCode !== 0) return await failAfterRuntimeMutation(cleanupCode);
 
     if (setupToken) {
       try {
@@ -997,6 +985,22 @@ async function installCommand(args, {
   } finally {
     await rm(stagedStateRoot, { recursive: true, force: true });
   }
+}
+
+async function removeInactiveProfileServices({root, config, stateRoot = root, execute, stdin, stdout, stderr}) {
+  const settings = profileRuntimeSettings(config.profile);
+  for (const [enabled, action, profile] of [
+    [settings.browserEnabled, "removeBrowser", "standard"],
+    [settings.temporalEnabled, "removeTemporal", "medium"]
+  ]) {
+    if (enabled) continue;
+    const code = await execute(composeCommand(action, root, {profile, stateRoot}), {stdin, stdout, stderr});
+    if (code !== 0) {
+      stderr.write("Inactive service cleanup failed. Data volumes were preserved. Run doctor --fix.\n");
+      return code;
+    }
+  }
+  return 0;
 }
 
 async function planInteractiveSetup({
@@ -1285,6 +1289,8 @@ async function repairRuntime({ root, config, platform, stdin, stdout, stderr, ex
       return 1;
     }
   }
+  const cleanupCode = await removeInactiveProfileServices({root, config, execute, stdin, stdout, stderr});
+  if (cleanupCode !== 0) return cleanupCode;
   stdout.write(`SpaceApp ${config.version} runtime repaired.\n`);
   return 0;
 }
@@ -1588,18 +1594,9 @@ async function restoreRuntimeAfterFailedInstall({
         })
       );
       if (restoreCode === 0) {
-        if (existingConfig.profile === "light") {
-          const cleanupCode = await runtimeExecute(
-            composeCommand("removeBrowser", root, {
-              profile: "standard"
-            })
-          );
-          if (cleanupCode !== 0) {
-            stderr.write(
-              "The previous SpaceApp runtime was restored, but an inactive browser container may remain.\n"
-            );
-          }
-        }
+        const cleanupCode = await removeInactiveProfileServices({root, config: existingConfig,
+          execute: runtimeExecute, stdin, stdout, stderr});
+        if (cleanupCode !== 0) stderr.write("The previous runtime was restored, but inactive service cleanup failed. Run doctor --fix.\n");
         stderr.write("The previous SpaceApp runtime and access mode were restored.\n");
         return;
       }
