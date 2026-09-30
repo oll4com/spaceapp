@@ -30,6 +30,7 @@ export interface SpaceApiConfig {
   temporalAddress: string;
   temporalNamespace: string;
   temporalTaskQueue: string;
+  workflowsEnabled?: boolean;
   enableDummyTurns: boolean;
   enableCodexTurns: boolean;
   agentPaneEnabled: boolean;
@@ -217,6 +218,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     temporalAddress: env.SPACE_TEMPORAL_ADDRESS ?? "127.0.0.1:7233",
     temporalNamespace: env.SPACE_TEMPORAL_NAMESPACE ?? "default",
     temporalTaskQueue: env.SPACE_TEMPORAL_TASK_QUEUE ?? "space-agent-turns",
+    workflowsEnabled: !(env.SPACE_PUBLIC_DISTRIBUTION === "true" && env.SPACEAPP_WORKFLOWS_ENABLED === "false"),
     enableDummyTurns: env.SPACE_ENABLE_DUMMY_TURNS === "true",
     enableCodexTurns: env.SPACE_ENABLE_CODEX_TURNS === "true",
     agentPaneEnabled: env.SPACE_AGENT_PANE_ENABLED === "true",

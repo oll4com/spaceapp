@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.29] - 2026-09-30
+
+- Make readiness explicitly recognize disabled background workers in the small public profile, while still requiring enabled workers and preserving live/private defaults.
+
 ## [1.0.28] - 2026-09-30
 
 - Choose small, medium or large from CPU, RAM and disk, check Docker allocations, and keep existing profiles on upgrades.
