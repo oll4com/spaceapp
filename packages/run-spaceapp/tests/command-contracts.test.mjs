@@ -284,8 +284,9 @@ test("update and rollback persist version state only after both Docker operation
     { version: RUNTIME_VERSION, previousVersion: "0.1.6" }
   );
   assert.deepEqual(calls.map((spec) => spec.args.at(-1)), [
-    "spaceapp",
     "pull",
+    "spaceapp-browser",
+    "spaceapp",
     "--remove-orphans",
     "pull",
     "--remove-orphans"

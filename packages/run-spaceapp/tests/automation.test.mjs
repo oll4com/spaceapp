@@ -67,5 +67,36 @@ test('an empty database checkpoint prevents upgrade even when pg_dump exits zero
   const before=await readFile(join(f.root,'config.json'),'utf8');
   await assert.rejects(run(['install','--non-interactive','--answers','{"confirm":true,"open":false}'],f.options),/dump failed or was empty/);
   assert.equal(await readFile(join(f.root,'config.json'),'utf8'),before);
-  assert.ok(!f.calls.some(x=>x.args.includes('up')));
+  assert.ok(f.calls.some(x=>x.args.includes('stop')));
+  assert.ok(f.calls.some(x=>x.args.includes('up'))); // Resume the old version after checkpoint failure.
+});
+
+test('local image mode never downloads registry images and requires preloaded images at startup',async(t)=>{
+  const f=await fixture(t);
+  assert.equal(await run(['install','--local-images','--non-interactive','--answers','{"confirm":true,"open":false}'],f.options),0);
+  assert.ok(!f.calls.some(x=>x.command==='docker' && x.args.at(-1)==='pull'));
+  const up=f.calls.find(x=>x.command==='docker' && x.args.includes('up'));
+  assert.deepEqual(up.args.slice(up.args.indexOf('up'),up.args.indexOf('up')+3),['up','--pull','never']);
+});
+
+test('failed upgrade restores checkpoint secrets with postgres running and checks old runtime readiness',async(t)=>{
+  const f=await fixture(t);await initializeInstallation(f.root,{version:'0.1.29'});
+  const secret=join(f.root,'secrets','setup-token');const original=await readFile(secret,'utf8');
+  let ups=0;
+  f.options.execute=async(spec,io)=>{
+    f.calls.push(spec);
+    if(spec.args?.includes('pg_dump'))io.stdout.write('-- PostgreSQL database dump\nSELECT 1;\n');
+    if(spec.args?.includes('up') && ++ups===1){await writeFile(secret,'changed-during-failed-upgrade');return 17;}
+    if(spec.args?.includes('psql'))assert.equal(typeof io.stdin.fd,'number');
+    return 0;
+  };
+  assert.equal(await run(['install','--non-interactive','--answers','{"confirm":true,"open":false}'],f.options),17);
+  assert.equal(await readFile(secret,'utf8'),original);
+  assert.equal(JSON.parse(await readFile(join(f.root,'config.json'),'utf8')).version,'0.1.29');
+  assert.ok(f.calls.some(x=>x.args?.includes('psql')));
+  assert.ok(!f.calls.some(x=>x.args?.includes('down')));
+  assert.ok(f.urls.some(x=>x.endsWith('/readyz')));
+  const stop=f.calls.findIndex(x=>x.args?.includes('stop'));
+  const dump=f.calls.findIndex(x=>x.args?.includes('pg_dump'));
+  assert.ok(stop>=0 && dump>stop);
 });

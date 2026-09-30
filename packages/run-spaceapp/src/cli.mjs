@@ -277,6 +277,7 @@ export async function run(argv, {
   hostRootRuntimeCompatible = HOST_ROOT_RUNTIME_COMPATIBLE
 } = {}) {
   const globalFlags = {
+    localImages: false,
     json: false,
     plan: false,
     nonInteractive: false,
@@ -286,7 +287,9 @@ export async function run(argv, {
   const filteredArgv = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--json") {
+    if (arg === "--local-images") {
+      globalFlags.localImages = true;
+    } else if (arg === "--json") {
       globalFlags.json = true;
     } else if (arg === "--plan") {
       globalFlags.plan = true;
@@ -325,6 +328,20 @@ export async function run(argv, {
   if (["help", "--help", "-h"].includes(command) || args.includes("--help") || args.includes("-h")) {
     stdout.write(helpText());
     return 0;
+  }
+  if (globalFlags.localImages) {
+    const originalExecute = execute;
+    execute = async (spec, io) => {
+      if (spec.command === "docker" && spec.args?.includes("compose")) {
+        if (spec.args.at(-1) === "pull") {
+          stdout.write("Local images only: skipping registry downloads; missing images will fail startup.\n");
+          return 0;
+        }
+        const index = spec.args.indexOf("up");
+        if (index !== -1) spec = {...spec, args: [...spec.args.slice(0,index+1), "--pull", "never", ...spec.args.slice(index+1)]};
+      }
+      return originalExecute(spec, io);
+    };
   }
   if (command !== "install") {
     await prepareDockerPath({ platform, env });
@@ -742,7 +759,7 @@ async function installCommand(args, {
         execute
       });
       if (upgradeCheckpoint) {
-        const restored = await restoreCheckpoint(root, upgradeCheckpoint, {stdin,stdout,stderr,execute,config:existingConfig});
+        const restored = await restoreCheckpoint(root, upgradeCheckpoint, {stdin,stdout,stderr,execute,config:existingConfig,request,sleep});
         if(!restored) stderr.write(`RECOVERY_REQUIRED: checkpoint retained at ${upgradeCheckpoint.path}\n`);
         else stderr.write("The previous SpaceApp runtime and access mode were restored from the verified checkpoint.\n");
       } else await restoreRuntimeAfterFailedInstall({
@@ -782,7 +799,7 @@ async function installCommand(args, {
     );
     if (pullCode !== 0) return pullCode;
     if(existingConfig && existingConfig.version !== result.config.version) {
-      upgradeCheckpoint = await createCheckpoint(root, existingConfig, {stdin,stdout,stderr,execute,platform});
+      upgradeCheckpoint = await createQuiescedCheckpoint(root, existingConfig, {stdin,stdout,stderr,execute,platform});
     }
     runtimeMutationAttempted = true;
     const upCode = await executeWithDockerDiagnostics(
@@ -1266,27 +1283,21 @@ async function performUpdate({
       version: targetVersion,
       previousVersion: config.version
     };
-  const checkpoint = await createCheckpoint(root, config, { stdin, stdout, stderr, execute, platform });
+  const stagedRoot = await mkdtemp(join(tmpdir(), "spaceapp-update-"));
+  let checkpoint = null;
   try {
-    await writeRuntimeFiles(root, updated);
-    if (preserveRecreate) {
-      const downCode = await execute(
-        composeCommand("down", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
-        { stdin, stdout, stderr }
-      );
-      if (downCode !== 0) {
-        throw new Error(`Preserve/recreate stop failed with Docker exit ${downCode}.`);
-      }
-    }
+    await writeRuntimeFiles(stagedRoot, updated);
+    const stagedCommand = (action) => composeCommand(action, root, {...updated, stateRoot: stagedRoot});
     const pullCode = await withHeadlessDockerConfig(
-      platform,
-      composeCommand("pull", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }),
+      platform, stagedCommand("pull"),
       (pullSpec) => execute(pullSpec, { stdin, stdout, stderr })
     );
     if (pullCode !== 0) {
       writeWindowsCredentialHint(platform, stderr);
       throw new Error(`Image pull failed with Docker exit ${pullCode}.`);
     }
+    checkpoint = await createQuiescedCheckpoint(root, config, {stdin, stdout, stderr, execute, platform});
+    await writeRuntimeFiles(root, updated);
     const upCode = await execute(
       composeCommand("up", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }),
       { stdin, stdout, stderr }
@@ -1314,21 +1325,23 @@ async function performUpdate({
     return 0;
   } catch (error) {
     stderr.write(`SpaceApp update failed: ${error?.message || String(error)}\n`);
-    const restored = await restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, execute, config });
+    const restored = !checkpoint || await restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, execute, config, request, sleep });
     if (!restored) {
       stderr.write(
         `Automatic restore failed. The checkpoint remains available at ${checkpoint.path} for manual recovery. System state: RECOVERY_REQUIRED\n`
       );
     }
     return 1;
+  } finally {
+    await rm(stagedRoot, {recursive: true, force: true});
   }
 }
 
-const CHECKPOINT_ID_PATTERN = /^spaceapp-checkpoint-\d{8}T\d{6}Z$/;
+const CHECKPOINT_ID_PATTERN = /^spaceapp-checkpoint-\d{8}T\d{6}Z(?:-[a-f0-9]{8})?$/;
 const CHECKPOINT_KEEP_COUNT = 2;
 
 function checkpointId() {
-  return `spaceapp-checkpoint-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
+  return `spaceapp-checkpoint-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-${randomBytes(4).toString("hex")}`;
 }
 
 async function manifestEntry(path, logicalPath) {
@@ -1363,6 +1376,19 @@ async function collectFiles(directory, logicalDirectory) {
     }
   }
   return files;
+}
+
+async function createQuiescedCheckpoint(root, config, io) {
+  io.stdout.write("Pausing SpaceApp writers before the database checkpoint...\n");
+  try {
+    const code = await io.execute(composeCommand("stopForRestore", root, config), io);
+    if (code !== 0) throw new Error(`Could not pause SpaceApp writers (exit ${code}).`);
+    return await createCheckpoint(root, config, io);
+  } catch (error) {
+    const resumed = await io.execute(composeCommand("up", root, config), io).catch(() => 1);
+    if (resumed !== 0) io.stderr.write("RECOVERY_REQUIRED: could not resume the unchanged runtime. Run doctor --fix.\n");
+    throw error;
+  }
 }
 
 async function createCheckpoint(root, config, { stdin, stdout, stderr, execute, platform }) {
@@ -1407,7 +1433,7 @@ async function createCheckpoint(root, config, { stdin, stdout, stderr, execute, 
   const dumpSize=(await stat(dumpPath)).size;
   if (dumpCode !== 0 || dumpSize === 0) {
     await rm(path, { recursive: true, force: true });
-    throw new Error(`Checkpoint database dump failed or was empty (exit ${dumpCode}). No runtime changes were made.`);
+    throw new Error(`Checkpoint database dump failed or was empty (exit ${dumpCode}). The upgrade was not applied.`);
   }
   manifest.files.push(await manifestEntry(dumpPath, "postgres.dump"));
   await writeFile(join(path, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
@@ -1443,12 +1469,16 @@ async function pruneCheckpoints(currentPath) {
     .filter((entry) => entry.isDirectory() && CHECKPOINT_ID_PATTERN.test(entry.name))
     .map((entry) => join(parent, entry.name))
     .sort();
-  while (entries.length > CHECKPOINT_KEEP_COUNT) {
-    await rm(entries.shift(), { recursive: true, force: true });
+  const verified = [];
+  for (const entry of entries) {
+    if (await stat(join(entry, "verified.json")).catch(() => null)) verified.push(entry);
+  }
+  while (verified.length > CHECKPOINT_KEEP_COUNT) {
+    await rm(verified.shift(), { recursive: true, force: true });
   }
 }
 
-async function restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, execute, config }) {
+async function restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, execute, config, request, sleep }) {
   if (!checkpoint) {
     stderr.write("No checkpoint was available for restore.\n");
     return false;
@@ -1459,10 +1489,14 @@ async function restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, exec
     return false;
   }
   stdout.write(`Restoring checkpoint ${checkpoint.id}...\n`);
-  await execute(
+  const stopCode = await execute(
     composeCommand("stopForRestore", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
-    { stdin: null, stdout: null, stderr: null }
-  ).catch(() => {});
+    { stdin: null, stdout: null, stderr }
+  ).catch(() => 1);
+  if (stopCode !== 0) {
+    stderr.write("Cannot restore while SpaceApp writers may still be active. Checkpoint retained.\n");
+    return false;
+  }
   const fileNames = ["config.json", "runtime.env", "compose.yml", "compose.workspaces.yml", "compose.host-access.yml"];
   for (const fileName of fileNames) {
     await copyFile(join(checkpoint.path, fileName), join(root, fileName));
@@ -1470,10 +1504,17 @@ async function restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, exec
   await cpDirectory(join(checkpoint.path, "secrets"), join(root, "secrets"));
   const restored = await loadConfig(root);
   const dumpPath = join(checkpoint.path, "postgres.dump");
-  const dbCode = await execute(
-    composeCommand("checkpointRestore", root, { profile: restored.profile, companionsEnabled: restored.companionsEnabled }),
-    { stdin: createReadStream(dumpPath), stdout, stderr }
-  );
+  const dumpStream = createReadStream(dumpPath);
+  await once(dumpStream, "open");
+  let dbCode;
+  try {
+    dbCode = await execute(
+      composeCommand("checkpointRestore", root, { profile: restored.profile, companionsEnabled: restored.companionsEnabled }),
+      { stdin: dumpStream, stdout, stderr }
+    );
+  } finally {
+    dumpStream.destroy();
+  }
   if (dbCode !== 0) {
     stderr.write(`Checkpoint database restore failed with Docker exit ${dbCode}. Checkpoint remains at ${checkpoint.path}.\n`);
     return false;
@@ -1482,7 +1523,9 @@ async function restoreCheckpoint(root, checkpoint, { stdin, stdout, stderr, exec
     composeCommand("up", root, { profile: restored.profile, companionsEnabled: restored.companionsEnabled }),
     { stdin, stdout, stderr }
   );
-  return upCode === 0;
+  if (upCode !== 0) return false;
+  if (typeof request !== "function") return true;
+  return waitForReadiness({url: `http://${restored.bindHost}:${restored.port}`, request, sleep: sleep || wait});
 }
 
 async function requireChangeApproval(stdin, stdout, stderr, lines) {
@@ -2413,6 +2456,7 @@ Options:
   --plan                            Dry-run mode: print actions without executing
   --json                            Output structured JSON where supported
   --log-file <file>                 Append all execution logs to specified file
+  --local-images               Use preloaded images only (offline/lab; missing images fail)
   --non-interactive                 Run non-interactively, failing on missing input
   --answers <json|path>             Pre-seed answers; automation requires confirm:true
 

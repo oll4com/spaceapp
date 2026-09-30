@@ -258,6 +258,15 @@ export function sanitizePublicText(input) {
   return output;
 }
 
+export function applyPublicOverlay(path, text) {
+  if (path === ".gitignore" && !text.includes("run-spaceapp-*.tgz")) return `${text}\nrun-spaceapp-*.tgz\n`;
+  if (path === "apps/api/src/cli-runtime-descriptors.ts") {
+    // First-run native discovery selects an available free model; never pin a retired default.
+    return text.replace(/defaultModelId: "opencode\/big-pickle"/g, 'defaultModelId: null');
+  }
+  return text;
+}
+
 export function isPublicExportPath(path) {
   const normalized = path.replaceAll("\\", "/");
   // Client binary releases are distributed separately, never inside the server installer.
@@ -374,7 +383,7 @@ export async function createPublicExport({
       let exported = original;
       if (isText(original)) {
         if (!byteStablePublicFiles.has(normalized)) {
-          const sanitized = sanitizePublicText(original.toString("utf8"));
+          const sanitized = applyPublicOverlay(normalized, sanitizePublicText(original.toString("utf8")));
           exported = Buffer.from(sanitized, "utf8");
           if (!exported.equals(original)) transformations += 1;
         }
