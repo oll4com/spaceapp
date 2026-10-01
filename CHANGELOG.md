@@ -5,6 +5,12 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.32] - 2026-10-01
+
+- Start and wait for the existing PostgreSQL database before upgrade checkpoints, including when Docker or the database was initially stopped. Preserve existing data and pause application writers before the dump.
+- Write the complete temporary Compose configuration before registry image pulls in the update command.
+- Add regression coverage for both install-based upgrades and the update command.
+
 ## [1.0.31] - 2026-09-30
 
 - Remove dependency JavaScript/CSS source maps from runtime images after compilation to keep AMD64 and ARM64 within the existing image size budgets.

@@ -301,6 +301,7 @@ test("update and rollback persist version state only after both Docker operation
   assert.deepEqual(calls.filter(spec => !spec.timeoutMs).map((spec) => spec.args.at(-1)), [
     "--version", "version", "info",
     "pull",
+    "postgres",
     "spaceapp-browser",
     "spaceapp",
     "--remove-orphans",

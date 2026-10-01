@@ -7476,7 +7476,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         new Promise<T>((resolve) => setTimeout(() => resolve(fallback), timeoutMs))
       ]);
     const [worker, appDiagnostics] = await Promise.all([
-      config.workflowsEnabled === false ? Promise.resolve(null) : bounded(workerReadinessChecker(), workerReadinessSchema.parse({
+      bounded(workerReadinessChecker(), workerReadinessSchema.parse({
         id: "space-worker",
         status: "ERROR",
         statusReason: "Worker readiness check timed out.",
@@ -7523,15 +7523,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       browserHost = "DISABLED";
     }
     return {
-      ok: (config.workflowsEnabled === false || worker?.status === "RUNNING") && cliHost !== "UNAVAILABLE" && cliAdminHost !== "UNAVAILABLE" &&
+      ok: worker.status === "RUNNING" && cliHost !== "UNAVAILABLE" && cliAdminHost !== "UNAVAILABLE" &&
         (browserHost === "in-process" || browserHost === "RUNNING" || browserHost === "DISABLED"),
       apiStartedAt,
       dependencies: {
         store: config.runtimeStore,
         runtimeStore: config.runtimeStore,
         eventBus: "in-process",
-        temporal: config.workflowsEnabled === false ? "disabled" : "enabled",
-        worker: config.workflowsEnabled === false ? "disabled" : worker?.status,
+        temporal: config.enableDummyTurns ? "enabled" : "disabled",
+        worker: worker.status,
         cliHost,
         cliAdminHost,
         browserHost,

@@ -86,7 +86,7 @@ test('failed upgrade retains writes made after cutover and preserves its checkpo
   f.options.execute=async(spec,io)=>{
     f.calls.push(spec);
     if(spec.args?.includes('pg_dump'))io.stdout.write('-- PostgreSQL database dump\nSELECT 1;\n');
-    if(spec.args?.includes('up') && ++ups===1){await writeFile(secret,'changed-during-failed-upgrade');return 17;}
+    if(spec.args?.includes('up') && !spec.args.includes('--wait') && ++ups===1){await writeFile(secret,'changed-during-failed-upgrade');return 17;}
     if(spec.args?.includes('ON_ERROR_STOP=1'))throw new Error('automatic database restore would lose new writes');
     return 0;
   };

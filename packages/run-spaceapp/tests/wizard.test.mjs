@@ -541,3 +541,23 @@ for (const operation of ["update", "install"]) {
     assert.equal(calls.some(c => c.args.includes("--volumes")), false);
   });
 }
+
+test("a database readiness failure cancels the upgrade before pausing writers or dumping data", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-db-start-failure-"));
+  await initializeInstallation(root, { version: "0.1.30", profile: "light" });
+  const before = await readFile(join(root, "config.json"), "utf8");
+  const calls = [];
+  const stderr = capture();
+  const code = await run(["update"], {
+    env: { SPACEAPP_HOME: root }, platform: "linux", stdin: ttyStdin("y"),
+    stdout: capture().stream, stderr: stderr.stream,
+    execute: async (spec) => { calls.push(spec); return spec.args?.includes("--wait") ? 23 : 0; },
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    ensureDocker: async () => ({ code: 0, reexecuted: false }),
+    prepareDockerPath: async () => null
+  });
+  assert.equal(code, 1);
+  assert.match(stderr.value(), /database did not become ready.*exit 23/);
+  assert.equal(calls.some(c => c.args.includes("pg_dump") || c.args.includes("stop")), false);
+  assert.equal(await readFile(join(root, "config.json"), "utf8"), before);
+});

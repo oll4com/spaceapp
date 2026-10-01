@@ -90,7 +90,7 @@ describe("CLI runtime descriptors", () => {
     expect(cliRunLifecycleAdapters.every((adapter) => adapter.tracksRunStarts)).toBe(true);
   });
 
-  it("defines OpenCode as the first setup connection with native first-run model selection", () => {
+  it("defines OpenCode as the first setup connection with the free DeepSeek V4 Flash default model", () => {
     expect(cliRuntimeDescriptors[0]).toMatchObject({
       key: "opencode",
       id: "cli:opencode",

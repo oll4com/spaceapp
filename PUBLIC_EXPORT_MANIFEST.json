@@ -20,8 +20,8 @@
     {
       "path": "LICENSE",
       "sourceObjectId": "d6331998498f03c6cac3f4f62676bd33dd5d5357",
-      "sha256": "a6004d48aaeb228e6e6b9470ac797dd73328dbf4e5887f897afae125b762676e",
-      "size": 2153
+      "sha256": "01a01ebbdd38ee623ba579fa406b577346cb7cd1372f5d6fad7cde4e7e96ab4e",
+      "size": 2139
     },
     {
       "path": "README.md",
@@ -212,8 +212,8 @@
     {
       "path": "apps/api/src/antigravity-usage-services.ts",
       "sourceObjectId": "5b5c1f4369e366c63b36279536f95f0b2c1dc61d",
-      "sha256": "2484b6319c6de9bc0399b3427f7b218b08f35fd8d3d8c6c30b4ddd2728665b3a",
-      "size": 14663
+      "sha256": "f9231919a9c006ed129b8d8a094b524298528356f86f1128b8411ae9a0c01ae9",
+      "size": 14633
     },
     {
       "path": "apps/api/src/api-provider-balance-services.ts",
@@ -236,8 +236,8 @@
     {
       "path": "apps/api/src/app.ts",
       "sourceObjectId": "a63d1fdc7deeb220b96b0c254b09fe562acea80e",
-      "sha256": "472a7f74e161f4a3f1aa34efd30121567c6c9f6c9b4d17f06e2cc6e715cb6a17",
-      "size": 880382
+      "sha256": "5df376915d54bdadf0779b427d16b198da4f27fe907bb28e000ed2eb25c8893b",
+      "size": 879280
     },
     {
       "path": "apps/api/src/asteroids-director.ts",
@@ -386,8 +386,8 @@
     {
       "path": "apps/api/src/cli-runtime-descriptors.ts",
       "sourceObjectId": "5a5cab0ce0d96354d65242b836e07a8fce78a402",
-      "sha256": "257e9518a06cf957ad0748120f9032506b6685c0608bc2bff7b6af4f4ed8542f",
-      "size": 19382
+      "sha256": "213246cf1994f453146b244591214e0f63a5fec989b87903b8d1630360da2a87",
+      "size": 19361
     },
     {
       "path": "apps/api/src/cli-runtime-process-sweeper.ts",
@@ -1154,8 +1154,8 @@
     {
       "path": "apps/api/tests/cli-runtime-descriptors.test.ts",
       "sourceObjectId": "889bd012850c87972cc1de820d2a08daaf54d15d",
-      "sha256": "ecd28233c0e7deeffecec2b86275131776c62645fff4e22a6c1ee1e127c3ca3c",
-      "size": 11456
+      "sha256": "dde192faeca8e1606dc53965468987f06659751fc85737c37a9fc9ea95e456c8",
+      "size": 11442
     },
     {
       "path": "apps/api/tests/owner-setup-bootstrap.test.ts",
@@ -1166,8 +1166,8 @@
     {
       "path": "apps/api/tests/setup.test.ts",
       "sourceObjectId": "647d7e33dbc82cca3a196c980af40abdafb192ea",
-      "sha256": "3e3e7e9384a7da95bbfced559c8943979fee7c0f5b8ad8e4d2d4af06fd3d993e",
-      "size": 9669
+      "sha256": "3b9ae52086fcf1b5ed3e3451adeff7384d84ae49c2c3d4b9fb89a65554f7966b",
+      "size": 9706
     },
     {
       "path": "apps/api/tsconfig.json",
