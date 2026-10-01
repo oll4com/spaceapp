@@ -174,7 +174,10 @@ const textReplacements = [
   [joined("YUN", "WU"), "LEGACY"],
   [joined("Yun", "wu"), "Legacy"],
   [joined("yun", "wu"), "legacy"],
-  [joined("proxmox", "usr"), "spaceapp-user"]
+  [joined("proxmox", "usr"), "spaceapp-user"],
+  [joined("pirniramon7@", "gmail.com"), "operator@example.invalid"],
+  [joined("pirni", "ramon"), "operator"],
+  [joined("162.55.", "99.104"), "192.0.2.10"]
 ].map(([from, to]) => [new RegExp(escaped(from), "g"), to]);
 // The private source repo shorthand must not become the public repo name
 // (which appends "app"), so replace it with a negative lookahead rule.
@@ -255,6 +258,18 @@ const contentRules = [
   {
     rule: "private-key",
     pattern: new RegExp(joined("-----BEGIN ", "(?:RSA |EC |OPENSSH )?PRIVATE KEY-----"))
+  },
+  {
+    rule: "private-operator-email",
+    pattern: new RegExp(joined("pirniramon7@", "gmail\\.com"), "i")
+  },
+  {
+    rule: "private-operator-handle",
+    pattern: new RegExp(joined("\\bpirni", "ramon\\b"), "i")
+  },
+  {
+    rule: "private-proxmox-ip",
+    pattern: new RegExp(joined("162\\.55\\.", "99\\.104"))
   }
 ];
 

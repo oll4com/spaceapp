@@ -7191,7 +7191,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (!url.startsWith("/api/auth/login") && !url.startsWith("/api/auth/logout") && !url.startsWith("/api/setup/")) {
         const cached = userRoleCache.get("user:operator");
         if (cached) {
-          request.user = { id: "user:operator", email: "pirniramon7@gmail.com", role: cached.role };
+          request.user = { id: "user:operator", email: "operator@space.local", role: cached.role };
         } else if (store.getControlActor) {
           try {
             const op = await store.getControlActor("user:operator");
