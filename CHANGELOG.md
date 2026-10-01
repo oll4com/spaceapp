@@ -5,6 +5,11 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.33] - 2026-10-01
+
+- Update the shared gRPC dependency to 1.14.5 to resolve certificate authorization and error disclosure advisories rejected by the release audit.
+- Include the tested stopped-PostgreSQL and complete update-staging fixes from the unpublished 1.0.32 candidate.
+
 ## [1.0.32] - 2026-10-01
 
 - Start and wait for the existing PostgreSQL database before upgrade checkpoints, including when Docker or the database was initially stopped. Preserve existing data and pause application writers before the dump.
