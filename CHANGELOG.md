@@ -5,6 +5,11 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.35] - 2026-10-01
+
+- Apply the candidate Compose template to the installed runtime during updates, after preserving the previous template in the recovery checkpoint. This removes legacy startup overrides from upgraded installations as well as fresh installs.
+- Verify upgrades from a legacy Compose template use the new template before starting services and preserve the old template for recovery.
+
 ## [1.0.34] - 2026-10-01
 
 - Start the core from its immutable image entrypoint. Remove the legacy startup rewrite of compiled API configuration, which could leave a damaged writable-layer file after a VM restart. Public configuration already disables the agent tools writer.

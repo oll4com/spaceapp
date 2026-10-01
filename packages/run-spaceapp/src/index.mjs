@@ -849,7 +849,8 @@ export async function prepareInstallation(root, {
 }
 
 export async function commitInstallation(root, config, {
-  templateDir = defaultTemplateDir()
+  templateDir = defaultTemplateDir(),
+  persistConfig = true
 } = {}) {
   validateHome(root);
   validateConfig(config);
@@ -857,7 +858,7 @@ export async function commitInstallation(root, config, {
   await mkdir(root, { recursive: true, mode: 0o700 });
   await atomicWrite(join(root, "compose.yml"), composeTemplate);
   await writeRuntimeFiles(root, config);
-  await saveConfig(root, config);
+  if (persistConfig) await saveConfig(root, config);
 }
 
 export async function initializeInstallation(root, options) {

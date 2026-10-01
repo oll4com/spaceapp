@@ -501,6 +501,10 @@ for (const operation of ["update", "install"]) {
   test(`${operation} starts a stopped database before checkpointing and supplies every staged Compose file`, async () => {
     const root = await mkdtemp(join(tmpdir(), "spaceapp-stopped-db-checkpoint-"));
     await initializeInstallation(root, { version: "0.1.30", profile: "light" });
+    const currentCompose = await readFile(join(root, "compose.yml"), "utf8");
+    const legacyCompose = currentCompose.replace("  spaceapp-core:\n", '  spaceapp-core:\n    entrypoint: ["/bin/sh", "-ec", "legacy-config-rewrite"]\n');
+    assert.notEqual(legacyCompose, currentCompose);
+    await writeFile(join(root, "compose.yml"), legacyCompose);
     const calls = [];
     let databaseReady = false;
     let writersPaused = false;
@@ -514,6 +518,11 @@ for (const operation of ["update", "install"]) {
         assert.ok(args.includes("--no-deps"));
         assert.equal(writersPaused, false);
         databaseReady = true;
+      }
+      if (args.includes("up") && !args.includes("--wait")) {
+        const composeIndex = args.indexOf("-f") + 1;
+        assert.equal(await readFile(args[composeIndex], "utf8"), currentCompose,
+          "the upgraded runtime must start with the candidate Compose template");
       }
       if (args.includes("stop") && args.includes("spaceapp-core")) writersPaused = true;
       if (args.includes("pg_dump")) {
@@ -538,6 +547,9 @@ for (const operation of ["update", "install"]) {
     assert.ok(calls.some(c => c.args.includes("pg_dump")));
     assert.ok(calls.some(c => c.args.includes("pull")));
     assert.equal((await loadConfig(root)).version, RUNTIME_VERSION);
+    assert.equal(await readFile(join(root, "compose.yml"), "utf8"), currentCompose);
+    const checkpoint = (await readdir(join(root, "checkpoints"))).find(name => name.startsWith("spaceapp-checkpoint-"));
+    assert.equal(await readFile(join(root, "checkpoints", checkpoint, "compose.yml"), "utf8"), legacyCompose);
     assert.equal(calls.some(c => c.args.includes("--volumes")), false);
   });
 }

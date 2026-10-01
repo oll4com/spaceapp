@@ -1331,7 +1331,7 @@ async function performUpdate({
     }
     if (await verifyStorage({ root, config: updated, existingConfig: config, operation: "upgrade", inspectResources, execute, stdout, stderr }) !== 0) return 1;
     checkpoint = await createQuiescedCheckpoint(root, config, {stdin, stdout, stderr, execute, platform});
-    await writeRuntimeFiles(root, updated);
+    await commitInstallation(root, updated, { persistConfig: false });
     const upCode = await execute(
       composeCommand("up", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }),
       { stdin, stdout, stderr }
