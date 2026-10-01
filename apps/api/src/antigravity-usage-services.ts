@@ -178,7 +178,7 @@ export function createAntigravityUsageAccountProvider(
       !Number.isFinite(expiryMs) ||
       expiryMs <= currentMs + 120_000;
 
-    if (needsRefresh && refreshToken) {
+    if (needsRefresh && refreshToken && ANTIGRAVITY_CLIENT_ID && ANTIGRAVITY_CLIENT_SECRET) {
       try {
         const body = new URLSearchParams({
           client_id: ANTIGRAVITY_CLIENT_ID,

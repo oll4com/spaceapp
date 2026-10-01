@@ -32,7 +32,7 @@ mutually untrusted users.
 Requirements:
 
 - Node.js 20.11 or newer for the launcher;
-- at least 4 CPUs, 8 GB system RAM, and 15 GiB free disk;
+- at least 4 CPUs, 8 GB-class system RAM, and 6.5 GiB free for a small fresh install;
 - recommended for the standard browser profile: 8 CPUs, 16 GB RAM, and
   25 GiB free disk.
 
@@ -81,12 +81,12 @@ terminal open.
 SpaceApp waits for up to ten minutes and continues automatically as soon as
 Docker is ready.
 
-`auto` always selects the lightweight profile so the default stays usable on
-an 8 GB host. Light mode keeps every bundled CLI, PostgreSQL, and Temporal but
-omits managed Chromium. Use
-`npx --yes run-spaceapp@latest install --profile standard` explicitly when the
-managed browser container is required and the host has the recommended
-resources.
+`auto` selects small, medium or large using CPU, usable RAM and free disk.
+Small includes SpaceApp/OpenCode/PostgreSQL; medium adds background workers;
+large adds managed Chromium. Choose explicitly with `--profile small|medium|large`.
+Fresh free-space targets are 6.5/8/11 GiB; upgrades check missing layers, database
+checkpoint and headroom separately. Existing profiles are preserved automatically.
+See [installation profiles](docs/getting-started.md#installation-profiles).
 
 The installer does not create or reserve a separate fixed-size VM. Linux uses
 the native Docker Engine; Windows uses Docker Desktop's WSL2 Linux environment;
@@ -185,7 +185,7 @@ require a real browser check with clean console and network results.
 
 ## License
 
-SpaceApp source code is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE) by [example.invalid](https://example.invalid).
+SpaceApp source code is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE) by the licensor named in LICENSE.
 
 - **Free and Allowed Use:** You are free to copy, modify, test, self-host, and use SpaceApp for personal and internal business operations.
 - **Use Limitation:** You may not make the functionality of SpaceApp available to third parties as a hosted or managed service, application service provider (ASP), or software-as-a-service (SaaS) that competes with example.invalid products or services.

@@ -13,6 +13,31 @@ import { createOwnerSetupBootstrap } from "../src/owner-setup.js";
 import type { SetupConnectionsService } from "../src/setup-connections.js";
 
 describe("public single-owner setup API", () => {
+  it("small public profile is ready without contacting a disabled worker, and enabled profiles still require it", async () => {
+    for (const enabled of [false, true]) {
+      let checks = 0;
+      const app = await createApp({
+        store: new InMemorySpaceStore(),
+        config: getApiConfig({ SPACE_PUBLIC_DISTRIBUTION: "true", SPACEAPP_WORKFLOWS_ENABLED: String(enabled),
+          SPACE_BROWSER_SESSIONS_ENABLED: "false", SPACE_CLI_ENABLED: "false" }),
+        workerReadinessChecker: async () => {
+          checks++;
+          return { id: "space-worker", status: "ERROR", statusReason: "Owned unavailable worker fixture",
+            address: "unavailable:7233", namespace: "default", taskQueue: "space-agent-turns", reachable: false,
+            workflowPollerCount: 0, activityPollerCount: 0, pollerCount: 0, workflowBacklogCount: null,
+            activityBacklogCount: null, pollerIdentities: [], lastPollerAccessAt: null, checkedAt: new Date().toISOString() };
+        }
+      });
+      try {
+        const response = await app.inject({ method: "GET", url: "/readyz" });
+        expect(response.json().ok).toBe(!enabled);
+        expect(response.json().dependencies.worker).toBe(enabled ? "ERROR" : "disabled");
+        expect(checks).toBe(enabled ? 1 : 0);
+      } finally { await app.close(); }
+    }
+    // Public profile controls cannot turn off the live/private readiness requirement.
+    expect(getApiConfig({ SPACEAPP_WORKFLOWS_ENABLED: "false" }).workflowsEnabled).toBe(true);
+  });
   it("claims an expiring token once, creates a session, and enables later owner login", async () => {
     const token = "setup-token-value-with-at-least-thirty-two-characters";
     const legacyPassword = "legacy operator password";
@@ -258,6 +283,8 @@ describe("public single-owner setup API", () => {
       isAuthenticated: false,
       isSetupRequired: false
     });
+
+    expect(claimedAuth.cookies.some(cookie => cookie.name === "space_session")).toBe(false);
 
     const login = await app.inject({
       method: "POST",
