@@ -11,6 +11,7 @@ const globalFollowUpCommand =
   /(^|[^\w-])spaceapp (?:doctor|status|uninstall|credentials)\b/;
 
 const publicTestModules = [
+  "publish-npm-candidate.test.mjs",
   "container-image-size-budget.test.mjs",
   "mcp-hono-compatibility.test.mjs",
   "portable-backup-restore.test.mjs",

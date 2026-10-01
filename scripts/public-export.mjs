@@ -63,6 +63,8 @@ const publicDocs = new Set([
 ]);
 
 const publicScripts = new Set([
+  "scripts/publish-npm-candidate.mjs",
+  "scripts/tests/publish-npm-candidate.test.mjs",
   "scripts/release-evidence.mjs",
   "scripts/publish-prepared.mjs",
   "scripts/tests/release-evidence.test.mjs",
