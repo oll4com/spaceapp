@@ -677,6 +677,7 @@ export function composeCommand(action, root, options = {}) {
     storageFree: ["exec", "-T", "spaceapp-core", "node", "-e", "const fs=require('node:fs');const s=fs.statfsSync('/var/lib/spaceapp');console.log(Number(s.bavail)*Number(s.bsize))"],
     purge: ["down", "--volumes", "--remove-orphans"],
     repair: ["up", "-d", "--remove-orphans", "--force-recreate"],
+    ensureCheckpointDatabase: ["up", "-d", "--no-deps", "--wait", "--wait-timeout", "120", "postgres"],
     checkpointDump: ["exec", "-T", "postgres", "pg_dump", "-c", "--if-exists", "-U", "spaceapp", "-d", "spaceapp"],
     checkpointRestore: ["exec", "-T", "postgres", "psql", "-v", "ON_ERROR_STOP=1", "-U", "spaceapp", "-d", "spaceapp"]
   };

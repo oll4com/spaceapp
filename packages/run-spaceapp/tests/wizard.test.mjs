@@ -496,3 +496,48 @@ test("update preserves recovery data and fails when the new application never be
   assert.equal(recovery.databasePreserved, true);
   await assert.rejects(readFile(join(root, "checkpoints", id, "verified.json")));
 });
+
+for (const operation of ["update", "install"]) {
+  test(`${operation} starts a stopped database before checkpointing and supplies every staged Compose file`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "spaceapp-stopped-db-checkpoint-"));
+    await initializeInstallation(root, { version: "0.1.30", profile: "light" });
+    const calls = [];
+    let databaseReady = false;
+    let writersPaused = false;
+    const execute = async (spec, io) => {
+      calls.push(spec);
+      const args = spec.args ?? [];
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === "-f") assert.ok((await readFile(args[i + 1], "utf8")).length, `Missing Compose file ${args[i + 1]}`);
+      }
+      if (args.includes("--wait") && args.at(-1) === "postgres") {
+        assert.ok(args.includes("--no-deps"));
+        assert.equal(writersPaused, false);
+        databaseReady = true;
+      }
+      if (args.includes("stop") && args.includes("spaceapp-core")) writersPaused = true;
+      if (args.includes("pg_dump")) {
+        assert.equal(databaseReady, true, "checkpoint requires the existing database to be running");
+        assert.equal(writersPaused, true, "checkpoint must pause application writers");
+        io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n");
+      }
+      return 0;
+    };
+    const args = operation === "install" ? ["install", "--profile", "light", "--no-open"] : ["update"];
+    const stderr = capture();
+    const code = await run(args, {
+      env: { SPACEAPP_HOME: root }, platform: "linux", stdin: ttyStdin("y"),
+      stdout: capture().stream, stderr: stderr.stream, execute,
+      inspectResources: async () => eightGigabyteClassLinuxGuest,
+      ensureDocker: async () => ({ code: 0, reexecuted: false }),
+      prepareDockerPath: async () => null,
+      request: async (url) => jsonResponse(url.endsWith("/readyz") ? { ok: true } : { setupRequired: false, expiresAt: null }),
+      sleep: async () => {}
+    });
+    assert.equal(code, 0, stderr.value());
+    assert.ok(calls.some(c => c.args.includes("pg_dump")));
+    assert.ok(calls.some(c => c.args.includes("pull")));
+    assert.equal((await loadConfig(root)).version, RUNTIME_VERSION);
+    assert.equal(calls.some(c => c.args.includes("--volumes")), false);
+  });
+}

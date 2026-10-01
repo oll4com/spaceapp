@@ -1319,7 +1319,7 @@ async function performUpdate({
   const stagedRoot = await mkdtemp(join(tmpdir(), "spaceapp-update-"));
   let checkpoint = null;
   try {
-    await writeRuntimeFiles(stagedRoot, updated);
+    await commitInstallation(stagedRoot, updated);
     const stagedCommand = (action) => composeCommand(action, root, {...updated, stateRoot: stagedRoot});
     const pullCode = await withHeadlessDockerConfig(
       platform, stagedCommand("pull"),
@@ -1410,6 +1410,9 @@ async function collectFiles(directory, logicalDirectory) {
 async function createQuiescedCheckpoint(root, config, io) {
   io.stdout.write("Pausing SpaceApp writers before the database checkpoint...\n");
   try {
+    io.stdout.write("Ensuring the existing PostgreSQL database is ready for the checkpoint...\n");
+    const databaseCode = await io.execute(composeCommand("ensureCheckpointDatabase", root, config), io);
+    if (databaseCode !== 0) throw new Error(`The existing PostgreSQL database did not become ready (exit ${databaseCode}). The upgrade was not applied.`);
     const code = await io.execute(composeCommand("stopForRestore", root, config), io);
     if (code !== 0) throw new Error(`Could not pause SpaceApp writers (exit ${code}).`);
     return await createCheckpoint(root, config, io);
