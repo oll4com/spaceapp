@@ -13,6 +13,11 @@ import { createOwnerSetupBootstrap } from "../src/owner-setup.js";
 import type { SetupConnectionsService } from "../src/setup-connections.js";
 
 describe("public single-owner setup API", () => {
+  it("disables the agent tools writer through configuration without patching compiled code", () => {
+    expect(getApiConfig({ SPACE_PUBLIC_DISTRIBUTION: "true", SPACE_AGENT_TOOLS_WRITER: "/custom/writer" }).agentToolsWriterCommand).toBeNull();
+    expect(getApiConfig({ SPACE_AGENT_TOOLS_WRITER: "disabled" }).agentToolsWriterCommand).toBeNull();
+    expect(getApiConfig({ SPACE_AGENT_TOOLS_WRITER: "/custom/writer" }).agentToolsWriterCommand).toBe("/custom/writer");
+  });
   it("small public profile is ready without contacting a disabled worker, and enabled profiles still require it", async () => {
     for (const enabled of [false, true]) {
       let checks = 0;

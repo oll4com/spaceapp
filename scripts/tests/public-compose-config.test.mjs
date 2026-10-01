@@ -61,6 +61,9 @@ test("generated profiles and access modes have the expected merged Docker Compos
       const model = JSON.parse(stdout);
       const core = model.services["spaceapp-core"];
       const cli = model.services["spaceapp-cli"];
+      assert.equal(core.entrypoint ?? null, null, "startup must inherit the image entrypoint without rewriting compiled code");
+      assert.equal(core.environment.SPACE_PUBLIC_DISTRIBUTION, "true");
+      assert.equal(core.environment.SPACE_AGENT_TOOLS_WRITER, "disabled");
       assert.equal(
         [core, cli].filter((service) =>
           service.volumes.some((volume) => volume.target === "/workspaces")

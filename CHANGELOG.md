@@ -5,6 +5,11 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.0.34] - 2026-10-01
+
+- Start the core from its immutable image entrypoint. Remove the legacy startup rewrite of compiled API configuration, which could leave a damaged writable-layer file after a VM restart. Public configuration already disables the agent tools writer.
+- Include the upgrade recovery and gRPC security fixes from the unpublished 1.0.32 and 1.0.33 candidates.
+
 ## [1.0.33] - 2026-10-01
 
 - Update the shared gRPC dependency to 1.14.5 to resolve certificate authorization and error disclosure advisories rejected by the release audit.
