@@ -21,13 +21,16 @@ test("public text sanitization replaces private infrastructure markers", () => {
     ["10.", "100.0.207"].join(""),
     ["Yun", "wu"].join(""),
     ["olla", ".gr"].join(""),
-    ["/etc/docs/", "gemini_history.md"].join("")
+    ["/etc/docs/", "gemini_history.md"].join(""),
+    ["pirniramon7@", "gmail.com"].join(""),
+    ["pirni", "ramon"].join(""),
+    ["162.55.", "99.104"].join("")
   ].join(" ");
   const sanitized = sanitizePublicText(privateInput);
 
   assert.equal(
     sanitized,
-    "http://127.0.0.1:4911 /opt/spaceapp /var/lib/spaceapp-user 192.0.2.207 Legacy example.invalid /opt/spaceapp/docs/gemini_history.md"
+    "http://127.0.0.1:4911 /opt/spaceapp /var/lib/spaceapp-user 192.0.2.207 Legacy example.invalid /opt/spaceapp/docs/gemini_history.md operator@example.invalid operator 192.0.2.10"
   );
 });
 
