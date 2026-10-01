@@ -59,6 +59,7 @@ async function installation({ platform = "linux", execute = async () => 0 } = {}
     stdin: ttyStdin("y"),
     stdout: stdout.stream,
     stderr: stderr.stream,
+    inspectResources: async () => ({ cpuCount: 4, totalMemoryBytes: 8 * 1024 ** 3, freeDiskBytes: 15 * 1024 ** 3 }),
     prepareDockerPath: async () => null,
     request: async () => ({ ok: true, json: async () => ({ ok: true }) }),
     sleep: async () => {},
