@@ -5,7 +5,10 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {executeCommand} from '../src/cli.mjs';
 import {ensureDockerAvailable} from '../src/prerequisites.mjs';
-test('a persistent Linux browser survives after the launcher returns, while immediate launch errors are reported',async()=>{
+// These fixtures execute real POSIX shell scripts; Windows native launch is
+// covered by the PowerShell launcher and prerequisite tests.
+const posixFixture = { skip: process.platform === 'win32' ? 'requires executable POSIX shell fixtures' : false };
+test('a persistent Linux browser survives after the launcher returns, while immediate launch errors are reported',posixFixture,async()=>{
  const root=await mkdtemp(join(tmpdir(),'spaceapp-browser-'));const previous=process.env.PATH;let pid;
  try{
   const path=join(root,'xdg-open'),pidFile=join(root,'pid');
@@ -18,7 +21,7 @@ test('a persistent Linux browser survives after the launcher returns, while imme
   await rm(path);assert.equal(await executeCommand({command:'xdg-open',args:['http://127.0.0.1:4911'],background:true}),127);
  }finally{process.env.PATH=previous;if(pid)try{process.kill(-pid,'SIGTERM');}catch{}await rm(root,{recursive:true,force:true});}
 });
-test('macOS reports a rejected native Docker launch before waiting for its engine',async()=>{
+test('macOS reports a rejected native Docker launch before waiting for its engine',posixFixture,async()=>{
  const root=await mkdtemp(join(tmpdir(),'spaceapp-mac-open-')),previous=process.env.PATH;
  try{
   const argsFile=join(root,'arguments');

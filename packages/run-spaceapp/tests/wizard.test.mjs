@@ -289,6 +289,7 @@ test("a downgrade update requires the typed DOWNGRADE confirmation", async () =>
     stdout: stdout.stream,
     stderr: stderr.stream,
     stdin: ttyStdin("CANCEL"),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
     prepareDockerPath: async () => null,
     execute: async (spec, io) => { if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
   }), 0);
@@ -310,6 +311,7 @@ test("update retains a verified checkpoint and current database when runtime sta
     stdout: stdout.stream,
     stderr: stderr.stream,
     stdin: ttyStdin("y"),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
     prepareDockerPath: async () => null,
     execute: async (spec, io) => {
       if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
@@ -371,6 +373,7 @@ test("a successful update marks the checkpoint verified and prunes older checkpo
     stdout: capture().stream,
     stderr: capture().stream,
     stdin: ttyStdin("y"),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
     prepareDockerPath: async () => null,
     request: async () => jsonResponse({ ok: true }),
     sleep: async () => {},
@@ -445,6 +448,7 @@ test("update waits for application readiness before reporting success and verify
   assert.equal(await run(["update"], {
     env: { SPACEAPP_HOME: root }, platform: "linux",
     stdin: ttyStdin("y"), stdout: stdout.stream, stderr: capture().stream,
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
     prepareDockerPath: async () => null,
     execute: async (spec, io) => {
       if (spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n");
@@ -478,6 +482,7 @@ test("update preserves recovery data and fails when the new application never be
   assert.equal(await run(["update"], {
     env: { SPACEAPP_HOME: root }, platform: "linux", stdin: ttyStdin("y"),
     stdout: capture().stream, stderr: stderr.stream,
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
     prepareDockerPath: async () => null,
     execute: async (spec, io) => {
       calls.push(spec.args);
@@ -502,7 +507,8 @@ for (const operation of ["update", "install"]) {
     const root = await mkdtemp(join(tmpdir(), "spaceapp-stopped-db-checkpoint-"));
     await initializeInstallation(root, { version: "0.1.30", profile: "light" });
     const currentCompose = await readFile(join(root, "compose.yml"), "utf8");
-    const legacyCompose = currentCompose.replace("  spaceapp-core:\n", '  spaceapp-core:\n    entrypoint: ["/bin/sh", "-ec", "legacy-config-rewrite"]\n');
+    const legacyCompose = currentCompose.replace(/  spaceapp-core:(\r?\n)/, (_match, newline) =>
+      `  spaceapp-core:${newline}    entrypoint: ["/bin/sh", "-ec", "legacy-config-rewrite"]${newline}`);
     assert.notEqual(legacyCompose, currentCompose);
     await writeFile(join(root, "compose.yml"), legacyCompose);
     const calls = [];
