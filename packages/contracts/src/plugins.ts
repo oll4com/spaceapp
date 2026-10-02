@@ -45,6 +45,11 @@ export const pluginCatalogItemSchema = z.object({
   authFields: z.array(pluginAuthFieldSchema).default([]),
   websiteUrl: z.string().url().nullable().default(null),
   docsUrl: z.string().url().nullable().default(null),
+  githubUrl: z.string().url().nullable().default(null),
+  overview: z.string().max(1000).nullable().default(null),
+  installedVersion: z.string().max(40).default("1.0.0"),
+  latestVersion: z.string().max(40).default("1.0.0"),
+  hasUpdate: z.boolean().default(false),
   preview: z.boolean().default(false),
   defaultEnabled: z.boolean().default(true),
   mcpCommand: z.string().min(1).max(300).nullable().default(null),
@@ -58,6 +63,9 @@ export const pluginConnectionStateSchema = z.object({
   lastHealthCheckAt: z.string().datetime({ offset: true }).nullable().default(null),
   accountLabel: z.string().max(160).nullable().default(null),
   toolCount: z.number().int().nonnegative().default(0),
+  installedVersion: z.string().max(40).nullable().default(null),
+  latestVersion: z.string().max(40).nullable().default(null),
+  hasUpdate: z.boolean().default(false),
   error: z.string().max(500).nullable().default(null)
 });
 

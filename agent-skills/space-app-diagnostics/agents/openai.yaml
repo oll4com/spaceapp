@@ -1,0 +1,4 @@
+interface:
+  display_name: "Space App Diagnostics"
+  short_description: "Inspect and prove Space Debug captures safely"
+  default_prompt: "Use $space-app-diagnostics to inspect a Space Debug capture and leave global Debug safely OFF."

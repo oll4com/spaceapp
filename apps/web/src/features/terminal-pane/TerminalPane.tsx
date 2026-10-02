@@ -62,7 +62,7 @@ import {
   shouldParkHiddenWarmSocket,
   shouldRefreshModelSettingsFromOutput
 } from "./hidden-warm-socket.js";
-import { DEMO_LOCAL_REPLY, getSpaceRuntime, terminalGateway, type PlatformGateway } from "../../runtime/SpaceRuntime.js";
+import { DEMO_LOCAL_REPLY, getSpaceRuntime, getSpaceRuntimeKind, terminalGateway, type PlatformGateway } from "../../runtime/SpaceRuntime.js";
 import { DEFAULT_CLI_IMAGE_PREVIEW_LIMIT, normalizeCliImagePreviewLimit } from "../../cli-upload-settings.js";
 import { isCliRuntimeTerminalLaunchable } from "../../cli-runtime-presentation.js";
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
@@ -170,11 +170,12 @@ export interface TerminalBootstrapBarrier {
 }
 
 export function createTerminalBootstrapBarrier(paneIds: readonly string[]): TerminalBootstrapBarrier {
+  const isDemo = getSpaceRuntimeKind() === "demo";
   const expectedPaneIds = new Set(paneIds.filter((id) => !id.startsWith("pane:optimistic-")));
   const currentTokens = new Map<string, symbol>();
   const arrivedPaneIds = new Set<string>();
   let joinVersion = 0;
-  let released = expectedPaneIds.size === 0;
+  let released = isDemo || expectedPaneIds.size === 0;
   let release: () => void = () => undefined;
   const ready = released
     ? Promise.resolve()
@@ -189,6 +190,27 @@ export function createTerminalBootstrapBarrier(paneIds: readonly string[]): Term
 
   function scheduleTerminalSetupTask() {
     if (!terminalSetupReady || terminalSetupTaskScheduled || requestedTerminalSetupPaneIds.size === 0) return;
+    if (isDemo) {
+      terminalSetupTaskScheduled = true;
+      const scheduleNext = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame
+        : (cb: () => void) => setTimeout(cb, 0);
+      scheduleNext(() => {
+        terminalSetupTaskScheduled = false;
+        let count = 0;
+        for (const paneId of Array.from(requestedTerminalSetupPaneIds)) {
+          requestedTerminalSetupPaneIds.delete(paneId);
+          resolvedTerminalSetupPaneIds.add(paneId);
+          terminalSetupTurnByPaneId.get(paneId)?.resolve();
+          count += 1;
+          if (count >= 2) break;
+        }
+        if (requestedTerminalSetupPaneIds.size > 0) {
+          scheduleTerminalSetupTask();
+        }
+      });
+      return;
+    }
     terminalSetupTaskScheduled = true;
     window.setTimeout(() => {
       terminalSetupTaskScheduled = false;
@@ -208,6 +230,11 @@ export function createTerminalBootstrapBarrier(paneIds: readonly string[]): Term
   });
 
   function scheduleRelease() {
+    if (isDemo) {
+      released = true;
+      release();
+      return;
+    }
     const scheduledJoinVersion = joinVersion;
     void Promise.resolve().then(() => {
       if (
@@ -228,7 +255,7 @@ export function createTerminalBootstrapBarrier(paneIds: readonly string[]): Term
         released = true;
         release();
       }
-    }, 6000);
+    }, isDemo ? 0 : 6000);
   }
 
   return {

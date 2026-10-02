@@ -121,6 +121,7 @@ import {
   spaceAgentRunRecordSchema,
   spaceAgentSessionRecordSchema,
   sourceControlConnectionSchema,
+  spaceConfigBundleSchema,
   sourceControlProviderSchema,
   updatePaneCliSessionInputSchema,
   updatePaneCliTerminalControlLeaseInputSchema,
@@ -292,6 +293,11 @@ import {
   type SpaceAgentMessageRecord,
   type SpaceAgentRunRecord,
   type SpaceAgentSessionRecord,
+  type SpaceConfigBundle,
+  type SpaceConfigRoom,
+  type ExportConfigOptions,
+  type ImportConfigOptions,
+  type ImportConfigResult,
   type SourceControlProvider,
   type SwarmLock,
   type SwarmMessage,
@@ -15352,6 +15358,506 @@ export class PostgresSpaceStore implements SpaceStore {
       } finally {
         client.release?.();
       }
+    }
+  }
+
+  async exportConfigurationBundle(options: ExportConfigOptions): Promise<SpaceConfigBundle> {
+    const userId = options.userId;
+    const rooms = await this.listRooms(userId ?? null);
+    const configRooms: SpaceConfigRoom[] = [];
+    let totalPanes = 0;
+    for (const room of rooms) {
+      const panes = await this.listPanes(room.id, options.includeClosedPanes ?? true);
+      totalPanes += panes.length;
+      configRooms.push({
+        ...room,
+        panes
+      });
+    }
+
+    let userSettings: UserSettings | undefined;
+    if (userId) {
+      try {
+        userSettings = await this.getUserSettings(userId);
+      } catch {}
+    }
+
+    let userLinks: UserLink[] = [];
+    if (userId) {
+      let page = 1;
+      while (true) {
+        const linksResult = await this.listUserLinks(userId, { isQuick: undefined, page, pageSize: 100 });
+        if (!linksResult.items.length) break;
+        userLinks.push(...linksResult.items);
+        if (userLinks.length >= linksResult.total) break;
+        page++;
+      }
+    }
+
+    let clipboardItems: ClipboardItem[] = [];
+    if (userId) {
+      let page = 1;
+      while (true) {
+        const clipResult = await this.listClipboardItems(userId, { page, pageSize: 100 });
+        if (!clipResult.items.length) break;
+        clipboardItems.push(...clipResult.items);
+        if (clipboardItems.length >= clipResult.total) break;
+        page++;
+      }
+    }
+
+    let taskItems: TaskItem[] = [];
+    if (userId) {
+      let page = 1;
+      while (true) {
+        const taskResult = await this.listTaskItems(userId, { page, pageSize: 100 });
+        if (!taskResult.items.length) break;
+        taskItems.push(...taskResult.items);
+        if (taskItems.length >= taskResult.total) break;
+        page++;
+      }
+    }
+
+    const cliRuntimeSettings = await this.listCliRuntimeSettings();
+    let codexCliModeDefaults: CodexCliModeDefaults | undefined;
+    try {
+      codexCliModeDefaults = await this.getCodexCliModeDefaults();
+    } catch {}
+
+    const providers = await this.listProviders();
+    let providerSettings: ProviderSettings | undefined;
+    try {
+      providerSettings = await this.getProviderSettings();
+    } catch {}
+
+    return {
+      format: "spaceapp-configuration-bundle",
+      version: "1.0.0",
+      exportedAt: nowIso(),
+      source: {
+        instance: process.env.SPACE_INSTANCE_NAME || "vm207",
+        exportedBy: userId ?? "operator",
+        appVersion: process.env.SPACE_APP_VERSION || "v1.0.35"
+      },
+      metadata: {
+        roomsCount: configRooms.length,
+        panesCount: totalPanes,
+        userLinksCount: userLinks.length,
+        clipboardItemsCount: clipboardItems.length,
+        taskItemsCount: taskItems.length,
+        cliRuntimesCount: cliRuntimeSettings.length,
+        providersCount: providers.length
+      },
+      data: {
+        userSettings,
+        rooms: configRooms,
+        userLinks,
+        clipboardItems,
+        taskItems,
+        cliRuntimeSettings,
+        codexCliModeDefaults,
+        providerSettings,
+        providers
+      }
+    };
+  }
+
+  async importConfigurationBundle(
+    bundle: SpaceConfigBundle,
+    options: ImportConfigOptions
+  ): Promise<ImportConfigResult> {
+    const parsedBundle = spaceConfigBundleSchema.parse(bundle);
+    const targetUserId = options.targetUserId || parsedBundle.source.exportedBy || "user:operator";
+    const mode = options.mode || "replace";
+    const warnings: string[] = [];
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // Verify or resolve effective target user
+      const userCheck = await client.query<{ id: string }>("SELECT id FROM users WHERE id = $1", [targetUserId]);
+      let effectiveUserId = targetUserId;
+      if (userCheck.rows.length === 0) {
+        const fallbackUser = await client.query<{ id: string }>("SELECT id FROM users ORDER BY created_at ASC LIMIT 1");
+        if (fallbackUser.rows.length === 0) {
+          throw new Error("No users found in database to attach configuration.");
+        }
+        effectiveUserId = fallbackUser.rows[0]!.id;
+        warnings.push(`Target user ${targetUserId} not found in database; using existing user ${effectiveUserId}`);
+      }
+
+      if (mode === "replace") {
+        await client.query("DELETE FROM rooms WHERE owner_user_id = $1", [effectiveUserId]);
+        await client.query("DELETE FROM user_links WHERE owner_user_id = $1", [effectiveUserId]);
+        await client.query("DELETE FROM clipboard_items WHERE owner_user_id = $1", [effectiveUserId]);
+        await client.query("DELETE FROM task_items WHERE owner_user_id = $1", [effectiveUserId]);
+      }
+
+      const roomIdMap = new Map<string, string>();
+      const paneIdMap = new Map<string, string>();
+      let roomsImported = 0;
+      let panesImported = 0;
+
+      let baseOrder = 0;
+      if (mode === "merge") {
+        const maxOrderRes = await client.query<{ max: number | null }>("SELECT MAX(room_order) as max FROM rooms");
+        baseOrder = (maxOrderRes.rows[0]?.max ?? -1) + 1;
+      }
+
+      for (let rIdx = 0; rIdx < parsedBundle.data.rooms.length; rIdx++) {
+        const room = parsedBundle.data.rooms[rIdx]!;
+        const newRoomId = mode === "merge" ? makeSpaceId("room") : room.id;
+        roomIdMap.set(room.id, newRoomId);
+        const assignedOrder = mode === "merge" ? baseOrder + rIdx : room.order;
+
+        await client.query(
+          `
+          INSERT INTO rooms (
+            id, name, description, pane_cap, trace_id, room_order,
+            pane_layout_columns, kind, pane_layout_height, owner_user_id,
+            project_path, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), now())
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            description = EXCLUDED.description,
+            pane_cap = EXCLUDED.pane_cap,
+            room_order = EXCLUDED.room_order,
+            pane_layout_columns = EXCLUDED.pane_layout_columns,
+            kind = EXCLUDED.kind,
+            pane_layout_height = EXCLUDED.pane_layout_height,
+            owner_user_id = EXCLUDED.owner_user_id,
+            project_path = EXCLUDED.project_path,
+            updated_at = now()
+          `,
+          [
+            newRoomId,
+            room.name,
+            room.description ?? null,
+            room.paneCap,
+            room.traceId || makeSpaceId("trace"),
+            assignedOrder,
+            room.paneLayoutColumns ?? null,
+            room.kind,
+            room.paneLayoutHeight,
+            effectiveUserId,
+            room.projectPath ?? null
+          ]
+        );
+        roomsImported++;
+
+        for (const pane of room.panes ?? []) {
+          const newPaneId = mode === "merge" ? makeSpaceId("pane") : pane.id;
+          paneIdMap.set(pane.id, newPaneId);
+
+          let cwd = pane.cwd;
+          if (options.pathRewrite && cwd) {
+            cwd = cwd.replace(options.pathRewrite.from, options.pathRewrite.to);
+          }
+
+          await client.query(
+            `
+            INSERT INTO panes (
+              id, room_id, title, mode, status, provider_id, model_id,
+              reasoning_effort, cwd, pane_order, is_maximized, is_closed,
+              split, column_span, terminal_runtime_id, is_minimized,
+              title_source, category_color, vnc_target, task_metadata,
+              created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, now(), now())
+            ON CONFLICT (id) DO UPDATE SET
+              room_id = EXCLUDED.room_id,
+              title = EXCLUDED.title,
+              mode = EXCLUDED.mode,
+              status = EXCLUDED.status,
+              provider_id = EXCLUDED.provider_id,
+              model_id = EXCLUDED.model_id,
+              reasoning_effort = EXCLUDED.reasoning_effort,
+              cwd = EXCLUDED.cwd,
+              pane_order = EXCLUDED.pane_order,
+              is_maximized = EXCLUDED.is_maximized,
+              is_closed = EXCLUDED.is_closed,
+              split = EXCLUDED.split,
+              column_span = EXCLUDED.column_span,
+              terminal_runtime_id = EXCLUDED.terminal_runtime_id,
+              is_minimized = EXCLUDED.is_minimized,
+              title_source = EXCLUDED.title_source,
+              category_color = EXCLUDED.category_color,
+              vnc_target = EXCLUDED.vnc_target,
+              task_metadata = EXCLUDED.task_metadata,
+              updated_at = now()
+            `,
+            [
+              newPaneId,
+              newRoomId,
+              pane.title,
+              pane.mode,
+              pane.status === "CLOSED" ? "CLOSED" : "IDLE",
+              pane.providerId ?? null,
+              pane.modelId ?? null,
+              pane.reasoningEffort,
+              cwd ?? null,
+              pane.order,
+              pane.isMaximized,
+              pane.isClosed,
+              JSON.stringify(pane.split ?? { size: null, parentId: null, direction: null }),
+              pane.columnSpan,
+              pane.terminalRuntimeId ?? null,
+              pane.isMinimized,
+              pane.titleSource,
+              pane.categoryColor ?? null,
+              pane.vncTarget ? JSON.stringify(pane.vncTarget) : null,
+              pane.taskMetadata ? JSON.stringify(pane.taskMetadata) : null
+            ]
+          );
+          panesImported++;
+        }
+      }
+
+      let settingsUpdated = false;
+      if (parsedBundle.data.userSettings) {
+        await client.query(
+          `
+          INSERT INTO user_settings (user_id, settings, created_at, updated_at)
+          VALUES ($1, $2, now(), now())
+          ON CONFLICT (user_id) DO UPDATE SET
+            settings = EXCLUDED.settings,
+            updated_at = now()
+          `,
+          [effectiveUserId, JSON.stringify(parsedBundle.data.userSettings)]
+        );
+        settingsUpdated = true;
+      }
+
+      let linksImported = 0;
+      for (const link of parsedBundle.data.userLinks ?? []) {
+        const linkId = mode === "merge" ? makeSpaceId("link") : link.id;
+        await client.query(
+          `
+          INSERT INTO user_links (
+            id, owner_user_id, title, description, url, open_mode,
+            is_quick, sort_order, category, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now())
+          ON CONFLICT (owner_user_id, url) DO UPDATE SET
+            title = EXCLUDED.title,
+            description = EXCLUDED.description,
+            open_mode = EXCLUDED.open_mode,
+            is_quick = EXCLUDED.is_quick,
+            sort_order = EXCLUDED.sort_order,
+            category = EXCLUDED.category,
+            updated_at = now()
+          `,
+          [
+            linkId,
+            effectiveUserId,
+            link.title,
+            link.description ?? "",
+            link.url,
+            link.openMode,
+            link.isQuick,
+            link.sortOrder,
+            link.category ?? "GENERAL"
+          ]
+        );
+        linksImported++;
+      }
+
+      let clipboardImported = 0;
+      for (const item of parsedBundle.data.clipboardItems ?? []) {
+        const clipId = mode === "merge" ? makeSpaceId("clipboard") : item.id;
+        const remappedRoomId = item.roomId ? roomIdMap.get(item.roomId) ?? null : null;
+        const remappedPaneId = item.paneId ? paneIdMap.get(item.paneId) ?? null : null;
+        const contentHash = createHash("sha256").update(item.text).digest("hex");
+        await client.query(
+          `
+          INSERT INTO clipboard_items (
+            id, owner_user_id, content_hash, text, source, room_id,
+            pane_id, pane_title, occurrence_count, character_count,
+            title, is_completed, execution_status, progress_percentage,
+            active_agent, steps_json, last_progress_at, created_at, last_used_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now(), now())
+          ON CONFLICT (owner_user_id, content_hash) DO UPDATE SET
+            title = EXCLUDED.title,
+            is_completed = EXCLUDED.is_completed,
+            execution_status = EXCLUDED.execution_status,
+            progress_percentage = EXCLUDED.progress_percentage,
+            active_agent = EXCLUDED.active_agent,
+            steps_json = EXCLUDED.steps_json,
+            last_used_at = now()
+          `,
+          [
+            clipId,
+            effectiveUserId,
+            contentHash,
+            item.text,
+            item.source,
+            remappedRoomId,
+            remappedPaneId,
+            item.paneTitle ?? null,
+            item.occurrenceCount,
+            item.characterCount,
+            item.title ?? null,
+            item.isCompleted,
+            item.executionStatus ?? "PLANNED",
+            item.progressPercentage ?? 0,
+            item.activeAgent ?? null,
+            JSON.stringify(item.steps ?? []),
+            item.lastProgressAt ?? null
+          ]
+        );
+        clipboardImported++;
+      }
+
+      let tasksImported = 0;
+      for (const task of parsedBundle.data.taskItems ?? []) {
+        const taskId = mode === "merge" ? makeSpaceId("task") : task.id;
+        const remappedRoomId = task.roomId ? roomIdMap.get(task.roomId) ?? null : null;
+        const remappedPaneId = task.paneId ? paneIdMap.get(task.paneId) ?? null : null;
+        const taskContentHash = createHash("sha256").update(task.objective).digest("hex");
+        await client.query(
+          `
+          INSERT INTO task_items (
+            id, owner_user_id, content_hash, title, objective, status,
+            source, room_id, pane_id, pane_title, occurrence_count,
+            character_count, created_at, last_used_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), now())
+          ON CONFLICT (owner_user_id, content_hash) DO UPDATE SET
+            title = EXCLUDED.title,
+            status = EXCLUDED.status,
+            last_used_at = now()
+          `,
+          [
+            taskId,
+            effectiveUserId,
+            taskContentHash,
+            task.title,
+            task.objective,
+            task.status,
+            task.source,
+            remappedRoomId,
+            remappedPaneId,
+            task.paneTitle ?? null,
+            task.occurrenceCount,
+            task.characterCount
+          ]
+        );
+        tasksImported++;
+      }
+
+      let cliRuntimesImported = 0;
+      for (const setting of parsedBundle.data.cliRuntimeSettings ?? []) {
+        await client.query(
+          `
+          INSERT INTO cli_runtime_settings (runtime_id, enabled, vpn_enabled, updated_at, updated_by)
+          VALUES ($1, $2, $3, now(), $4)
+          ON CONFLICT (runtime_id) DO UPDATE SET
+            enabled = EXCLUDED.enabled,
+            vpn_enabled = EXCLUDED.vpn_enabled,
+            updated_at = now(),
+            updated_by = EXCLUDED.updated_by
+          `,
+          [setting.runtimeId, setting.enabled, setting.vpnEnabled ?? false, effectiveUserId]
+        );
+        cliRuntimesImported++;
+      }
+
+      if (parsedBundle.data.codexCliModeDefaults) {
+        const def = parsedBundle.data.codexCliModeDefaults;
+        await client.query(
+          `
+          INSERT INTO codex_cli_mode_defaults (
+            id, build_model_id, build_reasoning_effort,
+            plan_model_id, plan_reasoning_effort, runtime_initialized, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, now())
+          ON CONFLICT (id) DO UPDATE SET
+            build_model_id = EXCLUDED.build_model_id,
+            build_reasoning_effort = EXCLUDED.build_reasoning_effort,
+            plan_model_id = EXCLUDED.plan_model_id,
+            plan_reasoning_effort = EXCLUDED.plan_reasoning_effort,
+            runtime_initialized = EXCLUDED.runtime_initialized,
+            updated_at = now()
+          `,
+          [
+            "global",
+            def.build.modelId,
+            def.build.reasoningEffort,
+            def.plan.modelId,
+            def.plan.reasoningEffort,
+            true
+          ]
+        );
+      }
+
+      let providersImported = 0;
+      for (const prov of parsedBundle.data.providers ?? []) {
+        if (!prov.isBuiltIn) {
+          await client.query(
+            `
+            INSERT INTO providers (
+              id, display_name, provider_type, status, base_url,
+              route_profile, backing_provider_id, is_builtin, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
+            ON CONFLICT (id) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              base_url = EXCLUDED.base_url,
+              route_profile = EXCLUDED.route_profile,
+              updated_at = now()
+            `,
+            [
+              prov.id,
+              prov.displayName,
+              prov.type,
+              prov.status,
+              prov.baseUrl ?? null,
+              prov.routeProfile ?? null,
+              prov.backingProviderId ?? null,
+              false
+            ]
+          );
+          providersImported++;
+        }
+      }
+
+      if (parsedBundle.data.providerSettings) {
+        const ps = parsedBundle.data.providerSettings;
+        await client.query(
+          `
+          INSERT INTO provider_settings (
+            id, default_provider_id, title_generation_model_id,
+            title_generation_reasoning_effort, updated_at
+          ) VALUES ('global', $1, $2, $3, now())
+          ON CONFLICT (id) DO UPDATE SET
+            default_provider_id = EXCLUDED.default_provider_id,
+            title_generation_model_id = EXCLUDED.title_generation_model_id,
+            title_generation_reasoning_effort = EXCLUDED.title_generation_reasoning_effort,
+            updated_at = now()
+          `,
+          [ps.defaultProviderId, ps.titleGenerationModelId ?? null, ps.titleGenerationReasoningEffort ?? "low"]
+        );
+      }
+
+      await client.query("COMMIT");
+
+      return {
+        success: true,
+        mode,
+        targetUserId: effectiveUserId,
+        stats: {
+          roomsImported,
+          panesImported,
+          linksImported,
+          clipboardImported,
+          tasksImported,
+          settingsUpdated,
+          cliRuntimesImported,
+          providersImported
+        },
+        warnings
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release?.();
     }
   }
 }

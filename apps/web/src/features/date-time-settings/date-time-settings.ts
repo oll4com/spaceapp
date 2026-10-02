@@ -19,7 +19,7 @@ export const DATE_TIME_SETTINGS_UPDATED_EVENT = "space:date-time-settings-update
  * Thailand (Asia/Bangkok, UTC+7), 24-hour time format, and DD/MM/YYYY date format.
  */
 export const defaultDateTimeSettings: DateTimeSettings = {
-  timeZone: "Asia/Bangkok",
+  timeZone: "UTC",
   timeFormat: "24h",
   dateFormat: "DD/MM/YYYY",
 };
@@ -93,10 +93,10 @@ export const TIME_ZONE_GROUPS: TimeZoneGroup[] = [
   {
     group: "Common & Presets",
     options: [
-      { value: "Asia/Bangkok", label: "Thailand (Bangkok, ICT, UTC+7) · Default" },
+      { value: "UTC", label: "UTC (Universal Coordinated Time, UTC+0) · Default" },
+      { value: "Asia/Bangkok", label: "Thailand (Bangkok, ICT, UTC+7)" },
       { value: "Europe/Athens", label: "Greece (Athens, EEST/EET, UTC+3/+2)" },
       { value: "Europe/Berlin", label: "Germany (Berlin, CEST/CET, UTC+2/+1)" },
-      { value: "UTC", label: "UTC (Universal Coordinated Time, UTC+0)" },
       { value: "system", label: "System / Browser Local Time" },
     ],
   },

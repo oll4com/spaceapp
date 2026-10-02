@@ -284,7 +284,7 @@ import {
 } from "./app-diagnostics/app-diagnostics-bootstrap.js";
 import { SettingsActionMenu } from "./features/settings/SettingsActionMenu.js";
 import { GitBranch } from "./features/ui-theme/app-icons.js";
-import { Plug } from "lucide-react";
+import { Plug, ArrowUpDown } from "lucide-react";
 import { PluginsSettingsCard } from "./features/plugins/PluginsSettingsCard.js";
 import { KeyboardAutocorrectSettingsCard } from "./features/keyboard-autocorrect/KeyboardAutocorrectSettingsCard.js";
 import { applyServerKeyboardAutocorrectSettings } from "./features/keyboard-autocorrect/keyboard-autocorrect-settings.js";
@@ -723,6 +723,10 @@ const LazyCodexCliDefaultsCard = lazy(() =>
 const LazyTelegramIntegrationCard = lazy(() =>
   import("./features/telegram-integration/TelegramIntegrationCard.js")
     .then((module) => ({ default: module.TelegramIntegrationCard }))
+);
+const LazyConfigurationMigrationCard = lazy(() =>
+  import("./features/settings/ConfigurationMigrationCard.js")
+    .then((module) => ({ default: module.ConfigurationMigrationCard }))
 );
 const LazyOnScreenKeyboard = lazy(() =>
   import("./features/osk-keyboard/OnScreenKeyboard.js").then((module) => ({ default: module.OnScreenKeyboard }))
@@ -3816,7 +3820,7 @@ export function App() {
   }
 
   async function waitForRoomTerminalBarrier(roomId: string, timeoutMs = 5_000): Promise<void> {
-    if (roomTerminalBarrierReady(roomId)) return;
+    if (getSpaceRuntimeKind() === "demo" || roomTerminalBarrierReady(roomId)) return;
     await new Promise<void>((resolve) => {
       let timer = 0;
       const finish = () => {
@@ -3848,7 +3852,7 @@ export function App() {
   }
 
   async function waitForRoomTerminalPrefillBarrier(roomId: string, timeoutMs = 2_000): Promise<boolean> {
-    if (roomTerminalPrefillBarrierReady(roomId)) return true;
+    if (getSpaceRuntimeKind() === "demo" || roomTerminalPrefillBarrierReady(roomId)) return true;
     return new Promise<boolean>((resolve) => {
       let timer = 0;
       const finish = () => {
@@ -12853,6 +12857,17 @@ function AgentSettingsDock({
         />
       </section>
 
+      </SettingsDisclosure>
+
+      <SettingsDisclosure
+        title="Backup & migration"
+        description="Export and import rooms, panes, bookmarks, plans, and settings."
+        scope="Installation"
+        icon={ArrowUpDown}
+      >
+        <RecoverableSurface fallback={settingsCardLoadingFallback}>
+          <LazyConfigurationMigrationCard />
+        </RecoverableSurface>
       </SettingsDisclosure>
       </SettingsSections>
     </div>

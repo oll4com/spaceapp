@@ -2,6 +2,7 @@
 # not commit them, and clean them only with an allowlist.
 node_modules/
 dist/
+dist-mock/
 dist-types/
 server-dist/
 coverage/

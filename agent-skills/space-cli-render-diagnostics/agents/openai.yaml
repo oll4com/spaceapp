@@ -1,0 +1,4 @@
+interface:
+  display_name: "CLI Render Diagnostics"
+  short_description: "Inspect terminal geometry and bounded browser proofs"
+  default_prompt: "Use $space-cli-render-diagnostics to inspect terminal rendering with numeric evidence, preserve warm-room behavior, and run only explicitly requested protected proof profiles."

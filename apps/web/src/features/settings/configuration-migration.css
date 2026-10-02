@@ -1,0 +1,233 @@
+.config-migration-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1rem;
+}
+
+.config-migration-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  background: var(--surface-subtle, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.config-migration-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.config-migration-section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-normal, #f0f0f0);
+}
+
+.config-migration-desc {
+  font-size: 0.825rem;
+  color: var(--text-muted, #999);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.config-migration-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+}
+
+.config-migration-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.15));
+  background: var(--surface-button, rgba(255, 255, 255, 0.07));
+  color: var(--text-normal, #f0f0f0);
+}
+
+.config-migration-btn:hover:not(:disabled) {
+  background: var(--surface-button-hover, rgba(255, 255, 255, 0.12));
+  border-color: var(--border-focus, #3b82f6);
+}
+
+.config-migration-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.config-migration-btn.primary {
+  background: var(--color-primary, #2563eb);
+  color: #fff;
+  border-color: var(--color-primary-dark, #1d4ed8);
+}
+
+.config-migration-btn.primary:hover:not(:disabled) {
+  background: var(--color-primary-hover, #1d4ed8);
+}
+
+.config-migration-btn.success {
+  background: var(--color-success, #16a34a);
+  color: #fff;
+  border-color: #15803d;
+}
+
+.config-migration-file-input {
+  display: none;
+}
+
+.config-migration-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 2px dashed var(--border-subtle, rgba(255, 255, 255, 0.15));
+  border-radius: 8px;
+  padding: 1.5rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
+}
+
+.config-migration-dropzone:hover {
+  border-color: var(--border-focus, #3b82f6);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.config-migration-mode-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.config-migration-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  cursor: pointer;
+  background: var(--surface-soft, rgba(255, 255, 255, 0.02));
+  transition: all 0.15s ease;
+}
+
+.config-migration-mode-option:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.config-migration-mode-option.selected {
+  border-color: var(--color-primary, #3b82f6);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.config-migration-mode-option input[type="radio"] {
+  margin-top: 0.2rem;
+}
+
+.config-migration-mode-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.config-migration-mode-info strong {
+  font-size: 0.85rem;
+  color: var(--text-normal, #f0f0f0);
+}
+
+.config-migration-mode-info small {
+  font-size: 0.75rem;
+  color: var(--text-muted, #999);
+}
+
+.config-migration-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  padding: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+.config-migration-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 0.5rem;
+}
+
+.config-migration-stat-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  text-align: center;
+}
+
+.config-migration-stat-badge .stat-count {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--color-primary-light, #60a5fa);
+}
+
+.config-migration-stat-badge .stat-label {
+  font-size: 0.7rem;
+  color: var(--text-muted, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-top: 0.15rem;
+}
+
+.config-migration-meta {
+  font-size: 0.75rem;
+  color: var(--text-muted, #888);
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.config-migration-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+
+.config-migration-alert.bad {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+}
+
+.config-migration-alert.good {
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: #86efac;
+}

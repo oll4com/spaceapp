@@ -1,5 +1,8 @@
 import type { PlatformGateway, SpaceRuntime } from "../runtime/SpaceRuntime.js";
 import { DEMO_LOCAL_REPLY, DemoStore } from "./DemoStore.js";
+import type { DemoFixture } from "./demo-fixture.js";
+import { MockBrowserSocket } from "./mock-browser-socket.js";
+import { handleCliMockInput } from "./mock-cli-transcripts.js";
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>();
@@ -68,19 +71,23 @@ class LocalTerminalSocket extends EventTarget {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
   onclose: ((event: CloseEvent) => void) | null = null;
+  private input = "";
+  private paneId: string;
+  private sessionId: string;
+  private runtimeId: string;
 
   constructor(url: string) {
     super();
     this.url = url;
+    const parsed = new URL(url);
+    this.paneId = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+    this.sessionId = parsed.searchParams.get("sessionId") ?? `cli_session:${this.paneId}`;
+    this.runtimeId = parsed.searchParams.get("runtimeId") ?? "cli:codex";
     queueMicrotask(() => {
       if (this.readyState !== this.CONNECTING) return;
       this.readyState = this.OPEN;
       this.emit("open", new Event("open"));
-      const parsed = new URL(url);
-      const paneId = decodeURIComponent(parsed.pathname.slice(1));
-      const sessionId = parsed.searchParams.get("sessionId") ?? `cli_session:${paneId}`;
-      const runtimeId = paneId.includes("root") ? "root" : paneId.includes("opencode") ? "opencode" : "codex";
-      this.emit("message", new MessageEvent("message", { data: JSON.stringify({ type: "ready", paneId, sessionId, runtimeId }) }));
+      this.emit("message", new MessageEvent("message", { data: JSON.stringify({ type: "ready", paneId: this.paneId, sessionId: this.sessionId, runtimeId: this.runtimeId }) }));
       this.emit("message", new MessageEvent("message", { data: JSON.stringify({ type: "status", status: "RUNNING", statusReason: "Local demo terminal is ready." }) }));
     });
   }
@@ -89,17 +96,38 @@ class LocalTerminalSocket extends EventTarget {
     if (this.readyState !== this.OPEN || typeof data !== "string") return;
     let payload: { type?: string; data?: string } | null = null;
     try { payload = JSON.parse(data) as { type?: string; data?: string }; } catch { return; }
+    if (payload.type === "ping") {
+      this.emit("message", new MessageEvent("message", { data: JSON.stringify({ type: "pong" }) }));
+      return;
+    }
     if (payload.type !== "input") return;
+    let output = "";
+    for (const char of payload.data ?? "") {
+      if (char === "\u0003") { this.input = ""; output += "^C\r\n> "; }
+      else if (char === "\u007f" || char === "\b") {
+        if (this.input) { this.input = this.input.slice(0, -1); output += "\b \b"; }
+      } else if (char === "\r" || char === "\n") {
+        const command = this.input.trim();
+        this.input = "";
+        output += handleCliMockInput(this.runtimeId, command);
+      } else if (char >= " ") {
+        this.input += char;
+        output += char;
+      }
+    }
+    if (!output) return;
     queueMicrotask(() => {
-      this.emit("message", new MessageEvent("message", { data: JSON.stringify({ type: "output", stream: "stdout", data: `\r\n${DEMO_LOCAL_REPLY}\r\n` }) }));
+      this.emit("message", new MessageEvent("message", { data: JSON.stringify({ type: "output", stream: "stdout", data: output }) }));
     });
   }
 
   close(code = 1000, reason = "Demo socket closed") {
     if (this.readyState === this.CLOSED) return;
     this.readyState = this.CLOSED;
-    const event = new CloseEvent("close", { code, reason, wasClean: true });
-    this.onclose?.(event);
+    const event = typeof CloseEvent !== "undefined"
+      ? new CloseEvent("close", { code, reason, wasClean: true })
+      : Object.assign(new Event("close"), { code, reason, wasClean: true });
+    this.onclose?.(event as CloseEvent);
     this.dispatchEvent(event);
   }
 
@@ -110,11 +138,25 @@ class LocalTerminalSocket extends EventTarget {
   }
 }
 
-export function createDemoRuntime(): { runtime: SpaceRuntime; store: DemoStore } {
-  const store = new DemoStore();
-  const localStorage = new MemoryStorage();
-  const sessionStorage = new MemoryStorage();
-  resetDemoStorage(localStorage, sessionStorage);
+export function createDemoRuntime(options: { fixture?: DemoFixture; localStorage?: Storage; sessionStorage?: Storage } = {}): { runtime: SpaceRuntime; store: DemoStore } {
+  const store = new DemoStore(options.fixture);
+  const localStorage = options.localStorage ?? new MemoryStorage();
+  const sessionStorage = options.sessionStorage ?? new MemoryStorage();
+  if (!options.localStorage) resetDemoStorage(localStorage, sessionStorage);
+  if (options.localStorage) store.restoreSnapshot(localStorage.getItem("workspace.snapshot"));
+  const client = options.localStorage ? new Proxy(store.api, {
+    get(target, property) {
+      const value = Reflect.get(target, property);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        const result = Reflect.apply(value, target, args);
+        if (/^(create|update|set|delete|clear|send|move|close|reorder|save|upload)|^files(Create|Write|Rename|Delete|Upload|Chmod)$|^demo(Save|Start|Stop|Restart|RunTests)/.test(String(property))) {
+          void Promise.resolve(result).then(() => localStorage.setItem("workspace.snapshot", store.snapshot())).catch(() => undefined);
+        }
+        return result;
+      };
+    }
+  }) : store.api;
   let clipboardText = "";
   const reset = () => {
     store.reset();
@@ -134,11 +176,11 @@ export function createDemoRuntime(): { runtime: SpaceRuntime; store: DemoStore }
     userMediaSupported: false,
     peerConnectionSupported: false,
     displayMediaSupported: false,
-    resolveExternalResource: () => null,
+    resolveExternalResource: (url) => options.fixture && /stream|radio.*\.mp3/.test(url) ? `${import.meta.env.BASE_URL}demo/media/space-loop-1.mp3` : null,
     fetch: async () => { throw new TypeError("Demo runtime blocks network requests."); },
     openLink: () => null,
     print: () => undefined,
-    reloadPage: reset,
+    reloadPage: options.localStorage ? () => window.location.reload() : reset,
     getUserMedia: async () => { throw new DOMException("Demo runtime blocks media capture.", "NotAllowedError"); },
     createPeerConnection: () => { throw new DOMException("Demo runtime blocks WebRTC.", "NotAllowedError"); },
     getDisplayMedia: async () => { throw new DOMException("Demo runtime blocks display capture.", "NotAllowedError"); },
@@ -146,10 +188,10 @@ export function createDemoRuntime(): { runtime: SpaceRuntime; store: DemoStore }
   };
   const runtime: SpaceRuntime = {
     kind: "demo",
-    api: store.api,
+    api: client,
     events: { supported: true, open: (url) => new LocalEventSource(url) as unknown as EventSource },
     terminal: { supported: true, connect: (url) => new LocalTerminalSocket(url) as unknown as WebSocket },
-    browser: { supported: false, connect: () => { throw new TypeError("Demo browser uses a local canvas fixture."); } },
+    browser: options.fixture ? { supported: true, connect: url => new MockBrowserSocket(url, client) as unknown as WebSocket } : { supported: false, connect: () => { throw new TypeError("Demo browser uses a local canvas fixture."); } },
     platform,
     reset
   };

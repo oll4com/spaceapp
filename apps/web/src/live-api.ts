@@ -21,7 +21,7 @@ import type {
   DemoVariantFilesResponse,
   DemoLogsResponse
 } from "@space/contracts";
-import type { SystemHealthSnapshot, SystemHealthHistory, SystemHealthRange, SystemTopologySnapshot } from "@space/contracts";
+import type { SystemHealthSnapshot, SystemHealthHistory, SystemHealthRange, SystemTopologySnapshot, SpaceConfigBundle, ImportConfigResult, ImportConfigMode } from "@space/contracts";
 import type { YouTubeAccounts, YouTubeAccountSelection } from "./features/browser-pane/youtube-accounts.js";
 import type { YouTubePlayback } from "./features/browser-pane/youtube-playback.js";
 import type {
@@ -532,6 +532,34 @@ export interface BrowserRecordingManifestPayload {
   frameCount: number;
   startedAt: string;
   finishedAt: string;
+}
+
+export interface ConfigurationInspectResult {
+  valid: boolean;
+  version: string;
+  exportedAt: string;
+  source: {
+    instance: string;
+    exportedBy: string;
+    appVersion?: string;
+  };
+  summary: {
+    roomsCount: number;
+    panesCount: number;
+    hasUserSettings: boolean;
+    userLinksCount: number;
+    clipboardItemsCount: number;
+    taskItemsCount: number;
+    cliRuntimeSettingsCount: number;
+    hasCodexCliModeDefaults: boolean;
+    providersCount: number;
+  };
+  rooms: Array<{
+    id: string;
+    name: string;
+    order: number;
+    panesCount: number;
+  }>;
 }
 
 export type BrowserInputPayload = BrowserRuntimeInput;
@@ -3216,5 +3244,17 @@ export const api = {
     request<{ ok: boolean; uploadedCount: number; files: string[] }>("/api/files/upload", {
       method: "POST",
       body: formData
+    }),
+  exportConfigurationUrl: "/api/configuration/export",
+  exportConfiguration: () => request<SpaceConfigBundle>("/api/configuration/export", { cache: "no-store" }),
+  inspectConfiguration: (bundle: unknown) =>
+    request<ConfigurationInspectResult>("/api/configuration/inspect", {
+      method: "POST",
+      body: JSON.stringify({ bundle })
+    }),
+  importConfiguration: (input: { bundle: unknown; mode?: ImportConfigMode; targetUserId?: string }) =>
+    request<ImportConfigResult>("/api/configuration/import", {
+      method: "POST",
+      body: JSON.stringify(input)
     })
 };

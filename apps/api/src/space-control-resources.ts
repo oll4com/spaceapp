@@ -1,25 +1,46 @@
 import { readFile, readdir, realpath } from "node:fs/promises";
-import { join,resolve,sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { SpaceConflictError } from "@space/runtime";
 import type { ControlAction } from "@space/contracts";
+import { pluginsService } from "./plugins-service.js";
+
 // Only installed Space skill directories. No arbitrary path or file reads.
-const skillRoots=["/var/lib/spaceapp-user/.codex/skills","/var/lib/spaceapp-user/.agents/skills"];
-export async function controlSkills(name?:string){
- const entries:Array<{name:string;root:string}>=[];
- for(const root of skillRoots){
-  for(const entry of await readdir(root,{withFileTypes:true}).catch(()=>[])){
-   if(!/^space[-a-z0-9]*$/.test(entry.name)&&entry.name!=="run-spaceapp-devtest")continue;
-   if(!entries.some(e=>e.name===entry.name))entries.push({name:entry.name,root});
+const skillRoots = [
+  "/var/lib/spaceapp-user/.codex/skills",
+  "/var/lib/spaceapp-user/.agents/skills",
+  "/var/lib/spaceapp-cli/.codex/skills",
+  "/var/lib/spaceapp-cli/.agents/skills"
+];
+
+export async function controlSkills(name?: string) {
+  const entries: Array<{ name: string; root: string }> = [];
+  for (const root of skillRoots) {
+    for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
+      if (!/^space[-a-z0-9]*$/.test(entry.name) && entry.name !== "run-spaceapp-devtest") continue;
+      if (!entries.some((e) => e.name === entry.name)) entries.push({ name: entry.name, root });
+    }
   }
- }
- if(!name)return {skills:entries.map(({name})=>({name})),source:"installed Space skills"};
- const entry=entries.find(e=>e.name===name);if(!entry)throw new SpaceConflictError("Skill is not in the installed Space catalog.");
- const path=await realpath(join(entry.root,entry.name,"SKILL.md"));
- const allowed=[...skillRoots,"/opt/spaceapp/agent-skills","/var/lib/spaceapp-user/.codex/skill-bundles"];
- if(!allowed.some(root=>path.startsWith(resolve(root)+sep)))throw new SpaceConflictError("Installed skill target is outside approved roots.");
- const text=await readFile(path,"utf8");if(text.length>100_000)throw new SpaceConflictError("Skill exceeds the content limit.");
- return {name,content:text,source:"installed Space skill"};
+  const enabledEntries: Array<{ name: string; root: string }> = [];
+  for (const entry of entries) {
+    if (await pluginsService.isSkillEnabled(entry.name)) {
+      enabledEntries.push(entry);
+    }
+  }
+  if (!name) return { skills: enabledEntries.map(({ name }) => ({ name })), source: "installed Space skills" };
+  const entry = enabledEntries.find((e) => e.name === name);
+  if (!entry) throw new SpaceConflictError("Skill is not in the installed Space catalog or has been disabled in Plugins settings.");
+  const path = await realpath(join(entry.root, entry.name, "SKILL.md"));
+  const allowed = [
+    ...skillRoots,
+    "/opt/spaceapp/agent-skills",
+    "/app/agent-skills",
+    "/var/lib/spaceapp-user/.codex/skill-bundles"
+  ];
+  if (!allowed.some((root) => path.startsWith(resolve(root) + sep))) throw new SpaceConflictError("Installed skill target is outside approved roots.");
+  const text = await readFile(path, "utf8");
+  if (text.length > 100_000) throw new SpaceConflictError("Skill exceeds the content limit.");
+  return { name, content: text, source: "installed Space skill" };
 }
 export type ResourceAction=Extract<ControlAction,{kind:"resource"}>;
 export const controlResourceRoutes:Partial<Record<ResourceAction["operation"],{method:"GET"|"POST"|"PATCH"|"PUT"|"DELETE";path:string;scope?:"pane"|"artifact"}>>={

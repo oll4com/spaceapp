@@ -108,6 +108,7 @@ import {
   spaceAgentRunRecordSchema,
   spaceAgentSessionRecordSchema,
   sourceControlConnectionSchema,
+  spaceConfigBundleSchema,
   sourceControlProviderSchema,
   updateProviderInputSchema,
   updateProviderSettingsInputSchema,
@@ -277,6 +278,11 @@ import type {
   SpaceAgentMessageRecord,
   SpaceAgentRunRecord,
   SpaceAgentSessionRecord,
+  SpaceConfigBundle,
+  SpaceConfigRoom,
+  ExportConfigOptions,
+  ImportConfigOptions,
+  ImportConfigResult,
   SourceControlConnection,
   SourceControlProvider,
   SourceControlVerificationCode,
@@ -1278,6 +1284,8 @@ export interface SpaceStore {
   postSwarmMessage(input: PostSwarmMessageInput, traceId?: string): MaybePromise<SwarmMessageRecord>;
   createSwarmReconcile(input: CreateSwarmReconcileInput, traceId?: string): MaybePromise<SwarmReconcileRecord>;
   getSwarmState(roomId?: string): MaybePromise<SwarmState>;
+  exportConfigurationBundle(options: ExportConfigOptions): MaybePromise<SpaceConfigBundle>;
+  importConfigurationBundle(bundle: SpaceConfigBundle, options: ImportConfigOptions): MaybePromise<ImportConfigResult>;
 }
 
 export class SpaceConflictError extends Error {
@@ -8316,5 +8324,305 @@ export class InMemorySpaceStore implements SpaceStore {
       throw new SpaceNotFoundError(`Swarm lock ${lockId} was not found in room ${roomId}.`);
     }
     return lock;
+  }
+
+  async exportConfigurationBundle(options: ExportConfigOptions): Promise<SpaceConfigBundle> {
+    const userId = options.userId;
+    const rooms = this.listRooms(userId ?? null);
+    const configRooms: SpaceConfigRoom[] = [];
+    let totalPanes = 0;
+    for (const room of rooms) {
+      const panes = this.listPanes(room.id, options.includeClosedPanes ?? true);
+      totalPanes += panes.length;
+      configRooms.push({
+        ...room,
+        panes
+      });
+    }
+
+    let userSettings: UserSettings | undefined;
+    if (userId) {
+      try {
+        userSettings = this.getUserSettings(userId);
+      } catch {}
+    }
+
+    let userLinks: UserLink[] = [];
+    if (userId) {
+      let page = 1;
+      while (true) {
+        const res = this.listUserLinks(userId, { isQuick: undefined, page, pageSize: 100 });
+        if (!res.items.length) break;
+        userLinks.push(...res.items);
+        if (userLinks.length >= res.total) break;
+        page++;
+      }
+    }
+
+    let clipboardItems: ClipboardItem[] = [];
+    if (userId) {
+      let page = 1;
+      while (true) {
+        const res = this.listClipboardItems(userId, { page, pageSize: 100 });
+        if (!res.items.length) break;
+        clipboardItems.push(...res.items);
+        if (clipboardItems.length >= res.total) break;
+        page++;
+      }
+    }
+
+    let taskItems: TaskItem[] = [];
+    if (userId) {
+      let page = 1;
+      while (true) {
+        const res = this.listTaskItems(userId, { page, pageSize: 100 });
+        if (!res.items.length) break;
+        taskItems.push(...res.items);
+        if (taskItems.length >= res.total) break;
+        page++;
+      }
+    }
+
+    const cliRuntimeSettings = this.listCliRuntimeSettings();
+    let codexCliModeDefaults: CodexCliModeDefaults | undefined;
+    try {
+      codexCliModeDefaults = this.getCodexCliModeDefaults();
+    } catch {}
+
+    const providers = this.listProviders();
+    let providerSettings: ProviderSettings | undefined;
+    try {
+      providerSettings = this.getProviderSettings();
+    } catch {}
+
+    return {
+      format: "spaceapp-configuration-bundle",
+      version: "1.0.0",
+      exportedAt: nowIso(),
+      source: {
+        instance: process.env.SPACE_INSTANCE_NAME || "local",
+        exportedBy: userId ?? "operator",
+        appVersion: process.env.SPACE_APP_VERSION || "v1.0.35"
+      },
+      metadata: {
+        roomsCount: configRooms.length,
+        panesCount: totalPanes,
+        userLinksCount: userLinks.length,
+        clipboardItemsCount: clipboardItems.length,
+        taskItemsCount: taskItems.length,
+        cliRuntimesCount: cliRuntimeSettings.length,
+        providersCount: providers.length
+      },
+      data: {
+        userSettings,
+        rooms: configRooms,
+        userLinks,
+        clipboardItems,
+        taskItems,
+        cliRuntimeSettings,
+        codexCliModeDefaults,
+        providerSettings,
+        providers
+      }
+    };
+  }
+
+  async importConfigurationBundle(
+    bundle: SpaceConfigBundle,
+    options: ImportConfigOptions
+  ): Promise<ImportConfigResult> {
+    const parsedBundle = spaceConfigBundleSchema.parse(bundle);
+    const targetUserId = options.targetUserId || parsedBundle.source.exportedBy || "user:operator";
+    const mode = options.mode || "replace";
+    const warnings: string[] = [];
+
+    if (mode === "replace") {
+      for (const [roomId, room] of this.rooms.entries()) {
+        if (room.ownerUserId === targetUserId) {
+          this.rooms.delete(roomId);
+          for (const [paneId, pane] of this.panes.entries()) {
+            if (pane.roomId === roomId) {
+              this.panes.delete(paneId);
+            }
+          }
+        }
+      }
+      for (const [id, rec] of this.clipboardItems.entries()) {
+        if (rec.ownerUserId === targetUserId) {
+          this.clipboardItems.delete(id);
+        }
+      }
+      for (const [id, rec] of this.userLinks.entries()) {
+        if (rec.ownerUserId === targetUserId) {
+          this.userLinks.delete(id);
+        }
+      }
+      for (const [id, rec] of this.taskItems.entries()) {
+        if (rec.ownerUserId === targetUserId) {
+          this.taskItems.delete(id);
+        }
+      }
+    }
+
+    const roomIdMap = new Map<string, string>();
+    const paneIdMap = new Map<string, string>();
+    let roomsImported = 0;
+    let panesImported = 0;
+
+    let baseOrder = 0;
+    if (mode === "merge") {
+      let maxOrder = -1;
+      for (const room of this.rooms.values()) {
+        if (room.order > maxOrder) maxOrder = room.order;
+      }
+      baseOrder = maxOrder + 1;
+    }
+
+    for (let rIdx = 0; rIdx < parsedBundle.data.rooms.length; rIdx++) {
+      const room = parsedBundle.data.rooms[rIdx]!;
+      const newRoomId = mode === "merge" ? `room:${nanoid(12)}` : room.id;
+      roomIdMap.set(room.id, newRoomId);
+      const assignedOrder = mode === "merge" ? baseOrder + rIdx : room.order;
+
+      this.rooms.set(newRoomId, {
+        ...room,
+        id: newRoomId,
+        ownerUserId: targetUserId,
+        order: assignedOrder,
+        updatedAt: nowIso()
+      });
+      roomsImported++;
+
+      for (const pane of room.panes ?? []) {
+        const newPaneId = mode === "merge" ? `pane:${nanoid(12)}` : pane.id;
+        paneIdMap.set(pane.id, newPaneId);
+        let cwd = pane.cwd;
+        if (options.pathRewrite && cwd) {
+          cwd = cwd.replace(options.pathRewrite.from, options.pathRewrite.to);
+        }
+        this.panes.set(newPaneId, {
+          ...pane,
+          id: newPaneId,
+          roomId: newRoomId,
+          cwd,
+          status: pane.status === "CLOSED" ? "CLOSED" : "IDLE",
+          updatedAt: nowIso()
+        });
+        panesImported++;
+      }
+    }
+
+    let settingsUpdated = false;
+    if (parsedBundle.data.userSettings) {
+      this.userSettings.set(targetUserId, {
+        ...parsedBundle.data.userSettings,
+        updatedAt: nowIso()
+      });
+      settingsUpdated = true;
+    }
+
+    let linksImported = 0;
+    for (const link of parsedBundle.data.userLinks ?? []) {
+      const linkId = mode === "merge" ? `link:${nanoid(12)}` : link.id;
+      this.userLinks.set(linkId, {
+        ownerUserId: targetUserId,
+        item: {
+          ...link,
+          id: linkId
+        }
+      });
+      linksImported++;
+    }
+
+    let clipboardImported = 0;
+    for (const item of parsedBundle.data.clipboardItems ?? []) {
+      const clipId = mode === "merge" ? `clipboard:${nanoid(12)}` : item.id;
+      const remappedRoomId = item.roomId ? roomIdMap.get(item.roomId) ?? null : null;
+      const remappedPaneId = item.paneId ? paneIdMap.get(item.paneId) ?? null : null;
+      const contentHash = createHash("sha256").update(item.text).digest("hex");
+      this.clipboardSequence += 1;
+      this.clipboardItems.set(clipId, {
+        ownerUserId: targetUserId,
+        contentHash,
+        sequence: this.clipboardSequence,
+        item: {
+          ...item,
+          id: clipId,
+          roomId: remappedRoomId,
+          paneId: remappedPaneId
+        }
+      });
+      clipboardImported++;
+    }
+
+    let tasksImported = 0;
+    for (const task of parsedBundle.data.taskItems ?? []) {
+      const taskId = mode === "merge" ? `task:${nanoid(12)}` : task.id;
+      const remappedRoomId = task.roomId ? roomIdMap.get(task.roomId) ?? null : null;
+      const remappedPaneId = task.paneId ? paneIdMap.get(task.paneId) ?? null : null;
+      const taskContentHash = createHash("sha256").update(task.objective).digest("hex");
+      this.taskSequence += 1;
+      this.taskItems.set(taskId, {
+        ownerUserId: targetUserId,
+        contentHash: taskContentHash,
+        sequence: this.taskSequence,
+        item: {
+          ...task,
+          id: taskId,
+          roomId: remappedRoomId,
+          paneId: remappedPaneId
+        }
+      });
+      tasksImported++;
+    }
+
+    let cliRuntimesImported = 0;
+    for (const setting of parsedBundle.data.cliRuntimeSettings ?? []) {
+      this.cliRuntimeSettings.set(setting.runtimeId, {
+        ...setting,
+        updatedAt: nowIso(),
+        updatedBy: targetUserId
+      });
+      cliRuntimesImported++;
+    }
+
+    if (parsedBundle.data.codexCliModeDefaults) {
+      this.codexCliModeDefaults = {
+        ...parsedBundle.data.codexCliModeDefaults,
+        updatedAt: nowIso()
+      };
+    }
+
+    let providersImported = 0;
+    for (const prov of parsedBundle.data.providers ?? []) {
+      if (!prov.isBuiltIn) {
+        this.providers = this.providers.filter((p) => p.id !== prov.id).concat(prov);
+        providersImported++;
+      }
+    }
+
+    if (parsedBundle.data.providerSettings) {
+      this.providerSettings = {
+        ...parsedBundle.data.providerSettings,
+        updatedAt: nowIso()
+      };
+    }
+
+    return {
+      success: true,
+      mode,
+      targetUserId,
+      stats: {
+        roomsImported,
+        panesImported,
+        linksImported,
+        clipboardImported,
+        tasksImported,
+        settingsUpdated,
+        cliRuntimesImported,
+        providersImported
+      },
+      warnings
+    };
   }
 }

@@ -1,0 +1,42 @@
+# Public mock only: local previews and uploads must work inside this directory.
+Options -Indexes
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTP:Accept-Encoding} \bbr\b
+    RewriteCond %{REQUEST_FILENAME}.br -s
+    RewriteRule ^(assets/.+\.(js|css))$ $1.br [L]
+    RewriteCond %{HTTP:Accept-Encoding} \bgzip\b
+    RewriteCond %{REQUEST_FILENAME}.gz -s
+    RewriteRule ^(assets/.+\.(js|css))$ $1.gz [L]
+</IfModule>
+<FilesMatch "\.js\.(br|gz)$">
+    ForceType application/javascript
+</FilesMatch>
+<FilesMatch "\.css\.(br|gz)$">
+    ForceType text/css
+</FilesMatch>
+<IfModule mod_deflate.c>
+    # This Apache host does not automatically negotiate the bundled .gz/.br siblings.
+    AddOutputFilterByType DEFLATE text/html text/css text/javascript application/javascript application/json image/svg+xml
+    SetEnvIf Request_URI "\.(br|gz)$" no-gzip
+</IfModule>
+<IfModule mod_headers.c>
+    Header always set Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; frame-src 'self' blob: data:; form-action 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' data: blob:; worker-src 'self' blob:; manifest-src 'self'"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Cross-Origin-Resource-Policy "same-origin"
+    <FilesMatch "\.(br|gz)$">
+        Header always merge Vary "Accept-Encoding"
+    </FilesMatch>
+    <FilesMatch "\.br$">
+        Header always set Content-Encoding "br"
+    </FilesMatch>
+    <FilesMatch "\.gz$">
+        Header always set Content-Encoding "gzip"
+    </FilesMatch>
+    <FilesMatch "-[A-Za-z0-9_-]{8,}\.(js|css)(\.(gz|br))?$">
+        Header always set Cache-Control "public, max-age=31536000, immutable"
+    </FilesMatch>
+    <FilesMatch "^(index\.html|mock\.html|mock-loader\.js|mock-worker\.js|mock-version\.json|demo-bundle-boundary\.json|.*-preview\.(html|js))(\.(gz|br))?$">
+        Header always set Cache-Control "no-cache, no-transform"
+    </FilesMatch>
+</IfModule>

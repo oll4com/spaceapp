@@ -1,0 +1,1 @@
+document.querySelector('#files').onclick=()=>{document.querySelector('#title').textContent='Files';document.querySelector('textarea').value='Workspace\n  README.md\n  docs/\n  launch-brief.md'};document.querySelector('#terminal').onclick=()=>{document.querySelector('#title').textContent='Terminal';document.querySelector('textarea').value='demo@space:~$ '};

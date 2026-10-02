@@ -1,4 +1,4 @@
-import { taskTitleSettingsSchema, shortTaskTitle } from "@space/contracts";
+import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, artifactSchema } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
 import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema } from "@space/contracts";
 import type {
@@ -48,6 +48,8 @@ import type { SpaceApiClient } from "../runtime/SpaceRuntime.js";
 import { DEMO_LOCAL_REPLY, SpaceApiError } from "../runtime/SpaceRuntime.js";
 import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-presentation.js";
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
+import { MockServices } from "./mock-services.js";
+import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
 
 export const DEMO_WARNING = "DEMO MODE — Everything is simulated locally. No production service is connected.";
 export { DEMO_LOCAL_REPLY } from "../runtime/SpaceRuntime.js";
@@ -210,22 +212,71 @@ export class DemoStore {
   private streamingBotSettings = initialStreamingBotSettings();
   private streamingBotStatus = initialStreamingBotStatus();
   readonly api: SpaceApiClient;
+  private mockServices = new MockServices(() => this.fixture);
+  private readonly publicMock: boolean;
+  private readonly initialFixture: DemoFixture;
 
-  constructor() {
+  constructor(initialFixture?: DemoFixture) {
+    this.publicMock = initialFixture !== undefined;
+    if (initialFixture) this.fixture = structuredClone(initialFixture);
+    this.initialFixture = structuredClone(this.fixture);
     this.api = new Proxy({} as SpaceApiClient, {
-      get: (_target, property) => (...args: unknown[]) => {
+      get: (_target, property) => {
+        if (this.publicMock && property === "harnessUrl") return `${import.meta.env.BASE_URL}demo/media/harness-preview.html`;
+        return (...args: unknown[]) => {
         const method = String(property);
+        if (this.publicMock) {
+          try {
+            const extra = this.mockServices.invoke(method, args);
+            if (extra.handled) return method.endsWith("Url") ? extra.value : Promise.resolve(extra.value);
+          } catch (error) {
+            if (method.endsWith("Url")) throw error;
+            return Promise.reject(error);
+          }
+        }
         if (["artifactFileUrl", "agentFilePreviewUrl", "agentFileDownloadUrl", "browserBookmarksExportUrl", "browserFrameWebSocketUrl", "browserStreamWebSocketUrl", "cliRuntimesSnapshot", "cliRuntimeSettingsSnapshot", "cliTerminalWebSocketUrl", "eventStreamUrl", "invalidateCliRuntimes", "invalidateCliRuntimeSettings", "openSetupConnectionCheckStream", "resetCliRuntimeSettingsCache", "setCliTerminalControlLease", "warmCliRuntimes", "warmCliRuntimeSettings"].includes(method)) {
           return this.invoke(method, args);
         }
         return Promise.resolve().then(() => this.invoke(method, args));
+        };
       }
     });
   }
 
+  snapshot(): string {
+    return JSON.stringify({ version: 1, sequence: this.sequence, rooms: this.fixture.rooms, panes: this.fixture.panes,
+      links: this.fixture.links, clipboardItems: this.fixture.clipboardItems, taskItems: this.fixture.taskItems,
+      settings: this.fixture.auth.settings, artifacts: this.fixture.artifacts, messages: [...this.agentMessages], services: this.mockServices.snapshot() });
+  }
+
+  restoreSnapshot(value: string | null): void {
+    if (!value) return;
+    try {
+      const state = JSON.parse(value);
+      if (state.version !== 1 || !Array.isArray(state.rooms) || !state.rooms.length || !Array.isArray(state.panes)) return;
+      const rooms = state.rooms.map((value: unknown) => roomSchema.parse(value));
+      const panes = state.panes.map((value: unknown) => paneSchema.parse(value));
+      const ids = new Set(rooms.map((r: Room) => r.id));
+      if (!panes.every((p: Pane) => ids.has(p.roomId))) return;
+      const links = state.links?.map((value: unknown) => userLinkSchema.parse(value)) ?? this.fixture.links;
+      const clipboardItems = state.clipboardItems?.map((value: unknown) => clipboardItemSchema.parse(value)) ?? this.fixture.clipboardItems;
+      const taskItems = state.taskItems?.map((value: unknown) => taskItemSchema.parse(value)) ?? this.fixture.taskItems;
+      const settings = state.settings ? userSettingsSchema.parse(state.settings) : this.fixture.auth.settings;
+      const artifacts = state.artifacts?.map((value: unknown) => artifactSchema.parse(value)) ?? this.fixture.artifacts;
+      this.fixture.rooms = rooms; this.fixture.panes = panes;
+      this.fixture.links = links; this.fixture.clipboardItems = clipboardItems; this.fixture.taskItems = taskItems;
+      this.fixture.auth.settings = settings;
+      this.fixture.artifacts = artifacts;
+      if (Array.isArray(state.messages) && state.messages.every((row: any) => Array.isArray(row) && typeof row[0] === "string" && Array.isArray(row[1]))) this.agentMessages = new Map(state.messages);
+      this.mockServices.restore(state.services);
+      if (Number.isSafeInteger(state.sequence) && state.sequence >= 0) this.sequence = state.sequence;
+    } catch { /* Invalid cached workspaces start with the current fixture. */ }
+  }
+
   reset(): void {
     this.toolRoutingState = defaultToolRoutingState();
-    this.fixture = cloneFixture();
+    this.fixture = structuredClone(this.initialFixture);
+    this.mockServices = new MockServices(() => this.fixture);
     this.sequence = 0;
     this.cliRuntimeEnabled = new Map(cliToggleRuntimeIds.map((runtimeId) => [runtimeId, true]));
     this.agentMessages.clear();
@@ -285,13 +336,19 @@ export class DemoStore {
   private agentSession(paneId: string): AgentPaneSession {
     const pane = this.fixture.panes.find((candidate) => candidate.id === paneId);
     const roomId = pane?.roomId ?? this.fixture.rooms[0]!.id;
-    const messages = this.agentMessages.get(paneId) ?? [{
+    const messages = this.agentMessages.get(paneId) ?? (this.publicMock && paneId === "pane:demo-research-chat" ? [{
+      id: `agent_message:${paneId}:brief`, role: "user" as const,
+      content: "Review the public launch workspace.", status: "COMPLETED" as const, createdAt: DEMO_FIXED_AT
+    }, {
+      id: `agent_message:${paneId}:reply`, role: "assistant" as const,
+      content: DEMO_LOCAL_REPLY, status: "COMPLETED" as const, createdAt: DEMO_FIXED_AT
+    }] : [{
       id: `agent_message:${paneId}:welcome`,
       role: "assistant" as const,
       content: "Welcome to the deterministic Space demo. Explore the real workspace controls safely.",
       status: "COMPLETED" as const,
       createdAt: DEMO_FIXED_AT
-    }];
+    }]);
     this.agentMessages.set(paneId, messages);
     const selectedToolIds = this.agentSelectedToolIds.get(paneId) ?? ["space-readonly:space_status"];
     return {
@@ -374,8 +431,12 @@ export class DemoStore {
 
   private cliSession(paneId: string) {
     const pane = this.fixture.panes.find((candidate) => candidate.id === paneId) ?? this.fixture.panes.find((candidate) => candidate.mode === "TERMINAL")!;
-    const runtimeId = pane.terminalRuntimeId ?? "codex";
+    const runtimeId = pane.terminalRuntimeId ?? "cli:codex";
     const sessionId = `cli_session:${pane.id}`;
+    const mockDef = getCliMockDefinition(runtimeId);
+    const content = this.publicMock
+      ? getCliMockTranscript(runtimeId)
+      : `Space ${runtimeId} demo ready. Commands stay inside this browser.\r\n${DEMO_LOCAL_REPLY}\r\n`;
     return {
       session: {
         sessionId,
@@ -383,10 +444,10 @@ export class DemoStore {
         roomId: pane.roomId,
         runtimeId,
         providerId: "demo-local",
-        agentId: runtimeId,
-        modelId: "gpt-5.6-sol",
+        agentId: runtimeId.replace(/^cli:/, ""),
+        modelId: mockDef.modelId,
         reasoningEffort: "high",
-        cwd: "/workspace/space-demo",
+        cwd: mockDef.cwd,
         codexThreadId: null,
         status: "RUNNING",
         statusReason: "Local deterministic terminal controller.",
@@ -400,15 +461,15 @@ export class DemoStore {
         id: runtimeId,
         providerId: "demo-local",
         providerName: "Space Demo",
-        agentId: runtimeId,
-        agentName: runtimeId === "root" ? "Root shell" : `${runtimeId} CLI`,
-        displayName: runtimeId === "root" ? "Root CLI" : runtimeId === "opencode" ? "OpenCode CLI" : "Codex CLI",
+        agentId: runtimeId.replace(/^cli:/, ""),
+        agentName: mockDef.displayName,
+        displayName: mockDef.displayName,
         capabilities: ["CLI"],
         status: "READY",
-        statusReason: "Simulated locally; no process is running.",
-        commandName: null,
-        detectedCommandPath: null,
-        defaultModelId: "gpt-5.6-sol",
+        statusReason: "Available in the local deterministic demo.",
+        commandName: runtimeId === "cli:root" ? "/bin/bash" : runtimeId.replace(/^cli:/, ""),
+        detectedCommandPath: `/demo/bin/${runtimeId.replace(/^cli:/, "")}`,
+        defaultModelId: mockDef.modelId,
         supportedReasoningEfforts: ["medium", "high", "xhigh"],
         checkedAt: DEMO_FIXED_AT
       },
@@ -419,8 +480,8 @@ export class DemoStore {
         roomId: pane.roomId,
         sequence: 0,
         stream: "system",
-        content: `Space ${runtimeId} demo ready. Commands stay inside this browser.\r\n${DEMO_LOCAL_REPLY}\r\n`,
-        byteLength: DEMO_LOCAL_REPLY.length + 64,
+        content,
+        byteLength: content.length,
         hostGenerationId: null,
         hostOutputSequence: null,
         createdAt: DEMO_FIXED_AT
@@ -1524,7 +1585,8 @@ export class DemoStore {
       case "cliTurnActivity": return Promise.resolve({ marker: String(args[1]), status: "COMPLETED", turnId: null });
       case "cliTerminalWebSocketUrl": {
         const ticket = args[0] as { paneId: string; sessionId: string };
-        return `demo-terminal://local/${encodeURIComponent(ticket.paneId)}?sessionId=${encodeURIComponent(ticket.sessionId)}`;
+        const runtimeId = this.cliSession(ticket.paneId).session.runtimeId;
+        return `demo-terminal://local/${encodeURIComponent(ticket.paneId)}?sessionId=${encodeURIComponent(ticket.sessionId)}&runtimeId=${encodeURIComponent(runtimeId)}`;
       }
       case "youtubePlayback": return { playback: null };
       case "saveYouTubePlayback": return { ok: true };
@@ -1651,7 +1713,7 @@ export class DemoStore {
         Object.assign(link, input, { url, openMode, updatedAt: DEMO_FIXED_AT });
         return Promise.resolve(structuredClone(link));
       }
-      case "deleteLink": return Promise.resolve({ id: roomId!, deleted: true as const });
+      case "deleteLink": if (this.publicMock) this.fixture.links = this.fixture.links.filter(item => item.id !== roomId); return Promise.resolve({ id: roomId!, deleted: true as const });
       case "clipboardItems": {
         const query = (args[0] ?? {}) as { q?: string; source?: ClipboardItem["source"]; includeCompleted?: boolean; page?: number; pageSize?: number };
         const needle = query.q?.trim().toLowerCase();
@@ -1707,8 +1769,8 @@ export class DemoStore {
         if (item.progressPercentage === 100) item.isCompleted = true;
         return Promise.resolve(structuredClone(item));
       }
-      case "deleteClipboardItem": return Promise.resolve({ id: roomId!, deleted: true as const });
-      case "clearClipboardItems": return Promise.resolve({ deletedCount: 0 });
+      case "deleteClipboardItem": if (this.publicMock) this.fixture.clipboardItems = this.fixture.clipboardItems.filter(item => item.id !== roomId); return Promise.resolve({ id: roomId!, deleted: true as const });
+      case "clearClipboardItems": { const deletedCount = this.publicMock ? this.fixture.clipboardItems.length : 0; if (this.publicMock) this.fixture.clipboardItems = []; return Promise.resolve({ deletedCount }); }
       case "taskItems": {
         const query = (args[0] ?? {}) as { q?: string; status?: TaskItem["status"]; page?: number; pageSize?: number };
         const needle = query.q?.trim().toLowerCase();
@@ -1748,8 +1810,8 @@ export class DemoStore {
         });
         return Promise.resolve(structuredClone(task));
       }
-      case "deleteTaskItem": return Promise.resolve({ id: roomId!, deleted: true as const });
-      case "clearTaskItems": return Promise.resolve({ deletedCount: 0 });
+      case "deleteTaskItem": if (this.publicMock) this.fixture.taskItems = this.fixture.taskItems.filter(item => item.id !== roomId); return Promise.resolve({ id: roomId!, deleted: true as const });
+      case "clearTaskItems": { const deletedCount = this.publicMock ? this.fixture.taskItems.length : 0; if (this.publicMock) this.fixture.taskItems = []; return Promise.resolve({ deletedCount }); }
       case "createRoom": {
         const name = String(args[0] ?? "Demo room").trim() || "Demo room";
         const initialPaneCount = Math.min(16, Math.max(0, Number(args[1] ?? 4)));
@@ -1821,6 +1883,9 @@ export class DemoStore {
           if (item.mode === "FILES") {
             return this.addPane(targetRoomId, `Files ${finalNumber}`, "FILES", {});
           }
+          if (item.mode === "DEMOS") {
+            return this.addPane(targetRoomId, `Demo Projects ${finalNumber}`, "DEMOS", {});
+          }
           const runtimeName = item.mode === "TERMINAL" ? cliRuntimeLabel(item.terminalRuntimeId)! : "Terminal";
           return this.addPane(targetRoomId, `${runtimeName} ${finalNumber}`, "TERMINAL", {
             cwd: "/etc",
@@ -1837,9 +1902,11 @@ export class DemoStore {
       }
       case "movePane": {
         const pane = this.fixture.panes.find((candidate) => candidate.id === roomId)!;
+        const sourceRoomId = pane.roomId;
+        const sourcePane = structuredClone(pane);
         pane.roomId = String(args[1]);
         pane.order = this.fixture.panes.filter((candidate) => candidate.roomId === pane.roomId).length - 1;
-        return Promise.resolve({ pane: structuredClone(pane), sourceRoomId: roomId, targetRoomId: pane.roomId });
+        return Promise.resolve({ pane: structuredClone(pane), sourcePane, targetPane: structuredClone(pane), sourceRoom: structuredClone(this.fixture.rooms.find(r => r.id === sourceRoomId)), targetRoom: structuredClone(this.fixture.rooms.find(r => r.id === pane.roomId)), sourceRoomId, targetRoomId: pane.roomId });
       }
       case "closePane": {
         const pane = this.fixture.panes.find((candidate) => candidate.id === roomId)!;
@@ -2094,6 +2161,10 @@ export class DemoStore {
   }
 
   private fallback(method: string): unknown {
+    if (this.publicMock && typeof window !== "undefined") {
+      const record = window as Window & { __spaceMockMissingMethods?: string[] };
+      record.__spaceMockMissingMethods = [...new Set([...(record.__spaceMockMissingMethods ?? []), method])];
+    }
     if (method.startsWith("create") || method.startsWith("update") || method.startsWith("delete") || method.startsWith("execute") || method.startsWith("restart") || method.startsWith("reclaim") || method.startsWith("switch") || method.startsWith("reap")) {
       return { ok: true, status: "SIMULATED", message: DEMO_LOCAL_REPLY, updatedAt: DEMO_FIXED_AT, data: [] };
     }

@@ -70,8 +70,8 @@ export function getSpaceRuntime(): SpaceRuntime {
   return installedRuntime;
 }
 
-export function getSpaceRuntimeKind(): SpaceRuntime["kind"] {
-  return getSpaceRuntime().kind;
+export function getSpaceRuntimeKind(): SpaceRuntime["kind"] | null {
+  return installedRuntime?.kind ?? null;
 }
 
 export function resolveExternalResource(url: string): string | null {

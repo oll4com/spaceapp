@@ -40,7 +40,7 @@ export function DateTimeSettingsCard({ userId }: { userId?: string }) {
           <button
             type="button"
             className="date-time-reset-btn"
-            title="Reset to defaults (Thailand UTC+7, 24-hour & DD/MM/YYYY)"
+            title="Reset to defaults (UTC, 24-hour & DD/MM/YYYY)"
             aria-label="Reset date and time settings to defaults"
             onClick={() => updateSettings(defaultDateTimeSettings)}
           >

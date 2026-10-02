@@ -63,6 +63,41 @@ export function registerPluginRoutes(app: FastifyInstance, rateLimitOptions: Rec
     return await pluginsService.testConnection(params.data.id);
   });
 
+  // Upgrade all plugins with available updates
+  app.post("/api/plugins/upgrade-all", rateLimitOptions, async () => {
+    return await pluginsService.upgradeAllPlugins();
+  });
+
+  // Update plugin to latest version
+  app.post("/api/plugins/:id/update", rateLimitOptions, async (request, reply) => {
+    const params = pluginIdParamSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: "INVALID_PARAM", message: "Invalid plugin id" });
+    }
+
+    try {
+      return await pluginsService.updatePlugin(params.data.id);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to update plugin";
+      return reply.code(400).send({ error: "UPDATE_FAILED", message });
+    }
+  });
+
+  // Check plugin for updates
+  app.post("/api/plugins/:id/check-update", rateLimitOptions, async (request, reply) => {
+    const params = pluginIdParamSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: "INVALID_PARAM", message: "Invalid plugin id" });
+    }
+
+    try {
+      return await pluginsService.checkPluginUpdate(params.data.id);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to check update";
+      return reply.code(400).send({ error: "CHECK_UPDATE_FAILED", message });
+    }
+  });
+
   // Get agent plugin config
   app.get("/api/plugins/agent/:paneId", rateLimitOptions, async (request, reply) => {
     const params = paneIdParamSchema.safeParse(request.params);

@@ -371,6 +371,16 @@ updateStreamingOverlaySettingsInputSchema,
   updateProviderInputSchema,
   updateProviderSettingsInputSchema,
   updateUserSettingsInputSchema,
+  exportConfigOptionsSchema,
+  importConfigOptionsSchema,
+  importConfigRequestSchema,
+  importConfigResultSchema,
+  spaceConfigBundleSchema,
+  type SpaceConfigBundle,
+  type ExportConfigOptions,
+  type ImportConfigOptions,
+  type ImportConfigRequest,
+  type ImportConfigResult,
   userSettingsSchema,
   voiceTranscriptionMaxBytes,
   voiceRealtimeSessionRequestSchema,
@@ -17456,6 +17466,97 @@ app.post(
     });
     return updated;
   });
+
+  const configurationRouteRateLimitOptions = {
+    ...defaultRouteRateLimitOptions,
+    bodyLimit: 50 * 1024 * 1024
+  };
+
+  app.get("/api/configuration/export", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
+    const bundle = await store.exportConfigurationBundle({
+      userId: request.user.id
+    });
+    const filename = `spaceapp-config-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    reply.header("Content-Disposition", `attachment; filename="${filename}"`);
+    reply.header("Content-Type", "application/json; charset=utf-8");
+    return bundle;
+  });
+
+  app.post("/api/configuration/export", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
+    const input = parseBody(exportConfigOptionsSchema, request.body ?? {});
+    const isAdmin = request.user.role === "ADMIN" || request.user.role === "OPERATOR";
+    const userId = (isAdmin && input.userId) ? input.userId : request.user.id;
+    const bundle = await store.exportConfigurationBundle({
+      ...input,
+      userId
+    });
+    return bundle;
+  });
+
+  app.post("/api/configuration/inspect", { ...configurationRouteRateLimitOptions, config: { rateLimit: defaultRouteRateLimitOptions.config.rateLimit } }, async (request, reply) => {
+    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
+    const rawBundle = (request.body && typeof request.body === "object" && "bundle" in (request.body as Record<string, unknown>))
+      ? (request.body as Record<string, unknown>).bundle
+      : request.body;
+    const parsed = spaceConfigBundleSchema.safeParse(rawBundle);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        valid: false,
+        error: "Invalid configuration bundle structure.",
+        issues: parsed.error.issues
+      });
+    }
+    const b = parsed.data;
+    return {
+      valid: true,
+      version: b.version,
+      exportedAt: b.exportedAt,
+      source: b.source,
+      summary: {
+        roomsCount: b.metadata.roomsCount,
+        panesCount: b.metadata.panesCount,
+        hasUserSettings: Boolean(b.data.userSettings),
+        userLinksCount: b.metadata.userLinksCount,
+        clipboardItemsCount: b.metadata.clipboardItemsCount,
+        taskItemsCount: b.metadata.taskItemsCount,
+        cliRuntimeSettingsCount: b.metadata.cliRuntimesCount,
+        hasCodexCliModeDefaults: Boolean(b.data.codexCliModeDefaults),
+        providersCount: b.metadata.providersCount
+      },
+      rooms: b.data.rooms.map((r) => ({
+        id: r.id,
+        name: r.name,
+        order: r.order,
+        panesCount: r.panes?.length || 0
+      }))
+    };
+  });
+
+  app.post("/api/configuration/import", { ...configurationRouteRateLimitOptions, config: { rateLimit: defaultRouteRateLimitOptions.config.rateLimit } }, async (request, reply) => {
+    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
+    const input = parseBody(importConfigRequestSchema, request.body);
+    const isAdmin = request.user.role === "ADMIN" || request.user.role === "OPERATOR";
+    const targetUserId = (isAdmin && input.targetUserId) ? input.targetUserId : request.user.id;
+    const result = await store.importConfigurationBundle(input.bundle, {
+      mode: input.mode,
+      targetUserId,
+      pathRewrite: input.pathRewrite,
+      sections: input.sections
+    });
+    await recordAudit(store, request, {
+      action: "configuration.import",
+      targetType: "configuration",
+      targetId: request.user.id,
+      metadata: {
+        mode: result.mode,
+        stats: result.stats
+      }
+    });
+    return result;
+  });
+
   app.post("/api/providers", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const input = parseBody(createProviderInputSchema, request.body);

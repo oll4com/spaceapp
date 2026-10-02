@@ -42,6 +42,8 @@ function isRuntimeOrSecretPath(path) {
 
 function isRepoArtifactPath(path) {
   const normalized = toPosix(path);
+  // This is the public application's bundled promotional video, not a test capture.
+  if (normalized === "apps/web/public/demo/media/discover-space.mp4") return false;
   return (
     /(^|\/)(reports?|screenshots?|traces?|tmp|temp)(\/|$)/.test(normalized) ||
     /\.(har|trace|trace\.zip|webm|mp4|mov)$/.test(normalized) ||

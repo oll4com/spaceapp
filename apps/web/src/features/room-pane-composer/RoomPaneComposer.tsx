@@ -255,6 +255,7 @@ export function RoomPaneComposer({
     setNotice(null);
     try {
       await onApply(targetRoom.id, { panes });
+      setCounts(emptyCounts());
       setNotice(`Added ${panes.length} ${panes.length === 1 ? "pane" : "panes"} to ${targetRoom.name}.`);
     } catch (error) {
       setApplyError(error instanceof Error ? error.message : "The pane batch could not be added.");

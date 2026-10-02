@@ -24,3 +24,4 @@ export * from "./maintenance-plan.js";
 
 export * from "./agent-run-ledger.js";
 export * from "./task-acceptance.js";
+export * from "./configuration-bundle.js";

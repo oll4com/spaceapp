@@ -17,7 +17,14 @@ import {
   Plug,
   RefreshCw,
   X,
-  Compass
+  Compass,
+  Zap,
+  Palette,
+  CheckCircle2,
+  AlertCircle,
+  Plus,
+  ExternalLink,
+  ArrowUpCircle
 } from "lucide-react";
 import type { PluginWithState, PluginCategory } from "@space/contracts";
 import "./plugins-settings.css";
@@ -63,9 +70,56 @@ function getPluginIcon(iconName: string) {
       return <Box size={20} />;
     case "Share2":
       return <Share2 size={20} />;
+    case "Zap":
+      return <Zap size={20} />;
+    case "Palette":
+      return <Palette size={20} />;
+    case "CheckCircle2":
+      return <CheckCircle2 size={20} />;
     default:
       return <Plug size={20} />;
   }
+}
+
+let cachedCsrfToken: string | null = null;
+
+async function getCsrfToken(): Promise<string> {
+  if (cachedCsrfToken) return cachedCsrfToken;
+  try {
+    const res = await fetch("/api/auth/csrf", { credentials: "same-origin" });
+    if (res.ok) {
+      const data = (await res.json()) as { csrfToken?: string };
+      if (data.csrfToken) cachedCsrfToken = data.csrfToken;
+    }
+  } catch {}
+  return cachedCsrfToken || "";
+}
+
+async function authedPost(url: string, body?: unknown): Promise<Response> {
+  let token = await getCsrfToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["x-space-csrf-token"] = token;
+  if (body !== undefined) headers["content-type"] = "application/json";
+
+  let res = await fetch(url, {
+    method: "POST",
+    credentials: "same-origin",
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined
+  });
+
+  if (res.status === 403 || res.status === 401) {
+    cachedCsrfToken = null;
+    token = await getCsrfToken();
+    if (token) headers["x-space-csrf-token"] = token;
+    res = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined
+    });
+  }
+  return res;
 }
 
 export function PluginsSettingsCard() {
@@ -77,13 +131,37 @@ export function PluginsSettingsCard() {
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [accountLabel, setAccountLabel] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [upgradingAll, setUpgradingAll] = useState(false);
+  const [upgradeAllMessage, setUpgradeAllMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
+
+  const outdatedCount = useMemo(() => plugins.filter((p) => p.hasUpdate).length, [plugins]);
+
+  const handleUpgradeAll = async () => {
+    setUpgradingAll(true);
+    setUpgradeAllMessage(null);
+    try {
+      const res = await authedPost("/api/plugins/upgrade-all");
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setUpgradeAllMessage(data.message || `Upgraded ${data.upgradedCount} plugins.`);
+        await fetchPlugins();
+      } else {
+        setUpgradeAllMessage(data.message || "Failed to upgrade plugins.");
+      }
+    } catch {
+      setUpgradeAllMessage("Network error during batch upgrade.");
+    } finally {
+      setUpgradingAll(false);
+    }
+  };
 
   const fetchPlugins = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/plugins");
+      const res = await fetch("/api/plugins", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
         setPlugins(data);
@@ -131,17 +209,13 @@ export function PluginsSettingsCard() {
     setSubmitting(true);
     setActionError(null);
     try {
-      const res = await fetch(`/api/plugins/${selectedPlugin.id}/connect`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          credentials,
-          accountLabel: accountLabel.trim() || undefined
-        })
+      const res = await authedPost(`/api/plugins/${selectedPlugin.id}/connect`, {
+        credentials,
+        accountLabel: accountLabel.trim() || undefined
       });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.message || "Connection failed");
+        throw new Error(data.error?.message || data.message || "Connection failed");
       }
       await fetchPlugins();
       handleCloseModal();
@@ -157,11 +231,10 @@ export function PluginsSettingsCard() {
     setSubmitting(true);
     setActionError(null);
     try {
-      const res = await fetch(`/api/plugins/${selectedPlugin.id}/disconnect`, {
-        method: "POST"
-      });
+      const res = await authedPost(`/api/plugins/${selectedPlugin.id}/disconnect`);
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error("Failed to disconnect");
+        throw new Error(data.error?.message || data.message || "Failed to disconnect");
       }
       await fetchPlugins();
       handleCloseModal();
@@ -178,14 +251,13 @@ export function PluginsSettingsCard() {
     setActionError(null);
     setTestResult(null);
     try {
-      const res = await fetch(`/api/plugins/${selectedPlugin.id}/test`, {
-        method: "POST"
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setTestResult(`✓ Active (${data.toolCount} tools ready)`);
+      const res = await authedPost(`/api/plugins/${selectedPlugin.id}/test`);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setTestResult(data.message || `Active (${data.toolCount} tools ready)`);
       } else {
-        setActionError(data.message || "Test failed");
+        const errorMsg = data.error?.message || data.message || "Test failed";
+        setActionError(errorMsg);
       }
     } catch {
       setActionError("Handshake probe timed out.");
@@ -194,11 +266,140 @@ export function PluginsSettingsCard() {
     }
   };
 
+  const handleUpdatePlugin = async () => {
+    if (!selectedPlugin) return;
+    setUpdating(true);
+    setActionError(null);
+    setTestResult(null);
+    try {
+      const res = await authedPost(`/api/plugins/${selectedPlugin.id}/update`);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setTestResult(data.message || `Successfully updated ${selectedPlugin.displayName}.`);
+        await fetchPlugins();
+        setSelectedPlugin((prev) =>
+          prev
+            ? {
+                ...prev,
+                installedVersion: data.installedVersion || prev.latestVersion,
+                hasUpdate: false,
+                connection: {
+                  ...prev.connection,
+                  installedVersion: data.installedVersion || prev.latestVersion,
+                  hasUpdate: false
+                }
+              }
+            : null
+        );
+      } else {
+        const errorMsg = data.error?.message || data.message || "Update failed";
+        setActionError(errorMsg);
+      }
+    } catch {
+      setActionError("Failed to update plugin.");
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const handleCheckUpdate = async () => {
+    if (!selectedPlugin) return;
+    setUpdating(true);
+    setActionError(null);
+    setTestResult(null);
+    try {
+      const res = await authedPost(`/api/plugins/${selectedPlugin.id}/check-update`);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setTestResult(data.message);
+        if (data.hasUpdate) {
+          setSelectedPlugin((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  hasUpdate: true,
+                  latestVersion: data.latestVersion,
+                  connection: {
+                    ...prev.connection,
+                    hasUpdate: true,
+                    latestVersion: data.latestVersion
+                  }
+                }
+              : null
+          );
+        }
+      } else {
+        setActionError(data.error?.message || data.message || "Failed to check update.");
+      }
+    } catch {
+      setActionError("Failed to check update.");
+    } finally {
+      setUpdating(false);
+    }
+  };
+
   return (
     <div className="plugins-settings-container">
       <div className="plugins-header-block">
-        <h2>Plugins</h2>
-        <p>Accounts and services your agents can act through.</p>
+        <div className="plugins-header-title-row">
+          <div>
+            <h2>Plugins</h2>
+            <p>Accounts and services your agents can act through.</p>
+          </div>
+          <div className="plugins-header-actions">
+            <button
+              type="button"
+              className={`plugin-upgrade-all-btn ${outdatedCount > 0 ? "has-updates" : "up-to-date"}`}
+              onClick={handleUpgradeAll}
+              disabled={upgradingAll}
+              title={
+                outdatedCount > 0
+                  ? `Upgrade ${outdatedCount} outdated plugin${outdatedCount > 1 ? "s" : ""}`
+                  : "All plugins are up to date. Click to check and upgrade all."
+              }
+            >
+              {upgradingAll ? (
+                <>
+                  <RefreshCw className="plugin-btn-spinner" size={15} />
+                  <span>Upgrading...</span>
+                </>
+              ) : outdatedCount > 0 ? (
+                <>
+                  <ArrowUpCircle size={15} />
+                  <span>Upgrade All ({outdatedCount})</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 size={15} className="plugin-btn-check-icon" />
+                  <span>Upgrade All (Up to date)</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+        {upgradeAllMessage && (
+          <div className="plugin-success-alert" style={{ marginTop: "12px" }}>
+            <CheckCircle2 className="plugin-alert-icon" />
+            <span style={{ flex: 1 }}>{upgradeAllMessage}</span>
+            <button
+              type="button"
+              className="plugin-alert-close-btn"
+              onClick={() => setUpgradeAllMessage(null)}
+              title="Dismiss"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "inherit",
+                cursor: "pointer",
+                padding: "2px",
+                display: "inline-flex",
+                alignItems: "center"
+              }}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="plugins-search-bar-wrap">
@@ -246,19 +447,24 @@ export function PluginsSettingsCard() {
                       type="button"
                       className="plugin-status-badge connected"
                       onClick={() => handleOpenConnect(plugin)}
-                      title="Click to view details or disconnect"
+                      title="Connected • Click to inspect or configure"
                     >
-                      • Connected
+                      <span className="plugin-status-dot-pulse" />
+                      <span>Connected</span>
                     </button>
                   ) : plugin.preview ? (
-                    <span className="plugin-preview-badge">Preview</span>
+                    <span className="plugin-preview-badge">
+                      <Sparkles size={11} className="plugin-preview-sparkle" />
+                      <span>Preview</span>
+                    </span>
                   ) : (
                     <button
                       type="button"
                       className="plugin-connect-btn"
                       onClick={() => handleOpenConnect(plugin)}
                     >
-                      Connect
+                      <Plus size={13} className="plugin-connect-icon" />
+                      <span>Connect</span>
                     </button>
                   )}
                 </div>
@@ -295,10 +501,12 @@ export function PluginsSettingsCard() {
 
             {selectedPlugin.connection.status === "CONNECTED" ? (
               <div className="plugin-modal-body">
+                {/* Status & Active Tools */}
                 <div className="plugin-modal-field">
                   <label>Status</label>
-                  <div style={{ color: "#34d399", fontSize: "0.9rem", fontWeight: 500 }}>
-                    Connected ({selectedPlugin.connection.toolCount} tools active)
+                  <div style={{ color: "#34d399", fontSize: "0.9rem", fontWeight: 500, display: "flex", alignItems: "center", gap: "0.45rem" }}>
+                    <span className="plugin-status-dot-pulse" />
+                    <span>Connected ({selectedPlugin.connection.toolCount} tools active)</span>
                   </div>
                 </div>
 
@@ -311,32 +519,112 @@ export function PluginsSettingsCard() {
                   </div>
                 )}
 
+                {/* Overview & GitHub link */}
+                <div className="plugin-modal-field">
+                  <div className="plugin-field-header-row">
+                    <label>Overview</label>
+                    {selectedPlugin.githubUrl && (
+                      <a
+                        href={selectedPlugin.githubUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="plugin-github-badge-link"
+                        title="Open GitHub Repository in a new tab"
+                      >
+                        <GitBranch size={13} />
+                        <span>GitHub</span>
+                        <ExternalLink size={11} className="plugin-ext-icon" />
+                      </a>
+                    )}
+                  </div>
+                  <div className="plugin-overview-box">
+                    <p className="plugin-overview-text">
+                      {selectedPlugin.overview || selectedPlugin.description}
+                    </p>
+                  </div>
+                </div>
+
+                {/* MCP Version & Update Info */}
+                <div className="plugin-modal-field">
+                  <label>MCP Version</label>
+                  <div className="plugin-version-card">
+                    <div className="plugin-version-info">
+                      <div className="plugin-version-row">
+                        <span className="plugin-version-label">Installed:</span>
+                        <span className="plugin-version-value">v{selectedPlugin.installedVersion || "1.0.0"}</span>
+                      </div>
+                      <div className="plugin-version-row">
+                        <span className="plugin-version-label">Latest:</span>
+                        <span className="plugin-version-value">v{selectedPlugin.latestVersion || selectedPlugin.installedVersion || "1.0.0"}</span>
+                      </div>
+                    </div>
+
+                    <div className="plugin-version-actions">
+                      {selectedPlugin.hasUpdate ? (
+                        <button
+                          type="button"
+                          className="plugin-update-btn has-update"
+                          onClick={handleUpdatePlugin}
+                          disabled={updating || submitting}
+                          title="Upgrade to latest version"
+                        >
+                          <ArrowUpCircle size={14} className={updating ? "plugin-spin" : ""} />
+                          <span>{updating ? "Upgrading..." : `Upgrade to v${selectedPlugin.latestVersion}`}</span>
+                        </button>
+                      ) : (
+                        <div className="plugin-up-to-date-wrap">
+                          <span className="plugin-up-to-date-badge">
+                            <CheckCircle2 size={13} />
+                            <span>Up to date</span>
+                          </span>
+                          <button
+                            type="button"
+                            className="plugin-check-update-btn"
+                            onClick={handleCheckUpdate}
+                            disabled={updating || submitting}
+                            title="Check for updates"
+                          >
+                            <RefreshCw size={12} className={updating ? "plugin-spin" : ""} />
+                            <span>{updating ? "Checking..." : "Check"}</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 {testResult && (
-                  <div style={{ color: "#34d399", fontSize: "0.85rem", fontWeight: 500 }}>
-                    {testResult}
+                  <div className="plugin-success-alert">
+                    <CheckCircle2 size={16} className="plugin-alert-icon" />
+                    <span>{testResult}</span>
                   </div>
                 )}
 
-                {actionError && <div className="plugin-error-alert">{actionError}</div>}
+                {actionError && (
+                  <div className="plugin-error-alert">
+                    <AlertCircle size={16} className="plugin-alert-icon" />
+                    <span>{actionError}</span>
+                  </div>
+                )}
 
                 <div className="plugin-modal-actions" style={{ justifyContent: "space-between" }}>
                   <button
                     type="button"
                     className="plugin-btn-danger"
                     onClick={handleDisconnect}
-                    disabled={submitting}
+                    disabled={submitting || updating}
                   >
-                    Disconnect
+                    {submitting ? "Disconnecting..." : "Disconnect"}
                   </button>
                   <div style={{ display: "flex", gap: "0.5rem" }}>
                     <button
                       type="button"
                       className="plugin-btn-secondary"
                       onClick={handleTestConnection}
-                      disabled={submitting}
+                      disabled={submitting || updating}
                     >
-                      <RefreshCw size={14} style={{ display: "inline", marginRight: "4px" }} />
-                      Test Connection
+                      <RefreshCw size={14} className={submitting ? "plugin-spin" : ""} style={{ display: "inline", marginRight: "4px" }} />
+                      {submitting ? "Testing..." : "Test Connection"}
                     </button>
                     <button
                       type="button"
@@ -350,9 +638,47 @@ export function PluginsSettingsCard() {
               </div>
             ) : (
               <form onSubmit={handleConnectSubmit} className="plugin-modal-body">
-                <p style={{ margin: 0, fontSize: "0.85rem", color: "#92979e" }}>
-                  {selectedPlugin.description}
-                </p>
+                {/* Overview & GitHub link */}
+                <div className="plugin-modal-field">
+                  <div className="plugin-field-header-row">
+                    <label>Overview</label>
+                    {selectedPlugin.githubUrl && (
+                      <a
+                        href={selectedPlugin.githubUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="plugin-github-badge-link"
+                        title="Open GitHub Repository in a new tab"
+                      >
+                        <GitBranch size={13} />
+                        <span>GitHub</span>
+                        <ExternalLink size={11} className="plugin-ext-icon" />
+                      </a>
+                    )}
+                  </div>
+                  <div className="plugin-overview-box">
+                    <p className="plugin-overview-text">
+                      {selectedPlugin.overview || selectedPlugin.description}
+                    </p>
+                  </div>
+                </div>
+
+                {/* MCP Version Preview */}
+                <div className="plugin-modal-field">
+                  <label>MCP Version</label>
+                  <div className="plugin-version-card">
+                    <div className="plugin-version-info">
+                      <div className="plugin-version-row">
+                        <span className="plugin-version-label">Available:</span>
+                        <span className="plugin-version-value">v{selectedPlugin.latestVersion || selectedPlugin.installedVersion || "1.0.0"}</span>
+                      </div>
+                    </div>
+                    <span className="plugin-up-to-date-badge">
+                      <CheckCircle2 size={13} />
+                      <span>Ready to connect</span>
+                    </span>
+                  </div>
+                </div>
 
                 {selectedPlugin.authFields.map((field) => (
                   <div key={field.key} className="plugin-modal-field">
@@ -382,7 +708,12 @@ export function PluginsSettingsCard() {
                   />
                 </div>
 
-                {actionError && <div className="plugin-error-alert">{actionError}</div>}
+                {actionError && (
+                  <div className="plugin-error-alert">
+                    <AlertCircle size={16} className="plugin-alert-icon" />
+                    <span>{actionError}</span>
+                  </div>
+                )}
 
                 <div className="plugin-modal-actions">
                   <button

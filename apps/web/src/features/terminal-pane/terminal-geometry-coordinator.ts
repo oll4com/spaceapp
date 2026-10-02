@@ -1,3 +1,5 @@
+import { getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
+
 export interface TerminalGeometryTerminal {
   cols: number;
   rows: number;
@@ -121,6 +123,7 @@ function screenRectSample(host: HTMLElement): LayoutSample | null {
 }
 
 function suspectBlankPaint(host: HTMLElement, sample: LayoutSample): boolean {
+  if (getSpaceRuntimeKind() === "demo") return false;
   const screen = screenRectSample(host);
   return !screen || screen.width < sample.width * GEOMETRY_COLLAPSE_RATIO;
 }
@@ -164,6 +167,9 @@ function canvasBackingSample(host: HTMLElement): { width: number; height: number
 }
 
 function domRowSample(host: HTMLElement): { rowCount: number; populatedRowCount: number; blankRowRatio: number | undefined } {
+  if (getSpaceRuntimeKind() === "demo") {
+    return { rowCount: 0, populatedRowCount: 0, blankRowRatio: undefined };
+  }
   const rows = host.querySelector<HTMLElement>(".xterm-rows");
   if (!rows || rows.children.length === 0) {
     return { rowCount: 0, populatedRowCount: 0, blankRowRatio: undefined };
@@ -182,6 +188,7 @@ function domRowSample(host: HTMLElement): { rowCount: number; populatedRowCount:
 }
 
 function sampleCanvasDarkness(host: HTMLElement): number | undefined {
+  if (getSpaceRuntimeKind() === "demo") return undefined;
   const canvas = host.querySelector<HTMLCanvasElement>(".xterm-screen canvas");
   if (!canvas || canvas.width <= 0 || canvas.height <= 0) return undefined;
   const ownerDocument = host.ownerDocument;
@@ -278,6 +285,7 @@ function geometryIsBroken(
   fitAddon: TerminalGeometryFitAddon,
   host: HTMLElement
 ): boolean {
+  if (getSpaceRuntimeKind() === "demo") return false;
   if (terminal.cols <= LEGACY_COLLAPSE_MAX_COLS) return true;
   const proposed = fitAddon.proposeDimensions?.();
   if (
@@ -408,7 +416,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     }
     const broken = repairRequested || geometryIsBroken(terminal, fitAddon, options.host);
     repairRequested = false;
-    if (broken) {
+    if (broken && getSpaceRuntimeKind() !== "demo") {
       options.invalidateWidthMeasurements(terminal);
       options.measureCharacterSize(terminal);
       terminal.clearTextureAtlas?.();
@@ -560,7 +568,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     if (!isEligible()) return;
 
     if (timer !== null) ownerWindow.clearTimeout(timer);
-    if (request.delayedPass !== false) {
+    if (request.delayedPass !== false && getSpaceRuntimeKind() !== "demo") {
       timer = ownerWindow.setTimeout(() => {
         timer = null;
         scheduleFrame();

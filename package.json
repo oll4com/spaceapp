@@ -55,7 +55,9 @@
     "memory:eval": "npm run build -w @space/memory-graph && node scripts/memory-query-eval.mjs",
     "memory:performance": "npm run build && node scripts/memory-performance-gates.mjs",
     "version:json": "node scripts/version.mjs",
-    "build:demos": "node scripts/build-demo-projects.mjs"
+    "build:demos": "node scripts/build-demo-projects.mjs",
+    "config:export": "node scripts/space-export-config.mjs",
+    "config:import": "node scripts/space-import-config.mjs"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.0",
