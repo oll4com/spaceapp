@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "a3806f4dc08b57664f73d4d13c0e87f83d71fd5a3688204db18a83199da1b3c1",
-  "sourceCommit": "4df2c6bd4b737b4a1b5b688633e75c82e9fadf6a",
-  "launcherVersion": "1.0.35",
-  "runtimeVersion": "1.0.35",
-  "createdAt": "2026-10-01T08:28:59.977Z",
+  "candidateDigest": "0439dd76ab6eac342061d6e031020bbd660b854a80512d2b2f8e2f5d6889d8f9",
+  "sourceCommit": "cde7b2052cd5939374708698d91e6d7db835d7ea",
+  "launcherVersion": "1.0.36",
+  "runtimeVersion": "1.0.36",
+  "createdAt": "2026-10-02T06:58:00.000Z",
   "checks": [
     {
       "platform": "linux",
