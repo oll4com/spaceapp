@@ -162,7 +162,13 @@ const publicBinaryFiles = new Map([
   [
     "apps/web/public/brand/spaceapp-orbital.png",
     "a50b49f40e9f011771fcbe815c4753b8fafdf109f54dbb9d7a7706a6a478c806"
-  ]
+  ],
+  ["apps/web/public/demo/media/discover-space.jpg", "faf2f2fd4919992b577ee59a27f82a7c9a64affcd17e34cd323c216f192485ad"],
+  ["apps/web/public/demo/media/discover-space.mp4", "97427f066761fdf1e197beddfd963f3bba3116180c519eacfa2f7e6867046496"],
+  ["apps/web/public/demo/media/hello-there.wav", "4b5d6cdf5fa86b6dcc6ecb793654afa5ac7352b44eb2d12046d094fa627eb87b"],
+  ["apps/web/public/demo/media/space-loop-1.mp3", "11c6987efd0d525dab3a17f90c7e47b45414f4127eddcbfe780393eb0c32ee48"],
+  ["apps/web/public/demo/media/space-loop-2.mp3", "2ba2a8380b001886dd0d0ab22907d9141a43d3cf9bc52414564d7036f6cdf3aa"],
+  ["apps/web/public/demo/media/space-loop-3.mp3", "fa7e84e49c6a552e4e5e09539c42f1412b7acc1a83233a83c4d6ecc6211f2f4a"]
 ]);
 
 function joined(...parts) {
