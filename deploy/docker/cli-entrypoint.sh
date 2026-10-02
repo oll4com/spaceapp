@@ -20,6 +20,22 @@ if [ -d /run/spaceapp-secrets/providers ]; then
   done
 fi
 
+if [ -d /app/agent-skills ]; then
+  install -d -o spaceapp -g spaceapp -m 0755 /var/lib/spaceapp-cli/.codex/skills /var/lib/spaceapp-cli/.agents/skills
+  for skill_dir in /app/agent-skills/*; do
+    if [ -d "$skill_dir" ]; then
+      skill_name=$(basename "$skill_dir")
+      short_name="${skill_name#space-}"
+      ln -sfn "$skill_dir" "/var/lib/spaceapp-cli/.codex/skills/$skill_name"
+      ln -sfn "$skill_dir" "/var/lib/spaceapp-cli/.agents/skills/$skill_name"
+      if [ "$short_name" != "$skill_name" ]; then
+        ln -sfn "$skill_dir" "/var/lib/spaceapp-cli/.codex/skills/$short_name"
+        ln -sfn "$skill_dir" "/var/lib/spaceapp-cli/.agents/skills/$short_name"
+      fi
+    fi
+  done
+fi
+
 if [ "${SPACEAPP_CLI_HOST_ROOT_ACCESS:-false}" = "true" ]; then
   exec gosu root:spaceapp node packages/cli-host/dist/main.js
 fi

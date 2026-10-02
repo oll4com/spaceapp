@@ -341,6 +341,7 @@ export function isPublicExportPath(path) {
     normalized.startsWith("starter-memory/") ||
     normalized.startsWith("demos/") ||
     normalized.startsWith("deploy/docker/") ||
+    normalized.startsWith("agent-skills/") ||
     publicDocs.has(normalized) ||
     publicScripts.has(normalized);
 }

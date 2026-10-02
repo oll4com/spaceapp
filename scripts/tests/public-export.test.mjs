@@ -123,6 +123,7 @@ test("public path policy excludes internal tests and keeps only reviewed public 
   assert.equal(isPublicExportPath("packages/runtime/tests/public-defaults.test.ts"), true);
   assert.equal(isPublicExportPath("packages/run-spaceapp/tests/cli.test.mjs"), true);
   assert.equal(isPublicExportPath("docs/legal/cli-distribution-policy.json"), true);
+  assert.equal(isPublicExportPath("agent-skills/space-superpowers/SKILL.md"), true);
   assert.equal(isPublicExportPath("SUPPORT.md"), true);
   for (const path of [
     ".trivyignore",

@@ -54,6 +54,7 @@ COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.
 COPY --from=build --chown=spaceapp:spaceapp /app/node_modules ./node_modules
 COPY --from=build --chown=spaceapp:spaceapp /app/apps ./apps
 COPY --from=build --chown=spaceapp:spaceapp /app/packages ./packages
+COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
 COPY --from=build --chown=spaceapp:spaceapp /app/LICENSE /app/NOTICE /app/THIRD_PARTY_NOTICES.md ./
 COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
 COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
