@@ -53,6 +53,23 @@ export function roomOpenCodeTerminalState(screen: string, isTurnActive: boolean,
 }
 
 export function roomTerminalMode(runtimeId: string, screen: string, advertisedModes: string[] = []): string | null {
+  if (runtimeId === "cli:opencode") {
+    // Narrow panes wrap the mode independently from the model/provider
+    // columns (e.g. "Buil" then "d"). Require the complete empty composer
+    // frame and shortcut footer; server idle alone never proves readiness.
+    const lines = screen.toLowerCase().split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(-9);
+    const border = lines.findLastIndex(line => /^╹[▀━─]{3,}$/.test(line));
+    if (border === lines.length - 2 && /^(?:\/|~\/|[a-z]:\\).*\btab agents\b.*\bctrl\+p commands$/.test(lines[border + 1] ?? "") && /^[┃│║]$/.test(lines[border - 1] ?? "")) {
+      let start = border - 2;
+      while (start >= 0 && /^[┃│║]\s+\S/.test(lines[start]!)) start--;
+      const rows = lines.slice(start + 1, border - 1);
+      if (/^[┃│║]$/.test(lines[start] ?? "") && rows.length >= 1 && rows.length <= 3) {
+        const label = rows.map(line => line.match(/^[┃│║]\s+(\S+)/)?.[1] ?? "").join("");
+        const mode = advertisedModes.find(mode => mode.toLowerCase() === label);
+        if (mode) return mode;
+      }
+    }
+  }
   const footer = screen.split(/\r?\n/).map((line) => line.toLowerCase().replace(/\s+/g, " ").trim()).filter(Boolean).slice(-4);
   if (runtimeId === "cli:claude") {
     for (const line of [...footer].reverse()) {

@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import { createPortal } from "react-dom";
 import { MessageSquare, Mic, Network, X } from "../ui-theme/app-icons.js";
 import { useLayoutEffect, useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
@@ -38,12 +39,13 @@ export function ChatLauncherMenu({
   liveDisabled,
   harnessHidden,
 }: ChatLauncherMenuProps) {
+  const embedded = useWorkspaceSurface();
   const popupRef = useRef<HTMLElement | null>(null);
   const closeIntentRef = useRef<"dismissal" | "activation">("dismissal");
   const [position, setPosition] = useState({ left: VIEWPORT_MARGIN, top: VIEWPORT_MARGIN, ready: false });
 
   useLayoutEffect(() => {
-    if (mobile) return;
+    if (mobile || embedded) return;
     function updatePosition() {
       const trigger = triggerRef.current;
       const popup = popupRef.current;
@@ -69,7 +71,7 @@ export function ChatLauncherMenu({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [mobile, triggerRef]);
+  }, [mobile, triggerRef, embedded]);
 
   useEffect(() => {
     const focusFrame = window.requestAnimationFrame(() => enabledButtons(popupRef.current)[0]?.focus());
@@ -80,7 +82,7 @@ export function ChatLauncherMenu({
   }, [triggerRef]);
 
   useEffect(() => {
-    if (mobile) return;
+    if (mobile || embedded) return;
     function handleOutsidePointer(event: PointerEvent) {
       const target = event.target as Node;
       if (popupRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
@@ -89,7 +91,7 @@ export function ChatLauncherMenu({
     }
     document.addEventListener("pointerdown", handleOutsidePointer, true);
     return () => document.removeEventListener("pointerdown", handleOutsidePointer, true);
-  }, [mobile, onClose, triggerRef]);
+  }, [mobile, onClose, triggerRef, embedded]);
 
   function dismiss() {
     closeIntentRef.current = "dismissal";
@@ -98,7 +100,7 @@ export function ChatLauncherMenu({
 
   function runAction(callback: () => void) {
     closeIntentRef.current = "activation";
-    onClose();
+    if (!embedded) onClose();
     window.requestAnimationFrame(callback);
   }
 
@@ -186,6 +188,8 @@ export function ChatLauncherMenu({
       ) : null}
     </>
   );
+
+  if (embedded) return <section ref={popupRef} className="workspace-chat-launcher" role="menu" aria-label="Chat" onKeyDown={handleKeyDown}>{content}</section>;
 
   if (mobile) {
     return createPortal(

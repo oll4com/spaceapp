@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 export function chatSubmissionFingerprint(input: {
+  acceptance?: import("@space/contracts").TaskAcceptance;
   content: string;
   operatorUserId?: string;
   selectedModelConfigId?: string;
@@ -8,7 +9,8 @@ export function chatSubmissionFingerprint(input: {
   artifactIds?: string[];
 }): string {
   return createHash("sha256").update(JSON.stringify({
-    version: 1,
+    version: input.acceptance ? 2 : 1,
+    ...(input.acceptance ? { acceptance: input.acceptance } : {}),
     operatorUserId: input.operatorUserId ?? null,
     content: input.content.trim(),
     selectedModelConfigId: input.selectedModelConfigId ?? null,

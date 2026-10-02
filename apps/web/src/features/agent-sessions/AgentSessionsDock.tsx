@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { AnimatedNumber } from "../ui-controls/AnimatedNumber.js";
-import type { AgentSessionHistoryItem } from "@space/contracts";
+import type {
+  AgentSessionHistoryItem,
+  AgentSessionInterval,
+  AgentSessionStatusFilter
+} from "@space/contracts";
 import {
   Archive,
   Check,
@@ -93,6 +97,8 @@ export function AgentSessionsDock({
   const [hasMore, setHasMore] = useState(false);
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [interval, setInterval] = useState<AgentSessionInterval>("all");
+  const [statusFilter, setStatusFilter] = useState<AgentSessionStatusFilter>("all");
   const [includeArchived, setIncludeArchived] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -117,7 +123,9 @@ export function AgentSessionsDock({
         page: targetPage,
         pageSize: PAGE_SIZE,
         includeArchived,
-        q: debouncedQuery.trim() || undefined
+        q: debouncedQuery.trim() || undefined,
+        interval,
+        status: statusFilter !== "all" ? statusFilter : undefined
       });
       if (!mountedRef.current || requestId !== loadRequestIdRef.current) return;
       setItems((current) => (append ? [...current, ...response.data] : response.data));
@@ -144,7 +152,7 @@ export function AgentSessionsDock({
     return () => {
       mountedRef.current = false;
     };
-  }, [debouncedQuery, includeArchived]);
+  }, [debouncedQuery, includeArchived, interval, statusFilter]);
 
   const groups = useMemo<AgentSessionGroup[]>(() => {
     const byLabel = new Map<string, AgentSessionHistoryItem[]>();
@@ -219,8 +227,7 @@ export function AgentSessionsDock({
   }
 
   const canResumeItem = (item: AgentSessionHistoryItem): boolean => {
-    void item;
-    return canResume;
+    return canResume && Boolean(item.threadId || item.taskId);
   };
 
   return (
@@ -246,6 +253,45 @@ export function AgentSessionsDock({
       </section>
 
       <section className="agent-sessions-controls" aria-label="Agent session history filters">
+        <div className="agent-sessions-filter-row">
+          <div className="agent-sessions-pill-group" role="group" aria-label="Filter by time interval">
+            {([
+              { id: "all", label: "All (7d)" },
+              { id: "today", label: "Today" },
+              { id: "24h", label: "24h" },
+              { id: "3d", label: "3d" },
+              { id: "7d", label: "7d" }
+            ] as const).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={`agent-sessions-pill ${interval === t.id ? "active" : ""}`}
+                onClick={() => setInterval(t.id)}
+                aria-pressed={interval === t.id}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="agent-sessions-pill-group" role="group" aria-label="Filter by status">
+            {([
+              { id: "all", label: "All" },
+              { id: "completed", label: "Completed" },
+              { id: "active", label: "Active" }
+            ] as const).map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                className={`agent-sessions-pill ${statusFilter === s.id ? "active" : ""}`}
+                onClick={() => setStatusFilter(s.id)}
+                aria-pressed={statusFilter === s.id}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <SpaceToggle
           className="agent-sessions-archive-toggle"
           label="Include archived"
@@ -311,81 +357,99 @@ export function AgentSessionsDock({
                     const resumable = canResumeItem(item);
                     return (
                       <article key={item.id} className="agent-sessions-row">
-                        <div className="agent-sessions-row-title">
-                          <AgentBrandIcon item={item} />
-                          <strong title={item.title}>{item.title}</strong>
-                          {renamingId === item.id ? (
-                            <span className="agent-sessions-rename">
-                              <input
-                                type="text"
-                                value={renameDraft}
-                                autoFocus
-                                maxLength={300}
-                                onChange={(event) => setRenameDraft(event.currentTarget.value)}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter") void renameItem(item);
-                                  if (event.key === "Escape") setRenamingId(null);
-                                }}
-                                aria-label="Session title"
-                              />
-                              <button
-                                type="button"
-                                disabled={pending}
-                                onClick={() => void renameItem(item)}
-                                title="Save title"
-                                aria-label="Save session title"
-                              >
+                        <div className="agent-sessions-row-header">
+                          <div className="agent-sessions-row-title">
+                            <AgentBrandIcon item={item} />
+                            <strong title={item.title}>{item.title}</strong>
+                          </div>
+                          <span
+                            className={`agent-sessions-badge ${item.isCompleted ? "completed" : "active"}`}
+                            title={item.isCompleted ? "Completed session" : "Active session"}
+                          >
+                            {item.isCompleted ? (
+                              <>
                                 <Check aria-hidden="true" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setRenamingId(null)}
-                                title="Cancel rename"
-                                aria-label="Cancel session rename"
-                              >
-                                <X aria-hidden="true" />
-                              </button>
-                            </span>
-                          ) : (
-                            <span className="agent-sessions-row-actions">
-                              <button
-                                type="button"
-                                className="compact-action"
-                                disabled={!resumable || pending}
-                                onClick={() => resumeItem(item)}
-                                title={`Resume in ${activePaneLabel ?? "pane"}`}
-                                aria-label={`Resume session ${item.title}`}
-                              >
-                                {pending ? <Loader2 aria-hidden="true" className="spin" /> : <Play aria-hidden="true" />}
-                                <span>{pending ? "Opening…" : "Resume"}</span>
-                              </button>
-                              {item.kind === "codex" ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    title="Rename session"
-                                    aria-label={`Rename session ${item.title}`}
-                                    onClick={() => {
-                                      setRenamingId(item.id);
-                                      setRenameDraft(item.title);
-                                    }}
-                                  >
-                                    <Pencil aria-hidden="true" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={pending}
-                                    title="Archive session"
-                                    aria-label={`Archive session ${item.title}`}
-                                    onClick={() => void archiveItem(item)}
-                                  >
-                                    <Archive aria-hidden="true" />
-                                  </button>
-                                </>
-                              ) : null}
-                            </span>
-                          )}
+                                <span>Completed</span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="agent-sessions-dot" aria-hidden="true" />
+                                <span>Active</span>
+                              </>
+                            )}
+                          </span>
                         </div>
+                        {renamingId === item.id ? (
+                          <div className="agent-sessions-rename">
+                            <input
+                              type="text"
+                              value={renameDraft}
+                              autoFocus
+                              maxLength={300}
+                              onChange={(event) => setRenameDraft(event.currentTarget.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") void renameItem(item);
+                                if (event.key === "Escape") setRenamingId(null);
+                              }}
+                              aria-label="Session title"
+                            />
+                            <button
+                              type="button"
+                              disabled={pending}
+                              onClick={() => void renameItem(item)}
+                              title="Save title"
+                              aria-label="Save session title"
+                            >
+                              <Check aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setRenamingId(null)}
+                              title="Cancel rename"
+                              aria-label="Cancel session rename"
+                            >
+                              <X aria-hidden="true" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="agent-sessions-row-actions">
+                            <button
+                              type="button"
+                              className="compact-action"
+                              disabled={!resumable || pending}
+                              onClick={() => resumeItem(item)}
+                              title={`Resume in ${activePaneLabel ?? "pane"}`}
+                              aria-label={`Resume session ${item.title}`}
+                            >
+                              {pending ? <Loader2 aria-hidden="true" className="spin" /> : <Play aria-hidden="true" />}
+                              <span>{pending ? "Opening…" : "Resume"}</span>
+                            </button>
+                            {item.kind === "codex" ? (
+                              <>
+                                <button
+                                  type="button"
+                                  title="Rename session"
+                                  aria-label={`Rename session ${item.title}`}
+                                  onClick={() => {
+                                    setRenamingId(item.id);
+                                    setRenameDraft(item.title);
+                                  }}
+                                >
+                                  <Pencil aria-hidden="true" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={pending}
+                                  title="Archive session"
+                                  aria-label={`Archive session ${item.title}`}
+                                  onClick={() => void archiveItem(item)}
+                                >
+                                  <Archive aria-hidden="true" />
+                                </button>
+                              </>
+                            ) : null}
+                          </div>
+                        )}
                         <small className="agent-sessions-row-preview">
                           {item.preview || item.firstUserMessage || "No preview"}
                         </small>

@@ -28,9 +28,15 @@ import {
 import { defaultLiveTimeZone, describeLiveTools } from "./live-bootstrap.js";
 import { liveMissionBootstrap, runLiveMissionAction } from "./live-missions.js";
 import { CLEAN_WORKTREE_PROMPT } from "../osk-keyboard/cli-shortcuts.js";
+import { createLiveToolReplay } from "./live-tool-replay.js";
+import { rememberLivePaneGroup, resolveLivePaneTargets, livePromptPaneReceipts } from "./live-pane-targets.js";
 import { createUnidentifiedLiveCommandOrigin, createIdentifiedLiveCommandOrigins, type LiveCommandRoom } from "./live-command-origin.js";
 
 export interface LiveSessionOptions {
+  userId?: string;
+  /** Stable across transport reconnects; separate for each new conversation. */
+  liveSessionId?: string;
+  toolReplay?: ReturnType<typeof createLiveToolReplay>;
   roomContext?: LiveRoomContext;
   getCommandRoom?: () => string | undefined;
   /** Capture at input start; a later utterance/navigation invalidates it. */
@@ -464,8 +470,9 @@ export async function openGoogleGeminiConversationSession(
   const socket = new WebSocket(wsUrl);
   socket.binaryType = "arraybuffer";
 
-  const toolSessionId = crypto.randomUUID();
+  const toolSessionId = options.liveSessionId ?? crypto.randomUUID();
   const googleToolCalls = new Set<string>();
+  const googleToolResults = options.toolReplay ??= createLiveToolReplay();
   const cancelledGoogleTools = new Set<string>();
   const googleCommandOrigin = createUnidentifiedLiveCommandOrigin(() => {
     if (options.captureCommandRoom) return options.captureCommandRoom();
@@ -478,21 +485,34 @@ export async function openGoogleGeminiConversationSession(
     if (closed || !setupComplete) return;
     const reject = () => { close(); callbacks.onError?.("Google Live requested an invalid or disabled tool; pending tools were stopped."); };
     if (typeof fc.id !== "string" || !fc.id || typeof fc.name !== "string" || !ctx.tools.some(tool => tool.name === fc.name)) { reject(); return; }
-    if (googleToolCalls.has(fc.id)) return;
-    if (googleToolCalls.size >= 4096 || pendingGoogleTools >= 32) { reject(); return; }
+
     const callId = fc.id, name = fc.name;
     const argsStr = typeof fc.args === "string" ? fc.args : JSON.stringify(fc.args ?? {});
     try {
       const args = JSON.parse(argsStr);
       if (!args || typeof args !== "object" || Array.isArray(args) || argsStr.length > 128000) { reject(); return; }
     } catch { reject(); return; }
+    if (googleToolResults.has(callId)) {
+      void googleToolResults.run(callId, name, argsStr, async () => "").then(out => {
+        if (!closed && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
+          toolResponse: { functionResponses: [{ id: callId, name, response: { output: { result: out } } }] }
+        }));
+      }).catch(reject);
+      return;
+    }
+    if (googleToolCalls.size >= 4096 || pendingGoogleTools >= 32) { reject(); return; }
     googleToolCalls.add(callId);
     pendingGoogleTools++;
     const origin = googleCommandOrigin.capture();
     const callOptions = { ...options, getCommandRoom: () => cancelledGoogleTools.has(callId) ? undefined : origin() };
-    googleToolQueue = googleToolQueue.then(async () => {
-      if (closed) return;
-      const out = await executeLiveFunction(name, argsStr, { ...callOptions, callbacks, callId: `${toolSessionId}:${callId}`, provider: "google", streamingMode: callOptions.streamingMode });
+    const previousQueue = googleToolQueue;
+    const result = googleToolResults.run(callId, name, argsStr, async () => {
+      await previousQueue;
+      if (closed) return JSON.stringify({ ok: false, code: "LIVE_SESSION_CLOSED" });
+      return executeLiveFunction(name, argsStr, { ...callOptions, callbacks, callId: `${toolSessionId}:${callId}`, provider: "google", streamingMode: callOptions.streamingMode });
+    });
+    googleToolQueue = previousQueue.then(async () => {
+      const out = await result;
       if (!closed && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
         toolResponse: { functionResponses: [{ id: callId, name, response: { output: { result: out } } }] }
       }));
@@ -626,6 +646,7 @@ export async function openGoogleGeminiConversationSession(
           modelTurn?: {
             parts?: Array<{
               text?: string;
+              thought?: boolean;
               inlineData?: {
                 mimeType?: string;
                 data?: string;
@@ -747,20 +768,9 @@ export async function openGoogleGeminiConversationSession(
         const modelTurn = data.serverContent.modelTurn;
         if (modelTurn?.parts) {
           for (const part of modelTurn.parts) {
-            if (part.text && !googleOutputTranscript) {
-              checkTurnFinalized();
-              let text = part.text;
-              if (preToolOutputTranscript && text.startsWith(preToolOutputTranscript)) {
-                text = text.slice(preToolOutputTranscript.length).trim();
-              }
-              if (text) {
-                googleOutputTranscript = mergeTranscriptText(googleOutputTranscript, text);
-                const customId = preToolOutputTranscript ? `${toolSessionId}:google:${googleTranscriptTurn}:assistant_post` : undefined;
-                if (!sc.turnComplete) {
-                  emitTranscript("assistant", text, true, customId);
-                }
-              }
-            }
+            if (part.thought) continue;
+            // AUDIO mode displays only outputTranscription. modelTurn text
+            // may be private thoughts or provider bookkeeping.
             if (part.inlineData?.data) {
               const audioBuf = base64ToArrayBuffer(part.inlineData.data);
               playPcmChunk(audioBuf, 24000);
@@ -775,7 +785,7 @@ export async function openGoogleGeminiConversationSession(
         }
         const messageHasFunctionCall = Boolean(directToolCalls?.length || sc.modelTurn?.parts?.some((p) => p.functionCall));
         if (sc.turnComplete) {
-          if (!messageHasFunctionCall && pendingGoogleTools === 0) googleCommandOrigin.finishTurn();
+          if (!messageHasFunctionCall) googleCommandOrigin.finishTurn();
           if (messageHasFunctionCall) {
             if (preToolOutputTranscript) {
               emitTranscript("assistant", preToolOutputTranscript, false);
@@ -1502,7 +1512,7 @@ export async function openGatewayRealtimeConversationSession(
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
     updateLiveSessionStats({ sessionActive: false });
   };
-  const toolSessionId = crypto.randomUUID();
+  const toolSessionId = options.liveSessionId ?? crypto.randomUUID();
   const controller = createGatewayRealtimeController({
     model,
     config: {
@@ -1844,7 +1854,7 @@ export async function openVercelLiveConversationSession(
   const pendingCallsByItemId = new Map<string, { id: string; name: string; callId: string; arguments: string }>();
   const pendingCallsByCallId = new Map<string, { id: string; name: string; callId: string; arguments: string }>();
   const pendingCallIds = new Set<string>();
-  const toolSessionId = crypto.randomUUID();
+  const toolSessionId = options.liveSessionId ?? crypto.randomUUID();
   const executedCallIds = new Set<string>();
   const pendingFunctionItemIds = new Set<string>();
   const activeResponseIds = new Set<string>();
@@ -2618,10 +2628,11 @@ export const SPACE_OPEN_PANES_TOOL = {
 export const SPACE_CLOSE_PANES_TOOL = {
   type: "function",
   name: "space_close_panes",
-  description: "Close panes by paneIds or all:true.",
+  description: "Close explicitly selected panes. Use targetGroup:lastOpened for the exact group opened by Live.",
   parameters: {
     type: "object",
     properties: {
+      targetGroup: { type: "string", enum: ["lastOpened"], description: "The last group this Live session opened in the current room, e.g. σε αυτά τα τέσσερα. Revalidated before execution." },
       paneIds: {
         type: "array",
         items: { type: "string" },
@@ -2702,10 +2713,11 @@ export const SPACE_RESTORE_PANES_TOOL = {
 export const SPACE_SEND_PROMPT_TOOL = {
   type: "function",
   name: "space_send_prompt",
-  description: "Send prompt, story, instructions, questions or tasks to one or more CLI panes. Use all: true to send to all open CLI panes.",
+  description: "Send a prompt or task to CLI and Chat panes. Use targetGroup:lastOpened for the exact group opened by Live.",
   parameters: {
     type: "object",
     properties: {
+      targetGroup: { type: "string", enum: ["lastOpened"], description: "The last group this Live session opened in the current room, e.g. σε αυτά τα τέσσερα. Revalidated before execution." },
       paneId: {
         type: "string",
         description: "Single target pane id."
@@ -2717,7 +2729,7 @@ export const SPACE_SEND_PROMPT_TOOL = {
       },
       all: {
         type: "boolean",
-        description: "Send to all open CLI panes (e.g. when user says 'και στα τρία', 'σε όλα τα παράθυρα')."
+        description: "Send to all open CLI and Chat panes (e.g. when user says 'και στα τρία', 'σε όλα τα παράθυρα')."
       },
       cliType: {
         type: "string",
@@ -3333,6 +3345,8 @@ export async function buildLiveSessionContext(
       combinedPrompt: publicInstruction, priorTurns: [], tools: describeLiveTools([STREAMING_STATUS_TOOL, STREAMING_ACTION_TOOL])
     };
   }
+  options.liveSessionId ??= crypto.randomUUID();
+
   const tz = options.timeZone || defaultLiveTimeZone();
   const userName =
     options.personalMemories?.find((m) => m.key.toLowerCase() === "username")?.value || "";
@@ -3423,7 +3437,7 @@ export async function buildLiveSessionContext(
 
   const enableMcp = options.enableMcpTools !== false;
   const spaceControlInstruction = enableMcp
-    ? "Your primary role is controlling SpaceApp through its authenticated MCP Control tools (space_open_panes, space_send_prompt, space_inspect_room, space_close_panes, etc.). When opening panes requested by the user, carefully include ALL mentioned pane types in `counts` (e.g. if user asks for 'κόντεξ/codex, gemini, opencode', include codex: 1, gemini: 1, opencode: 1). When the user asks to send prompts, ALWAYS call `space_send_prompt`. Inspect current capabilities and exact target IDs before acting; obey all authorization gates. For multi-step work keep the complete objective and ordered checklist, verify each step, and resume from the first unverified step. Never claim browser-local state is durable server execution."
+    ? "Your primary role is controlling SpaceApp through its authenticated MCP Control tools (space_open_panes, space_send_prompt, space_inspect_room, space_close_panes, etc.). When opening panes requested by the user, carefully include ALL mentioned pane types in `counts` (e.g. if user asks for 'κόντεξ/codex, gemini, opencode', include codex: 1, gemini: 1, opencode: 1). When the user asks to send prompts, ALWAYS call `space_send_prompt`. Give a short Greek answer stating the verified outcome. Do not narrate internal reasoning or tool bookkeeping. Submission is not task completion. For references to the panes you just opened, use targetGroup:lastOpened for sending and closing; never broaden to all panes. Inspect current capabilities and exact target IDs before acting; obey all authorization gates. For multi-step work keep the complete objective and ordered checklist, verify each step, and resume from the first unverified step. Never claim browser-local state is durable server execution."
     : "Space Control tools are disabled for this session. Do not claim to control the application.";
 
   const currentActivityInstruction = enableMcp
@@ -3431,7 +3445,7 @@ export async function buildLiveSessionContext(
     : "";
 
   const promptDispatchInstruction = enableMcp
-    ? "Sending Prompts & Tasks to CLI Panes:\n- When the user asks you to send a prompt, task, instructions, question, or story to open panes or CLI windows (e.g. 'στείλε prompt', 'γράψτε μια ιστορία 30 λέξεων', 'πες τους να κάνουν...', 'στείλε και στα τρία παράθυρα', 'στείλε στο gemini', 'γράψτο', 'στείλε το'): You MUST IMMEDIATELY CALL `space_send_prompt`.\n- Parameters for `space_send_prompt`: Pass `prompt` (the exact text to send). If the user asks to send to all panes or multiple open CLI windows (e.g. 'και στα τρία', 'σε όλα τα παράθυρα', 'σε όλα τα CLI'), pass `all: true`. If targeting a specific CLI type (e.g. 'στο gemini', 'στο codex', 'στο opencode'), pass `cliType`. If targeting a specific pane id, pass `paneId` or `paneIds`.\n- STRICT RULES FOR PROMPT DISPATCH:\n  1. NEVER stall, NEVER ask redundant questions ('ανησυχείτε για παιχνίδι λέξεων;', 'μήπως θέλετε άλλη διατύπωση;'), and NEVER delay execution. Execute `space_send_prompt` immediately!\n  2. NEVER claim or tell the user 'Το στέλνω τώρα' or 'Στάλθηκε' WITHOUT actually executing the `space_send_prompt` tool call in the same turn.\n  3. DO NOT call `search_conversation_history` when the user gives you a command to send a prompt or write a story, even if they say phrases like 'όπως σου είπα' or 'γράψτο'."
+    ? "Sending Prompts & Tasks to CLI Panes:\n- When the user asks you to send a prompt, task, instructions, question, or story to open panes or CLI windows (e.g. 'στείλε prompt', 'γράψτε μια ιστορία 30 λέξεων', 'πες τους να κάνουν...', 'στείλε και στα τρία παράθυρα', 'στείλε στο gemini', 'γράψτο', 'στείλε το'): You MUST IMMEDIATELY CALL `space_send_prompt`.\n- Parameters for `space_send_prompt`: Pass `prompt` (the exact text to send). For references to the group you just opened (e.g. 'σε αυτά τα τέσσερα'), pass targetGroup: 'lastOpened'; never all:true for that group. If the user explicitly asks to send to all panes or multiple open CLI windows (e.g. 'και στα τρία', 'σε όλα τα παράθυρα', 'σε όλα τα CLI'), pass `all: true`. If targeting a specific CLI type (e.g. 'στο gemini', 'στο codex', 'στο opencode'), pass `cliType`. If targeting a specific pane id, pass `paneId` or `paneIds`.\n- STRICT RULES FOR PROMPT DISPATCH:\n  1. NEVER stall, NEVER ask redundant questions ('ανησυχείτε για παιχνίδι λέξεων;', 'μήπως θέλετε άλλη διατύπωση;'), and NEVER delay execution. Execute `space_send_prompt` immediately!\n  2. NEVER claim or tell the user 'Το στέλνω τώρα' or 'Στάλθηκε' WITHOUT actually executing the `space_send_prompt` tool call in the same turn.\n  3. DO NOT call `search_conversation_history` when the user gives you a command to send a prompt or write a story, even if they say phrases like 'όπως σου είπα' or 'γράψτο'."
     : "";
 
   const readConversationAndPanesInstruction = enableMcp
@@ -3620,6 +3634,8 @@ export async function executeLiveFunction(
   argsStr: string,
   context: {
     roomId?: string;
+    userId?: string;
+    liveSessionId?: string;
     getCommandRoom?: () => string | undefined;
     paneId?: string;
     delegatedModel?: string;
@@ -3634,11 +3650,17 @@ export async function executeLiveFunction(
   const { paneId, delegatedModel, timeZone, callbacks, provider } = context;
   const roomId = context.getCommandRoom ? context.getCommandRoom() : context.roomId;
   if (context.getCommandRoom && !roomId && name !== "get_current_time") {
+    const rejection = { name, callId: context.callId, provider, code: "LIVE_ROOM_CONTEXT_UNSET", stage: "BEFORE_EXECUTOR", originRoomId: context.roomId };
+    callbacks.onLogEvent?.("tool.rejected", rejection);
+    if (context.roomId && typeof api.reportLiveVoiceLog === "function") void api.reportLiveVoiceLog({
+      roomId: context.roomId, event: "tool_call_rejected", role: "tool", detail: rejection
+    }).catch(() => {});
     return JSON.stringify({ ok: false, code: "LIVE_ROOM_CONTEXT_UNSET", message: "This command is stale or its originating room is unavailable. Ask the user to repeat it in the intended room before acting." });
   }
   const executionId = context.callId || crypto.randomUUID();
   let actionIndex = 0;
   const executeControl = async (targetRoom: string, actions: any[], revision?: string, wait = true) => {
+    if (context.getCommandRoom && context.getCommandRoom() !== targetRoom) throw Error("LIVE_ROOM_CONTEXT_UNSET: The command room changed before execution.");
     const key = JSON.stringify([context.provider, executionId, name, actionIndex++, targetRoom, actions]);
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
     const requestId = `live:${Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("")}`;
@@ -4183,7 +4205,7 @@ export async function executeLiveFunction(
           roomId: effectiveRoomId,
           event: "tool_call_start",
           role: "tool",
-          toolCall: { name, args: argsStr }
+          toolCall: { name, callId: context.callId, provider, args: argsStr, originRoomId: roomId }
         });
 
         try {
@@ -4220,11 +4242,16 @@ export async function executeLiveFunction(
             return data;
           };
 
+          if ((name === "space_open_panes" || parsedArgs.targetGroup === "lastOpened") && !context.userId) {
+            const identity = await api.me();
+            if (!identity.isAuthenticated || !identity.user) throw Error("Authenticated Live user is unavailable.");
+            context.userId = identity.user.id;
+          }
           if (name === "space_inspect_activity") {
             const current = await api.getLiveRoomActivity(effectiveRoomId);
             if (current.roomId !== effectiveRoomId || !current.activitySummary) throw new Error("Fresh agent activity is unavailable.");
             if (context.getCommandRoom && context.getCommandRoom() !== effectiveRoomId) throw new Error("The command context changed while reading activity.");
-            outputText = JSON.stringify({ roomId: current.roomId, checkedAt: current.checkedAt, counts: current.activitySummary,
+            outputText = JSON.stringify({ roomId: current.roomId, checkedAt: current.checkedAt, counts: { ...current.activitySummary, openPanes: current.panes.length },
               evidence: "RUNNING counts require a native running turn. Unknown observations are not counted as active or completed.",
               panes: current.panes.filter(pane => pane.mode === "TERMINAL" || pane.mode === "CHAT")
                 .map(pane => ({ paneId: pane.id, title: pane.title, activity: pane.activity ?? "UNKNOWN", task: pane.task })) });
@@ -4561,23 +4588,9 @@ export async function executeLiveFunction(
                   });
                 }
               }
-              if (newlyOpenedPanes.length === 0 && postPanes.length > 0) {
-                const matchingPost = postPanes.filter((p: any) =>
-                  requestedTypes.some((t) => String(p.mode || p.terminalRuntimeId || "").toLowerCase().includes(t.toLowerCase()))
-                );
-                const countToPick = totalCreated > 0 ? totalCreated : (totalRequested > 0 ? totalRequested : 1);
-                for (const p of matchingPost.slice(-countToPick)) {
-                  newlyOpenedPanes.push({
-                    id: p.id,
-                    title: p.title,
-                    terminalRuntimeId: p.terminalRuntimeId || p.runtimeId,
-                    mode: p.mode,
-                    timestamp: Date.now()
-                  });
-                }
-              }
               if (newlyOpenedPanes.length > 0) {
                 recordRecentOpenedPanes(effectiveRoomId, newlyOpenedPanes);
+                rememberLivePaneGroup(effectiveRoomId, newlyOpenedPanes.map(p => p.id), context);
               }
 
               if (missingInState.length > 0 && totalCreated < totalRequested) {
@@ -4586,9 +4599,7 @@ export async function executeLiveFunction(
                 const paneLabels = newlyOpenedPanes.map((p) => `${p.title || p.terminalRuntimeId || p.mode} (paneId: ${p.id})`).join(", ");
                 outputText = `Ανοίχτηκαν ${totalCreated} παράθυρα (${paneLabels || requestedTypes.join(", ")}), ο συγχρονισμός οθόνης εκκρεμεί.`;
               } else {
-                const verifiedList = postPanes.filter((p: any) =>
-                  requestedTypes.some((t) => String(p.mode || p.terminalRuntimeId || "").toLowerCase().includes(t.toLowerCase()))
-                );
+                const verifiedList = postPanes.filter((p: any) => newlyOpenedPanes.some(created => created.id === p.id));
                 if (totalRequested > 4) {
                   outputText = `✓ State verified: Ανοίχτηκαν επιτυχώς ${verifiedList.length} παράθυρα (${requestedTypes.join(", ")}) και εμφανίζονται στην οθόνη: ${verifiedList.map((p: any) => `${p.title || p.id} [${p.id}]`).join(", ")}`;
                 } else {
@@ -4608,7 +4619,9 @@ export async function executeLiveFunction(
             const reqMode = parsedArgs.mode ? String(parsedArgs.mode).toUpperCase().trim() : undefined;
             let targetPaneIds: string[] = [];
 
-            if (reqMode) {
+            if (parsedArgs.targetGroup !== undefined || parsedArgs.paneIds !== undefined || parsedArgs.paneId !== undefined) {
+              targetPaneIds = resolveLivePaneTargets(effectiveRoomId, openPanes, parsedArgs, context, false, livePaneId);
+            } else if (reqMode) {
               targetPaneIds = openPanes.filter((p: any) => p.id !== livePaneId && p.mode !== "LIVE" && String(p.mode || "").toUpperCase() === reqMode).map((p: any) => p.id);
             } else if (reqCliType) {
               const matchedPanes = openPanes.filter((p: any) => {
@@ -4639,7 +4652,7 @@ export async function executeLiveFunction(
             } else if (parsedArgs.paneIds || parsedArgs.paneId) {
               const raw = parsedArgs.paneIds || [parsedArgs.paneId];
               targetPaneIds = (Array.isArray(raw) ? raw : [raw]).filter((id: string) => id !== livePaneId);
-            } else if (parsedArgs.all === true || (!reqCliType && parsedArgs.filter !== "unused" && !parsedArgs.unusedOnly && !parsedArgs.paneIds && !parsedArgs.paneId)) {
+            } else if (parsedArgs.all === true || parsedArgs.filter === "all") {
               // Close all open panes EXCEPT the active Live pane
               targetPaneIds = openPanes.filter((p: any) => p.id !== livePaneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE").map((p: any) => p.id);
             }
@@ -4654,11 +4667,6 @@ export async function executeLiveFunction(
                 ? "Δεν υπάρχουν άλλα ανοιχτά παράθυρα στο δωμάτιο προς κλείσιμο (μόνο το τρέχον παράθυρο Live είναι ενεργό)."
                 : "Δεν βρέθηκαν παράθυρα προς κλείσιμο.";
             } else {
-              window.dispatchEvent(
-                new CustomEvent("space-pane-control-action", {
-                  detail: { action: "close", paneIds: targetPaneIds }
-                })
-              );
               const res = await executeControl(effectiveRoomId, [
                 {
                   kind: "pane",
@@ -4825,19 +4833,7 @@ export async function executeLiveFunction(
             const statePanes = ((stateRes?.result?.structuredContent?.panes || []) as any[]).filter(
               (p: any) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE"
             );
-            const rawIds = parsedArgs.paneId || parsedArgs.paneIds;
-            const rawList = (Array.isArray(rawIds) ? rawIds : rawIds ? [rawIds] : []).map((x: any) => String(x));
-            const typeHint = parsedArgs.cliType || parsedArgs.runtime || parsedArgs.type;
-            const wantAll = parsedArgs.all === true;
-            let targetPaneIds = rawList.filter((id: string) => statePanes.some((p: any) => p.id === id));
-            if (rawList.length > 0 && targetPaneIds.length === 0 && !typeHint && !wantAll) {
-              outputText = `Άγνωστα ids (${rawList.join(", ")}). Έκανα re-inspect — πες all:true ή έγκυρα ids.`;
-            } else if (targetPaneIds.length === 0) {
-              const pool = typeHint
-                ? statePanes.filter((p: any) => String(p.terminalRuntimeId || p.mode || "").toLowerCase().includes(String(typeHint).toLowerCase()))
-                : statePanes.filter((p: any) => p.mode === "TERMINAL" || (p as any).terminalRuntimeId);
-              targetPaneIds = pool.map((p: any) => p.id);
-            }
+            const targetPaneIds = resolveLivePaneTargets(effectiveRoomId, statePanes, parsedArgs, context, true, paneId);
             if (targetPaneIds.length === 0) {
               if (!outputText) outputText = `No target panes found — nothing sent.`;
             } else {
@@ -4867,7 +4863,7 @@ export async function executeLiveFunction(
               outputText = `Αποτυχία αποστολής εντολής στο παράθυρο (${reason}) σε ${elapsedMs}ms.`;
             } else {
               const receipt = await awaitOperationIfNeeded(effectiveRoomId, res, 6000);
-              outputText = JSON.stringify({ operationId: receipt?.id, status: receipt?.status ?? "UNKNOWN", panes: paneNames || targetPaneIds.join(", "), elapsedMs, results: receipt?.results ?? [], instruction: "This receipt describes prompt submission, not task completion. Report each target's actual status. Completion notifications require a persisted watch receipt." });
+              outputText = JSON.stringify({ operationId: receipt?.id, status: receipt?.status ?? "UNKNOWN", panes: livePromptPaneReceipts(targetPaneIds, receipt), paneNames, elapsedMs, results: receipt?.results ?? [], instruction: "This receipt describes prompt submission, not task completion. Report each target's actual status. Completion notifications require a persisted watch receipt." });
             }
             }
             }
@@ -5577,7 +5573,7 @@ export async function executeLiveFunction(
             roomId: effectiveRoomId,
             event: "tool_call_done",
             role: "tool",
-            toolCall: { name, args: argsStr, output: outputText.slice(0, 1500) }
+            toolCall: { name, callId: context.callId, provider, args: argsStr, output: outputText.slice(0, 1500) }
           });
         } catch (err) {
           outputText = `Error executing Space Control MCP ${name}: ${err instanceof Error ? err.message : String(err)}`;
@@ -5597,7 +5593,7 @@ export async function executeLiveFunction(
             roomId: effectiveRoomId,
             event: "tool_call_error",
             role: "tool",
-            toolCall: { name, args: argsStr, error: outputText }
+            toolCall: { name, callId: context.callId, provider, args: argsStr, error: outputText }
           });
         }
 
@@ -5690,8 +5686,9 @@ export async function openOpenAiVoiceConversationSession(
   const pendingCallsByItemId = new Map<string, { id: string; name: string; callId: string; arguments: string }>();
   const pendingCallsByCallId = new Map<string, { id: string; name: string; callId: string; arguments: string }>();
   const pendingCallIds = new Set<string>();
-  const toolSessionId = crypto.randomUUID();
+  const toolSessionId = options.liveSessionId ?? crypto.randomUUID();
   const executedCallIds = new Set<string>();
+  const toolResults = options.toolReplay ??= createLiveToolReplay();
   const pendingFunctionItemIds = new Set<string>();
   const activeResponseIds = new Set<string>();
   const commandOrigins = createIdentifiedLiveCommandOrigins(() => {
@@ -6038,8 +6035,9 @@ export async function openOpenAiVoiceConversationSession(
   });
 
   const executeFunctionCall = async (callId: string, name: string, argsStr: string) => {
-    if (closed || !sessionReady || !callId || executedCallIds.has(callId)) return;
+    if (closed || !sessionReady || !callId) return;
     if (!ctx.tools.some((tool) => tool.name === name)) { fail("Voice provider requested a tool not enabled in this session."); return; }
+    const replayed = executedCallIds.has(callId);
     executedCallIds.add(callId);
     pendingCallIds.add(callId);
     hasPendingToolOutputs = true;
@@ -6047,7 +6045,7 @@ export async function openOpenAiVoiceConversationSession(
     toolResponseOrigin = origin;
 
     try {
-      const outputText = await executeLiveFunction(name, argsStr, {
+      const outputText = await toolResults.run(callId, name, argsStr, () => executeLiveFunction(name, argsStr, {
         callId: `${toolSessionId}:${callId}`,
         provider: "openai",
         streamingMode: options.streamingMode,
@@ -6055,10 +6053,12 @@ export async function openOpenAiVoiceConversationSession(
         roomId: options.roomId,
         getCommandRoom: origin,
         paneId: options.paneId,
+        userId: options.userId,
+        liveSessionId: options.liveSessionId,
         delegatedModel: options.delegatedModel,
         timeZone: options.timeZone,
         callbacks
-      });
+      }));
 
       if (channel.readyState === "open") {
         try {
@@ -6082,7 +6082,7 @@ export async function openOpenAiVoiceConversationSession(
       if (entry?.id) {
         pendingFunctionItemIds.delete(entry.id);
       }
-      maybeTriggerToolsResponse();
+      if (!replayed) maybeTriggerToolsResponse();
     }
   };
 
@@ -6505,7 +6505,7 @@ export async function openOpenAiVoiceConversationSession(
               const callId = item.call_id;
               const name = (typeof item.name === "string" && item.name) || "";
               const argsStr = (typeof item.arguments === "string" && item.arguments) || "{}";
-              if (!executedCallIds.has(callId)) {
+              {
                 pendingCallIds.add(callId);
                 hasPendingToolOutputs = true;
                 commandOrigins.bindCall(callId, resp.id);

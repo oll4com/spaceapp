@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import React, { useEffect, useState, useRef } from "react";
 import { Monitor, Maximize2, X, ExternalLink } from "../ui-theme/app-icons.js";
 import "./desktop-display-controls.css";
@@ -26,8 +27,9 @@ export function DesktopDisplayControls({
   activePaneId,
   variant = "titlebar"
 }: DesktopDisplayControlsProps) {
+  const embedded = useWorkspaceSurface();
   const [displays, setDisplays] = useState<DesktopDisplayInfo[]>([]);
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(embedded);
   const [actionPending, setActionPending] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -80,13 +82,13 @@ export function DesktopDisplayControls({
   };
 
   useEffect(() => {
-    if (!isDesktop) return;
+    if (!isDesktop && !embedded) return;
     void fetchDisplays();
     const interval = setInterval(() => {
       void fetchDisplays();
     }, 5000);
     return () => clearInterval(interval);
-  }, [isDesktop]);
+  }, [isDesktop, embedded]);
 
   useEffect(() => {
     const handleOpenDisplays = () => {
@@ -108,7 +110,7 @@ export function DesktopDisplayControls({
         setIsOpen(false);
       }
     };
-    if (isOpen) {
+    if (isOpen && !embedded) {
       document.addEventListener("mousedown", handleClickOutside);
       document.addEventListener("keydown", handleKeyDown);
     }
@@ -116,9 +118,9 @@ export function DesktopDisplayControls({
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isOpen]);
+  }, [isOpen, embedded]);
 
-  if (!isDesktop) {
+  if (!isDesktop && !embedded) {
     return null;
   }
 

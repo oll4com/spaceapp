@@ -886,6 +886,7 @@ export interface CreateAppOptions {
   codexSocketControlFactory?: (socketPath: string) => CodexAppServerSocketControlService;
   hostStatsProvider?: HostStatsProvider;
   requirementsCacheTtlMs?: number;
+  modelCatalogCacheMaxAgeMs?: number;
   cancelWorkflow?: (workflowId: string) => Promise<void>;
   antigravityUsageProvider?: () => Promise<AntigravityUsageAccountList>;
   apiProviderAccountsProvider?: () => Promise<ApiProviderAccountList>;
@@ -4013,6 +4014,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           : null;
       },
       requirementsCacheTtlMs: options.requirementsCacheTtlMs,
+      modelCatalogCacheMaxAgeMs: options.modelCatalogCacheMaxAgeMs,
       cancelWorkflow: options.cancelWorkflow,
       decisionsService
     });
@@ -4117,7 +4119,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return null;
     }
   });
-  const agentSessionHistoryService = new AgentSessionHistoryService({ codexParity, unifiedCliTaskRegistry });
+  const agentSessionHistoryService = new AgentSessionHistoryService({
+    codexParity,
+    unifiedCliTaskRegistry,
+    codexHome: config.codexAppServerHome ?? "/var/lib/spaceapp-user/.codex",
+    maxAgeDays: 7,
+    verifyRolloutExistence: true
+  });
   let cliRuntimeRegistryCache!: ReturnType<typeof createAgentRuntimeRegistryCache>;
   let setupConnections!: SetupConnectionsService;
 
@@ -5408,23 +5416,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!session) {
       session = (await store.listPaneCliSessions(pane.id, 1))[0] ?? null;
     }
-    if (!session && !expectedSessionId) {
-      const runtimes = await discoverAgentRuntimes(config);
-      const runtime = runtimes.data.find((r) => r.id === pane.terminalRuntimeId);
-      if (runtime) {
-        session = await store.createPaneCliSession({
-          sessionId: makeSpaceId("cli_session"),
-          paneId: pane.id,
-          roomId: pane.roomId,
-          runtimeId: runtime.id,
-          providerId: runtime.providerId,
-          agentId: runtime.agentId,
-          modelId: pane.modelId ?? runtime.defaultModelId,
-          reasoningEffort: runtime.id === "cli:gemini" ? (pane.reasoningEffort ?? "high") : (pane.reasoningEffort ?? "medium"),
-          purpose: "NORMAL"
-        });
-      }
-    }
     if (!session || session.purpose !== "NORMAL" || (expectedSessionId && session.sessionId !== expectedSessionId)) throw new SpaceConflictError("The target CLI session is unavailable or changed.");
     return session;
   }
@@ -5443,7 +5434,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!freshness?.fresh && cached && cached.expires > Date.now()) {
       return cached.data;
     }
-    const session = await roomCliSession(pane).catch(() => null) ?? await store.getActivePaneCliSession(pane.id) ?? (await store.listPaneCliSessions(pane.id, 1))[0] ?? null;
+    const session = await store.getActivePaneCliSession(pane.id) ?? (await store.listPaneCliSessions(pane.id, 1))[0] ?? null;
     const rawTaskRef = session?.codexThreadId?.trim();
     const base: RoomPaneObservation = { paneId: pane.id, title: pane.title, runtimeId: pane.terminalRuntimeId ?? null,
       sessionId: session?.sessionId ?? null, state: "UNKNOWN", nativeTaskRef: rawTaskRef && rawTaskRef.length > 0 ? rawTaskRef : null,
@@ -6071,7 +6062,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     roomCliObservationCache.delete(pane.id);
     try {
     if(pane.mode==="CHAT"){
-      const result=await spaceAgentAdapter.sendMessage({pane,content:text,traceId});
+      // Control request IDs can occupy all 128 characters. The native Chat
+      // workflow adds room/pane prefixes, so derive a bounded stable trace.
+      const chatTraceId=createHash("sha256").update(JSON.stringify([traceId,pane.id])).digest("hex").slice(0,32);
+      const result=await spaceAgentAdapter.sendMessage({pane,content:text,traceId:chatTraceId});
       return {sessionId:result.session.binding.sessionId,state:result.session.runStatus,submitted:true};
     }
     if(text.length>20_000)throw new SpaceConflictError("CLI prompts support at most 20,000 characters per turn.");
@@ -7476,7 +7470,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         new Promise<T>((resolve) => setTimeout(() => resolve(fallback), timeoutMs))
       ]);
     const [worker, appDiagnostics] = await Promise.all([
-      config.workflowsEnabled === false ? Promise.resolve(null) : bounded(workerReadinessChecker(), workerReadinessSchema.parse({
+      bounded(workerReadinessChecker(), workerReadinessSchema.parse({
         id: "space-worker",
         status: "ERROR",
         statusReason: "Worker readiness check timed out.",
@@ -7523,15 +7517,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       browserHost = "DISABLED";
     }
     return {
-      ok: (config.workflowsEnabled === false || worker?.status === "RUNNING") && cliHost !== "UNAVAILABLE" && cliAdminHost !== "UNAVAILABLE" &&
+      ok: worker.status === "RUNNING" && cliHost !== "UNAVAILABLE" && cliAdminHost !== "UNAVAILABLE" &&
         (browserHost === "in-process" || browserHost === "RUNNING" || browserHost === "DISABLED"),
       apiStartedAt,
       dependencies: {
         store: config.runtimeStore,
         runtimeStore: config.runtimeStore,
         eventBus: "in-process",
-        temporal: config.workflowsEnabled === false ? "disabled" : "enabled",
-        worker: config.workflowsEnabled === false ? "disabled" : worker?.status,
+        temporal: config.enableDummyTurns ? "enabled" : "disabled",
+        worker: worker.status,
         cliHost,
         cliAdminHost,
         browserHost,
@@ -9366,6 +9360,8 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         pageSize: query.pageSize,
         includeArchived: query.includeArchived,
         q: query.q,
+        interval: query.interval,
+        status: query.status,
         runtimeIds: requestedId
       })
     );
@@ -14403,12 +14399,24 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     const pane = await getPaneById(store, params.id);
     assertCliPaneCompatible(pane);
     await assertPaneCliRuntimeEnabled(pane);
-    const active = await store.getActivePaneCliSession(pane.id);
-    if (!active || !active.isActive || active.status === "EXITED" || active.status === "ERROR") {
+    const authority = parseCliHttpControlAuthority(request);
+    let targetSession: PaneCliSession | null = null;
+    if (authority?.leaseId) {
+      const lease = await store.getPaneCliTerminalControlLease(authority.leaseId);
+      if (lease && lease.paneId === pane.id && lease.status === "ACTIVE") {
+        targetSession = await store.getPaneCliSession(lease.sessionId);
+      }
+    }
+    const active = targetSession ?? await store.getActivePaneCliSession(pane.id);
+    if (!active || (!active.isActive && !targetSession) || active.status === "EXITED" || active.status === "ERROR") {
       return sendApiError(reply, 409, "CLI_SESSION_REQUIRED", "Attach or reconnect a CLI session before uploading files to the terminal.");
     }
     if (active.purpose !== "NORMAL") {
       return sendApiError(reply, 409, "CLI_LOGIN_SESSION_RESTRICTED", "CLI login sessions cannot persist terminal uploads.");
+    }
+    if (targetSession && !targetSession.isActive) {
+      await store.updatePaneCliSession(targetSession.sessionId, { isActive: true }, request.requestIdForSpace);
+      active.isActive = true;
     }
     await assertCliHttpMutationControl(request, active);
     await cliRuntimeVisibility.assertEnabled(active.runtimeId);
@@ -14839,6 +14847,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     const pane = await getPaneById(store, params.id);
     assertAgentPaneCompatible(pane);
     const result = await spaceAgentAdapter.sendMessage({
+      acceptance: input.acceptance,
       clientRequestId: input.clientRequestId,
       pane,
       content: input.content,
@@ -15065,7 +15074,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Voice Realtime call failed.";
-      request.log.warn({ provider, model, requestId: request.requestIdForSpace }, "voice realtime call failed");
+      request.log.warn({ provider, model, requestId: request.requestIdForSpace, err: message }, "voice realtime call failed");
       return sendApiError(reply, 502, "VOICE_REALTIME_CALL_FAILED", message);
     }
   });
@@ -15075,14 +15084,15 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     return { ok: true };
   });
 
-  const classifyLiveRequest = async (ownerId: string, input: { query: string; roomId?: string; explicitModel?: string }, room: Room | null) => {
+  const classifyLiveRequest = async (ownerId: string, input: { query: string; roomId?: string; explicitModel?: string }, room: Room | null, shortcut = false, signal?: AbortSignal) => {
     const context = room ? { id: room.id, name: room.name, description: room.description,
       panes: (await store.listPanes(room.id)).filter(pane => !pane.isClosed).slice(0, 16)
         .map(pane => ({ id: pane.id, title: pane.title, runtimeId: pane.terminalRuntimeId, status: pane.status,
           configuredModelId: pane.modelId, reasoningEffort: pane.reasoningEffort })) } : null;
-    return decisionsService.classifyLiveIntent({ ownerId, roomId: room?.id ?? "", query: input.query, explicitModel: input.explicitModel,
+    const request = { ownerId, roomId: room?.id ?? "", query: input.query, explicitModel: input.explicitModel,
       context, contextRevision: createHash("sha256").update(JSON.stringify(context)).digest("hex"),
-      policyRevision: createHash("sha256").update(JSON.stringify(config.liveModelPolicy)).digest("hex") });
+      policyRevision: createHash("sha256").update(JSON.stringify(config.liveModelPolicy)).digest("hex") };
+    return shortcut ? decisionsService.classifyLiveRead(request, signal) : decisionsService.classifyLiveIntent(request);
   };
 
   app.post("/api/voice/realtime/delegate", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -15101,7 +15111,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     }
     try {
       const result = await routeLiveDelegation({ enabled: config.liveJevAccelerationEnabled, roomId: room?.id, tools: input.tools,
-        classify: () => classifyLiveRequest(request.user!.id, input, room),
+        classify: signal => classifyLiveRequest(request.user!.id, input, room, true, signal),
         delegate: signal => createVoiceDelegateResponse(config, input, signal) });
       try {
         await recordAudit(store, request, {

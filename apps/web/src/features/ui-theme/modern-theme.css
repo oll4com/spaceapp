@@ -333,7 +333,19 @@
 .space-shell[data-ui-theme="modern"] .room-item.selected {
   border-color: var(--modern-accent);
   background: var(--modern-accent-soft);
-  box-shadow: inset 3px 0 0 var(--modern-accent);
+  box-shadow: none;
+}
+
+.space-shell[data-ui-theme="modern"] .room-dock-expand-btn.is-expanded {
+  border-color: var(--modern-danger, #ef4444);
+  color: var(--modern-danger, #ef4444);
+  background: var(--modern-danger-soft, rgba(239, 68, 68, 0.12));
+}
+
+.space-shell[data-ui-theme="modern"] .room-dock-expand-btn.is-expanded:hover {
+  border-color: #f87171;
+  background: rgba(239, 68, 68, 0.22);
+  color: #fca5a5;
 }
 
 .space-shell[data-ui-theme="modern"] .room-select {
@@ -894,6 +906,20 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   color: var(--modern-text);
 }
 
+.space-shell[data-ui-theme="modern"] :is(.desktop-dock-header, .surface-header) {
+  border-bottom: 1px solid var(--modern-border);
+  background: var(--modern-surface);
+  color: var(--modern-text);
+}
+
+.space-shell[data-ui-theme="modern"] :is(.desktop-dock-header, .surface-header) strong {
+  color: var(--modern-text);
+}
+
+.space-shell[data-ui-theme="modern"] :is(.desktop-dock-header, .surface-header) small {
+  color: var(--modern-muted);
+}
+
 .space-shell[data-ui-theme="modern"] .settings-dock-title {
   position: sticky;
   top: -0.75rem;
@@ -902,6 +928,20 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   padding: 0.75rem;
   border-bottom: 1px solid var(--modern-border);
   background: var(--modern-surface);
+}
+
+.space-shell[data-ui-theme="modern"] .settings-dock-title > svg {
+  border-color: var(--modern-border);
+  background: var(--modern-surface-raised);
+  color: var(--modern-accent);
+}
+
+.space-shell[data-ui-theme="modern"] .settings-dock-title h2 {
+  color: var(--modern-text);
+}
+
+.space-shell[data-ui-theme="modern"] .settings-dock-title small {
+  color: var(--modern-muted);
 }
 
 .space-shell[data-ui-theme="modern"] .ui-theme-options legend,
@@ -937,7 +977,7 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   .agent-settings-dock,
   .cli-dock,
   .memory-dock,
-  .memory-workspace,
+  .memory-workspace:not(.memory-atlas),
   .room-agent-dock,
   .clipboard-dock,
   .task-dock,
@@ -963,7 +1003,7 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   .agent-settings-dock,
   .cli-dock,
   .memory-dock,
-  .memory-workspace,
+  .memory-workspace:not(.memory-atlas),
   .room-agent-dock,
   .clipboard-dock,
   .task-dock,
@@ -991,7 +1031,7 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   .agent-settings-dock,
   .cli-dock,
   .memory-dock,
-  .memory-workspace,
+  .memory-workspace:not(.memory-atlas),
   .room-agent-dock,
   .clipboard-dock,
   .task-dock,
@@ -1029,6 +1069,8 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   .room-agent-goal,
   .room-agent-message,
   .room-agent-task,
+  .settings-disclosure,
+  .settings-setup-shortcut,
   .clipboard-note-editor,
   .clipboard-card,
   .task-note-editor,
@@ -1044,12 +1086,30 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   .quick-links-list button,
   .runtime-strip,
   .health-tile,
+  .shared-chat-message,
+  .shared-chat-mark,
+  .room-agent-task-card,
+  .streaming-session-card,
+  .streaming-provider-card,
+  .streaming-section,
   .conversation-message,
   .turn-summary
 ) {
   border-color: var(--modern-border);
   background: var(--modern-surface-raised);
   color: var(--modern-text);
+}
+
+.space-shell[data-ui-theme="modern"] .settings-disclosure h3 > button {
+  color: var(--modern-text);
+}
+
+.space-shell[data-ui-theme="modern"] .settings-disclosure h3 > button:hover {
+  background: var(--modern-surface-soft);
+}
+
+.space-shell[data-ui-theme="modern"] .settings-disclosure h3 small {
+  color: var(--modern-muted);
 }
 
 .space-shell[data-ui-theme="modern"] :is(

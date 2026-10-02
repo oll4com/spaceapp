@@ -3,7 +3,8 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSP
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import type { IconToolbarAction } from "../../icon-toolbar.js";
-import { ChevronRight, Grid2X2, GripVertical, Minus, MoreHorizontal, Plus, Search, ShieldCheck, SlidersHorizontal, Sparkles, UserCheck, Wrench, X } from "./app-icons.js";
+import { ChevronLeft, ChevronRight, Grid2X2, GripVertical, Minus, MoreHorizontal, Plus, Search, ShieldCheck, SlidersHorizontal, Sparkles, UserCheck, Wrench, X } from "./app-icons.js";
+import { WorkspaceSurface } from "./WorkspaceSurface.js";
 import { desktopActionDescriptions, desktopActionGroup, desktopActionVisible, desktopGroups, type DesktopGroup } from "./desktop-navigation.js";
 import { workspaceActionCategory, workspaceActionLabel, workspaceActionToggle, workspaceCategories, workspaceQuickActionIds, type WorkspaceCategory } from "./workspace-actions.js";
 import { ACTION_TO_LOWER_RAIL_ID, LOWER_RAIL_HIDDEN_KEY, LOWER_RAIL_NON_HIDEABLE, LOWER_RAIL_VISIBILITY_IDS, readHiddenRailIds } from "./use-rail-visibility.js";
@@ -12,18 +13,22 @@ import "./desktop-navigation.css";
 
 const navigationOpenEvent = "space:navigation-open";
 const mobileWidth = 768;
-export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, onAction, footer, version, renderCreateTools, createOnly = false, docksOnly = false, toolsOnly = false, workspaceOnly = false, hiddenRailIds, emptySlots }: {
+export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, onAction, footer, version, renderCreateTools, renderWorkspaceAction, onWorkspaceDetailChange, workspaceDetailActionIds = [], createOnly = false, docksOnly = false, toolsOnly = false, workspaceOnly = false, hiddenRailIds, emptySlots }: {
   createOnly?: boolean; docksOnly?: boolean; toolsOnly?: boolean; workspaceOnly?: boolean;
   actions: IconToolbarAction[]; adminMode: boolean; canAdmin: boolean;
   onModeChange: () => void;
   onAction: (action: IconToolbarAction, anchor: HTMLButtonElement, count?: number) => void;
   footer?: ReactNode; version?: ReactNode;
+  workspaceDetailActionIds?: readonly string[];
+  onWorkspaceDetailChange?: (id: string | null) => void;
+  renderWorkspaceAction?: (id: string, options: { onBack: () => void; onNavigate: (id: string) => void; triggerRef: RefObject<HTMLButtonElement | null> }) => ReactNode;
   renderCreateTools?: (options: {
     query: string;
     onClose: () => void;
     triggerRef: RefObject<HTMLButtonElement | null>;
     paneCount?: number;
     onPaneCountChange?: (count: number | ((prev: number) => number)) => void;
+    onNavigate?: (id: string) => void;
   }) => ReactNode;
   hiddenRailIds?: string[];
   emptySlots?: {
@@ -53,6 +58,10 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
   const [open, setOpen] = useState<DesktopGroup | null>(null);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<WorkspaceCategory>("docks");
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [detailHistory, setDetailHistory] = useState<string[]>([]);
+  const detail = useRef<HTMLDivElement>(null);
+  const detailTrigger = useRef<HTMLButtonElement | null>(null);
   const [compact, setCompact] = useState(false);
   const [mobile, setMobile] = useState(() => window.innerWidth <= mobileWidth);
   const nav = useRef<HTMLElement>(null);
@@ -60,7 +69,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
   const menu = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const createTrigger = useRef<HTMLButtonElement | null>(null);
-  useMenuWheel(menu, ".desktop-menu-action:not(:disabled), .cli-launcher-embedded button:not(:disabled)", Boolean(open), createTrigger, true);
+  useMenuWheel(menu, ".desktop-menu-action:not(:disabled), .cli-launcher-embedded button:not(:disabled)", Boolean(open) && !detailId, createTrigger, true);
   const CREATE_MENU_ORDER_KEY = "space:create-menu-top-order";
   const [createOrder, setCreateOrder] = useState<string[]>(() => {
     if (typeof window === "undefined") return [];
@@ -101,6 +110,8 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
   }));
   const close = (restore = false) => {
     setOpen(null);
+    setDetailId(null);
+    setDetailHistory([]);
     setPaneCount(1);
     if (restore && open) triggers.current[open]?.focus();
   };
@@ -124,16 +135,25 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
     window.addEventListener(navigationOpenEvent, dismiss);
     return () => window.removeEventListener(navigationOpenEvent, dismiss);
   }, [instance]);
-  useEffect(() => { setOpen(null); setQuery(""); setPaneCount(1); }, [adminMode]);
+  useEffect(() => { setOpen(current => current === "workspace" ? current : null); setDetailId(null); setDetailHistory([]); setQuery(""); setPaneCount(1); }, [adminMode]);
   useEffect(() => {
     dispatchRailMenuChange();
   }, [open]);
+  const workspaceToolsOrder = [
+    "osk-keyboard",
+    "vibe-music",
+    "sign-out",
+    "agents-dashboard",
+    "live-model",
+    "desktop-displays"
+  ];
   const toolOrder = [
     "widget-clock",
     "widget-countdown-timer",
     "widget-pushup-reminder",
     "widget-spaceapp-promo",
     "widget-ai-quota",
+    "widget-streaming-metrics",
     "toggle-admin-mode",
     "memory-workspace",
     "demo-mode",
@@ -154,35 +174,70 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
     "vpn-city",
     "reload-room",
     "browser-fullscreen",
-    "clip-tool"
+    "clip-tool",
+    "snip-tool"
   ];
+  const isToolsAction = (id: string) => {
+    if (toolOrder.includes(id)) return true;
+    const railId = ACTION_TO_LOWER_RAIL_ID[id] ?? (LOWER_RAIL_IDS.includes(id) ? id : undefined);
+    return Boolean(railId && activeHiddenRailIds.includes(railId));
+  };
   const visible = actions.filter(action => {
     if (action.id === "add-empty-slots") return false;
+    if ((workspaceOnly || !railOnly) && action.id === "snip-tool" && actions.some(a => a.id === "clip-tool")) return false;
+    if ((workspaceOnly || !railOnly) && action.id === "docks" && actions.some(a => a.id.startsWith("surface-"))) return false;
+    if (mobile && action.id.startsWith("widget-")) return false;
+    if ((workspaceOnly || !railOnly) && ["room-toolbar", "category-color-filter"].includes(action.id)) return false;
     if ((workspaceOnly || !railOnly) && ["room-focus", "previous-room", "next-room"].includes(action.id)) return true;
     if (!desktopActionVisible(action.id, adminMode && canAdmin)) return false;
     if (docksOnly) return action.id.startsWith("surface-");
-    if (toolsOnly) {
-      if (toolOrder.includes(action.id)) return true;
-      const railId = ACTION_TO_LOWER_RAIL_ID[action.id] ?? (LOWER_RAIL_IDS.includes(action.id) ? action.id : undefined);
-      if (railId && activeHiddenRailIds.includes(railId)) return true;
-      return false;
-    }
+    if (toolsOnly) return isToolsAction(action.id);
     return true;
   });
-  const visibleCategories = mobile ? workspaceCategories.filter((item) => item.id !== "widgets") : workspaceCategories;
   const workspace = open === "workspace" && !docksOnly;
+  useEffect(() => {
+    if (!workspace) return;
+    onWorkspaceDetailChange?.(detailId);
+    return () => onWorkspaceDetailChange?.(null);
+  }, [workspace, detailId, onWorkspaceDetailChange]);
+  const actionCategory = workspaceActionCategory;
+  const visibleCategories = workspaceCategories;
+  useEffect(() => {
+    if (!open || !detailId) return;
+    if (!detailHistory.length && !visible.some(action => action.id === detailId)) setDetailId(null);
+  }, [open, detailId, actions]);
+  useLayoutEffect(() => {
+    if (detailId) detail.current?.focus();
+  }, [detailId]);
+  const back = () => {
+    if (detailHistory.length) {
+      setDetailId(detailHistory.at(-1)!);
+      setDetailHistory(detailHistory.slice(0, -1));
+      return;
+    }
+    const previous = detailId;
+    setDetailId(null);
+    window.requestAnimationFrame(() => menu.current?.querySelector<HTMLButtonElement>(`[data-action-id="${previous}"]`)?.focus());
+  };
+  const navigate = (id: string) => {
+    if (detailId) setDetailHistory(previous => [...previous, detailId]);
+    setDetailId(id);
+  };
   const isSearching = Boolean(query.trim());
+  const toolsMenu = toolsOnly;
+  const detailAction = visible.find(action => action.id === detailId);
+  const detailLabel = detailAction ? workspaceActionLabel(detailAction) : "Workspace";
   const quick = workspace && !isSearching ? workspaceQuickActionIds.flatMap(id => visible.filter(a => a.id === id)) : [];
   const matched = visible.filter(action => {
     if (renderCreateTools && action.id === "add-cli") return false;
     if (isSearching) return `${workspaceActionLabel(action)} ${action.label} ${desktopActionDescriptions[action.id] ?? ""}`.toLowerCase().includes(query.trim().toLowerCase());
     if (docksOnly || toolsOnly) return true;
+    if (workspace) return !workspaceQuickActionIds.includes(action.id) && actionCategory(action.id) === category;
     const group = desktopActionGroup(action.id);
-    if (workspace) return !workspaceQuickActionIds.includes(action.id) && group !== "create" && workspaceActionCategory(action.id) === category;
     return group === open;
   });
   const sortedMatched = useMemo(() => {
-    if (toolsOnly) {
+    if (toolsOnly || (workspace && ["widgets", "utilities", "toggles"].includes(category))) {
       return [...matched].sort((a, b) => {
         const aRailId = ACTION_TO_LOWER_RAIL_ID[a.id] ?? (LOWER_RAIL_IDS.includes(a.id) ? a.id : undefined);
         const bRailId = ACTION_TO_LOWER_RAIL_ID[b.id] ?? (LOWER_RAIL_IDS.includes(b.id) ? b.id : undefined);
@@ -203,6 +258,16 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
         return 0;
       });
     }
+    if (workspace && category === "tools") {
+      return [...matched].sort((a, b) => {
+        const ai = workspaceToolsOrder.indexOf(a.id);
+        const bi = workspaceToolsOrder.indexOf(b.id);
+        if (ai !== -1 && bi !== -1) return ai - bi;
+        if (ai !== -1) return -1;
+        if (bi !== -1) return 1;
+        return 0;
+      });
+    }
     if ((open === "create" || createOnly) && !isSearching && createOrder.length > 0) {
       const sorted = [...matched].sort((a, b) => {
         const ai = createOrder.indexOf(a.id);
@@ -215,8 +280,8 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
       return sorted;
     }
     return matched;
-  }, [matched, toolsOnly, isSearching, open, createOnly, createOrder, toolOrder, activeHiddenRailIds]);
-  const showCreateTools = Boolean(renderCreateTools && !docksOnly && !toolsOnly && !workspaceOnly && (open === "create" || isSearching));
+  }, [matched, toolsOnly, workspace, category, isSearching, open, createOnly, createOrder, toolOrder, workspaceToolsOrder, activeHiddenRailIds]);
+  const showCreateTools = Boolean(renderCreateTools && !docksOnly && !toolsOnly && (open === "create" || workspace && category === "create" && !isSearching || isSearching && !workspaceOnly));
   useLayoutEffect(() => {
     if (!open) return;
     const reposition = () => {
@@ -362,7 +427,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
     const Icon = action.icon;
     const toggle = workspaceActionToggle(action);
     const reason = action.disabled ? action.disabledReason : undefined;
-    const description = mobile ? undefined : reason ?? (workspace && !quickAction ? desktopActionDescriptions[action.id] : undefined);
+    const description = mobile ? undefined : reason ?? (workspace && !quickAction && !toolsMenu ? desktopActionDescriptions[action.id] : undefined);
     const label = quickAction || workspace || docksOnly || toolsOnly ? workspaceActionLabel(action) : action.label;
     const isCreateDraggable = (open === "create" || createOnly) && !isSearching && !action.disabled;
     const isDragging = draggedCreateActionId === action.id;
@@ -454,8 +519,8 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
     return <button key={action.id} type="button"
       className={`desktop-menu-action${isDragging ? " is-dragging" : ""}${isDragOver ? " is-drag-over" : ""}`}
       data-action-id={action.id}
-      data-category={workspace ? workspaceActionCategory(action.id) : undefined}
-      style={workspace ? { "--workspace-category-color": workspaceCategories.find(item => item.id === workspaceActionCategory(action.id))?.color } as CSSProperties : undefined}
+      data-category={workspace ? actionCategory(action.id) : undefined}
+      style={workspace ? { "--workspace-category-color": workspaceCategories.find(item => item.id === actionCategory(action.id))?.color } as CSSProperties : undefined}
       disabled={action.disabled}
       draggable={false}
       onDragStart={(e) => e.preventDefault()}
@@ -464,16 +529,31 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
       aria-label={toggle === undefined ? action.ariaLabel : label} aria-pressed={toggle ?? action.ariaPressed}
       aria-haspopup={action.ariaHasPopup}
       title={reason ?? action.title}
-      onClick={() => {
+      onClick={event => {
         if (isDraggingCreateRef.current) return;
+        if (workspace && action.id === "docks") {
+          setCategory("docks"); setQuery(""); setDetailId(null); setDetailHistory([]);
+          return;
+        }
+        if (workspace && action.id === "osk-keyboard") {
+          close();
+        }
+        if (workspace && renderWorkspaceAction && workspaceDetailActionIds.includes(action.id)) {
+          detailTrigger.current = event.currentTarget;
+          setDetailHistory([]);
+          setDetailId(action.id);
+          return;
+        }
         const anchor = open ? triggers.current[open] : null;
         const countToRun = (open === "create" || createOnly) ? paneCount : 1;
         const isWidgetToggle = action.id.startsWith("widget-");
-        if (!isWidgetToggle) {
+        if (workspace && action.id === "osk-keyboard") {
+          // already closed above
+        } else if (!isWidgetToggle && !workspace) {
           close();
         }
         if (anchor) {
-          if (!isWidgetToggle) anchor.focus();
+          if (!isWidgetToggle && !workspace) anchor.focus();
           if (countToRun > 1) onAction(action, anchor, countToRun);
           else onAction(action, anchor);
         } else {
@@ -504,6 +584,8 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
         aria-controls={open === group.id ? menuId : undefined}
         onClick={event => {
           createTrigger.current = event.currentTarget; setQuery(""); setCategory("docks"); setPaneCount(1);
+          setDetailId(null);
+          setDetailHistory([]);
           window.dispatchEvent(new CustomEvent(navigationOpenEvent, { detail: instance }));
           setOpen(open === group.id ? null : group.id);
         }}>
@@ -521,7 +603,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
             id={menuId} ref={menu}
             className={`desktop-navigation-menu${workspace ? " is-workspace" : ""}${docksOnly ? " is-docks" : ""}${toolsOnly ? " is-tools" : ""}${mobile ? " is-mobile" : ""}`}
             role="dialog" aria-modal={mobile || undefined}
-            aria-label={docksOnly ? "Docks" : toolsOnly ? "Workspace tools" : isSearching ? "Find an action" : workspace ? "Workspace" : desktopGroups.find(g => g.id === open)?.label}
+            aria-label={docksOnly ? "Docks" : toolsOnly ? "Workspace tools" : workspace ? "Workspace" : isSearching ? "Find an action" : desktopGroups.find(g => g.id === open)?.label}
             tabIndex={-1} data-ui-theme={source?.dataset.uiTheme} data-color-mode={source?.dataset.colorMode} data-room-theme={source?.dataset.roomTheme}
             initial={{ opacity: 0, scale: 0.97, y: -6 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -529,13 +611,15 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
             transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
             style={{ left: position.left, top: mobile || railOnly ? undefined : position.top, bottom: !mobile && railOnly ? window.innerHeight - position.top : mobile ? Math.max(8, window.innerHeight - position.top - position.height) : undefined, maxHeight: position.height, "--navigation-available-height": `${position.height}px` } as CSSProperties}
             onKeyDown={event => {
-              if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); return; }
-              if (event.key === "Tab" && mobile) {
-                const nodes = Array.from(menu.current?.querySelectorAll<HTMLElement>('input, button:not(:disabled)') ?? []).filter(node => node.tabIndex >= 0);
+              if (event.defaultPrevented) return;
+              if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (detailId) back(); else close(true); return; }
+              if (event.key === "Tab" && (mobile || workspace)) {
+                const nodes = Array.from(menu.current?.querySelectorAll<HTMLElement>('input:not(:disabled), textarea:not(:disabled), select:not(:disabled), button:not(:disabled), a[href], [tabindex="0"]') ?? []).filter(node => node.tabIndex >= 0 && !node.closest('[hidden], [aria-hidden="true"]'));
                 if (event.shiftKey && (document.activeElement === nodes[0] || document.activeElement === menu.current)) { event.preventDefault(); nodes.at(-1)?.focus(); }
                 else if (!event.shiftKey && document.activeElement === nodes.at(-1)) { event.preventDefault(); nodes[0]?.focus(); }
                 return;
               }
+              if (detailId) return;
               if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
               const buttons = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>(".desktop-menu-action:not(:disabled), .cli-launcher-embedded button:not(:disabled)") ?? []);
               if (!buttons.length) return;
@@ -544,24 +628,24 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
               const next = index < 0 ? (event.key === "ArrowDown" ? 0 : buttons.length - 1) : (index + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length;
               buttons[next]?.focus();
             }}
-            onBlur={event => { if (!mobile && event.relatedTarget && !event.currentTarget.contains(event.relatedTarget) && !Object.values(triggers.current).some(node => node?.contains(event.relatedTarget as Node))) setOpen(null); }}>
+            onBlur={event => { if (!workspace && !mobile && event.relatedTarget && !event.currentTarget.contains(event.relatedTarget) && !Object.values(triggers.current).some(node => node?.contains(event.relatedTarget as Node))) setOpen(null); }}>
             <div className="desktop-menu-header">
               <label className="desktop-menu-search"><Search aria-hidden="true" />
                 <input ref={search} aria-label={docksOnly ? "Find a dock" : toolsOnly ? "Find a tool" : "Find an action"}
-                  placeholder="Find an action…" value={query} onChange={event => setQuery(event.target.value)} />
+                  placeholder="Find an action…" value={query} onChange={event => { setDetailId(null); setDetailHistory([]); setQuery(event.target.value); }} />
               </label>
               <button type="button" className="desktop-menu-close" aria-label="Close menu" title="Close" onClick={() => close(true)}><X aria-hidden="true" /></button>
             </div>
-            {quick.length ? <div className="workspace-quick-actions" aria-label="Quick access">{quick.map(a => renderAction(a, true))}</div> : null}
+            {quick.length && !detailId ? <div className="workspace-quick-actions" aria-label="Quick access">{quick.map(a => renderAction(a, true))}</div> : null}
             {workspace ? <div className="workspace-menu-heading">
               <span><strong>Workspace</strong><small>Everything you need, in one place</small></span>
               <span className="workspace-menu-hint">{isSearching ? `${matched.length} results` : "Browse by category"}</span>
             </div> : null}
-            <div className={workspace ? `workspace-browser${isSearching ? " is-searching" : ""}` : "desktop-menu-body"}>
-            {workspace && !isSearching ? <div className="workspace-category-tabs" role="tablist" aria-label="Workspace categories" aria-orientation={mobile ? "horizontal" : "vertical"}>
+            <div className={workspace ? `workspace-browser${isSearching && !detailId ? " is-searching" : ""}${detailId ? " has-detail" : ""}` : "desktop-menu-body"}>
+            {workspace && (!isSearching || detailId) ? <div className="workspace-category-tabs" role="tablist" aria-label="Workspace categories" aria-orientation={mobile ? "horizontal" : "vertical"}>
               {visibleCategories.map(item => {
                 const CategoryIcon = item.icon;
-                const count = visible.filter(action => !workspaceQuickActionIds.includes(action.id) && desktopActionGroup(action.id) !== "create" && workspaceActionCategory(action.id) === item.id).length;
+                const count = item.id === "layout" ? 5 : visible.filter(action => !workspaceQuickActionIds.includes(action.id) && actionCategory(action.id) === item.id).length;
                 return <button key={item.id} id={`${menuId}-${item.id}`} type="button" role="tab" aria-label={item.label}
                 aria-selected={category === item.id} aria-controls={`${menuId}-actions`} tabIndex={category === item.id ? 0 : -1}
                 style={{ "--workspace-category-color": item.color } as CSSProperties}
@@ -572,18 +656,33 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
                   const length = visibleCategories.length;
                   const next = event.key === "Home" ? 0 : event.key === "End" ? length - 1 : (index + (["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : length - 1)) % length;
                   setCategory(visibleCategories[next]!.id);
+                  setDetailId(null); setDetailHistory([]); setQuery("");
                   document.getElementById(`${menuId}-${visibleCategories[next]!.id}`)?.focus();
-                }} onClick={() => setCategory(item.id)}>
+                }} onClick={() => { setCategory(item.id); setDetailId(null); setDetailHistory([]); setQuery(""); }}>
                 <CategoryIcon aria-hidden="true" /><span>{item.label}</span><small aria-hidden="true">{count}</small>
               </button>; })}
             </div> : null}
-            <div id={`${menuId}-actions`} className="desktop-menu-actions" role={workspace && !isSearching ? "tabpanel" : undefined}
+            {detailId && renderWorkspaceAction ? <div id={`${menuId}-actions`} className="workspace-detail" role="tabpanel" aria-label={detailLabel}>
+              <header className="workspace-detail-header">
+                <button type="button" className="workspace-back" aria-label="Back to workspace actions" onClick={back}><ChevronLeft aria-hidden="true" /><span>Back</span></button>
+                <strong>{detailLabel}</strong>
+              </header>
+              <div ref={detail} className="workspace-detail-content" tabIndex={-1} data-workspace-page={detailId}>
+                <WorkspaceSurface>{renderWorkspaceAction(detailId, { onBack: back, onNavigate: navigate, triggerRef: detailTrigger })}</WorkspaceSurface>
+              </div>
+            </div> : <div id={`${menuId}-actions`} className={`desktop-menu-actions${workspace && ["tools", "widgets", "utilities", "toggles"].includes(category) || toolsOnly ? " is-tools-list" : ""}`} role={workspace && !isSearching ? "tabpanel" : undefined}
               aria-labelledby={workspace && !isSearching ? `${menuId}-${category}` : undefined}>
-              {workspace && !isSearching ? <div className="workspace-section-heading">
+              {workspace && !isSearching && (category !== "layout" || !renderWorkspaceAction) ? <div className="workspace-section-heading">
                 <strong>{workspaceCategories.find(item => item.id === category)?.label}</strong>
                 {!mobile ? <small>{workspaceCategories.find(item => item.id === category)?.description}</small> : null}
               </div> : null}
-              {toolsOnly && !isSearching ? (() => {
+              {workspace && category === "layout" && !isSearching && renderWorkspaceAction ? (
+                <div className="workspace-pane-layout-view">
+                  <WorkspaceSurface>
+                    {renderWorkspaceAction("pane-layout", { onBack: () => {}, onNavigate: navigate, triggerRef: detailTrigger })}
+                  </WorkspaceSurface>
+                </div>
+              ) : toolsOnly && !isSearching ? (() => {
                 const isToolToggle = (a: IconToolbarAction) => {
                   if (a.id.startsWith("widget-")) return false;
                   const railId = ACTION_TO_LOWER_RAIL_ID[a.id] ?? (LOWER_RAIL_IDS.includes(a.id) ? a.id : undefined);
@@ -613,7 +712,9 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
                     ) : null}
                   </>
                 );
-              })() : (
+              })() : workspace && category === "tools" && !isSearching ? (
+                <div className="workspace-tools-icons">{sortedMatched.map(a => renderAction(a))}</div>
+              ) : (
                 sortedMatched.map(a => renderAction(a))
               )}
               {showCreateTools ? renderCreateTools?.({
@@ -621,10 +722,11 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
                 onClose: () => close(),
                 triggerRef: createTrigger,
                 paneCount,
-                onPaneCountChange: setPaneCount
+                onPaneCountChange: setPaneCount,
+                onNavigate: workspace ? navigate : undefined
               }) : null}
-              {!matched.length && !showCreateTools ? <p className="desktop-menu-empty">{isSearching ? "No matching actions. Try a different name." : "No actions available in this category."}</p> : null}
-            </div>
+              {!matched.length && !showCreateTools && (category !== "layout" || isSearching || !renderWorkspaceAction) ? <p className="desktop-menu-empty">{isSearching ? "No matching actions. Try a different name." : "No actions available in this category."}</p> : null}
+            </div>}
             </div>
             {(open === "help" || workspace) && !isSearching && footer ? <div className="desktop-menu-footer">{footer}</div> : null}
           </motion.div>

@@ -63,6 +63,7 @@ type PlaylistPlaybackStatus = "idle" | "connecting" | "playing" | "paused" | "un
 type MusicSource = "radio" | "playlist";
 
 type VibeMusicPlayerProps = {
+  portalTarget?: HTMLElement | null;
   activeRoomId?: string;
   mobile: boolean;
   open: boolean;
@@ -293,7 +294,7 @@ function formatPlaybackTime(totalSeconds: number): string {
   return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${paddedSeconds}` : `${minutes}:${paddedSeconds}`;
 }
 
-export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOpenYouTube, persistVolume: shouldPersistVolume = true, roomTheme, triggerRef }: VibeMusicPlayerProps) {
+export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOpenYouTube, persistVolume: shouldPersistVolume = true, roomTheme, triggerRef, portalTarget }: VibeMusicPlayerProps) {
   const runtime = getSpaceRuntime();
   const [reloadPlayback] = useState(() => readReloadPlayback(shouldPersistVolume));
   const [resumeBlocked, setResumeBlocked] = useState(false);
@@ -1377,7 +1378,7 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
   }, [musicLinks, musicLinksLoading, open, playlistStatus, selectedLinkId, source, startPlaylist]);
 
   useLayoutEffect(() => {
-    if (!open || mobile) return;
+    if (!open || mobile || portalTarget) return;
     function updatePosition() {
       const trigger = triggerRef.current;
       const panel = panelRef.current;
@@ -1429,10 +1430,10 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [mobile, open, triggerRef]);
+  }, [mobile, open, triggerRef, portalTarget]);
 
   useEffect(() => {
-    if (!open || !mobile) return;
+    if (!open || !mobile || portalTarget) return;
     const currentPanel = panelRef.current;
     if (!(currentPanel instanceof HTMLElement)) return;
     const focusPanel: HTMLElement = currentPanel;
@@ -1473,7 +1474,7 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
         element.inert = inert;
       });
     };
-  }, [mobile, open]);
+  }, [mobile, open, portalTarget]);
 
   useEffect(() => {
     if (!open) return;
@@ -1487,7 +1488,7 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
   useEffect(() => {
     if (!open) return;
     function handleEscape(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       onOpenChange(false);
     }
@@ -1496,7 +1497,7 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
   }, [onOpenChange, open]);
 
   useEffect(() => {
-    if (!open || mobile) return;
+    if (!open || mobile || portalTarget) return;
     function handleOutsidePointer(event: PointerEvent) {
       const target = event.target as Node;
       if (panelRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
@@ -1504,7 +1505,7 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
     }
     document.addEventListener("pointerdown", handleOutsidePointer, true);
     return () => document.removeEventListener("pointerdown", handleOutsidePointer, true);
-  }, [mobile, onOpenChange, open, triggerRef]);
+  }, [mobile, onOpenChange, open, triggerRef, portalTarget]);
 
   function updateVolume(nextPercent: number) {
     const nextVolume = Math.min(1, Math.max(0, nextPercent / 100));
@@ -1525,9 +1526,9 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
   const playlistStatusText = hasPlaylistSession && playlistStatus === "idle" && !playlistEnded
     ? "Ready"
     : playlistStatusLabel(playlistStatus);
-  const panelStyle: CSSProperties | undefined = mobile
+  const panelStyle: CSSProperties | undefined = portalTarget || mobile
     ? undefined
-    : { left: `${position.left}px`, top: `${position.top}px`, visibility: position.ready ? "visible" : "hidden" };
+    : { left: `${position.left}px`, top: `${position.top}px`, visibility: portalTarget || position.ready ? "visible" : "hidden" };
 
   const panel = open ? (
     <section
@@ -1536,7 +1537,7 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
       className={mobile ? "vibe-music-panel vibe-music-sheet vibe-music-theme" : "vibe-music-panel vibe-music-popover vibe-music-theme"}
       data-room-theme={roomTheme}
       role="dialog"
-      aria-modal={mobile ? "true" : undefined}
+      aria-modal={mobile && !portalTarget ? "true" : undefined}
       aria-label="Vibe Music"
       style={panelStyle}
       onClick={(event) => event.stopPropagation()}
@@ -1826,10 +1827,10 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
       />
       {panel
         ? createPortal(
-            mobile
+            mobile && !portalTarget
               ? <div className="vibe-music-sheet-backdrop" onClick={() => onOpenChange(false)}>{panel}</div>
               : panel,
-            document.body
+            portalTarget ?? document.body
           )
         : null}
     </>

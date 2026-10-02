@@ -10,9 +10,14 @@ import {
   Sparkles,
   Monitor,
   Play,
-  FolderOpen
+  FolderOpen,
+  Video,
+  Camera,
+  Square,
+  Crop
 } from "../ui-theme/app-icons.js";
 import "./desktop-window-titlebar.css";
+import { toggleBrowserFullscreen } from "./fullscreen.js";
 
 const ChevronDownIcon = () => (
   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ opacity: 0.65 }}>
@@ -116,6 +121,17 @@ export function DesktopWindowTitlebar({
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "in-progress" | "fallback-downloaded" | "installer-ready">("idle");
+  const [activeAspectRatio, setActiveAspectRatio] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
+  const [isRecordingDialogOpen, setIsRecordingDialogOpen] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
   const menuContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -127,16 +143,16 @@ export function DesktopWindowTitlebar({
         setSystemInfo({
           platform: "win32",
           arch: "x64",
-          version: "0.1.16",
-          electronVersion: "33.2.1"
+          version: "",
+          electronVersion: ""
         });
       });
     } else {
       setSystemInfo({
         platform: "win32",
         arch: "x64",
-        version: "0.1.16",
-        electronVersion: "33.2.1"
+        version: "",
+        electronVersion: ""
       });
     }
   }, [isDesktop, desktopBridge]);
@@ -165,6 +181,31 @@ export function DesktopWindowTitlebar({
   }, [isDesktop]);
 
   useEffect(() => {
+    let interval: any = null;
+    if (isRecording) {
+      interval = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } else {
+      setRecordingSeconds(0);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isRecording]);
+
+  useEffect(() => {
+    return () => {
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      if (recordedVideoUrl) {
+        URL.revokeObjectURL(recordedVideoUrl);
+      }
+    };
+  }, [recordedVideoUrl]);
+
+  useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (menuContainerRef.current && !menuContainerRef.current.contains(event.target as Node)) {
         setIsAppMenuOpen(false);
@@ -175,9 +216,10 @@ export function DesktopWindowTitlebar({
         setIsAppMenuOpen(false);
         setIsAboutDialogOpen(false);
         setIsUpdateDialogOpen(false);
+        setIsRecordingDialogOpen(false);
       }
     };
-    if (isAppMenuOpen || isAboutDialogOpen || isUpdateDialogOpen) {
+    if (isAppMenuOpen || isAboutDialogOpen || isUpdateDialogOpen || isRecordingDialogOpen) {
       document.addEventListener("mousedown", handleClickOutside);
       document.addEventListener("keydown", handleKeyDown);
     }
@@ -185,14 +227,14 @@ export function DesktopWindowTitlebar({
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isAppMenuOpen, isAboutDialogOpen, isUpdateDialogOpen]);
+  }, [isAppMenuOpen, isAboutDialogOpen, isUpdateDialogOpen, isRecordingDialogOpen]);
 
   if (!isDesktop || isFullscreen) {
     return null;
   }
 
-  const currentVersion = systemInfo?.version || "0.1.15";
-  const targetVersion = latestRelease?.version || "0.1.15";
+  const currentVersion = systemInfo?.version || "unknown";
+  const targetVersion = latestRelease?.version || currentVersion;
   const hasUpdate = Boolean(latestRelease?.version && isVersionNewer(latestRelease.version, currentVersion));
 
   const platformLabel = systemInfo?.platform === "win32"
@@ -203,16 +245,226 @@ export function DesktopWindowTitlebar({
 
   const handleToggleFullscreen = () => {
     setIsAppMenuOpen(false);
-    if (document.fullscreenElement) {
-      void document.exitFullscreen();
-    } else {
-      void document.documentElement.requestFullscreen();
-    }
+    void toggleBrowserFullscreen();
   };
 
   const handleReloadWindow = () => {
     setIsAppMenuOpen(false);
     window.location.reload();
+  };
+
+  const formatDuration = (totalSeconds: number): string => {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  };
+
+  const handleSelectAspectRatio = async (preset: "16:9" | "1:1" | "4:5" | "9:16" | "maximize") => {
+    try {
+      if (desktopBridge?.setAspectRatio) {
+        const res = await desktopBridge.setAspectRatio(preset);
+        if (res?.success) {
+          setActiveAspectRatio(preset === "maximize" ? null : preset);
+        }
+      }
+    } catch (err) {
+      console.warn("Could not set aspect ratio:", err);
+    }
+  };
+
+  const handleToggleRecording = async () => {
+    if (isRecording) {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch (err) {
+          console.warn("Error stopping MediaRecorder:", err);
+          setIsRecording(false);
+        }
+      }
+      return;
+    }
+
+    try {
+      let stream: MediaStream | null = null;
+      if (desktopBridge?.getWindowMediaSourceId) {
+        const res = await desktopBridge.getWindowMediaSourceId();
+        if (res?.success && res.sourceId) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: {
+                mandatory: {
+                  chromeMediaSource: "desktop",
+                  chromeMediaSourceId: res.sourceId,
+                  minWidth: 1280,
+                  maxWidth: 3840,
+                  minHeight: 720,
+                  maxHeight: 2160,
+                  minFrameRate: 30,
+                  maxFrameRate: 60
+                }
+              } as any
+            });
+          } catch (gumErr) {
+            console.warn("getUserMedia with sourceId notice:", gumErr);
+          }
+        }
+      }
+
+      if (!stream) {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: false
+        });
+      }
+
+      if (!stream) {
+        throw new Error("Screen capture stream could not be acquired.");
+      }
+
+      const preferredMime = [
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8",
+        "video/webm"
+      ].find((type) => MediaRecorder.isTypeSupported(type)) || "video/webm";
+
+      const recorder = new MediaRecorder(stream, { mimeType: preferredMime });
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          chunks.push(e.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const finalBlob = new Blob(chunks, { type: preferredMime });
+        stream?.getTracks().forEach((track) => track.stop());
+        setRecordedBlob(finalBlob);
+        setRecordedVideoUrl(URL.createObjectURL(finalBlob));
+        setIsRecording(false);
+        setIsRecordingDialogOpen(true);
+        setSaveStatus("idle");
+      };
+
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          if (recorder.state === "recording") {
+            try {
+              recorder.stop();
+            } catch {}
+          }
+        };
+      }
+
+      recorder.start(1000);
+      mediaRecorderRef.current = recorder;
+      mediaStreamRef.current = stream;
+      setIsRecording(true);
+      setRecordingSeconds(0);
+    } catch (err: any) {
+      console.warn("Could not start recording:", err);
+      setIsRecording(false);
+    }
+  };
+
+  const handleSaveRecording = async () => {
+    if (!recordedBlob) return;
+    setSaveStatus("saving");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const filename = `SpaceApp-Recording-${timestamp}.webm`;
+
+    try {
+      if (desktopBridge?.saveRecording) {
+        let arrayBuffer: ArrayBuffer;
+        if (typeof (recordedBlob as any).arrayBuffer === "function") {
+          arrayBuffer = await recordedBlob.arrayBuffer();
+        } else if (typeof Response !== "undefined") {
+          arrayBuffer = await new Response(recordedBlob).arrayBuffer();
+        } else {
+          arrayBuffer = new Uint8Array(await new Promise<number[]>((res) => {
+            const reader = new FileReader();
+            reader.onload = () => res(Array.from(new Uint8Array(reader.result as ArrayBuffer)));
+            reader.readAsArrayBuffer(recordedBlob);
+          })).buffer;
+        }
+        const res = await desktopBridge.saveRecording({ buffer: new Uint8Array(arrayBuffer), filename });
+        if (res?.success) {
+          setSaveStatus("saved");
+          return;
+        }
+      }
+
+      const a = document.createElement("a");
+      a.href = recordedVideoUrl || URL.createObjectURL(recordedBlob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setSaveStatus("saved");
+    } catch (err) {
+      console.warn("Could not save recording:", err);
+      setSaveStatus("idle");
+    }
+  };
+
+  const handleCaptureSnapshot = async () => {
+    setIsAppMenuOpen(false);
+    try {
+      let blob: Blob | null = null;
+      if (desktopBridge?.capturePage) {
+        const res = await desktopBridge.capturePage();
+        if (res?.success && res.dataUrl) {
+          const raw = atob(res.dataUrl.slice(res.dataUrl.indexOf(",") + 1));
+          blob = new Blob([Uint8Array.from(raw, (c) => c.charCodeAt(0))], { type: "image/png" });
+        }
+      }
+
+      if (!blob) {
+        throw new Error("Snapshot capture not supported or returned empty");
+      }
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const filename = `SpaceApp-Snapshot-${timestamp}.png`;
+
+      if (typeof window !== "undefined" && window.navigator?.clipboard && typeof ClipboardItem !== "undefined") {
+        try {
+          await window.navigator.clipboard.write([
+            new ClipboardItem({ "image/png": blob })
+          ]);
+        } catch {}
+      }
+
+      if (desktopBridge?.saveRecording) {
+        let arrayBuffer: ArrayBuffer;
+        if (typeof (blob as any).arrayBuffer === "function") {
+          arrayBuffer = await blob.arrayBuffer();
+        } else if (typeof Response !== "undefined") {
+          arrayBuffer = await new Response(blob).arrayBuffer();
+        } else {
+          arrayBuffer = new Uint8Array(await new Promise<number[]>((res) => {
+            const reader = new FileReader();
+            reader.onload = () => res(Array.from(new Uint8Array(reader.result as ArrayBuffer)));
+            reader.readAsArrayBuffer(blob!);
+          })).buffer;
+        }
+        await desktopBridge.saveRecording({ buffer: new Uint8Array(arrayBuffer), filename });
+      } else {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+
+      setToastMessage("Snapshot copied to clipboard & saved to Downloads!");
+      setTimeout(() => setToastMessage(null), 3500);
+    } catch (err) {
+      console.warn("Snapshot capture failed:", err);
+    }
   };
 
   const handleDownloadSetup = () => {
@@ -302,7 +554,7 @@ export function DesktopWindowTitlebar({
               title={hasUpdate ? `Update available: v${targetVersion}! Click to update.` : "SpaceApp Menu & Version Details"}
             >
               <img
-                src="/brand/space-logo-2048.png"
+                src="/brand/spaceapp-dev-icon.svg"
                 alt="SpaceApp"
                 className="desktop-window-titlebar-icon"
                 width={16}
@@ -328,7 +580,7 @@ export function DesktopWindowTitlebar({
                 <div className="desktop-window-app-menu-header">
                   <div className="desktop-window-app-menu-header-brand">
                     <img
-                      src="/brand/space-logo-2048.png"
+                      src="/brand/spaceapp-dev-icon.svg"
                       alt="SpaceApp"
                       width={20}
                       height={20}
@@ -413,6 +665,86 @@ export function DesktopWindowTitlebar({
                     </div>
                   </button>
 
+                  {/* Social Media Aspect Ratio Section */}
+                  <div className="desktop-window-app-menu-aspect-section">
+                    <div className="desktop-window-app-menu-aspect-header">
+                      <Crop aria-hidden="true" style={{ width: 13, height: 13, color: "#a371f7" }} />
+                      <span>Social Media Aspect Ratio</span>
+                      <small>X.com · LinkedIn</small>
+                    </div>
+                    <div className="desktop-window-aspect-ratio-grid">
+                      <button
+                        type="button"
+                        className={`desktop-window-aspect-ratio-btn ${activeAspectRatio === "16:9" ? "active" : ""}`}
+                        title="16:9 Landscape - Optimal for X (Twitter) & LinkedIn Video / Posts"
+                        onClick={() => handleSelectAspectRatio("16:9")}
+                      >
+                        <strong>16:9</strong>
+                        <span>Landscape</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`desktop-window-aspect-ratio-btn ${activeAspectRatio === "1:1" ? "active" : ""}`}
+                        title="1:1 Square - Universal square format for X & LinkedIn feed posts"
+                        onClick={() => handleSelectAspectRatio("1:1")}
+                      >
+                        <strong>1:1</strong>
+                        <span>Square</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`desktop-window-aspect-ratio-btn ${activeAspectRatio === "4:5" ? "active" : ""}`}
+                        title="4:5 Portrait - Optimal tall vertical post for LinkedIn & Mobile Feed"
+                        onClick={() => handleSelectAspectRatio("4:5")}
+                      >
+                        <strong>4:5</strong>
+                        <span>Portrait</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`desktop-window-aspect-ratio-btn ${activeAspectRatio === "9:16" ? "active" : ""}`}
+                        title="9:16 Vertical - Stories, Shorts & Mobile Video"
+                        onClick={() => handleSelectAspectRatio("9:16")}
+                      >
+                        <strong>9:16</strong>
+                        <span>Vertical</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`desktop-window-aspect-ratio-btn maximize ${activeAspectRatio === null ? "active" : ""}`}
+                        title="Maximize Window - Restore full size"
+                        onClick={() => handleSelectAspectRatio("maximize")}
+                      >
+                        <Maximize2 aria-hidden="true" style={{ width: 11, height: 11 }} />
+                        <span>Maximize</span>
+                      </button>
+                    </div>
+
+                    <div className="desktop-window-aspect-actions">
+                      <button
+                        type="button"
+                        className="desktop-window-aspect-action-btn"
+                        onClick={handleCaptureSnapshot}
+                        title="Capture clean snapshot of this window as PNG"
+                      >
+                        <Camera aria-hidden="true" style={{ width: 13, height: 13, color: "#58a6ff" }} />
+                        <span>Snapshot Photo</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`desktop-window-aspect-action-btn ${isRecording ? "recording" : ""}`}
+                        onClick={() => {
+                          setIsAppMenuOpen(false);
+                          void handleToggleRecording();
+                        }}
+                        title={isRecording ? "Stop recording" : "Record video of only this window"}
+                      >
+                        <Video aria-hidden="true" style={{ width: 13, height: 13, color: isRecording ? "#f85149" : "#3fb950" }} />
+                        <span>{isRecording ? "Stop Recording" : "Record Window"}</span>
+                      </button>
+                    </div>
+                  </div>
+
                   <button
                     type="button"
                     className="desktop-window-app-menu-item"
@@ -455,6 +787,27 @@ export function DesktopWindowTitlebar({
           ) : null}
 
           <DesktopDisplayControls variant="titlebar" activeRoomId={activeRoomId} activePaneId={activePaneId} />
+
+          <button
+            type="button"
+            className={`desktop-window-record-btn ${isRecording ? "is-recording" : ""}`}
+            onClick={() => void handleToggleRecording()}
+            title={isRecording ? "Click to stop recording" : "Record window video for X.com / LinkedIn"}
+            aria-label={isRecording ? "Stop Recording" : "Record Window"}
+          >
+            <span className={`desktop-window-record-dot ${isRecording ? "recording-pulse" : ""}`} />
+            {isRecording ? (
+              <>
+                <Square aria-hidden="true" style={{ width: 10, height: 10, fill: "currentColor" }} />
+                <span>REC {formatDuration(recordingSeconds)}</span>
+              </>
+            ) : (
+              <>
+                <Video aria-hidden="true" style={{ width: 12, height: 12 }} />
+                <span>Record Window</span>
+              </>
+            )}
+          </button>
         </div>
 
         <div className="desktop-window-titlebar-drag-spacer" />
@@ -640,7 +993,7 @@ export function DesktopWindowTitlebar({
             <div className="desktop-window-about-header">
               <div className="desktop-window-about-title">
                 <img
-                  src="/brand/space-logo-2048.png"
+                  src="/brand/spaceapp-dev-icon.svg"
                   alt="SpaceApp"
                   width={28}
                   height={28}
@@ -729,6 +1082,118 @@ export function DesktopWindowTitlebar({
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Window Recording Finished Dialog */}
+      {isRecordingDialogOpen && (
+        <div className="desktop-window-about-backdrop" role="dialog" aria-modal="true">
+          <div className="desktop-window-recording-dialog">
+            <div className="desktop-window-about-header">
+              <div className="desktop-window-about-title">
+                <div className="desktop-window-recording-dialog-icon">
+                  <Video aria-hidden="true" style={{ width: 20, height: 20, color: "#f85149" }} />
+                </div>
+                <div>
+                  <h3>Window Recording</h3>
+                  <p>Recorded {formatDuration(recordingSeconds)} · Ready for X.com / LinkedIn</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="desktop-window-about-close"
+                onClick={() => setIsRecordingDialogOpen(false)}
+                aria-label="Close dialog"
+              >
+                <X aria-hidden="true" style={{ width: 16, height: 16 }} />
+              </button>
+            </div>
+
+            <div className="desktop-window-recording-body">
+              {recordedVideoUrl && (
+                <div className="desktop-window-recording-player-wrapper">
+                  <video
+                    src={recordedVideoUrl}
+                    controls
+                    autoPlay
+                    playsInline
+                    className="desktop-window-recording-player"
+                  />
+                </div>
+              )}
+
+              <div className="desktop-window-recording-meta-pills">
+                <div className="desktop-window-recording-meta-pill">
+                  <span>Duration</span>
+                  <strong>{formatDuration(recordingSeconds)}</strong>
+                </div>
+                <div className="desktop-window-recording-meta-pill">
+                  <span>Size</span>
+                  <strong>{recordedBlob ? `${(recordedBlob.size / (1024 * 1024)).toFixed(2)} MB` : "—"}</strong>
+                </div>
+                <div className="desktop-window-recording-meta-pill">
+                  <span>Format</span>
+                  <strong>WebM (VP9)</strong>
+                </div>
+                {activeAspectRatio && (
+                  <div className="desktop-window-recording-meta-pill">
+                    <span>Aspect Ratio</span>
+                    <strong>{activeAspectRatio}</strong>
+                  </div>
+                )}
+              </div>
+
+              <div className="desktop-window-recording-actions">
+                <button
+                  type="button"
+                  className="desktop-window-recording-save-btn"
+                  onClick={handleSaveRecording}
+                >
+                  {saveStatus === "saved" ? (
+                    <>
+                      <Check aria-hidden="true" style={{ width: 15, height: 15 }} />
+                      <span>Saved to Downloads</span>
+                    </>
+                  ) : saveStatus === "saving" ? (
+                    <span>Saving...</span>
+                  ) : (
+                    <>
+                      <Download aria-hidden="true" style={{ width: 15, height: 15 }} />
+                      <span>Save to Downloads</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  className="desktop-window-update-open-btn"
+                  onClick={handleOpenDownloads}
+                >
+                  <FolderOpen aria-hidden="true" style={{ width: 14, height: 14 }} />
+                  <span>Open Downloads Folder</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="desktop-window-about-footer">
+              <small>Saved directly to your Downloads folder for easy social upload.</small>
+              <button
+                type="button"
+                className="desktop-window-about-ok-btn"
+                onClick={() => setIsRecordingDialogOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Snapshot Toast */}
+      {toastMessage && (
+        <div className="desktop-window-snapshot-toast" role="status">
+          <Camera aria-hidden="true" style={{ width: 14, height: 14, color: "#3fb950" }} />
+          <span>{toastMessage}</span>
         </div>
       )}
     </>

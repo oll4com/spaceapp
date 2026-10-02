@@ -347,7 +347,7 @@ async function queryVercelGateway(apiKey: string): Promise<ApiProviderAccount> {
       })
     ]);
 
-    let email = "operator@example.invalid";
+    let email = "operator@space.local";
     let isLimited = false;
     if (userRes.ok) {
       try {

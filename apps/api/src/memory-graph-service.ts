@@ -1,3 +1,4 @@
+import { createMemorySourceTopology } from "./memory-source-topology.js";
 import { readFile, readdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { basename, dirname, join } from "node:path";
@@ -5,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { MemoryGraphSnapshot, MemoryGraphSource } from "@space/memory-graph";
 
 export interface MemoryGraphApiService {
+  withSourceTopology?(snapshot: MemoryGraphSnapshot): Promise<MemoryGraphSnapshot>;
   getSnapshot(): Promise<{ snapshot: MemoryGraphSnapshot; isStale: boolean }>;
   getCachedSnapshot(): Promise<MemoryGraphSnapshot | null>;
   getArchiveSnapshot(): Promise<MemoryGraphSnapshot>;
@@ -41,6 +43,7 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
   let archiveSnapshot: MemoryGraphSnapshot | null = null;
   let archiveBuild: Promise<MemoryGraphSnapshot> | null = null;
   const memoryDir = dirname(options.indexPath);
+  const withSourceTopology = createMemorySourceTopology(options.indexPath);
   const monthlyMemoryPattern = /^gemini_history_(\d{4}-\d{2})\.md$/;
 
   const loadGraphModule = () => {
@@ -133,6 +136,7 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
   };
 
   return {
+    withSourceTopology,
     async getSourceContent(sourcePath) {
       if (sourcePath !== options.indexPath && sourcePath !== options.monthlyPath) {
         throw new Error("Canonical memory source is outside the configured source allowlist.");

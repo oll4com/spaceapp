@@ -19,10 +19,10 @@
   height: 2.25rem;
   display: grid;
   place-items: center;
-  border: 1px solid #3f5f58;
-  border-radius: 6px;
-  background: #202826;
-  color: #9cd8cc;
+  border: 1px solid var(--room-border, #3f5f58);
+  border-radius: 9px;
+  background: var(--room-surface, #202826);
+  color: var(--room-accent, #9cd8cc);
 }
 
 .shared-chat-mark svg {
@@ -43,11 +43,11 @@
 
 .shared-chat-head h2 {
   font-size: 0.92rem;
-  color: #eee8dc;
+  color: var(--room-text, #eee8dc);
 }
 
 .shared-chat-head small {
-  color: #9c9a94;
+  color: var(--room-muted, #9c9a94);
   font-size: 0.7rem;
 }
 
@@ -87,16 +87,17 @@
   width: min(92%, 22rem);
   display: grid;
   gap: 0.35rem;
-  border: 1px solid #343738;
-  border-radius: 7px;
-  padding: 0.65rem 0.75rem;
-  background: #1b1d1e;
+  border: 1px solid var(--room-border, #343738);
+  border-radius: 12px;
+  padding: 0.75rem 0.85rem;
+  background: var(--room-surface, #1b1d1e);
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .shared-chat-message.is-user {
   justify-self: end;
-  border-color: #3f5f58;
-  background: #202826;
+  border-color: color-mix(in srgb, var(--room-accent, #6db7aa) 45%, var(--room-border, #3f5f58));
+  background: color-mix(in srgb, var(--room-accent, #6db7aa) 15%, var(--room-surface, #1b1d1e));
 }
 
 .shared-chat-message.is-agent {
@@ -205,11 +206,11 @@
   min-height: 5rem;
   max-height: 10rem;
   resize: vertical;
-  border: 1px solid #3b3d3f;
-  border-radius: 6px;
-  padding: 0.65rem 0.7rem;
-  background: #151718;
-  color: #eee8dc;
+  border: 1px solid var(--room-border, #3b3d3f);
+  border-radius: 9px;
+  padding: 0.65rem 0.75rem;
+  background: var(--room-surface, #151718);
+  color: var(--room-text, #eee8dc);
   font: inherit;
   line-height: 1.4;
 }

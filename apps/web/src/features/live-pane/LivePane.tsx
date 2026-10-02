@@ -238,7 +238,20 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
     const now = Date.now();
     if (now - (clearGuardRef.current || 0) < 1500) return;
     clearGuardRef.current = now;
-    if (shared) { await coordinator.clearRoom(pane.roomId); return; }
+    if (shared) {
+      if (pane.roomId) {
+        await coordinator.clearRoom(pane.roomId);
+      } else {
+        await coordinator.clearAll();
+      }
+      setTranscripts([]);
+      try {
+        if (typeof localStorage !== "undefined") {
+          localStorage.removeItem(storageKey);
+        }
+      } catch {}
+      return;
+    }
     setTranscripts([]);
     try {
       if (typeof localStorage !== "undefined") {
@@ -451,6 +464,13 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
       }
       return {};
     });
+    if (pane.id && (pane.modelId !== voiceModel || pane.providerId !== provider || pane.reasoningEffort !== reasoningEffort)) {
+      void api.updatePane(pane.id, {
+        modelId: voiceModel,
+        providerId: provider,
+        reasoningEffort
+      }).catch(() => {});
+    }
   }, [
     pane.id,
     streamingMode,
@@ -1721,7 +1741,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
 
       <main className="live-pane-main">
         {(() => {
-          const activeRunningTool = transcripts.slice().reverse().find((item) => item.toolCall && item.toolCall.status === "running")?.toolCall;
+          const activeRunningTool = transcripts.slice().reverse().find((item) => item.toolCall && item.toolCall?.status === "running")?.toolCall;
           const visibleTranscripts = transcripts.filter((item) => {
             if (voiceOnly && !item.toolCall) return false;
             if (item.toolCall && !showToolCalls) return false;
@@ -1935,18 +1955,19 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
                     {visibleTranscripts.map((item) => (
                       <div key={item.id} className={`live-transcript-bubble ${item.role}`}>
                         <div className="live-transcript-text">
-                          {item.toolCall ? (
-                            <div className="live-tool-call-badge" style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                          {item.toolCall || item.id.startsWith("tool_") ? (
+                            <details className="live-tool-call-badge">
+                              <summary>Tool details</summary>
                               <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 600 }}>
                                 <span>⚡</span>
-                                <span>{item.toolCall.name}</span>
-                                {item.toolCall.status === "running" && <span style={{ color: "#e3b341", fontSize: "11px" }}>● εκτελείται...</span>}
-                                {item.toolCall.status === "done" && <span style={{ color: "#3fb950", fontSize: "11px" }}>✓ ολοκληρώθηκε</span>}
-                                {item.toolCall.status === "error" && <span style={{ color: "#f85149", fontSize: "11px" }}>✗ σφάλμα</span>}
+                                <span>{item.toolCall?.name ?? "Control tool"}</span>
+                                {item.toolCall?.status === "running" && <span style={{ color: "#e3b341", fontSize: "11px" }}>● Running</span>}
+                                {item.toolCall?.status === "done" && <span style={{ color: "#3fb950", fontSize: "11px" }}>✓ Done</span>}
+                                {item.toolCall?.status === "error" && <span style={{ color: "#f85149", fontSize: "11px" }}>✗ Error</span>}
                               </div>
-                              {item.toolCall.query && <div style={{ fontSize: "11px", opacity: 0.8 }}>Παράμετροι: {item.toolCall.query}</div>}
-                              {item.toolCall.resultSummary && <div style={{ fontSize: "11px", color: "#7ee787" }}>{item.toolCall.resultSummary}</div>}
-                            </div>
+                              {item.toolCall?.query && <div style={{ fontSize: "11px", opacity: 0.8 }}>Arguments: {item.toolCall?.query}</div>}
+                              {item.toolCall?.resultSummary && <div style={{ fontSize: "11px", color: "#7ee787" }}>{item.toolCall?.resultSummary ?? item.text}</div>}
+                            </details>
                           ) : (
                             item.text
                           )}

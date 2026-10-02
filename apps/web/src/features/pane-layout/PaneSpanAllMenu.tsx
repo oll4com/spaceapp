@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import { useMenuWheel, useRailPopover } from "../rail-popover.js";
 import { Check, Loader2 } from "../ui-theme/app-icons.js";
 import { useEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from "react";
@@ -25,8 +26,9 @@ export function PaneSpanAllMenu({
   triggerRef,
   visiblePaneCount
 }: PaneSpanAllMenuProps) {
+  const embedded = useWorkspaceSurface();
   const menuRef = useRef<HTMLDivElement | null>(null);
-  useRailPopover(menuRef, triggerRef);
+  useRailPopover(menuRef, triggerRef, !embedded);
   useMenuWheel(menuRef, '[role="menuitemradio"]', true, triggerRef);
   const spans = useMemo(() => {
     const count = Math.max(1, Math.min(activeColumnCount, visiblePaneCount));
@@ -75,7 +77,7 @@ export function PaneSpanAllMenu({
     <div
       ref={menuRef}
       id={PANE_SPAN_ALL_MENU_ID}
-      className="pane-span-all-menu toolbar-floating-menu"
+      className={`pane-span-all-menu${embedded ? " workspace-inline-control" : " toolbar-floating-menu"}`}
       role="menu"
       aria-label="Pane width for all panes"
       aria-busy={pending}

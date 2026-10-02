@@ -1346,13 +1346,22 @@ export const api = {
     }
     return request<CliTaskHistoryResponse>(`/api/cli/tasks?${params.toString()}`);
   },
-  agentSessions: (input?: { page?: number; pageSize?: number; includeArchived?: boolean; q?: string }) => {
+  agentSessions: (input?: {
+    page?: number;
+    pageSize?: number;
+    includeArchived?: boolean;
+    q?: string;
+    interval?: "all" | "today" | "24h" | "3d" | "7d";
+    status?: "all" | "active" | "completed";
+  }) => {
     const params = new URLSearchParams();
     if (input) {
       if (input.page !== undefined) params.set("page", String(input.page));
       if (input.pageSize !== undefined) params.set("pageSize", String(input.pageSize));
       if (input.includeArchived) params.set("includeArchived", "true");
       if (input.q) params.set("q", input.q);
+      if (input.interval && input.interval !== "all") params.set("interval", input.interval);
+      if (input.status && input.status !== "all") params.set("status", input.status);
     }
     return request<AgentSessionHistoryResponse>(`/api/agent/sessions?${params.toString()}`);
   },
@@ -1682,18 +1691,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  sendAgentMessage: (paneId: string, content: string, selectedModelConfigId?: string | null, selectedToolIds?: string[], artifactIds?: string[], clientRequestId?: string) =>
+  sendAgentMessage: (paneId: string, content: string, selectedModelConfigId?: string | null, selectedToolIds?: string[], artifactIds?: string[], clientRequestId?: string, acceptance?: import("@space/contracts").TaskAcceptance) =>
     request<AgentPaneSession>(`/api/panes/${encodeURIComponent(paneId)}/agent/messages`, {
       method: "POST",
       body: JSON.stringify({
         content,
         ...(clientRequestId ? { clientRequestId } : {}),
+        ...(acceptance ? { acceptance } : {}),
         ...(selectedModelConfigId ? { selectedModelConfigId } : {}),
         ...(selectedToolIds ? { selectedToolIds } : {}),
         ...(artifactIds?.length ? { artifactIds } : {})
       })
     }),
-  prepareAgentRetry: (paneId: string) => request<{ content: string; artifacts: Artifact[] }>(
+  prepareAgentRetry: (paneId: string) => request<{ content: string; artifacts: Artifact[]; acceptance?: import("@space/contracts").TaskAcceptance }>(
     `/api/panes/${encodeURIComponent(paneId)}/agent/prepare-retry`, { method: "POST", body: "{}" }
   ),
   interruptAgent: (paneId: string) =>
@@ -2737,6 +2747,7 @@ export const api = {
     paneId?: string | null;
     source: "USER_UPLOAD" | "CLIPBOARD" | "DROP" | "SCREEN_CAPTURE";
     files: File[];
+    signal?: AbortSignal;
   }) => {
     const params = new URLSearchParams({ roomId: input.roomId, source: input.source });
     if (input.paneId) params.set("paneId", input.paneId);
@@ -2744,7 +2755,8 @@ export const api = {
     input.files.forEach((file) => form.append("file", file, file.name || "upload"));
     return request<{ artifacts: Artifact[] }>(`/api/artifacts/file-uploads?${params.toString()}`, {
       method: "POST",
-      body: form
+      body: form,
+      signal: input.signal
     });
   },
   uploadAgentFiles: (input: { roomId: string; files: File[] }) => {

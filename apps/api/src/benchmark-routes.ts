@@ -636,7 +636,7 @@ export async function fetchModelLiveDirective(
 
         return {
           action,
-          turnBias: telemetry.hazardAngleDelta && telemetry.hazardAngleDelta > 0 ? "right" : "left",
+          turnBias: telemetry.hazardAngleDelta && telemetry.hazardAngleDelta > 0 ? "left" : "right",
           thrustOverride: action === "emergency_dash" || action === "strafe_circle",
           radioCallout: callouts[action] ?? "JEV: REACTIVE DIRECTIVE",
           confidence: 0.95,

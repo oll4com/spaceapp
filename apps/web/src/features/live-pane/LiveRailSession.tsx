@@ -15,10 +15,12 @@ export function LiveRailSession() {
   const shouldFollowTranscriptRef = useRef(true);
   const dragRef = useRef<{ offsetX: number; offsetY: number; width: number; height: number } | null>(null);
   const handleClearConversation = useCallback(() => {
-    const roomId = coordinator?.getSnapshot().roomId;
-    if (!roomId) return;
-    void coordinator?.clearRoom(roomId);
-  }, [coordinator]);
+    if (roomOnly && coordinator?.getSnapshot().roomId) {
+      void coordinator.clearRoom(coordinator.getSnapshot().roomId!);
+    } else {
+      void coordinator?.clearAll();
+    }
+  }, [coordinator, roomOnly]);
   useEffect(() => {
     const conversation = () => setConversationOpen(open => !open);
     const stats = () => setStatsOpen(open => !open);
@@ -74,7 +76,7 @@ export function LiveRailSession() {
               <button
                 type="button"
                 className="live-rail-clear-btn"
-                title="Clear this room conversation"
+                title={roomOnly ? "Clear this room conversation" : "Clear conversation"}
                 aria-label="Clear conversation"
                 onClick={handleClearConversation}
               >
@@ -97,10 +99,13 @@ export function LiveRailSession() {
             {transcripts.length === 0 ? (
               <p className="live-rail-conversation-empty">Your Live conversation will appear here.</p>
             ) : transcripts.map((item) => (
-              <p key={item.id} className={`live-rail-message is-${item.role}`}>
+              <div key={item.id} className={`live-rail-message is-${item.role}`}>
                 <strong>{item.role === "user" ? "You" : item.role === "assistant" ? "Live" : "System"}</strong>
-                <small>{item.roomName}</small><span>{item.text}</span>
-              </p>
+                <small>{item.roomName}</small>{item.toolCall || item.id.startsWith("tool_") ? (
+                  <details><summary>Tool details</summary><span>{item.toolCall?.name ?? "Control tool"} · {item.toolCall?.status ?? "done"}</span>
+                    <span>{item.toolCall?.query}</span><span>{item.toolCall?.resultSummary ?? item.text}</span></details>
+                ) : <span>{item.text}</span>}
+              </div>
             ))}
           </div>
         </section>

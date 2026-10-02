@@ -398,6 +398,7 @@ export interface BuildCodexAppServerProcessEnvOptions {
   baseEnv: NodeJS.ProcessEnv;
   codexHome: string;
   credential: CodexAppServerProcessCredential | null;
+  workspace?: string | null;
 }
 
 declare const codexAppServerProcessEnvBrand: unique symbol;
@@ -436,7 +437,8 @@ function assertProviderCredentialEnvName(name: string): void {
 export function buildCodexAppServerProcessEnv({
   baseEnv,
   codexHome,
-  credential
+  credential,
+  workspace
 }: BuildCodexAppServerProcessEnvOptions): CodexAppServerProcessEnv {
   if (!codexHome) {
     throw new Error("Codex App Server home is required.");
@@ -469,6 +471,10 @@ export function buildCodexAppServerProcessEnv({
   if (credential) {
     assertProviderCredentialEnvName(credential.name);
     childEnv[credential.name] = credential.value;
+  }
+  if (workspace != null) {
+    if (!isAbsolute(workspace) || workspace.includes("\0")) throw new Error("Codex App Server workspace must be absolute.");
+    childEnv.SPACE_CLI_WORKSPACE = resolve(workspace);
   }
   const processEnv = Object.freeze(childEnv) as CodexAppServerProcessEnv;
   builtCodexAppServerProcessEnvs.add(processEnv);

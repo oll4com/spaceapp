@@ -378,7 +378,7 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
     assert.match(
       packageReadme,
       new RegExp(
-        `npx --yes run-spaceapp@personal ${command.replace(
+        `npx --yes run-spaceapp@(personal|latest) ${command.replace(
           /[.*+?^${}()|[\]\\]/g,
           "\\$&"
         )}`

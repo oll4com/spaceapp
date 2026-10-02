@@ -1,6 +1,10 @@
+import { existsSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import {
   agentSessionHistoryResponseSchema,
   type AgentSessionHistoryItem,
+  type AgentSessionInterval,
+  type AgentSessionStatusFilter,
   type CodexHistoryItem
 } from "@space/contracts";
 import type { CodexParityService } from "./codex-parity.js";
@@ -13,11 +17,19 @@ export interface AgentSessionHistoryListInput {
   includeArchived?: boolean;
   q?: string;
   runtimeIds?: string[];
+  interval?: AgentSessionInterval;
+  status?: AgentSessionStatusFilter;
+  maxAgeDays?: number | null;
+  now?: () => number;
 }
 
 export interface AgentSessionHistoryServiceOptions {
   codexParity: CodexParityService;
   unifiedCliTaskRegistry: UnifiedCliTaskRegistry;
+  codexHome?: string;
+  maxAgeDays?: number | null;
+  verifyRolloutExistence?: boolean;
+  now?: () => number;
 }
 
 function recencyTimestamp(value: string | null | undefined): number {
@@ -26,7 +38,45 @@ function recencyTimestamp(value: string | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function mapCodexItem(item: CodexHistoryItem): AgentSessionHistoryItem {
+function rolloutExists(rawPath: string | null | undefined, codexHome: string): boolean {
+  if (!rawPath) return false;
+  const candidate = isAbsolute(rawPath) ? rawPath : join(codexHome, rawPath);
+  try {
+    return existsSync(candidate);
+  } catch {
+    return false;
+  }
+}
+
+function computeIntervalCutoff(
+  interval: AgentSessionInterval | undefined,
+  maxAgeDays: number | null | undefined,
+  nowMs: number
+): number | null {
+  const maxRetentionCutoff =
+    maxAgeDays !== null && maxAgeDays !== undefined ? nowMs - maxAgeDays * 86_400_000 : null;
+  if (!interval || interval === "all" || interval === "7d") {
+    return maxRetentionCutoff;
+  }
+  if (interval === "today") {
+    const startOfToday = new Date(nowMs);
+    startOfToday.setHours(0, 0, 0, 0);
+    const todayMs = startOfToday.getTime();
+    return maxRetentionCutoff !== null ? Math.max(todayMs, maxRetentionCutoff) : todayMs;
+  }
+  if (interval === "24h") {
+    const dayMs = nowMs - 86_400_000;
+    return maxRetentionCutoff !== null ? Math.max(dayMs, maxRetentionCutoff) : dayMs;
+  }
+  if (interval === "3d") {
+    const threeDaysMs = nowMs - 3 * 86_400_000;
+    return maxRetentionCutoff !== null ? Math.max(threeDaysMs, maxRetentionCutoff) : threeDaysMs;
+  }
+  return maxRetentionCutoff;
+}
+
+function mapCodexItem(item: CodexHistoryItem, activeThreadIds: Set<string>): AgentSessionHistoryItem {
+  const isActive = Boolean(item.id && activeThreadIds.has(item.id));
   return {
     id: `codex:${item.id}`,
     kind: "codex",
@@ -43,11 +93,14 @@ function mapCodexItem(item: CodexHistoryItem): AgentSessionHistoryItem {
     firstUserMessage: item.firstUserMessage,
     archived: item.archived,
     updatedAt: item.updatedAt,
-    recencyAt: item.recencyAt
+    recencyAt: item.recencyAt,
+    status: isActive ? "active" : "completed",
+    isCompleted: !isActive
   };
 }
 
 function mapCliItem(task: UnifiedCliTask): AgentSessionHistoryItem {
+  const isCompleted = task.isCompleted ?? (task.status !== "active");
   return {
     id: `cli:${task.taskId}`,
     kind: "cli",
@@ -64,7 +117,9 @@ function mapCliItem(task: UnifiedCliTask): AgentSessionHistoryItem {
     firstUserMessage: task.firstUserMessage,
     archived: task.archived,
     updatedAt: task.updatedAt,
-    recencyAt: task.recencyAt
+    recencyAt: task.recencyAt,
+    status: isCompleted ? "completed" : "active",
+    isCompleted
   };
 }
 
@@ -79,6 +134,17 @@ export class AgentSessionHistoryService {
     const fetchSize = Math.min(Math.max(Math.trunc(pageSize * 3), 1), 100);
     const start = (page - 1) * pageSize;
     const maxRounds = 6;
+
+    const codexHome = this.options.codexHome ?? "/var/lib/spaceapp-user/.codex";
+    const nowFn = input.now ?? this.options.now ?? (() => Date.now());
+    const nowMs = nowFn();
+    const maxAgeDays = input.maxAgeDays !== undefined ? input.maxAgeDays : this.options.maxAgeDays;
+    const cutoffMs = computeIntervalCutoff(input.interval, maxAgeDays, nowMs);
+
+    const activeCodexThreadIds =
+      typeof this.options.unifiedCliTaskRegistry.listActiveCodexThreadIds === "function"
+        ? await this.options.unifiedCliTaskRegistry.listActiveCodexThreadIds()
+        : new Set<string>();
 
     const resumableItems: AgentSessionHistoryItem[] = [];
     for (let round = 1; round <= maxRounds; round += 1) {
@@ -100,20 +166,56 @@ export class AgentSessionHistoryService {
         })
       ]);
 
-      const codexItems = codexResponse.data.map(mapCodexItem);
+      const codexCandidateItems = codexResponse.data
+        .filter((item) => {
+          if (!item.id) return false;
+          if (this.options.verifyRolloutExistence && item.rolloutPath) {
+            return rolloutExists(item.rolloutPath, codexHome);
+          }
+          return true;
+        })
+        .map((item) => mapCodexItem(item, activeCodexThreadIds));
+
       const claimedThreadIds = await this.options.unifiedCliTaskRegistry.listResumableCodexThreadIds(
-        codexItems.map((item) => item.threadId).filter((threadId): threadId is string => Boolean(threadId))
+        codexCandidateItems
+          .map((item) => item.threadId)
+          .filter((threadId): threadId is string => Boolean(threadId))
       );
-      resumableItems.push(
-        ...codexItems.filter((item) => item.threadId && claimedThreadIds.has(item.threadId)),
-        ...cliResponse.tasks.map(mapCliItem)
+
+      const validCodexItems = codexCandidateItems.filter(
+        (item) => item.threadId && claimedThreadIds.has(item.threadId)
       );
+
+      const validCliItems = cliResponse.tasks
+        .filter((task) => Boolean(task.firstUserMessage?.trim() || task.nativeTaskRef))
+        .map(mapCliItem);
+
+      resumableItems.push(...validCodexItems, ...validCliItems);
 
       if (codexResponse.data.length < fetchSize && cliResponse.tasks.length < fetchSize) break;
-      if (resumableItems.length >= start + pageSize) break;
+      if (resumableItems.length >= start + pageSize * 2) break;
     }
 
-    const merged = resumableItems.sort(
+    let filtered = resumableItems;
+
+    // Filter by time cutoff (e.g. max 7 days and interval filter)
+    if (cutoffMs !== null) {
+      filtered = filtered.filter((item) => {
+        const timestamp = recencyTimestamp(item.recencyAt ?? item.updatedAt);
+        return timestamp >= cutoffMs;
+      });
+    }
+
+    // Filter by completion status
+    if (input.status && input.status !== "all") {
+      filtered = filtered.filter((item) => {
+        if (input.status === "completed") return item.isCompleted;
+        if (input.status === "active") return !item.isCompleted;
+        return true;
+      });
+    }
+
+    const merged = filtered.sort(
       (left, right) => recencyTimestamp(right.recencyAt) - recencyTimestamp(left.recencyAt)
     );
 
@@ -121,7 +223,7 @@ export class AgentSessionHistoryService {
       data: merged.slice(start, start + pageSize),
       totalItems: merged.length,
       visibleItems: merged.length,
-      checkedAt: new Date().toISOString()
+      checkedAt: new Date(nowMs).toISOString()
     });
   }
 }

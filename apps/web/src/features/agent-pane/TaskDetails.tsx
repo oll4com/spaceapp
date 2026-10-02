@@ -14,6 +14,14 @@ function Timestamp({ value }: { value: string | null }) {
 
 export function TaskDetails({ run }: { run: AgentPaneTaskRun }) {
   const attachments = run.execution?.attachments;
+  const ledger = run.ledger;
+  const cost = ledger?.cost;
+  const evaluation = ledger?.evaluation;
+  const costLabel = !cost || cost.status === "UNKNOWN" ? "Unknown"
+    : `${cost.status === "ESTIMATED" ? "Estimated " : ""}$${cost.amountUsd.toFixed(6)}`;
+  const evaluationLabel = !evaluation ? "Not evaluated" : evaluation.status === "PENDING" ? "Pending"
+    : evaluation.status === "UNSCORABLE" ? "Unscorable"
+      : `${evaluation.validation ? "Checks: " : ""}${Number(evaluation.qualityScore.toFixed(2))}/100${evaluation.criticalFailure ? " · Critical failure" : ""}`;
   const duration = run.startedAt && run.completedAt
     ? Math.max(0, Math.round((Date.parse(run.completedAt) - Date.parse(run.startedAt)) / 1000)) : null;
   const receipt = [
@@ -27,7 +35,19 @@ export function TaskDetails({ run }: { run: AgentPaneTaskRun }) {
     `Execution time: ${duration === null ? "Not available yet" : `${duration}s`}`,
     `Trace: ${run.execution?.traceId ?? "Not recorded"}`,
     `Thread: ${run.threadId ?? "Not assigned"}`, `Turn: ${run.turnId ?? "Not assigned"}`,
-    "Cost: Unknown", "Quality evaluation: Not evaluated",
+    `Cost: ${costLabel}`, `Quality evaluation: ${evaluationLabel}`,
+    ...(ledger ? [
+      `Ledger recorded: ${ledger.recordedAt ?? "Historical record; no ledger was recorded"}`,
+      `Model evidence: ${ledger.model.source}; scope: ${ledger.model.scope}; observed: ${ledger.model.observedAt ?? "Not recorded"}`,
+      `Usage: Unknown; ${ledger.usage.reason}`,
+      `Cost evidence: ${cost?.status === "UNKNOWN" ? cost.reason : `${cost?.source}; ${cost?.observedAt}; pricing: ${cost?.priceCatalogVersion ?? "Not applicable"}`}`,
+      `Evaluation evidence: ${evaluation?.status === "SCORED" ? `${evaluation.evaluator}; rubric: ${evaluation.rubricVersion}; evidence: ${evaluation.evidenceIds.join(", ")}` : evaluation?.reason}`,
+      ...(evaluation?.status === "SCORED" && evaluation.validation ? [
+        "Evaluation scope: Declared checks only",
+        `Result SHA-256: ${evaluation.validation.resultSha256}`,
+        ...evaluation.validation.checks.map(check => `Check ${check.id}: ${check.passed ? "Passed" : "Failed"}${check.critical ? " (critical)" : ""}`)
+      ] : [])
+    ] : []),
     `Submitted files: ${attachments === undefined ? "Not recorded" : attachments.length}`,
     ...(attachments ?? []).map(file => `File: ${JSON.stringify(file.name)}; ${file.mimeType}; ${file.byteSize} bytes; ${file.artifactId}; SHA-256: ${file.sha256}`)
   ].join("\n");
@@ -44,10 +64,27 @@ export function TaskDetails({ run }: { run: AgentPaneTaskRun }) {
         <div><dt>Started</dt><dd><Timestamp value={run.startedAt} /></dd></div>
         <div><dt>Finished</dt><dd><Timestamp value={run.completedAt} /></dd></div>
         <div><dt>Execution time</dt><dd>{duration === null ? "Not available yet" : `${duration}s`}</dd></div>
-        <div><dt>Cost</dt><dd>Unknown</dd></div>
-        <div><dt>Quality evaluation</dt><dd>Not evaluated</dd></div>
+        <div><dt>Cost</dt><dd>{costLabel}</dd></div>
+        <div><dt>Quality evaluation</dt><dd>{evaluationLabel}</dd></div>
       </dl>
-      <p className="chat-task-evidence-note">The runtime model is reported at startup; later routing changes may not be reported. Cost and quality measurements are not available for this task.</p>
+      <p className="chat-task-evidence-note">The runtime model is reported at startup; later routing changes may not be reported.</p>
+      {ledger && <section aria-label="Measurement evidence">
+        <p>Usage: {ledger.usage.reason}</p>
+        <p>Cost: {cost?.status === "UNKNOWN" ? cost.reason : `${cost?.source} · ${cost?.observedAt} · Pricing: ${cost?.priceCatalogVersion ?? "Not applicable"}`}</p>
+        <p>Evaluation: {evaluation?.status === "SCORED"
+          ? `${evaluation.evaluator} · Rubric: ${evaluation.rubricVersion} · Assessed: ${evaluation.assessedAt}`
+          : evaluation?.reason}</p>
+        {ledger.model.observedAt && <p>Model reported: <Timestamp value={ledger.model.observedAt} /></p>}
+        {evaluation?.status === "SCORED" && evaluation.validation && <section aria-label="Result checks">
+          <p>Only the declared checks were assessed. Other aspects of the answer have not been evaluated.</p>
+          {evaluation.criticalFailure && <p role="status">A required check failed. Review the result before using it.</p>}
+          <ul>{evaluation.validation.checks.map(check => <li key={check.id}>
+            {check.id}: {check.passed ? "Passed" : "Failed"}{check.critical ? " · Required" : ""}
+          </li>)}</ul>
+          <p>Result SHA-256: {evaluation.validation.resultSha256}</p>
+        </section>}
+        {!ledger.recordedAt && <p>No measurement ledger was recorded for this historical task.</p>}
+      </section>}
       <section className="chat-task-attachments" aria-label="Submitted files">
         <h3>Submitted files{attachments?.length ? ` · ${attachments.length}` : ""}</h3>
         {attachments?.length ? <>

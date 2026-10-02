@@ -1338,9 +1338,12 @@ export function createRoomActionExecutor(options: {
                 finalResult,
                 completionEvidence: redactMemoryText(JSON.stringify(result.evidence)).slice(0, 12_000)
               });
+              await assertMissionRunning(bridge);
               const qualityScore = evaluation.available ? evaluation.qualityScore : null;
               const combinedScore = qualityScore === null ? null : qualityScore * 0.7 + scoring.score * 0.3;
-              const state = combinedScore !== null && combinedScore < 70 ? "LOW_QUALITY" as const : "COMPLETED" as const;
+              // Execution reliability cannot compensate for incorrect or low-quality output.
+              const state = evaluation.available && (evaluation.qualityScore < 70 || evaluation.rubric.correctness < 70)
+                ? "LOW_QUALITY" as const : "COMPLETED" as const;
               await store.upsertRoomAgentTaskRun({
                 runId,
                 missionId: bridge.missionId,
@@ -1378,7 +1381,7 @@ export function createRoomActionExecutor(options: {
                   : `${stepEvidence.verificationSummary} Quality unavailable after ${evaluation.attempts} evaluator attempt(s).`
               }, traceId);
               if (state === "LOW_QUALITY") {
-                await reportProgress(bridge, `LOW QUALITY: «${stepEvidence.label}» scored ${combinedScore?.toFixed(1)}/100; verified completion remains authoritative.`, traceId);
+                await reportProgress(bridge, `LOW QUALITY: «${stepEvidence.label}» quality ${qualityScore?.toFixed(1)}/100, correctness ${evaluation.available ? evaluation.rubric.correctness : "unknown"}/100. Execution completed; answer quality needs review.`, traceId);
               }
               return stepEvidence;
             }

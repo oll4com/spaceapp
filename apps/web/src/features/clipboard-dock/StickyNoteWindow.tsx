@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import { GripVertical, Pin, X } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardItem } from "@space/contracts";
@@ -151,6 +152,7 @@ export function StickyNoteWindow({
   onUpdatePosition,
   onFocus
 }: StickyNoteWindowProps) {
+  const embedded = useWorkspaceSurface();
   const [text, setText] = useState(initialText);
   const [color, setColor] = useState<StickyNoteColor>(initialColor);
   const [pos, setPos] = useState({ x: initialX, y: initialY });
@@ -274,7 +276,7 @@ export function StickyNoteWindow({
       ref={windowRef}
       className="sticky-note-window"
       data-sticky-color={color}
-      style={{
+      style={embedded ? undefined : {
         left: pos.x,
         top: pos.y,
         zIndex,
@@ -286,7 +288,7 @@ export function StickyNoteWindow({
     >
       <div
         className="sticky-note-titlebar"
-        onMouseDown={onDragHandleMouseDown}
+        onMouseDown={embedded ? undefined : onDragHandleMouseDown}
         role="toolbar"
         aria-label="Drag sticky note"
       >

@@ -1,3 +1,5 @@
+import { agentRunLedgerSchema, agentRunEvaluationSchema } from "./agent-run-ledger.js";
+import { taskAcceptanceSchema } from "./task-acceptance.js";
 import { controlToolSchemas } from "./space-control.js";
 import { z } from "zod";
 import { roomMiniRouteSchema } from "./pane-catalog.js";
@@ -656,6 +658,7 @@ export const agentRunAttachmentSchema = z.object({
 });
 
 export const agentRunExecutionContextSchema = z.object({
+  acceptance: taskAcceptanceSchema.optional(),
   traceId: idSchema,
   modelConfigId: z.string().min(1).max(500).nullable(),
   providerId: z.string().min(1).max(160).nullable(),
@@ -676,6 +679,8 @@ export const agentPaneTaskRunSchema = z.object({
   runtimeModelAtStart: z.string().min(1).max(200).nullable(),
   threadId: z.string().min(1).max(200).nullable(),
   turnId: z.string().min(1).max(200).nullable(),
+  ledger: agentRunLedgerSchema.nullable().optional(),
+  // Retained for already-open clients; versioned measurements live in ledger.
   costStatus: z.literal("UNKNOWN"),
   evaluationStatus: z.literal("NOT_EVALUATED")
 });
@@ -1505,6 +1510,7 @@ export const turnArtifactMaxCount = 8;
 
 export const agentPaneSendMessageInputSchema = z
   .object({
+    acceptance: taskAcceptanceSchema.optional(),
     clientRequestId: requestIdSchema.optional(),
     content: z.string().trim().max(4000).default(""),
     selectedModelConfigId: agentModelConfigIdSchema.optional(),
@@ -3679,6 +3685,7 @@ export const updateSpaceAgentMessageInputSchema = z
   .refine((input) => Object.keys(input).length > 0, "Space agent message update must include at least one field.");
 
 export const spaceAgentRunRecordSchema = z.object({
+  ledger: agentRunLedgerSchema.nullable().optional(),
   clientRequestId: requestIdSchema.optional(),
   requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   execution: agentRunExecutionContextSchema.nullable().optional(),
@@ -3704,6 +3711,7 @@ export const spaceAgentRunRecordSchema = z.object({
 
 export const createSpaceAgentRunInputSchema = spaceAgentRunRecordSchema
   .omit({
+    ledger: true,
     startedAt: true,
     runtimeModelAtStart: true,
     runId: true,
@@ -3728,6 +3736,7 @@ export const createSpaceAgentRunInputSchema = spaceAgentRunRecordSchema
 
 export const updateSpaceAgentRunInputSchema = z
   .object({
+    evaluation: agentRunEvaluationSchema.optional(),
     runtimeModelAtStart: z.string().min(1).max(200).nullable().optional(),
     temporalRunId: z.string().min(1).max(160).nullable().optional(),
     codexThreadId: z.string().min(1).max(200).nullable().optional(),
@@ -4189,8 +4198,16 @@ export const agentSessionHistoryItemSchema = z.object({
   firstUserMessage: z.string().max(2000),
   archived: z.boolean(),
   updatedAt: isoDateTimeSchema.nullable(),
-  recencyAt: isoDateTimeSchema.nullable()
+  recencyAt: isoDateTimeSchema.nullable(),
+  status: z.enum(["active", "completed"]).default("completed"),
+  isCompleted: z.boolean().default(true)
 });
+
+export const agentSessionIntervalSchema = z.enum(["all", "today", "24h", "3d", "7d"]);
+export type AgentSessionInterval = z.infer<typeof agentSessionIntervalSchema>;
+
+export const agentSessionStatusFilterSchema = z.enum(["all", "active", "completed"]);
+export type AgentSessionStatusFilter = z.infer<typeof agentSessionStatusFilterSchema>;
 
 export const agentSessionHistoryResponseSchema = z.object({
   data: z.array(agentSessionHistoryItemSchema).max(100),
@@ -4207,14 +4224,18 @@ export const agentSessionHistoryQuerySchema = z
       .union([z.boolean(), z.enum(["true", "false"])])
       .default(false)
       .transform((value) => value === true || value === "true"),
-    q: z.string().max(300).optional()
+    q: z.string().max(300).optional(),
+    interval: agentSessionIntervalSchema.optional().default("all"),
+    status: agentSessionStatusFilterSchema.optional().default("all")
   })
   .strict()
   .transform((input) => ({
     page: input.page ?? 1,
     pageSize: input.pageSize ?? 50,
     includeArchived: input.includeArchived,
-    q: input.q?.trim() || undefined
+    q: input.q?.trim() || undefined,
+    interval: input.interval ?? "all",
+    status: input.status ?? "all"
   }));
 
 export const codexThreadPresentationSchema = z.enum(["raw", "chat"]);
@@ -8125,9 +8146,32 @@ export const keyboardAutocorrectSettingsSchema = z.object({
   supportedLanguages: z.array(z.string()).default(["el", "en"])
 });
 
+export const livePaneSettingsSchema = z.object({
+  streamingMode: z.boolean().default(false),
+  provider: liveAudioProviderIdSchema.optional().default("openai"),
+  voiceModel: z.string().default("gpt-live-1"),
+  voice: z.string().default("alloy"),
+  language: voiceTranscriptionLanguageSchema.default("auto"),
+  timeZone: z.string().optional(),
+  opening: z.string().default(""),
+  voicePrompt: z.string().default(""),
+  prompt: z.string().default(""),
+  delegatedModel: z.string().default("gpt-5.6-terra"),
+  delegatedType: z.enum(["responses", "client"]).default("responses"),
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).default("minimal"),
+  webSearch: z.boolean().default(true),
+  delegatedPrompt: z.string().default(""),
+  enableMcpTools: z.boolean().default(true),
+  enableProfileMemory: z.boolean().default(true),
+  voiceOnly: z.boolean().default(false),
+  showToolCalls: z.boolean().default(false),
+  selectedDeviceId: z.string().default("")
+});
+
 export const defaultDateTimeSettings = dateTimeSettingsSchema.parse({});
 export const defaultVoiceComposerSettings = voiceComposerSettingsSchema.parse({});
 export const defaultKeyboardAutocorrectSettings = keyboardAutocorrectSettingsSchema.parse({});
+export const defaultLivePaneSettings = livePaneSettingsSchema.parse({});
 
 export const userSettingsSchema = z.object({
   uiTheme: z.enum(["modern", "classic", "codex", "motion"]).default("modern"),
@@ -8137,6 +8181,7 @@ export const userSettingsSchema = z.object({
   dateTime: dateTimeSettingsSchema.default(defaultDateTimeSettings),
   voice: voiceComposerSettingsSchema.default(defaultVoiceComposerSettings),
   keyboardAutocorrect: keyboardAutocorrectSettingsSchema.default(defaultKeyboardAutocorrectSettings),
+  livePane: livePaneSettingsSchema.default(defaultLivePaneSettings),
   suppressNotifications: z.boolean().default(false),
   warmRoomEnabled: z.boolean().default(true),
   warmRoomConnectedPaneLimit: z.number().int().min(6).max(96).default(96),
@@ -8164,6 +8209,7 @@ export const updateUserSettingsInputSchema = z.object({
   dateTime: dateTimeSettingsSchema.partial().optional(),
   voice: voiceComposerSettingsSchema.partial().optional(),
   keyboardAutocorrect: keyboardAutocorrectSettingsSchema.partial().optional(),
+  livePane: livePaneSettingsSchema.partial().optional(),
   suppressNotifications: z.boolean().optional(),
   warmRoomEnabled: z.boolean().optional(),
   warmRoomConnectedPaneLimit: z.number().int().min(6).max(96).optional(),
@@ -9361,6 +9407,7 @@ export type AuthMe = z.infer<typeof authMeSchema>;
 export type DateTimeSettings = z.infer<typeof dateTimeSettingsSchema>;
 export type VoiceComposerSettings = z.infer<typeof voiceComposerSettingsSchema>;
 export type KeyboardAutocorrectSettings = z.infer<typeof keyboardAutocorrectSettingsSchema>;
+export type LivePaneSettings = z.infer<typeof livePaneSettingsSchema>;
 export type UserSettings = z.infer<typeof userSettingsSchema>;
 export type UpdateUserSettingsInput = z.infer<typeof updateUserSettingsInputSchema>;
 export type LoginInput = z.infer<typeof loginInputSchema>;

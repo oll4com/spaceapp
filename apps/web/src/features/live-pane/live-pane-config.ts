@@ -1,5 +1,6 @@
 import type { LivePersonalMemoryItem } from "../../live-api.js";
-import type { LiveAudioProviderId } from "@space/contracts";
+import type { LiveAudioProviderId, LivePaneSettings } from "@space/contracts";
+import { api } from "../../api.js";
 
 export interface LivePaneStoredConfig {
   streamingMode?: boolean;
@@ -27,6 +28,49 @@ export interface LivePaneStoredConfig {
 
 const GLOBAL_CONFIG_KEY = "space_live_pane_default";
 
+let userSettingsSaveTimeout: ReturnType<typeof setTimeout> | null = null;
+let pendingUserSettings: Partial<LivePaneSettings> = {};
+
+function scheduleUserSettingsSave(patch: Partial<LivePaneSettings>) {
+  pendingUserSettings = { ...pendingUserSettings, ...patch };
+  if (userSettingsSaveTimeout) clearTimeout(userSettingsSaveTimeout);
+  userSettingsSaveTimeout = setTimeout(() => {
+    userSettingsSaveTimeout = null;
+    const toSave = { ...pendingUserSettings };
+    pendingUserSettings = {};
+    try {
+      void api.updateUserSettings({
+        livePane: toSave,
+        ...(toSave.voiceModel || toSave.voice || toSave.provider || toSave.language || toSave.prompt ? {
+          voice: {
+            ...(toSave.provider ? { provider: toSave.provider } : {}),
+            ...(toSave.voiceModel ? { model: toSave.voiceModel } : {}),
+            ...(toSave.voice ? { voice: toSave.voice } : {}),
+            ...(toSave.language ? { language: toSave.language } : {}),
+            ...(toSave.prompt ? { prompt: toSave.prompt } : {}),
+            ...(toSave.opening ? { opening: toSave.opening } : {}),
+            ...(toSave.delegatedModel ? { delegatedModel: toSave.delegatedModel } : {}),
+            ...(toSave.delegatedPrompt ? { delegatedPrompt: toSave.delegatedPrompt } : {}),
+            ...(toSave.delegatedType ? { delegatedType: toSave.delegatedType } : {}),
+            ...(toSave.reasoningEffort ? { delegatedReasoningEffort: toSave.reasoningEffort } : {}),
+            ...(typeof toSave.webSearch === "boolean" ? { delegatedWebSearch: toSave.webSearch } : {})
+          }
+        } : {})
+      }).catch(() => {});
+    } catch {}
+  }, 400);
+}
+
+export function applyServerLivePaneSettings(settings: Partial<LivePaneSettings>): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const existingRaw = localStorage.getItem(GLOBAL_CONFIG_KEY);
+    const existing: LivePaneStoredConfig = existingRaw ? JSON.parse(existingRaw) : {};
+    const merged = { ...existing, ...settings };
+    localStorage.setItem(GLOBAL_CONFIG_KEY, JSON.stringify(merged));
+  } catch {}
+}
+
 export function loadLivePaneConfig(paneId: string): LivePaneStoredConfig {
   try {
     if (typeof localStorage === "undefined") return {};
@@ -45,8 +89,28 @@ export function saveLivePaneConfig(paneId: string, config: LivePaneStoredConfig,
     const serialized = JSON.stringify(config);
     localStorage.setItem(`space_live_pane_${paneId}`, serialized);
     if (persistAsDefault) {
-      const { streamingMode: _paneOnlyMode, ...defaults } = config;
+      const { streamingMode: _paneOnlyMode, personalMemories: _memories, ...defaults } = config;
       localStorage.setItem(GLOBAL_CONFIG_KEY, JSON.stringify(defaults));
+      scheduleUserSettingsSave({
+        streamingMode: config.streamingMode,
+        provider: config.provider,
+        voiceModel: config.voiceModel,
+        voice: config.voice,
+        language: config.language,
+        timeZone: config.timeZone,
+        opening: config.opening,
+        voicePrompt: config.voicePrompt,
+        prompt: config.prompt,
+        delegatedModel: config.delegatedModel,
+        reasoningEffort: config.reasoningEffort,
+        webSearch: config.webSearch,
+        delegatedPrompt: config.delegatedPrompt,
+        enableMcpTools: config.enableMcpTools,
+        enableProfileMemory: config.enableProfileMemory,
+        voiceOnly: config.voiceOnly,
+        showToolCalls: config.showToolCalls,
+        selectedDeviceId: config.selectedDeviceId
+      });
     }
   } catch {}
 }

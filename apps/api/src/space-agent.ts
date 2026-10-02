@@ -1,3 +1,4 @@
+import { transitionAgentRunLedger } from "@space/contracts";
 import { Client, Connection } from "@temporalio/client";
 import {
   permissionParamsForMode,
@@ -46,6 +47,7 @@ import { TurnStarterDisabledError, type TurnStarter } from "./turns.js";
 import type { DecisionsService } from "./decisions-service.js";
 import { chatAttachmentReceipts, resolveChatAttachments } from "./chat-attachments.js";
 import { chatSubmissionFingerprint } from "./chat-submissions.js";
+import { createChatProviderCatalogCache } from "./chat-provider-catalog-cache.js";
 
 export interface SpaceAgentAdapterInput {
   pane: Pane;
@@ -60,6 +62,7 @@ export interface SpaceAgentCreateInput extends SpaceAgentAdapterInput {
 }
 
 export interface SpaceAgentSendInput extends SpaceAgentAdapterInput {
+  acceptance?: import("@space/contracts").TaskAcceptance;
   clientRequestId?: string;
   content: string;
   operatorUserId?: string;
@@ -92,7 +95,7 @@ export interface SpaceAgentMutationResult {
 }
 
 export interface SpaceAgentAdapter {
-  prepareRetry(input: SpaceAgentAdapterInput): Promise<{ content: string; artifacts: Artifact[] }>;
+  prepareRetry(input: SpaceAgentAdapterInput): Promise<{ content: string; artifacts: Artifact[]; acceptance?: import("@space/contracts").TaskAcceptance }>;
   listRoomChatTypes?(): Promise<Array<{ id: string; title: string; mode: "CHAT"; selectedModelConfigId: string }>>;
   loadSession(input: SpaceAgentAdapterInput): Promise<AgentPaneSession>;
   createOrRestoreSession(input: SpaceAgentCreateInput): Promise<AgentPaneSession>;
@@ -507,7 +510,7 @@ function sharedChatToolContext(selectedToolIds: string[] | null | undefined): st
   return [
     "Space shared chat tools selected:",
     `tools=${selected.join(", ")}`,
-    "The Space shared chat is the one room where the operator and every agent pane talk together. Use chat:read first to follow the conversation, then chat:send to reply or report progress. Use chat:react only to react to an existing message.",
+    "The Space shared chat is the one room where the operator and every agent pane talk together. Use these tools only when the operator asks to read, send, or react in the shared chat, or when an ongoing task already requires reporting there. Answer ordinary conversation, greetings, and test messages directly in this pane without reading shared chat. For a requested shared chat reply, use chat:read before chat:send. Use chat:react only to react to an existing message.",
     "To request a shared chat action, include one fenced block named space-chat-actions with JSON only:",
     '```space-chat-actions\n{"version":1,"actions":[{"toolId":"chat:send","action":{"type":"send","content":"message text"}}]}\n```',
     "Action bodies: chat:send uses type=send with content and optional roomId/replyToId; chat:read uses type=read with optional limit/before/senderType; chat:react uses type=react with messageId and emoji.",
@@ -799,7 +802,7 @@ interface SpaceAgentRuntimeCapabilitiesResult {
 
 interface SpaceAgentOperationContext {
   providers: ChatProviderAdapter[];
-  providerCatalogs: Promise<ChatProviderCatalogResult[]>;
+  providerCatalogs: (selectedModelConfigId?: string | null) => Promise<ChatProviderCatalogResult[]>;
   providerEnabled: Promise<boolean[]>;
   runtimeCapabilities: Promise<SpaceAgentRuntimeCapabilitiesResult>;
 }
@@ -815,6 +818,7 @@ export function createSpaceAgentAdapter(options: {
   isChatProviderEnabled?: (providerId: string) => Promise<boolean>;
   readGoal?: SpaceAgentGoalReader;
   requirementsCacheTtlMs?: number;
+  modelCatalogCacheMaxAgeMs?: number;
   cancelWorkflow?: (workflowId: string) => Promise<void>;
   decisionsService?: DecisionsService;
 }): SpaceAgentAdapter {
@@ -829,6 +833,7 @@ export function createSpaceAgentAdapter(options: {
     cancelWorkflow
   } = options;
   let cachedRuntimeCapabilities: { value: SpaceAgentRuntimeCapabilities; expiresAt: number } | null = null;
+  const catalogCache = createChatProviderCatalogCache({ maxAgeMs: options.modelCatalogCacheMaxAgeMs });
 
   function createProviderRegistry(): ChatProviderAdapter[] {
     const codexSnapshot = createModelCatalogSnapshot();
@@ -898,16 +903,36 @@ export function createSpaceAgentAdapter(options: {
       options.isChatProviderEnabled?.(provider.providerId) ?? Promise.resolve(true)
     );
     const providerEnabled = Promise.all(providerEnabledChecks);
+    const uncached = options.modelCatalogCacheMaxAgeMs === 0;
+    const catalogLoads = providers.map((provider, index) => providerEnabledChecks[index]!.then(enabled => {
+      if (!enabled) { catalogCache.forget(provider.providerId); return; }
+      if (!uncached) catalogCache.warm(provider);
+    }));
+    // Keep one immutable snapshot per selected provider within an operation.
+    const snapshots = new Map<string, Promise<ChatProviderCatalogResult[]>>();
+    const uncachedCatalogs = uncached ? Promise.all(providers.map((provider, index) =>
+      providerEnabledChecks[index]!.then(enabled => enabled ? provider.loadCatalog()
+        : { models: [], current: null, error: `${provider.providerName} is disabled.` })
+    )) : null;
     return {
       providers,
       providerEnabled,
-      // Codex catalog discovery stays concurrent with capability discovery.
-      // Optional providers are loaded only after their global switch resolves.
-      providerCatalogs: Promise.all(providers.map((provider, index) =>
-        providerEnabledChecks[index]!.then((enabled) => enabled
-          ? provider.loadCatalog()
-          : { models: [], current: null, error: `${provider.providerName} is disabled.` })
-      )),
+      providerCatalogs: async selectedModelConfigId => {
+        if (uncachedCatalogs) return uncachedCatalogs;
+        const enabled = await providerEnabled;
+        await Promise.all(catalogLoads);
+        const required = providerForConfigId(providers, selectedModelConfigId ?? null)
+          ?? providers.find((_provider, index) => enabled[index]) ?? providers[0];
+        const key = required?.providerId ?? "";
+        let snapshot = snapshots.get(key);
+        if (!snapshot) {
+          snapshot = Promise.all(providers.map((provider, index) => enabled[index]
+            ? catalogCache.read(provider, provider === required)
+            : Promise.resolve({ models: [], current: null, error: `${provider.providerName} is disabled.` })));
+          snapshots.set(key, snapshot);
+        }
+        return snapshot;
+      },
       runtimeCapabilities: runtimeCapabilitiesSnapshot
     };
   }
@@ -915,23 +940,22 @@ export function createSpaceAgentAdapter(options: {
   async function selection(
     roomId: string,
     providers: ChatProviderAdapter[],
-    providerCatalogs: Promise<ChatProviderCatalogResult[]>,
+    providerCatalogs: SpaceAgentOperationContext["providerCatalogs"],
     providerEnabled: Promise<boolean[]>,
     selectedModelConfigId?: string | null,
     selectedToolIds?: string[] | null,
     strictModelSelection = false
   ) {
     const [providerResults, enabled, mcpServers, mcpTools, browserSessions] = await Promise.all([
-      providerCatalogs,
+      providerCatalogs(selectedModelConfigId),
       providerEnabled,
       store.listMcpServers(),
       store.listMcpTools(),
       store.listActivePaneBrowserSessions(roomId)
     ]);
-    // A provider is offered only while its catalog actually works. A provider that
-    // fails (runtime/credential/quota/catalog error) goes inactive automatically and
-    // returns on the next session read, once its catalog loads again. The selected
-    // provider remains selected while inactive; Chat must not silently switch models.
+    // Only a recent successful catalog offers models. Background discovery replaces
+    // it with any failure; cold optional providers remain visibly inactive. A selected
+    // failed provider waits for its own fresh catalog and never changes providers.
     const providerActive = providers.map((_provider, index) => {
       const result = providerResults[index];
       return Boolean(enabled[index] && result && !result.error && result.models.length > 0);
@@ -1073,6 +1097,14 @@ export function createSpaceAgentAdapter(options: {
   }
 
   const sessionMutations = new Map<string, Promise<SpaceAgentSessionRecord>>();
+
+  function sessionRefreshStatus(session: SpaceAgentSessionRecord, gate: string | null): Partial<Pick<SpaceAgentSessionRecord, "status">> {
+    // The worker can accept or finish a turn while catalog discovery is pending.
+    // Let the store retain its locked READY/RUNNING value, rather than replaying
+    // an earlier snapshot over that transition.
+    if (gate) return { status: "BLOCKED" };
+    return session.status === "READY" || session.status === "RUNNING" ? {} : { status: "READY" };
+  }
   async function ensureSession(input: SpaceAgentCreateInput, operation: SpaceAgentOperationContext): Promise<SpaceAgentSessionRecord> {
     const previous = sessionMutations.get(input.pane.id);
     const pending = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() => ensureSessionSerialized(input, operation));
@@ -1094,14 +1126,13 @@ export function createSpaceAgentAdapter(options: {
       }
       const select = await selectionForExistingSession(existing, input, operation);
       const gate = runtimeGate ?? select.modelCatalogGate ?? select.modelSelectionGate;
-      const status = gate ? "BLOCKED" : existing.status === "RUNNING" ? "RUNNING" : "READY";
       return store.updateSpaceAgentSession(existing.sessionId, {
         paneId: input.pane.id,
         roomId: input.pane.roomId,
         isActive: true,
-        status,
+        ...sessionRefreshStatus(existing, gate),
         title: input.title ?? existing.title,
-        threadId: input.threadId === undefined ? existing.threadId : input.threadId,
+        ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
         // A failover read must not overwrite the remembered provider/model.
         ...(isRememberedSelection(select, existing) ? selectedSessionFields(select, existing) : {}),
         permissionMode: existing.permissionMode ?? "full_access",
@@ -1113,11 +1144,10 @@ export function createSpaceAgentAdapter(options: {
     if (active) {
       const select = await selectionForExistingSession(active, input, operation);
       const gate = runtimeGate ?? select.modelCatalogGate ?? select.modelSelectionGate;
-      const status = gate ? "BLOCKED" : active.status === "RUNNING" ? "RUNNING" : "READY";
       return store.updateSpaceAgentSession(active.sessionId, {
-        status,
+        ...sessionRefreshStatus(active, gate),
         title: input.title ?? active.title,
-        threadId: input.threadId === undefined ? active.threadId : input.threadId,
+        ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
         // A failover read must not overwrite the remembered provider/model.
         ...(isRememberedSelection(select, active) ? selectedSessionFields(select, active) : {}),
         permissionMode: active.permissionMode ?? "full_access",
@@ -1138,11 +1168,10 @@ export function createSpaceAgentAdapter(options: {
       });
       const select = await selectionForExistingSession(reactivated, input, operation);
       const gate = runtimeGate ?? select.modelCatalogGate ?? select.modelSelectionGate;
-      const status = gate ? "BLOCKED" : reactivated.status === "RUNNING" ? "RUNNING" : "READY";
       return store.updateSpaceAgentSession(reactivated.sessionId, {
-        status,
+        ...sessionRefreshStatus(reactivated, gate),
         title: input.title ?? reactivated.title,
-        threadId: input.threadId === undefined ? reactivated.threadId : input.threadId,
+        ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
         // A failover read must not overwrite the remembered provider/model.
         ...(isRememberedSelection(select, reactivated) ? selectedSessionFields(select, reactivated) : {}),
         permissionMode: reactivated.permissionMode ?? "full_access",
@@ -1271,6 +1300,8 @@ export function createSpaceAgentAdapter(options: {
         ? readGoal(projectedSession.threadId).catch(() => null)
         : Promise.resolve(null)
     ]);
+    const ledger = latestRun ? latestRun.ledger ?? transitionAgentRunLedger({ status: latestRun.status, at: null,
+      runtimeModelAtStart: latestRun.runtimeModelAtStart }) : null;
     const statusReason = gates.gate ?? (latestRun?.errorMessage ? latestRun.errorMessage : "Space agent session is ready.");
     const runStatus = runStatusFromRecord(projectedSession, latestRun);
     const canSend =
@@ -1282,7 +1313,8 @@ export function createSpaceAgentAdapter(options: {
         completedAt: latestRun.completedAt,
         execution: latestRun.execution ?? null, runtimeModelAtStart: latestRun.runtimeModelAtStart ?? null,
         threadId: latestRun.codexThreadId, turnId: latestRun.codexTurnId,
-        costStatus: "UNKNOWN", evaluationStatus: "NOT_EVALUATED"
+        // Old clients validate these literals. New clients read the versioned ledger.
+        ledger, costStatus: "UNKNOWN", evaluationStatus: "NOT_EVALUATED"
       } : null,
       binding: bindingFromSession(projectedSession),
       threadId: projectedSession.threadId,
@@ -1351,7 +1383,7 @@ export function createSpaceAgentAdapter(options: {
     if (artifacts.some((artifact, index) => artifact.sha256 !== receipts[index]?.sha256)) {
       throw new SpaceConflictError("An original attachment changed. Review the files before starting a new attempt.");
     }
-    return { content: prompt.content, artifacts };
+    return { content: prompt.content, artifacts, ...(run.execution?.acceptance ? { acceptance: run.execution.acceptance } : {}) };
   }
 
   async function sendMessage(input: SpaceAgentSendInput): Promise<SpaceAgentMutationResult> {
@@ -1455,6 +1487,7 @@ export function createSpaceAgentAdapter(options: {
       clientRequestId: input.clientRequestId,
       requestFingerprint: fingerprint,
       execution: {
+        ...(input.acceptance ? { acceptance: input.acceptance } : {}),
         traceId: input.traceId,
         modelConfigId: session.selectedModelConfigId,
         providerId: session.selectedProviderId ?? null,

@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import { ExternalLink, Loader2, RefreshCw, X } from "../ui-theme/app-icons.js";
 import { useEffect, useRef, useState } from "react";
 import type { UserLink } from "@space/contracts";
@@ -5,6 +6,7 @@ import type { UserLink } from "@space/contracts";
 const iframeSandbox = ["allow-scripts", "allow-same-origin", "allow-forms", "allow-downloads", "allow-modals", "allow-popups", "allow-popups-to-escape-sandbox"].join(" ");
 
 export function EmbeddedDashboardDialog({ link, onClose }: { link: UserLink; onClose: () => void }) {
+  const embedded = useWorkspaceSurface();
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -14,12 +16,12 @@ export function EmbeddedDashboardDialog({ link, onClose }: { link: UserLink; onC
   useEffect(() => {
     const dialog = dialogRef.current;
     openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    if (dialog && !dialog.open) typeof dialog.showModal === "function" ? dialog.showModal() : dialog.setAttribute("open", "");
+    if (dialog && !dialog.open) { if (embedded) dialog.setAttribute("open", ""); else if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", ""); }
     return () => {
       if (dialog?.open && typeof dialog.close === "function") dialog.close();
       openerRef.current?.focus();
     };
-  }, []);
+  }, [embedded]);
 
   return <dialog ref={dialogRef} className="embedded-dashboard-dialog" aria-labelledby={titleId} onCancel={(event) => { event.preventDefault(); onClose(); }}>
     <header className="embedded-dashboard-header">

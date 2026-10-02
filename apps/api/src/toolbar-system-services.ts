@@ -126,7 +126,7 @@ export function parseCodexUsageAccounts(raw: string, checkedAt: Date): CodexUsag
 export function createCodexUsageRemoteReader(options: {
   timeoutMs?: number;
 } = {}): () => Promise<string> {
-  const timeoutMs = Math.max(Math.min(Math.trunc(options.timeoutMs ?? 5_000), 5_000), 250);
+  const timeoutMs = Math.max(Math.min(Math.trunc(options.timeoutMs ?? 10_000), 15_000), 250);
   return async () => {
     const { stdout } = await execFileAsync(
       CODEX_USAGE_COMMAND.command,

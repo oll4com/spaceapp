@@ -1,635 +1,162 @@
-import {
-  lazy,
-  Suspense,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type FormEvent
-} from "react";
-import {
-  AlertTriangle,
-  ChevronLeft,
-  ChevronRight,
-  History,
-  ListFilter,
-  Network,
-  Search,
-  SlidersHorizontal,
-  X
-} from "../ui-theme/app-icons.js";
-import type {
-  MemoryEntry,
-  MemoryGraphEdge,
-  MemoryGraphIssue,
-  MemoryGraphNode,
-  MemoryGraphNodeDetail,
-  MemoryGraphNodeType
-} from "@space/contracts";
-import { SpaceApiError, api, type MemoryGraphOverviewResponse, type MemoryGraphResponse } from "../../api.js";
-import { MemoryIssueList } from "./MemoryIssueList.js";
-import { MemoryJobsPanel } from "./MemoryJobsPanel.js";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Network, Search, X } from "../ui-theme/app-icons.js";
+import type { MemoryGraphNodeDetail } from "@space/contracts";
+import { api, type MemoryGraphOverviewResponse } from "../../api.js";
 import { MemoryGraphErrorBoundary } from "./MemoryGraphErrorBoundary.js";
 import { MemoryNodeDetail } from "./MemoryNodeDetail.js";
-import type { MemoryGraphDisplayMode } from "./DesktopMemoryGraph.js";
+import { createMemoryAtlas, type MemoryAtlasPosition } from "./memory-atlas.js";
+import { MemoryGraph3D } from "./MemoryGraph3D.js";
+import type { MemoryPoint3D } from "./memory-3d.js";
+import "./memory-atlas.css";
 
 const DesktopMemoryGraph = lazy(() => import("./DesktopMemoryGraph.js"));
-const MemoryChangeSetPanel = lazy(() =>
-  import("./MemoryChangeSetPanel.js").then((module) => ({ default: module.MemoryChangeSetPanel }))
-);
-const nodeTypes: Array<{ value: "" | MemoryGraphNodeType; label: string }> = [
-  { value: "", label: "All node types" },
-  { value: "MEMORY", label: "Memory blocks" },
-  { value: "SOURCE", label: "Sources" },
-  { value: "SECTION", label: "Sections" },
-  { value: "ROOM", label: "Rooms" },
-  { value: "PROVENANCE", label: "Provenance" },
-  { value: "TOPIC", label: "Topics" },
-  { value: "CACHE_RECORD", label: "Cache records" }
-];
 
-function readableType(value: string): string {
-  return value.toLocaleLowerCase().replaceAll("_", " ");
-}
-
-function currentMonth(): string {
-  return new Date().toISOString().slice(0, 7);
-}
-
-function monthLabel(value: string): string {
-  const [year, month] = value.split("-");
-  const date = new Date(Number(year), Number(month) - 1, 1);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString("en", { month: "long", year: "numeric" });
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof SpaceApiError && error.code === "MEMORY_GRAPH_DISABLED") {
-    return "Memory Graph is behind its guarded rollout flag. Enable it only after the canonical snapshot audit passes.";
-  }
-  return error instanceof Error ? error.message : "Memory Graph could not be loaded.";
-}
-
-function progressiveGraph(
-  nodes: MemoryGraphNode[],
-  edges: MemoryGraphEdge[],
-  selectedNodeId: string | null,
-  explorationActive: boolean
-): { nodes: MemoryGraphNode[]; edges: MemoryGraphEdge[] } {
-  if (explorationActive) return { nodes, edges };
-
-  const visibleIds = new Set(
-    nodes
-      .filter((node) => node.type === "MEMORY" || node.type === "ROOM")
-      .map((node) => node.id)
-  );
-  for (const edge of edges) {
-    if (edge.type === "TAGGED_WITH" && edge.origin === "EXPLICIT_TAG") {
-      visibleIds.add(edge.target);
-    }
-  }
-  if (selectedNodeId) {
-    visibleIds.add(selectedNodeId);
-    for (const edge of edges) {
-      if (edge.source === selectedNodeId) visibleIds.add(edge.target);
-      if (edge.target === selectedNodeId) visibleIds.add(edge.source);
-    }
-  }
-
-  return {
-    nodes: nodes.filter((node) => visibleIds.has(node.id)),
-    edges: edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target))
-  };
-}
-
-export function MemoryWorkspace({
-  shellMode,
-  activeRoomId,
-  onClose
-}: {
+export function MemoryWorkspace({ shellMode, onClose }: {
   shellMode: "desktop" | "tablet" | "mobile";
   activeRoomId: string | null;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"graph" | "issues" | "changes">("graph");
-  const [graphDisplayMode, setGraphDisplayMode] = useState<MemoryGraphDisplayMode>("SEMANTIC");
+  const [view3D, setView3D] = useState(false);
+  const [showTitles, setShowTitles] = useState(true);
+  const [reset3D, setReset3D] = useState(0);
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
-  const [nodeType, setNodeType] = useState<"" | MemoryGraphNodeType>("");
-  const [scope, setScope] = useState<"" | MemoryEntry["scope"]>("");
-  const [sourcePath, setSourcePath] = useState("");
-  const [month, setMonth] = useState("");
-  const [lifecycleStatus, setLifecycleStatus] = useState<"" | "ACTIVE" | "ARCHIVED">("");
-  const [issueStatus, setIssueStatus] = useState<"OPEN" | "IGNORED" | "RESOLVED">("OPEN");
-  const [currentRoomOnly, setCurrentRoomOnly] = useState(false);
-  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
-  const [page, setPage] = useState(1);
-  const [graph, setGraph] = useState<MemoryGraphOverviewResponse | MemoryGraphResponse | null>(null);
-  const [issues, setIssues] = useState<MemoryGraphIssue[]>([]);
-  const [issueTotal, setIssueTotal] = useState(0);
-  const [openIssueCount, setOpenIssueCount] = useState(0);
+  const [graph, setGraph] = useState<MemoryGraphOverviewResponse | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [detail, setDetail] = useState<MemoryGraphNodeDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [graphError, setGraphError] = useState<string | null>(null);
-  const detailRequestRef = useRef(0);
-  const issueRequestRef = useRef(0);
-  const handleError = useCallback((caught: unknown) => setError(errorMessage(caught)), []);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const detailRequest = useRef(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const closeDetail = useCallback(() => {
+    detailRequest.current++;
+    setSelectedNodeId(null);
+    setDetail(null);
+    setDetailLoading(false);
+    setDetailError(null);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setQuery(queryDraft.trim()), 280);
+    return () => window.clearTimeout(timer);
+  }, [queryDraft]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        if (selectedNodeId) closeDetail();
+        else if (queryDraft) { setQueryDraft(""); setQuery(""); }
+        else onClose();
+      }
+      if (event.key === "/" && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLTextAreaElement) && !(event.target instanceof HTMLElement && event.target.isContentEditable)) {
+        event.preventDefault();
+        searchRef.current?.focus();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
-  const graphFiltersActive = Boolean(
-    query || nodeType || scope || sourcePath || lifecycleStatus || currentRoomOnly || month
-  );
-  const filtersOrDraftActive = Boolean(queryDraft || graphFiltersActive);
-  const semanticGraphActive = shellMode !== "mobile" && graphDisplayMode === "SEMANTIC";
-  const relationMode: "CLUSTERED" | "RELATIONS" = semanticGraphActive ||
-    selectedNodeId ||
-    graphFiltersActive
-    ? "RELATIONS"
-    : "CLUSTERED";
-  const availableMonths = graph?.data.months ?? [];
-  const monthOptions = availableMonths.filter((candidate) => candidate !== currentMonth());
-  const selectedMonthLabel = month === "all"
-    ? "All months"
-    : month
-      ? monthLabel(month)
-      : "Current month";
+  }, [closeDetail, onClose, queryDraft, selectedNodeId]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
-    setGraphError(null);
-    const filters = {
-      q: query || undefined,
-      nodeType: nodeType || undefined,
-      scope: scope || undefined,
-      roomId: currentRoomOnly ? activeRoomId ?? undefined : undefined,
-      sourcePath: sourcePath || undefined,
-      month: month || undefined,
-      lifecycleStatus: lifecycleStatus || undefined,
-      relationMode
-    };
-    void (async () => {
-      try {
-        const payload = shellMode === "mobile"
-          ? await api.memoryGraph({ ...filters, page, pageSize: 100 })
-          : await api.memoryGraphOverview(filters);
-        if (!active) return;
-        setGraph(payload);
-        setGraphError(null);
-        setError(null);
-      } catch (loadError) {
-        if (active) {
-          const message = errorMessage(loadError);
-          setGraphError(message);
-          setError(message);
-        }
-      } finally {
-        if (active) setLoading(false);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [
-    activeRoomId,
-    currentRoomOnly,
-    lifecycleStatus,
-    month,
-    nodeType,
-    page,
-    query,
-    relationMode,
-    scope,
-    shellMode,
-    sourcePath
-  ]);
+    setError(null);
+    closeDetail();
+    // Search covers the entire archive; removing the month picker must not hide old memories.
+    void api.memoryGraphOverview({ q: query || undefined, month: "all", relationMode: "RELATIONS" })
+      .then(payload => { if (active) setGraph(payload); })
+      .catch(caught => { if (active) setError(caught instanceof Error ? caught.message : "Memory could not be loaded."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [query, closeDetail]);
 
-  const refreshIssues = useCallback(async () => {
-    const requestId = issueRequestRef.current + 1;
-    issueRequestRef.current = requestId;
-    try {
-      const selectedPromise = api.memoryGraphIssues({ status: issueStatus, pageSize: 100 });
-      const [selectedPayload, openPayload] = issueStatus === "OPEN"
-        ? await selectedPromise.then((payload) => [payload, payload] as const)
-        : await Promise.all([
-          selectedPromise,
-          api.memoryGraphIssues({ status: "OPEN", pageSize: 1 })
-        ]);
-      if (issueRequestRef.current !== requestId) return;
-      setIssues(selectedPayload.data);
-      setIssueTotal(selectedPayload.pagination.totalItems);
-      setOpenIssueCount(openPayload.pagination.totalItems);
-      setError(null);
-    } catch (loadError) {
-      if (issueRequestRef.current === requestId) setError(errorMessage(loadError));
-    }
-  }, [issueStatus]);
-
-  useEffect(() => {
-    void refreshIssues();
-  }, [refreshIssues]);
-
-  function submitSearch(event: FormEvent) {
-    event.preventDefault();
-    setPage(1);
-    setQuery(queryDraft.trim());
-  }
-
-  function clearFilters() {
-    setQueryDraft("");
-    setQuery("");
-    setNodeType("");
-    setScope("");
-    setSourcePath("");
-    setMonth("");
-    setLifecycleStatus("");
-    setCurrentRoomOnly(false);
-    setPage(1);
-  }
-
+  useEffect(() => () => { detailRequest.current++; }, []);
   const selectNode = useCallback((nodeId: string) => {
-    const requestId = detailRequestRef.current + 1;
-    detailRequestRef.current = requestId;
+    const request = ++detailRequest.current;
     setSelectedNodeId(nodeId);
     setDetail(null);
+    setDetailError(null);
     setDetailLoading(true);
-    api.memoryGraphNode(nodeId)
-      .then((payload) => {
-        if (detailRequestRef.current !== requestId) return;
-        setDetail(payload);
-        setError(null);
-      })
-      .catch((loadError: unknown) => {
-        if (detailRequestRef.current === requestId) setError(errorMessage(loadError));
-      })
-      .finally(() => {
-        if (detailRequestRef.current === requestId) setDetailLoading(false);
-      });
+    void api.memoryGraphNode(nodeId)
+      .then(payload => { if (request === detailRequest.current) setDetail(payload); })
+      .catch(caught => { if (request === detailRequest.current) setDetailError(caught instanceof Error ? caught.message : "This memory could not be opened."); })
+      .finally(() => { if (request === detailRequest.current) setDetailLoading(false); });
   }, []);
 
-  const closeDetail = useCallback(() => {
-    detailRequestRef.current += 1;
-    setSelectedNodeId(null);
-    setDetail(null);
-    setDetailLoading(false);
-  }, []);
-
-  const rawNodes = graph?.data.nodes ?? [];
-  const rawEdges = graph?.data.edges ?? [];
-  const visibleGraph = useMemo(
-    () => semanticGraphActive
-      ? { nodes: rawNodes, edges: rawEdges }
-      : progressiveGraph(rawNodes, rawEdges, selectedNodeId, graphFiltersActive),
-    [graphFiltersActive, rawEdges, rawNodes, selectedNodeId, semanticGraphActive]
-  );
-  const pagination = graph && "pagination" in graph ? graph.pagination : undefined;
-  const overview = graph && "truncated" in graph.data ? graph.data : null;
+  const atlas = useMemo(() => createMemoryAtlas(graph?.data.nodes ?? [], graph?.data.edges ?? [], false), [graph]);
+  const [layout, setLayout] = useState<{ atlas: typeof atlas; positions: Map<string, MemoryAtlasPosition>; depth: Map<string, MemoryPoint3D> } | null>(null);
+  useEffect(() => {
+    if (!atlas.nodes.length || typeof Worker === "undefined") return;
+    const worker = new Worker(new URL("./memory-network-layout.worker.ts", import.meta.url), { type: "module" });
+    worker.onmessage = (event: MessageEvent<{ positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]> }>) => {
+      const coordinates = new Map(event.data.positions);
+      setLayout({ atlas, depth: new Map(event.data.depth), positions: new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }])) });
+      worker.terminate();
+    };
+    worker.onerror = event => { setError(`Memory layout could not be calculated: ${event.message || "worker unavailable"}`); worker.terminate(); };
+    worker.postMessage({ nodes: atlas.nodes, edges: atlas.edges });
+    return () => worker.terminate();
+  }, [atlas]);
+  const layoutPending = typeof Worker !== "undefined" && atlas.nodes.length > 0 && layout?.atlas !== atlas;
+  const atlasPositions = layout?.atlas === atlas ? layout.positions : atlas.positions;
   const summary = graph?.data.summary;
-  const rawNodeTypes = [...new Set(rawNodes.map((node) => node.type))].sort().join(",");
-  const sourceOptions = [...new Set(
-    rawNodes.flatMap((node) => node.sourcePath ? [node.sourcePath] : [])
-  )].sort();
-
+  const memoryCount = atlas.nodes.filter(node => node.type === "MEMORY").length;
+  const displayGroups = useMemo(() => atlas.groups.filter(group => group.kind !== "tag" || group.count >= 10), [atlas.groups]);
   return (
-    <section className="memory-workspace" aria-label="Memory workspace" data-shell-mode={shellMode}>
-      <header className="memory-workspace-header">
-        <div className="memory-workspace-heading">
-          <span className="memory-workspace-kicker"><Network aria-hidden="true" /> Canonical memory</span>
-          <div>
-            <h2>Memory workspace</h2>
-            <p>{summary ? `${summary.recordCount} records · ${summary.nodeCount} nodes · ${selectedMonthLabel}` : "Loading records · nodes…"}</p>
+    <section id="memory-atlas" className="memory-workspace memory-atlas" aria-label="Memory workspace" data-shell-mode={shellMode} data-view-mode={view3D ? "3D" : "2D"} data-titles-visible={showTitles} data-atlas-layout="network" data-layout-ready={layout?.atlas === atlas} data-layout-root-x={atlasPositions.get(atlas.nodes.find(node => node.label === "gemini.md")?.id ?? "")?.x} data-atlas-group-count={displayGroups.length} data-atlas-color-count={new Set(displayGroups.map(group => group.color)).size}>
+      <header className="memory-atlas-header memory-workspace-header">
+        <div className="memory-atlas-brand"><Network aria-hidden="true" /><h2>Memory</h2><span>ATLAS</span></div>
+        <form className="memory-workspace-controls memory-workspace-search" role="search" onSubmit={event => { event.preventDefault(); setQuery(queryDraft.trim()); }}>
+          <label className="memory-search-input">
+            <Search aria-hidden="true" />
+            <input ref={searchRef} type="search" name="memoryQuery" aria-label="Search canonical memory" placeholder="Search your memory…" value={queryDraft} onChange={event => setQueryDraft(event.currentTarget.value)} />
+            {queryDraft ? <button type="button" aria-label="Clear memory search" onClick={() => { setQueryDraft(""); setQuery(""); searchRef.current?.focus(); }}><X aria-hidden="true" /></button> : <kbd>/</kbd>}
+          </label>
+        </form>
+        <div className="memory-atlas-actions">
+          <div className="memory-atlas-view-controls" aria-label="Memory view controls">
+            <button type="button" aria-label="Toggle 3D memory view" aria-pressed={view3D} onClick={() => setView3D(value => !value)}><span aria-hidden="true">◇</span> {view3D ? "2D" : "3D"}</button>
+            <button type="button" aria-label="Toggle memory titles" aria-pressed={showTitles} onClick={() => setShowTitles(value => !value)}>Aa <span>Titles</span></button>
+            {view3D ? <button type="button" aria-label="Reset 3D memory view" onClick={() => setReset3D(value => value + 1)}>↺</button> : null}
           </div>
-        </div>
-        <div className="memory-workspace-header-actions">
-          <MemoryJobsPanel onError={handleError} />
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="Close memory workspace"
-            title="Close memory workspace"
-            onClick={onClose}
-          >
-            <X aria-hidden="true" />
-          </button>
+          <button type="button" className="icon-button memory-atlas-close" aria-label="Close memory workspace" onClick={onClose}><X aria-hidden="true" /></button>
         </div>
       </header>
-
-      {graph?.data.isStale ? (
-        <div className="memory-snapshot-warning" role="status" aria-label="Memory snapshot warning">
-          <AlertTriangle aria-hidden="true" />
-          <span><strong>Snapshot out of date.</strong> Last generated <time dateTime={graph.data.generatedAt}>{graph.data.generatedAt}</time>.</span>
+      <div className="memory-atlas-stage memory-workspace-body">
+        <div className="memory-atlas-intro" aria-label="Memory overview">
+          <span className="memory-atlas-eyebrow"><i /> YOUR KNOWLEDGE, CONNECTED</span>
+          <h3>Everything you know.<br /><em>Connected.</em></h3>
+          <p>Your files, memories and<br />their real connections.</p>
+          <dl className="memory-atlas-stats">
+            <div><dt>Memories</dt><dd>{summary?.recordCount.toLocaleString() ?? "—"}</dd></div>
+            <div><dt>In this map</dt><dd>{memoryCount.toLocaleString()}</dd></div>
+            <div><dt>Connections</dt><dd>{atlas.edges.length.toLocaleString()}</dd></div>
+          </dl>
         </div>
-      ) : null}
-
-      <div className="memory-workspace-controls">
-        <form className="memory-workspace-search" role="search" onSubmit={submitSearch}>
-          <label className={`memory-search-input${queryDraft || query ? " is-active-filter" : ""}`}>
-            <Search aria-hidden="true" />
-            <input
-              type="search"
-              name="memoryQuery"
-              aria-label="Search canonical memory"
-              placeholder="Search titles, content, provenance…"
-              value={queryDraft}
-              onChange={(event) => setQueryDraft(event.currentTarget.value)}
-            />
-          </label>
-          <button
-            type="button"
-            className={advancedFiltersOpen || nodeType || scope || sourcePath || lifecycleStatus ? "is-active" : ""}
-            aria-expanded={advancedFiltersOpen}
-            aria-controls="memory-advanced-filters"
-            onClick={() => setAdvancedFiltersOpen((open) => !open)}
-          >
-            <SlidersHorizontal aria-hidden="true" />
-            Filters
-          </button>
-          <label className={`memory-month-select${month ? " is-active-filter" : ""}`} title="Show a single month or the full archive">
-            <History aria-hidden="true" />
-            <select
-              aria-label="Memory month"
-              name="memoryMonth"
-              value={month}
-              onChange={(event) => {
-                setPage(1);
-                setMonth(event.currentTarget.value);
-              }}
-            >
-              <option value="">Current month</option>
-              <option value="all">All months</option>
-              {monthOptions.map((candidate) => (
-                <option key={candidate} value={candidate}>{monthLabel(candidate)}</option>
-              ))}
-            </select>
-          </label>
-          {activeRoomId ? (
-            <button
-              type="button"
-              className={currentRoomOnly ? "is-active" : ""}
-              aria-pressed={currentRoomOnly}
-              onClick={() => {
-                setPage(1);
-                setCurrentRoomOnly((current) => !current);
-              }}
-            >
-              Current room
-            </button>
-          ) : null}
-        </form>
-
-        {advancedFiltersOpen ? (
-          <div className="memory-advanced-filters" id="memory-advanced-filters">
-            <label className={nodeType ? "is-active-filter" : undefined}>
-              <ListFilter aria-hidden="true" />
-              <select
-                aria-label="Memory node type"
-                name="memoryNodeType"
-                value={nodeType}
-                onChange={(event) => {
-                  setPage(1);
-                  setNodeType(event.currentTarget.value as "" | MemoryGraphNodeType);
-                }}
-              >
-                {nodeTypes.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            </label>
-            <label className={scope ? "is-active-filter" : undefined}>
-              <select
-                aria-label="Memory scope"
-                name="memoryScope"
-                value={scope}
-                onChange={(event) => {
-                  setPage(1);
-                  setScope(event.currentTarget.value as typeof scope);
-                }}
-              >
-                <option value="">All scopes</option>
-                <option value="SYSTEM">System</option>
-                <option value="PROJECT">Project</option>
-                <option value="ROOM">Room</option>
-              </select>
-            </label>
-            <label className={sourcePath ? "is-active-filter" : undefined}>
-              <select
-                aria-label="Memory source"
-                name="memorySource"
-                value={sourcePath}
-                onChange={(event) => {
-                  setPage(1);
-                  setSourcePath(event.currentTarget.value);
-                }}
-              >
-                <option value="">All sources</option>
-                {sourceOptions.map((path) => <option key={path} value={path}>{path.split("/").at(-1)}</option>)}
-              </select>
-            </label>
-            <label className={lifecycleStatus ? "is-active-filter" : undefined}>
-              <select
-                aria-label="Memory lifecycle"
-                name="memoryLifecycle"
-                value={lifecycleStatus}
-                onChange={(event) => {
-                  setPage(1);
-                  setLifecycleStatus(event.currentTarget.value as typeof lifecycleStatus);
-                }}
-              >
-                <option value="">All lifecycle states</option>
-                <option value="ACTIVE">Active</option>
-                <option value="ARCHIVED">Archived</option>
-              </select>
-            </label>
-            {filtersOrDraftActive ? (
-              <button type="button" onClick={clearFilters}>Clear filters</button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-
-      {error ? (
-        <div className="memory-workspace-error" role="alert">
-          <AlertTriangle aria-hidden="true" />
-          <span>{error}</span>
+        <div className="memory-graph-layout" data-detail-open={Boolean(selectedNodeId)} data-graph-mode="ATLAS" data-source-count={atlas.nodes.filter(node => node.type === "SOURCE").length} data-source-link-count={atlas.edges.filter(edge => edge.type === "CONTAINS" || edge.type === "DERIVED_FROM").length} data-root-visible={atlas.nodes.some(node => node.type === "SOURCE" && node.label === "gemini.md")} data-raw-node-count={graph?.data.nodes.length ?? 0} data-visible-node-count={atlas.nodes.length} data-visible-edge-count={atlas.edges.length}>
+          <div className="memory-atlas-2d" hidden={view3D}><MemoryGraphErrorBoundary>
+            <Suspense fallback={<div className="memory-graph-loading" role="status">Connecting your memories…</div>}>
+              <DesktopMemoryGraph nodes={atlas.nodes} edges={atlas.edges} displayMode="SEMANTIC" relationMode="RELATIONS" selectedNodeId={selectedNodeId} onSelectNode={selectNode} loading={loading || layoutPending} error={error} totalNodes={graph?.data.totalMatchingNodes ?? 0} totalEdges={graph?.data.totalMatchingEdges ?? 0} truncated={graph?.data.truncated ?? false} atlasPositions={atlasPositions} showTitles={showTitles} />
+            </Suspense>
+          </MemoryGraphErrorBoundary></div>
+          {view3D ? <MemoryGraph3D nodes={atlas.nodes} edges={atlas.edges} positions={atlasPositions} coordinates={layout?.atlas === atlas ? layout.depth : new Map()} showTitles={showTitles} selectedNodeId={selectedNodeId} onSelectNode={selectNode} loading={loading || layoutPending} resetToken={reset3D} /> : null}
         </div>
-      ) : null}
-
-      <div className="memory-workspace-viewbar">
-        <div className="memory-workspace-tabs" role="tablist" aria-label="Memory workspace views">
-          <button type="button" role="tab" aria-selected={tab === "graph"} onClick={() => setTab("graph")}>Map</button>
-          <button type="button" role="tab" aria-selected={tab === "issues"} onClick={() => setTab("issues")}>Issues <span>{openIssueCount}</span></button>
-          <button type="button" role="tab" aria-selected={tab === "changes"} onClick={() => setTab("changes")}>Changes</button>
-        </div>
-        {tab === "graph" && shellMode !== "mobile" ? (
-          <div className="memory-workspace-map-modes" role="group" aria-label="Memory map mode">
-            <button
-              type="button"
-              aria-pressed={graphDisplayMode === "SEMANTIC"}
-              onClick={() => setGraphDisplayMode("SEMANTIC")}
-            >
-              Semantic Graph
-            </button>
-            <button
-              type="button"
-              aria-pressed={graphDisplayMode === "FOCUSED"}
-              onClick={() => setGraphDisplayMode("FOCUSED")}
-            >
-              Focused Map
-            </button>
-          </div>
-        ) : null}
-        {tab === "issues" ? (
-          <div className="memory-issue-status-filters" role="group" aria-label="Memory issue status">
-            {(["OPEN", "IGNORED", "RESOLVED"] as const).map((status) => (
-              <button
-                key={status}
-                type="button"
-                aria-pressed={issueStatus === status}
-                onClick={() => setIssueStatus(status)}
-              >
-                {status.charAt(0) + status.slice(1).toLocaleLowerCase()}
-              </button>
-            ))}
-          </div>
-        ) : null}
+        {!selectedNodeId && displayGroups.length > 0 ? <aside className="memory-atlas-topics" aria-label="Map topics">
+          <span className="memory-atlas-eyebrow">COLOR GUIDE</span>
+          <p>Tags, themes & archive months</p>
+          <ul>{displayGroups.map(group => <li key={group.id}><i style={{ background: group.color }} /><span title={group.label}>{group.label}</span><small>{group.kind}</small><b>{group.count}</b></li>)}</ul>
+        </aside> : null}
+        {!selectedNodeId ? <aside className="memory-atlas-insight"><span className="memory-atlas-eyebrow">THE BIGGER PICTURE</span><strong>{atlas.semanticCount.toLocaleString()}</strong><p>semantic connections</p><small>Explore the links between your memories.</small><div className="memory-atlas-spectrum" /></aside> : null}
+        {selectedNodeId ? <div className="memory-atlas-detail">
+          {detailError ? <div className="memory-workspace-error" role="alert"><AlertTriangle /><span>{detailError}</span><button onClick={closeDetail}>Close</button></div> : <MemoryNodeDetail detail={detail} loading={detailLoading} onClose={closeDetail} onSelectNode={selectNode} />}
+        </div> : null}
+        {graph?.data.isStale ? <div className="memory-atlas-stale" role="status"><AlertTriangle aria-hidden="true" /> Snapshot awaiting refresh</div> : null}
+        {query && !loading && !error ? <div className="memory-atlas-search-status" role="status">{atlas.nodes.length ? `${atlas.nodes.length.toLocaleString()} matching nodes` : "No memories found. Try another search."}</div> : null}
       </div>
-
-      <div className="memory-workspace-body">
-        {tab === "graph" ? (
-          <div
-            className="memory-graph-layout"
-            data-detail-open={selectedNodeId ? "true" : "false"}
-            data-graph-mode={shellMode === "mobile" ? "LIST" : graphDisplayMode}
-            data-raw-node-count={rawNodes.length}
-            data-raw-edge-count={rawEdges.length}
-            data-raw-node-types={rawNodeTypes}
-            data-visible-node-count={visibleGraph.nodes.length}
-            data-visible-edge-count={visibleGraph.edges.length}
-          >
-            {shellMode !== "mobile" ? (
-              <MemoryGraphErrorBoundary>
-                <Suspense fallback={<div className="memory-graph-loading" role="status">Loading graph renderer…</div>}>
-                  <DesktopMemoryGraph
-                    nodes={visibleGraph.nodes}
-                    edges={visibleGraph.edges}
-                    displayMode={graphDisplayMode}
-                    relationMode={relationMode}
-                    selectedNodeId={selectedNodeId}
-                    onSelectNode={selectNode}
-                    loading={loading}
-                    error={graphError}
-                    totalNodes={overview?.totalMatchingNodes ?? rawNodes.length}
-                    totalEdges={overview?.totalMatchingEdges ?? rawEdges.length}
-                    truncated={overview?.truncated ?? false}
-                  />
-                </Suspense>
-              </MemoryGraphErrorBoundary>
-            ) : selectedNodeId ? null : (
-              <NodeList
-                nodes={visibleGraph.nodes}
-                selectedNodeId={selectedNodeId}
-                loading={loading}
-                onSelect={selectNode}
-              />
-            )}
-            {selectedNodeId ? (
-              <MemoryNodeDetail
-                detail={detail}
-                loading={detailLoading}
-                onClose={closeDetail}
-                onOpenChanges={() => setTab("changes")}
-              />
-            ) : null}
-          </div>
-        ) : tab === "issues" ? (
-          <div className="memory-issues-view">
-            <p className="memory-issue-total">{issueTotal} {readableType(issueStatus)} issues</p>
-            <MemoryIssueList
-              issues={issues}
-              status={issueStatus}
-              onError={handleError}
-              onUpdated={() => {
-                void refreshIssues();
-              }}
-              onOpenRecord={(recordId) => {
-                setTab("graph");
-                selectNode(recordId);
-              }}
-            />
-          </div>
-        ) : (
-          <Suspense fallback={<div className="memory-graph-loading" role="status">Loading guarded change sets…</div>}>
-            <MemoryChangeSetPanel />
-          </Suspense>
-        )}
-      </div>
-
-      {tab === "graph" && shellMode === "mobile" && !selectedNodeId && pagination ? (
-        <footer className="memory-workspace-pagination">
-          <span>{pagination.totalItems} matching nodes · page {pagination.page} of {Math.max(pagination.totalPages, 1)}</span>
-          <div>
-            <button
-              type="button"
-              aria-label="Previous memory graph page"
-              disabled={page <= 1}
-              onClick={() => setPage((value) => value - 1)}
-            >
-              <ChevronLeft aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              aria-label="Next memory graph page"
-              disabled={page >= pagination.totalPages}
-              onClick={() => setPage((value) => value + 1)}
-            >
-              <ChevronRight aria-hidden="true" />
-            </button>
-          </div>
-        </footer>
-      ) : null}
-    </section>
-  );
-}
-
-function NodeList({
-  nodes,
-  selectedNodeId,
-  loading,
-  onSelect
-}: {
-  nodes: MemoryGraphNode[];
-  selectedNodeId: string | null;
-  loading: boolean;
-  onSelect: (nodeId: string) => void;
-}) {
-  return (
-    <section className="memory-node-list" aria-label="Memory graph nodes">
-      {loading ? <p role="status">Loading canonical graph…</p> : null}
-      {!loading && nodes.length === 0 ? <p>No nodes match the current filters.</p> : null}
-      {nodes.map((node) => (
-        <button
-          key={node.id}
-          type="button"
-          className={node.id === selectedNodeId ? "selected" : ""}
-          onClick={() => onSelect(node.id)}
-        >
-          <span data-node-type={node.type}>{readableType(node.type)}</span>
-          <strong>{node.label}</strong>
-          <small>{node.sourcePath?.split("/").at(-1) ?? node.id}</small>
-        </button>
-      ))}
     </section>
   );
 }

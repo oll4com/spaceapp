@@ -56,6 +56,8 @@ export interface CodexComposerProps {
   onVoice: () => void;
   onAddFiles?: () => void;
   onSetGoal?: () => void;
+  onSetAcceptance?: () => void;
+  hasAcceptance?: boolean;
   onVisualContext?: (source: "screen" | "camera") => void;
   onVoicePrewarm?: () => void;
   voiceActive: boolean;
@@ -110,6 +112,8 @@ export function CodexComposer({
   onVoice,
   onAddFiles,
   onSetGoal,
+  onSetAcceptance,
+  hasAcceptance = false,
   onVisualContext,
   onVoicePrewarm,
   voiceActive,
@@ -624,6 +628,7 @@ export function CodexComposer({
         {addMenuOpen && onAddFiles ? <div className="room-agent-add-menu" role="group" aria-label="Add to conversation">
           <button type="button" onClick={() => { setAddMenuOpen(false); onAddFiles(); }}><Paperclip aria-hidden="true" /><span><strong>Files</strong><small>Attach a document or image</small></span></button>
           {onSetGoal ? <button type="button" onClick={() => { setAddMenuOpen(false); onSetGoal(); }}><Sparkles aria-hidden="true" /><span><strong>Set a goal</strong><small>Keep the objective in this chat</small></span></button> : null}
+          {onSetAcceptance ? <button type="button" onClick={() => { setAddMenuOpen(false); onSetAcceptance(); }}><Sparkles aria-hidden="true" /><span><strong>{hasAcceptance ? "Edit result check" : "Result check"}</strong><small>Check the next answer against expected text</small></span></button> : null}
           {onVisualContext ? <><button type="button" onClick={() => { setAddMenuOpen(false); onVisualContext("screen"); }}><Monitor aria-hidden="true" /><span><strong>Screen</strong><small>Attach a screenshot you select</small></span></button><button type="button" onClick={() => { setAddMenuOpen(false); onVisualContext("camera"); }}><Camera aria-hidden="true" /><span><strong>Camera</strong><small>Attach a photo you select</small></span></button></> : null}
         </div> : null}
         {isComposerLayoutIconVisible(autocorrectSettings) ? (

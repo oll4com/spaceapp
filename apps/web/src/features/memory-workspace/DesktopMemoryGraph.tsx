@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Eye, EyeOff, RotateCcw } from "../ui-theme/app-icons.js";
+import { AlertTriangle, RotateCcw } from "../ui-theme/app-icons.js";
 import { MultiDirectedGraph } from "graphology";
 import Sigma from "sigma";
 import type { NodeHoverDrawingFunction, NodeLabelDrawingFunction } from "sigma/rendering";
 import type { MemoryGraphEdge, MemoryGraphNode } from "@space/contracts";
+import type { MemoryAtlasPosition } from "./memory-atlas.js";
 import {
   memoryGraphEdgeStyle,
   memoryGraphNodeStyle,
@@ -16,14 +17,22 @@ import {
 const INITIAL_REVEAL_COUNT = 140;
 const REVEAL_BATCH_SIZE = 180;
 const REVEAL_DELAY_MS = 120;
-const MEMORY_GRAPH_LABEL_COLOR = "#ded8cc";
+const MEMORY_GRAPH_LABEL_COLOR = "#c8dfec";
 const MEMORY_GRAPH_HIGHLIGHT_BACKGROUND = "#f4e6c1";
 const MEMORY_GRAPH_HIGHLIGHT_TEXT = "#222627";
-const MEMORY_GRAPH_SELECTED_COLOR = "#e05252";
-const MEMORY_GRAPH_HOVER_COLOR = "#f5d78b";
+const MEMORY_GRAPH_SELECTED_COLOR = "#ffffff";
+const MEMORY_GRAPH_HOVER_COLOR = "#b0eaff";
 let memoryGraphRendererSerial = 0;
 
 export type MemoryGraphDisplayMode = "SEMANTIC" | "FOCUSED";
+
+// Sigma's six-digit colors avoid ambiguous alpha parsing across render backends.
+const subduedAtlasColor = (color: string) => {
+  const value = Number.parseInt(color.slice(1), 16);
+  return "#" + [value >> 16, (value >> 8) & 255, value & 255].map((channel, index) =>
+    Math.round(channel * 0.2 + [7, 12, 19][index]! * 0.8).toString(16).padStart(2, "0")
+  ).join("");
+};
 
 const drawMemoryGraphLabel: NodeLabelDrawingFunction = (context, data, settings) => {
   if (!data.label) return;
@@ -98,7 +107,9 @@ export default function DesktopMemoryGraph({
   error,
   totalNodes,
   totalEdges,
-  truncated
+  truncated,
+  atlasPositions,
+  showTitles = true
 }: {
   nodes: MemoryGraphNode[];
   edges: MemoryGraphEdge[];
@@ -111,6 +122,8 @@ export default function DesktopMemoryGraph({
   totalNodes: number;
   totalEdges: number;
   truncated: boolean;
+  atlasPositions?: Map<string, MemoryAtlasPosition>;
+  showTitles?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<Sigma | null>(null);
@@ -127,7 +140,7 @@ export default function DesktopMemoryGraph({
   const [renderError, setRenderError] = useState<string | null>(null);
   const [rendererReady, setRendererReady] = useState(false);
   const [rendererRevision, setRendererRevision] = useState(0);
-  const [labelsVisible, setLabelsVisible] = useState(true);
+  const labelsVisible = showTitles;
 
   selectedNodeRef.current = selectedNodeId;
   onSelectNodeRef.current = onSelectNode;
@@ -161,19 +174,21 @@ export default function DesktopMemoryGraph({
 
     try {
       renderer = new Sigma(graph, container, {
+        allowInvalidContainer: true,
         labelColor: { color: MEMORY_GRAPH_LABEL_COLOR },
-        labelDensity: 0.1,
+        labelDensity: 0.035,
         labelGridCellSize: 90,
-        labelRenderedSizeThreshold: 6.5,
+        labelRenderedSizeThreshold: 5.5,
         hideEdgesOnMove: true,
         hideLabelsOnMove: false,
         minCameraRatio: 0.06,
         maxCameraRatio: 8,
-        stagePadding: 28,
+        stagePadding: 55,
         zIndex: true,
         defaultDrawNodeLabel: drawMemoryGraphLabel,
         defaultDrawNodeHover: drawMemoryGraphHover,
         nodeReducer: (nodeId, attributes) => {
+          if (!labelsVisibleRef.current) attributes = { ...attributes, label: null, forceLabel: false };
           const neighbors = neighborsRef.current;
           const hoveredNodeId = hoveredNodeRef.current && neighbors.has(hoveredNodeRef.current)
             ? hoveredNodeRef.current
@@ -183,6 +198,7 @@ export default function DesktopMemoryGraph({
             : null;
           const traceNodeId = hoveredNodeId ?? selectedNodeId;
           if (!traceNodeId) {
+            if (attributes.atlasGroupId) return { ...attributes, forceLabel: attributes.importantHub === true, label: attributes.label };
             if (displayModeRef.current === "SEMANTIC") {
               return labelsVisibleRef.current
                 ? attributes
@@ -229,7 +245,7 @@ export default function DesktopMemoryGraph({
           }
           return {
             ...attributes,
-            color: "#343a3b",
+            color: "#182530",
             forceLabel: false,
             label: null,
             size: Number(attributes.size ?? 5) * 0.72,
@@ -245,11 +261,12 @@ export default function DesktopMemoryGraph({
             ? selectedNodeRef.current
             : null;
           const traceNodeId = hoveredNodeId ?? selectedNodeId;
+          // Keep the overview readable. All real incident links reappear when a node is explored.
           if (!traceNodeId) return attributes;
           const incident = attributes.sourceId === traceNodeId || attributes.targetId === traceNodeId;
           return incident
-            ? { ...attributes, color: "#d8bd79", size: Number(attributes.size ?? 1) * 1.75, zIndex: 2 }
-            : { ...attributes, color: "#272c2d", size: Math.max(0.35, Number(attributes.size ?? 1) * 0.55), zIndex: 0 };
+            ? { ...attributes, hidden: false, color: "#8edbed", size: Number(attributes.size ?? 1) * 1.75, zIndex: 2 }
+            : { ...attributes, hidden: true, zIndex: 0 };
         }
       });
       memoryGraphRendererSerial += 1;
@@ -335,9 +352,12 @@ export default function DesktopMemoryGraph({
           !graph.hasNode(edge.target)
         ) continue;
         const style = memoryGraphEdgeStyle(edge);
+        const sourceGroup = atlasPositions?.get(edge.source);
+        const targetGroup = atlasPositions?.get(edge.target);
         graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
-          color: style.color,
-          size: style.size,
+          color: atlasPositions ? (sourceGroup?.hub && targetGroup?.hub ? "#7595ad" : sourceGroup?.groupId === targetGroup?.groupId ? subduedAtlasColor(sourceGroup?.color ?? "#7395ad") : "#1b2c3d") : style.color,
+          size: atlasPositions ? (sourceGroup?.hub && targetGroup?.hub ? 1.3 : 0.35) : style.size,
+          crossGroup: Boolean(sourceGroup && targetGroup && sourceGroup.groupId !== targetGroup.groupId),
           sourceId: edge.source,
           targetId: edge.target,
           relationType: edge.type
@@ -350,25 +370,27 @@ export default function DesktopMemoryGraph({
       const start = graph.order;
       for (let index = start; index < end; index += 1) {
         const node = orderedNodes[index]!;
-        const position = resolveMemoryGraphPosition(node, index, relationMode);
+        const atlas = atlasPositions?.get(node.id);
+        const position = atlas ?? resolveMemoryGraphPosition(node, index, relationMode);
         const topicOrigin = topicOrigins.get(node.id) ?? null;
         const style = memoryGraphNodeStyle(node, topicOrigin);
-        const importantHub = shouldForceMemoryGraphLabel(
+        const importantHub = atlas ? (node.label === "gemini.md" || node.label === "gemini_history.md") : shouldForceMemoryGraphLabel(
           node,
           topicOrigin,
           degrees.get(node.id) ?? 0,
           index
         );
         graph.addNode(node.id, {
-          label: node.label,
+          label: `${node.label.length > 48 ? `${node.label.slice(0, 45)}…` : node.label}${atlas?.monthLabel ? ` · ${atlas.monthLabel}` : ""}`,
           x: position.x,
           y: position.y,
-          size: style.size,
-          color: style.color,
+          size: atlas ? (node.label === "gemini.md" ? 14 : node.type === "SOURCE" ? (importantHub ? 8 : 4.8) : atlas.hub ? 5 : node.type === "MEMORY" ? 2.7 : 1.8) : style.size,
+          color: atlas?.color ?? style.color,
           forceLabel: importantHub,
           importantHub,
           nodeType: node.type,
-          topicOrigin
+          topicOrigin,
+          atlasGroupId: atlas?.groupId
         });
       }
       addAvailableEdges();
@@ -387,6 +409,13 @@ export default function DesktopMemoryGraph({
     };
 
     try {
+      if (atlasPositions?.size) {
+        const points = [...atlasPositions.values()];
+        renderer.setCustomBBox?.({
+          x: [Math.min(...points.map(point => point.x)) - 8, Math.max(...points.map(point => point.x)) + 8],
+          y: [Math.min(...points.map(point => point.y)) - 8, Math.max(...points.map(point => point.y)) + 18]
+        });
+      } else renderer.setCustomBBox?.(null);
       const initialEnd = Math.min(INITIAL_REVEAL_COUNT, orderedNodes.length);
       revealThrough(initialEnd);
       renderer.setGraph(graph);
@@ -402,13 +431,14 @@ export default function DesktopMemoryGraph({
       if (graphGenerationRef.current === generation) graphGenerationRef.current += 1;
       if (revealTimer !== null) window.clearTimeout(revealTimer);
     };
-  }, [edges, nodes, relationMode, rendererRevision]);
+  }, [edges, nodes, relationMode, rendererRevision, atlasPositions]);
 
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer || rendererFailedRef.current) return;
     renderer.refresh();
     if (!selectedNodeId) {
+      if (lastCameraFocusRef.current) void renderer.getCamera().animatedReset({ duration: 360 });
       lastCameraFocusRef.current = null;
       return;
     }
@@ -423,6 +453,7 @@ export default function DesktopMemoryGraph({
   }, [nodes, rendererRevision, revealedCount, selectedNodeId]);
 
   useEffect(() => {
+    rendererRef.current?.setSetting("renderLabels", labelsVisible);
     rendererRef.current?.refresh();
   }, [displayMode, labelsVisible]);
 
@@ -439,44 +470,12 @@ export default function DesktopMemoryGraph({
     <section className="memory-graph-panel" aria-label="Interactive memory map">
       <header className="memory-graph-toolbar">
         <div>
-          <span>Memory map</span>
+          <span>Knowledge atlas</span>
           <strong>{nodes.length.toLocaleString()} nodes · {edges.length.toLocaleString()} relationships</strong>
           <small className="memory-graph-taxonomy-summary">
             {taxonomy.explicitTags.toLocaleString()} explicit tags · {taxonomy.derivedTopics.toLocaleString()} derived topics · {taxonomy.semanticLinks.toLocaleString()} semantic links
           </small>
         </div>
-        {displayMode === "SEMANTIC" ? (
-          <>
-            <label className="memory-graph-node-picker">
-              <span>Focus node</span>
-              <select
-                aria-label="Focus graph node"
-                name="memoryGraphFocusNode"
-                disabled={nodes.length === 0}
-                value={selectedNodeId ?? ""}
-                onChange={(event) => {
-                  if (event.currentTarget.value) onSelectNode(event.currentTarget.value);
-                }}
-              >
-                <option value="">Choose a node…</option>
-                {[...nodes].sort((left, right) => left.label.localeCompare(right.label)).map((node) => (
-                  <option key={node.id} value={node.id}>{node.label}</option>
-                ))}
-              </select>
-            </label>
-            <button
-              type="button"
-              className="memory-graph-label-toggle"
-              aria-label={labelsVisible ? "Hide map labels" : "Show map labels"}
-              aria-pressed={!labelsVisible}
-              title={labelsVisible ? "Hide map labels" : "Show map labels"}
-              onClick={() => setLabelsVisible((visible) => !visible)}
-            >
-              {labelsVisible ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
-              <span>{labelsVisible ? "Hide labels" : "Show labels"}</span>
-            </button>
-          </>
-        ) : null}
         <button
           type="button"
           className="memory-graph-reset"
@@ -498,8 +497,17 @@ export default function DesktopMemoryGraph({
       <div
         className="memory-graph-canvas"
         ref={containerRef}
-        role="img"
-        aria-label={`Canonical memory graph with ${nodes.length} visible nodes and ${edges.length} visible relationships`}
+        role="application"
+        tabIndex={0}
+        onKeyDown={event => {
+          if (!nodes.length || !["ArrowRight", "ArrowLeft", "Enter"].includes(event.key)) return;
+          event.preventDefault();
+          const index = nodes.findIndex(node => node.id === selectedNodeId);
+          const firstMemory = Math.max(0, nodes.findIndex(node => node.type === "MEMORY"));
+          const next = index < 0 ? (event.key === "ArrowLeft" ? nodes.length - 1 : firstMemory) : event.key === "ArrowLeft" ? (index - 1 + nodes.length) % nodes.length : (index + 1) % nodes.length;
+          onSelectNode(nodes[event.key === "Enter" && index >= 0 ? index : next]!.id);
+        }}
+        aria-label={`Canonical memory graph with ${nodes.length} visible nodes and ${edges.length} visible relationships. Use arrow keys to explore and Enter to open.`}
         aria-busy={loading || (!effectiveError && revealedCount < nodes.length)}
         data-graph-mode={displayMode}
         data-relation-mode={relationMode}
@@ -510,7 +518,7 @@ export default function DesktopMemoryGraph({
             <strong>Map rendering paused</strong>
             <span>Use Retry below to restore the graphics layer.</span>
           </div>
-        ) : !loading && !effectiveError && nodes.length === 0 ? <p>No graph nodes match these filters.</p> : null}
+        ) : !loading && !effectiveError && nodes.length === 0 ? <p>No memories found. Try another search.</p> : null}
       </div>
 
       <footer className="memory-graph-status" aria-live="polite">
@@ -529,12 +537,12 @@ export default function DesktopMemoryGraph({
             ) : null}
           </div>
         ) : truncated ? (
-          <p>Showing the bounded map of {nodes.length.toLocaleString()} from {totalNodes.toLocaleString()} nodes and {edges.length.toLocaleString()} from {totalEdges.toLocaleString()} relationships.</p>
+          <p>Exploring {nodes.length.toLocaleString()} of {totalNodes.toLocaleString()} archive nodes · Hover to reveal connections · Search to discover more</p>
         ) : nodes.length > 0 && revealedCount < nodes.length ? (
           <p role="status">Revealing map… {revealedCount.toLocaleString()} of {nodes.length.toLocaleString()} nodes</p>
         ) : nodes.length > 0 ? (
-          <p>{nodes.length.toLocaleString()} nodes and {visibleEdges.toLocaleString()} relationships ready. Hover to trace; select to inspect evidence.</p>
-        ) : <p>Adjust filters to explore another part of canonical memory.</p>}
+          <p>Drag to explore · Scroll to zoom · Click a point to open its memory</p>
+        ) : <p>Search to explore your knowledge.</p>}
       </footer>
     </section>
   );

@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import {
   lazy,
   Suspense,
@@ -296,9 +297,11 @@ function useDialogFocus(
   ref: RefObject<HTMLElement | null>,
   onClose: () => void,
 ) {
+  const embedded = useWorkspaceSurface();
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
+    if (embedded) return;
     const previous =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
@@ -352,7 +355,7 @@ function useDialogFocus(
       node?.removeEventListener("keydown", handle);
       if (previous?.isConnected) previous.focus();
     };
-  }, [ref]);
+  }, [ref, embedded]);
 }
 function ThresholdEditor({
   thresholds,
@@ -1310,6 +1313,7 @@ function HealthWindow({
   allowChanges?: boolean;
   onManage?: (id: "accounts" | "provider" | "cli") => void;
 }) {
+  const embedded = useWorkspaceSurface();
   const ref = useRef<HTMLElement>(null);
   useDialogFocus(ref, onClose);
   const [maximized, setMaximized] = useState(false);
@@ -1474,7 +1478,7 @@ function HealthWindow({
   );
   return (
     <div
-      className="health-modal-backdrop"
+      className={`health-modal-backdrop${embedded ? " is-workspace-embedded" : ""}`}
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -1482,9 +1486,9 @@ function HealthWindow({
       <section
         ref={ref}
         tabIndex={-1}
-        className={`health-window resources-unified${maximized ? " is-maximized" : ""}`}
+        className={`health-window resources-unified${maximized ? " is-maximized" : ""}${embedded ? " is-workspace-embedded" : ""}`}
         role="dialog"
-        aria-modal="true"
+        aria-modal={embedded ? undefined : true}
         aria-label="Resources"
       >
         <header className="health-window-header">
@@ -1496,7 +1500,7 @@ function HealthWindow({
             <p>{section === "overview" ? "Your Space at a glance" : "Details & history"}</p>
           </div>
           <div className="health-window-actions">
-            <button
+            {!embedded ? <button
               type="button"
               className={`health-maximize-toggle dock-fullscreen-toggle${maximized ? " is-active" : ""}`}
               title={maximized ? "Collapse Resources" : "Expand Resources"}
@@ -1505,7 +1509,7 @@ function HealthWindow({
               onClick={() => setMaximized((v) => !v)}
             >
               {maximized ? <Minimize2 /> : <Maximize2 />}
-            </button>
+            </button> : null}
             <button type="button" className="health-window-close-btn" aria-label="Close Resources" onClick={onClose}>
               <X />
             </button>
@@ -1812,7 +1816,11 @@ export function SystemHealth({
   onReopenAllDetached,
   onCloseSession,
   readOnly = false,
+  initialSection = "overview",
+  onClose,
 }: {
+  initialSection?: HealthSection;
+  onClose?: () => void;
   userId: string;
   railVisible: boolean;
   environment: CodexEnvironment | null;
@@ -1827,6 +1835,7 @@ export function SystemHealth({
   /** When true, indicator buttons are display-only: no panel opens on click. */
   readOnly?: boolean;
 }) {
+  const embedded = useWorkspaceSurface();
   const [agentsLiveSummary, setAgentsLiveSummary] = useState<AgentDashboardSummary | null>(agentsSummary ?? null);
   useEffect(() => {
     if (agentsSummary) setAgentsLiveSummary(agentsSummary);
@@ -1843,8 +1852,8 @@ export function SystemHealth({
   const [thresholds, setThresholds] = useState(() =>
     readHealthThresholds(storage, userId),
   );
-  const [open, setOpen] = useState<"health" | "resources" | null>(null);
-  const [section, setSection] = useState<HealthSection>("overview");
+  const [open, setOpen] = useState<"health" | "resources" | null>(embedded ? "health" : null);
+  const [section, setSection] = useState<HealthSection>(initialSection);
   const [selected, setSelected] = useState("cpu");
   const [expanded, setExpanded] = useState(false);
   const [visibilityMenu, setVisibilityMenu] = useState<RailVisibilityMenuState>(null);
@@ -1872,6 +1881,7 @@ export function SystemHealth({
     dispatchRailMenuChange();
   }, [open]);
   useLayoutEffect(() => {
+    if (embedded) return;
     const shell = source.current?.closest<HTMLElement>(".space-shell");
     const element = rail.current;
     if (!shell || !element) return;
@@ -1880,7 +1890,7 @@ export function SystemHealth({
     const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
     observer?.observe(element);
     return () => { observer?.disconnect(); shell.style.removeProperty("--resource-rail-height"); };
-  }, [railVisible, open, expanded]);
+  }, [railVisible, open, expanded, embedded]);
   const telemetry = useHealthTelemetry(
     railVisible || open !== null,
     open === "health",
@@ -1889,6 +1899,7 @@ export function SystemHealth({
     readOnly,
   );
   useEffect(() => {
+    if (embedded) return;
     const listener = (event: Event) => {
       if (readOnly) return;
       const detail = (
@@ -1905,9 +1916,9 @@ export function SystemHealth({
     };
     window.addEventListener("space:system-health", listener);
     return () => window.removeEventListener("space:system-health", listener);
-  }, [readOnly]);
+  }, [readOnly, embedded]);
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (embedded || typeof window === "undefined") return;
     const viewport = window.visualViewport;
     let wasKeyboardOpen = false;
 
@@ -1960,7 +1971,7 @@ export function SystemHealth({
       window.removeEventListener("focusout", handleBlur);
       document.documentElement.removeAttribute("data-virtual-keyboard-open");
     };
-  }, []);
+  }, [embedded]);
 
   const shell = source.current?.closest<HTMLElement>("[data-shell-mode]") ?? (typeof document !== "undefined" ? document.querySelector<HTMLElement>("[data-shell-mode]") : null);
   const theme = {
@@ -1974,7 +1985,7 @@ export function SystemHealth({
     window.addEventListener("space:navigation-open", dismiss);
     return () => window.removeEventListener("space:navigation-open", dismiss);
   }, []);
-  const close = () => setOpen(null);
+  const close = () => { if (embedded) onClose?.(); else setOpen(null); };
   const save = (next: HealthThresholds) => {
     setThresholds(next);
     try {
@@ -2108,6 +2119,29 @@ export function SystemHealth({
     }, 20_000);
     return () => clearInterval(interval);
   }, [accountProviders.length]);
+
+    const resourceWindow = <div className="health-theme-root" {...theme}>
+              <HealthWindow
+                onReopenPane={onReopenPane} onReopenAllDetached={onReopenAllDetached} onCloseSession={onCloseSession}
+                telemetry={telemetry}
+                section={section}
+                onSection={setSection}
+                selected={selected}
+                onSelect={setSelected}
+                onClose={close}
+                thresholds={thresholds}
+                onThresholds={save}
+                allowChanges={allowChanges}
+                onManage={
+                  onManage
+                    ? (id) => {
+                        close();
+                        onManage(id);
+                      }
+                    : undefined
+                }
+              />
+          </div>;
 
   return (
     <>
@@ -2270,32 +2304,7 @@ export function SystemHealth({
           ) : null}
         </nav>
       )}
-      {open &&
-        createPortal(
-          <div className="health-theme-root" {...theme}>
-              <HealthWindow
-                onReopenPane={onReopenPane} onReopenAllDetached={onReopenAllDetached} onCloseSession={onCloseSession}
-                telemetry={telemetry}
-                section={section}
-                onSection={setSection}
-                selected={selected}
-                onSelect={setSelected}
-                onClose={close}
-                thresholds={thresholds}
-                onThresholds={save}
-                allowChanges={allowChanges}
-                onManage={
-                  onManage
-                    ? (id) => {
-                        close();
-                        onManage(id);
-                      }
-                    : undefined
-                }
-              />
-          </div>,
-          document.body,
-        )}
+      {open && (embedded ? resourceWindow : createPortal(resourceWindow, document.body))}
     </>
   );
 }

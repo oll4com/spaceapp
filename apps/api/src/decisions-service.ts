@@ -1,4 +1,5 @@
 import { createLiveIntentClassifier } from "./live-intent-classifier.js";
+import { createLiveReadClassifier, liveReadBudgetMs } from "./live-jev-read-classifier.js";
 import { readFile } from "node:fs/promises";
 import {
   JEV_NOT_CONFIGURED_REASON,
@@ -105,8 +106,10 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
   }
 
   const classifyLiveIntent = createLiveIntentClassifier((input, signal) => decide(input, { signal, timeoutMs: 750 }));
+  const classifyLiveRead = createLiveReadClassifier((input, signal) => decide(input, { signal, timeoutMs: liveReadBudgetMs }));
   return {
     classifyLiveIntent,
+    classifyLiveRead,
     async status(): Promise<{ enabled: boolean; configured: boolean; model: string }> {
       const config = await getConfig();
       if (!enabled) return { enabled: false, configured: false, model: config.model };
@@ -412,13 +415,14 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
       });
 
       if (!raw.available) {
-        const lower = prompt.toLowerCase();
-        const needsBrowser = /https?:\/\/|navigate|screenshot|browser|playwright|chrome|render web|web page/i.test(lower);
+        // Classification failure is not evidence that a selected capability is
+        // unnecessary. Preserve the authorized surface for every language,
+        // including research requests without URLs and misspelled prompts.
         return {
           available: false,
-          needsBrowser,
-          filteredTools: needsBrowser ? availableTools : availableTools.filter((t) => !browserToolPattern.test(t)),
-          confidence: needsBrowser ? 0.8 : 0.0,
+          needsBrowser: true,
+          filteredTools: availableTools,
+          confidence: 0,
           reason: raw.reason,
           degraded: true
         };

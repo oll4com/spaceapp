@@ -554,6 +554,11 @@ async function openOpenAiVoiceSession(
     if (closed) return;
     closed = true;
     clearFallbackDoneTimer();
+    if (isLiveTranscriptionModel(options.model) && channel.readyState === "open") {
+      try {
+        channel.send(JSON.stringify({ type: "session.close" }));
+      } catch {}
+    }
     try {
       channel.close();
     } catch {}
@@ -695,7 +700,11 @@ async function openOpenAiVoiceSession(
           return;
         }
         try {
-          channel.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          if (isLiveTranscriptionModel(options.model)) {
+            channel.send(JSON.stringify({ type: "session.input_audio.mute" }));
+          } else {
+            channel.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          }
         } catch (error) {
           fail(errorMessage(error, "Voice Realtime audio could not be submitted."));
           return;

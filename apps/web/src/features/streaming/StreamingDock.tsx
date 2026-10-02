@@ -12,6 +12,7 @@ import type {
 } from "@space/contracts";
 import {
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   GripVertical,
@@ -151,11 +152,24 @@ export function StreamingDock() {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [expandedProviders, setExpandedProviders] = useState<Set<StreamingOAuthProvider>>(() => new Set());
   const mounted = useRef(true);
   const savingRef = useRef(false);
   const queuedDraftRef = useRef<StreamingDraft | null>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasUnsavedChangesRef = useRef(false);
+
+  const toggleProviderExpanded = useCallback((provider: StreamingOAuthProvider) => {
+    setExpandedProviders((prev) => {
+      const next = new Set(prev);
+      if (next.has(provider)) {
+        next.delete(provider);
+      } else {
+        next.add(provider);
+      }
+      return next;
+    });
+  }, []);
 
   const saveDraftDirect = useCallback(async (targetDraft: StreamingDraft) => {
     if (savingRef.current) {
@@ -548,98 +562,173 @@ export function StreamingDock() {
             const accounts = catalog.accounts.filter((account) => account.provider === provider);
             const authorizations = catalog.authorizations.filter((authorization) => authorization.provider === provider);
             const ready = readiness?.status === "READY";
+            const isExpanded = expandedProviders.has(provider);
             return (
-              <article className="streaming-provider-card" key={provider} data-provider={provider}>
-                <header>
+              <article className={`streaming-provider-card ${isExpanded ? "is-expanded" : "is-collapsed"}`} key={provider} data-provider={provider}>
+                <header
+                  className="streaming-provider-header"
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={isExpanded}
+                  aria-label={`Toggle ${providerLabel(provider)}`}
+                  onClick={() => toggleProviderExpanded(provider)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggleProviderExpanded(provider);
+                    }
+                  }}
+                >
                   <span className="streaming-provider-mark"><ProviderIcon provider={provider} /></span>
-                  <div><h4>{providerLabel(provider)}</h4><span className={`streaming-readiness status-${readiness?.status.toLowerCase() ?? "error"}`}>{readiness?.status ?? "ERROR"}</span></div>
-                  <button type="button" onClick={() => void connect(provider)} disabled={!ready || pendingAction !== null}>
-                    {pendingAction === `connect:${provider}` ? <Loader2 className="spin" aria-hidden="true" /> : null}
-                    Connect another
-                  </button>
+                  <div className="streaming-provider-meta">
+                    <div className="streaming-provider-meta-row">
+                      <h4>{providerLabel(provider)}</h4>
+                      <span className={`streaming-readiness status-${readiness?.status.toLowerCase() ?? "error"}`}>{readiness?.status ?? "ERROR"}</span>
+                      {accounts.length > 0 ? (
+                        <span className="streaming-provider-account-badge">
+                          {accounts.length} {accounts.length === 1 ? "account" : "accounts"}
+                        </span>
+                      ) : null}
+                    </div>
+                    {readiness?.status !== "READY" && readiness?.code ? (
+                      <code className="streaming-safe-code">{readiness.code}</code>
+                    ) : null}
+                  </div>
+                  <div className="streaming-provider-header-actions">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void connect(provider);
+                      }}
+                      disabled={!ready || pendingAction !== null}
+                    >
+                      {pendingAction === `connect:${provider}` ? <Loader2 className="spin" aria-hidden="true" /> : null}
+                      {accounts.length > 0 ? "Connect another" : "Connect"}
+                    </button>
+                    <span
+                      className="streaming-provider-chevron"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={isExpanded ? `Collapse ${providerLabel(provider)}` : `Expand ${providerLabel(provider)}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleProviderExpanded(provider);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          toggleProviderExpanded(provider);
+                        }
+                      }}
+                    >
+                      {isExpanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                    </span>
+                  </div>
                 </header>
-                <p className="streaming-provider-detail">{readiness?.message ?? "Provider readiness is unavailable."}</p>
-                {readiness?.status !== "READY" ? <code className="streaming-safe-code">{readiness?.code ?? "READINESS_UNAVAILABLE"}</code> : null}
 
-                {accounts.length === 0 ? <p className="streaming-empty">No connected accounts.</p> : (
-                  <ul className="streaming-account-list">
-                    {accounts.map((account) => {
-                      const capabilities = streamingCapabilities(account, authorizations.find(item => item.id === account.authorizationId));
-                      const allSelected = accountMetrics(catalog, account).every((metric) =>
-                        draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000${account.id}`)
-                      );
-                      return (
-                        <li key={account.id} className="streaming-account-card">
-                          <div className="streaming-account-heading">
-                            <div><strong>{account.displayName}</strong><span>{account.badge} · {account.status}</span></div>
-                            <div className="streaming-inline-actions">
-                              <button type="button" onClick={() => void runAction(`verify:${account.id}`, () => api.verifyStreamingAccount(account.id), `${account.displayName} was verified.`)} disabled={pendingAction !== null}>
-                                <CheckCircle2 aria-hidden="true" /> Verify
-                              </button>
-                              <button type="button" className="danger" onClick={() => void runAction(`remove:${account.id}`, () => api.removeStreamingAccount(account.id), `${account.displayName} was removed.`)} disabled={pendingAction !== null}>
-                                <Trash2 aria-hidden="true" /> Remove account
-                              </button>
-                            </div>
-                          </div>
-                          <div className="streaming-inline-actions streaming-capability-badges" aria-label={`Capabilities for ${account.displayName}`}>
-                            <span className={`streaming-bot-badge ${capabilities.metrics ? "ok" : ""}`}>Metrics {capabilities.metrics ? "ready" : "unavailable"}</span>
-                            <span className={`streaming-bot-badge ${capabilities.readChat ? "ok" : ""}`}>Chat {capabilities.readChat ? "ready" : "unavailable"}</span>
-                            <span className={`streaming-bot-badge ${capabilities.reply ? "ok" : ""}`}>Replies {capabilities.reply ? "ready" : "unavailable"}</span>
-                            <span className={`streaming-bot-badge ${capabilities.moderate ? "ok" : ""}`}>Moderation {capabilities.moderate ? "ready" : "unavailable"}</span>
-                          </div>
-                          {capabilities.reason ? <small>{capabilities.reason}</small> : null}
-                          {account.safeErrorMessage ? <div className="streaming-safe-error"><code>{account.safeErrorCode}</code><span>{account.safeErrorMessage}</span></div> : null}
-                          <fieldset className="streaming-metric-options" aria-label={`Metrics for ${account.displayName}`}>
-                            <div className="streaming-metric-header">
-                              <span className="streaming-metric-title">Metrics for {account.displayName}</span>
-                              <button
-                                type="button"
-                                className="streaming-select-all-button"
-                                onClick={() => toggleAllAccountMetrics(account)}
-                              >
-                                {allSelected ? "Deselect all" : "All metrics"}
-                              </button>
-                            </div>
-                            {accountMetrics(catalog, account).map((metric) => {
-                              const checked = draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000${account.id}`);
-                              return (
-                                <SpaceToggle
-                                  key={metric.key}
-                                  checked={checked}
-                                  label={metric.label}
-                                  detail={metric.category.toLowerCase()}
-                                  onChange={() => toggleMetric(metric, account)}
-                                />
-                              );
-                            })}
-                            {isDirty ? (
-                              <button
-                                type="button"
-                                className="streaming-quick-save"
-                                onClick={() => void saveOverlay()}
-                                disabled={pendingAction !== null}
-                              >
-                                {pendingAction === "save" ? <Loader2 className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />} Save changes
-                              </button>
-                            ) : null}
-                          </fieldset>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
+                {isExpanded ? (
+                  <div className="streaming-provider-body">
+                    <p className="streaming-provider-detail">{readiness?.message ?? "Provider readiness is unavailable."}</p>
 
-                {authorizations.length > 0 ? (
-                  <div className="streaming-authorizations">
-                    {authorizations.map((authorization) => (
-                      <div key={authorization.id}>
-                        <span>{authorization.accountCount} account{authorization.accountCount === 1 ? "" : "s"} · {authorization.status}</span>
-                        <button type="button" className="danger" onClick={() => void runAction(`disconnect:${authorization.id}`, () => api.disconnectStreamingAuthorization(authorization.id), `${providerLabel(provider)} authorization was disconnected.`)} disabled={pendingAction !== null}>
-                          Disconnect authorization
-                        </button>
-                        {authorization.safeErrorMessage ? <p className="streaming-safe-error"><code>{authorization.safeErrorCode}</code><span>{authorization.safeErrorMessage}</span></p> : null}
+                    {accounts.length === 0 ? <p className="streaming-empty">No connected accounts.</p> : (
+                      <ul className="streaming-account-list">
+                        {accounts.map((account) => {
+                          const capabilities = streamingCapabilities(account, authorizations.find(item => item.id === account.authorizationId));
+                          const allSelected = accountMetrics(catalog, account).every((metric) =>
+                            draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000${account.id}`)
+                          );
+                          return (
+                            <li key={account.id} className="streaming-account-card">
+                              <div className="streaming-account-heading">
+                                <div><strong>{account.displayName}</strong><span>{account.badge} · {account.status}</span></div>
+                                <div className="streaming-inline-actions">
+                                  <button type="button" onClick={() => void runAction(`verify:${account.id}`, () => api.verifyStreamingAccount(account.id), `${account.displayName} was verified.`)} disabled={pendingAction !== null}>
+                                    <CheckCircle2 aria-hidden="true" /> Verify
+                                  </button>
+                                  <button type="button" className="danger" onClick={() => void runAction(`remove:${account.id}`, () => api.removeStreamingAccount(account.id), `${account.displayName} was removed.`)} disabled={pendingAction !== null}>
+                                    <Trash2 aria-hidden="true" /> Remove account
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="streaming-capability-grid" aria-label={`Capabilities for ${account.displayName}`}>
+                                <div className={`streaming-capability-chip ${capabilities.metrics ? "is-ready" : "is-unavailable"}`}>
+                                  <span className="streaming-capability-dot" aria-hidden="true" />
+                                  <span className="streaming-capability-label">Metrics</span>
+                                  <span className="streaming-capability-status">{capabilities.metrics ? "ON" : "OFF"}</span>
+                                </div>
+                                <div className={`streaming-capability-chip ${capabilities.readChat ? "is-ready" : "is-unavailable"}`}>
+                                  <span className="streaming-capability-dot" aria-hidden="true" />
+                                  <span className="streaming-capability-label">Chat</span>
+                                  <span className="streaming-capability-status">{capabilities.readChat ? "ON" : "OFF"}</span>
+                                </div>
+                                <div className={`streaming-capability-chip ${capabilities.reply ? "is-ready" : "is-unavailable"}`}>
+                                  <span className="streaming-capability-dot" aria-hidden="true" />
+                                  <span className="streaming-capability-label">Replies</span>
+                                  <span className="streaming-capability-status">{capabilities.reply ? "ON" : "OFF"}</span>
+                                </div>
+                                <div className={`streaming-capability-chip ${capabilities.moderate ? "is-ready" : "is-unavailable"}`}>
+                                  <span className="streaming-capability-dot" aria-hidden="true" />
+                                  <span className="streaming-capability-label">Moderation</span>
+                                  <span className="streaming-capability-status">{capabilities.moderate ? "ON" : "OFF"}</span>
+                                </div>
+                              </div>
+                              {capabilities.reason ? <small>{capabilities.reason}</small> : null}
+                              {account.safeErrorMessage ? <div className="streaming-safe-error"><code>{account.safeErrorCode}</code><span>{account.safeErrorMessage}</span></div> : null}
+                              <fieldset className="streaming-metric-options" aria-label={`Metrics for ${account.displayName}`}>
+                                <div className="streaming-metric-header">
+                                  <span className="streaming-metric-title">Metrics for {account.displayName}</span>
+                                  <button
+                                    type="button"
+                                    className="streaming-select-all-button"
+                                    onClick={() => toggleAllAccountMetrics(account)}
+                                  >
+                                    {allSelected ? "Deselect all" : "All metrics"}
+                                  </button>
+                                </div>
+                                {accountMetrics(catalog, account).map((metric) => {
+                                  const checked = draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000${account.id}`);
+                                  return (
+                                    <SpaceToggle
+                                      key={metric.key}
+                                      checked={checked}
+                                      label={metric.label}
+                                      detail={metric.category.toLowerCase()}
+                                      onChange={() => toggleMetric(metric, account)}
+                                    />
+                                  );
+                                })}
+                                {isDirty ? (
+                                  <button
+                                    type="button"
+                                    className="streaming-quick-save"
+                                    onClick={() => void saveOverlay()}
+                                    disabled={pendingAction !== null}
+                                  >
+                                    {pendingAction === "save" ? <Loader2 className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />} Save changes
+                                  </button>
+                                ) : null}
+                              </fieldset>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+
+                    {authorizations.length > 0 ? (
+                      <div className="streaming-authorizations">
+                        {authorizations.map((authorization) => (
+                          <div key={authorization.id}>
+                            <span>{authorization.accountCount} account{authorization.accountCount === 1 ? "" : "s"} · {authorization.status}</span>
+                            <button type="button" className="danger" onClick={() => void runAction(`disconnect:${authorization.id}`, () => api.disconnectStreamingAuthorization(authorization.id), `${providerLabel(provider)} authorization was disconnected.`)} disabled={pendingAction !== null}>
+                              Disconnect authorization
+                            </button>
+                            {authorization.safeErrorMessage ? <p className="streaming-safe-error"><code>{authorization.safeErrorCode}</code><span>{authorization.safeErrorMessage}</span></p> : null}
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    ) : null}
                   </div>
                 ) : null}
               </article>

@@ -6,6 +6,7 @@ import { resolveExternalResource } from "../../runtime/SpaceRuntime.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { useRailPopover } from "../rail-popover.js";
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 
 export const USER_LINKS_UPDATED_EVENT = "space:user-links-updated";
 const STORAGE_KEY_SELECTED_CATEGORY = "space:user-links-selected-category";
@@ -31,9 +32,12 @@ function notifyLinksUpdated() {
 }
 
 export function LinkFavicon({ link }: { link: UserLink }) {
+  const embedded = useWorkspaceSurface();
   const [failed, setFailed] = useState(false);
   const source = resolveExternalResource(`${new URL(link.url).origin}/favicon.ico`);
   useEffect(() => setFailed(false), [link.url]);
+  // Workspace navigation uses local icons and does not contact bookmarked sites.
+  if (embedded) return link.category === "MUSIC_LIBRARY" ? <Music2 aria-hidden="true" /> : <LinkIcon aria-hidden="true" />;
   if (!source || failed) return <LinkIcon aria-hidden="true" />;
   return <img src={source} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
 }

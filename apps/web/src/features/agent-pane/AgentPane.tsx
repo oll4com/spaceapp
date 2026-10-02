@@ -23,6 +23,7 @@ import { DEMO_LOCAL_REPLY } from "../../runtime/SpaceRuntime.js";
 import type { VoiceComposerSettings } from "../../voice-settings.js";
 import { useVoiceInput } from "../voice-input/VoiceInputProvider.js";
 import { CodexComposer } from "./CodexComposer.js";
+import { TaskAcceptanceDialog } from "./TaskAcceptanceDialog.js";
 import { captureLiveVisual } from "../live-pane/live-visual-capture.js";
 import type { AgentPaneModelProvider } from "@space/contracts";
 import { CodexNotification, CodexTranscript, copyableCodexTranscript, visibleChatMessages } from "./CodexTranscript.js";
@@ -269,6 +270,8 @@ export function AgentPane({
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const permissionsRef = useRef<HTMLElement | null>(null);
   const [goalDialogOpen, setGoalDialogOpen] = useState(false);
+  const [acceptanceDialogOpen, setAcceptanceDialogOpen] = useState(false);
+  const [acceptance, setAcceptance] = useState<import("@space/contracts").TaskAcceptance | undefined>(initialDraft.acceptance);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [composerRestoreKey, setComposerRestoreKey] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -507,8 +510,8 @@ export function AgentPane({
   }, [pane.id, pane.mode, pane.title]);
 
   useEffect(() => {
-    writeAgentPaneDraft(pane.id, { prompt, attachments });
-  }, [attachments, pane.id, prompt]);
+    writeAgentPaneDraft(pane.id, { prompt, attachments, acceptance });
+  }, [attachments, pane.id, prompt, acceptance]);
 
   useEffect(() => {
     void loadSession();
@@ -766,12 +769,14 @@ export function AgentPane({
     }
     try {
       const nextSession = await api.sendAgentMessage(pane.id, submission.content, submission.selectedModelConfigId,
-        submission.selectedToolIds, submission.attachments.map(artifact => artifact.id), submission.clientRequestId);
+        submission.selectedToolIds, submission.attachments.map(artifact => artifact.id), submission.clientRequestId, submission.acceptance);
       // Submission succeeded even if the subsequent transcript read fails.
       rememberSubmission(null);
+      if (clearDraft) setAcceptance(undefined);
       setSession(nextSession);
       setNotice("Request accepted. Its task is saved in this conversation.");
       if (!clearDraft) {
+        if (JSON.stringify(acceptance) === JSON.stringify(submission.acceptance)) setAcceptance(undefined);
         setPrompt(current => current.trim() === submission.content.trim() ? "" : current);
         setAttachments(current => current.length === submission.attachments.length &&
           current.every((artifact, index) => artifact.id === submission.attachments[index]?.id) ? [] : current);
@@ -788,7 +793,7 @@ export function AgentPane({
         setPrompt(promptToRestore);
         setComposerRestoreKey(current => current + 1);
         setAttachments(submission.attachments);
-        writeAgentPaneDraft(pane.id, { prompt: promptToRestore, attachments: submission.attachments });
+        writeAgentPaneDraft(pane.id, { prompt: promptToRestore, attachments: submission.attachments, acceptance: submission.acceptance });
       }
       setError(err instanceof Error ? err.message : "Request confirmation failed");
       return false;
@@ -811,7 +816,7 @@ export function AgentPane({
         unconfirmedSubmissionRef.current || session?.capabilities.canSend === false) return false;
     return sendSubmission({ clientRequestId: crypto.randomUUID(), content,
       selectedModelConfigId: session?.selectedModelConfigId ?? null, selectedToolIds: session?.selectedToolIds ?? [],
-      attachments: attachments.slice() }, promptToRestore, true);
+      attachments: attachments.slice(), ...(acceptance ? { acceptance } : {}) }, promptToRestore, true);
   }
 
   async function submitQuickMessage(content: string, options: { selectedModelConfigId?: string | null } = {}) {
@@ -851,6 +856,7 @@ export function AgentPane({
       setThread(null);
       setHomePinned(true);
       setPrompt("");
+      setAcceptance(undefined);
       setAttachments([]);
       clearAgentPaneDraft(pane.id);
     } catch (err) {
@@ -1131,7 +1137,8 @@ export function AgentPane({
       setPrompt(original.content);
       setComposerRestoreKey(current => current + 1);
       setAttachments(original.artifacts);
-      writeAgentPaneDraft(pane.id, { prompt: original.content, attachments: original.artifacts });
+      setAcceptance(original.acceptance);
+      writeAgentPaneDraft(pane.id, { prompt: original.content, attachments: original.artifacts, acceptance: original.acceptance });
       setComposerFocusRequest(current => current + 1);
       setCodexError(null);
       setDismissedRunError(runError);
@@ -1283,6 +1290,8 @@ export function AgentPane({
           onVoice={toggleVoiceCapture}
           onAddFiles={() => fileInputRef.current?.click()}
           onSetGoal={() => setGoalDialogOpen(true)}
+          onSetAcceptance={() => setAcceptanceDialogOpen(true)}
+          hasAcceptance={Boolean(acceptance)}
           onVisualContext={(source) => void attachVisualContext(source)}
           onVoicePrewarm={voiceInput.prewarm}
           voiceActive={voiceOwned && voiceInput.status === "recording"}
@@ -1343,6 +1352,11 @@ export function AgentPane({
           onClear={() => void clearGoal()}
         />
       ) : null}
+      {acceptanceDialogOpen && <TaskAcceptanceDialog current={acceptance}
+        onClose={() => { setAcceptanceDialogOpen(false); setComposerFocusRequest(value => value + 1); }}
+        onSave={value => { setAcceptance(value); setAcceptanceDialogOpen(false);
+          setComposerFocusRequest(current => current + 1);
+          setNotice(value ? "Result check saved for your next message." : "Result check removed."); }} />}
     </section>
   );
 }

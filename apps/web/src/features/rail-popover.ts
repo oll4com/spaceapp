@@ -173,10 +173,10 @@ export function railPopoverPosition(trigger: HTMLElement | null, width: number) 
   return { left: Math.max(8, rect.left - width - 8), bottom: Math.max(8, window.innerHeight - bottom), maxHeight: Math.max(100, bottom - top) };
 }
 
-export function useRailPopover(panel: RefObject<HTMLElement | null>, trigger?: RefObject<HTMLButtonElement | null> | null) {
+export function useRailPopover(panel: RefObject<HTMLElement | null>, trigger?: RefObject<HTMLButtonElement | null> | null, active = true) {
   useLayoutEffect(() => {
     const node = panel.current;
-    if (!node) return;
+    if (!active || !node) return;
     const update = () => {
       const position = railPopoverPosition(trigger?.current ?? null, node.getBoundingClientRect().width);
       if (position) {
@@ -194,7 +194,7 @@ export function useRailPopover(panel: RefObject<HTMLElement | null>, trigger?: R
       window.removeEventListener("resize", update);
       dispatchRailMenuChange();
     };
-  }, [panel, trigger]);
+  }, [panel, trigger, active]);
 }
 
 const wheelMenuStack: HTMLElement[] = [];

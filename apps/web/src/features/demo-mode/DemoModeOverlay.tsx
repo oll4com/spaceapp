@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import { useEffect, useState, useRef, useLayoutEffect, useCallback } from "react";
 import { DEMO_MODE_STEPS, type DemoModeStep } from "./demo-mode-steps.js";
 import {
@@ -26,6 +27,7 @@ const CARD_HEIGHT_ESTIMATE = 340;
 const MARGIN = 16;
 
 export function DemoModeOverlay({ isOpen, onClose, onActionPreview }: DemoModeOverlayProps) {
+  const embedded = useWorkspaceSurface();
   const [stepIndex, setStepIndex] = useState(0);
   const [isAutoPlay, setIsAutoPlay] = useState(false);
   const [autoPlayProgress, setAutoPlayProgress] = useState(0);
@@ -62,7 +64,7 @@ export function DemoModeOverlay({ isOpen, onClose, onActionPreview }: DemoModeOv
 
   // Update spotlight target positioning
   const updatePosition = useCallback(() => {
-    if (!isOpen || typeof window === "undefined") return;
+    if (!isOpen || embedded || typeof window === "undefined") return;
 
     let targetEl: HTMLElement | null = null;
     const selectors = currentStep.targetSelector.split(",").map((s) => s.trim());
@@ -119,7 +121,7 @@ export function DemoModeOverlay({ isOpen, onClose, onActionPreview }: DemoModeOv
         left: Math.max(MARGIN, (vw - CARD_WIDTH) / 2)
       });
     }
-  }, [isOpen, currentStep]);
+  }, [isOpen, currentStep, embedded]);
 
   useLayoutEffect(() => {
     updatePosition();
@@ -136,6 +138,7 @@ export function DemoModeOverlay({ isOpen, onClose, onActionPreview }: DemoModeOv
     if (!isOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       if (e.key === "Escape") {
         e.preventDefault();
         onClose();
@@ -176,10 +179,10 @@ export function DemoModeOverlay({ isOpen, onClose, onActionPreview }: DemoModeOv
   if (!isOpen) return null;
 
   return (
-    <aside className="demo-mode-root" aria-label="Space App Demo Mode Tour" role="dialog" aria-modal="true">
+    <aside className="demo-mode-root" aria-label="Space App Demo Mode Tour" role="dialog" aria-modal={embedded ? undefined : true}>
       <div className="demo-mode-backdrop" onClick={onClose} aria-hidden="true" />
 
-      {spotlightRect && (
+      {!embedded && spotlightRect && (
         <div
           className="demo-mode-spotlight"
           style={{
@@ -264,7 +267,7 @@ export function DemoModeOverlay({ isOpen, onClose, onActionPreview }: DemoModeOv
       <section
         ref={cardRef}
         className="demo-mode-card"
-        style={{
+        style={embedded ? undefined : {
           top: `${cardPos.top}px`,
           left: `${cardPos.left}px`
         }}

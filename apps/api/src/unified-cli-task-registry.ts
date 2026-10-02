@@ -27,6 +27,9 @@ export interface UnifiedCliTask {
   source: "space";
   threadSource: string;
   rolloutPath: null;
+  status?: "active" | "completed";
+  isCompleted?: boolean;
+  nativeTaskRef?: string | null;
 }
 
 export interface UnifiedCliTaskListResponse {
@@ -84,6 +87,7 @@ function normalizeTask(record: PaneCliTaskHistoryRecord): UnifiedCliTask {
   const title = cleanTaskText(record.revision.displayTitle || record.paneTitle, 300) ||
     firstUserMessage.slice(0, 120) ||
     "Space CLI task";
+  const isActive = Boolean(record.session?.isActive && record.session?.status === "RUNNING");
   return {
     id: record.taskId,
     taskId: record.taskId,
@@ -103,7 +107,10 @@ function normalizeTask(record: PaneCliTaskHistoryRecord): UnifiedCliTask {
     archived: false,
     source: "space",
     threadSource: record.revision.runtimeId,
-    rolloutPath: null
+    rolloutPath: null,
+    nativeTaskRef: record.revision.nativeTaskRef ?? null,
+    status: isActive ? "active" : "completed",
+    isCompleted: !isActive
   };
 }
 
@@ -142,9 +149,12 @@ export class UnifiedCliTaskRegistry {
       query: options?.q,
       runtimeIds: options?.runtimeIds
     });
+    const tasks = result.items
+      .map(normalizeTask)
+      .filter((task) => Boolean(task.firstUserMessage.trim() || task.nativeTaskRef));
     return {
-      tasks: result.items.map(normalizeTask),
-      total: result.total,
+      tasks,
+      total: tasks.length,
       page,
       pageSize
     };
@@ -152,6 +162,11 @@ export class UnifiedCliTaskRegistry {
 
   async listResumableCodexThreadIds(codexThreadIds: string[]): Promise<Set<string>> {
     return this.store.listResumablePaneCliCodexThreadIds(codexThreadIds);
+  }
+
+  async listActiveCodexThreadIds(): Promise<Set<string>> {
+    const ids = await this.store.listActiveManagedCodexThreadIds();
+    return new Set(ids);
   }
 
   async getTask(taskIdOrLegacyThreadId: string, runtimeIds?: string[]): Promise<ResolvedSpaceCliTask> {

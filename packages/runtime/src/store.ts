@@ -1,3 +1,4 @@
+import { transitionAgentRunLedger, agentRunEvaluationSchema } from "@space/contracts";
 import { splitCliHostTranscriptContent } from "@space/contracts";
 import type { PaneBatchClaim } from "@space/contracts";
 import type { TaskTitleState } from "@space/contracts";
@@ -442,6 +443,7 @@ export interface CompletedTurnRecord {
 }
 
 export interface CompleteSpaceAgentRunInput {
+  evaluation?: import("@space/contracts").AgentRunEvaluation;
   runId: string;
   sessionId: string;
   responseMessageId: string;
@@ -2565,6 +2567,10 @@ export class InMemorySpaceStore implements SpaceStore {
         ...current.keyboardAutocorrect,
         ...(input.keyboardAutocorrect ?? {})
       },
+      livePane: {
+        ...current.livePane,
+        ...(input.livePane ?? {})
+      },
       updatedAt: nowIso()
     });
     this.userSettings.set(userId, updated);
@@ -3341,9 +3347,23 @@ export class InMemorySpaceStore implements SpaceStore {
       return null;
     }
     this.userStarterRoomInitialized.add(userId);
-    const existing = [...this.rooms.values()].find((r) => r.ownerUserId === userId);
+    const existing = [...this.rooms.values()].find((r) => (r.ownerUserId === userId || !r.ownerUserId) && r.name === "Getting Started")
+      ?? [...this.rooms.values()].find((r) => r.ownerUserId === userId);
     if (existing) return existing;
-    return this.createRoom({ name: "Getting Started", initialPaneCount: 0 }, traceId, userId);
+    const room = this.createRoom({ name: "Getting Started", initialPaneCount: 0 }, traceId, userId);
+    this.createPanes(
+      [
+        {
+          roomId: room.id,
+          title: "OpenCode CLI",
+          mode: "TERMINAL",
+          terminalRuntimeId: "cli:opencode",
+          cwd: "/etc"
+        }
+      ],
+      traceId
+    );
+    return room;
   }
 
   listRunningCliSessionCountsByRoom(runtimeIds?: string[]): RoomCliActivity[] {
@@ -4268,6 +4288,7 @@ export class InMemorySpaceStore implements SpaceStore {
       updatedAt: timestamp
     });
     const run = spaceAgentRunRecordSchema.parse({
+      ledger: transitionAgentRunLedger({ status: "QUEUED", at: timestamp }),
       runId: input.runId,
       sessionId,
       paneId: queueItem.turn.paneId,
@@ -5103,6 +5124,7 @@ export class InMemorySpaceStore implements SpaceStore {
     const timestamp = nowIso();
     const run = spaceAgentRunRecordSchema.parse({
       ...parsed,
+      ledger: transitionAgentRunLedger({ status: parsed.status, at: timestamp }),
       runId: parsed.runId ?? makeSpaceId("agent_run"),
       temporalRunId: parsed.temporalRunId ?? null,
       codexThreadId: parsed.codexThreadId ?? null,
@@ -5148,6 +5170,9 @@ export class InMemorySpaceStore implements SpaceStore {
     const updated = spaceAgentRunRecordSchema.parse({
       ...current,
       ...parsed,
+      ledger: transitionAgentRunLedger({ current: current.ledger ?? transitionAgentRunLedger({ status: current.status, at: null,
+          runtimeModelAtStart: current.runtimeModelAtStart }), status: parsed.status ?? current.status, at: nowIso(),
+        runtimeModelAtStart: parsed.runtimeModelAtStart, evaluation: parsed.evaluation }),
       startedAt: current.startedAt ?? (parsed.status === "RUNNING" ? nowIso() : null),
       temporalRunId: parsed.temporalRunId === undefined ? current.temporalRunId : parsed.temporalRunId,
       codexThreadId: parsed.codexThreadId === undefined ? current.codexThreadId : parsed.codexThreadId,
@@ -5195,6 +5220,7 @@ export class InMemorySpaceStore implements SpaceStore {
   }
 
   completeSpaceAgentRun(input: CompleteSpaceAgentRunInput): CompletedSpaceAgentRunRecord {
+    if (input.evaluation) agentRunEvaluationSchema.parse(input.evaluation);
     const currentRun = this.spaceAgentRuns.get(input.runId);
     const currentSession = this.spaceAgentSessions.get(input.sessionId);
     const currentMessage = this.spaceAgentMessages.get(input.responseMessageId);
@@ -5213,6 +5239,7 @@ export class InMemorySpaceStore implements SpaceStore {
     });
     if (input.roomAgentOutcome) this.roomAgentTurnOutcomes.set(input.runId, input.roomAgentOutcome);
     const run = this.updateSpaceAgentRun(input.runId, {
+      evaluation: input.evaluation,
       status: "COMPLETED",
       codexThreadId: input.codexThreadId,
       codexTurnId: input.codexTurnId,

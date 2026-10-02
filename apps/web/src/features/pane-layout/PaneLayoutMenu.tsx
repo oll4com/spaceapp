@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import { useMenuWheel, useRailPopover } from "../rail-popover.js";
 import { Check, Grid2X2, Loader2, Minus, Plus } from "../ui-theme/app-icons.js";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type RefObject } from "react";
@@ -110,6 +111,7 @@ export function PaneLayoutMenu({
   triggerRef,
   visiblePaneCount
 }: PaneLayoutMenuProps) {
+  const embedded = useWorkspaceSurface();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [optimisticHeight, setOptimisticHeight] = useState<number | null>(null);
 
@@ -124,8 +126,8 @@ export function PaneLayoutMenu({
   const canPlus = emptySlots ? emptySlots.count < emptySlots.max && !pending : false;
   const emptySlotsReason = emptySlots?.disabledReason;
 
-  useRailPopover(menuRef, triggerRef);
-  useMenuWheel(menuRef, '[role="menuitemradio"]', true, triggerRef, true);
+  useRailPopover(menuRef, triggerRef, !embedded);
+  useMenuWheel(menuRef, '[role="menuitemradio"]', true, triggerRef, !embedded);
   const visibleOptions = useMemo(
     () => visiblePaneLayoutOptions(automaticColumns, currentColumns, maximumColumns, visiblePaneCount),
     [automaticColumns, currentColumns, maximumColumns, visiblePaneCount]
@@ -173,7 +175,7 @@ export function PaneLayoutMenu({
     <div
       ref={menuRef}
       id={menuId}
-      className="pane-layout-menu toolbar-floating-menu"
+      className={`pane-layout-menu${embedded ? " workspace-inline-control" : " toolbar-floating-menu"}`}
       role="menu"
       aria-label="Pane layout presets"
       aria-busy={pending}

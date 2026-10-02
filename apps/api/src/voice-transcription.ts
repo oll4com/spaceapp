@@ -708,12 +708,6 @@ export async function createVoiceRealtimeCall(
       audio: {
         output: {
           voice: chosenVoice
-        },
-        input: {
-          transcription: {
-            model: "whisper-1"
-          },
-          ...(turnDetectionConfig ? { turn_detection: turnDetectionConfig } : {})
         }
       }
     };

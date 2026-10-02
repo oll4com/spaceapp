@@ -310,6 +310,36 @@ function memoryIssuesRevisionHash(snapshotRevision: string, states: MemoryIssueS
   return digest(JSON.stringify({ snapshotRevision, stateRevisions }));
 }
 
+// Keep the same payload budget while retaining the taxonomy needed to interpret a large archive.
+export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): MemoryGraphNode[] {
+  if (nodes.length <= 2000) return nodes;
+  const members = new Map<string, Set<string>>();
+  const explicit = new Set<string>();
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  for (const edge of edges) {
+    if (edge.type !== "TAGGED_WITH" || byId.get(edge.source)?.type !== "MEMORY" || byId.get(edge.target)?.type !== "TOPIC") continue;
+    if (!members.has(edge.target)) members.set(edge.target, new Set());
+    members.get(edge.target)!.add(edge.source);
+    if (edge.origin === "EXPLICIT_TAG") explicit.add(edge.target);
+  }
+  const topics = nodes.filter(node => members.has(node.id)).sort((a, b) =>
+    Number(explicit.has(b.id)) - Number(explicit.has(a.id)) ||
+    members.get(b.id)!.size - members.get(a.id)!.size || a.id.localeCompare(b.id)
+  ).slice(0, 160);
+  const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(b.label === "gemini.md") - Number(a.label === "gemini.md") || a.id.localeCompare(b.id)).slice(0, 120);
+  const selected = new Map([...sources, ...topics].map(node => [node.id, node]));
+  // Give every reserved topic a real visible neighbor, even for sparse explicit tags.
+  for (const topic of topics) {
+    const first = [...members.get(topic.id)!].sort()[0];
+    if (first) selected.set(first, byId.get(first)!);
+  }
+  for (const node of nodes) {
+    if (selected.size >= 2000) break;
+    selected.set(node.id, node);
+  }
+  return [...selected.values()];
+}
+
 export function registerMemoryGraphRoutes(
   app: FastifyInstance,
   options: {
@@ -327,7 +357,8 @@ export function registerMemoryGraphRoutes(
     const snapshotData = query.month
       ? await (options.service.getArchiveSnapshotState?.() ?? options.service.getArchiveSnapshot().then(snapshot => ({ snapshot, isStale: false })))
       : await options.service.getSnapshot();
-    const { snapshot, isStale } = snapshotData;
+    const { isStale } = snapshotData;
+    const snapshot = await options.service.withSourceTopology?.(snapshotData.snapshot) ?? snapshotData.snapshot;
     if (setSnapshotEtag(request, reply, snapshot.revisionHash ?? snapshot.sourceHash)) return reply.code(304).send();
     const availableMonths = await options.service.listAvailableMonths();
 
@@ -352,10 +383,11 @@ export function registerMemoryGraphRoutes(
       matchingNodeIds.has(edge.target) &&
       (query.relationMode !== "RELATIONS" || anchorIds.has(edge.source) || anchorIds.has(edge.target))
     );
-    const selectedNodes = matchingNodes.slice(0, 2000);
+    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges);
     const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
     const selectedEdges = matchingEdges
       .filter((edge) => selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target))
+      .sort((a, b) => Number(b.type === "CONTAINS" || b.type === "DERIVED_FROM") - Number(a.type === "CONTAINS" || a.type === "DERIVED_FROM"))
       .slice(0, 6000);
     const data = memoryGraphOverviewPayloadSchema.parse({
       version: snapshot.version,
@@ -448,10 +480,12 @@ export function registerMemoryGraphRoutes(
     requireMemoryGraph(options.config);
     const id = idSchema.parse((request.params as { id?: unknown }).id);
     const live = await options.service.getSnapshot();
+    if (options.service.withSourceTopology) live.snapshot = await options.service.withSourceTopology(live.snapshot);
     let snapshotData: { snapshot: MemoryGraphSnapshot; isStale: boolean } = live;
     let node = live.snapshot.nodes.find((candidate) => candidate.id === id);
-    if (!node) {
-      const archive = await options.service.getArchiveSnapshot();
+    if (!node || node.type === "SOURCE") {
+      const archiveRaw = await options.service.getArchiveSnapshot();
+      const archive = await options.service.withSourceTopology?.(archiveRaw) ?? archiveRaw;
       node = archive.nodes.find((candidate) => candidate.id === id);
       if (node) snapshotData = { snapshot: archive, isStale: false };
     }

@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Search, X, Wrench, Link as LinkIcon, ServerCog, Users, type LucideIcon } from "../ui-theme/app-icons.js";
@@ -23,10 +24,11 @@ export function managementGroup(id: string) {
 export function ServerActionsMenu({ actions, onClose, triggerRef, renderAction, initialAction, suspended = false }: {
   actions: ServerActionCommand[]; mobile: boolean; onClose: () => void;
   triggerRef: RefObject<HTMLButtonElement | null>;
-  renderAction?: (id: string, back: () => void) => ReactNode;
+  renderAction?: (id: string, back: () => void, navigate: (id: string) => void) => ReactNode;
   initialAction?: string | null;
   suspended?: boolean;
 }) {
+  const embedded = useWorkspaceSurface();
   const ref = useRef<HTMLElement>(null);
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState<string | null>(initialAction ? managementGroup(initialAction) : null);
@@ -41,7 +43,7 @@ export function ServerActionsMenu({ actions, onClose, triggerRef, renderAction, 
   const childBusy = () => Boolean(ref.current?.querySelector('[aria-busy="true"]'));
   const close = () => { if (!childBusy()) onClose(); };
   const back = () => { if (!childBusy()) { setSelected(null); setQuery(""); } };
-  const content = selected ? renderAction?.(selected, back) : null;
+  const content = selected ? renderAction?.(selected, back, setSelected) : null;
   const source = triggerRef.current?.closest<HTMLElement>("[data-shell-mode]") ?? document.querySelector<HTMLElement>(".space-shell");
   useEffect(() => {
     (ref.current?.querySelector<HTMLInputElement>("input") ?? ref.current?.querySelector<HTMLButtonElement>("button"))?.focus();
@@ -53,15 +55,15 @@ export function ServerActionsMenu({ actions, onClose, triggerRef, renderAction, 
     : managementGroup(a.id) === group));
   function activate(action: ServerActionCommand) {
     if (action.disabled) return;
-    if (renderAction?.(action.id, back)) setSelected(action.id);
+    if (renderAction?.(action.id, back, setSelected)) setSelected(action.id);
     else { action.onSelect(); }
   }
-  return createPortal(<div className="manage-backdrop" style={suspended ? { display: "none" } : undefined} onPointerDown={e => { if (e.target === e.currentTarget) close(); }}>
-    <section ref={ref} id={SERVER_ACTIONS_MENU_ID} className="manage-workspace" role="dialog" aria-modal="true" aria-label="Manage"
+  const menu = <div className="manage-backdrop" style={suspended ? { display: "none" } : undefined} onPointerDown={e => { if (e.target === e.currentTarget) close(); }}>
+    <section ref={ref} id={SERVER_ACTIONS_MENU_ID} className="manage-workspace" role="dialog" aria-modal={embedded ? undefined : true} aria-label="Manage"
       data-ui-theme={source?.dataset.uiTheme} data-color-mode={source?.dataset.colorMode} data-room-theme={source?.dataset.roomTheme}
       onKeyDown={e => {
         if (e.key === "Escape") { e.stopPropagation(); if (e.defaultPrevented || childBusy()) return; if (selected) back(); else if (group) setGroup(null); else close(); }
-        if (e.key === "Tab") {
+        if (e.key === "Tab" && !embedded) {
           const items = Array.from(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),a[href],summary,[tabindex="0"]') ?? []).filter(el => el.getClientRects().length);
           const first = items[0], last = items.at(-1);
           if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
@@ -79,5 +81,6 @@ export function ServerActionsMenu({ actions, onClose, triggerRef, renderAction, 
         </>}
       </div>
     </section>
-  </div>, document.body);
+  </div>;
+  return embedded ? menu : createPortal(menu, document.body);
 }

@@ -2102,7 +2102,7 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
   .space-shell[data-shell-mode="mobile"] .side-surface-drawer {
     width: min(24rem, calc(100vw - 1rem));
     max-width: 100vw;
-    inset: 0 auto 0 0;
+    inset: max(var(--desktop-titlebar-height, 0px), env(safe-area-inset-top)) auto 0 0;
     border-right: 1px solid var(--modern-border, #2b2e30);
   }
 }

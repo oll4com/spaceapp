@@ -131,7 +131,7 @@ import type { LucideIcon } from "./features/ui-theme/app-icons.js";
 import { SensitiveDataMask } from "./features/sensitive-data/SensitiveDataMask.js";
 import { SpaceToggle } from "./features/ui-controls/SpaceToggle.js";
 import type { AgentPaneIdentity } from "./features/agent-pane/AgentPane.js";
-import { lazy, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { cloneElement, lazy, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useAutoDismiss } from "./use-auto-dismiss.js";
 import type {
@@ -293,6 +293,8 @@ import { applyServerDateTimeSettings } from "./features/date-time-settings/date-
 import { GoogleAccountSettingsCard } from "./features/auth/GoogleAccountSettingsCard.js";
 import { SettingsDisclosure, SettingsSections } from "./features/settings/SettingsDisclosure.js";
 import { DesktopNavigation } from "./features/ui-theme/DesktopNavigation.js";
+import { WorkspaceRoomSettings } from "./features/ui-theme/WorkspaceRoomSettings.js";
+import { WorkspacePortalMount } from "./features/ui-theme/WorkspaceSurface.js";
 import "./features/ui-theme/workspace-chrome.css";
 import { workspaceRoomActivity, workspaceRoomMatches, type WorkspaceRoomFilter } from "./features/ui-theme/workspace-room-filter.js";
 import { desktopActionDescriptions } from "./features/ui-theme/desktop-navigation.js";
@@ -362,7 +364,7 @@ import { registerCliResumeIntent } from "./features/terminal-pane/cli-resume-int
 import type { OnScreenKeyboardInput } from "./features/osk-keyboard/OnScreenKeyboard.js";
 import { VIBE_MUSIC_PANEL_ID, VibeMusicPlayer } from "./features/vibe-music/VibeMusicPlayer.js";
 import { SnipToolOverlay } from "./features/snip-tool/SnipToolOverlay.js";
-import { StickyNoteLayer, useStickyNoteWindows } from "./features/clipboard-dock/StickyNoteWindow.js";
+import { StickyNoteLayer, StickyNoteWindow, useStickyNoteWindows } from "./features/clipboard-dock/StickyNoteWindow.js";
 import { DesktopWidgetsLayer, useDesktopWidgets } from "./features/desktop-widgets/index.js";
 import { useRailMenuDodge } from "./features/rail-popover.js";
 import {
@@ -385,6 +387,7 @@ import {
   MinimizedPaneBarToggle
 } from "./features/pane-float/MinimizedPaneBarToggle.js";
 import { DesktopDisplayControls } from "./features/desktop-screens/DesktopDisplayControls.js";
+import { isDocumentFullscreen, toggleBrowserFullscreen } from "./features/desktop-titlebar/fullscreen.js";
 import { DesktopWindowTitlebar } from "./features/desktop-titlebar/DesktopWindowTitlebar.js";
 import {
   useDismissibleToolbarLayer,
@@ -407,6 +410,7 @@ import {
   applyServerVoiceSettings,
   type VoiceComposerSettings
 } from "./voice-settings.js";
+import { applyServerLivePaneSettings } from "./features/live-pane/live-pane-config.js";
 import { useVoiceInput } from "./features/voice-input/VoiceInputProvider.js";
 import {
   connectedPaneCount,
@@ -2775,47 +2779,6 @@ function MinimizedPanePreviewCard({
   );
 }
 
-function isDocumentFullscreen(): boolean {
-  if (typeof document === "undefined") return false;
-  return Boolean(
-    document.fullscreenElement ||
-    (document as any).webkitFullscreenElement ||
-    (document as any).mozFullScreenElement ||
-    (document as any).msFullscreenElement
-  );
-}
-
-async function toggleBrowserFullscreen(): Promise<void> {
-  if (typeof document === "undefined") return;
-  try {
-    if (!isDocumentFullscreen()) {
-      const docEl = document.documentElement as any;
-      if (docEl.requestFullscreen) {
-        await docEl.requestFullscreen();
-      } else if (docEl.webkitRequestFullscreen) {
-        await docEl.webkitRequestFullscreen();
-      } else if (docEl.mozRequestFullScreen) {
-        await docEl.mozRequestFullScreen();
-      } else if (docEl.msRequestFullscreen) {
-        await docEl.msRequestFullscreen();
-      }
-    } else {
-      const doc = document as any;
-      if (doc.exitFullscreen) {
-        await doc.exitFullscreen();
-      } else if (doc.webkitExitFullscreen) {
-        await doc.webkitExitFullscreen();
-      } else if (doc.mozCancelFullScreen) {
-        await doc.mozCancelFullScreen();
-      } else if (doc.msExitFullscreen) {
-        await doc.msExitFullscreen();
-      }
-    }
-  } catch (err) {
-    console.warn("Browser fullscreen toggle failed:", err);
-  }
-}
-
 function applyServerUserSettings(
   storage: Storage,
   settings: UserSettings,
@@ -2842,6 +2805,9 @@ function applyServerUserSettings(
   }
   if (settings.voice) {
     applyServerVoiceSettings(settings.voice);
+  }
+  if (settings.livePane) {
+    applyServerLivePaneSettings(settings.livePane);
   }
   if (settings.keyboardAutocorrect) {
     applyServerKeyboardAutocorrectSettings(settings.keyboardAutocorrect);
@@ -3166,9 +3132,25 @@ export function App() {
   const [isBrowserFullscreen, setIsBrowserFullscreen] = useState(() => isDocumentFullscreen());
 
   useEffect(() => {
+    const bridge = (window as any).spaceDesktop;
+    let disposed = false;
     const handleFullscreenChange = () => {
-      setIsBrowserFullscreen(isDocumentFullscreen());
+      if (typeof bridge?.isFullscreen === "function") {
+        void bridge.isFullscreen().then((fullscreen: boolean) => {
+          if (!disposed) setIsBrowserFullscreen(fullscreen || isDocumentFullscreen());
+        }).catch(() => {});
+      } else {
+        setIsBrowserFullscreen(isDocumentFullscreen());
+      }
     };
+    const unsubscribe = bridge?.onFullscreenChange?.((fullscreen: boolean) => {
+      if (!disposed) setIsBrowserFullscreen(fullscreen);
+    });
+    if (typeof bridge?.isFullscreen === "function") {
+      void bridge.isFullscreen().then((fullscreen: boolean) => {
+        if (!disposed) setIsBrowserFullscreen(fullscreen);
+      }).catch(() => {});
+    }
     document.addEventListener("fullscreenchange", handleFullscreenChange);
     document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
     document.addEventListener("mozfullscreenchange", handleFullscreenChange);
@@ -3183,6 +3165,8 @@ export function App() {
     window.addEventListener("keydown", handleKeyDown);
 
     return () => {
+      disposed = true;
+      if (typeof unsubscribe === "function") unsubscribe();
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
       document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
       document.removeEventListener("mozfullscreenchange", handleFullscreenChange);
@@ -3314,6 +3298,15 @@ export function App() {
   const [isAgentsDashboardOpen, setIsAgentsDashboardOpen] = useState(false);
   const [agentsDashboardSummary, setAgentsDashboardSummary] = useState<AgentDashboardSummary | null>(null);
   const [isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen] = useState(false);
+  const [workspaceNavigationDetail, setWorkspaceNavigationDetail] = useState<string | null>(null);
+  const [workspaceUserLink, setWorkspaceUserLink] = useState<UserLink | null>(null);
+  useEffect(() => {
+    if (workspaceNavigationDetail !== "link-preview") setWorkspaceUserLink(null);
+  }, [workspaceNavigationDetail]);
+  const [workspaceMusicHost, setWorkspaceMusicHost] = useState<HTMLDivElement | null>(null);
+  const workspaceMusicBack = useRef<(() => void) | null>(null);
+  const [workspaceKeyboardHost, setWorkspaceKeyboardHost] = useState<HTMLDivElement | null>(null);
+  const workspaceKeyboardBack = useRef<(() => void) | null>(null);
   const [resourceIndicatorsVisible, toggleResourceIndicators] = useResourceIndicators(auth?.user?.id);
   const [systemAnalyticsTab, setSystemAnalyticsTab] = useState<SystemAnalyticsTab | null>(null);
   useEffect(() => {
@@ -4454,10 +4447,6 @@ export function App() {
   }, [displayedRoomId, selectedRoomId, warmRoomEnabled]);
 
   useEffect(() => {
-    writeStoredWarmRoomConnectedPaneLimit(warmConnectedPaneLimit);
-  }, [warmConnectedPaneLimit]);
-
-  useEffect(() => {
     const handlePaneRunLifecycle = (event: Event) => {
       if (!(event instanceof CustomEvent)) return;
       const detail = event.detail as Partial<PaneRunLifecycleDetail> | null;
@@ -4647,9 +4636,12 @@ export function App() {
     const myRooms = roomPayload.data.filter((room) => !room.ownerUserId || room.ownerUserId === me.user?.id);
     const selectedRoomIsMine = userSelectedRoomId ? myRooms.some((room) => room.id === userSelectedRoomId) : false;
     const selectedRoomStillExists = userSelectedRoomId ? roomPayload.data.some((room) => room.id === userSelectedRoomId) : false;
+    const starterRoom = myRooms.find((room) => room.name.toLowerCase() === "getting started")
+      ?? roomPayload.data.find((room) => room.name.toLowerCase() === "getting started");
+    const defaultFirstRoom = starterRoom ?? myRooms[0] ?? roomPayload.data[0];
     const nextRoomId = (selectedRoomIsMine || adminModeRequested) && selectedRoomStillExists
       ? userSelectedRoomId
-      : (myRooms[0]?.id ?? roomPayload.data[0]?.id ?? null);
+      : (defaultFirstRoom?.id ?? null);
     activateRoom(nextRoomId, { preserveOutgoing: selectedRoomStillExists });
     if (userSelectedRoomId && !selectedRoomStillExists && nextRoomId && roomPayload.data.length > 0) {
       setError(`Room ${userSelectedRoomId} no longer exists; switched to ${roomPayload.data[0]?.name ?? "the next room"}.`);
@@ -4943,10 +4935,6 @@ export function App() {
   useEffect(() => {
     writeStoredCliImagePreviewLimit(cliImagePreviewLimit);
   }, [cliImagePreviewLimit]);
-
-  useEffect(() => {
-    writeStoredWarmRoomEnabled(warmRoomEnabled);
-  }, [warmRoomEnabled]);
 
   useEffect(() => {
     runtime.platform.localStorage.setItem(SESSION_DEBUG_IDS_STORAGE_KEY, String(showSessionDebugIds));
@@ -5575,6 +5563,7 @@ export function App() {
         if (selectedRoomIdRef.current === roomId) {
           setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
           setSelectedPaneId(pane.id);
+          setIsMemoryWorkspaceOpen(false);
         }
       }
       await refreshRoomEvents(roomId);
@@ -5598,6 +5587,7 @@ export function App() {
         const pane = await api.createPane(selectedRoomId, paneTitleForMode("HARNESS", panes.length + 1), "HARNESS");
         setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
         setSelectedPaneId(pane.id);
+        setIsMemoryWorkspaceOpen(false);
       }
       await refreshRoomEvents(selectedRoomId);
     } catch (err) {
@@ -6379,6 +6369,11 @@ export function App() {
     setIsPaneSpanAllMenuOpen(false);
     setPaneSpanAllError(null);
   }, [activeRoom?.id, activeRoom?.name]);
+  useEffect(() => {
+    if (workspaceNavigationDetail !== "rename-room") return;
+    setRoomNameDraft(activeRoom?.name ?? "");
+    setRoomRenameError(null);
+  }, [workspaceNavigationDetail, activeRoom?.id, activeRoom?.name]);
   const activeRoomExtraSlots = activeRoom ? (roomExtraEmptySlots[activeRoom.id] ?? 0) : 0;
   const effectiveVisiblePaneCountForAuto = useMemo(() => {
     if (visiblePanes.length < 1) return 0;
@@ -6485,6 +6480,10 @@ export function App() {
   const isCompactShell = shellMode !== "desktop";
   const isSideSurfaceOpen = isCompactShell ? isCompactSideSurfaceOpen : isDesktopSideSurfaceOpen;
   const activeSideSurfaceLabel = sideSurfaceMeta[activeSideSurface].surfaceLabel;
+  const activeSideSurfaceDockTitle = useMemo(() => {
+    const raw = sideSurfaceMeta[activeSideSurface]?.surfaceLabel || activeSideSurface;
+    return raw.toLowerCase().endsWith("dock") ? raw : `${raw} dock`;
+  }, [activeSideSurface]);
   const activeSideSurfaceCloseLabel = `Close ${sideSurfaceMeta[activeSideSurface].label}`;
   const showInlineSideSurface = !isCompactShell && isDesktopSideSurfaceOpen;
   const showOverlaySideSurface = isCompactShell && isCompactSideSurfaceOpen;
@@ -6566,7 +6565,7 @@ export function App() {
     window.addEventListener("space-pane-control-action", handlePaneControlAction);
     return () => window.removeEventListener("space-pane-control-action", handlePaneControlAction);
   }, [panes, selectedRoomId]);
-  useRailOrder(collapsedToolbarRef, Boolean(auth?.isAuthenticated && setupStatus) && appView === "workspace" && !(shellMode === "mobile" && isMobilePaneFocusMode && activePane) && isRoomToolbarHidden && !showOverlaySideSurface && !isMemoryWorkspaceOpen && !systemAnalyticsTab);
+  useRailOrder(collapsedToolbarRef, Boolean(auth?.isAuthenticated && setupStatus) && appView === "workspace" && !(shellMode === "mobile" && isMobilePaneFocusMode && activePane) && isRoomToolbarHidden && !showOverlaySideSurface && !systemAnalyticsTab);
   useLayoutEffect(() => {
     const element = collapsedToolbarRef.current;
     if (!element) return;
@@ -6585,7 +6584,7 @@ export function App() {
       observer?.disconnect();
       shell.style.removeProperty("--room-toolbar-collapsed-height");
     };
-  }, [isRoomToolbarHidden, showOverlaySideSurface]);
+  }, [isRoomToolbarHidden, showOverlaySideSurface, isMemoryWorkspaceOpen]);
   useEffect(() => {
     if (!isRoomToolbarHidden) setLowerRailVisibilityMenu(null);
   }, [isRoomToolbarHidden]);
@@ -7515,7 +7514,7 @@ export function App() {
       {
         id: "snip-tool",
         label: "Snip Tool",
-        title: "Snip Tool (Capture & auto-attach to pane)",
+        title: "Snip Tool (Capture, edit and share)",
         ariaLabel: "Snip Tool",
         icon: Crop,
         onClick: () => {
@@ -7963,6 +7962,20 @@ export function App() {
       if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
     }
   }] as IconToolbarAction[] : []));
+  const workspaceNavigationActions: IconToolbarAction[] = [...desktopToolbarActions, {
+    id: "workspace-room", label: "Room", title: "Room settings", ariaLabel: "Room", icon: PanelTopOpen,
+    onClick: () => undefined
+  }, {
+    id: "desktop-displays", label: "Displays", title: "Multi-Screen Displays", ariaLabel: "Displays", icon: Monitor,
+    onClick: () => window.dispatchEvent(new Event("space:desktop:open-displays"))
+  }];
+  const workspaceDetailActionIds = [
+    ...Object.keys(sideSurfaceMeta).map(surface => `surface-${surface}`),
+    "pane-layout", "pane-span-all", "font-down", "theme", "resources", "system-resources", "system-analytics",
+    "server-restart", "advanced-settings", "setup-connections", "system-services", "help",
+    "benchmark", "token-usage", "add-chat", "add-cli", "create", "desktop-displays", "sticky-note", "quick-links",
+    "vibe-music", "clip-tool", "snip-tool", "agents-dashboard", "demo-mode", "rename-room", "workspace-room"
+  ];
   useEffect(() => {
     const dismiss = () => {
       roomToolbar.closeMenus();
@@ -8021,13 +8034,15 @@ export function App() {
     onClose,
     triggerRef,
     paneCount,
-    onPaneCountChange
+    onPaneCountChange,
+    onNavigate
   }: {
     query: string;
     onClose: () => void;
     triggerRef: RefObject<HTMLButtonElement | null>;
     paneCount?: number;
     onPaneCountChange?: (count: number | ((prev: number) => number)) => void;
+    onNavigate?: (id: string) => void;
   }) {
     return (
       <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
@@ -8041,7 +8056,7 @@ export function App() {
           onClose={onClose}
           onCreate={addCliRuntimePane}
           onLogin={openCliRuntimeLogin}
-          onOpenSettings={() => { onClose(); openSettingsSurface(); }}
+          onOpenSettings={() => { if (onNavigate) onNavigate("surface-settings"); else { onClose(); openSettingsSurface(); } }}
           triggerRef={triggerRef}
           paneCount={paneCount}
           onPaneCountChange={onPaneCountChange}
@@ -8292,7 +8307,7 @@ export function App() {
     setIsRoomFocusMode(nextValue);
   }
 
-  async function submitRoomRename(event: FormEvent<HTMLFormElement>) {
+  async function submitRoomRename(event: FormEvent<HTMLFormElement>, onComplete?: () => void) {
     event.preventDefault();
     if (!activeRoom || roomRenamePending) return;
     const nextName = roomNameDraft.trim();
@@ -8302,6 +8317,7 @@ export function App() {
     }
     if (nextName === activeRoom.name) {
       cancelRoomRename();
+      onComplete?.();
       return;
     }
     setRoomRenamePending(true);
@@ -8313,6 +8329,7 @@ export function App() {
       setRooms((current) => current.map((room) => (room.id === updated.id ? updated : room)));
       setRoomNameDraft(updated.name);
       setIsRoomRenameOpen(false);
+      onComplete?.();
     } catch (err) {
       setRoomRenameError(err instanceof Error ? err.message : "Room rename failed");
     } finally {
@@ -8609,7 +8626,8 @@ export function App() {
     input.click();
   }
 
-  async function routeClipImage(file: File, target: ClipImageTarget) {
+  async function routeClipImage(file: File, target: ClipImageTarget, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     if (!SUPPORTED_CLIP_IMAGE_TYPES.has(file.type.toLowerCase())) {
       throw new Error("Choose a PNG, JPEG, or WebP image.");
     }
@@ -8621,8 +8639,10 @@ export function App() {
       roomId: target.roomId,
       paneId: target.paneId,
       source: "SCREEN_CAPTURE",
-      files: [file]
+      files: [file],
+      signal
     });
+    signal?.throwIfAborted();
     dispatchArtifactsUpdated(target.roomId, uploaded.artifacts);
     if (target.paneMode === "CHAT" && target.paneId) {
       dispatchAgentPaneAttachments(target.paneId, uploaded.artifacts);
@@ -9447,20 +9467,20 @@ export function App() {
       restartAllPending={cliRuntimeRestartAllPending}
     />
   );
-  const sideSurfaceContent =
-    activeSideSurface === "rooms" ? (
-      roomsSurfaceContent
-    ) : activeSideSurface === "room-agent" ? (
+  const renderSideSurfaceContent = (surface: SideSurface, onClose?: () => void, onNavigate?: (id: string) => void) =>
+    surface === "rooms" ? (
+      onNavigate ? cloneElement(roomsSurfaceContent, { ref: undefined }) : roomsSurfaceContent
+    ) : surface === "room-agent" ? (
       <LazyRoomAgentDock
         activeRoom={activeRoom}
         selectedBrowserPaneId={activePane?.mode === "BROWSER" && activePane.id === selectedPaneId ? activePane.id : undefined}
         isCodexEnabled={isCodexEnabled}
         refreshKey={roomEvents.at(-1)?.id ?? null}
       />
-    ) : activeSideSurface === "settings" ? (
+    ) : surface === "settings" ? (
       <AgentSettingsDock
         adminMode={shellMode !== "desktop" || isAdminMode}
-        onOpenSetup={() => openManage("setup-connections")}
+        onOpenSetup={() => onNavigate ? onNavigate("setup-connections") : openManage("setup-connections")}
         activePane={activePane}
         currentAppearance={modernAppearance}
         currentIconPack={modernIconPack}
@@ -9495,42 +9515,48 @@ export function App() {
         auth={auth}
         onAuthRefresh={refresh}
       />
-    ) : activeSideSurface === "media" ? (
+    ) : surface === "media" ? (
       <LazyMediaDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
-    ) : activeSideSurface === "streaming" ? (
+    ) : surface === "streaming" ? (
       <LazyStreamingDock />
-    ) : activeSideSurface === "cli" ? (
+    ) : surface === "cli" ? (
       cliDockContent
-    ) : activeSideSurface === "agent-sessions" ? (
+    ) : surface === "agent-sessions" ? (
       <LazyAgentSessionsDock
         activePaneLabel={activePane ? displayPaneTitle(activePane) : null}
         canResume={Boolean(selectedRoomId)}
         codexEnabled={isCodexEnabled}
         onResume={resumeAgentSession}
       />
-    ) : activeSideSurface === "agent-files" ? (
+    ) : surface === "agent-files" ? (
       <LazyAgentFilesDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
-    ) : activeSideSurface === "shared-chat" ? (
+    ) : surface === "shared-chat" ? (
       <LazySharedChatDock />
-    ) : activeSideSurface === "clipboard" ? (
+    ) : surface === "clipboard" ? (
       <LazyClipboardDock
         canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}
         activePaneLabel={activePane ? displayPaneTitle(activePane) : null}
         onInsert={insertClipboardItem}
-        onOpenStickyNote={openStickyNote}
+        onOpenStickyNote={onNavigate ? () => onNavigate("sticky-note") : openStickyNote}
         onClose={() => {
+          if (onClose) { onClose(); return; }
           setIsDesktopSideSurfaceOpen(false);
           closeCompactSideSurface();
         }}
       />
-    ) : activeSideSurface === "tasks" ? (
+    ) : surface === "tasks" ? (
       <LazyTaskDock
         canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}
         activePaneLabel={activePane ? displayPaneTitle(activePane) : null}
         onInsert={insertTaskItem}
       />
-    ) : activeSideSurface === "links" ? (
-      <LinksPanel onOpen={openUserLink} />
+    ) : surface === "links" ? (
+      <LinksPanel onOpen={link => {
+        if (onNavigate && link.openMode !== "NEW_TAB" && !isYouTubeUrl(link.url)) {
+          setWorkspaceUserLink(link);
+          onNavigate("link-preview");
+        } else openUserLink(link);
+      }} />
     ) : (
       <HealthDock
         readiness={readiness}
@@ -9544,6 +9570,8 @@ export function App() {
       />
     );
 
+  const sideSurfaceContent = renderSideSurfaceContent(activeSideSurface);
+
   const targetablePanes = useMemo(() => {
     const roomPanes = panes.filter(
       (p) => p.roomId === activeRoom?.id && !p.isClosed && !floatingYouTubePaneIds.has(p.id)
@@ -9552,23 +9580,28 @@ export function App() {
     return nonMinimized.length > 0 ? nonMinimized : roomPanes;
   }, [panes, activeRoom?.id, floatingYouTubePaneIds]);
 
-  const handleSnipCapture = useStableCallback(async (file: File, targetPaneId?: string) => {
-    if (!activeRoom) return;
-    const resolvedPaneId = targetPaneId ?? activePane?.id ?? targetablePanes[0]?.id ?? null;
-    const resolvedPane = panes.find((p) => p.id === resolvedPaneId) ?? activePane ?? targetablePanes[0] ?? null;
-    if (resolvedPane) {
-      if (resolvedPane.isMinimized) {
-        await restorePane(resolvedPane);
-      } else {
-        setSelectedPaneId(resolvedPane.id);
+  const handleSnipCapture = useStableCallback(async (file: File, targetPaneId?: string | null, captureRoomId?: string, signal?: AbortSignal) => {
+    const assertCurrent = () => {
+      if (signal?.aborted) throw new DOMException("Capture cancelled", "AbortError");
+      if (!activeRoom || selectedRoomIdRef.current !== activeRoom.id || (captureRoomId && activeRoom.id !== captureRoomId)) {
+        throw new Error("The room changed. Close Snip Tool and capture again in the current room.");
       }
+    };
+    assertCurrent();
+    // Explicit null means Media Dock, never a fallback to a different pane.
+    const resolvedPane = targetPaneId ? panes.find(p => p.id === targetPaneId && p.roomId === activeRoom!.id && !p.isClosed) : null;
+    if (targetPaneId && !resolvedPane) throw new Error("The selected pane is no longer available. Choose another pane or Media Dock.");
+    if (resolvedPane?.isMinimized) await restorePane(resolvedPane);
+    assertCurrent();
+    if (resolvedPane && !panesRef.current.some(p => p.id === resolvedPane.id && !p.isClosed && p.roomId === activeRoom!.id)) {
+      throw new Error("The selected pane is no longer available. Choose another pane or Media Dock.");
     }
-    const target: ClipImageTarget = {
-      roomId: activeRoom.id,
+    if (resolvedPane) setSelectedPaneId(resolvedPane.id);
+    await routeClipImage(file, {
+      roomId: activeRoom!.id,
       paneId: resolvedPane?.id ?? null,
       paneMode: resolvedPane?.mode ?? null
-    };
-    await routeClipImage(file, target);
+    }, signal);
   });
 
   if (!auth || !setupStatus) {
@@ -9609,14 +9642,15 @@ export function App() {
     );
   }
 
-  if (isOskKeyboardOpen) oskKeyboardMountedRef.current = true;
+  if (isOskKeyboardOpen || workspaceKeyboardHost) oskKeyboardMountedRef.current = true;
 
   const vibeMusicPlayer = (
     <VibeMusicPlayer
       activeRoomId={activeRoom?.id}
       mobile={shellMode === "mobile"}
-      open={isVibeMusicOpen}
-      onOpenChange={setIsVibeMusicOpen}
+      open={isVibeMusicOpen || Boolean(workspaceMusicHost)}
+      portalTarget={workspaceMusicHost}
+      onOpenChange={open => { if (!open && workspaceMusicHost) workspaceMusicBack.current?.(); else setIsVibeMusicOpen(open); }}
       onOpenYouTube={(url) => { void addPane("YOUTUBE", url); }}
       roomTheme={roomTheme}
       triggerRef={vibeMusicButtonRef}
@@ -9626,23 +9660,17 @@ export function App() {
   const snipToolOverlay = isSnipToolOpen ? (
     <SnipToolOverlay
       isOpen={isSnipToolOpen}
+      roomId={activeRoom?.id}
       onClose={() => setIsSnipToolOpen(false)}
       isMobile={shellMode === "mobile"}
-      activePaneId={activePane?.id ?? targetablePanes[0]?.id ?? null}
-      activePaneTitle={activePane ? activePane.title || activePane.mode : targetablePanes[0]?.title || null}
-      activePaneMode={activePane?.mode ?? targetablePanes[0]?.mode ?? null}
+      activePaneId={activePane && !activePane.isMinimized ? activePane.id : null}
+      activePaneTitle={activePane ? activePane.title || activePane.mode : null}
+      activePaneMode={activePane?.mode ?? null}
       availablePanes={targetablePanes.map((p) => ({
         id: p.id,
         title: p.title || p.mode,
         mode: p.mode
       }))}
-      onSelectTargetPane={(paneId) => {
-        setSelectedPaneId(paneId);
-        const targetPane = panes.find((p) => p.id === paneId);
-        if (targetPane?.isMinimized) {
-          void restorePane(targetPane);
-        }
-      }}
       onCapture={handleSnipCapture}
     />
   ) : null;
@@ -9651,10 +9679,11 @@ export function App() {
     <RecoverableSurface fallback={null}>
       <LazyOnScreenKeyboard
         mobile={shellMode === "mobile"}
-        open={isOskKeyboardOpen}
+        open={isOskKeyboardOpen || Boolean(workspaceKeyboardHost)}
+        portalTarget={workspaceKeyboardHost}
         onInput={routeOnScreenKeyboardInput}
         onShortcut={routeCliShortcut}
-        onOpenChange={setIsOskKeyboardOpen}
+        onOpenChange={open => { if (!open && workspaceKeyboardHost) workspaceKeyboardBack.current?.(); else setIsOskKeyboardOpen(open); }}
         roomTheme={roomTheme}
       />
     </RecoverableSurface>
@@ -10288,6 +10317,566 @@ export function App() {
               </SettingsSections>
             ) : undefined;
 
+  function renderWorkspaceManageAction(id: string, back: () => void, navigate: (id: string) => void = openManage, inline = false) {
+              if (id === "space-cli-maintenance" || id === "cli-update-all" || id === "publish-space-release")
+                return <LazyAdminOperationsDialog embedded initialTool={id === "publish-space-release" ? "release" : id === "cli-update-all" ? "update-all" : "maintenance"} onClose={back} />;
+              if (id === "codex-lb-speed-control" || id === "cli-session-cleanup" || id === "codex-history-purge")
+                return <LazyAdminCodexToolsDialog embedded initialTool={id === "codex-lb-speed-control" ? "speed" : id === "cli-session-cleanup" ? "cleanup" : "history"} isCodexEnabled={isCodexEnabled} anyCliEnabled={anyCliEnabled} onClose={back} />;
+              if (id === "system-services") return <LazySystemServicesDialog embedded onClose={back} />;
+              if (id === "user-management") return <LazyUserManagementDialog embedded currentUserId={auth?.user?.id} onClose={back} />;
+              if (id === "setup-connections") return <LazySetupConnectionsWizard embedded open onOpenMaintenance={() => navigate("space-cli-maintenance")} connectionsContent={setupConnectionsContent} checks={api} finish={api.finishSetup} loadOverview={api.setupOverview} openLogin={async connection => {
+                  if (!inline) { manageLoginPendingRef.current = true; setManageLoginPending(true); }
+                  try { await openSetupConnectionLogin(connection); }
+                  catch (error) { manageLoginPendingRef.current = false; setManageLoginPending(false); throw error; }
+                }} onOpenChange={open => {
+                  if (inline) { if (!open) back(); return; }
+                  if (open) { manageLoginPendingRef.current = false; setIsServerActionsMenuOpen(true); setManageLoginPending(false); }
+                  else if (manageLoginPendingRef.current) setIsServerActionsMenuOpen(false);
+                  else back();
+                }} />;
+              return null;
+  }
+
+  function renderWorkspaceAction(id: string, { onBack, onNavigate, triggerRef }: {
+    onBack: () => void; onNavigate: (id: string) => void; triggerRef: RefObject<HTMLButtonElement | null>;
+  }) {
+    let content;
+    if (id === "vibe-music") return <WorkspacePortalMount onTargetChange={setWorkspaceMusicHost} onBack={onBack} onBackRef={workspaceMusicBack} />;
+    if (id === "osk-keyboard") return <WorkspacePortalMount onTargetChange={setWorkspaceKeyboardHost} onBack={onBack} onBackRef={workspaceKeyboardBack} />;
+    if (id === "workspace-room") {
+      content = <WorkspaceRoomSettings actions={workspaceNavigationActions} detailActionIds={workspaceDetailActionIds} onNavigate={onNavigate} />;
+    } else if (id === "resources" || id === "system-resources" || id === "surface-health") {
+      content = <SystemHealth userId={auth?.user?.id ?? ""} railVisible={false} environment={codexEnvironmentSummary}
+        allowChanges={isAdminMode} onClose={onBack} onReopenPane={reopenPane} onReopenAllDetached={reopenAllDetachedPanes}
+        onCloseSession={closeDetachedPane} />;
+    } else if (id.startsWith("surface-")) {
+      const surface = id.slice(8) as SideSurface;
+      content = <section className="workspace-dock-detail" aria-label={sideSurfaceMeta[surface].surfaceLabel}>
+        {renderSideSurfaceContent(surface, onBack, onNavigate)}
+      </section>;
+    } else if (id === "advanced-settings") {
+      content = renderSideSurfaceContent("settings", onBack, onNavigate);
+    } else if (id === "pane-layout" && activeRoom) {
+      content = <LazyPaneLayoutMenu automaticColumns={layoutAutomaticPaneGridColumnCount}
+        currentColumns={activeRoom.paneLayoutColumns ?? null} currentHeight={activeRoom.paneLayoutHeight ?? 1}
+        emptySlots={activeRoomEmptySlotsMetrics ?? undefined} error={paneLayoutError}
+        maximumColumns={shellMode === "mobile" ? 1 : shellMode === "tablet" ? 2 : 4}
+        onClose={onBack} onSelect={columns => void applyPaneLayoutPreset(columns, undefined, true)}
+        onSelectHeight={height => void applyPaneLayoutPreset(undefined, height, true)} pending={paneLayoutPending}
+        triggerRef={triggerRef} visiblePaneCount={effectiveLayoutPaneCount} />;
+    } else if (id === "pane-span-all") {
+      content = <LazyPaneSpanAllMenu activeColumnCount={paneGridColumnCount}
+        currentSpan={commonPaneColumnSpan(visiblePanes)} error={paneSpanAllError} onClose={onBack}
+        onSelect={span => void applyPaneSpanToAll(span)} pending={paneSpanAllPending} triggerRef={triggerRef}
+        visiblePaneCount={visiblePanes.length} />;
+    } else if (id === "rename-room" && activeRoom) {
+      content = <form className="workspace-room-rename" onSubmit={event => void submitRoomRename(event, onBack)} aria-busy={roomRenamePending}>
+        <label>Room name<input aria-label="Room name" value={roomNameDraft} disabled={roomRenamePending}
+          onChange={event => setRoomNameDraft(event.target.value)} required /></label>
+        {roomRenameError ? <p role="alert">{roomRenameError}</p> : null}
+        <button type="submit" disabled={roomRenamePending}>Save room name</button>
+      </form>;
+    } else if (id === "font-down") {
+      content = <div className="workspace-text-size-page"><p>Text size across your workspace</p>
+        <WorkspaceTextSizePicker anchorRef={triggerRef} open value={terminalFontSize} onChange={setTerminalFontSize} onClose={onBack} />
+        <p className="workspace-text-preview" style={{ fontSize: terminalFontSize }}>The quick brown fox jumps over the lazy dog. 0123456789</p></div>;
+    } else if (id === "theme") {
+      content = <RoomThemeMenu currentTheme={roomTheme} mobile={false} onClose={onBack} onSelect={setRoomTheme} triggerRef={triggerRef} />;
+    } else if (["server-restart", "setup-connections", "system-services"].includes(id)) {
+      content = <LazyServerActionsMenu actions={serverActionCommands} mobile={false} onClose={onBack} triggerRef={triggerRef}
+        initialAction={id === "server-restart" ? null : id} renderAction={(actionId, back, navigate) => renderWorkspaceManageAction(actionId, back, navigate, true)} />;
+    } else if (["space-cli-maintenance", "cli-update-all", "publish-space-release", "codex-lb-speed-control", "cli-session-cleanup", "codex-history-purge", "user-management"].includes(id)) {
+      content = renderWorkspaceManageAction(id, onBack, onNavigate, true);
+    } else if (id === "memory-workspace") {
+      content = <MemoryWorkspaceErrorBoundary onClose={onBack}><LazyMemoryWorkspace shellMode={shellMode}
+        activeRoomId={activeRoom?.id ?? null} onClose={onBack} /></MemoryWorkspaceErrorBoundary>;
+    } else if (id === "system-analytics" || id === "token-usage") {
+      content = <LazySystemAnalyticsWorkspace shellMode={shellMode} initialTab={id === "token-usage" ? "models" : "overview"} onClose={onBack} />;
+    } else if (id === "help") {
+      content = <LazyHelpPage onBack={onBack} />;
+    } else if (id === "benchmark") {
+      content = <LazyBenchmarkPage onBack={onBack} />;
+    } else if (id === "room-toolbar") {
+      content = <div className="workspace-rail-settings" role="group" aria-label="Room toolbar icons">
+        {DEFAULT_LOWER_RAIL_ITEMS.map(item => <label key={item.id}><input type="checkbox" checked={lowerRailVisibility.isVisible(item.id)}
+          disabled={item.hideable === false} onChange={event => event.target.checked ? lowerRailVisibility.show(item.id) : lowerRailVisibility.hide(item.id)} />{item.label}</label>)}
+      </div>;
+    } else if (id === "desktop-displays") {
+      content = <DesktopDisplayControls activeRoomId={activeRoom?.id} activePaneId={activePane?.id} />;
+    } else if (id === "demo-mode") {
+      content = <LazyDemoModeOverlay isOpen onClose={onBack} onActionPreview={onNavigate} />;
+    } else if (id === "link-preview" && workspaceUserLink) {
+      content = <LazyEmbeddedDashboardDialog link={workspaceUserLink} onClose={() => { setWorkspaceUserLink(null); onBack(); }} />;
+    } else if (id === "quick-links") {
+      content = renderSideSurfaceContent("links", onBack, onNavigate);
+    } else if (id === "sticky-note") {
+      content = <StickyNoteWindow id="workspace-sticky-note" onClose={onBack} />;
+    } else if (id === "clip-tool" || id === "snip-tool") {
+      content = <SnipToolOverlay isOpen onClose={onBack} roomId={activeRoom?.id} isMobile={shellMode === "mobile"}
+        activePaneId={activePane && !activePane.isMinimized ? activePane.id : null}
+        activePaneTitle={activePane?.title || activePane?.mode} activePaneMode={activePane?.mode ?? null}
+        availablePanes={targetablePanes.map(p => ({ id: p.id, title: p.title || p.mode, mode: p.mode }))} onCapture={handleSnipCapture} />;
+    } else if (id === "agents-dashboard") {
+      content = <LazyAgentsDashboard userId={auth?.user?.id} open rooms={rooms} completions={paneCompletionLifecycle.panes}
+        activePanes={panes} onOpenPane={paneCardOnOpenExisting} onClose={onBack} />;
+    } else if (id === "add-chat") {
+      content = <LazyChatLauncherMenu mobile={false} onClose={onBack} onSelectChat={() => void addPane("CHAT")}
+        onSelectHarness={() => void addHarnessPane()} onSelectLive={() => void addLivePane()} triggerRef={triggerRef}
+        chatDisabled={!isCodexEnabled || panes.length >= 16} harnessDisabled={panes.length >= 16}
+        harnessHidden={!isHarnessEnabled} liveDisabled={panes.length >= 16} />;
+    } else if (id === "add-cli" || id === "create") {
+      content = <LazyCliLauncherMenu embedded query="" mobile={false} refreshOnOpen atPaneCap={panes.length >= 16}
+        isCodexEnabled={isCodexEnabled} onClose={onBack} onCreate={addCliRuntimePane} onLogin={openCliRuntimeLogin}
+        onOpenSettings={() => onNavigate("surface-settings")} triggerRef={triggerRef} />;
+    }
+    return <RecoverableSurface resetKey={id} fallback={sideSurfaceLoadingFallback}>{content}</RecoverableSurface>;
+  }
+
+  function renderCollapsedToolbar() {
+    if (isMobilePaneFocused || !isRoomToolbarHidden || showOverlaySideSurface || systemAnalyticsTab) {
+      return null;
+    }
+    return (
+      <div
+        ref={collapsedToolbarRef}
+        className="room-toolbar-collapsed room-toolbar-floating-controls"
+        role="region"
+        aria-label="Room toolbar hidden"
+        {...lowerRailTouchContext}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setIsCollapsedPaneLayoutMenuOpen(false);
+          setIsPaneSpanAllMenuOpen(false);
+          setIsWorkspaceTextSizePickerOpen(false);
+          setIsVibeMusicOpen(false);
+          setLowerRailVisibilityMenu((current) => current ? null : { x: event.clientX, y: event.clientY });
+        }}
+      >
+        {previousRoom && lowerRailVisibility.isVisible("previous") ? (
+          <button
+            type="button"
+            className="room-toolbar-visibility-button room-rail-secondary"
+            title={`Previous room: ${previousRoom.name}`}
+            data-rail-id="previous"
+            aria-label="Previous room"
+            onClick={() => { void selectRoom(previousRoom.id); }}
+          >
+            <ChevronLeft aria-hidden="true" />
+          </button>
+        ) : null}
+        {nextRoom && lowerRailVisibility.isVisible("next") ? (
+          <button
+            type="button"
+            className="room-toolbar-visibility-button room-rail-secondary"
+            title={`Next room: ${nextRoom.name}`}
+            data-rail-id="next"
+            aria-label="Next room"
+            onClick={() => { void selectRoom(nextRoom.id); }}
+          >
+            <ChevronRight aria-hidden="true" />
+          </button>
+        ) : null}
+        {lowerRailVisibility.isVisible("rooms") ? (
+          <button
+            type="button"
+            className={`room-toolbar-visibility-button${isSideSurfaceOpen && activeSideSurface === "rooms" ? " is-active" : ""}`}
+            title={sideSurfaceToggleLabel("rooms")}
+            data-rail-id="rooms"
+            aria-label={sideSurfaceToggleLabel("rooms")}
+            aria-pressed={isSideSurfaceOpen && activeSideSurface === "rooms"}
+            onClick={() => {
+              setIsThemeMenuOpen(false);
+              setIsPaneLayoutMenuOpen(false);
+              setIsCollapsedPaneLayoutMenuOpen(false);
+              setIsPaneSpanAllMenuOpen(false);
+              setIsWorkspaceTextSizePickerOpen(false);
+              setIsVibeMusicOpen(false);
+              setLowerRailVisibilityMenu(null);
+              toggleSideSurface("rooms");
+            }}
+          >
+            <PanelLeft aria-hidden="true" />
+          </button>
+        ) : null}
+        {lowerRailVisibility.isVisible("live-model") ? (
+          <button
+            type="button"
+            className={`room-toolbar-visibility-button room-live-rail-button ${
+              isLiveRailGraphicDisabled ? "is-graphic-disabled" : ""
+            } ${
+              liveRailStatus === "active" || liveRailStatus === "listening" || liveRailStatus === "thinking" || liveRailStatus === "speaking" ? "is-connected" : ""
+            } ${liveRailStatus === "listening" ? "is-listening is-user-speaking" : ""} ${
+              liveRailStatus === "speaking" ? "is-speaking is-agent-speaking" : ""
+            } ${liveRailStatus === "connecting" ? "is-connecting" : ""}`}
+            title={
+              liveRailStatus === "listening"
+                ? "User speaking..."
+                : liveRailStatus === "speaking"
+                ? "Agent speaking..."
+                : liveRailStatus === "active"
+                ? "Live voice active (Listening)"
+                : liveRailStatus === "connecting"
+                ? "Connecting Live voice model..."
+                : liveRailStatus === "thinking"
+                ? "Live voice is thinking..."
+                : liveRailStatus === "error"
+                ? "Live voice disconnected. Tap to retry."
+                : "Start Live voice conversation"
+            }
+            data-rail-id="live-model"
+            data-live-status={liveRailStatus}
+            data-graphic-disabled={isLiveRailGraphicDisabled ? "true" : undefined}
+            aria-label={
+              liveRailStatus === "connecting"
+                ? "Connecting Live voice model"
+                : liveRailStatus === "listening"
+                ? "User speaking"
+                : liveRailStatus === "speaking"
+                ? "Agent speaking"
+                : liveRailStatus === "thinking"
+                ? "Live voice is thinking"
+                : liveRailStatus === "error"
+                ? "Retry Live voice conversation"
+                : "Start Live voice conversation"
+            }
+            aria-pressed={liveRailStatus !== "idle" && liveRailStatus !== "error"}
+            aria-busy={liveRailStatus === "connecting"}
+            onClick={activateLiveFromRail}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setLiveRailContextMenu((current) => current ? null : { x: event.clientX, y: event.clientY });
+            }}
+            disabled={!selectedRoomId && !activeRoom && rooms.length === 0}
+          >
+            {!isLiveRailGraphicDisabled ? (
+              <>
+                <span className="room-live-rail-glow" aria-hidden="true" />
+                <span className="room-live-rail-sphere" aria-hidden="true">
+                  <span className="room-live-rail-line line-one" />
+                  <span className="room-live-rail-line line-two" />
+                  <span className="room-live-rail-line line-three" />
+                  <span className="room-live-rail-line line-four" />
+                  <span className="room-live-rail-core" />
+                </span>
+              </>
+            ) : null}
+          </button>
+        ) : null}
+        {liveRailContextMenu ? (
+          <LiveRailContextMenu
+            x={liveRailContextMenu.x}
+            y={liveRailContextMenu.y}
+            isGraphicDisabled={isLiveRailGraphicDisabled}
+            onToggleGraphic={toggleLiveRailGraphic}
+            onClose={() => setLiveRailContextMenu(null)}
+          />
+        ) : null}
+        {lowerRailVisibility.isVisible("create") ? (
+          <DesktopNavigation createOnly actions={desktopToolbarActions}
+            adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+            onModeChange={() => undefined} onAction={runDesktopAction}
+            renderCreateTools={renderDesktopCreateTools}
+            emptySlots={activeRoomEmptySlotsMetrics ?? undefined} />
+        ) : null}
+        {lowerRailVisibility.isVisible("layout") ? (
+          <button
+            ref={paneLayoutCollapsedButtonRef}
+            type="button"
+            className="room-toolbar-visibility-button"
+            title="Pane layout"
+            data-rail-id="layout"
+            aria-label="Pane layout"
+            aria-controls="pane-layout-presets-collapsed"
+            aria-expanded={isCollapsedPaneLayoutMenuOpen}
+            aria-haspopup="menu"
+            onClick={() => {
+              setIsThemeMenuOpen(false);
+              setIsPaneSpanAllMenuOpen(false);
+              setIsWorkspaceTextSizePickerOpen(false);
+              setIsVibeMusicOpen(false);
+              setIsPaneLayoutMenuOpen(false);
+              setLowerRailVisibilityMenu(null);
+              setIsCollapsedPaneLayoutMenuOpen((current) => !current);
+            }}
+            disabled={!activeRoom || paneLayoutPending}
+          >
+            <PanelsTopLeft aria-hidden="true" />
+          </button>
+        ) : null}
+        {lowerRailVisibility.isVisible("sticky") ? (
+          <button
+            type="button"
+            className="room-toolbar-visibility-button room-rail-secondary"
+            title="Sticky note"
+            data-rail-id="sticky"
+            aria-label="Sticky note"
+            onClick={() => {
+              setIsThemeMenuOpen(false);
+              setIsPaneLayoutMenuOpen(false);
+              setIsCollapsedPaneLayoutMenuOpen(false);
+              setIsPaneSpanAllMenuOpen(false);
+              setIsWorkspaceTextSizePickerOpen(false);
+              setIsVibeMusicOpen(false);
+              setLowerRailVisibilityMenu(null);
+              openStickyNote();
+            }}
+          >
+            <StickyNote aria-hidden="true" />
+          </button>
+        ) : null}
+        {lowerRailVisibility.isVisible("keyboard") ? (
+          <button
+            type="button"
+            className="room-toolbar-visibility-button room-rail-secondary"
+            title="On-screen keyboard"
+            data-rail-id="keyboard"
+            aria-label="On-screen keyboard"
+            aria-controls={OSK_PANEL_ID}
+            aria-expanded={isOskKeyboardOpen}
+            aria-haspopup="dialog"
+            onClick={() => {
+              setIsThemeMenuOpen(false);
+              setIsPaneLayoutMenuOpen(false);
+              setIsCollapsedPaneLayoutMenuOpen(false);
+              setIsPaneSpanAllMenuOpen(false);
+              setIsWorkspaceTextSizePickerOpen(false);
+              setIsVibeMusicOpen(false);
+              setLowerRailVisibilityMenu(null);
+              setIsOskKeyboardOpen((current) => !current);
+            }}
+          >
+            <Keyboard aria-hidden="true" />
+          </button>
+        ) : null}
+        {lowerRailVisibility.isVisible("music") ? (
+          <button
+            ref={vibeMusicButtonRef}
+            type="button"
+            className="room-toolbar-visibility-button room-rail-secondary"
+            title="Vibe music with freeCodeCamp Code Radio"
+            data-rail-id="music"
+            aria-label="Music"
+            aria-controls={VIBE_MUSIC_PANEL_ID}
+            aria-expanded={isVibeMusicOpen}
+            aria-haspopup="dialog"
+            onClick={() => {
+              setIsThemeMenuOpen(false);
+              setIsPaneLayoutMenuOpen(false);
+              setIsCollapsedPaneLayoutMenuOpen(false);
+              setIsPaneSpanAllMenuOpen(false);
+              setIsWorkspaceTextSizePickerOpen(false);
+              setLowerRailVisibilityMenu(null);
+              setIsVibeMusicOpen((current) => !current);
+            }}
+          >
+            <Music2 aria-hidden="true" />
+          </button>
+        ) : null}
+        {lowerRailVisibility.isVisible("snip-tool") ? (
+          <button
+            type="button"
+            className={`room-toolbar-visibility-button room-rail-secondary${isSnipToolOpen ? " is-active" : ""}`}
+            title={isSnipToolOpen ? "Close Snip Tool" : "Snip Tool (Capture, edit and share)"}
+            data-rail-id="snip-tool"
+            aria-label="Snip Tool"
+            aria-pressed={isSnipToolOpen}
+            onClick={() => {
+              setIsThemeMenuOpen(false);
+              setIsPaneLayoutMenuOpen(false);
+              setIsCollapsedPaneLayoutMenuOpen(false);
+              setIsPaneSpanAllMenuOpen(false);
+              setIsWorkspaceTextSizePickerOpen(false);
+              setIsVibeMusicOpen(false);
+              setLowerRailVisibilityMenu(null);
+              setIsSnipToolOpen((current) => !current);
+            }}
+            disabled={!activeRoom}
+          >
+            <Crop aria-hidden="true" />
+          </button>
+        ) : null}
+        {lowerRailVisibility.isVisible("quick-links") ? (
+          <button
+            ref={quickLinksButtonRef}
+            type="button"
+            className={`room-toolbar-visibility-button room-rail-secondary${isQuickLinksOpen ? " is-active" : ""}`}
+            title="Quick Links"
+            data-rail-id="quick-links"
+            aria-label="Quick Links"
+            aria-controls="quick-links-popover"
+            aria-haspopup="dialog"
+            aria-expanded={isQuickLinksOpen}
+            onClick={() => {
+              setIsThemeMenuOpen(false);
+              setIsPaneLayoutMenuOpen(false);
+              setIsCollapsedPaneLayoutMenuOpen(false);
+              setIsPaneSpanAllMenuOpen(false);
+              setIsWorkspaceTextSizePickerOpen(false);
+              setIsVibeMusicOpen(false);
+              setLowerRailVisibilityMenu(null);
+              setIsQuickLinksOpen((current) => !current);
+            }}
+          >
+            <Star aria-hidden="true" fill={isQuickLinksOpen ? "currentColor" : "none"} />
+          </button>
+        ) : null}
+        {lowerRailVisibility.isVisible("docks") ? (
+          <DesktopNavigation docksOnly actions={roomToolbarActions}
+            adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+            onModeChange={() => undefined}
+            onAction={(action, anchor) => {
+              setIsThemeMenuOpen(false);
+              setIsPaneLayoutMenuOpen(false);
+              setIsCollapsedPaneLayoutMenuOpen(false);
+              setIsPaneSpanAllMenuOpen(false);
+              setIsWorkspaceTextSizePickerOpen(false);
+              setIsVibeMusicOpen(false);
+              setLowerRailVisibilityMenu(null);
+              runDesktopAction(action, anchor);
+            }} />
+        ) : null}
+        {lowerRailVisibility.isVisible("tools") ? (
+          <DesktopNavigation toolsOnly actions={workspaceNavigationActions}
+            adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+            onModeChange={() => {
+              setAdminModeRequested(!isAdminMode);
+              setIsServerActionsMenuOpen(false);
+              if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
+            }}
+            onAction={(action, anchor) => {
+              setIsThemeMenuOpen(false);
+              if (action.id !== "pane-layout") {
+                setIsPaneLayoutMenuOpen(false);
+                setIsCollapsedPaneLayoutMenuOpen(false);
+              }
+              setIsPaneSpanAllMenuOpen(false);
+              setIsWorkspaceTextSizePickerOpen(false);
+              if (action.id !== "vibe-music") setIsVibeMusicOpen(false);
+              setLowerRailVisibilityMenu(null);
+              runDesktopAction(action, anchor);
+            }}
+            hiddenRailIds={lowerRailVisibility.hiddenIds} />
+        ) : null}
+        {lowerRailVisibility.isVisible("fullscreen") ? (
+          <button
+            type="button"
+            className={`room-toolbar-visibility-button room-rail-secondary dock-fullscreen-toggle${isBrowserFullscreen ? " is-active" : ""}`}
+            title={isBrowserFullscreen ? "Exit full screen (F11)" : "Full screen browser (F11)"}
+            data-rail-id="fullscreen"
+            aria-label={isBrowserFullscreen ? "Exit full screen" : "Full screen browser"}
+            aria-pressed={isBrowserFullscreen}
+            onClick={() => {
+              setIsThemeMenuOpen(false);
+              setIsPaneLayoutMenuOpen(false);
+              setIsCollapsedPaneLayoutMenuOpen(false);
+              setIsPaneSpanAllMenuOpen(false);
+              setIsWorkspaceTextSizePickerOpen(false);
+              setIsVibeMusicOpen(false);
+              setLowerRailVisibilityMenu(null);
+              void toggleBrowserFullscreen();
+            }}
+          >
+            {isBrowserFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+          </button>
+        ) : null}
+        {showMinimizedBarToggle && auth?.user?.role !== "ADMIN" && lowerRailVisibility.isVisible("minimized-bar") ? (
+          <MinimizedPaneBarToggle
+            count={minimizedPanes.length}
+            runningCount={minimizedPaneRunningCount}
+            expanded={showMinimizedBar}
+            onToggle={() => setMinimizedBarExpanded((value) => !value)}
+          />
+        ) : null}
+        <button
+          type="button"
+          className="room-toolbar-visibility-button"
+          title="Show room toolbar"
+          data-rail-id="expand"
+          aria-label="Show room toolbar"
+          onClick={() => updateRoomToolbarVisibility(false)}
+        >
+          <PanelTopOpen aria-hidden="true" />
+        </button>
+        {lowerRailVisibility.isVisible("more") ? (
+          <div className="room-rail-more">
+            <DesktopNavigation workspaceOnly actions={workspaceNavigationActions}
+              renderWorkspaceAction={renderWorkspaceAction} onWorkspaceDetailChange={setWorkspaceNavigationDetail} workspaceDetailActionIds={workspaceDetailActionIds}
+              renderCreateTools={renderDesktopCreateTools} hiddenRailIds={lowerRailVisibility.hiddenIds}
+              adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+              onModeChange={() => {
+                setAdminModeRequested(!isAdminMode);
+                setIsServerActionsMenuOpen(false);
+                if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
+              }} onAction={runDesktopAction} />
+          </div>
+        ) : null}
+        {isCollapsedPaneLayoutMenuOpen && activeRoom ? (
+          <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+            <LazyPaneLayoutMenu
+              automaticColumns={layoutAutomaticPaneGridColumnCount}
+              currentColumns={activeRoom.paneLayoutColumns ?? null}
+              currentHeight={activeRoom.paneLayoutHeight ?? 1}
+              error={paneLayoutError}
+              maximumColumns={shellMode === "mobile" ? 1 : shellMode === "tablet" ? 2 : 4}
+              menuId="pane-layout-presets-collapsed"
+              onClose={() => setIsCollapsedPaneLayoutMenuOpen(false)}
+              onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
+              onSelectHeight={(paneLayoutHeight) => void applyPaneLayoutPreset(undefined, paneLayoutHeight, true)}
+              pending={paneLayoutPending}
+              triggerRef={paneLayoutCollapsedButtonRef}
+              visiblePaneCount={effectiveLayoutPaneCount}
+              emptySlots={activeRoomEmptySlotsMetrics ?? undefined}
+            />
+          </RecoverableSurface>
+        ) : null}
+        {isPaneSpanAllMenuOpen && activeRoom ? (
+          <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+            <LazyPaneSpanAllMenu
+              activeColumnCount={paneGridColumnCount}
+              currentSpan={commonPaneColumnSpan(visiblePanes)}
+              error={paneSpanAllError}
+              onClose={() => setIsPaneSpanAllMenuOpen(false)}
+              onSelect={(columnSpan) => void applyPaneSpanToAll(columnSpan)}
+              pending={paneSpanAllPending}
+              triggerRef={paneSpanAllButtonRef}
+              visiblePaneCount={visiblePanes.length}
+            />
+          </RecoverableSurface>
+        ) : null}
+        <WorkspaceTextSizePicker
+          anchorRef={workspaceTextSizeButtonRef}
+          open={isWorkspaceTextSizePickerOpen}
+          value={terminalFontSize}
+          onChange={setTerminalFontSize}
+          onClose={() => setIsWorkspaceTextSizePickerOpen(false)}
+        />
+        {lowerRailVisibilityMenu ? (
+          <RailVisibilityMenu
+            anchorRef={collapsedToolbarRef}
+            items={
+              showMinimizedBarToggle && auth?.user?.role !== "ADMIN"
+                ? [
+                    ...DEFAULT_LOWER_RAIL_ITEMS.filter((item) => item.id !== "expand" && item.id !== "more"),
+                    ...railVisibilityItems(["minimized-bar"], LOWER_RAIL_LABELS, LOWER_RAIL_NON_HIDEABLE),
+                  ]
+                : DEFAULT_LOWER_RAIL_ITEMS.filter((item) => item.id !== "expand" && item.id !== "more")
+            }
+            hiddenIds={lowerRailVisibility.hiddenIds}
+            label="Rail icons"
+            x={lowerRailVisibilityMenu.x}
+            y={lowerRailVisibilityMenu.y}
+            onClose={() => setLowerRailVisibilityMenu(null)}
+            onHide={lowerRailVisibility.hide}
+            onShow={lowerRailVisibility.show}
+            onShowAll={lowerRailVisibility.showAll}
+          />
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <CliShortcutUserContext.Provider value={auth.user?.id ?? null}>
     <AppIconProvider pack={modernIconPack}>
@@ -10522,25 +11111,7 @@ export function App() {
             actions={serverActionCommands}
             suspended={!isServerActionsMenuOpen}
             initialAction={manageInitialAction}
-            renderAction={(id, back) => {
-              if (id === "space-cli-maintenance" || id === "cli-update-all" || id === "publish-space-release")
-                return <LazyAdminOperationsDialog embedded initialTool={id === "publish-space-release" ? "release" : id === "cli-update-all" ? "update-all" : "maintenance"} onClose={back} />;
-              if (id === "codex-lb-speed-control" || id === "cli-session-cleanup" || id === "codex-history-purge")
-                return <LazyAdminCodexToolsDialog embedded initialTool={id === "codex-lb-speed-control" ? "speed" : id === "cli-session-cleanup" ? "cleanup" : "history"} isCodexEnabled={isCodexEnabled} anyCliEnabled={anyCliEnabled} onClose={back} />;
-              if (id === "system-services") return <LazySystemServicesDialog embedded onClose={back} />;
-              if (id === "user-management") return <LazyUserManagementDialog embedded currentUserId={auth.user?.id} onClose={back} />;
-              if (id === "setup-connections") return <LazySetupConnectionsWizard embedded open onOpenMaintenance={() => openManage("space-cli-maintenance")} connectionsContent={setupConnectionsContent} checks={api} finish={api.finishSetup} loadOverview={api.setupOverview} openLogin={async connection => {
-                  manageLoginPendingRef.current = true;
-                  setManageLoginPending(true);
-                  try { await openSetupConnectionLogin(connection); }
-                  catch (error) { manageLoginPendingRef.current = false; setManageLoginPending(false); throw error; }
-                }} onOpenChange={open => {
-                  if (open) { manageLoginPendingRef.current = false; setIsServerActionsMenuOpen(true); setManageLoginPending(false); }
-                  else if (manageLoginPendingRef.current) setIsServerActionsMenuOpen(false);
-                  else back();
-                }} />;
-              return null;
-            }}
+            renderAction={renderWorkspaceManageAction}
             mobile={shellMode === "mobile"}
             onClose={() => setIsServerActionsMenuOpen(false)}
             triggerRef={serverActionsButtonRef}
@@ -10685,11 +11256,13 @@ export function App() {
         onReopenAllDetached={auth.user.role === "ADMIN" ? reopenAllDetachedPanes : undefined}
         onCloseSession={auth.user.role === "ADMIN" ? closeDetachedPane : undefined} />}
 
+      {renderCollapsedToolbar()}
+
       {!isMemoryWorkspaceOpen && !systemAnalyticsTab ? <section className={workspaceClassName}>
         {showInlineSideSurface ? (
           <aside className="side-surface side-surface-inline" aria-label={activeSideSurfaceLabel} data-surface={activeSideSurface}>
             <div className="desktop-dock-header">
-              <span><strong>{activeSideSurfaceLabel}</strong><small>{desktopActionDescriptions[`surface-${activeSideSurface}`]}</small></span>
+              <span><strong>{activeSideSurfaceDockTitle}</strong><small>{desktopActionDescriptions[`surface-${activeSideSurface}`]}</small></span>
               <div className="dock-nav-controls">
                 <button type="button" className="icon-button" aria-label="Previous dock" title="Previous dock"
                   onClick={() => navigateDock("prev")}><ChevronLeft aria-hidden="true" /></button>
@@ -10716,7 +11289,7 @@ export function App() {
               data-surface-mode="drawer"
             >
               <div className="surface-header">
-                <strong>{activeSideSurfaceLabel}</strong>
+                <span><strong>{activeSideSurfaceDockTitle}</strong><small>{desktopActionDescriptions[`surface-${activeSideSurface}`]}</small></span>
                 <div className="dock-nav-controls">
                   <button type="button" className="icon-button" aria-label="Previous dock" title="Previous dock"
                     onClick={() => navigateDock("prev")}><ChevronLeft aria-hidden="true" /></button>
@@ -10739,450 +11312,6 @@ export function App() {
         ) : null}
 
         <section className={boardClassName} aria-label="Pane board">
-          {!isMobilePaneFocused && isRoomToolbarHidden && !showOverlaySideSurface ? (
-            <div
-              ref={collapsedToolbarRef}
-              className="room-toolbar-collapsed room-toolbar-floating-controls"
-              role="region"
-              aria-label="Room toolbar hidden"
-              {...lowerRailTouchContext}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                setIsCollapsedPaneLayoutMenuOpen(false);
-                setIsPaneSpanAllMenuOpen(false);
-                setIsWorkspaceTextSizePickerOpen(false);
-                setIsVibeMusicOpen(false);
-                setLowerRailVisibilityMenu((current) => current ? null : { x: event.clientX, y: event.clientY });
-              }}
-            >
-              {previousRoom && lowerRailVisibility.isVisible("previous") ? (
-                <button
-                  type="button"
-                  className="room-toolbar-visibility-button room-rail-secondary"
-                  title={`Previous room: ${previousRoom.name}`}
-                  data-rail-id="previous"
-                  aria-label="Previous room"
-                  onClick={() => { void selectRoom(previousRoom.id); }}
-                >
-                  <ChevronLeft aria-hidden="true" />
-                </button>
-              ) : null}
-              {nextRoom && lowerRailVisibility.isVisible("next") ? (
-                <button
-                  type="button"
-                  className="room-toolbar-visibility-button room-rail-secondary"
-                  title={`Next room: ${nextRoom.name}`}
-                  data-rail-id="next"
-                  aria-label="Next room"
-                  onClick={() => { void selectRoom(nextRoom.id); }}
-                >
-                  <ChevronRight aria-hidden="true" />
-                </button>
-              ) : null}
-              {lowerRailVisibility.isVisible("rooms") ? (
-                <button
-                  type="button"
-                  className={`room-toolbar-visibility-button${isSideSurfaceOpen && activeSideSurface === "rooms" ? " is-active" : ""}`}
-                  title={sideSurfaceToggleLabel("rooms")}
-                  data-rail-id="rooms"
-                  aria-label={sideSurfaceToggleLabel("rooms")}
-                  aria-pressed={isSideSurfaceOpen && activeSideSurface === "rooms"}
-                  onClick={() => {
-                    setIsThemeMenuOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsCollapsedPaneLayoutMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setIsVibeMusicOpen(false);
-                    setLowerRailVisibilityMenu(null);
-                    toggleSideSurface("rooms");
-                  }}
-                >
-                  <PanelLeft aria-hidden="true" />
-                </button>
-              ) : null}
-              {lowerRailVisibility.isVisible("live-model") ? (
-                <button
-                  type="button"
-                  className={`room-toolbar-visibility-button room-live-rail-button ${
-                    isLiveRailGraphicDisabled ? "is-graphic-disabled" : ""
-                  } ${
-                    liveRailStatus === "active" || liveRailStatus === "listening" || liveRailStatus === "thinking" || liveRailStatus === "speaking" ? "is-connected" : ""
-                  } ${liveRailStatus === "listening" ? "is-listening is-user-speaking" : ""} ${
-                    liveRailStatus === "speaking" ? "is-speaking is-agent-speaking" : ""
-                  } ${liveRailStatus === "connecting" ? "is-connecting" : ""}`}
-                  title={
-                    liveRailStatus === "listening"
-                      ? "User speaking..."
-                      : liveRailStatus === "speaking"
-                      ? "Agent speaking..."
-                      : liveRailStatus === "active"
-                      ? "Live voice active (Listening)"
-                      : liveRailStatus === "connecting"
-                      ? "Connecting Live voice model..."
-                      : liveRailStatus === "thinking"
-                      ? "Live voice is thinking..."
-                      : liveRailStatus === "error"
-                      ? "Live voice disconnected. Tap to retry."
-                      : "Start Live voice conversation"
-                  }
-                  data-rail-id="live-model"
-                  data-live-status={liveRailStatus}
-                  data-graphic-disabled={isLiveRailGraphicDisabled ? "true" : undefined}
-                  aria-label={
-                    liveRailStatus === "connecting"
-                      ? "Connecting Live voice model"
-                      : liveRailStatus === "listening"
-                      ? "User speaking"
-                      : liveRailStatus === "speaking"
-                      ? "Agent speaking"
-                      : liveRailStatus === "thinking"
-                      ? "Live voice is thinking"
-                      : liveRailStatus === "error"
-                      ? "Retry Live voice conversation"
-                      : "Start Live voice conversation"
-                  }
-                  aria-pressed={liveRailStatus !== "idle" && liveRailStatus !== "error"}
-                  aria-busy={liveRailStatus === "connecting"}
-                  onClick={activateLiveFromRail}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setLiveRailContextMenu((current) => current ? null : { x: event.clientX, y: event.clientY });
-                  }}
-                  disabled={!selectedRoomId && !activeRoom && rooms.length === 0}
-                >
-                  {!isLiveRailGraphicDisabled ? (
-                    <>
-                      <span className="room-live-rail-glow" aria-hidden="true" />
-                      <span className="room-live-rail-sphere" aria-hidden="true">
-                        <span className="room-live-rail-line line-one" />
-                        <span className="room-live-rail-line line-two" />
-                        <span className="room-live-rail-line line-three" />
-                        <span className="room-live-rail-line line-four" />
-                        <span className="room-live-rail-core" />
-                      </span>
-                    </>
-                  ) : null}
-                </button>
-              ) : null}
-              {liveRailContextMenu ? (
-                <LiveRailContextMenu
-                  x={liveRailContextMenu.x}
-                  y={liveRailContextMenu.y}
-                  isGraphicDisabled={isLiveRailGraphicDisabled}
-                  onToggleGraphic={toggleLiveRailGraphic}
-                  onClose={() => setLiveRailContextMenu(null)}
-                />
-              ) : null}
-              {lowerRailVisibility.isVisible("create") ? (
-                <DesktopNavigation createOnly actions={desktopToolbarActions}
-                  adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-                  onModeChange={() => undefined} onAction={runDesktopAction}
-                  renderCreateTools={renderDesktopCreateTools}
-                  emptySlots={activeRoomEmptySlotsMetrics ?? undefined} />
-              ) : null}
-              {lowerRailVisibility.isVisible("layout") ? (
-                <button
-                  ref={paneLayoutCollapsedButtonRef}
-                  type="button"
-                  className="room-toolbar-visibility-button"
-                  title="Pane layout"
-                  data-rail-id="layout"
-                  aria-label="Pane layout"
-                  aria-controls="pane-layout-presets-collapsed"
-                  aria-expanded={isCollapsedPaneLayoutMenuOpen}
-                  aria-haspopup="menu"
-                  onClick={() => {
-                    setIsThemeMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setIsVibeMusicOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setLowerRailVisibilityMenu(null);
-                    setIsCollapsedPaneLayoutMenuOpen((current) => !current);
-                  }}
-                  disabled={!activeRoom || paneLayoutPending}
-                >
-                  <PanelsTopLeft aria-hidden="true" />
-                </button>
-              ) : null}
-              {lowerRailVisibility.isVisible("sticky") ? (
-                <button
-                  type="button"
-                  className="room-toolbar-visibility-button room-rail-secondary"
-                  title="Sticky note"
-                  data-rail-id="sticky"
-                  aria-label="Sticky note"
-                  onClick={() => {
-                    setIsThemeMenuOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsCollapsedPaneLayoutMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setIsVibeMusicOpen(false);
-                    setLowerRailVisibilityMenu(null);
-                    openStickyNote();
-                  }}
-                >
-                  <StickyNote aria-hidden="true" />
-                </button>
-              ) : null}
-              {lowerRailVisibility.isVisible("keyboard") ? (
-                <button
-                  type="button"
-                  className="room-toolbar-visibility-button room-rail-secondary"
-                  title="On-screen keyboard"
-                  data-rail-id="keyboard"
-                  aria-label="On-screen keyboard"
-                  aria-controls={OSK_PANEL_ID}
-                  aria-expanded={isOskKeyboardOpen}
-                  aria-haspopup="dialog"
-                  onClick={() => {
-                    setIsThemeMenuOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsCollapsedPaneLayoutMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setIsVibeMusicOpen(false);
-                    setLowerRailVisibilityMenu(null);
-                    setIsOskKeyboardOpen((current) => !current);
-                  }}
-                >
-                  <Keyboard aria-hidden="true" />
-                </button>
-              ) : null}
-              {lowerRailVisibility.isVisible("music") ? (
-                <button
-                  ref={vibeMusicButtonRef}
-                  type="button"
-                  className="room-toolbar-visibility-button room-rail-secondary"
-                  title="Vibe music with freeCodeCamp Code Radio"
-                  data-rail-id="music"
-                  aria-label="Music"
-                  aria-controls={VIBE_MUSIC_PANEL_ID}
-                  aria-expanded={isVibeMusicOpen}
-                  aria-haspopup="dialog"
-                  onClick={() => {
-                    setIsThemeMenuOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsCollapsedPaneLayoutMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setLowerRailVisibilityMenu(null);
-                    setIsVibeMusicOpen((current) => !current);
-                  }}
-                >
-                  <Music2 aria-hidden="true" />
-                </button>
-              ) : null}
-              {lowerRailVisibility.isVisible("snip-tool") ? (
-                <button
-                  type="button"
-                  className={`room-toolbar-visibility-button room-rail-secondary${isSnipToolOpen ? " is-active" : ""}`}
-                  title={isSnipToolOpen ? "Close Snip Tool" : "Snip Tool (Capture & auto-attach to pane)"}
-                  data-rail-id="snip-tool"
-                  aria-label="Snip Tool"
-                  aria-pressed={isSnipToolOpen}
-                  onClick={() => {
-                    setIsThemeMenuOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsCollapsedPaneLayoutMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setIsVibeMusicOpen(false);
-                    setLowerRailVisibilityMenu(null);
-                    setIsSnipToolOpen((current) => !current);
-                  }}
-                  disabled={!activeRoom}
-                >
-                  <Crop aria-hidden="true" />
-                </button>
-              ) : null}
-              {lowerRailVisibility.isVisible("quick-links") ? (
-                <button
-                  ref={quickLinksButtonRef}
-                  type="button"
-                  className={`room-toolbar-visibility-button room-rail-secondary${isQuickLinksOpen ? " is-active" : ""}`}
-                  title="Quick Links"
-                  data-rail-id="quick-links"
-                  aria-label="Quick Links"
-                  aria-controls="quick-links-popover"
-                  aria-haspopup="dialog"
-                  aria-expanded={isQuickLinksOpen}
-                  onClick={() => {
-                    setIsThemeMenuOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsCollapsedPaneLayoutMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setIsVibeMusicOpen(false);
-                    setLowerRailVisibilityMenu(null);
-                    setIsQuickLinksOpen((current) => !current);
-                  }}
-                >
-                  <Star aria-hidden="true" fill={isQuickLinksOpen ? "currentColor" : "none"} />
-                </button>
-              ) : null}
-              {lowerRailVisibility.isVisible("docks") ? (
-                <DesktopNavigation docksOnly actions={roomToolbarActions}
-                  adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-                  onModeChange={() => undefined}
-                  onAction={(action, anchor) => {
-                    setIsThemeMenuOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsCollapsedPaneLayoutMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setIsVibeMusicOpen(false);
-                    setLowerRailVisibilityMenu(null);
-                    runDesktopAction(action, anchor);
-                  }} />
-              ) : null}
-              {lowerRailVisibility.isVisible("tools") ? (
-                <DesktopNavigation toolsOnly actions={desktopToolbarActions}
-                  adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-                  onModeChange={() => {
-                    setAdminModeRequested(!isAdminMode);
-                    setIsServerActionsMenuOpen(false);
-                    if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
-                  }}
-                  onAction={(action, anchor) => {
-                    setIsThemeMenuOpen(false);
-                    if (action.id !== "pane-layout") {
-                      setIsPaneLayoutMenuOpen(false);
-                      setIsCollapsedPaneLayoutMenuOpen(false);
-                    }
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    if (action.id !== "vibe-music") setIsVibeMusicOpen(false);
-                    setLowerRailVisibilityMenu(null);
-                    runDesktopAction(action, anchor);
-                  }}
-                  hiddenRailIds={lowerRailVisibility.hiddenIds} />
-              ) : null}
-              {lowerRailVisibility.isVisible("displays") ? (
-                <DesktopDisplayControls
-                  variant="rail"
-                  activeRoomId={activeRoom?.id}
-                  activePaneId={activePane?.id}
-                />
-              ) : null}
-              {lowerRailVisibility.isVisible("fullscreen") ? (
-                <button
-                  type="button"
-                  className={`room-toolbar-visibility-button room-rail-secondary dock-fullscreen-toggle${isBrowserFullscreen ? " is-active" : ""}`}
-                  title={isBrowserFullscreen ? "Exit full screen (F11)" : "Full screen browser (F11)"}
-                  data-rail-id="fullscreen"
-                  aria-label={isBrowserFullscreen ? "Exit full screen" : "Full screen browser"}
-                  aria-pressed={isBrowserFullscreen}
-                  onClick={() => {
-                    setIsThemeMenuOpen(false);
-                    setIsPaneLayoutMenuOpen(false);
-                    setIsCollapsedPaneLayoutMenuOpen(false);
-                    setIsPaneSpanAllMenuOpen(false);
-                    setIsWorkspaceTextSizePickerOpen(false);
-                    setIsVibeMusicOpen(false);
-                    setLowerRailVisibilityMenu(null);
-                    void toggleBrowserFullscreen();
-                  }}
-                >
-                  {isBrowserFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-                </button>
-              ) : null}
-              {showMinimizedBarToggle && auth.user?.role !== "ADMIN" && lowerRailVisibility.isVisible("minimized-bar") ? (
-                <MinimizedPaneBarToggle
-                  count={minimizedPanes.length}
-                  runningCount={minimizedPaneRunningCount}
-                  expanded={showMinimizedBar}
-                  onToggle={() => setMinimizedBarExpanded((value) => !value)}
-                />
-              ) : null}
-              <button
-                type="button"
-                className="room-toolbar-visibility-button"
-                title="Show room toolbar"
-                data-rail-id="expand"
-                aria-label="Show room toolbar"
-                onClick={() => updateRoomToolbarVisibility(false)}
-              >
-                <PanelTopOpen aria-hidden="true" />
-              </button>
-              {lowerRailVisibility.isVisible("more") ? (
-                <div className="room-rail-more">
-                  <DesktopNavigation workspaceOnly actions={desktopToolbarActions}
-                    adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-                    onModeChange={() => {
-                      setAdminModeRequested(!isAdminMode);
-                      setIsServerActionsMenuOpen(false);
-                      if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
-                    }} onAction={runDesktopAction} />
-                </div>
-              ) : null}
-              {isCollapsedPaneLayoutMenuOpen && activeRoom ? (
-                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
-                  <LazyPaneLayoutMenu
-                    automaticColumns={layoutAutomaticPaneGridColumnCount}
-                    currentColumns={activeRoom.paneLayoutColumns ?? null}
-                    currentHeight={activeRoom.paneLayoutHeight ?? 1}
-                    error={paneLayoutError}
-                    maximumColumns={shellMode === "mobile" ? 1 : shellMode === "tablet" ? 2 : 4}
-                    menuId="pane-layout-presets-collapsed"
-                    onClose={() => setIsCollapsedPaneLayoutMenuOpen(false)}
-                    onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
-                    onSelectHeight={(paneLayoutHeight) => void applyPaneLayoutPreset(undefined, paneLayoutHeight, true)}
-                    pending={paneLayoutPending}
-                    triggerRef={paneLayoutCollapsedButtonRef}
-                    visiblePaneCount={effectiveLayoutPaneCount}
-                    emptySlots={activeRoomEmptySlotsMetrics ?? undefined}
-                  />
-                </RecoverableSurface>
-              ) : null}
-              {isPaneSpanAllMenuOpen && activeRoom ? (
-                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
-                  <LazyPaneSpanAllMenu
-                    activeColumnCount={paneGridColumnCount}
-                    currentSpan={commonPaneColumnSpan(visiblePanes)}
-                    error={paneSpanAllError}
-                    onClose={() => setIsPaneSpanAllMenuOpen(false)}
-                    onSelect={(columnSpan) => void applyPaneSpanToAll(columnSpan)}
-                    pending={paneSpanAllPending}
-                    triggerRef={paneSpanAllButtonRef}
-                    visiblePaneCount={visiblePanes.length}
-                  />
-                </RecoverableSurface>
-              ) : null}
-              <WorkspaceTextSizePicker
-                anchorRef={workspaceTextSizeButtonRef}
-                open={isWorkspaceTextSizePickerOpen}
-                value={terminalFontSize}
-                onChange={setTerminalFontSize}
-                onClose={() => setIsWorkspaceTextSizePickerOpen(false)}
-              />
-              {lowerRailVisibilityMenu ? (
-                <RailVisibilityMenu
-                  anchorRef={collapsedToolbarRef}
-                  items={
-                    showMinimizedBarToggle && auth.user?.role !== "ADMIN"
-                      ? [
-                          ...DEFAULT_LOWER_RAIL_ITEMS.filter((item) => item.id !== "expand" && item.id !== "more"),
-                          ...railVisibilityItems(["minimized-bar"], LOWER_RAIL_LABELS, LOWER_RAIL_NON_HIDEABLE),
-                        ]
-                      : DEFAULT_LOWER_RAIL_ITEMS.filter((item) => item.id !== "expand" && item.id !== "more")
-                  }
-                  hiddenIds={lowerRailVisibility.hiddenIds}
-                  label="Rail icons"
-                  x={lowerRailVisibilityMenu.x}
-                  y={lowerRailVisibilityMenu.y}
-                  onClose={() => setLowerRailVisibilityMenu(null)}
-                  onHide={lowerRailVisibility.hide}
-                  onShow={lowerRailVisibility.show}
-                  onShowAll={lowerRailVisibility.showAll}
-                />
-              ) : null}
-            </div>
-          ) : null}
           {!isMobilePaneFocused && !isRoomToolbarHidden ? (
             <div
               ref={boardToolbarRef}
@@ -11198,7 +11327,7 @@ export function App() {
                   aria-label={sideSurfaceToggleLabel("rooms")} title={sideSurfaceToggleLabel("rooms")}
                   aria-pressed={isSideSurfaceOpen && activeSideSurface === "rooms"}
                   onClick={() => toggleSideSurface("rooms")}><PanelLeft aria-hidden="true" /></button>
-                <SpaceBrand />
+                <SpaceBrand onActivate={() => void minimizeAllPanes()} />
                 <div className="board-title-heading">
                   {isRoomRenameOpen && presentationRoom ? (
                     <form className="room-title-form" onSubmit={submitRoomRename}>
@@ -11343,7 +11472,9 @@ export function App() {
               ) : null}
               <div ref={roomToolbarScrollRef} className="toolbar-actions-scroll">
                 <DesktopNavigation
-                  actions={desktopToolbarActions}
+                  actions={workspaceNavigationActions}
+                  renderWorkspaceAction={renderWorkspaceAction} onWorkspaceDetailChange={setWorkspaceNavigationDetail} workspaceDetailActionIds={workspaceDetailActionIds}
+                  hiddenRailIds={lowerRailVisibility.hiddenIds}
                   adminMode={isAdminMode}
                   canAdmin={auth?.user?.role === "ADMIN"}
                   onModeChange={() => {
@@ -11395,7 +11526,6 @@ export function App() {
                 )
               ) : null}
               <div className="toolbar-actions-fixed" role="group" aria-label="Room utility controls">
-                <DesktopDisplayControls variant="toolbar" activeRoomId={activeRoom?.id} activePaneId={activePane?.id} />
                 {showMinimizedBarToggle ? (
                   <MinimizedPaneBarToggle
                     count={minimizedPanes.length}
@@ -11650,7 +11780,7 @@ export function App() {
 
       </section> : null}
       <QuickLinksPopover open={isQuickLinksOpen} triggerRef={quickLinksButtonRef} onClose={() => setIsQuickLinksOpen(false)} onOpen={openUserLink} onManage={manageLinks} />
-      {activeUserLink ? (
+      {activeUserLink && !workspaceNavigationDetail ? (
         <RecoverableSurface fallback={<div role="status">Loading dashboard…</div>}>
           <LazyEmbeddedDashboardDialog link={activeUserLink} onClose={() => setActiveUserLink(null)} />
         </RecoverableSurface>
@@ -11715,7 +11845,7 @@ function LoginScreen({
 
   function loginErrorMessage(err: unknown): string {
     if (err instanceof SpaceApiError && err.code === "INVALID_CREDENTIALS") {
-      return "Login rejected. Use the configured operator credentials, or the documented development account when development login is enabled.";
+      return "Login rejected. Use the configured operator credentials, or run 'npx --yes run-spaceapp@latest owner reset-password' in your host terminal to set a new password.";
     }
     return err instanceof Error ? err.message : "Login failed";
   }
@@ -11825,6 +11955,61 @@ function LoginScreen({
         </label>
         {error ? <p className="form-error">{error}</p> : null}
         <button type="submit">Enter</button>
+
+        <div
+          className="login-self-hosted-hint"
+          style={{
+            marginTop: "1.25rem",
+            padding: "0.75rem 0.85rem",
+            fontSize: "0.75rem",
+            lineHeight: 1.45,
+            color: "var(--room-muted, #a7a59e)",
+            border: "1px solid var(--room-border, rgba(255, 255, 255, 0.1))",
+            borderRadius: "6px",
+            background: "rgba(255, 255, 255, 0.02)",
+            textAlign: "left"
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: "0.35rem", color: "var(--room-text, #e2e8f0)" }}>
+            Self-hosted installation help:
+          </div>
+          <div style={{ marginBottom: "0.35rem" }}>
+            Forgot your operator password? Run in your host terminal:
+            <code
+              style={{
+                display: "block",
+                marginTop: "0.25rem",
+                padding: "0.25rem 0.4rem",
+                background: "rgba(0, 0, 0, 0.35)",
+                borderRadius: "4px",
+                fontFamily: "monospace",
+                fontSize: "0.72rem",
+                color: "#67e8f9",
+                wordBreak: "break-all"
+              }}
+            >
+              npx --yes run-spaceapp@latest owner reset-password
+            </code>
+          </div>
+          <div>
+            Need a clean install from scratch? Run:
+            <code
+              style={{
+                display: "block",
+                marginTop: "0.25rem",
+                padding: "0.25rem 0.4rem",
+                background: "rgba(0, 0, 0, 0.35)",
+                borderRadius: "4px",
+                fontFamily: "monospace",
+                fontSize: "0.72rem",
+                color: "#67e8f9",
+                wordBreak: "break-all"
+              }}
+            >
+              npx --yes run-spaceapp@latest factory-reset
+            </code>
+          </div>
+        </div>
       </form>
     </main>
   );

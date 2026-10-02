@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createHmac, randomBytes, scrypt as scryptCallback, timingSafeEqual, type ScryptOptions } from "node:crypto";
 import { authUserSchema, type AuthUser, type LoginInput } from "@space/contracts";
 import { persistentOperatorSessionTtlSeconds, signPersistentOperatorSessionToken, signSessionTokenWithTtl } from "@space/runtime";
+import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from "./antigravity-usage-services.js";
 
 const SESSION_COOKIE = "space_session";
 const CSRF_HEADER = "x-space-csrf-token";
@@ -64,6 +65,10 @@ export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
         }
       }
     } catch {}
+  }
+  if (!googleClientId && env.SPACE_GOOGLE_AUTH_DISABLED !== "true") {
+    googleClientId = ANTIGRAVITY_CLIENT_ID;
+    googleClientSecret = ANTIGRAVITY_CLIENT_SECRET;
   }
   return {
     sessionSecret: env.SPACE_SESSION_SECRET ?? "",

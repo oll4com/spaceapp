@@ -1,5 +1,6 @@
 /* Motion theme inspired by https://motion.dev */
 :root[data-interface-theme="motion"] {
+  --room-accent: #ffe600;
   --font-sans: "TASA Orbiter", "Geist Sans", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", "Geist Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
@@ -271,6 +272,22 @@
   background: rgba(255, 230, 0, 0.16);
   border-color: rgba(255, 230, 0, 0.4);
   color: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-expand-btn.is-expanded {
+  border-color: #ff4d4d;
+  color: #ff6b7a;
+  background: rgba(255, 60, 60, 0.14);
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-dock-expand-btn.is-expanded:hover {
+  border-color: #ff4d4d;
+  background: rgba(255, 60, 60, 0.25);
+  color: #ff8b97;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-item.selected {
+  box-shadow: none;
 }
 
 :root[data-interface-theme="motion"] .space-shell .room-dock-expansion {

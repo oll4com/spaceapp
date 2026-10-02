@@ -6,7 +6,7 @@ import {
 } from "../../warm-room-settings.js";
 import { CliRuntimeSettingsCard } from "../cli-runtime-settings/CliRuntimeSettingsCard.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
-import { Gauge, Images } from "../ui-theme/app-icons.js";
+import { Gauge, Images, Terminal } from "../ui-theme/app-icons.js";
 import { SettingsDisclosure, SettingsSections } from "../settings/SettingsDisclosure.js";
 
 interface CliDockProps {
@@ -33,8 +33,15 @@ export function CliDock({
   restartAllPending
 }: CliDockProps) {
   return (
-    <div className="cli-dock">
+    <div className="dock-panel cli-dock">
       <SettingsSections>
+      <header className="settings-dock-title settings-flat-dock-title">
+        <Terminal aria-hidden="true" />
+        <span>
+          <h2>{canManage ? "CLI Tools" : "CLI runtimes"}</h2>
+          <small>{canManage ? "Runtime visibility, restart and VPN routing." : "Runtime visibility and coding preferences."}</small>
+        </span>
+      </header>
       {!canManage ? <p className="dock-muted-text">The ADMIN role can manage CLI runtimes.</p> : null}
 
       <CliRuntimeSettingsCard

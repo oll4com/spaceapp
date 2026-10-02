@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import { railPopoverPosition } from "../rail-popover.js";
 import { createPortal } from "react-dom";
 import {
@@ -60,6 +61,7 @@ export function WorkspaceTextSizePicker({
   onChange,
   onClose
 }: WorkspaceTextSizePickerProps) {
+  const embedded = useWorkspaceSurface();
   const pickerRef = useRef<HTMLDivElement>(null);
   const wheelDeltaRef = useRef(0);
   const wheelResetTimerRef = useRef<number | null>(null);
@@ -68,7 +70,7 @@ export function WorkspaceTextSizePicker({
   const options = useMemo(() => visibleTextSizes(normalizedValue), [normalizedValue]);
 
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open || embedded) return;
 
     function updatePosition() {
       const anchor = anchorRef.current;
@@ -113,10 +115,10 @@ export function WorkspaceTextSizePicker({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [anchorRef, open]);
+  }, [anchorRef, open, embedded]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || embedded) return;
     function handleOutsidePointer(event: PointerEvent) {
       const target = event.target as Node;
       if (pickerRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
@@ -124,7 +126,7 @@ export function WorkspaceTextSizePicker({
     }
     document.addEventListener("pointerdown", handleOutsidePointer, true);
     return () => document.removeEventListener("pointerdown", handleOutsidePointer, true);
-  }, [anchorRef, onClose, open]);
+  }, [anchorRef, onClose, open, embedded]);
 
   useEffect(
     () => () => {
@@ -168,6 +170,7 @@ export function WorkspaceTextSizePicker({
     if (event.key === "End") nextValue = MAX_WORKSPACE_TEXT_SIZE;
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       onClose();
       anchorRef.current?.focus();
       return;
@@ -177,18 +180,18 @@ export function WorkspaceTextSizePicker({
     select(nextValue);
   }
 
-  return createPortal(
-    <div
+  const picker = <div
       ref={pickerRef}
       id={WORKSPACE_TEXT_SIZE_PICKER_ID}
-      className="workspace-text-size-picker"
+      className={`workspace-text-size-picker${embedded ? " workspace-inline-control" : ""}`}
       role="listbox"
       aria-label="Workspace text size"
       aria-activedescendant={`workspace-text-size-${normalizedValue}`}
       data-placement={position.placement}
       tabIndex={0}
-      style={{ left: `${position.left}px`, top: `${position.top}px` }}
+      style={embedded ? undefined : { left: `${position.left}px`, top: `${position.top}px` }}
       onBlur={(event) => {
+        if (embedded) return;
         const nextFocus = event.relatedTarget as Node | null;
         if (nextFocus && (event.currentTarget.contains(nextFocus) || anchorRef.current?.contains(nextFocus))) return;
         onClose();
@@ -210,7 +213,6 @@ export function WorkspaceTextSizePicker({
           <small>px</small>
         </button>
       ))}
-    </div>,
-    document.body
-  );
+    </div>;
+  return embedded ? picker : createPortal(picker, document.body);
 }

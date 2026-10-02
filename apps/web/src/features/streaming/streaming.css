@@ -153,33 +153,117 @@
   max-width: 100%;
   box-sizing: border-box;
   container: streaming-provider / inline-size;
-  padding: 0.68rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #343d3a;
+  border-radius: 0.75rem;
+  background: #191e1d;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-.streaming-provider-card > header {
-  align-items: flex-start;
+.streaming-provider-card.is-collapsed:hover {
+  border-color: #4a5652;
 }
 
-.streaming-provider-card > header > div {
+.streaming-provider-card.is-expanded {
+  border-color: #4a5652;
+}
+
+.streaming-provider-header {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 0.5rem;
+  padding: 0.15rem 0;
+}
+
+.streaming-provider-header:focus-visible {
+  outline: 2px solid var(--space-focus, #38bdf8);
+  outline-offset: 2px;
+}
+
+.streaming-provider-meta {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }
 
-.streaming-provider-card > header button {
+.streaming-provider-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.streaming-provider-meta h4 {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #f4f4f5;
+  line-height: 1.2;
+}
+
+.streaming-provider-account-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #d4d4d8;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.streaming-provider-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
   flex: 0 0 auto;
-  font-size: 0.7rem;
 }
 
-@container streaming-provider (max-width: 14rem) {
-  .streaming-provider-card > header {
-    display: grid;
-    grid-template-columns: 2rem minmax(0, 1fr);
-    justify-content: stretch;
+.streaming-provider-header-actions button {
+  font-size: 0.7rem;
+  min-height: 1.75rem;
+  padding: 0.2rem 0.5rem;
+  flex: 0 0 auto;
+}
+
+.streaming-provider-chevron {
+  display: grid;
+  place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 0.35rem;
+  color: #a1a1aa;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.streaming-provider-chevron:hover {
+  color: #f4f4f5;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.streaming-provider-body {
+  margin-top: 0.65rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+@container streaming-provider (max-width: 18rem) {
+  .streaming-provider-header {
+    flex-wrap: wrap;
   }
 
-  .streaming-provider-card > header button {
-    grid-column: 2;
-    justify-self: start;
+  .streaming-provider-header-actions {
+    width: 100%;
+    justify-content: flex-end;
+    margin-top: 0.25rem;
   }
 }
 
@@ -314,6 +398,85 @@
 .streaming-dock button.danger {
   border-color: #6a3941;
   color: #ffabb2;
+}
+
+.streaming-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  width: 100%;
+  margin-top: 0.55rem;
+  margin-bottom: 0.25rem;
+}
+
+.streaming-capability-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.5rem;
+  border-radius: 0.45rem;
+  font-size: 0.68rem;
+  font-weight: 500;
+  line-height: 1.2;
+  box-sizing: border-box;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #a1a1aa;
+  min-width: 0;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.streaming-capability-chip.is-ready {
+  background: rgba(34, 197, 94, 0.08);
+  border-color: rgba(34, 197, 94, 0.28);
+  color: #86efac;
+}
+
+.streaming-capability-chip.is-unavailable {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.06);
+  color: #71717a;
+  opacity: 0.7;
+}
+
+.streaming-capability-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex: 0 0 6px;
+  background: #52525b;
+}
+
+.streaming-capability-chip.is-ready .streaming-capability-dot {
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.55);
+}
+
+.streaming-capability-label {
+  font-weight: 600;
+  color: #f4f4f5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.streaming-capability-chip.is-unavailable .streaming-capability-label {
+  color: #a1a1aa;
+}
+
+.streaming-capability-status {
+  margin-left: auto;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.9;
+  flex-shrink: 0;
+  padding-left: 0.2rem;
+}
+
+.streaming-capability-chip.is-ready .streaming-capability-status {
+  color: #4ade80;
 }
 
 .streaming-metric-options {
@@ -690,8 +853,10 @@
   color: #75dcc5;
 }
 
-.streaming-metric-badge {
-  display: none !important;
+.streaming-metric-tile .streaming-metric-badge,
+.streaming-overlay .streaming-metric-badge,
+.streaming-draft-preview .streaming-metric-badge {
+  display: none;
 }
 
 .streaming-metric-tile > strong {

@@ -1,3 +1,4 @@
+import { createLiveToolReplay } from "./live-tool-replay.js";
 import { createGateway } from "@ai-sdk/gateway";
 import { createIdentifiedLiveCommandOrigins, type LiveCommandRoom } from "./live-command-origin.js";
 
@@ -21,6 +22,7 @@ export function createGatewayRealtimeController(options: {
   const codec = createGateway().experimental_realtime(options.model);
   const allowedTools = new Set(options.config.tools?.map((tool) => tool.name));
   const calls = new Set<string>();
+  const results = createLiveToolReplay();
   const responses = new Set<string>();
   let ready = false;
   let closed = false;
@@ -118,24 +120,38 @@ export function createGatewayRealtimeController(options: {
           if (!event.callId || typeof event.name !== "string" || typeof event.arguments !== "string") {
             fail("Invalid Gateway tool call."); return;
           }
-          if (calls.has(event.callId)) return;
+          if (calls.has(event.callId)) {
+            void results.run(event.callId, event.name, event.arguments, async () => "").then(output => {
+              send({ type: "conversation-item-create", item: { type: "function-call-output", callId: event.callId, name: event.name, output } });
+            }).catch(() => fail("Invalid Gateway replay."));
+            return;
+          }
           // Fail closed on an oversized session, never evict deduplication keys
           // and accidentally repeat side effects. Pending calls are serialized.
           if (calls.size >= 4096 || pending >= 32 || event.arguments.length > 128_000) {
             fail("Gateway tool execution limit reached."); return;
           }
+          if (!allowedTools.has(event.name)) { fail("Gateway requested a tool not enabled in this session."); return; }
+          try { const args = JSON.parse(event.arguments); if (!args || typeof args !== "object" || Array.isArray(args)) throw Error(); }
+          catch { fail("Invalid Gateway tool arguments."); return; }
           calls.add(event.callId);
           origins.bindCall(event.callId, event.responseId);
           const origin = origins.captureCall(event.callId);
           continuationOrigin = origin;
           pending++;
           needsResponse = true;
-          queue = queue.then(async () => {
+          const previousQueue = queue;
+          const result = results.run(event.callId, event.name, event.arguments, async () => {
+            await previousQueue;
+            if (closed) return JSON.stringify({ ok: false, code: "LIVE_SESSION_CLOSED" });
+            return options.execute(event.name, event.arguments, event.callId, origin);
+          });
+          queue = previousQueue.then(async () => {
             if (closed) return;
             if (!allowedTools.has(event.name)) throw new Error("Gateway requested a tool not enabled in this session.");
             const args = JSON.parse(event.arguments);
             if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Invalid Gateway tool arguments.");
-            const output = await options.execute(event.name, event.arguments, event.callId, origin);
+            const output = await result;
             send({ type: "conversation-item-create", item: {
               type: "function-call-output", callId: event.callId, name: event.name, output
             } });

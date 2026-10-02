@@ -60,6 +60,7 @@ import {
 import { executeSkillActionBridge, parseSkillActionBlock } from "./skill-action-bridge.js";
 import { ROOM_AGENT_TURN_HEARTBEAT_INTERVAL_MS } from "./room-supervisor-state.js";
 import { isCliChatQuotaError, isCliChatTurnProviderId, isNativeChatTurn } from "./turn-runtime-policy.js";
+import { evaluateCompletedTaskResult } from "./task-result-evaluation.js";
 
 let cachedStore: PostgresSpaceStore | null = null;
 const execFileAsync = promisify(execFile);
@@ -456,13 +457,14 @@ function canonicalMemoryBridgeFromEnv(env: NodeJS.ProcessEnv | undefined): Canon
 
 function buildCodexAppServerTurnEnv(
   config: CodexAppServerTurnActivityConfig,
-  baseEnv: NodeJS.ProcessEnv
+  baseEnv: NodeJS.ProcessEnv,
+  workspace?: string | null
 ): CodexAppServerProcessEnv {
   const codexHome = resolve(config.home ?? "/var/lib/spaceapp-user/.codex");
   const credential = config.keyFile && (!codexHome || basename(codexHome) !== ".codex")
     ? { name: config.keyEnv, value: readFileSync(config.keyFile, "utf8").trim() }
     : null;
-  return buildCodexAppServerProcessEnv({ baseEnv, codexHome, credential });
+  return buildCodexAppServerProcessEnv({ baseEnv, codexHome, credential, workspace });
 }
 
 function firstClosedCodexTurnGate(config: CodexAppServerTurnActivityConfig): { reasonCode: string; message: string } | null {
@@ -533,10 +535,7 @@ async function defaultStdioTurnExecutor(
   const modelProvider = runtime.modelProvider;
   const nativeChat = isNativeChatTurn(input);
   await applyCodexProviderRoute(runtime, turnConfig, env, routeSwitcher);
-  const turnEnv = buildCodexAppServerTurnEnv(turnConfig, env);
-  if (targetWorkspace) {
-    (turnEnv as Record<string, string | undefined>).SPACE_CLI_WORKSPACE = targetWorkspace;
-  }
+  const turnEnv = buildCodexAppServerTurnEnv(turnConfig, env, targetWorkspace);
   const run = (threadId: string | null, resumeTurnId: string | null) => runCodexAppServerStdioTurnSession({
     command: turnConfig.command,
     cwd: turnConfig.cwd,
@@ -703,9 +702,8 @@ function operatorAuthoredMemoryFallbackContent(input: DummyTurnInput): string | 
 }
 
 function buildToolObservationFollowUpPrompt(toolMessageContent: string, originalPrompt: string): string {
-  const observation = toolMessageContent.slice(0, 6500);
   const promptContext = redactMemoryText(originalPrompt).slice(0, 5000);
-  return [
+  const context = [
     "Space tool observations are below.",
     "Continue the answer to the operator using only these observations and the Space task context below.",
     "Do not request another tool action in this follow-up turn. If more tool work is needed, state the next needed action.",
@@ -713,9 +711,10 @@ function buildToolObservationFollowUpPrompt(toolMessageContent: string, original
     "",
     "Space task context:",
     promptContext,
-    "",
-    observation
+    ""
   ].join("\n");
+  // Stay within the native turn schema even for a long request and result.
+  return `${context}\n${redactMemoryText(toolMessageContent).slice(0, Math.min(6500, 8000 - context.length - 1))}`;
 }
 
 function deferredToolMessageContent(): string {
@@ -782,9 +781,15 @@ async function runToolObservationFollowUp(input: {
   }
 
   try {
+    // Use the submitted request, not the runtime prompt that contains tool
+    // declarations. The existing native thread already holds the full context.
+    const messages = await input.store.listSpaceAgentMessages(input.turnInput.agentSessionId!, 500);
+    const operatorPrompt = messages.find(message =>
+      message.messageId === input.turnInput.agentUserMessageId && message.role === "user"
+    )?.content ?? "Answer the operator request from the preceding conversation.";
     const followUpInput = dummyTurnInputSchema.parse({
       ...input.turnInput,
-      prompt: buildToolObservationFollowUpPrompt(input.observation.toolMessageContent, input.turnInput.prompt),
+      prompt: buildToolObservationFollowUpPrompt(input.observation.toolMessageContent, operatorPrompt),
       artifactIds: [],
       agentThreadId: input.threadId
     });
@@ -1515,7 +1520,10 @@ async function recordSpaceAgentRunCompleted(
     const finalAssistant = [...messages]
       .reverse()
       .find((message) => message.runId === run.runId && message.role === "assistant" && message.status === "COMPLETED" && message.content.trim());
+    bridgeOptions.abortSignal?.throwIfAborted();
     await store.completeSpaceAgentRun({
+      evaluation: evaluateCompletedTaskResult(run, finalAssistant?.content ?? (content ? finalContent : ""), completedAt,
+        finalAssistant?.messageId ?? input.agentAssistantMessageId),
       runId: run.runId,
       sessionId: input.agentSessionId,
       responseMessageId: input.agentAssistantMessageId,

@@ -538,8 +538,10 @@ export class CliHostSessionRegistry {
   }
 }
 
+// Keep wrap/whitespace branches disjoint: nested optional whitespace can
+// catastrophically backtrack on PTY padding and block every hosted session.
 export const CLI_UPLOAD_WRAPPED_PATH_PATTERN =
-  /(?:[ \t]*(?:\r?\n|\r)[ \t]*|\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t])*['"]?(?:\/srv\/space\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t]*(?:\r?\n|\r)[ \t]*(?:\x1b\[[0-9;?]*[ -/]*[@-~])*)+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
+  /(?<![ \t\r\n])(?:[ \t\r\n]|\x1b\[[0-9;?]*[ -/]*[@-~])*['"]?(?:\/srv\/space\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
 
 export function isUploadPathCutoff(text: string): number {
   const marker = "/cli-uploads/";

@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import {
   useEffect,
   useLayoutEffect,
@@ -84,6 +85,7 @@ export function RoomThemeMenu({
   onSelect: (theme: RoomTheme) => void;
   triggerRef: RefObject<HTMLButtonElement | null>;
 }) {
+  const embedded = useWorkspaceSurface();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [position, setPosition] = useState<RoomThemeMenuPosition | null>(null);
@@ -93,7 +95,7 @@ export function RoomThemeMenu({
   }, [currentTheme]);
 
   useLayoutEffect(() => {
-    if (mobile) {
+    if (mobile || embedded) {
       setPosition(null);
       return;
     }
@@ -120,9 +122,10 @@ export function RoomThemeMenu({
       window.removeEventListener("scroll", updatePosition, true);
       dispatchRailMenuChange();
     };
-  }, [mobile, triggerRef]);
+  }, [mobile, triggerRef, embedded]);
 
   useEffect(() => {
+    if (embedded) return;
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
@@ -130,11 +133,12 @@ export function RoomThemeMenu({
     };
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [onClose, triggerRef]);
+  }, [onClose, triggerRef, embedded]);
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       onClose();
       triggerRef.current?.focus();
       return;
@@ -156,7 +160,7 @@ export function RoomThemeMenu({
     itemRefs.current[nextIndex]?.focus();
   }
 
-  const desktopStyle: CSSProperties | undefined = mobile
+  const desktopStyle: CSSProperties | undefined = mobile || embedded
     ? undefined
     : position
       ? { left: position.left, top: position.top }
@@ -186,7 +190,7 @@ export function RoomThemeMenu({
           aria-checked={theme.id === currentTheme}
           onClick={() => {
             onSelect(theme.id);
-            onClose();
+            if (!embedded) onClose();
           }}
         >
           <span className={`theme-swatch ${theme.id}`} aria-hidden="true" />
@@ -195,6 +199,8 @@ export function RoomThemeMenu({
       ))}
     </div>
   );
+
+  if (embedded) return menu;
 
   return createPortal(
     mobile ? (

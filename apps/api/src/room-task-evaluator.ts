@@ -15,7 +15,7 @@ export type RoomTaskEvaluation =
   | { available: false; reason: string; attempts: number };
 
 export interface RoomTaskEvaluator {
-  evaluate(input: { instruction: string; finalResult: string; completionEvidence: string }): Promise<RoomTaskEvaluation>;
+  evaluate(input: { instruction: string; finalResult: string; completionEvidence: string; signal?: AbortSignal }): Promise<RoomTaskEvaluation>;
 }
 
 export function createRoomTaskEvaluator(options: {
@@ -23,6 +23,7 @@ export function createRoomTaskEvaluator(options: {
   apiKey: string | null;
   model: string;
   fetch?: typeof globalThis.fetch;
+  timeoutMs?: number;
 }): RoomTaskEvaluator {
   const request = options.fetch ?? globalThis.fetch;
   return {
@@ -30,62 +31,86 @@ export function createRoomTaskEvaluator(options: {
       if (!options.baseUrl || !options.apiKey) {
         return { available: false, reason: "Quality evaluator is not configured.", attempts: 0 };
       }
-      const endpoint = `${options.baseUrl.replace(/\/$/, "")}/chat/completions`;
-      let reason = "Quality evaluator returned invalid JSON twice.";
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
-        try {
-          const response = await request(endpoint, {
-            method: "POST",
-            headers: { authorization: `Bearer ${options.apiKey}`, "content-type": "application/json" },
-            body: JSON.stringify({
-              model: options.model,
-              messages: [{
-                role: "user",
-                content: [
-                  "Evaluate the completed task. Return only JSON matching the supplied schema.",
-                  "Score every rubric field from 0 to 100: 0 is completely unsuccessful, 50 is partial, and 100 is fully successful. Use this percentage scale, never a 0-to-1 fraction.",
-                  "Rubric weights: correctness 30%, completeness 25%, instruction adherence 20%, evidence 15%, clarity 10%.",
-                  `Instruction:\n${input.instruction}`,
-                  `Final sanitized result:\n${input.finalResult}`,
-                  `Completion evidence:\n${input.completionEvidence}`
-                ].join("\n\n")
-              }],
-              response_format: {
-                type: "json_schema",
-                json_schema: {
-                  name: "room_task_quality",
-                  strict: true,
-                  schema: {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["correctness", "completeness", "instructionAdherence", "evidence", "clarity", "summary"],
-                    properties: {
-                      correctness: { type: "number", minimum: 0, maximum: 100 },
-                      completeness: { type: "number", minimum: 0, maximum: 100 },
-                      instructionAdherence: { type: "number", minimum: 0, maximum: 100 },
-                      evidence: { type: "number", minimum: 0, maximum: 100 },
-                      clarity: { type: "number", minimum: 0, maximum: 100 },
-                      summary: { type: "string", minLength: 1, maxLength: 1000 }
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      if (input.signal?.aborted) return { available: false, reason: "Quality evaluation was cancelled.", attempts: 0 };
+      input.signal?.addEventListener("abort", abort, { once: true });
+      const timeoutMs = Math.min(30_000, Math.max(1, options.timeoutMs ?? 15_000));
+      const timer = setTimeout(abort, timeoutMs);
+      let attempts = 0;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        controller.signal.addEventListener("abort", () => reject(new Error(input.signal?.aborted
+          ? "Quality evaluation was cancelled." : "Quality evaluator exceeded its deadline.")), { once: true });
+      });
+      try {
+        const endpoint = `${options.baseUrl.replace(/\/$/, "")}/chat/completions`;
+        let reason = "Quality evaluator returned invalid JSON twice.";
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          attempts = attempt;
+          try {
+            // Bound the entire request, body read and parse, even for an adapter
+            // that does not honor AbortSignal. Never retry after the deadline.
+            const result = await Promise.race([aborted, (async () => {
+              const response = await request(endpoint, {
+                signal: controller.signal,
+                method: "POST",
+                headers: { authorization: `Bearer ${options.apiKey}`, "content-type": "application/json" },
+                body: JSON.stringify({
+                  model: options.model,
+                  messages: [{
+                    role: "user",
+                    content: [
+                      "Evaluate the completed task. Return only JSON matching the supplied schema.",
+                      "Score every rubric field from 0 to 100: 0 is completely unsuccessful, 50 is partial, and 100 is fully successful. Use this percentage scale, never a 0-to-1 fraction.",
+                      "Rubric weights: correctness 30%, completeness 25%, instruction adherence 20%, evidence 15%, clarity 10%.",
+                      `Instruction:\n${input.instruction}`,
+                      `Final sanitized result:\n${input.finalResult}`,
+                      `Completion evidence:\n${input.completionEvidence}`
+                    ].join("\n\n")
+                  }],
+                  response_format: {
+                    type: "json_schema",
+                    json_schema: {
+                      name: "room_task_quality",
+                      strict: true,
+                      schema: {
+                        type: "object",
+                        additionalProperties: false,
+                        required: ["correctness", "completeness", "instructionAdherence", "evidence", "clarity", "summary"],
+                        properties: {
+                          correctness: { type: "number", minimum: 0, maximum: 100 },
+                          completeness: { type: "number", minimum: 0, maximum: 100 },
+                          instructionAdherence: { type: "number", minimum: 0, maximum: 100 },
+                          evidence: { type: "number", minimum: 0, maximum: 100 },
+                          clarity: { type: "number", minimum: 0, maximum: 100 },
+                          summary: { type: "string", minLength: 1, maxLength: 1000 }
+                        }
+                      }
                     }
                   }
-                }
-              }
-            })
-          });
-          if (!response.ok) throw new Error(`Evaluator request failed with HTTP ${response.status}.`);
-          const payload = await response.json() as { choices?: Array<{ message?: { content?: unknown } }> };
-          const content = payload.choices?.[0]?.message?.content;
-          if (typeof content !== "string") throw new Error("Evaluator response did not include text content.");
-          const parsed = rubricSchema.parse(JSON.parse(content));
-          const { summary, ...rubric } = parsed;
-          const qualityScore = rubric.correctness * 0.3 + rubric.completeness * 0.25 +
-            rubric.instructionAdherence * 0.2 + rubric.evidence * 0.15 + rubric.clarity * 0.1;
-          return { available: true, qualityScore, rubric, summary, attempts: attempt };
-        } catch (error) {
-          reason = error instanceof Error ? error.message : "Quality evaluator failed.";
+                })
+              });
+              if (!response.ok) throw new Error(`Evaluator request failed with HTTP ${response.status}.`);
+              const payload = await response.json() as { choices?: Array<{ message?: { content?: unknown } }> };
+              const content = payload.choices?.[0]?.message?.content;
+              if (typeof content !== "string") throw new Error("Evaluator response did not include text content.");
+              const parsed = rubricSchema.parse(JSON.parse(content));
+              const { summary, ...rubric } = parsed;
+              const qualityScore = rubric.correctness * 0.3 + rubric.completeness * 0.25 +
+                rubric.instructionAdherence * 0.2 + rubric.evidence * 0.15 + rubric.clarity * 0.1;
+              return { available: true as const, qualityScore, rubric, summary, attempts: attempt };
+            })()]);
+            return result;
+          } catch (error) {
+            reason = error instanceof Error ? error.message : "Quality evaluator failed.";
+            if (controller.signal.aborted) return { available: false, reason, attempts };
+          }
         }
+        return { available: false, reason, attempts };
+      } finally {
+        clearTimeout(timer);
+        input.signal?.removeEventListener("abort", abort);
       }
-      return { available: false, reason, attempts: 2 };
     }
   };
 }

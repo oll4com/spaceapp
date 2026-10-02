@@ -1,3 +1,4 @@
+import { transitionAgentRunLedger } from "@space/contracts";
 import { splitCliHostTranscriptContent } from "@space/contracts";
 import type { PaneBatchClaim } from "@space/contracts";
 import type { TaskTitleState } from "@space/contracts";
@@ -657,6 +658,7 @@ type SpaceAgentMessageRow = {
 };
 
 type SpaceAgentRunRow = {
+  ledger?: SpaceAgentRunRecord["ledger"];
   clientRequestId: string | null;
   requestFingerprint: string | null;
   execution: SpaceAgentRunRecord["execution"];
@@ -1588,6 +1590,7 @@ const spaceAgentMessageSelect = `
 const spaceAgentRunSelect = `
   SELECT
     execution_context AS "execution", runtime_model_at_start AS "runtimeModelAtStart", started_at AS "startedAt",
+    task_ledger AS "ledger",
     client_request_id AS "clientRequestId", request_fingerprint AS "requestFingerprint",
     run_id AS "runId",
     session_id AS "sessionId",
@@ -2724,6 +2727,7 @@ function mapSpaceAgentRun(row: SpaceAgentRunRow): SpaceAgentRunRecord {
   return spaceAgentRunRecordSchema.parse({
     clientRequestId: row.clientRequestId ?? undefined,
     requestFingerprint: row.requestFingerprint ?? undefined,
+    ledger: row.ledger ?? null,
     execution: row.execution ?? null,
     runtimeModelAtStart: row.runtimeModelAtStart ?? null,
     startedAt: toIso(row.startedAt),
@@ -3745,6 +3749,10 @@ export class PostgresSpaceStore implements SpaceStore {
       keyboardAutocorrect: {
         ...current.keyboardAutocorrect,
         ...(input.keyboardAutocorrect ?? {})
+      },
+      livePane: {
+        ...current.livePane,
+        ...(input.livePane ?? {})
       },
       updatedAt: nowIso()
     });
@@ -5062,6 +5070,13 @@ export class PostgresSpaceStore implements SpaceStore {
            ON CONFLICT (id) DO UPDATE SET starter_room_initialized = true, updated_at = now()`,
           [userId, email]
         );
+      }
+      const starter = await client.query<RoomRow>(
+        `${roomSelect} WHERE (owner_user_id = $1 OR owner_user_id IS NULL) AND name = 'Getting Started' ORDER BY room_order ASC LIMIT 1`,
+        [userId]
+      );
+      if (starter.rows[0]) {
+        return mapRoom(starter.rows[0]);
       }
       const existing = await client.query<RoomRow>(
         `${roomSelect} WHERE owner_user_id = $1 ORDER BY room_order ASC LIMIT 1`,
@@ -6657,20 +6672,20 @@ export class PostgresSpaceStore implements SpaceStore {
         `
           INSERT INTO space_agent_runs (
             run_id, session_id, pane_id, room_id, workflow_id, temporal_run_id, codex_thread_id, codex_turn_id,
-            status, prompt_message_id, response_message_id, error_code, error_message, created_at, updated_at, completed_at
+            status, prompt_message_id, response_message_id, error_code, error_message, created_at, updated_at, completed_at, task_ledger
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, $15)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, $15, $16::jsonb)
           RETURNING
             run_id AS "runId", session_id AS "sessionId", pane_id AS "paneId", room_id AS "roomId",
             workflow_id AS "workflowId", temporal_run_id AS "temporalRunId", codex_thread_id AS "codexThreadId",
             codex_turn_id AS "codexTurnId", status, prompt_message_id AS "promptMessageId",
             response_message_id AS "responseMessageId", error_code AS "errorCode", error_message AS "errorMessage",
-            created_at AS "createdAt", updated_at AS "updatedAt", completed_at AS "completedAt"
+            created_at AS "createdAt", updated_at AS "updatedAt", completed_at AS "completedAt", task_ledger AS "ledger"
         `,
         [runInput.runId, runInput.sessionId, runInput.paneId, runInput.roomId, runInput.workflowId,
           runInput.temporalRunId ?? null, runInput.codexThreadId ?? null, runInput.codexTurnId ?? null, runInput.status,
           runInput.promptMessageId, runInput.responseMessageId, runInput.errorCode ?? null, runInput.errorMessage ?? null,
-          timestamp, runInput.completedAt ?? null]
+          timestamp, runInput.completedAt ?? null, JSON.stringify(transitionAgentRunLedger({ status: runInput.status, at: timestamp }))]
       );
       const run = mapSpaceAgentRun(firstOrNotFound(runResult.rows, `Room agent run ${runInput.runId} was not stored.`));
       await client.query(
@@ -8053,11 +8068,22 @@ export class PostgresSpaceStore implements SpaceStore {
   ): Promise<SpaceAgentSessionRecord> {
     const parsed = updateSpaceAgentSessionInputSchema.parse(input);
     return this.withTransaction(async (client) => {
+      // Submission and session creation lock the pane before its sessions. Use
+      // the same order here so polling cannot deadlock an accepted submission.
+      const hintResult = await client.query<SpaceAgentSessionRow>(
+        `${spaceAgentSessionSelect} WHERE session_id = $1`, [sessionId]
+      );
+      const hint = mapSpaceAgentSession(firstOrNotFound(hintResult.rows, `Space agent session ${sessionId} was not found.`));
+      const lockedPaneIds = [...new Set([hint.paneId, parsed.paneId ?? hint.paneId])].sort();
+      for (const id of lockedPaneIds) await this.getPaneForUpdate(client, id);
       const currentResult = await client.query<SpaceAgentSessionRow>(
         `${spaceAgentSessionSelect} WHERE session_id = $1 FOR UPDATE`,
         [sessionId]
       );
       const current = mapSpaceAgentSession(firstOrNotFound(currentResult.rows, `Space agent session ${sessionId} was not found.`));
+      if (!lockedPaneIds.includes(current.paneId)) {
+        throw new SpaceConflictError("Space agent session moved while its pane was being locked. Retry with the current pane.");
+      }
       const paneId = parsed.paneId ?? current.paneId;
       const roomId = parsed.roomId ?? current.roomId;
       const pane = await this.getPaneForUpdate(client, paneId);
@@ -8314,9 +8340,9 @@ export class PostgresSpaceStore implements SpaceStore {
           error_message,
           created_at,
           updated_at,
-          completed_at, execution_context, started_at, client_request_id, request_fingerprint
+          completed_at, execution_context, started_at, client_request_id, request_fingerprint, task_ledger
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, $15, $16::jsonb, $17, $18, $19)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, $15, $16::jsonb, $17, $18, $19, $20::jsonb)
         RETURNING
           run_id AS "runId",
           session_id AS "sessionId",
@@ -8335,6 +8361,7 @@ export class PostgresSpaceStore implements SpaceStore {
           updated_at AS "updatedAt",
           completed_at AS "completedAt",
           execution_context AS "execution", runtime_model_at_start AS "runtimeModelAtStart", started_at AS "startedAt",
+    task_ledger AS "ledger",
     client_request_id AS "clientRequestId", request_fingerprint AS "requestFingerprint"
       `,
       [
@@ -8356,7 +8383,8 @@ export class PostgresSpaceStore implements SpaceStore {
         parsed.execution ? JSON.stringify(parsed.execution) : null,
         parsed.status === "RUNNING" ? timestamp : null,
         parsed.clientRequestId ?? null,
-        parsed.requestFingerprint ?? null
+        parsed.requestFingerprint ?? null,
+        JSON.stringify(transitionAgentRunLedger({ status: parsed.status, at: timestamp }))
       ]
       );
       const run = mapSpaceAgentRun(firstOrNotFound(result.rows, `Space agent run ${runId} was not stored.`));
@@ -8399,6 +8427,11 @@ export class PostgresSpaceStore implements SpaceStore {
   async updateSpaceAgentRun(runId: string, input: UpdateSpaceAgentRunInput, traceId = makeSpaceId("trace")): Promise<SpaceAgentRunRecord> {
     const parsed = updateSpaceAgentRunInputSchema.parse(input);
     return this.withTransaction(async (client) => {
+      // Terminal transitions append pane events, and may race completion.
+      // Keep the same pane -> run order even for metadata-only updates.
+      const hintResult = await client.query<SpaceAgentRunRow>(`${spaceAgentRunSelect} WHERE run_id = $1`, [runId]);
+      const paneId = firstOrNotFound(hintResult.rows, `Space agent run ${runId} was not found.`).paneId;
+      await this.getPaneForUpdate(client, paneId);
       const currentResult = await client.query<SpaceAgentRunRow>(`${spaceAgentRunSelect} WHERE run_id = $1 FOR UPDATE`, [runId]);
       const current = mapSpaceAgentRun(firstOrNotFound(currentResult.rows, `Space agent run ${runId} was not found.`));
       const terminal = parsed.status === "COMPLETED" || parsed.status === "FAILED" || parsed.status === "INTERRUPTED";
@@ -8414,6 +8447,7 @@ export class PostgresSpaceStore implements SpaceStore {
             updated_at = $8,
             completed_at = $9,
             runtime_model_at_start = $10,
+            task_ledger = $11::jsonb,
             started_at = COALESCE(started_at, CASE WHEN $5 = 'RUNNING' THEN $8::timestamptz END)
         WHERE run_id = $1
         RETURNING
@@ -8434,6 +8468,7 @@ export class PostgresSpaceStore implements SpaceStore {
           updated_at AS "updatedAt",
           completed_at AS "completedAt",
           execution_context AS "execution", runtime_model_at_start AS "runtimeModelAtStart", started_at AS "startedAt",
+    task_ledger AS "ledger",
     client_request_id AS "clientRequestId", request_fingerprint AS "requestFingerprint"
       `,
       [
@@ -8446,7 +8481,10 @@ export class PostgresSpaceStore implements SpaceStore {
         parsed.errorMessage === undefined ? current.errorMessage : parsed.errorMessage,
         nowIso(),
         parsed.completedAt === undefined ? (terminal ? nowIso() : current.completedAt) : parsed.completedAt,
-        parsed.runtimeModelAtStart === undefined ? current.runtimeModelAtStart ?? null : parsed.runtimeModelAtStart
+        parsed.runtimeModelAtStart === undefined ? current.runtimeModelAtStart ?? null : parsed.runtimeModelAtStart,
+        JSON.stringify(transitionAgentRunLedger({ current: current.ledger ?? transitionAgentRunLedger({ status: current.status, at: null,
+          runtimeModelAtStart: current.runtimeModelAtStart }), status: parsed.status ?? current.status, at: nowIso(),
+          runtimeModelAtStart: parsed.runtimeModelAtStart, evaluation: parsed.evaluation }))
       ]
       );
       const updated = mapSpaceAgentRun(firstOrNotFound(result.rows, `Space agent run ${runId} was not updated.`));
@@ -8490,6 +8528,11 @@ export class PostgresSpaceStore implements SpaceStore {
 
   async completeSpaceAgentRun(input: CompleteSpaceAgentRunInput): Promise<CompletedSpaceAgentRunRecord> {
     return this.withTransaction(async (client) => {
+      // Completion also appends a pane event. Lock that pane before the run and
+      // session to agree with submission, polling, and session creation.
+      const runHint = await client.query<SpaceAgentRunRow>(`${spaceAgentRunSelect} WHERE run_id = $1`, [input.runId]);
+      const paneId = firstOrNotFound(runHint.rows, `Space agent run ${input.runId} was not found.`).paneId;
+      await this.getPaneForUpdate(client, paneId);
       const runResult = await client.query<SpaceAgentRunRow>(`${spaceAgentRunSelect} WHERE run_id = $1 FOR UPDATE`, [input.runId]);
       const currentRun = mapSpaceAgentRun(firstOrNotFound(runResult.rows, `Space agent run ${input.runId} was not found.`));
       const sessionResult = await client.query<SpaceAgentSessionRow>(
@@ -8549,7 +8592,7 @@ export class PostgresSpaceStore implements SpaceStore {
         `
           UPDATE space_agent_runs
           SET status = 'COMPLETED', codex_thread_id = $2, codex_turn_id = $3,
-              error_code = NULL, error_message = NULL, completed_at = $4, updated_at = $4
+              error_code = NULL, error_message = NULL, completed_at = $4, updated_at = $4, task_ledger = $5::jsonb
           WHERE run_id = $1
           RETURNING
             run_id AS "runId", session_id AS "sessionId", pane_id AS "paneId", room_id AS "roomId",
@@ -8559,9 +8602,13 @@ export class PostgresSpaceStore implements SpaceStore {
             error_code AS "errorCode", error_message AS "errorMessage",
             created_at AS "createdAt", updated_at AS "updatedAt", completed_at AS "completedAt",
             execution_context AS "execution", runtime_model_at_start AS "runtimeModelAtStart", started_at AS "startedAt",
+    task_ledger AS "ledger",
     client_request_id AS "clientRequestId", request_fingerprint AS "requestFingerprint"
         `,
-        [input.runId, input.codexThreadId, input.codexTurnId, input.completedAt]
+        [input.runId, input.codexThreadId, input.codexTurnId, input.completedAt,
+          JSON.stringify(transitionAgentRunLedger({ current: currentRun.ledger ?? transitionAgentRunLedger({ status: currentRun.status, at: null,
+            runtimeModelAtStart: currentRun.runtimeModelAtStart }), status: "COMPLETED", at: input.completedAt,
+            evaluation: input.evaluation }))]
       );
       const paneResult = await client.query<{ isClosed: boolean; isRoomAgent: boolean }>(
         `SELECT p.is_closed AS "isClosed", EXISTS (
@@ -9985,16 +10032,18 @@ export class PostgresSpaceStore implements SpaceStore {
         ]
       );
       await this.updateCliTaskRevisionTranscript(client, session, parsed.stream, parsed.content, timestamp);
+      // (session_id, sequence) is unique: seek the first excess row without
+      // hashing the retained chunk IDs or reading their contents on every write.
       await client.query(
         `
           DELETE FROM pane_cli_transcript_chunks
           WHERE session_id = $1
-            AND chunk_id NOT IN (
-              SELECT chunk_id
+            AND sequence <= (
+              SELECT sequence
               FROM pane_cli_transcript_chunks
               WHERE session_id = $1
-              ORDER BY sequence DESC, created_at DESC
-              LIMIT $2
+              ORDER BY sequence DESC
+              OFFSET $2 LIMIT 1
             )
         `,
         [parsed.sessionId, PANE_CLI_TRANSCRIPT_CHUNK_CAP]
@@ -10071,15 +10120,16 @@ export class PostgresSpaceStore implements SpaceStore {
         last = mapPaneCliTranscriptChunk(firstOrNotFound(result.rows, `CLI transcript chunk ${chunkId} was not stored.`));
       }
       await this.updateCliTaskRevisionTranscript(client, session, parsed.stream, parsed.content, timestamp);
+      // A missing excess row yields NULL, so a session below the cap is untouched.
       await client.query(
         `
           DELETE FROM pane_cli_transcript_chunks
           WHERE session_id = $1
-            AND chunk_id NOT IN (
-              SELECT chunk_id FROM pane_cli_transcript_chunks
+            AND sequence <= (
+              SELECT sequence FROM pane_cli_transcript_chunks
               WHERE session_id = $1
-              ORDER BY sequence DESC, created_at DESC
-              LIMIT $2
+              ORDER BY sequence DESC
+              OFFSET $2 LIMIT 1
             )
         `,
         [parsed.sessionId, PANE_CLI_TRANSCRIPT_CHUNK_CAP]

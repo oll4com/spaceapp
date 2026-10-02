@@ -16,22 +16,23 @@ export function liveJevReadCandidate(result: LiveIntentResult, roomId: string | 
 
 export async function routeLiveDelegation(input: {
   enabled: boolean; roomId?: string; tools?: Array<Record<string, unknown>>;
-  classify: () => Promise<LiveIntentResult>;
+  classify: (signal?: AbortSignal) => Promise<LiveIntentResult>;
   delegate: (signal?: AbortSignal) => Promise<DelegateResult>;
 }): Promise<DelegateResult> {
   if (!input.enabled) return input.delegate();
-  const started = performance.now(), abort = new AbortController();
+  const started = performance.now(), abort = new AbortController(), classifierAbort = new AbortController();
   // Starting the fallback immediately avoids adding the classifier's timeout
   // to ordinary commands. Cancelling a losing provider request does not prove
   // zero provider cost, so its cost remains unknown in the receipt.
   const baseline = input.delegate(abort.signal);
-  const candidate = input.classify().then(result => {
+  const candidate = input.classify(classifierAbort.signal).then(result => {
     const toolCall = liveJevReadCandidate(result, input.roomId, input.tools);
     return toolCall ? { toolCall, message: null, telemetry: { provider: null, model: null,
       latencyMs: Math.round(performance.now() - started), attempt: 1, estimatedCostUsd: null,
       routing: "jev-read" as const } } : baseline;
   }).catch(() => baseline);
   const result = await Promise.race([baseline, candidate]);
+  classifierAbort.abort();
   if (result.telemetry?.routing === "jev-read") abort.abort();
   return result;
 }

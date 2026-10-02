@@ -1,3 +1,21 @@
+:root {
+  --desktop-titlebar-height: 0px;
+}
+
+/* Portalled overlays share the inset of the visible native title bar. */
+body:has(.desktop-window-titlebar),
+.space-shell:has(.desktop-window-titlebar) {
+  --desktop-titlebar-height: 32px;
+}
+
+:fullscreen,
+:-webkit-full-screen,
+[data-browser-fullscreen="true"],
+body:has([data-browser-fullscreen="true"]),
+.space-shell[data-browser-fullscreen="true"] {
+  --desktop-titlebar-height: 0px !important;
+}
+
 .desktop-window-titlebar {
   display: flex;
   align-items: center;
@@ -23,6 +41,8 @@
 }
 
 .desktop-window-titlebar-left {
+  height: 100%;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -109,6 +129,11 @@
 }
 
 .desktop-window-titlebar-menu-trigger {
+  height: 26px;
+  min-height: 26px;
+  max-height: 26px;
+  box-sizing: border-box;
+  line-height: 1;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -950,6 +975,317 @@
 .desktop-window-update-action-btn:disabled {
   opacity: 0.65;
   cursor: not-allowed;
+}
+
+/* Titlebar Record Button */
+.desktop-window-record-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: var(--room-text, #e6edf3);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: all 0.15s ease;
+  user-select: none;
+  margin-left: 4px;
+}
+
+.desktop-window-record-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.desktop-window-record-btn.is-recording {
+  background: rgba(248, 81, 73, 0.2);
+  border-color: rgba(248, 81, 73, 0.6);
+  color: #ff7b72;
+  box-shadow: 0 0 10px rgba(248, 81, 73, 0.3);
+}
+
+.desktop-window-record-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f85149;
+  flex-shrink: 0;
+}
+
+.desktop-window-record-dot.recording-pulse {
+  animation: recordPulse 1.2s infinite ease-in-out;
+}
+
+@keyframes recordPulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scale(1.3);
+    opacity: 1;
+    box-shadow: 0 0 6px #f85149;
+  }
+  100% {
+    transform: scale(0.9);
+    opacity: 0.4;
+  }
+}
+
+/* App Menu Aspect Ratio Section */
+.desktop-window-app-menu-aspect-section {
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-top: 1px solid #30363d;
+  border-bottom: 1px solid #30363d;
+  margin: 4px 0;
+}
+
+.desktop-window-app-menu-aspect-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #e6edf3;
+  margin-bottom: 8px;
+}
+
+.desktop-window-app-menu-aspect-header small {
+  margin-left: auto;
+  font-size: 0.68rem;
+  color: #8b949e;
+  font-weight: 400;
+}
+
+.desktop-window-aspect-ratio-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+.desktop-window-aspect-ratio-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 2px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #c9d1d9;
+  cursor: pointer;
+  transition: all 0.12s;
+  min-height: 40px;
+}
+
+.desktop-window-aspect-ratio-btn strong {
+  font-size: 0.74rem;
+  line-height: 1.1;
+  color: #e6edf3;
+}
+
+.desktop-window-aspect-ratio-btn span {
+  font-size: 0.62rem;
+  color: #8b949e;
+  margin-top: 2px;
+}
+
+.desktop-window-aspect-ratio-btn:hover {
+  background: #30363d;
+  border-color: #58a6ff;
+  color: #fff;
+}
+
+.desktop-window-aspect-ratio-btn.active {
+  background: rgba(88, 166, 255, 0.18);
+  border-color: #58a6ff;
+  color: #58a6ff;
+}
+
+.desktop-window-aspect-ratio-btn.active strong {
+  color: #58a6ff;
+}
+
+.desktop-window-aspect-ratio-btn.maximize {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.desktop-window-aspect-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.desktop-window-aspect-action-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #e6edf3;
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.desktop-window-aspect-action-btn:hover {
+  background: #30363d;
+  border-color: #8b949e;
+}
+
+.desktop-window-aspect-action-btn.recording {
+  background: rgba(248, 81, 73, 0.2);
+  border-color: rgba(248, 81, 73, 0.5);
+  color: #ff7b72;
+}
+
+/* Recording Dialog */
+.desktop-window-recording-dialog {
+  width: 90%;
+  max-width: 580px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: fadeInDialog 0.15s ease-out;
+}
+
+.desktop-window-recording-dialog-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: rgba(248, 81, 73, 0.15);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.desktop-window-recording-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.desktop-window-recording-player-wrapper {
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid #30363d;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.desktop-window-recording-player {
+  max-width: 100%;
+  max-height: 340px;
+  display: block;
+}
+
+.desktop-window-recording-meta-pills {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.desktop-window-recording-meta-pill {
+  flex: 1;
+  min-width: 80px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.desktop-window-recording-meta-pill span {
+  font-size: 0.68rem;
+  color: #8b949e;
+}
+
+.desktop-window-recording-meta-pill strong {
+  font-size: 0.82rem;
+  color: #e6edf3;
+}
+
+.desktop-window-recording-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.desktop-window-recording-save-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 16px;
+  background: #238636;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.desktop-window-recording-save-btn:hover {
+  background: #2ea043;
+}
+
+/* Snapshot Toast */
+.desktop-window-snapshot-toast {
+  position: fixed;
+  top: 42px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1f242c;
+  color: #e6edf3;
+  border: 1px solid rgba(63, 185, 80, 0.5);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 100000;
+  animation: toastPop 0.2s ease-out;
+  pointer-events: none;
+}
+
+@keyframes toastPop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }
 
 

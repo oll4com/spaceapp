@@ -396,7 +396,8 @@ export function OnScreenKeyboard({
   onOpenChange,
   roomTheme,
   defaultShowShortcuts = false,
-  defaultAutocomplete
+  defaultAutocomplete,
+  portalTarget
 }: {
   mobile: boolean;
   open: boolean;
@@ -406,6 +407,7 @@ export function OnScreenKeyboard({
   roomTheme: RoomTheme;
   defaultShowShortcuts?: boolean;
   defaultAutocomplete?: boolean;
+  portalTarget?: HTMLElement | null;
 }) {
   const panelRef = useRef<HTMLElement | null>(null);
   useMenuWheel(panelRef, ".osk-chip", open);
@@ -512,7 +514,7 @@ export function OnScreenKeyboard({
   })();
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || portalTarget) return;
     const panel = panelRef.current;
     if (!panel) return;
     const rect = panel.getBoundingClientRect();
@@ -526,7 +528,7 @@ export function OnScreenKeyboard({
       const top = Math.max(VIEWPORT_MARGIN_PX, Math.min(window.innerHeight - height - VIEWPORT_MARGIN_PX, window.innerHeight - height - 96));
       return { left, top, ready: true };
     });
-  }, [open]);
+  }, [open, portalTarget]);
 
   useEffect(() => {
     persistScale(scale);
@@ -537,7 +539,7 @@ export function OnScreenKeyboard({
   }, [lang]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || portalTarget) return;
     if (typeof document === "undefined") return;
 
     document.documentElement.classList.add("space-osk-open");
@@ -593,7 +595,7 @@ export function OnScreenKeyboard({
       window.removeEventListener("contextmenu", preventContextMenu, { capture: true });
       document.removeEventListener("touchend", handleTouchEnd);
     };
-  }, [open]);
+  }, [portalTarget, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -687,7 +689,7 @@ export function OnScreenKeyboard({
     setSymbolLayer((current) => !current);
   }, []);
 
-  const panelStyle: CSSProperties = mobile
+  const panelStyle: CSSProperties = portalTarget ? {} : mobile
     ? {
         left: `${position.left}px`,
         top: `${position.top}px`,
@@ -731,7 +733,7 @@ export function OnScreenKeyboard({
           role="button"
           tabIndex={0}
           aria-label="Move on-screen keyboard"
-          onPointerDown={handleDragStart}
+          onPointerDown={portalTarget ? undefined : handleDragStart}
           onPointerMove={handleDragMove}
           onPointerUp={handleDragEnd}
           onPointerCancel={handleDragEnd}
@@ -876,8 +878,8 @@ export function OnScreenKeyboard({
 
   return panel
     ? createPortal(
-        mobile ? <div className="osk-sheet-backdrop" onContextMenu={(event) => event.preventDefault()}>{panel}</div> : panel,
-        document.body
+        mobile && !portalTarget ? <div className="osk-sheet-backdrop" onContextMenu={(event) => event.preventDefault()}>{panel}</div> : panel,
+        portalTarget ?? document.body
       )
     : null;
 }

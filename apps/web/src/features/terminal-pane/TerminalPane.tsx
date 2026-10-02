@@ -4,7 +4,8 @@ import { submitCliShortcut } from "./submit-cli-shortcut.js";
 import { CliShortcutsMenu } from "./CliShortcutsMenu.js";
 import { CliPlansMenu } from "./CliPlansMenu.js";
 import { resolveCliModeShortcut, OSK_CLI_COMMANDS, OSK_ESC_COMMAND, OSK_ENTER_COMMAND, type OskCliCommand } from "../osk-keyboard/cli-shortcuts.js";
-import { ArrowUp, BrainCircuit, ChevronLeft, ChevronRight, Clipboard, Copy, Github, Images, Keyboard, Loader2, Maximize2, Square, Terminal as TerminalIcon, X } from "../ui-theme/app-icons.js";
+import { ArrowUp, BrainCircuit, ChevronLeft, ChevronRight, Clipboard, Copy, Github, Images, Keyboard, Loader2, Maximize2, Square, Terminal as TerminalIcon, Trash2, X } from "../ui-theme/app-icons.js";
+import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
 import { detectKeyboardLayoutMismatch, toggleKeyboardLayout, type LayoutMismatchDetection } from "../agent-pane/greek-layout-converter.js";
 import {
   isComposerLayoutIconVisible,
@@ -1006,8 +1007,9 @@ function containsCliUploadPath(text: string): boolean {
   return text.includes("/opt/spaceapp/var/artifacts/cli-uploads/") || text.includes("/cli-uploads/");
 }
 
+// Match the host's disjoint wrap branches to avoid freezing on PTY padding.
 export const CLI_UPLOAD_WRAPPED_PATH_PATTERN =
-  /(?:[ \t]*(?:\r?\n|\r)[ \t]*|\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t])*['"]?(?:\/srv\/space\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t]*(?:\r?\n|\r)[ \t]*(?:\x1b\[[0-9;?]*[ -/]*[@-~])*)+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
+  /(?<![ \t\r\n])(?:[ \t\r\n]|\x1b\[[0-9;?]*[ -/]*[@-~])*['"]?(?:\/srv\/space\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
 
 export function isUploadPathCutoff(text: string): number {
   const marker = "/cli-uploads/";
@@ -1581,6 +1583,16 @@ export function TerminalPane({
   const [photoHistoryAttempt, setPhotoHistoryAttempt] = useState(0);
   const uploadPreviewsPickerRef = useRef<HTMLDivElement | null>(null);
   const uploadPreviewsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [photoContextMenu, setPhotoContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const photoContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const photoTouchContext = useTouchContextMenu(
+    (source) => (source instanceof Element ? source.closest<HTMLElement>(".terminal-upload-preview-trigger") : null),
+    ({ x, y }) => {
+      setUploadPreviewsOpen(false);
+      setContextMenu(null);
+      setPhotoContextMenu({ x, y });
+    }
+  );
   const [sessionResponse, setSessionResponse] = useState<PaneCliSessionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
@@ -1669,6 +1681,32 @@ export function TerminalPane({
       window.removeEventListener("resize", handleResize);
     };
   }, [contextMenu]);
+
+  useEffect(() => {
+    if (!photoContextMenu) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && !photoContextMenuRef.current?.contains(event.target)) {
+        setPhotoContextMenu(null);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setPhotoContextMenu(null);
+        focusTerminal();
+      }
+    };
+    const handleResize = () => setPhotoContextMenu(null);
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("resize", handleResize);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [photoContextMenu]);
 
   const [activeCliTurn, setActiveCliTurn] = useState<ActiveCliTurn | null>(null);
   const fallbackRunRef = useRef<{ runKey: string } | null>(null);
@@ -6306,7 +6344,7 @@ export function TerminalPane({
     return output;
   }
 
-  function removeUploadPreview(id: string) {
+  async function removeUploadPreview(id: string) {
     const removedIndex = uploadPreviews.findIndex((preview) => preview.id === id);
     const removedPreview = removedIndex >= 0 ? uploadPreviews[removedIndex] ?? null : null;
     setUploadPreviews((current) => current.filter((preview) => preview.id !== id));
@@ -6320,18 +6358,27 @@ export function TerminalPane({
         "clipboard preview removed",
         `removed image ${removedIndex + 1}; remaining=${Math.max(uploadPreviews.length - 1, 0)}; path=${removedPreview.path}; ${terminalRoutingSummary(typeof document !== "undefined" ? document.activeElement : null)}.`
       );
+      if (removedPreview.id) {
+        await api.deleteArtifact(removedPreview.id).catch(() => {});
+      }
     }
     focusTerminal();
     window.requestAnimationFrame(() => focusTerminal());
   }
 
-  function clearUploadPreviews() {
+  async function clearUploadPreviews() {
     if (!uploadPreviews.length) return;
+    const toDelete = [...uploadPreviews];
     setUploadPreviews([]);
     setSelectedUploadPreviewId(null);
+    setUploadPreviewsOpen(false);
+    setPhotoContextMenu(null);
     setNotice("All clipboard previews removed.");
     focusTerminal();
     window.requestAnimationFrame(() => focusTerminal());
+    await Promise.allSettled(
+      toDelete.map((p) => (p.id ? api.deleteArtifact(p.id).catch(() => {}) : Promise.resolve()))
+    );
   }
 
   async function uploadFiles(
@@ -7397,6 +7444,15 @@ export function TerminalPane({
               >
                 <X aria-hidden="true" />
               </button>
+              <button
+                type="button"
+                className="terminal-upload-modal-delete"
+                aria-label="Delete photo"
+                title="Delete photo"
+                onClick={() => void removeUploadPreview(selectedUploadPreview.id)}
+              >
+                <Trash2 size={15} aria-hidden="true" />
+              </button>
               <span className="terminal-upload-modal-label" aria-live="polite">
                 {selectedUploadPreviewLabel} · {selectedUploadPreviewIndex + 1} / {uploadPreviews.length}
               </span>
@@ -7429,6 +7485,14 @@ export function TerminalPane({
               aria-expanded={uploadPreviewsOpen}
               title={`Photos (${uploadPreviews.length})`}
               onClick={() => setUploadPreviewsOpen((prev) => !prev)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setUploadPreviewsOpen(false);
+                setContextMenu(null);
+                setPhotoContextMenu({ x: event.clientX, y: event.clientY });
+              }}
+              {...photoTouchContext}
             >
               <Images size={16} aria-hidden="true" />
               {uploadPreviews.length > 1 ? (
@@ -7439,6 +7503,20 @@ export function TerminalPane({
             </button>
             {uploadPreviewsOpen ? (
               <div className="terminal-upload-preview-popover" role="dialog" aria-label={`CLI photos ${pane.title}`}>
+                <div className="terminal-upload-popover-header">
+                  <span className="terminal-upload-popover-title">Photos ({uploadPreviews.length})</span>
+                  <button
+                    type="button"
+                    className="terminal-upload-popover-clear"
+                    aria-label={`Dismiss all images ${pane.title}`}
+                    title="Delete photos"
+                    disabled={!uploadPreviews.length}
+                    onClick={() => void clearUploadPreviews()}
+                  >
+                    <Trash2 size={13} aria-hidden="true" />
+                    <span>Delete photos</span>
+                  </button>
+                </div>
                 {photoHistoryError ? (
                   <button type="button" className="compact-action" onClick={() => setPhotoHistoryAttempt((attempt) => attempt + 1)}>
                     Retry loading photos
@@ -7468,6 +7546,18 @@ export function TerminalPane({
                           {index + 1}
                         </span>
                         <img src={preview.objectUrl} alt={`Image ${index + 1} preview`} loading="lazy" />
+                      </button>
+                      <button
+                        type="button"
+                        className="terminal-upload-preview-delete"
+                        aria-label={`Delete image ${index + 1}`}
+                        title="Delete photo"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void removeUploadPreview(preview.id);
+                        }}
+                      >
+                        <X size={11} aria-hidden="true" />
                       </button>
                     </figure>;
                   })}
@@ -7873,6 +7963,59 @@ export function TerminalPane({
                 </div>
               </button>
             ) : null}
+          </div>,
+          document.body
+        );
+      })() : null}
+      {photoContextMenu && typeof document !== "undefined" ? (() => {
+        const targetHost = xtermHostRef.current?.closest<HTMLElement>("[data-shell-mode], .space-shell, [data-room-theme], [data-ui-theme]");
+        const currentUiTheme = targetHost?.dataset.uiTheme || (typeof document !== "undefined" ? document.body.dataset.uiTheme : undefined);
+        const currentInterfaceTheme = targetHost?.dataset.interfaceTheme || (typeof document !== "undefined" ? document.documentElement.dataset.interfaceTheme : undefined);
+        const currentRoomTheme = targetHost?.dataset.roomTheme || (typeof document !== "undefined" ? document.body.dataset.roomTheme : undefined);
+        const currentColorMode = targetHost?.dataset.colorMode || (typeof document !== "undefined" ? document.body.dataset.colorMode : undefined);
+        const contextMenuLeft = Math.max(8, Math.min(photoContextMenu.x, window.innerWidth - 180 - 8));
+        const contextMenuTop = Math.max(8, Math.min(photoContextMenu.y, window.innerHeight - 120 - 8));
+        return createPortal(
+          <div
+            ref={photoContextMenuRef}
+            className="icon-context-menu terminal-context-menu terminal-photo-context-menu"
+            role="menu"
+            aria-label={`Photo options ${pane.title}`}
+            data-ui-theme={currentUiTheme}
+            data-interface-theme={currentInterfaceTheme}
+            data-room-theme={currentRoomTheme}
+            data-color-mode={currentColorMode}
+            style={{ left: `${contextMenuLeft}px`, top: `${contextMenuTop}px` }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setPhotoContextMenu(null);
+                setUploadPreviewsOpen(true);
+              }}
+            >
+              <div className="terminal-context-menu-item-left">
+                <Images aria-hidden="true" />
+                <span>View photos</span>
+              </div>
+            </button>
+            <div className="terminal-context-menu-separator" role="separator" />
+            <button
+              type="button"
+              role="menuitem"
+              className="is-delete"
+              disabled={!uploadPreviews.length}
+              onClick={() => {
+                setPhotoContextMenu(null);
+                void clearUploadPreviews();
+              }}
+            >
+              <div className="terminal-context-menu-item-left">
+                <Trash2 aria-hidden="true" />
+                <span>Delete photos</span>
+              </div>
+            </button>
           </div>,
           document.body
         );

@@ -1,3 +1,7 @@
+:root[data-interface-theme="codex"] {
+  --room-accent: #82aaff;
+}
+
 /* Codex LB shares the Modern layout; these tokens also reach body portals. */
 :root[data-interface-theme="codex"] [data-ui-theme="modern"] {
   --modern-bg: #090909;

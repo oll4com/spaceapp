@@ -1,7 +1,33 @@
 import React, { useState } from "react";
 import type { AuthMe } from "@space/contracts";
-import { CheckCircle2, Shield, Unlink, Link2 } from "lucide-react";
+import { CheckCircle2, Shield, Unlink, Link2, Eye, EyeOff } from "lucide-react";
 import { api } from "../../api.js";
+
+export function maskEmail(email: string): string {
+  if (!email || !email.includes("@")) return "***";
+  const [localPart, domain] = email.split("@");
+  if (!localPart || !domain) return "***";
+
+  let maskedLocal = "***";
+  if (localPart.length <= 2) {
+    maskedLocal = `${localPart[0]}***`;
+  } else if (localPart.length <= 4) {
+    maskedLocal = `${localPart[0]}***${localPart[localPart.length - 1]}`;
+  } else {
+    maskedLocal = `${localPart.slice(0, 2)}***${localPart.slice(-2)}`;
+  }
+
+  const domainParts = domain.split(".");
+  let maskedDomain = domain;
+  if (domainParts.length >= 2) {
+    const host = domainParts[0]!;
+    const tld = domainParts.slice(1).join(".");
+    const maskedHost = host.length <= 2 ? `${host[0]}***` : `${host[0]}***${host[host.length - 1]}`;
+    maskedDomain = `${maskedHost}.${tld}`;
+  }
+
+  return `${maskedLocal}@${maskedDomain}`;
+}
 
 export interface GoogleAccountSettingsCardProps {
   auth: AuthMe | null;
@@ -15,6 +41,7 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
   const [configClientId, setConfigClientId] = useState("");
   const [configClientSecret, setConfigClientSecret] = useState("");
   const [showConfig, setShowConfig] = useState(false);
+  const [showFullEmail, setShowFullEmail] = useState(false);
 
   const user = auth?.user;
   const isLinked = Boolean(user?.googleId);
@@ -95,7 +122,33 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
       <div className="settings-flat-row" style={{ alignItems: "center" }}>
         <span className="settings-flat-row-copy">
           <strong>Space User</strong>
-          <small>{user?.email ?? user?.id ?? "Current session"} &bull; Role: {user?.role ?? "USER"}</small>
+          <small style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}>
+            <span data-sensitive-masked="manual">
+              {user?.email
+                ? (showFullEmail ? user.email : maskEmail(user.email))
+                : (user?.id ?? "Current session")}
+            </span>
+            {user?.email ? (
+              <button
+                type="button"
+                onClick={() => setShowFullEmail(!showFullEmail)}
+                aria-label={showFullEmail ? "Hide email" : "Show full email"}
+                title={showFullEmail ? "Hide email" : "Show full email"}
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  cursor: "pointer",
+                  color: "var(--room-text-secondary, #9ca3af)",
+                  display: "inline-flex",
+                  alignItems: "center"
+                }}
+              >
+                {showFullEmail ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
+            ) : null}
+            <span>&bull; Role: {user?.role ?? "USER"}</span>
+          </small>
         </span>
         <span
           style={{
@@ -152,7 +205,11 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
             <strong>{isLinked ? "Google Account Linked" : "Google Account Link"}</strong>
             <small style={{ wordBreak: "break-all" }}>
               {isLinked
-                ? `Active Google ID: ${user?.googleId}`
+                ? (
+                  <span data-sensitive-masked="manual">
+                    Active Google ID: {user?.googleId ? `${user.googleId.slice(0, 4)}••••${user.googleId.slice(-4)}` : ""}
+                  </span>
+                )
                 : googleAuthEnabled
                   ? "Connect a Google account to sign in directly with Google SSO."
                   : "Google OAuth is not configured on this server."}

@@ -4,9 +4,12 @@ const STATIC_LOGO_SRC = "/brand/space-logo-2048.png";
 const STATIC_LIGHT_LOGO_SRC = "/brand/space-logo-light.svg";
 const ANIMATED_LOGO_SRC = "/brand/space-logo.gif";
 const FALLBACK_LOGO_SRC = "/brand/space-logo.svg";
+const ORBITAL_LOGO_SRC = "/brand/spaceapp-orbital.png";
+const ORBITAL_ANIMATED_SRC = "/brand/spaceapp-orbital.gif";
+const ORBITAL_FALLBACK_SRC = "/brand/spaceapp-orbital.ico";
 const ANIMATION_DURATION_MS = 4_800;
 
-type StaticLogoSource = typeof STATIC_LOGO_SRC | typeof STATIC_LIGHT_LOGO_SRC | typeof FALLBACK_LOGO_SRC;
+type StaticLogoSource = typeof STATIC_LOGO_SRC | typeof STATIC_LIGHT_LOGO_SRC | typeof FALLBACK_LOGO_SRC | typeof ORBITAL_LOGO_SRC | typeof ORBITAL_FALLBACK_SRC;
 
 function getInitialIsLight(): boolean {
   if (typeof document === "undefined") return false;
@@ -15,9 +18,9 @@ function getInitialIsLight(): boolean {
          document.querySelector(".space-shell")?.getAttribute("data-color-mode") === "light";
 }
 
-export function SpaceBrand() {
+export function SpaceBrand({ orbital = false, onActivate }: { orbital?: boolean; onActivate?: () => void } = {}) {
   const [isLight, setIsLight] = useState(getInitialIsLight);
-  const [staticSource, setStaticSource] = useState<StaticLogoSource>(() => getInitialIsLight() ? STATIC_LIGHT_LOGO_SRC : STATIC_LOGO_SRC);
+  const [staticSource, setStaticSource] = useState<StaticLogoSource>(() => orbital ? ORBITAL_LOGO_SRC : getInitialIsLight() ? STATIC_LIGHT_LOGO_SRC : STATIC_LOGO_SRC);
   const [isAnimating, setIsAnimating] = useState(false);
   const [animationRun, setAnimationRun] = useState(0);
   const [showTextFallback, setShowTextFallback] = useState(false);
@@ -64,16 +67,17 @@ export function SpaceBrand() {
     setShowTextFallback(false);
     setAnimationRun((current) => current + 1);
     setIsAnimating(true);
+    onActivate?.();
   }
 
   useEffect(() => clearAnimationTimer, []);
 
-  const imageSource = isAnimating ? ANIMATED_LOGO_SRC : staticSource;
+  const imageSource = isAnimating ? (orbital ? ORBITAL_ANIMATED_SRC : ANIMATED_LOGO_SRC) : staticSource;
 
   return (
     <button
       type="button"
-      className="space-brand-control"
+      className={`space-brand-control${orbital ? " space-brand-orbital" : ""}`}
       aria-label="Play Space logo animation"
       title="Play Space logo animation"
       onClick={playAnimation}
@@ -95,6 +99,10 @@ export function SpaceBrand() {
             }
             if (staticSource === STATIC_LOGO_SRC) {
               setStaticSource(FALLBACK_LOGO_SRC);
+              return;
+            }
+            if (staticSource === ORBITAL_LOGO_SRC) {
+              setStaticSource(ORBITAL_FALLBACK_SRC);
               return;
             }
             setShowTextFallback(true);

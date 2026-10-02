@@ -40,6 +40,7 @@ export function createLiveCoordinator(deps: {
   let disposed = false;
   let contextDirty = false;
   let connectionOptions: LiveSessionOptions | null = null;
+  let liveSessionId: string = crypto.randomUUID();
   let configured: Partial<LiveSessionOptions> = {};
   let releaseMicrophone: (() => void) | null = null;
   let hasConnected = false;
@@ -51,7 +52,7 @@ export function createLiveCoordinator(deps: {
   const key = () => `space.live.coordinator.v2:${state.ownerId}`;
   const persist = () => {
     if (!state.ownerId) return;
-    try { deps.storage?.setItem(key(), JSON.stringify({ enabled: state.enabled, muted: state.muted, transcripts: state.transcripts.slice(-200), hasConnected })); } catch {}
+    try { deps.storage?.setItem(key(), JSON.stringify({ enabled: state.enabled, muted: state.muted, transcripts: state.transcripts.slice(-200), hasConnected, liveSessionId })); } catch {}
   };
   const patch = (change: Partial<LiveCoordinatorState>) => {
     state = { ...state, ...change };
@@ -166,7 +167,7 @@ export function createLiveCoordinator(deps: {
         if (!current()) { release(); return; }
         releaseMicrophone = release;
       }
-      connectionOptions = { ...deps.config(), ...configured, muted: state.muted, managedNotifications: true, roomId: state.roomId!, roomContext: state.context ?? undefined,
+      connectionOptions = { ...deps.config(), ...configured, userId: state.ownerId, liveSessionId, muted: state.muted, managedNotifications: true, roomId: state.roomId!, roomContext: state.context ?? undefined,
         transcripts: state.transcripts, suppressGreeting: hasConnected || state.transcripts.length > 0,
         getCommandRoom: () => state.contextState === "ready" && inputRoom === state.roomId ? state.roomId ?? undefined : undefined,
         captureCommandRoom: () => {
@@ -196,7 +197,7 @@ export function createLiveCoordinator(deps: {
     return pending;
   };
   const stop = () => {
-    generation++; commandEpoch++; starting = false; inputActive = false; cancelReconnect();
+    generation++; commandEpoch++; liveSessionId = crypto.randomUUID(); starting = false; inputActive = false; cancelReconnect();
     if (notificationTimer) clearTimeout(notificationTimer); notificationTimer = null;
     const handle = state.handle;
     patch({ enabled: false, handle: null, status: "idle", error: null }); persist();
@@ -210,6 +211,7 @@ export function createLiveCoordinator(deps: {
       stop(); roomGeneration++; contextAbort?.abort(); contextRead = null;
       let saved: Partial<LiveCoordinatorState> = {};
       try { saved = JSON.parse(deps.storage?.getItem(`space.live.coordinator.v2:${ownerId}`) || "{}"); } catch {}
+      liveSessionId = (saved as { liveSessionId?: string }).liveSessionId || crypto.randomUUID();
       inputRoom = null; configured = {}; hasConnected = (saved as { hasConnected?: boolean }).hasConnected === true;
       patch({ ownerId, roomId: null, roomName: "", enabled: saved.enabled === true, muted: saved.muted === true, transcripts: Array.isArray(saved.transcripts) ? saved.transcripts.slice(-200) : [], context: null, contextState: "unavailable" });
       if (deps.history) {
@@ -250,10 +252,36 @@ export function createLiveCoordinator(deps: {
       for (const part of parts) if (part.type === "text") state.handle.sendTextMessage(part.text);
     },
     async clearRoom(roomId: string) {
+      let syncError: string | null = null;
       try {
         await deps.history?.clearRoom(roomId, state.transcripts.filter(item => item.roomId === roomId).map(item => item.id));
-        patch({ transcripts: state.transcripts.filter(item => item.roomId !== roomId) }); persist();
-      } catch (error) { patch({ error: error instanceof Error ? error.message : "Conversation could not be cleared." }); }
+      } catch (error) {
+        syncError = error instanceof Error ? error.message : "Remote conversation could not be cleared.";
+      }
+      patch({
+        transcripts: state.transcripts.filter(item => item.roomId !== roomId),
+        ...(syncError ? { error: syncError } : {})
+      });
+      persist();
+    },
+    async clearAll() {
+      let syncError: string | null = null;
+      try {
+        const roomIds = Array.from(new Set(state.transcripts.map(item => item.roomId).filter(Boolean))) as string[];
+        for (const rId of roomIds) {
+          await deps.history?.clearRoom(rId, state.transcripts.filter(item => item.roomId === rId).map(item => item.id));
+        }
+        if (state.roomId && !roomIds.includes(state.roomId)) {
+          await deps.history?.clearRoom(state.roomId, []);
+        }
+      } catch (error) {
+        syncError = error instanceof Error ? error.message : "Remote conversation could not be cleared.";
+      }
+      patch({
+        transcripts: [],
+        ...(syncError ? { error: syncError } : {})
+      });
+      persist();
     },
     addTurn,
     dispose() {

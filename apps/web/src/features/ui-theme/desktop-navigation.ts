@@ -4,7 +4,7 @@ export const desktopGroups: { id: DesktopGroup; label: string }[] = [
   { id: "create", label: "Create" },
   { id: "workspace", label: "Workspace" }
 ];
-const adminActions = new Set(["advanced-settings", "server-restart", "add-root-admin-cli", "surface-health", "system-resources", "token-usage", "surface-streaming", "system-analytics", "system-services", "demo-mode"]);
+const adminActions = new Set(["advanced-settings", "server-restart", "add-root-admin-cli", "surface-health", "system-resources", "token-usage", "system-analytics", "system-services", "demo-mode"]);
 export function desktopActionGroup(id: string): DesktopGroup {
   if (id === "surface-rooms" || ["room-focus", "previous-room", "next-room"].includes(id)) return "rooms";
   if (id.startsWith("add-")) return "create";
@@ -16,8 +16,8 @@ export function desktopActionVisible(id: string, adminMode: boolean): boolean {
 }
 export const desktopActionDescriptions: Record<string, string> = {
   "advanced-settings": "All installation settings, providers, connections, and diagnostics.",
-  "surface-rooms": "Choose a room, create one, or organize your workspace.",
-  "surface-room-agent": "Ask an assistant to coordinate work in this room.",
+  "surface-rooms": "Choose a room or organize your workspace.",
+  "surface-room-agent": "Ask an assistant to coordinate this room.",
   "surface-shared-chat": "A shared conversation for everyone in the room.",
   "surface-media": "Images, recordings, and other media.",
   "surface-streaming": "Manage live broadcasts and overlays.",
@@ -28,7 +28,7 @@ export const desktopActionDescriptions: Record<string, string> = {
   "surface-clipboard": "Saved text, notes, and plans.",
   "surface-tasks": "Follow tasks and their progress.",
   "surface-links": "Bookmarks and browser connections.",
-  "surface-settings": "Appearance, notifications, and session preferences.",
+  "surface-settings": "Appearance, notifications, and preferences.",
   "token-usage": "Daily, weekly, and monthly token totals by provider and model.",
   "surface-health": "Inspect service health and connection status.",
   "system-resources": "Live system resources, detached CLI sessions, memory & CPU analysis.",
@@ -46,6 +46,8 @@ export const desktopActionDescriptions: Record<string, string> = {
   "pane-layout": "Choose how panes are arranged in this room.",
   "pane-span-all": "Adjust the width of every pane.",
   "theme": "Choose a color theme for this room.",
+  "rename-room": "Change the name of this room.",
+  "room-toolbar": "Choose which room controls are visible.",
   "font-down": "Adjust text size across your workspace.",
   "category-color-filter": "Show panes with a selected category color.",
   "resource-indicators": "Show live resource values and health alerts at the top right.",
@@ -62,6 +64,7 @@ export const desktopActionDescriptions: Record<string, string> = {
   "widget-pushup-reminder": "Floating periodic workout reminder for push-ups.",
   "widget-spaceapp-promo": "Floating banner promoting SpaceApp.dev (Free & Open Source).",
   "widget-ai-quota": "Floating AI quota monitor with live animated gauges for Codex, Gemini, and Claude.",
+  "widget-streaming-metrics": "Floating live streaming metrics monitor for active audio/video feeds.",
   "server-restart": "Setup, updates, cleanup, and guarded server operations.",
   "setup-connections": "Set up missing tools or reconnect an account.",
   "help": "Learn about rooms, panes, and everyday actions.",

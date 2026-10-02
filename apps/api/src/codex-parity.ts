@@ -437,6 +437,10 @@ const sharedChatContextTail = [
   "Action bodies: chat:send uses type=send with content and optional roomId/replyToId; chat:read uses type=read with optional limit/before/senderType; chat:react uses type=react with messageId and emoji.",
   "V1 allows at most 3 actions per turn. chat:send and chat:read messages stay permanently recorded in the operator-visible shared chat with the agent pane as sender."
 ];
+const currentSharedChatContextTail = [
+  "The Space shared chat is the one room where the operator and every agent pane talk together. Use these tools only when the operator asks to read, send, or react in the shared chat, or when an ongoing task already requires reporting there. Answer ordinary conversation, greetings, and test messages directly in this pane without reading shared chat. For a requested shared chat reply, use chat:read before chat:send. Use chat:react only to react to an existing message.",
+  ...sharedChatContextTail.slice(1)
+];
 const taskContextOpening = "Space private task tools selected:";
 const taskContextTail = [
   "Use these tools only when the operator explicitly asks to list, read, save, or update Space task declarations. Never add task declarations to an ordinary prompt.",
@@ -504,7 +508,8 @@ function isTrustedSharedChatContext(value: string): boolean {
   if (lines[0] !== sharedChatContextOpening || !/^tools=chat:(?:send|read|react)(?:, chat:(?:send|read|react))*$/.test(lines[1] ?? "")) {
     return false;
   }
-  return lines.slice(2).join("\n") === sharedChatContextTail.join("\n");
+  const tail = lines.slice(2).join("\n");
+  return tail === sharedChatContextTail.join("\n") || tail === currentSharedChatContextTail.join("\n");
 }
 
 function isTrustedTaskContext(value: string): boolean {
@@ -584,8 +589,23 @@ function stripChatTransportImages(value: string): string {
   return candidate !== value && trailingDurableTurnMarker.test(candidate) ? candidate : value;
 }
 
+const toolObservationFollowUpOpening = [
+  "Space tool observations are below.",
+  "Continue the answer to the operator using only these observations and the Space task context below.",
+  "Do not request another tool action in this follow-up turn. If more tool work is needed, state the next needed action.",
+  "Do not reveal internal tokens, profile paths, CDP details, cookies, localStorage, or raw screenshots.",
+  "",
+  "Space task context:",
+  ""
+].join("\n");
+const trailingToolFollowUpMarker = /(?:\n\n)<space-durable-turn marker="space-durable-followup:[A-Za-z0-9:._-]{1,400}:[0-9a-f]{64}">Internal recovery marker; do not mention it in your response\.<\/space-durable-turn>\s*$/;
+
 function chatUserPrompt(payload: Record<string, unknown>): string | null {
   const raw = stripChatTransportImages(rawMessageContent({ content: payload.message ?? payload.content ?? payload.text }));
+  // Follow-up turns are internal tool results, never operator messages. Require
+  // both the exact worker scaffold and its separate durable identity; ordinary
+  // quotes and user-authored lookalikes must remain visible. Raw history is intact.
+  if (trailingToolFollowUpMarker.test(raw) && raw.startsWith(toolObservationFollowUpOpening)) return null;
   const trustedGoalObjective = extractTrustedCodexGoalObjective(raw);
   const stripped = stripTrailingSpaceMarkers(trustedGoalObjective ?? raw, {
     allowEscapedDurableTurnMarker: trustedGoalObjective !== null

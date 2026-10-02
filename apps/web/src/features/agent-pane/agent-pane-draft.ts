@@ -1,7 +1,9 @@
 import type { Artifact } from "@space/contracts";
+import { taskAcceptanceSchema, type TaskAcceptance } from "@space/contracts";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 
 interface AgentPaneDraftState {
+  acceptance?: TaskAcceptance;
   prompt: string;
   attachments: Artifact[];
 }
@@ -32,7 +34,8 @@ export function readAgentPaneDraft(paneId: string): AgentPaneDraftState {
     const draft = parsed as Partial<AgentPaneDraftState>;
     return {
       prompt: typeof draft.prompt === "string" ? draft.prompt : "",
-      attachments: Array.isArray(draft.attachments) ? (draft.attachments as Artifact[]).slice(0, 8) : []
+      attachments: Array.isArray(draft.attachments) ? (draft.attachments as Artifact[]).slice(0, 8) : [],
+      ...(draft.acceptance && taskAcceptanceSchema.safeParse(draft.acceptance).success ? { acceptance: taskAcceptanceSchema.parse(draft.acceptance) } : {})
     };
   } catch {
     return { prompt: "", attachments: [] };
@@ -43,7 +46,7 @@ export function writeAgentPaneDraft(paneId: string, draft: AgentPaneDraftState) 
   const storage = safeSessionStorage();
   if (!storage) return;
   try {
-    if (!draft.prompt && draft.attachments.length === 0) {
+    if (!draft.prompt && draft.attachments.length === 0 && !draft.acceptance) {
       storage.removeItem(storageKeyFor(paneId));
       return;
     }
@@ -51,6 +54,7 @@ export function writeAgentPaneDraft(paneId: string, draft: AgentPaneDraftState) 
       storageKeyFor(paneId),
       JSON.stringify({
         prompt: draft.prompt,
+        ...(draft.acceptance ? { acceptance: draft.acceptance } : {}),
         attachments: draft.attachments.slice(0, 8)
       })
     );

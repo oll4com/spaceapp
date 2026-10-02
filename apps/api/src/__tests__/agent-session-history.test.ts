@@ -158,4 +158,57 @@ describe("AgentSessionHistoryService", () => {
     const page2Ids = new Set(page2.data.map((item) => item.id));
     expect([...page1Ids].filter((id) => page2Ids.has(id))).toHaveLength(0);
   });
+
+  it("filters by interval and enforces 7-day maximum age", async () => {
+    const now = new Date();
+    const twoHoursAgo = new Date(now.getTime() - 2 * 3600 * 1000).toISOString();
+    const twoDaysAgo = new Date(now.getTime() - 2 * 86400 * 1000).toISOString();
+    const tenDaysAgo = new Date(now.getTime() - 10 * 86400 * 1000).toISOString();
+
+    const service = new AgentSessionHistoryService({
+      codexParity: fakeCodexParity([
+        codexItem({ id: "recent", recencyAt: twoHoursAgo }),
+        codexItem({ id: "two-days", recencyAt: twoDaysAgo }),
+        codexItem({ id: "ancient", recencyAt: tenDaysAgo })
+      ]),
+      unifiedCliTaskRegistry: fakeRegistry([]),
+      maxAgeDays: 7
+    });
+
+    // "all" should exclude > 7 days ancient item
+    const allResult = await service.list({ interval: "all" });
+    const allIds = allResult.data.map((d) => d.threadId);
+    expect(allIds).toContain("recent");
+    expect(allIds).toContain("two-days");
+    expect(allIds).not.toContain("ancient");
+
+    // "24h" should only include recent item
+    const dayResult = await service.list({ interval: "24h" });
+    expect(dayResult.data.map((d) => d.threadId)).toEqual(["recent"]);
+  });
+
+  it("filters by status (active vs completed)", async () => {
+    const service = new AgentSessionHistoryService({
+      codexParity: fakeCodexParity([]),
+      unifiedCliTaskRegistry: {
+        ...fakeRegistry([]),
+        listAllTasks: async () => ({
+          tasks: [
+            cliTask({ taskId: "t-completed", status: "completed", isCompleted: true }),
+            cliTask({ taskId: "t-active", status: "active", isCompleted: false })
+          ],
+          total: 2,
+          page: 1,
+          pageSize: 50
+        }),
+        listActiveCodexThreadIds: async () => new Set<string>()
+      } as unknown as UnifiedCliTaskRegistry
+    });
+
+    const completedResult = await service.list({ status: "completed" });
+    expect(completedResult.data.map((d) => d.taskId)).toEqual(["t-completed"]);
+
+    const activeResult = await service.list({ status: "active" });
+    expect(activeResult.data.map((d) => d.taskId)).toEqual(["t-active"]);
+  });
 });

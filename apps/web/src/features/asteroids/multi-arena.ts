@@ -359,9 +359,18 @@ export class MultiArenaEngine {
     // Emergency evasion when hazard is within collision zone (< 120px)
     if (closestHazardDist < 120) {
       const hazardDelta = angleDelta(ship.angle, closestHazardAngle);
-      // Steer perpendicular away from collision vector
-      if (hazardDelta > 0) controls.left = true;
-      else controls.right = true;
+      // Steer perpendicular away from collision vector (mutually exclusive)
+      if (hazardDelta > 0) {
+        controls.left = true;
+        controls.right = false;
+      } else {
+        controls.right = true;
+        controls.left = false;
+      }
+
+      if (Math.abs(hazardDelta) < 1.1) {
+        controls.thrust = false;
+      }
 
       // Smart evasive dash: dash sideways away from incoming hazard
       if (ship.dashCooldown <= 0 && ship.immunity <= 0 && Math.abs(hazardDelta) > 1.1) {

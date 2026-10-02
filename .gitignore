@@ -20,6 +20,10 @@ apps/desktop/release/*.tgz
 apps/desktop/release/@space/
 apps/desktop/release/*.yml
 apps/desktop/release/*.yaml
+apps/mobile/release/*.apk
+apps/mobile/release/*.idsig
+apps/web/public/downloads/*.apk
+apps/web/dist/downloads/*.apk
 
 # Live/deploy-adjacent runtime state. Do not delete with blanket git clean.
 secrets/

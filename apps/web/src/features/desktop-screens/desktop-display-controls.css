@@ -90,6 +90,9 @@
 
 .desktop-display-controls[data-variant="titlebar"] .desktop-display-trigger {
   height: 24px;
+  min-height: 24px;
+  max-height: 24px;
+  box-sizing: border-box;
   padding: 0 6px;
   font-size: 0.75rem;
   border-radius: 4px;
@@ -216,8 +219,27 @@
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  max-height: 260px;
+  max-height: min(440px, calc(100vh - 180px));
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #30363d transparent;
+}
+
+.desktop-display-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.desktop-display-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.desktop-display-list::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+.desktop-display-list::-webkit-scrollbar-thumb:hover {
+  background: #58a6ff;
 }
 
 .desktop-display-card {

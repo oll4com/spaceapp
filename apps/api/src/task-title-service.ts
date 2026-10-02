@@ -475,7 +475,7 @@ export class TaskTitleService {
       ]);
       if (history.status === "fulfilled") {
         nativeTitle = history.value.title;
-        if (isSubstantiveTaskRequest(history.value.firstUserMessage ?? ""))
+        if (pane.mode !== "CHAT" && isSubstantiveTaskRequest(history.value.firstUserMessage ?? ""))
           requests = [history.value.firstUserMessage!];
       }
       if (thread.status === "fulfilled") {
@@ -483,13 +483,19 @@ export class TaskTitleService {
           .filter((i) => i.kind === "message" && i.role === "user")
           .map((i) => i.content)
           .filter(isSubstantiveTaskRequest);
-        if (native.length) requests = native;
+        if (pane.mode !== "CHAT" && native.length) requests = native;
       }
       // Codex's native /resume name is separate from the legacy SQLite title.
       // Read the active thread's name over its exact private CLI socket.
       try {
         nativeTitle = (await this.options.readCodexName?.(sessionId, nativeId)) ?? nativeTitle;
       } catch {}
+      // Native Chat receives a tool envelope before the real user prompt. Its
+      // automatic first-line title must not become the pane title. Durable Chat
+      // user messages are authoritative, including intentional operator quotes.
+      const envelopeHeading = /^(?:Space (?:private clipboard|private task|shared chat|managed browser) tools selected|Space workspace directory|Attached Space artifacts for this user message)(?:[:\s]|$)/;
+      if (pane.mode === "CHAT" && nativeTitle && envelopeHeading.test(nativeTitle)
+        && !requests.some(request => envelopeHeading.test(request.trim()))) nativeTitle = null;
     }
     // A reused pane that switched native sessions must never inherit mutable metadata.
     if (nativeId) key = `native:${runtimeId}:${accountKey}:${nativeId}`;

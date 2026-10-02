@@ -1,3 +1,4 @@
+import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Pane, Room } from "@space/contracts";
 import { api } from "../../api.js";
@@ -66,6 +67,7 @@ export interface AgentsDashboardProps {
 }
 
 export function AgentsDashboard({ open = true, userId, rooms, completions, activePanes, onOpenPane, onClose, onSummaryChange }: AgentsDashboardProps) {
+  const embedded = useWorkspaceSurface();
   const inFlight = useRef(false);
   const snapshots = useRef(new Map<string, { data: Pane[]; activity: Record<string, AgentStatus> }>());
   const missingRooms = useRef(new Set<string>());
@@ -89,7 +91,7 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
     const element = dialog.current;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (element && !element.open) element.show();
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); } };
     element?.addEventListener("keydown", escape);
     return () => { element?.removeEventListener("keydown", escape); element?.close(); opener?.focus(); };
   }, [open, userId]);
@@ -212,7 +214,7 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
 
   if (!open) return null;
 
-  return <dialog ref={dialog} className={`agents-dashboard${maximized ? " is-maximized" : ""}`} aria-labelledby="agents-dashboard-title" onCancel={event => { event.preventDefault(); onClose(); }}>
+  return <dialog ref={dialog} data-embedded={embedded || undefined} className={`agents-dashboard${maximized ? " is-maximized" : ""}`} aria-labelledby="agents-dashboard-title" onCancel={event => { event.preventDefault(); onClose(); }}>
     <div className="agents-dashboard-content">
       <header className="agents-dashboard-header">
         <span className="agents-dashboard-brand"><LayoutDashboard aria-hidden="true" /></span><div className="agents-dashboard-heading"><h2 id="agents-dashboard-title">Agents Dashboard</h2><p>Activity across your rooms</p></div>
