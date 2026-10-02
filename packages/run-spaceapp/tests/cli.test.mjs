@@ -382,6 +382,9 @@ test("install recovers when an initial readiness HTTP request times out", async 
 
   assert.equal(readinessAttempts, 2);
   assert.match(stdout.value(), /SpaceApp is ready at http:\/\/127\.0\.0\.1:4911/);
+  assert.match(stdout.value(), /Existing SpaceApp database detected/);
+  assert.match(stdout.value(), /owner reset-password/);
+  assert.match(stdout.value(), /factory-reset/);
 });
 
 test("install retains the host token and prints no secret when database rotation fails", async () => {

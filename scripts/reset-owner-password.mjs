@@ -34,8 +34,9 @@ export async function resetOwnerPassword({
   const passwordHash = await hashPassword(password);
   const client = createClient(connectionString);
   await client.connect();
+  let result;
   try {
-    const result = await client.query(
+    result = await client.query(
       `
         UPDATE users
         SET password_hash = $1, updated_at = now()
@@ -44,7 +45,7 @@ export async function resetOwnerPassword({
           FROM space_owner_setup
           WHERE singleton = true
         )
-        RETURNING id
+        RETURNING id, email
       `,
       [passwordHash]
     );
@@ -54,7 +55,8 @@ export async function resetOwnerPassword({
   } finally {
     await client.end();
   }
-  stdout.write("SpaceApp owner password updated.\n");
+  const emailNotice = result.rows?.[0]?.email ? ` for ${result.rows[0].email}` : "";
+  stdout.write(`SpaceApp owner password updated${emailNotice}.\n`);
 }
 
 async function defaultHashPassword(password) {

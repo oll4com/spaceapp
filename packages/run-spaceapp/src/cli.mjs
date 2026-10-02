@@ -968,6 +968,13 @@ async function installCommand(args, {
       stdout.write('Paste it into the "One-time setup token" field in the page that opens.\n');
       stdout.write("It expires in 15 minutes and stops working after the first owner is created.\n");
       stdout.write(`If it expires, run: ${UNIVERSAL_COMMAND} owner rotate-setup-token\n`);
+    } else {
+      stdout.write(
+        "\nNotice: Existing SpaceApp database detected with an already registered operator account.\n" +
+        "Sign in using your existing email and password.\n" +
+        `- Forgot password? Run: "${UNIVERSAL_COMMAND} owner reset-password"\n` +
+        `- Clean install from scratch: "${UNIVERSAL_COMMAND} factory-reset"\n\n`
+      );
     }
     stdout.write(
       "Next: open the Getting Started room and use OpenCode. A working free model is selected on first launch.\n" +
