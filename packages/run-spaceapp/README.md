@@ -105,10 +105,10 @@ Claude Code is not redistributed in SpaceApp images. Install the reviewed
 package as an explicit owner action with:
 
 ```bash
-npx --yes run-spaceapp@personal provider install claude
+npx --yes run-spaceapp@latest provider install claude
 ```
 
-Run `npx --yes run-spaceapp@personal help` for the complete command list. Full
+Run `npx --yes run-spaceapp@latest help` for the complete command list. Full
 documentation:
 
 - [Getting started](https://github.com/oll4com/spaceapp/blob/main/docs/getting-started.md)
@@ -121,16 +121,38 @@ After the stack passes readiness checks, the install command prints the fresh
 it expires before the owner is created, run:
 
 ```bash
-npx --yes run-spaceapp@personal owner rotate-setup-token
+npx --yes run-spaceapp@latest owner rotate-setup-token
 ```
 
-Common follow-up commands use the same reliable launcher prefix:
+### Self-Hosted Installation Help & Recovery
+
+- **Forgot your operator password?** Run in your host terminal:
+  ```bash
+  npx --yes run-spaceapp@latest owner reset-password
+  ```
+- **Need a clean install from scratch?** Run:
+  ```bash
+  npx --yes run-spaceapp@latest factory-reset
+  ```
+
+### Common Commands
 
 ```bash
-npx --yes run-spaceapp@personal doctor
-npx --yes run-spaceapp@personal status
-npx --yes run-spaceapp@personal credentials list
-npx --yes run-spaceapp@personal uninstall
+npx --yes run-spaceapp@latest status         # Check container health and port bindings
+npx --yes run-spaceapp@latest logs           # View or stream container logs
+npx --yes run-spaceapp@latest doctor         # Verify system prerequisites and diagnose Docker
+npx --yes run-spaceapp@latest up             # Start containers in background
+npx --yes run-spaceapp@latest down           # Stop containers cleanly
+npx --yes run-spaceapp@latest open           # Open web app in default browser
+npx --yes run-spaceapp@latest backup         # Create verified, portable backup archive
+npx --yes run-spaceapp@latest restore        # Restore state from a backup archive
+npx --yes run-spaceapp@latest update         # Pull latest images and upgrade stack
+npx --yes run-spaceapp@latest rollback       # Revert to previous stable version
+npx --yes run-spaceapp@latest workspace add <path> # Register host folder for AI CLIs
+npx --yes run-spaceapp@latest workspace list       # List registered host folders
+npx --yes run-spaceapp@latest credentials list     # List configured AI providers
+npx --yes run-spaceapp@latest credentials set <provider> # Set API key via masked input
+npx --yes run-spaceapp@latest uninstall      # Stop and remove containers (preserves data)
 ```
 
 Uninstall retains data by default and prints the separate
