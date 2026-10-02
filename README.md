@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/spaceapp-banner.webp" alt="SpaceApp Banner" width="800" />
+  <a href="https://spaceapp.dev"><img src="docs/images/spaceapp-hero-banner.png" alt="SpaceApp — The Super Agent App" width="900" /></a>
 </p>
 
 <p align="center">
@@ -15,6 +15,8 @@
 
 <p align="center">
   Run <b>OpenCode</b>, <b>OpenAI Codex</b>, <b>Claude Code</b>, <b>Google Gemini</b>, <b>Qwen</b>, <b>Kimi</b>, <b>Grok</b>, and <b>DeepSeek</b> concurrently in persistent, isolated rooms on your own machine.
+  <br>
+  <a href="https://spaceapp.dev"><b>Explore spaceapp.dev »</b></a> | <a href="https://spaceapp.dev/demoapp/"><b>Try Live Demo »</b></a>
 </p>
 
 ---
@@ -34,33 +36,52 @@ With SpaceApp, you can:
 
 ## 📸 Visual Tour
 
-### 1. Multi-Agent Room Grid
-Run multiple AI coding CLIs side-by-side in real-time. Assign different tasks to different agents (e.g., frontend refactoring to Claude, test suites to Codex, API review to OpenCode, and architectural checks to Gemini) within the same room:
+### 1. Parallel Multi-Agent Workspace (The 16-Pane Matrix)
+Run up to 16 AI coding assistants, terminals, or workspace monitors simultaneously in a single coordinated room. Orchestrate multiple autonomous agents across your projects without context loss:
 
 <p align="center">
-  <img src="docs/images/spaceapp-multi-agent-grid.png" alt="Multi-Agent Workspace" width="950" />
+  <img src="docs/images/spaceapp-16-pane-matrix.png" alt="SpaceApp 16-Pane Multi-Agent Workspace" width="950" />
 </p>
 
-### 2. Workspace & Agent Controls
-Seamlessly launch, switch, or configure any integrated AI coding assistant. Access real-time hardware telemetry (CPU, RAM, swap, latency) and workspace toggle controls:
+*Above: SpaceApp running OpenCode, Codex, Gemini, Grok, DeepSeek, Cursor, Copilot, Hermes, Droid, and terminal tools in a live 16-pane room grid.*
+
+### 2. Live Agent Execution & Streaming Telemetry
+Inspect agent thought chains, token consumption, automated bash commands, and test suites running in real-time on your local machine:
 
 <p align="center">
-  <img src="docs/images/spaceapp-workspace-controls.png" alt="Workspace and Agent Controls" width="950" />
+  <img src="docs/images/spaceapp-live-execution.png" alt="Live Real-Time Agent Execution in SpaceApp" width="950" />
 </p>
 
-### 3. Canonical 3D Vector Memory Graph
-A persistent memory system that indexes context, file changes, and architectural rationale across sessions. Trace technical decisions visually:
+*Above: Real-time execution captured from a live SpaceApp room running parallel Google Gemini 3.8 Flash agents handling test verification, codebase search, and file editing.*
+
+### 3. Unified Workspace Action Palette & Docks
+Access your entire engineering environment through the central SpaceApp overlay: switch rooms, inspect agent files, manage persistent clipboards, configure VPN routes, and monitor system resources:
 
 <p align="center">
-  <img src="docs/images/spaceapp-memory-graph.png" alt="Canonical Vector Memory Graph" width="950" />
+  <img src="docs/images/spaceapp-tools-docks.png" alt="Workspace Action Palette and Docks" width="950" />
 </p>
 
-### 4. Responsive & Mobile-Ready
-Work from your desktop workstation, review agent progress from a tablet, or follow long-running tasks on the go:
+*Above: The SpaceApp Actions & Docks center providing instant access to Rooms, Room Agent, Shared Chat, Media, Agent Files, Tasks, Links, Settings, and CLI Tools.*
+
+### 4. Canonical 3D Vector Memory Graph
+SpaceApp features an integrated PostgreSQL `pgvector` database that indexes file modifications, architecture choices, and session history into an interactive 3D point cloud:
 
 <p align="center">
-  <img src="docs/images/spaceapp-mobile-view.png" alt="Mobile Room View" width="450" />
+  <img src="docs/images/spaceapp-3d-memory.png" alt="Canonical 3D Vector Memory Point Cloud" width="850" />
 </p>
+
+*Above: 3D visualization of the persistent vector memory graph linking multi-session context, file relationships, and cross-agent discoveries.*
+
+### 5. Conversational Room Agent & Gemini Live Voice
+Coordinate multi-step tasks conversationally through the Room Agent or speak naturally to your workspace using full-duplex Gemini Live voice streaming:
+
+<p align="center">
+  <img src="docs/images/spaceapp-room-agent.png" alt="SpaceApp Room Agent" width="380" />
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/images/spaceapp-gemini-live-voice.png" alt="SpaceApp Gemini Live Voice" width="540" />
+</p>
+
+*Above left: The Room Agent coordinator ready to receive goals and orchestrate sub-agents. Above right: Gemini Live low-latency full-duplex voice interface.*
 
 ---
 
