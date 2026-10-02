@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "7ecd3ae081ee9ff49d8efb692bad90d0cdb4a0486f9d9717b0902a6f78a5eb93",
-  "sourceCommit": "72bc32c694665422896263eb8c6c5a3d0ecfe4f9",
+  "candidateDigest": "efa4ccdfd9005436a6f689bfd43ec2f6a191953f33b7da3a2e4672b84927c59b",
+  "sourceCommit": "a821d3e87fc4d2217cbe3d489b433cf5dcaee1cf",
   "launcherVersion": "1.0.36",
   "runtimeVersion": "1.0.36",
   "createdAt": "2026-10-02T04:00:00.000Z",
