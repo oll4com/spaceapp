@@ -145,7 +145,7 @@ const publicBinaryFiles = new Map([
   ],
   [
     "apps/web/public/brand/space-logo-2048.png",
-    "e6b6fc302b75f6ed0d9fb12d3e7f58a56e325f0e9520a2d9d8bbcd5a10711ab3"
+    "4d12a609edfd99f8ab1c3edec7440326fa86c10353b6c61dbb16120698f2bd27"
   ],
   [
     "apps/web/public/brand/space-logo.gif",
