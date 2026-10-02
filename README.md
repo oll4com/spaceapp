@@ -265,8 +265,19 @@ npx --yes run-spaceapp@latest owner reset-password
 If you did not complete the initial browser setup within 15 minutes, generate a fresh token:
 
 ```bash
-npx --yes run-spaceapp@latest owner rotate-setup-token
+npx --yes run-spaceapp@personal owner rotate-setup-token
 ```
+</details>
+
+<details>
+<summary><b>Need host-root filesystem access on Linux?</b></summary>
+<br>
+On Linux, host-root access can be routed via the personal candidate:
+
+```bash
+npx --yes run-spaceapp@personal install --access host-root
+```
+Host-root is supported only on Linux. Use the same `npx --yes run-spaceapp@personal` prefix for follow-up commands.
 </details>
 
 <details>
