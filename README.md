@@ -1,195 +1,328 @@
-# SpaceApp
+<p align="center">
+  <a href="https://spaceapp.dev"><img src="docs/images/spaceapp-hero-banner.png" alt="SpaceApp — The Super Agent App" width="900" /></a>
+</p>
 
-SpaceApp is a self-hosted workspace for running multiple AI coding CLIs in
-isolated rooms. The application, browser runtime, database, workflow engine,
-generic starter memory, and redistributable pinned CLI tools run in Docker;
-the owner supplies only their provider credentials and the host workspaces
-they deliberately register. Claude Code is installed separately through an
-explicit owner-initiated command because its package is not open-source
-redistributable.
+<p align="center">
+  <a href="https://github.com/oll4com/spaceapp/releases"><img src="https://img.shields.io/github/v/release/oll4com/spaceapp?color=00d2b4&label=release" alt="GitHub Release"></a>
+  <a href="https://www.npmjs.com/package/run-spaceapp"><img src="https://img.shields.io/npm/v/run-spaceapp?color=00d2b4&label=npm%20run-spaceapp" alt="npm package"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1%20%2F%20Apache%202.0-blue.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%2011-orange.svg" alt="Platform Support">
+  <img src="https://img.shields.io/badge/docker-self--hosted-2496ed.svg" alt="Docker Self-Hosted">
+  <img src="https://img.shields.io/badge/starter%20model-Free%20DeepSeek%20V4%20Flash-success.svg" alt="Free Model Included">
+</p>
 
-## What SpaceApp provides
+<h3 align="center">The Open-Source, Self-Hosted Multi-Agent AI Coding Workspace</h3>
 
-- one `spaceapp` launcher for Linux, macOS, and Windows 11;
-- a versioned Docker Compose stack with no host Docker socket;
-- pinned OpenCode (default), Codex, Gemini, Qwen Code, Kimi Code, Grok Build,
-  and experimental community DeepSeek CLI runtimes, with
-  `opencode/deepseek-v4-flash-free` as the default model;
-- an owner-initiated Claude installation flow that installs
-  Claude Code into that installation's private provider volume;
-- one-time first-owner setup with no default password;
-- isolated, persistent provider state and mutable owner memory;
-- explicit host workspace registration, including read-only mounts;
-- portable, checksummed backups for application data, PostgreSQL, and owner
-  memory.
+<p align="center">
+  Run <b>OpenCode</b>, <b>OpenAI Codex</b>, <b>Claude Code</b>, <b>Google Gemini</b>, <b>Qwen</b>, <b>Kimi</b>, <b>Grok</b>, and <b>DeepSeek</b> concurrently in persistent, isolated rooms on your own machine.
+  <br>
+  <a href="https://spaceapp.dev"><b>Explore spaceapp.dev »</b></a> | <a href="https://spaceapp.dev/spaceappmock/"><b>Try Live Demo »</b></a>
+</p>
 
-SpaceApp is designed for **one trusted owner on one self-hosted
-instance**. It is not a multi-tenant service or an isolation boundary between
-mutually untrusted users.
+---
 
-## One-command installation
+## 🌟 What is SpaceApp?
 
-Requirements:
+**SpaceApp** is a self-hosted workspace engineered for developers who use AI coding assistants. Instead of juggling dozens of terminal windows, scattered browser tabs, and copy-pasting code between tools, SpaceApp brings your entire AI engineering team into a single, unified mission control interface.
 
-- Node.js 20.11 or newer for the launcher;
-- at least 4 CPUs, 8 GB system RAM, and 15 GiB free disk;
-- recommended for the standard browser profile: 8 CPUs, 16 GB RAM, and
-  25 GiB free disk.
+With SpaceApp, you can:
+- **Run Multiple AI Coding Agents in Parallel**: Pair program with Codex, Claude Code, Gemini, and OpenCode side-by-side on the same project repository or across separate workspaces.
+- **Keep Total Privacy & Zero Cloud Lock-In**: Everything runs 100% locally on your machine inside managed, unprivileged Docker containers. Your source code, API keys, and private conversations never touch third-party relay servers.
+- **Start Immediately with Free AI Models**: Ships preconfigured with **OpenCode** and the free **DeepSeek V4 Flash** model (`opencode/deepseek-v4-flash-free`). No API keys or credit cards required to start building.
+- **Cross-Agent Persistent Vector Memory**: Powered by an embedded PostgreSQL instance with `pgvector`, SpaceApp indexes your architecture, past decisions, and task evidence into a 3D semantic memory graph shared across your agent sessions.
+- **One-Command Setup**: A single universal launcher command installs Docker prerequisites (if missing), configures containers, sets up database secrets, and launches the web application across Linux, macOS, and Windows 11.
 
-Run the same command in Linux, macOS, or Windows 11 Command Prompt:
+---
+
+## 📸 Visual Tour
+
+### 1. Parallel Multi-Agent Workspace (The 16-Pane Matrix)
+Run up to 16 AI coding assistants, terminals, or workspace monitors simultaneously in a single coordinated room. Orchestrate multiple autonomous agents across your projects without context loss:
+
+<p align="center">
+  <img src="docs/images/spaceapp-16-pane-matrix.png" alt="SpaceApp 16-Pane Multi-Agent Workspace" width="950" />
+</p>
+
+*Above: SpaceApp running OpenCode, Codex, Gemini, Grok, DeepSeek, Cursor, Copilot, Hermes, Droid, and terminal tools in a live 16-pane room grid.*
+
+### 2. Live Agent Execution & Streaming Telemetry
+Inspect agent thought chains, token consumption, automated bash commands, and test suites running in real-time on your local machine:
+
+<p align="center">
+  <img src="docs/images/spaceapp-live-execution.png" alt="Live Real-Time Agent Execution in SpaceApp" width="950" />
+</p>
+
+*Above: Real-time execution captured from a live SpaceApp room running parallel Google Gemini 3.8 Flash agents handling test verification, codebase search, and file editing.*
+
+### 3. Unified Workspace Action Palette & Docks
+Access your entire engineering environment through the central SpaceApp overlay: switch rooms, inspect agent files, manage persistent clipboards, configure VPN routes, and monitor system resources:
+
+<p align="center">
+  <img src="docs/images/spaceapp-tools-docks.png" alt="Workspace Action Palette and Docks" width="950" />
+</p>
+
+*Above: The SpaceApp Actions & Docks center providing instant access to Rooms, Room Agent, Shared Chat, Media, Agent Files, Tasks, Links, Settings, and CLI Tools.*
+
+### 4. Canonical 3D Vector Memory Graph
+SpaceApp features an integrated PostgreSQL `pgvector` database that indexes file modifications, architecture choices, and session history into an interactive 3D point cloud:
+
+<p align="center">
+  <img src="docs/images/spaceapp-3d-memory.png" alt="Canonical 3D Vector Memory Point Cloud" width="850" />
+</p>
+
+*Above: 3D visualization of the persistent vector memory graph linking multi-session context, file relationships, and cross-agent discoveries.*
+
+### 5. Conversational Room Agent & Gemini Live Voice
+Coordinate multi-step tasks conversationally through the Room Agent or speak naturally to your workspace using full-duplex Gemini Live voice streaming:
+
+<p align="center">
+  <img src="docs/images/spaceapp-room-agent.png" alt="SpaceApp Room Agent" width="380" />
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/images/spaceapp-gemini-live-voice.png" alt="SpaceApp Gemini Live Voice" width="540" />
+</p>
+
+*Above left: The Room Agent coordinator ready to receive goals and orchestrate sub-agents. Above right: Gemini Live low-latency full-duplex voice interface.*
+
+---
+
+## ⚡ Quick Start: One-Command Installation
+
+### Prerequisites
+- **Node.js**: 20.11 or newer (for the lightweight host launcher).
+- **Hardware**:
+  - Minimum: 4 CPU cores, 8 GB RAM, 6.5 GiB free disk.
+  - Recommended: 8 CPU cores, 16 GB RAM, 25 GiB free disk (for standard profile with managed browser).
+- **Docker**: If Docker is not installed, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+
+### Run the Installation Command
+
+Run the universal command in your terminal:
 
 ```bash
 npx --yes run-spaceapp@latest install
 ```
 
-This downloads the current launcher, installs missing Docker prerequisites,
-selects the light profile, starts SpaceApp, and opens it. To keep a global
-`spaceapp` command for later operations, install it separately:
+> **Windows 11 Tip**: Use **Command Prompt** (`cmd.exe`) or the Command Prompt profile in Windows Terminal. If PowerShell has a restricted execution policy, run `npx.cmd --yes run-spaceapp@latest install`.
 
+### What Happens Next (Step-by-Step Onboarding):
+1. **System & Docker Verification**: The launcher verifies CPU, RAM, and disk space, and installs/starts Docker if needed.
+2. **Container Initialization**: Pulls the pinned, verified images and starts the container stack.
+3. **One-Time Setup Token**: The terminal prints a secure 15-minute setup token and automatically opens `http://127.0.0.1:4911`.
+4. **Create Your Operator Account**: Paste the token into the setup screen, enter your email and password, and click Create Owner.
+5. **Start Coding with OpenCode (Free)**: Open the Getting Started room. The bundled OpenCode agent is ready immediately using the free DeepSeek V4 Flash model—no paid account or API key required!
+
+To retain a global `spaceapp` command for future management, optionally install:
 ```bash
 npm install -g run-spaceapp
 ```
 
-Keep `@latest` in the command. Under npm's
-[exec contract](https://docs.npmjs.com/cli/v11/commands/npm-exec), a package
-name without a version specifier can match an existing local package, while
-the explicit specifier resolves the requested current release.
+---
 
-The universal install command creates the local configuration and fresh
-secrets, installs Docker when it is missing, checks the host, selects a
-resource profile, downloads the images, starts the stack, and opens the app.
-It is idempotent, so running the same command again preserves data and
-long-lived secrets. While the owner is still unclaimed, every successful
-install issues a fresh 15-minute setup token that is accepted by the running
-database.
+## 💻 Complete CLI Command Reference
 
-The automatic prerequisite flow uses official Docker sources: Docker Desktop
-through Windows Package Manager's hash-pinned manifest on Windows (with a
-signed direct-download fallback), Docker Desktop on macOS, and Docker Engine
-repositories on Ubuntu, Debian, Fedora, RHEL, and CentOS. Docker Desktop
-license acceptance and Linux `docker` group membership require confirmation
-inside the same command. Windows may require one restart after WSL2 is enabled;
-SpaceApp registers a one-time resume, asks before scheduling the restart, and
-continues automatically after the user signs back in. The install command does
-not need to be entered again.
-On Docker Desktop's first launch, its **Welcome to Docker** window may require
-one user choice before the Engine starts. On Windows, use the **Command
-Prompt** profile in Windows Terminal because the default restricted PowerShell
-policy can block npm's `npx.ps1` before SpaceApp starts. Select **Skip** in the
-top-right (or sign in), accept any remaining Docker prompt, and keep the
-terminal open.
-SpaceApp waits for up to ten minutes and continues automatically as soon as
-Docker is ready.
+The `run-spaceapp` launcher provides a comprehensive set of commands to manage, troubleshoot, and operate your self-hosted instance.
 
-`auto` always selects the lightweight profile so the default stays usable on
-an 8 GB host. Light mode keeps every bundled CLI, PostgreSQL, and Temporal but
-omits managed Chromium. Use
-`npx --yes run-spaceapp@latest install --profile standard` explicitly when the
-managed browser container is required and the host has the recommended
-resources.
+You can run any command using `npx --yes run-spaceapp@latest <command>` or simply `spaceapp <command>` if installed globally.
 
-The installer does not create or reserve a separate fixed-size VM. Linux uses
-the native Docker Engine; Windows uses Docker Desktop's WSL2 Linux environment;
-macOS uses Docker Desktop's lightweight Linux VM. Docker images consume real
-space as they are downloaded, while Docker Desktop's virtual disk grows with
-written data up to its configured limit rather than allocating that limit
-immediately.
+### 🚀 Stack Lifecycle Management
 
-After the application passes readiness checks, the command prints a one-time
-setup token and exact paste instructions. Enter it in the first browser page,
-create the owner, register only the host workspaces SpaceApp may access, and
-connect providers through official login flows or masked credential input. If
-the token expires, run
-`npx --yes run-spaceapp@personal owner rotate-setup-token`. The default address is
-`http://127.0.0.1:4911`; do not expose it directly to an untrusted network.
+| Command | Description | Example |
+| :--- | :--- | :--- |
+| `install` | Full setup: installs Docker if needed, creates secrets, starts stack, and opens browser. | `npx --yes run-spaceapp@latest install --profile auto` |
+| `reinstall` | Clean reinstallation of containers while preserving existing data, credentials, and workspaces. | `npx --yes run-spaceapp@latest reinstall --keep-data` |
+| `up` | Starts the Docker application containers in the background. | `npx --yes run-spaceapp@latest up` |
+| `down` | Stops all SpaceApp containers cleanly without removing data. | `npx --yes run-spaceapp@latest down` |
+| `status` | Checks running container status, health checks, and port bindings. | `npx --yes run-spaceapp@latest status` |
+| `logs` | Displays or streams real-time container logs for troubleshooting. | `npx --yes run-spaceapp@latest logs` |
+| `open` | Opens the SpaceApp web application (`http://127.0.0.1:4911`) in your default browser. | `npx --yes run-spaceapp@latest open` |
+| `uninstall` | Stops and removes containers. Keeps user data by default (`--purge-data` to delete). | `npx --yes run-spaceapp@latest uninstall` |
 
-See [Getting started](docs/getting-started.md) for platform-specific paths,
-workspace examples, the first-owner flow, and current source-checkout testing.
+### 🔐 Owner Account & Recovery
 
-## Host-root access (Linux)
+| Command | Description | Example |
+| :--- | :--- | :--- |
+| `owner reset-password` | **Forgot your password?** Securely resets the operator account password from your terminal via masked input. | `npx --yes run-spaceapp@latest owner reset-password` |
+| `owner rotate-setup-token` | **Setup token expired?** Generates a fresh 15-minute token if the first-run owner setup was not completed in time. | `npx --yes run-spaceapp@latest owner rotate-setup-token` |
+| `factory-reset` | **Fresh start:** Creates a safety backup, purges all Docker volumes and database data, and resets to clean slate. | `npx --yes run-spaceapp@latest factory-reset` |
 
-The x64 Linux host-root path lets the non-root core service reach a CLI
-socket owned by the root service. Install it with the personal candidate:
+### 📁 Host Workspace Management
 
-```bash
-npx --yes run-spaceapp@personal install --access host-root
+By default, SpaceApp runs in an isolated container sandbox and cannot access your host filesystem. You explicitly register which directories your AI agents are allowed to inspect and modify:
+
+| Command | Description | Example |
+| :--- | :--- | :--- |
+| `workspace add <path>` | Registers a local repository directory so agents can read and edit its files. | `npx --yes run-spaceapp@latest workspace add /home/user/my-project` |
+| `workspace add <path> --read-only` | Mounts a directory in read-only mode (ideal for reference repos or sensitive libraries). | `npx --yes run-spaceapp@latest workspace add /docs/ref --read-only` |
+| `workspace list` | Lists all currently registered workspaces and their mount IDs. | `npx --yes run-spaceapp@latest workspace list` |
+| `workspace remove <path>` | Unregisters a workspace from the SpaceApp environment. | `npx --yes run-spaceapp@latest workspace remove /home/user/my-project` |
+
+> *Note: After adding or removing workspaces, run `npx --yes run-spaceapp@latest up` to apply the updated mounts to the running stack.*
+
+### 🤖 AI Providers & Credentials
+
+| Command | Description | Example |
+| :--- | :--- | :--- |
+| `provider install <name>` | Installs or updates a CLI agent into its isolated persistent volume (`codex`, `claude`, `gemini`, `qwen`, `kimi`, `grok`, `deepseek`, etc.). | `npx --yes run-spaceapp@latest provider install claude` |
+| `credentials set <provider>` | Securely saves an API key for a provider via masked standard input (never passed as CLI flags). | `npx --yes run-spaceapp@latest credentials set claude` |
+| `credentials list` | Lists all configured credential providers (bundled, owner-installed, and experimental). | `npx --yes run-spaceapp@latest credentials list` |
+| `credentials remove <provider>`| Securely deletes stored credentials for a specific provider. | `npx --yes run-spaceapp@latest credentials remove gemini` |
+
+### 🛠️ Diagnostics, Maintenance & Backups
+
+| Command | Description | Example |
+| :--- | :--- | :--- |
+| `doctor [--fix]` | Diagnoses system prerequisites, Docker health, and config; `--fix` automatically repairs issues. | `npx --yes run-spaceapp@latest doctor --fix` |
+| `repair [--dry-run]` | Verifies and rebuilds container configurations and runtime files. | `npx --yes run-spaceapp@latest repair` |
+| `support-bundle` | Generates a sanitized diagnostic JSON bundle to share when seeking help or opening issues. | `npx --yes run-spaceapp@latest support-bundle` |
+| `update [version]` | Safely downloads updated Docker images and upgrades the application stack with automatic checkpointing. | `npx --yes run-spaceapp@latest update` |
+| `rollback` | Reverts containers and database to the verified pre-update checkpoint if an upgrade fails. | `npx --yes run-spaceapp@latest rollback` |
+| `backup` | Generates a portable, checksummed archive containing PostgreSQL data, app settings, and memory graph. | `npx --yes run-spaceapp@latest backup` |
+| `restore` | Restores database, application data, and memory state from a previously generated backup archive. | `npx --yes run-spaceapp@latest restore` |
+
+### Global CLI Options
+
+- `--plan`: Dry-run mode. Displays what actions would be executed without making any changes.
+- `--profile <auto|small|medium|large>`: Explicitly select the resource allocation profile.
+- `--non-interactive`: Automated headless execution for CI/CD or scripted environments.
+- `--answers <json|path>`: Pre-seeds wizard responses for silent installation.
+- `--json`: Outputs structured JSON data for scripting and integration.
+- `--log-file <path>`: Logs full execution output to a designated file.
+
+---
+
+## 🧩 Supported AI Coding Agents
+
+SpaceApp comes with native support for the industry's leading AI coding tools:
+
+| Assistant | Integration Type | Authentication | Description |
+| :--- | :--- | :--- | :--- |
+| **OpenCode** | **Bundled (Default)** | Free / Built-in | Pre-configured with free DeepSeek V4 Flash. Works immediately without an API key! |
+| **OpenAI Codex** | Owner-installed | API Key / OAuth | Advanced reasoning and multi-file code editing via GPT-4o / GPT-5 models. |
+| **Anthropic Claude Code** | Owner-installed | API Key / OAuth | Deep codebase comprehension, refactoring, and agentic terminal commands via Claude 3.5 Sonnet. |
+| **Google Gemini CLI** | Owner-installed | Google OAuth / API Key | Massive context window reasoning and code analysis using Gemini 1.5 Pro / 2.0 Flash. |
+| **Qwen Code** | Owner-installed | API Key / OpenRouter | High-efficiency open-weight coding models developed by Alibaba Cloud. |
+| **Kimi Code** | Owner-installed | Moonshot API Key | Long-context coding assistant with deep context caching. |
+| **Grok Build** | Owner-installed | xAI API Key | Real-time coding and reasoning powered by xAI Grok. |
+| **DeepSeek CLI** | Experimental | DeepSeek API Key | Dedicated native CLI wrapper for DeepSeek V3 and R1 reasoning models. |
+| **Cursor / Copilot / Autohand** | Companion | Host / Token | Bridge your favorite IDE workflows and companion tools directly into your rooms. |
+
+---
+
+## 🏗️ System Architecture & Profiles
+
+SpaceApp deploys a versioned Docker Compose stack running five core services:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                              Host Machine                              │
+│  ┌───────────────────────┐             ┌────────────────────────────┐  │
+│  │  run-spaceapp launcher│             │    Registered Workspaces   │  │
+│  └───────────┬───────────┘             └─────────────┬──────────────┘  │
+│              │                                       │ (Bind Mounts)   │
+├──────────────┼───────────────────────────────────────┼─────────────────┤
+│              ▼                                       ▼                 │
+│  ┌───────────────────────┐             ┌────────────────────────────┐  │
+│  │     spaceapp-core     │◄───────────►│        spaceapp-cli        │  │
+│  │ (Web UI, API, Memory) │             │ (Codex, Claude, OpenCode)  │  │
+│  └───────────┬───────────┘             └────────────────────────────┘  │
+│              │                                                         │
+│              ├──────────────────────┬──────────────────────────────────┤
+│              ▼                      ▼                                  ▼
+│  ┌───────────────────────┐ ┌─────────────────┐        ┌─────────────┐  │
+│  │      PostgreSQL       │ │    Temporal     │        │  spaceapp-  │  │
+│  │ (pgvector memory DB)  │ │(Workflow Engine)│        │   browser   │  │
+│  └───────────────────────┘ └─────────────────┘        └─────────────┘  │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-Host-root is supported only on Linux. Use the same
-`npx --yes run-spaceapp@personal` prefix for follow-up commands.
+### Installation Profiles
 
-## Architecture
+The launcher automatically selects an optimal profile based on available hardware, or you can pass `--profile <name>`:
 
-The launcher writes non-secret configuration to the current user's platform
-config directory and manages four services in light mode or five in standard
-mode:
+| Profile | Target System | Allocated Services | Minimum Hardware |
+| :--- | :--- | :--- | :--- |
+| `small` | Laptops / Small VMs | `spaceapp-core`, `spaceapp-cli`, `postgres` | 4 CPUs, 7 GiB RAM, 6.5 GiB disk |
+| `medium` | Standard Dev PC | Small stack + `temporal` (background workers & automated workflows) | 4 CPUs, 11 GiB RAM, 8 GiB disk |
+| `large` | Workstations / Servers | Medium stack + `spaceapp-browser` (isolated Chromium browser sessions) | 8 CPUs, 15 GiB RAM, 11 GiB disk |
 
-| Service | Responsibility |
-| --- | --- |
-| `spaceapp-core` | API, web application, worker supervision, owner memory |
-| `spaceapp-cli` | redistributable pinned CLIs, owner-installed providers, and isolated provider state |
-| `spaceapp-browser` | sandboxed Chromium browser sessions; standard profile only |
-| `postgres` | PostgreSQL with pgvector |
-| `temporal` | durable workflow orchestration |
+---
 
-Only workspaces added with
-`npx --yes run-spaceapp@latest workspace add` are mounted. Core and CLI
-containers run as an unprivileged application user, secrets are file-mounted,
-and telemetry is disabled by default.
+## ❓ Frequently Asked Questions & Troubleshooting
 
-## Common commands
+<details>
+<summary><b>Forgot your operator password?</b></summary>
+<br>
+Run the following command in your terminal. You will be prompted to enter a new password securely:
 
 ```bash
-npx --yes run-spaceapp@latest status
-npx --yes run-spaceapp@latest logs
-npx --yes run-spaceapp@latest backup
-npx --yes run-spaceapp@latest install
-npx --yes run-spaceapp@latest rollback
-npx --yes run-spaceapp@latest down
-npx --yes run-spaceapp@latest uninstall
+npx --yes run-spaceapp@latest owner reset-password
 ```
+</details>
 
-Portable backups include a PostgreSQL custom dump, application-data archive,
-owner-memory archive, and checksummed manifest. Provider credentials, provider
-login state, registered host workspace contents, and browser profiles are
-intentionally excluded. Read [Operations](docs/operations.md) before an update
-or restore.
-
-## Documentation
-
-- [Getting started](docs/getting-started.md)
-- [CLI providers and credentials](docs/cli-providers.md)
-- [Operations, backup, restore, and rollback](docs/operations.md)
-- [Clean-room testing](docs/clean-room-testing.md)
-- [Public release runbook](docs/public-release.md)
-- [Security model](docs/security-model.md)
-- [Public distribution decision](docs/decisions/ADR-010-public-distribution.md)
-- [Contributing](CONTRIBUTING.md)
-- [Community support](SUPPORT.md)
-- [Security reporting](SECURITY.md)
-
-## Development
-
-Repository development requires Node.js 22 and npm:
+<details>
+<summary><b>Setup token expired on first install?</b></summary>
+<br>
+If you did not complete the initial browser setup within 15 minutes, generate a fresh token:
 
 ```bash
-npm ci
-npm run check
-npm test
-npm run build
+npx --yes run-spaceapp@latest owner rotate-setup-token
 ```
+</details>
 
-Docker is required for Compose validation and clean-install testing. Run
-`npm run hygiene:preflight` before committing. Browser-facing changes also
-require a real browser check with clean console and network results.
+<details>
+<summary><b>Need to perform a clean install from scratch?</b></summary>
+<br>
+To create a safety backup, wipe old containers/volumes, and return to factory state:
 
-## License
+```bash
+npx --yes run-spaceapp@latest factory-reset
+```
+</details>
 
-SpaceApp source code is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE) by [example.invalid](https://example.invalid).
+<details>
+<summary><b>Docker permissions error on Linux?</b></summary>
+<br>
+Ensure your user is in the `docker` group. Run the diagnostic repair tool:
 
-- **Free and Allowed Use:** You are free to copy, modify, test, self-host, and use SpaceApp for personal and internal business operations.
-- **Use Limitation:** You may not make the functionality of SpaceApp available to third parties as a hosted or managed service, application service provider (ASP), or software-as-a-service (SaaS) that competes with example.invalid products or services.
-- **Change Date:** On October 1, 2030, this version of the software automatically transitions to the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0).
+```bash
+npx --yes run-spaceapp@latest doctor --fix
+```
+Log out and log back in for group changes to take effect.
+</details>
 
-Integrated provider CLIs remain subject to their own licenses and terms; SpaceApp does not provide provider accounts, usage credits, or credentials. See [Third-party notices](THIRD_PARTY_NOTICES.md).
+<details>
+<summary><b>Windows PowerShell execution policy error?</b></summary>
+<br>
+Windows may block npm's `.ps1` shims by default. Switch to **Command Prompt** (`cmd.exe`) in Windows Terminal or run:
 
+```bat
+npx.cmd --yes run-spaceapp@latest install
+```
+</details>
+
+---
+
+## 📚 Documentation & Deep Dives
+
+- [Getting Started & Installation Guide](docs/getting-started.md)
+- [CLI Providers, Models & Credential Setup](docs/cli-providers.md)
+- [Operations, Backup, Restore & Rollback](docs/operations.md)
+- [Container Security & Isolation Model](docs/security-model.md)
+- [Clean-Room Verification Runbook](docs/clean-room-testing.md)
+- [Release Process & Pipeline](docs/public-release.md)
+- [Public Distribution Decision (ADR-010)](docs/decisions/ADR-010-public-distribution.md)
+- [Contributing Guidelines](CONTRIBUTING.md)
+- [Community Support](SUPPORT.md)
+- [Security Disclosures](SECURITY.md)
+
+---
+
+## 📄 License
+
+SpaceApp is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE).
+
+- **Free and Allowed Use**: You are 100% free to copy, modify, test, self-host, and use SpaceApp for personal and internal business operations without payment.
+- **Use Limitation**: You may not offer SpaceApp as a hosted commercial managed service or SaaS competing directly with the licensor.
+- **Open-Source Transition**: On **October 1, 2030**, this version of SpaceApp transitions automatically to the permissive **Apache License 2.0**.
+
+*Integrated AI provider CLIs (Claude, Codex, Gemini, etc.) remain subject to their respective third-party licenses and terms. See [Third-Party Notices](THIRD_PARTY_NOTICES.md).*
