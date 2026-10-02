@@ -150,6 +150,18 @@ const publicBinaryFiles = new Map([
   [
     "apps/web/public/brand/space-logo.gif",
     "cbf2cd68586adcf8e86d3b65038152aa85b8f117e147a1092d1f978ab7d3c6c1"
+  ],
+  [
+    "apps/web/public/brand/spaceapp-orbital.gif",
+    "ff2cf6ed6737d64d6f29b84f31e037cf2ead54409dc803ae7cf98f96daf8db85"
+  ],
+  [
+    "apps/web/public/brand/spaceapp-orbital.ico",
+    "b80f3267f200710534281958b04916ccfa847b1bee20ef8f1e278c235df2328e"
+  ],
+  [
+    "apps/web/public/brand/spaceapp-orbital.png",
+    "a50b49f40e9f011771fcbe815c4753b8fafdf109f54dbb9d7a7706a6a478c806"
   ]
 ]);
 
