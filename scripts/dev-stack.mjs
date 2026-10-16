@@ -29,7 +29,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import {
-  chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, statSync
+  chmodSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -105,6 +105,19 @@ function requireDocker() {
 // that the digests are read from that file or one shared place — never copied by
 // hand. This is that reader.
 // ---------------------------------------------------------------------------
+/**
+ * Read the digest-pinned postgres and temporal image references out of the
+ * upstream compose template.
+ *
+ * The acceptance contract for this feature requires the digests to come from
+ * packages/run-spaceapp/templates/compose.yml rather than being copied by hand,
+ * so this parses that file rather than hardcoding anything. A template that stops
+ * pinning a digest, or a renamed service, fails loudly here instead of quietly
+ * running an unpinned image.
+ *
+ * @param {string} [templateText] Contents of the upstream compose template.
+ * @returns {{postgres: string, temporal: string}} Digest-pinned image references.
+ */
 export function readPinnedImages(templateText = readFileSync(COMPOSE_TEMPLATE, "utf8")) {
   // Match  `image: <repo>:<tag>@sha256:<64 hex>`  anywhere in the file.
   // `\r?$` matters: the repo is checked out with CRLF line endings on Windows,
@@ -173,6 +186,22 @@ const SECRET_MODES = {
 };
 const SECRET_FILES = Object.keys(SECRET_MODES);
 
+/**
+ * Create the per-state-directory secrets, or tighten the ones already there.
+ *
+ * Modes are per file, not per directory of files: `postgres-password` is 0644
+ * because a non-root container user reads it, and everything else is 0600
+ * because only this machine ever sees it. The directory itself is 0700, which is
+ * what keeps the one 0644 file unreachable by other local users. The full
+ * reasoning, and the CI run that proves the 0600 case fails, is in the block
+ * comment above.
+ *
+ * Idempotent on purpose: re-running narrows a file an older run left too open,
+ * in either direction.
+ *
+ * @param {string} [dir] State secret directory to create or reuse.
+ * @returns {{postgresPassword: string, sessionSecret: string, setupToken: string, databaseUrl: string}}
+ */
 export function generateSecrets(dir = SECRETS_DIR) {
   mkdirSync(dir, { recursive: true, mode: SECRETS_DIR_MODE });
   // mkdirSync's mode only applies to directories it creates, so a state
@@ -245,6 +274,17 @@ export function generateSecrets(dir = SECRETS_DIR) {
   };
 }
 
+/**
+ * Read the secrets a previous `up` wrote into a state directory.
+ *
+ * `up` uses this when the state directory already exists, so a second run reuses
+ * the same database password instead of orphaning the postgres volume that is
+ * still holding the old one. Throws if any file is missing, which is why `up`
+ * checks for the directory before calling it.
+ *
+ * @param {string} [dir] State secret directory to read.
+ * @returns {{postgresPassword: string, sessionSecret: string, setupToken: string, databaseUrl: string}}
+ */
 export function readSecrets(dir = SECRETS_DIR) {
   const read = (name) => readFileSync(join(dir, name), "utf8");
   return {
@@ -276,6 +316,24 @@ export function readSecrets(dir = SECRETS_DIR) {
 // ---------------------------------------------------------------------------
 export const SETUP_TOKEN_FILE_VAR = "SPACE_SETUP_TOKEN_FILE";
 
+/**
+ * Build the environment for the four from-source services (API, web, worker and
+ * CLI host).
+ *
+ * Every address, port and path the services need is decided here rather than
+ * inherited, so the stack cannot pick up an installed SpaceApp's ports, state
+ * directory or session secret by accident.
+ *
+ * The owner setup token travels as a FILE PATH, not a value: GET
+ * /api/setup/status only registers a token that arrived through
+ * SPACE_SETUP_TOKEN_FILE, and a plain SPACE_SETUP_TOKEN value leaves the
+ * endpoint reporting `expiresAt: null` while POST /api/setup/claim then answers
+ * 409 "The SpaceApp setup token is not valid."
+ *
+ * @param {{postgresPassword: string, sessionSecret: string, setupToken: string, databaseUrl: string}} secrets
+ * @param {{version?: string, binDir: string, commandPath?: string}} opencode Where the pinned OpenCode wrapper lives.
+ * @returns {Record<string, string>} Environment entries for the spawned services.
+ */
 export function buildServiceEnv(secrets, opencode) {
   const pathSep = process.platform === "win32" ? ";" : ":";
   return {
@@ -310,6 +368,26 @@ export function buildServiceEnv(secrets, opencode) {
 // Generated compose file. Only the Docker services (postgres + temporal). The
 // application processes run from source on the host, which is the whole point.
 // ---------------------------------------------------------------------------
+/**
+ * Render the dev-stack compose file: namespaced, loopback-bound, digest-pinned.
+ *
+ * Three things here are contract rather than convenience:
+ *
+ *   - The image references come from the upstream template through
+ *     readPinnedImages, digest included. Nothing is hand-copied, so a bumped
+ *     upstream template moves this stack with it and cannot silently drift.
+ *   - Every published port is bound to 127.0.0.1. PostgreSQL and Temporal never
+ *     leave the machine, which is a large part of why a generated database
+ *     password is an acceptable one.
+ *   - Only `postgres-password` appears under the top-level `secrets:`. That is
+ *     the single fact the file modes above depend on: it is the only secret a
+ *     container reads, so it is the only one that may be 0644.
+ *
+ * @param {{postgres: string, temporal: string}} images Digest-pinned image references.
+ * @param {{postgresPassword: string, sessionSecret: string, setupToken: string, databaseUrl: string}} secrets
+ * @param {Record<string, number>} [ports] Host port per service.
+ * @returns {string} Contents for the generated compose file.
+ */
 export function renderCompose(images, secrets, ports = PORTS) {
   return `# Generated by scripts/dev-stack.mjs — do not edit, do not commit.
 # Images are pinned by digest and copied from packages/run-spaceapp/templates/compose.yml
@@ -396,6 +474,18 @@ const DOCKERFILE = join(repoRoot, "Dockerfile");
 
 export const OPENCODE_PARITY_COMMAND = "opencode-vscode-parity";
 
+/**
+ * Read the pinned opencode-ai version out of the upstream Dockerfile.
+ *
+ * The dev stack installs the same version the released images bake in, but into
+ * its own state directory instead of a global npm prefix — the acceptance
+ * contract calls that out, and it means an installed SpaceApp's toolchain is
+ * never touched. Reading the version from the Dockerfile is what keeps the two
+ * from drifting.
+ *
+ * @param {string} [dockerfileText] Contents of the upstream Dockerfile.
+ * @returns {string} The pinned version, without a leading `@` or `v`.
+ */
 export function readPinnedOpenCode(dockerfileText = readFileSync(DOCKERFILE, "utf8")) {
   // `RUN npm install --global ... opencode-ai@1.18.4 ...`
   const match = dockerfileText.match(/opencode-ai@([0-9]+\.[0-9]+\.[0-9]+(?:-[^\s\\]+)?)/);
@@ -408,6 +498,24 @@ export function readPinnedOpenCode(dockerfileText = readFileSync(DOCKERFILE, "ut
  * branch of deploy/docker/public-cli-wrapper.sh — provider state is redirected
  * under the state directory and `--run-inner` is tolerated, because the API
  * appends it when it resumes a native session.
+ */
+/**
+ * Render the shell wrapper that stands in for the CLI host's `-vscode-parity`
+ * command.
+ *
+ * The CLI host resolves a runtime by looking for `<name>-vscode-parity` inside
+ * SPACE_CLI_COMMAND_PATH, so a directory holding only `opencode` is not enough:
+ * without this wrapper the stack answers POST /api/panes/:id/cli/session with 503
+ * CLI_RUNTIME_DISABLED. The wrapper is what makes the pane step in CI reachable.
+ *
+ * It pins OpenCode's state to the dev stack's own directory through the XDG
+ * variables, so a developer's real OpenCode configuration is never read or
+ * written, and it exports a placeholder OPENCODE_API_KEY because the pane only
+ * has to start and show its UI — the contract explicitly requires no AI provider
+ * account.
+ *
+ * @param {string} [stateDir] State directory the wrapper should confine itself to.
+ * @returns {string} The wrapper script text.
  */
 export function renderOpenCodeWrapper(stateDir = STATE_DIR) {
   const providerRoot = join(stateDir, "providers/opencode");
@@ -441,6 +549,20 @@ exec "${launcher}" "$@"
 `;
 }
 
+/**
+ * Write the OpenCode wrapper into the state directory and mark it executable.
+ *
+ * The execute bit is part of the contract, not a nicety: the CLI host gates each
+ * candidate on an execute-permission check, so a wrapper that is merely readable
+ * is reported as absent. Windows has no execute bit and its access check only
+ * confirms the file exists, hence the platform branch.
+ *
+ * Called before the version stamp is consulted, so an existing install still
+ * picks up a changed wrapper.
+ *
+ * @param {string} [stateDir] State directory to write into.
+ * @returns {{binDir: string, commandPath: string}} Where the wrapper landed.
+ */
 export function writeOpenCodeWrapper(stateDir = STATE_DIR) {
   const binDir = join(stateDir, "bin");
   mkdirSync(binDir, { recursive: true });
@@ -503,6 +625,19 @@ const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0
 // second, and the health field is empty when the image ships no healthcheck.
 // Split the fields and compare them individually; testing for a prefix of the
 // joined string silently never matches "running healthy".
+/**
+ * Parse the newline-delimited JSON that `docker compose ps --format json` prints.
+ *
+ * One JSON object per line, one line per container, and empty output is a valid
+ * answer meaning nothing is running — `reset` leans on that reading to prove it
+ * cleaned up after itself, which is why an empty string must not throw.
+ *
+ * Unparseable lines are skipped rather than fatal, so a stray warning on stdout
+ * cannot turn a teardown into a failure.
+ *
+ * @param {string} raw Raw stdout from `docker compose ps`.
+ * @returns {Array<Record<string, unknown>>} One entry per parsed container.
+ */
 export function parseContainerState(raw) {
   const [status = "", health = ""] = (raw ?? "").trim().split(/\s+/);
   return { raw: (raw ?? "").trim(), status, health };
@@ -513,6 +648,20 @@ function containerState(name) {
   return parseContainerState(r.stdout);
 }
 
+/**
+ * Poll `docker compose ps` until postgres reports healthy and temporal is up.
+ *
+ * Polling rather than sleeping a fixed interval, because the two containers need
+ * very different amounts of time on a warm image cache versus a cold one, and
+ * migrations must not start against a postgres that is still initialising its
+ * data directory.
+ *
+ * A timeout fails with the states it actually observed, so a CI log says what was
+ * wrong rather than only that something was slow.
+ *
+ * @param {{postgres: string, temporal: string}} [names] Container names to wait on.
+ * @param {number} [timeoutMs] How long to keep polling before failing.
+ */
 export function waitForInfrastructure(names = { postgres: `${COMPOSE_PROJECT}-postgres-1`, temporal: `${COMPOSE_PROJECT}-temporal-1` }, timeoutMs = 180_000) {
   const deadline = Date.now() + timeoutMs;
   let postgres = parseContainerState("");
@@ -613,11 +762,59 @@ function signalProcessTree(pid, signal = "SIGTERM") {
   return false;
 }
 
+// One /proc entry's scheduling state and process-group id, or null when the
+// entry vanished between listing and reading. Field layout is
+// `pid (comm) state ppid pgrp ...`; `comm` is the executable name and may itself
+// contain spaces, parentheses and newlines, so only the fields after the closing
+// paren are safe to split on.
+function readProcStat(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return { state: fields[0], pgrp: Number(fields[2]) };
+  } catch {
+    return null;
+  }
+}
+
+// True when any process in `pgid` can still do work. `Z` is a zombie and `X` is
+// being torn down; neither runs user code, and neither can be killed, so neither
+// counts towards "something is still running here".
+//
+// This exists because the portable probe cannot answer the question. A process
+// group answers signal 0 while ANY member exists, and an exited process stays a
+// member until its parent collects it — so a fully stopped stack still reads as
+// alive. Returns null when /proc is unavailable, letting the caller fall back.
+function linuxGroupHasLiveMember(pgid) {
+  let entries;
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!/^[0-9]+$/.test(entry)) continue;
+    const stat = readProcStat(entry);
+    if (stat && stat.pgrp === pgid && stat.state !== "Z" && stat.state !== "X") return true;
+  }
+  return false;
+}
+
 function processTreeAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 1) return false;
   if (process.platform === "win32") {
     const out = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], { encoding: "utf8" });
     return (out.stdout ?? "").includes(`"${pid}"`);
+  }
+  // Linux is where the acceptance contract's CI runs, and where /proc can answer
+  // precisely. Ask it first: the group, then the pid itself.
+  if (process.platform === "linux") {
+    const groupLive = linuxGroupHasLiveMember(pid);
+    if (groupLive !== null) {
+      if (groupLive) return true;
+      const own = readProcStat(pid);
+      return own !== null && own.state !== "Z" && own.state !== "X";
+    }
   }
   for (const target of [-pid, pid]) {
     try {
@@ -648,6 +845,13 @@ function stopProcessTrees(entries, { graceMs = 6000 } = {}) {
     alive = alive.filter(processTreeAlive);
   }
   for (const pid of alive) signalProcessTree(pid, "SIGKILL");
+  // SIGKILL is not synchronous: the process still has to be scheduled to die, and
+  // a survivor check that runs immediately reports processes that were already on
+  // their way out. Give the kernel a bounded moment before believing it.
+  if (alive.length) {
+    const killDeadline = Date.now() + 2000;
+    while (alive.some(processTreeAlive) && Date.now() < killDeadline) sleepSync(50);
+  }
   const survivors = alive.filter(processTreeAlive);
   if (survivors.length) {
     fail(`Could not stop pid ${survivors.join(", ")}. Stop them before continuing.`);

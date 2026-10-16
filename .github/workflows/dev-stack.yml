@@ -77,9 +77,14 @@ jobs:
             sleep 2
           done
           echo "readyz never reported ok"
+          # The API is not necessarily the process that died: dev-stack stops the
+          # whole stack as soon as any child exits, so every service log matters.
           echo "--- dev-stack.out ---"; cat dev-stack.out || true
           echo "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true
-          echo "--- api.log ---"; tail -n 120 .dev-stack/logs/api.log 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "--- $f ---"; tail -n 120 "$f" || true
+          done
           exit 1
 
       # Owner setup goes through the real setup-token flow:
@@ -237,10 +242,43 @@ jobs:
           tail -n 120 .dev-stack/logs/cli-host.log || true
           exit 1
 
+      # Evidence first, teardown second. `reset` deletes .dev-stack/, so a dump
+      # that runs after it finds nothing left to read.
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "=== dev-stack.out ==="; cat dev-stack.out || true
+          echo "=== .dev-stack/logs ==="; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "=== $f ==="; tail -n 120 "$f" || true
+          done
+          echo "=== containers ==="
+          docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack" || true
+          for c in $(docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Names}}'); do
+            echo "=== docker logs $c ==="; docker logs --tail 80 "$c" 2>&1 || true
+          done
+
       - name: Reset and verify no resources remain
+        id: reset-stack
         if: always()
         run: |
           set -euo pipefail
+
+          # Record the host processes the stack started BEFORE reset removes the
+          # state directory that lists them, so the post-reset check below has
+          # something to assert against. `npm run dev:stack` spawns the API, web,
+          # worker and CLI host as real children; a reset that stopped only the
+          # containers would leave all four running.
+          echo "[]" > /tmp/dev-stack.pids.json
+          if [ -f .dev-stack/dev-stack.pids.json ]; then
+            cp .dev-stack/dev-stack.pids.json /tmp/dev-stack.pids.json
+            echo "--- host processes recorded before reset ---"
+            node -e 'for (const e of require("/tmp/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)'
+          else
+            echo "no pid file was recorded before reset"
+          fi
+
           npm run dev:stack -- reset 2>&1 | tee reset.out
 
           echo "--- residual check ---"
@@ -253,14 +291,30 @@ jobs:
           if [ -d .dev-stack ]; then
             echo ".dev-stack still exists after reset"; ls -la .dev-stack; exit 1
           fi
-          echo "no containers, no volumes, no state directory left."
 
-      - name: Dump logs on failure
-        if: failure()
+          # The acceptance criteria name processes alongside containers and
+          # volumes. Any pid recorded above that still answers kill -0 means reset
+          # left a host process behind — the worker forks its own children, so a
+          # leader-only signal would show up here.
+          leaked=0
+          while read -r name pid; do
+            [ -n "${pid:-}" ] || continue
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "process still alive after reset: $name (pid $pid)"
+              ps -o pid,ppid,pgid,stat,command -p "$pid" || true
+              leaked=1
+            fi
+          done < <(node -e 'for (const e of require("/tmp/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)')
+          if [ "$leaked" -ne 0 ]; then
+            echo "reset left host processes running"; exit 1
+          fi
+
+          echo "no containers, no volumes, no state directory and no processes left."
+
+      # A leak after reset is its own failure mode — the acceptance criteria call
+      # out leftover containers, volumes and processes specifically — so surface
+      # reset's own output rather than leaving it buried in the step log.
+      - name: Dump reset output when reset itself failed
+        if: failure() && steps.reset-stack.outcome == 'failure'
         run: |
-          echo "=== dev-stack.out ==="; cat dev-stack.out || true
-          echo "=== .dev-stack/logs ==="; ls -la .dev-stack/logs 2>/dev/null || true
-          for f in .dev-stack/logs/*.log; do
-            [ -f "$f" ] || continue
-            echo "=== $f (tail 80) ==="; tail -n 80 "$f" || true
-          done
+          echo "=== reset.out ==="; cat reset.out || true

@@ -559,10 +559,19 @@ test("readPidFile survives a missing, truncated or hand-edited pid file", () => 
 });
 
 test("teardown reaches a child's own children, not just the leader it recorded", () => {
-  // Regression: `down` and `reset` signalled only the pid recorded at spawn
-  // time. spawnService starts every child with `detached`, so that pid is a
-  // process-group leader and the workers it forked — `npx tsx watch`, `vite` —
-  // survived the teardown.
+  // Regression, two layers deep.
+  //
+  // 1. `down` and `reset` signalled only the pid recorded at spawn time.
+  //    spawnService starts every child with `detached`, so that pid is a
+  //    process-group leader and the workers it forked — `npx tsx watch`, `vite` —
+  //    survived the teardown.
+  //
+  // 2. The liveness probe then over-reported. A process group answers signal 0
+  //    while any member exists, and an exited process stays a member until its
+  //    parent collects it, so a fully stopped tree still read as running. That
+  //    is why this test leaves the leader unreaped — the test process is its
+  //    parent and never waits on it, so the leader is a zombie, exactly the shape
+  //    CI hit. processTreeAlive consults /proc on Linux and ignores zombies.
   if (process.platform === "win32") {
     // Windows has no POSIX process groups; signalProcessTree goes through
     // taskkill /T there and needs a real console process to prove anything,
