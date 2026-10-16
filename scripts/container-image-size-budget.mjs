@@ -4,11 +4,13 @@ import { pathToFileURL } from "node:url";
 
 const mebibyte = 1024 * 1024;
 
-// Per-service budgets are enforced for both architectures by containers.yml.
+// Measured with `docker image inspect` on 2026-10-16 (MiB, amd64 / arm64):
+// core 290.1 / 301.6, browser 410.7 / 412.4, cli 280.2 / 223.9.
+// Budgets leave roughly 8-11% headroom over the largest measured image per target.
 export const containerImageSizeBudgets = Object.freeze({
-  core: 375 * mebibyte,
-  browser: 600 * mebibyte,
-  cli: 350 * mebibyte
+  core: 325 * mebibyte,
+  browser: 450 * mebibyte,
+  cli: 310 * mebibyte
 });
 
 export function evaluateContainerImageSize({ target, sizeBytes }) {
