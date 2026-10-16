@@ -14,6 +14,11 @@ const targetsDir = join(repoRoot, "targets");
 
 const TARGETS = ["core", "browser", "cli"];
 
+/**
+ * Ensures that a target directory exists and is empty.
+ * @param {string} dir - Directory path to initialize.
+ * @returns {void}
+ */
 function ensureEmptyDir(dir) {
   if (existsSync(dir)) {
     rmSync(dir, { recursive: true, force: true });
@@ -21,17 +26,33 @@ function ensureEmptyDir(dir) {
   mkdirSync(dir, { recursive: true });
 }
 
+/**
+ * Copies a source file or directory tree to destination if source exists.
+ * @param {string} src - Source file or directory path.
+ * @param {string} dest - Destination file or directory path.
+ * @returns {void}
+ */
 function safeCopy(src, dest) {
   if (!existsSync(src)) return;
   mkdirSync(dirname(dest), { recursive: true });
   cpSync(src, dest, { recursive: true, dereference: false });
 }
 
+/**
+ * Removes a file or directory tree recursively if it exists.
+ * @param {string} path - Path to delete.
+ * @returns {void}
+ */
 function safeRemove(path) {
   if (!existsSync(path)) return;
   rmSync(path, { recursive: true, force: true });
 }
 
+/**
+ * Prunes native binaries and prebuilds targeting non-Linux or musl platforms from node_modules.
+ * @param {string} nodeModulesDir - Path to node_modules directory.
+ * @returns {void}
+ */
 function removeUnusedPlatformBinaries(nodeModulesDir) {
   // Prune prebuilds for other OSes from node-pty
   const nodePtyPrebuilds = join(nodeModulesDir, "node-pty/prebuilds");
@@ -69,6 +90,10 @@ function removeUnusedPlatformBinaries(nodeModulesDir) {
   }
 }
 
+/**
+ * Prepares isolated production filesystem targets for core, browser, and cli service images.
+ * @returns {void}
+ */
 export function prepareTargets() {
   process.stdout.write("Staging per-service container closures in /app/targets...\n");
 
@@ -102,6 +127,7 @@ export function prepareTargets() {
       // Workspaces needed by API and Worker
       const corePackages = [
         "contracts",
+        "cli-host",
         "icons",
         "streaming",
         "opencode-control",
@@ -127,12 +153,8 @@ export function prepareTargets() {
         safeCopy(join(repoRoot, `scripts/${script}`), join(dest, `scripts/${script}`));
       }
 
-      // Exclude cli-host and terminal dependencies from core
-      safeRemove(join(dest, "packages/cli-host"));
+      // Preserve browser-host-main.js exclusion (runs exclusively in browser-host image)
       safeRemove(join(dest, "apps/api/dist/browser-host-main.js"));
-      safeRemove(join(nodeModulesDest, "@space/cli-host"));
-      safeRemove(join(nodeModulesDest, "node-pty"));
-      safeRemove(join(nodeModulesDest, "@xterm"));
 
     } else if (target === "browser") {
       // Browser Host service only
