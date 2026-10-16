@@ -10,7 +10,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // Import only the pure helpers. The CLI entry is guarded behind `invokedDirectly`.
 // pathToFileURL keeps this working on Windows, where a bare `d:\...` path is not
 // a valid ESM specifier.
-const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, parseContainerState, waitForInfrastructure, buildServiceEnv, SETUP_TOKEN_FILE_VAR, PORTS } =
+const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, parseContainerState, waitForInfrastructure, buildServiceEnv, SETUP_TOKEN_FILE_VAR, PORTS, OPENCODE_PARITY_COMMAND, renderOpenCodeWrapper, writeOpenCodeWrapper } =
   await import(pathToFileURL(join(repoRoot, "scripts", "dev-stack.mjs")).href);
 
 const TEMPLATE = join(repoRoot, "packages/run-spaceapp/templates/compose.yml");
@@ -347,4 +347,106 @@ test("dev-stack installs OpenCode into the state directory, never globally", () 
   assert.ok(source.includes('"--prefix", stateDir'), "OpenCode must be installed with --prefix into the state directory");
   // And it must not use `--global`/`-g`, which would touch the user's npm prefix.
   assert.ok(!source.includes('"--global"') && !source.includes('"-g"'), "OpenCode must not be installed globally");
+});
+
+test("the pane command is named exactly what the API's descriptor fixes", () => {
+  // Regression: the first run that reached the pane step got
+  //   503 CLI_RUNTIME_DISABLED
+  //   "Command opencode-vscode-parity was not executable inside
+  //    SPACE_CLI_COMMAND_PATH for the space service user."
+  // The API does not run `opencode`; it probes SPACE_CLI_COMMAND_PATH for a file
+  // named after the descriptor's commandName and gates on access(X_OK)
+  // (apps/api/src/cli-runtimes.ts detectCommand). Renaming either side breaks
+  // pane startup, so pin the two together here instead of restating a literal.
+  const descriptors = readFileSync(join(repoRoot, "apps/api/src/cli-runtime-descriptors.ts"), "utf8");
+  const opencodeBlock = descriptors.slice(descriptors.indexOf('key: "opencode"'));
+  const descriptorCommandName = opencodeBlock.match(/commandName:\s*"([^"]+)"/)?.[1];
+  assert.ok(descriptorCommandName, "the opencode descriptor must declare a commandName");
+  assert.equal(
+    descriptorCommandName,
+    OPENCODE_PARITY_COMMAND,
+    "the wrapper file name and apps/api/src/cli-runtime-descriptors.ts must agree"
+  );
+
+  // Executability, not mere existence, is the contract.
+  const runtimes = readFileSync(join(repoRoot, "apps/api/src/cli-runtimes.ts"), "utf8");
+  assert.match(
+    runtimes,
+    /access\(\s*\w+,\s*constants\.X_OK/,
+    "detectCommand must gate on X_OK, so the wrapper needs the execute bit"
+  );
+});
+
+test("renderOpenCodeWrapper isolates provider state and execs the pinned launcher", () => {
+  const stateDir = join(repoRoot, ".dev-stack");
+  const script = renderOpenCodeWrapper(stateDir);
+  const providerRoot = join(stateDir, "providers", "opencode");
+  const launcher = join(stateDir, "node_modules", ".bin", "opencode");
+
+  assert.ok(script.startsWith("#!/bin/sh"), "the wrapper must be a POSIX sh script");
+
+  // Provider state lives under the state directory, mirroring the opencode
+  // branch of deploy/docker/public-cli-wrapper.sh, which redirects it under
+  // /var/lib/spaceapp-cli/providers/<runtime>. The script anchors everything on
+  // one `state_root`, so assert that anchor and then that each variable uses it.
+  assert.ok(script.includes(`state_root="${providerRoot}"`), "state_root must be the provider root");
+  assert.ok(script.includes('export HOME="$state_root"'), "HOME must point at the provider root");
+  assert.ok(script.includes('export TMPDIR="$state_root/tmp"'), "TMPDIR must stay under the provider root");
+  for (const variable of ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"]) {
+    assert.ok(script.includes(`export ${variable}="$state_root/`), `${variable} must stay under the provider root`);
+  }
+
+  // The state-dir install, never a PATH lookup that could find a global one.
+  assert.ok(script.includes(`exec "${launcher}" "$@"`), "the wrapper must exec the pinned launcher with every argument");
+  assert.ok(!/exec\s+opencode\b/.test(script), "the wrapper must not resolve opencode from PATH");
+
+  // The API appends --run-inner when it resumes a native session.
+  assert.ok(script.includes('"--run-inner"'), "the wrapper must tolerate --run-inner");
+});
+
+test("writeOpenCodeWrapper writes an executable file where the API looks for it", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "devstack-wrapper-"));
+  try {
+    const { binDir, commandPath } = writeOpenCodeWrapper(stateDir);
+
+    assert.equal(basename(commandPath), OPENCODE_PARITY_COMMAND);
+    assert.equal(dirname(commandPath), binDir);
+    assert.equal(binDir, join(stateDir, "bin"));
+    assert.ok(existsSync(commandPath), "the wrapper must exist");
+    assert.ok(statSync(commandPath).isFile(), "the wrapper must be a regular file, not a directory");
+
+    // detectCommand runs access(candidate, X_OK). Windows has no execute bit and
+    // its X_OK check only proves existence, so the mode assertion is POSIX-only.
+    if (process.platform !== "win32") {
+      const mode = statSync(commandPath).mode & 0o777;
+      assert.ok(mode & 0o111, `wrapper mode ${mode.toString(8)} is not executable`);
+    }
+
+    // `up` runs again on an existing state directory, so regenerating must not
+    // fail and must not need a network round trip.
+    writeOpenCodeWrapper(stateDir);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("buildServiceEnv points the CLI command path at the wrapper directory", () => {
+  // A temp state directory, so running the tests never writes into the repo.
+  const stateDir = mkdtempSync(join(tmpdir(), "devstack-clipath-"));
+  try {
+    const { binDir, commandPath } = writeOpenCodeWrapper(stateDir);
+    const env = buildServiceEnv(
+      { setupToken: "x".repeat(64), sessionSecret: "s", databaseUrl: "postgresql://u:p@127.0.0.1:1/db" },
+      { version: "0.0.0", binDir, commandPath }
+    );
+
+    assert.equal(env.SPACE_CLI_ENABLED, "true");
+    assert.equal(env.SPACE_CLI_COMMAND_PATH, binDir, "SPACE_CLI_COMMAND_PATH must be the directory holding the wrapper");
+    // The API resolves commandName inside that directory; a path would make
+    // commandNameIsSafe reject it.
+    assert.equal(basename(join(env.SPACE_CLI_COMMAND_PATH, OPENCODE_PARITY_COMMAND)), OPENCODE_PARITY_COMMAND);
+    assert.ok((env.PATH ?? "").startsWith(`${binDir}${process.platform === "win32" ? ";" : ":"}`));
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 });
