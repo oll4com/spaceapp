@@ -294,24 +294,22 @@ async function checkBrowser() {
        { name: "Container smoke check" }, "container-smoke", null
      );
      console.log("room " + room.id);
+     // Panes are database records too; the host resolves the pane it is
+     // asked to open. Seed it through the store and use the stored pane.
+     const pane = await store.createPane(
+       { roomId: room.id, title: "Container smoke check", mode: "BROWSER" },
+       "container-smoke"
+     );
+     console.log("pane " + pane.id);
      const client = new BrowserHostClient({ socketPath: "/run/spaceapp-browser/browser-host.sock" });
      const health = await client.health();
      console.log("health " + JSON.stringify(health));
-     const now = new Date().toISOString();
-     const pane = {
-       id: "smoke-pane-1", roomId: room.id, title: "Container smoke check",
-       mode: "BROWSER", status: "IDLE", providerId: null, modelId: null,
-       cwd: null, order: 0, columnSpan: 1, isMaximized: false,
-       isMinimized: false, isClosed: false,
-       split: { parentId: null, direction: null, size: null },
-       createdAt: now, updatedAt: now
-     };
      const opened = await client.startOrRestore(
        { pane, targetUrl: "about:blank", traceId: "container-smoke" },
        undefined
      );
      console.log("opened " + JSON.stringify(opened).slice(0, 400));
-     await client.stopPane("smoke-pane-1", "container-smoke", undefined);
+     await client.stopPane(pane.id, "container-smoke", undefined);
      await client.close();
      process.exit(0);`
   );
