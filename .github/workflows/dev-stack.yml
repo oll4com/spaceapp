@@ -112,6 +112,25 @@ jobs:
             console.log("owner claimed; starter room:", c.starterRoomId);
           '
 
+      # Every non-GET /api/ request made with a session must carry the CSRF
+      # header the API names, or the request guard answers 403 CSRF_INVALID.
+      # The claim above succeeded without one only because there was no session
+      # yet and the guard skips unauthenticated requests.
+      - name: Fetch the CSRF token the session needs
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          curl -fsS -b cookies.txt "${BASE}/api/auth/csrf" -o csrf.json -w 'csrf: %{http_code}\n'
+          cat csrf.json
+          node -e '
+            const c = require("./csrf.json");
+            if (!c.csrfToken) { console.error("no csrfToken in the response"); process.exit(1); }
+            if (!c.headerName) { console.error("no headerName in the response"); process.exit(1); }
+            require("fs").writeFileSync("csrf-token.txt", c.csrfToken);
+            require("fs").writeFileSync("csrf-header.txt", c.headerName);
+            console.log("csrf header:", c.headerName);
+          '
+
       # The starter room is created through the documented setup route, not by
       # guessing a room id. It needs the ADMIN session the claim just issued.
       # The route takes no body, and Fastify answers 400 "Body cannot be empty
@@ -121,9 +140,14 @@ jobs:
         run: |
           set -euo pipefail
           BASE="http://127.0.0.1:${API_PORT}"
-          curl -fsS -b cookies.txt -X POST "${BASE}/api/setup/starter-room" \
-            -o starter-room.json -w 'starter room: %{http_code}\n'
+          CSRF_HEADER="$(cat csrf-header.txt)"
+          CSRF_TOKEN="$(cat csrf-token.txt)"
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/setup/starter-room" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
+            -o starter-room.json -w '%{http_code}')"
+          echo "starter room: ${code}"
           cat starter-room.json
+          if [ "${code}" != "200" ]; then echo "starter-room request failed"; exit 1; fi
           node -e '
             const s = require("./starter-room.json");
             const id = s.room?.id;
@@ -147,12 +171,17 @@ jobs:
           set -euo pipefail
           BASE="http://127.0.0.1:${API_PORT}"
           ROOM_ID="$(cat starter-room-id.txt)"
+          CSRF_HEADER="$(cat csrf-header.txt)"
+          CSRF_TOKEN="$(cat csrf-token.txt)"
 
-          curl -fsS -b cookies.txt -X POST "${BASE}/api/panes" \
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/panes" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
             -H 'content-type: application/json' \
             -d "{\"roomId\":\"${ROOM_ID}\",\"title\":\"OpenCode CLI\",\"mode\":\"TERMINAL\",\"terminalRuntimeId\":\"cli:opencode\"}" \
-            -o pane.json -w 'open pane: %{http_code}\n'
+            -o pane.json -w '%{http_code}')"
+          echo "open pane: ${code}"
           cat pane.json
+          if [ "${code}" != "200" ]; then echo "pane create failed"; exit 1; fi
 
           node -e '
             const p = require("./pane.json");
@@ -164,11 +193,14 @@ jobs:
           '
           PANE_ID="$(cat pane-id.txt)"
 
-          curl -fsS -b cookies.txt -X POST "${BASE}/api/panes/${PANE_ID}/cli/session" \
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/panes/${PANE_ID}/cli/session" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
             -H 'content-type: application/json' \
             -d '{"runtimeId":"cli:opencode"}' \
-            -o session-start.json -w 'start cli session: %{http_code}\n'
+            -o session-start.json -w '%{http_code}')"
+          echo "start cli session: ${code}"
           cat session-start.json
+          if [ "${code}" != "200" ]; then echo "cli session start failed"; exit 1; fi
 
           node -e '
             const s = require("./session-start.json");
