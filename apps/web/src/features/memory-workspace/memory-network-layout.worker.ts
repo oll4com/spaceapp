@@ -1,3 +1,7 @@
+/**
+ * Web Worker for asynchronous force-directed 2D and 3D memory graph layout.
+ * Computes 2D planar projection and streams incremental 3D coordinates back to the main thread.
+ */
 import { layoutMemoryNetwork3D } from "./memory-3d.js";
 import { layoutMemoryNetwork } from "./memory-network-layout.js";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";

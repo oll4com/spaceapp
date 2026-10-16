@@ -1,7 +1,7 @@
 import type { MemoryGraphEdge, MemoryGraphNode } from "@space/contracts";
 import type { MemoryAtlasPosition } from "./memory-atlas.js";
 import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
-import { projectMemoryPoint, type MemoryCamera3D, type MemoryPoint3D } from "./memory-3d.js";
+import { type MemoryCamera3D, type MemoryPoint3D } from "./memory-3d.js";
 
 export const MAX_LABEL_BUDGET = 32;
 export const CANVAS_FALLBACK_NODE_LIMIT = 2000;
@@ -38,6 +38,9 @@ export class SpatialPickingIndex {
   private head = new Int32Array(0);
   private next = new Int32Array(0);
 
+  /**
+   * Pre-allocates flat typed array capacity for n nodes.
+   */
   public ensureCapacity(capacity: number) {
     if (this.screenX.length < capacity) {
       this.screenX = new Float32Array(capacity);
@@ -48,6 +51,9 @@ export class SpatialPickingIndex {
     }
   }
 
+  /**
+   * Rebuilds spatial hash index from current 3D node coordinates and camera.
+   */
   public rebuild(
     nodes: MemoryGraphNode[],
     coordinates: Map<string, MemoryPoint3D>,
@@ -118,15 +124,13 @@ export class SpatialPickingIndex {
         const cell = cy * cols + cx;
         this.next[i] = this.head[cell]!;
         this.head[cell] = i;
-      } else {
-        this.next[i] = -1;
       }
     }
   }
 
   /**
-   * Non-linear O(1) bounded spatial lookup around cursor.
-   * Examines at most a 3x3 cell neighborhood.
+   * Queries screen-space (px, py) for the closest node under pointer within hit threshold.
+   * Runs in O(1) time without allocations.
    */
   public query(px: number, py: number): string | null {
     if (this.count === 0) return null;
@@ -198,54 +202,63 @@ export function selectBoundedLabels(
   if (nodes.length === 0 || spatial.nodeIds.length === 0) return [];
 
   // Gather priority candidates
-  // Priority: 1. Focused node, 2. Root/Core nodes, 3. Source nodes, 4. Memory nodes (if zoomed)
-  const candidateIndices: number[] = [];
-  let focusIdx = -1;
-
-  for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i]!;
-    if (node.id === focusId) {
-      focusIdx = i;
-      continue;
-    }
-    const isCore = isMemoryCoreLabel(node.label);
-    const isSource = node.type === "SOURCE";
-    if (isCore || isSource || (zoom >= 1.6 && candidateIndices.length < budget * 3)) {
-      candidateIndices.push(i);
-    }
+  interface LabelCandidate {
+    node: MemoryGraphNode;
+    index: number;
+    score: number;
+    isCore: boolean;
+    isFocused: boolean;
   }
 
-  // Sort candidate indices by priority: core first, then by depth (closer to camera)
-  candidateIndices.sort((a, b) => {
-    const coreA = Number(isMemoryCoreLabel(nodes[a]!.label));
-    const coreB = Number(isMemoryCoreLabel(nodes[b]!.label));
-    if (coreA !== coreB) return coreB - coreA;
-    const srcA = Number(nodes[a]!.type === "SOURCE");
-    const srcB = Number(nodes[b]!.type === "SOURCE");
-    if (srcA !== srcB) return srcB - srcA;
-    return spatial.screenZ[a]! - spatial.screenZ[b]!;
-  });
+  const candidates: LabelCandidate[] = [];
+  const count = Math.min(nodes.length, spatial.nodeIds.length);
 
-  const orderedIndices = focusIdx >= 0 ? [focusIdx, ...candidateIndices] : candidateIndices;
+  for (let i = 0; i < count; i++) {
+    const node = nodes[i]!;
+    const sx = spatial.screenX[i]!;
+    const sy = spatial.screenY[i]!;
+
+    // Viewport frustum culling
+    if (sx < -40 || sx > width + 40 || sy < -20 || sy > height + 20) continue;
+
+    const isCore = node.type === "SOURCE" && isMemoryCoreLabel(node.label);
+    const isFocused = node.id === focusId;
+    const isSource = node.type === "SOURCE";
+
+    // Skip non-sources if not zoomed in and not focused
+    if (!isCore && !isFocused && !isSource && zoom < 1.6) continue;
+
+    // Priority scoring
+    let score = 0;
+    if (isFocused) score += 10000;
+    if (isCore) score += 5000;
+    if (isSource) score += 1000;
+    score += (1000 - spatial.screenZ[i]!); // Closer to camera
+
+    candidates.push({ node, index: i, score, isCore, isFocused });
+  }
+
+  // Sort descending by priority score
+  candidates.sort((a, b) => b.score - a.score);
+
   const labelBoxes: SelectedLabel[] = [];
 
-  for (const idx of orderedIndices) {
-    if (labelBoxes.length >= budget) break;
-
-    const node = nodes[idx]!;
-    const sx = spatial.screenX[idx]!;
-    const sy = spatial.screenY[idx]!;
-    if (sx < -50 || sx > width + 50 || sy < 10 || sy > height + 10) continue;
+  for (let c = 0; c < candidates.length && labelBoxes.length < budget; c++) {
+    const cand = candidates[c]!;
+    const node = cand.node;
+    const i = cand.index;
+    const sx = spatial.screenX[i]!;
+    const sy = spatial.screenY[i]!;
 
     const rawLabel = node.label.length > 48 ? `${node.label.slice(0, 45)}…` : node.label;
     const w = measureText(rawLabel);
     const x = sx + 9;
     const y = sy;
 
-    // Bounds check
+    // Boundary check
     if (x + w > width || y < 14 || y > height - 5) continue;
 
-    // Collision check against placed boxes
+    // Collision detection against placed boxes
     let collides = false;
     for (let b = 0; b < labelBoxes.length; b++) {
       const box = labelBoxes[b]!;
@@ -290,6 +303,7 @@ layout(location = 4) in float a_flags;
 uniform vec2 u_resolution;
 uniform vec3 u_camera; // yaw, pitch, zoom
 uniform float u_scale;
+uniform float u_dim;
 
 out vec4 v_color;
 out vec2 v_uv;
@@ -326,7 +340,7 @@ void main() {
   float ndcZ = clamp((rz + 1500.0) / 3000.0, 0.001, 0.999);
   gl_Position = vec4(ndc, ndcZ, 1.0);
 
-  v_color = a_color;
+  v_color = vec4(a_color.rgb, a_color.a * u_dim);
   v_uv = a_corner * (quadSize / radius);
   v_flags = a_flags;
 }
@@ -367,6 +381,7 @@ layout(location = 1) in vec4 a_color;
 uniform vec2 u_resolution;
 uniform vec3 u_camera;
 uniform float u_scale;
+uniform float u_dim;
 
 out vec4 v_color;
 
@@ -395,7 +410,7 @@ void main() {
 
   float ndcZ = clamp((rz + 1500.0) / 3000.0, 0.001, 0.999);
   gl_Position = vec4(ndc, ndcZ, 1.0);
-  v_color = a_color;
+  v_color = vec4(a_color.rgb, a_color.a * u_dim);
 }
 `;
 
@@ -444,12 +459,14 @@ function createProgram(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: string)
 /**
  * High-performance vanilla WebGL2 renderer for 50,000 nodes.
  * Features instanced billboard quads, batched line rendering, and GPU depth testing.
+ * Separates immutable static geometry buffers from lightweight dynamic highlight passes.
  */
 export class MemoryWebGL2Renderer {
   private gl: WebGL2RenderingContext;
   private nodeProgram: WebGLProgram | null = null;
   private edgeProgram: WebGLProgram | null = null;
 
+  // Static geometry buffers
   private quadVao: WebGLVertexArrayObject | null = null;
   private quadVbo: WebGLBuffer | null = null;
   private nodeInstanceVbo: WebGLBuffer | null = null;
@@ -460,14 +477,43 @@ export class MemoryWebGL2Renderer {
   private nodeCount = 0;
   private edgeVertexCount = 0;
 
-  // Staged typed arrays for instanced node data: [x, y, z, r, g, b, a, radius, flags] (9 floats per node)
+  // Dynamic highlight pass buffers (for instant hover without 50k buffer rebuild)
+  private highlightQuadVao: WebGLVertexArrayObject | null = null;
+  private highlightNodeVbo: WebGLBuffer | null = null;
+  private highlightEdgeVao: WebGLVertexArrayObject | null = null;
+  private highlightEdgeVbo: WebGLBuffer | null = null;
+
+  private highlightNodeCount = 0;
+  private highlightEdgeVertexCount = 0;
+
+  private highlightNodeData = new Float32Array(0);
+  private highlightEdgeData = new Float32Array(0);
+
+  // Staged typed arrays for base node data: [x, y, z, r, g, b, a, radius, flags] (9 floats per node)
   private nodeData = new Float32Array(0);
   // Staged typed arrays for edge lines: [x, y, z, r, g, b, a] (7 floats per vertex, 2 vertices per edge)
   private edgeData = new Float32Array(0);
 
+  // Topology and coordinate cache for microsecond focus queries
+  private incidentEdges = new Map<string, MemoryGraphEdge[]>();
+  private nodeById = new Map<string, MemoryGraphNode>();
+  private coordsById: Map<string, MemoryPoint3D> = new Map();
+  private colorsById = new Map<string, [number, number, number]>();
+  private focusId: string | null = null;
+
   // Cached uniform locations
-  private nodeUniforms = { resolution: null as WebGLUniformLocation | null, camera: null as WebGLUniformLocation | null, scale: null as WebGLUniformLocation | null };
-  private edgeUniforms = { resolution: null as WebGLUniformLocation | null, camera: null as WebGLUniformLocation | null, scale: null as WebGLUniformLocation | null };
+  private nodeUniforms = {
+    resolution: null as WebGLUniformLocation | null,
+    camera: null as WebGLUniformLocation | null,
+    scale: null as WebGLUniformLocation | null,
+    dim: null as WebGLUniformLocation | null
+  };
+  private edgeUniforms = {
+    resolution: null as WebGLUniformLocation | null,
+    camera: null as WebGLUniformLocation | null,
+    scale: null as WebGLUniformLocation | null,
+    dim: null as WebGLUniformLocation | null
+  };
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
@@ -483,10 +529,12 @@ export class MemoryWebGL2Renderer {
     this.nodeUniforms.resolution = gl.getUniformLocation(this.nodeProgram, "u_resolution");
     this.nodeUniforms.camera = gl.getUniformLocation(this.nodeProgram, "u_camera");
     this.nodeUniforms.scale = gl.getUniformLocation(this.nodeProgram, "u_scale");
+    this.nodeUniforms.dim = gl.getUniformLocation(this.nodeProgram, "u_dim");
 
     this.edgeUniforms.resolution = gl.getUniformLocation(this.edgeProgram, "u_resolution");
     this.edgeUniforms.camera = gl.getUniformLocation(this.edgeProgram, "u_camera");
     this.edgeUniforms.scale = gl.getUniformLocation(this.edgeProgram, "u_scale");
+    this.edgeUniforms.dim = gl.getUniformLocation(this.edgeProgram, "u_dim");
 
     // Static unit quad for instanced billboards: 2 triangles (6 vertices)
     const quadVertices = new Float32Array([
@@ -537,15 +585,53 @@ export class MemoryWebGL2Renderer {
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 4, gl.FLOAT, false, edgeStride, 12);
 
+    // Highlight Quad VAO (shares quadVbo corner coordinates)
+    this.highlightQuadVao = gl.createVertexArray();
+    gl.bindVertexArray(this.highlightQuadVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadVbo);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+    this.highlightNodeVbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.highlightNodeVbo);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 0);
+    gl.vertexAttribDivisor(1, 1);
+
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, 12);
+    gl.vertexAttribDivisor(2, 1);
+
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribPointer(3, 1, gl.FLOAT, false, stride, 28);
+    gl.vertexAttribDivisor(3, 1);
+
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribPointer(4, 1, gl.FLOAT, false, stride, 32);
+    gl.vertexAttribDivisor(4, 1);
+
+    // Highlight Edges VAO
+    this.highlightEdgeVao = gl.createVertexArray();
+    gl.bindVertexArray(this.highlightEdgeVao);
+    this.highlightEdgeVbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.highlightEdgeVbo);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, edgeStride, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, edgeStride, 12);
+
     gl.bindVertexArray(null);
   }
 
-  public updateBuffers(
+  /**
+   * Uploads base static graph geometry (nodes, edges, positions, coordinates).
+   * Called only when topology or layout coordinates change.
+   */
+  public updateGraph(
     nodes: MemoryGraphNode[],
     edges: MemoryGraphEdge[],
     coordinates: Map<string, MemoryPoint3D>,
-    positions: Map<string, MemoryAtlasPosition>,
-    focusId: string | null
+    positions: Map<string, MemoryAtlasPosition>
   ) {
     const gl = this.gl;
     this.nodeCount = nodes.length;
@@ -554,55 +640,57 @@ export class MemoryWebGL2Renderer {
       this.nodeData = new Float32Array(nodeFloats);
     }
 
-    const neighbors = new Set<string>();
-    if (focusId) {
-      for (const edge of edges) {
-        if (edge.source === focusId) neighbors.add(edge.target);
-        if (edge.target === focusId) neighbors.add(edge.source);
-      }
+    // Cache topology and coordinates
+    this.nodeById.clear();
+    this.coordsById = coordinates;
+    this.colorsById.clear();
+    this.incidentEdges.clear();
+
+    for (let i = 0; i < this.nodeCount; i++) {
+      const node = nodes[i]!;
+      this.nodeById.set(node.id, node);
+      const hex = positions.get(node.id)?.color ?? "#7395ad";
+      this.colorsById.set(node.id, parseHexRgb(hex));
+    }
+
+    for (let i = 0; i < edges.length; i++) {
+      const edge = edges[i]!;
+      let s = this.incidentEdges.get(edge.source);
+      if (!s) { s = []; this.incidentEdges.set(edge.source, s); }
+      s.push(edge);
+
+      let t = this.incidentEdges.get(edge.target);
+      if (!t) { t = []; this.incidentEdges.set(edge.target, t); }
+      t.push(edge);
     }
 
     let offset = 0;
     for (let i = 0; i < this.nodeCount; i++) {
       const node = nodes[i]!;
       const coord = coordinates.get(node.id) ?? { x: 0, y: 0, z: 0 };
-      const isFocused = node.id === focusId;
       const isRoot = node.type === "SOURCE" && isMemoryCoreLabel(node.label);
-
-      let r = 0.45, g = 0.58, b = 0.68, a = 1.0;
-      if (isFocused) {
-        r = 1.0; g = 1.0; b = 1.0; a = 1.0;
-      } else {
-        const hex = positions.get(node.id)?.color ?? "#7395ad";
-        const rgb = parseHexRgb(hex);
-        r = rgb[0]; g = rgb[1]; b = rgb[2];
-        if (focusId && !neighbors.has(node.id)) {
-          a = 0.2;
-        }
-      }
-
+      const rgb = this.colorsById.get(node.id) ?? [0.45, 0.58, 0.68];
       const baseRadius = isRoot ? 10 : node.type === "SOURCE" ? 4.6 : 2.1;
-      const flags = isFocused ? 1.0 : isRoot ? 2.0 : 0.0;
+      const flags = isRoot ? 2.0 : 0.0;
 
       this.nodeData[offset++] = coord.x;
       this.nodeData[offset++] = coord.y;
       this.nodeData[offset++] = coord.z;
-      this.nodeData[offset++] = r;
-      this.nodeData[offset++] = g;
-      this.nodeData[offset++] = b;
-      this.nodeData[offset++] = a;
+      this.nodeData[offset++] = rgb[0];
+      this.nodeData[offset++] = rgb[1];
+      this.nodeData[offset++] = rgb[2];
+      this.nodeData[offset++] = 1.0;
       this.nodeData[offset++] = baseRadius;
       this.nodeData[offset++] = flags;
     }
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.nodeInstanceVbo);
-    gl.bufferData(gl.ARRAY_BUFFER, this.nodeData.subarray(0, nodeFloats), gl.DYNAMIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, this.nodeData.subarray(0, nodeFloats), gl.STATIC_DRAW);
 
-    // Update Edges
-    this.edgeVertexCount = edges.length * 2;
-    const edgeFloats = this.edgeVertexCount * 7;
-    if (this.edgeData.length < edgeFloats) {
-      this.edgeData = new Float32Array(edgeFloats);
+    // Static Edges
+    const maxEdgeFloats = edges.length * 14;
+    if (this.edgeData.length < maxEdgeFloats) {
+      this.edgeData = new Float32Array(maxEdgeFloats);
     }
 
     let edgeOffset = 0;
@@ -612,13 +700,8 @@ export class MemoryWebGL2Renderer {
       const b = coordinates.get(edge.target);
       if (!a || !b) continue;
 
-      const incident = edge.source === focusId || edge.target === focusId;
       let er = 0.125, eg = 0.20, eb = 0.26, ea = 0.6; // #203343
-      if (incident) {
-        er = 0.596; eg = 0.855; eb = 0.980; ea = 1.0; // #98dafa
-      } else if (focusId) {
-        er = 0.078; eg = 0.125; eb = 0.169; ea = 0.18; // #14202b dimmed
-      } else if (edge.type === "DERIVED_FROM") {
+      if (edge.type === "DERIVED_FROM") {
         er = 0.220; eg = 0.314; eb = 0.408; ea = 0.7; // #385068
       }
 
@@ -641,10 +724,141 @@ export class MemoryWebGL2Renderer {
       this.edgeData[edgeOffset++] = ea;
     }
 
+    // Phase 8 fix: derive vertex count strictly from vertices actually written
+    this.edgeVertexCount = edgeOffset / 7;
+
     gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeVbo);
-    gl.bufferData(gl.ARRAY_BUFFER, this.edgeData.subarray(0, edgeOffset), gl.DYNAMIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, this.edgeData.subarray(0, edgeOffset), gl.STATIC_DRAW);
   }
 
+  /**
+   * Updates pointer hover/focus selection without rebuilding 50k static geometry.
+   * Runs in microseconds by updating only incident edges and neighbors in dedicated highlight buffers.
+   */
+  public setFocus(focusId: string | null) {
+    if (this.focusId === focusId) return;
+    this.focusId = focusId;
+    const gl = this.gl;
+
+    if (!focusId) {
+      this.highlightEdgeVertexCount = 0;
+      this.highlightNodeCount = 0;
+      return;
+    }
+
+    // 1. Collect incident edges and neighbor IDs
+    const incEdges = this.incidentEdges.get(focusId) ?? [];
+    const neighborIds = new Set<string>();
+    for (const e of incEdges) {
+      if (e.source !== focusId) neighborIds.add(e.source);
+      if (e.target !== focusId) neighborIds.add(e.target);
+    }
+
+    // 2. Populate highlight edges (bright cyan #98dafa)
+    const edgeFloats = incEdges.length * 14;
+    if (this.highlightEdgeData.length < edgeFloats) {
+      this.highlightEdgeData = new Float32Array(Math.max(edgeFloats, 256));
+    }
+
+    let edgeOffset = 0;
+    for (const edge of incEdges) {
+      const a = this.coordsById.get(edge.source);
+      const b = this.coordsById.get(edge.target);
+      if (!a || !b) continue;
+
+      const er = 0.596, eg = 0.855, eb = 0.980, ea = 1.0; // #98dafa
+      this.highlightEdgeData[edgeOffset++] = a.x;
+      this.highlightEdgeData[edgeOffset++] = a.y;
+      this.highlightEdgeData[edgeOffset++] = a.z;
+      this.highlightEdgeData[edgeOffset++] = er;
+      this.highlightEdgeData[edgeOffset++] = eg;
+      this.highlightEdgeData[edgeOffset++] = eb;
+      this.highlightEdgeData[edgeOffset++] = ea;
+
+      this.highlightEdgeData[edgeOffset++] = b.x;
+      this.highlightEdgeData[edgeOffset++] = b.y;
+      this.highlightEdgeData[edgeOffset++] = b.z;
+      this.highlightEdgeData[edgeOffset++] = er;
+      this.highlightEdgeData[edgeOffset++] = eg;
+      this.highlightEdgeData[edgeOffset++] = eb;
+      this.highlightEdgeData[edgeOffset++] = ea;
+    }
+    this.highlightEdgeVertexCount = edgeOffset / 7;
+    if (edgeOffset > 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.highlightEdgeVbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this.highlightEdgeData.subarray(0, edgeOffset), gl.DYNAMIC_DRAW);
+    }
+
+    // 3. Populate highlight nodes (focused node + neighbors)
+    const totalHighlightNodes = 1 + neighborIds.size;
+    const nodeFloats = totalHighlightNodes * 9;
+    if (this.highlightNodeData.length < nodeFloats) {
+      this.highlightNodeData = new Float32Array(Math.max(nodeFloats, 256));
+    }
+
+    let nodeOffset = 0;
+    // Add focused node (white, halo flag = 1.0, scaled)
+    const focusedNode = this.nodeById.get(focusId);
+    if (focusedNode) {
+      const coord = this.coordsById.get(focusId) ?? { x: 0, y: 0, z: 0 };
+      const isRoot = focusedNode.type === "SOURCE" && isMemoryCoreLabel(focusedNode.label);
+      const baseRadius = isRoot ? 10 : focusedNode.type === "SOURCE" ? 4.6 : 2.1;
+
+      this.highlightNodeData[nodeOffset++] = coord.x;
+      this.highlightNodeData[nodeOffset++] = coord.y;
+      this.highlightNodeData[nodeOffset++] = coord.z;
+      this.highlightNodeData[nodeOffset++] = 1.0;
+      this.highlightNodeData[nodeOffset++] = 1.0;
+      this.highlightNodeData[nodeOffset++] = 1.0;
+      this.highlightNodeData[nodeOffset++] = 1.0;
+      this.highlightNodeData[nodeOffset++] = baseRadius;
+      this.highlightNodeData[nodeOffset++] = 1.0; // flag 1.0 = focused halo
+    }
+
+    // Add neighbor nodes (full saturation/alpha)
+    for (const nId of neighborIds) {
+      const nNode = this.nodeById.get(nId);
+      if (!nNode) continue;
+      const coord = this.coordsById.get(nId) ?? { x: 0, y: 0, z: 0 };
+      const isRoot = nNode.type === "SOURCE" && isMemoryCoreLabel(nNode.label);
+      const rgb = this.colorsById.get(nId) ?? [0.45, 0.58, 0.68];
+      const baseRadius = isRoot ? 10 : nNode.type === "SOURCE" ? 4.6 : 2.1;
+
+      this.highlightNodeData[nodeOffset++] = coord.x;
+      this.highlightNodeData[nodeOffset++] = coord.y;
+      this.highlightNodeData[nodeOffset++] = coord.z;
+      this.highlightNodeData[nodeOffset++] = rgb[0];
+      this.highlightNodeData[nodeOffset++] = rgb[1];
+      this.highlightNodeData[nodeOffset++] = rgb[2];
+      this.highlightNodeData[nodeOffset++] = 1.0;
+      this.highlightNodeData[nodeOffset++] = baseRadius;
+      this.highlightNodeData[nodeOffset++] = isRoot ? 2.0 : 0.0;
+    }
+
+    this.highlightNodeCount = nodeOffset / 9;
+    if (nodeOffset > 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.highlightNodeVbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this.highlightNodeData.subarray(0, nodeOffset), gl.DYNAMIC_DRAW);
+    }
+  }
+
+  /**
+   * Compatibility method: updates both base graph geometry and focus state.
+   */
+  public updateBuffers(
+    nodes: MemoryGraphNode[],
+    edges: MemoryGraphEdge[],
+    coordinates: Map<string, MemoryPoint3D>,
+    positions: Map<string, MemoryAtlasPosition>,
+    focusId: string | null
+  ) {
+    this.updateGraph(nodes, edges, coordinates, positions);
+    this.setFocus(focusId);
+  }
+
+  /**
+   * Executes the WebGL2 render pass with camera transformations and GPU depth testing.
+   */
   public render(width: number, height: number, camera: MemoryCamera3D, scale: number) {
     const gl = this.gl;
     if (!this.nodeProgram || !this.edgeProgram) return;
@@ -659,31 +873,64 @@ export class MemoryWebGL2Renderer {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-    // 1. Draw Edges
+    const hasFocus = Boolean(this.focusId);
+    const baseDim = hasFocus ? 0.25 : 1.0;
+
+    // 1. Draw Base Edges
     if (this.edgeVertexCount > 0) {
       gl.useProgram(this.edgeProgram);
       gl.uniform2f(this.edgeUniforms.resolution, width, height);
       gl.uniform3f(this.edgeUniforms.camera, camera.yaw, camera.pitch, camera.zoom);
       gl.uniform1f(this.edgeUniforms.scale, scale);
+      gl.uniform1f(this.edgeUniforms.dim, baseDim);
 
       gl.bindVertexArray(this.edgeVao);
       gl.drawArrays(gl.LINES, 0, this.edgeVertexCount);
     }
 
-    // 2. Draw Nodes (Instanced Quads)
+    // 2. Draw Base Nodes (Instanced Quads)
     if (this.nodeCount > 0) {
       gl.useProgram(this.nodeProgram);
       gl.uniform2f(this.nodeUniforms.resolution, width, height);
       gl.uniform3f(this.nodeUniforms.camera, camera.yaw, camera.pitch, camera.zoom);
       gl.uniform1f(this.nodeUniforms.scale, scale);
+      gl.uniform1f(this.nodeUniforms.dim, baseDim);
 
       gl.bindVertexArray(this.quadVao);
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.nodeCount);
     }
 
+    // 3. Highlight Pass (Incident edges and focused node/neighbors)
+    if (hasFocus) {
+      if (this.highlightEdgeVertexCount > 0) {
+        gl.useProgram(this.edgeProgram);
+        gl.uniform2f(this.edgeUniforms.resolution, width, height);
+        gl.uniform3f(this.edgeUniforms.camera, camera.yaw, camera.pitch, camera.zoom);
+        gl.uniform1f(this.edgeUniforms.scale, scale);
+        gl.uniform1f(this.edgeUniforms.dim, 1.0);
+
+        gl.bindVertexArray(this.highlightEdgeVao);
+        gl.drawArrays(gl.LINES, 0, this.highlightEdgeVertexCount);
+      }
+
+      if (this.highlightNodeCount > 0) {
+        gl.useProgram(this.nodeProgram);
+        gl.uniform2f(this.nodeUniforms.resolution, width, height);
+        gl.uniform3f(this.nodeUniforms.camera, camera.yaw, camera.pitch, camera.zoom);
+        gl.uniform1f(this.nodeUniforms.scale, scale);
+        gl.uniform1f(this.nodeUniforms.dim, 1.0);
+
+        gl.bindVertexArray(this.highlightQuadVao);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.highlightNodeCount);
+      }
+    }
+
     gl.bindVertexArray(null);
   }
 
+  /**
+   * Releases WebGL GPU resources (VAOs, buffers, and shader programs).
+   */
   public destroy() {
     const gl = this.gl;
     if (this.quadVao) gl.deleteVertexArray(this.quadVao);
@@ -691,6 +938,10 @@ export class MemoryWebGL2Renderer {
     if (this.nodeInstanceVbo) gl.deleteBuffer(this.nodeInstanceVbo);
     if (this.edgeVao) gl.deleteVertexArray(this.edgeVao);
     if (this.edgeVbo) gl.deleteBuffer(this.edgeVbo);
+    if (this.highlightQuadVao) gl.deleteVertexArray(this.highlightQuadVao);
+    if (this.highlightNodeVbo) gl.deleteBuffer(this.highlightNodeVbo);
+    if (this.highlightEdgeVao) gl.deleteVertexArray(this.highlightEdgeVao);
+    if (this.highlightEdgeVbo) gl.deleteBuffer(this.highlightEdgeVbo);
     if (this.nodeProgram) gl.deleteProgram(this.nodeProgram);
     if (this.edgeProgram) gl.deleteProgram(this.edgeProgram);
   }

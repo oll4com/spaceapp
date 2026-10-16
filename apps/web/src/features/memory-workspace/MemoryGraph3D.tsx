@@ -47,7 +47,8 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
 
     canvas.dataset.renderer = isWebGL ? "webgl2" : "canvas2d";
     if (!isWebGL) {
-      ctx2D = canvas.getContext("2d");
+      // In non-WebGL environments (or JSDOM), attempt canvas 2D or fallback to overlay canvas
+      ctx2D = canvas.getContext("2d") ?? labelsCtx;
       if (!ctx2D) return;
     }
 
@@ -55,7 +56,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
     let frame = 0, width = 1, height = 1;
     let hover: string | null = null;
     let points2D: Array<{ id: string; x: number; y: number; z: number; radius: number }> = [];
-    let buffersDirty = true;
+    let graphDirty = true;
     let lastFocus: string | null = null;
     const pointers = new Map<number, { x: number; y: number }>();
     let dragged = false, downX = 0, downY = 0;
@@ -67,17 +68,17 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
       const scale = Math.min(width, height) * 0.4 / extent;
       const focus = hover ?? selectedNodeId;
 
-      if (focus !== lastFocus) {
-        buffersDirty = true;
-        lastFocus = focus;
-      }
-
       if (isWebGL && webglRenderer && gl && !gl.isContextLost()) {
         canvas.dataset.renderer = "webgl2";
-        if (buffersDirty) {
-          webglRenderer.updateBuffers(nodes, edges, coordinates, positions, focus);
-          buffersDirty = false;
+        if (graphDirty) {
+          webglRenderer.updateGraph(nodes, edges, coordinates, positions);
+          graphDirty = false;
         }
+        if (focus !== lastFocus) {
+          webglRenderer.setFocus(focus);
+          lastFocus = focus;
+        }
+
         webglRenderer.render(canvas.width, canvas.height, cameraRef.current, scale);
         spatialIndex.rebuild(nodes, coordinates, cameraRef.current, scale, width, height, focus);
 
@@ -94,10 +95,14 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
             }
           }
         }
-      } else if (ctx2D) {
+      } else {
         // Graceful Canvas 2D fallback capped to CANVAS_FALLBACK_NODE_LIMIT
+        // Renders onto labelsCtx or ctx2D (handles WebGL context loss safely without requesting getContext("2d") on WebGL canvas)
+        const target2D = labelsCtx ?? ctx2D;
+        if (!target2D) return;
+
         canvas.dataset.renderer = "canvas2d";
-        ctx2D.clearRect(0, 0, width, height);
+        target2D.clearRect(0, 0, width, height);
         const fallbackNodes = nodes.length > CANVAS_FALLBACK_NODE_LIMIT ? nodes.slice(0, CANVAS_FALLBACK_NODE_LIMIT) : nodes;
         const fallbackIds = new Set(fallbackNodes.map(n => n.id));
         const fallbackEdges = edges.filter(e => fallbackIds.has(e.source) && fallbackIds.has(e.target));
@@ -115,14 +120,14 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
           }
         }
 
-        ctx2D.lineWidth = 0.55;
+        target2D.lineWidth = 0.55;
         for (const edge of fallbackEdges) {
           const a = projected.get(edge.source), b = projected.get(edge.target);
           if (!a || !b) continue;
           const incident = edge.source === focus || edge.target === focus;
-          ctx2D.strokeStyle = incident ? "#98dafa" : focus ? "#14202b" : edge.type === "DERIVED_FROM" ? "#385068" : "#203343";
-          ctx2D.lineWidth = incident ? 1.15 : 0.55;
-          ctx2D.beginPath(); ctx2D.moveTo(a.x, a.y); ctx2D.lineTo(b.x, b.y); ctx2D.stroke();
+          target2D.strokeStyle = incident ? "#98dafa" : focus ? "#14202b" : edge.type === "DERIVED_FROM" ? "#385068" : "#203343";
+          target2D.lineWidth = incident ? 1.15 : 0.55;
+          target2D.beginPath(); target2D.moveTo(a.x, a.y); target2D.lineTo(b.x, b.y); target2D.stroke();
         }
 
         points2D = [];
@@ -135,25 +140,25 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
           const root = node.type === "SOURCE" && isMemoryCoreLabel(node.label);
           const radius = Math.max(1, (root ? 10 : node.type === "SOURCE" ? 4.6 : 2.1) * p.perspective * Math.sqrt(cameraRef.current.zoom)) * (highlighted ? 1.5 : 1);
           points2D.push({ id: node.id, ...p, radius });
-          ctx2D.globalAlpha = focus && !highlighted && !neighbors.has(node.id) ? 0.2 : Math.max(0.4, Math.min(1, p.perspective));
-          ctx2D.fillStyle = highlighted ? "#ffffff" : positions.get(node.id)?.color ?? "#7395ad";
-          if (root || highlighted) { ctx2D.shadowColor = ctx2D.fillStyle; ctx2D.shadowBlur = 13; }
-          ctx2D.beginPath(); ctx2D.arc(p.x, p.y, radius, 0, Math.PI * 2); ctx2D.fill(); ctx2D.shadowBlur = 0;
+          target2D.globalAlpha = focus && !highlighted && !neighbors.has(node.id) ? 0.2 : Math.max(0.4, Math.min(1, p.perspective));
+          target2D.fillStyle = highlighted ? "#ffffff" : positions.get(node.id)?.color ?? "#7395ad";
+          if (root || highlighted) { target2D.shadowColor = target2D.fillStyle; target2D.shadowBlur = 13; }
+          target2D.beginPath(); target2D.arc(p.x, p.y, radius, 0, Math.PI * 2); target2D.fill(); target2D.shadowBlur = 0;
         }
-        ctx2D.globalAlpha = 1;
+        target2D.globalAlpha = 1;
 
         if (showTitles) {
           const labeled = [...ordered].sort((a, b) => Number(b.id === focus) - Number(a.id === focus) || Number(isMemoryCoreLabel(b.label)) - Number(isMemoryCoreLabel(a.label)) || Number(b.type === "SOURCE") - Number(a.type === "SOURCE"));
-          ctx2D.font = "11px system-ui, sans-serif";
+          target2D.font = "11px system-ui, sans-serif";
           for (const node of labeled) {
             if (node.type !== "SOURCE" && node.id !== focus && cameraRef.current.zoom < 1.6) continue;
             const p = projected.get(node.id)!;
             const label = node.label.length > 48 ? `${node.label.slice(0, 45)}…` : node.label;
-            const x = p.x + 9, y = p.y, w = ctx2D.measureText(label).width;
+            const x = p.x + 9, y = p.y, w = target2D.measureText(label).width;
             if (x + w > width || y < 14 || y > height - 5 || labelBoxes.some(box => Math.abs(box.y - y) < 16 && x < box.x + box.w + 5 && x + w + 5 > box.x)) continue;
             labelBoxes.push({ x, y, w });
-            ctx2D.fillStyle = "#09111bea"; ctx2D.fillRect(x - 3, y - 11, w + 6, 16);
-            ctx2D.fillStyle = isMemoryCoreLabel(node.label) ? "#fff0b0" : "#c6dfed"; ctx2D.fillText(label, x, y + 1);
+            target2D.fillStyle = "#09111bea"; target2D.fillRect(x - 3, y - 11, w + 6, 16);
+            target2D.fillStyle = isMemoryCoreLabel(node.label) ? "#fff0b0" : "#c6dfed"; target2D.fillText(label, x, y + 1);
           }
         }
       }
@@ -163,7 +168,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
 
     const schedule = () => { if (!frame) frame = requestAnimationFrame(render); };
     redrawRef.current = () => {
-      buffersDirty = true;
+      graphDirty = true;
       schedule();
     };
 
@@ -187,7 +192,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
     };
 
     const hit = (x: number, y: number) => {
-      if (isWebGL) {
+      if (isWebGL && gl && !gl.isContextLost()) {
         return spatialIndex.query(x, y);
       }
       return [...points2D].reverse().find(p => Math.hypot(p.x - x, p.y - y) < Math.max(7, p.radius + 3))?.id ?? null;
@@ -249,7 +254,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
 
     const wheel = (event: WheelEvent) => {
       event.preventDefault();
-      cameraRef.current.zoom = Math.max(0.35, Math.min(5, cameraRef.current.zoom * Math.exp(-event.deltaY * 0.001)));
+      cameraRef.current.zoom = Math.max(0.35, Math.min(5, cameraRef.current.zoom * (event.deltaY < 0 ? 1.08 : 0.92)));
       schedule();
     };
 
@@ -273,7 +278,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
         webglRenderer = null;
       }
       isWebGL = false;
-      ctx2D = canvas.getContext("2d");
+      canvas.dataset.renderer = "canvas2d";
       schedule();
     };
 
@@ -283,10 +288,13 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
         if (gl) {
           webglRenderer = new MemoryWebGL2Renderer(gl);
           isWebGL = true;
-          buffersDirty = true;
+          canvas.dataset.renderer = "webgl2";
+          graphDirty = true;
+          if (labelsCtx) labelsCtx.clearRect(0, 0, width, height);
         }
       } catch {
         isWebGL = false;
+        canvas.dataset.renderer = "canvas2d";
       }
       schedule();
     };

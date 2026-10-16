@@ -146,10 +146,11 @@ async function runBenchmarkForSize(targetNodes: number): Promise<BenchmarkResult
   );
   const labelPassTimeMs = performance.now() - t0Label;
 
-  // 5. Active Frame Loop Simulation (Rotation + Zoom + Pointer Query + Draw)
+  // 5. Active Frame Loop Simulation (Rotation + Zoom + Pointer Query + Hover Update + Label Pass)
   // 300 active interaction frames
   const frameTimes: number[] = [];
   const camera: MemoryCamera3D = { ...DEFAULT_MEMORY_CAMERA };
+  let currentFocusId: string | null = null;
 
   for (let f = 0; f < 300; f++) {
     const t0Frame = performance.now();
@@ -159,15 +160,18 @@ async function runBenchmarkForSize(targetNodes: number): Promise<BenchmarkResult
     camera.zoom = 1.0 + Math.sin(f * 0.05) * 0.2;
 
     // Projection & spatial picking update
-    spatialIndex.rebuild(graph.nodes, fullCoords, camera, scale, width, height, null);
+    spatialIndex.rebuild(graph.nodes, fullCoords, camera, scale, width, height, currentFocusId);
 
     // Pointer hover query
     const px = (width * 0.5) + Math.cos(f * 0.1) * 200;
     const py = (height * 0.5) + Math.sin(f * 0.1) * 200;
-    spatialIndex.query(px, py);
+    const hoveredId = spatialIndex.query(px, py);
+    if (hoveredId !== currentFocusId) {
+      currentFocusId = hoveredId;
+    }
 
     // Label pass
-    selectBoundedLabels(graph.nodes, spatialIndex, null, camera.zoom, width, height, measureTextMock);
+    selectBoundedLabels(graph.nodes, spatialIndex, currentFocusId, camera.zoom, width, height, measureTextMock);
 
     const fDuration = performance.now() - t0Frame;
     frameTimes.push(fDuration);
@@ -252,26 +256,36 @@ async function main() {
   console.log("\n--------------------------------------------------------------------------------");
   console.log("DETAILED 50,000 NODE TARGET DEEP-DIVE [MEASURED]:");
   const r50k = results.find(r => r.nodeCount === 50000)!;
+  const pickingPass = r50k.pickingLatency.avgMs <= 4.0;
+  const frame50kPass = r50k.frameSimulation.p95FrameTimeMs <= 33.0;
+
   console.log(`- Nodes: ${r50k.nodeCount.toLocaleString()}`);
   console.log(`- Edges: ${r50k.edgeCount.toLocaleString()}`);
   console.log(`- Uncompressed JSON Payload: ${(r50k.uncompressedPayloadKB / 1024).toFixed(2)} MB`);
   console.log(`- Gzipped JSON Payload: ${(r50k.gzipPayloadKB / 1024).toFixed(2)} MB`);
   console.log(`- Spatial Picking Rebuild Time: ${r50k.spatialIndexRebuildTimeMs} ms`);
   console.log(`- Spatial Picking Query Latency [Target <= 4.0 ms]:`);
-  console.log(`    * Average: ${r50k.pickingLatency.avgMs} ms  [PASS - 400x faster than target]`);
+  console.log(`    * Average: ${r50k.pickingLatency.avgMs} ms  [${pickingPass ? "PASS" : "FAIL"}]`);
   console.log(`    * p50:     ${r50k.pickingLatency.p50Ms} ms`);
   console.log(`    * p95:     ${r50k.pickingLatency.p95Ms} ms`);
   console.log(`    * p99:     ${r50k.pickingLatency.p99Ms} ms`);
   console.log(`    * Maximum: ${r50k.pickingLatency.maxMs} ms`);
   console.log(`- Bounded Label Selection Time: ${r50k.labelPassTimeMs} ms (Budget: ${r50k.labelCount} labels <= ${MAX_LABEL_BUDGET})`);
-  console.log(`- Active Frame Simulation (300 frames with rotation, zoom & cursor movement):`);
+  console.log(`- Active Frame Simulation (300 frames with rotation, zoom, cursor movement & hover update):`);
   console.log(`    * Average Frame Time: ${r50k.frameSimulation.avgFrameTimeMs} ms`);
   console.log(`    * p50 Frame Time:     ${r50k.frameSimulation.p50FrameTimeMs} ms`);
-  console.log(`    * p95 Frame Time:     ${r50k.frameSimulation.p95FrameTimeMs} ms`);
+  console.log(`    * p95 Frame Time:     ${r50k.frameSimulation.p95FrameTimeMs} ms  [${frame50kPass ? "PASS" : "FAIL"} - Target <= 33.0 ms]`);
   console.log(`    * p99 Frame Time:     ${r50k.frameSimulation.p99FrameTimeMs} ms`);
   console.log(`    * Maximum Frame Time: ${r50k.frameSimulation.maxFrameTimeMs} ms`);
-  console.log(`    * Effective FPS:      ${r50k.frameSimulation.effectiveFPS} FPS (Target >= 30-60 FPS) [PASS]`);
+  console.log(`    * Effective FPS:      ${r50k.frameSimulation.effectiveFPS} FPS (Target >= 30-60 FPS)`);
   console.log(`    * GPU Draw Calls:     ${r50k.frameSimulation.drawCalls} per frame [1 instanced quads, 1 batched lines]`);
+
+  const r2k = results.find(r => r.nodeCount === 2000)!;
+  const frame2kPass = r2k.frameSimulation.p95FrameTimeMs <= 16.7;
+  console.log("\n--------------------------------------------------------------------------------");
+  console.log("2,000 NODE ACCEPTANCE GATE [MEASURED]:");
+  console.log(`- p95 Frame Time: ${r2k.frameSimulation.p95FrameTimeMs} ms  [${frame2kPass ? "PASS" : "FAIL"} - Target <= 16.7 ms]`);
+  console.log(`- Effective FPS:  ${r2k.frameSimulation.effectiveFPS} FPS (Target >= 60 FPS)`);
   console.log("================================================================================\n");
 
   // Output JSON benchmark artifact for record keeping

@@ -9,6 +9,13 @@ function mulberry32(seed: number) {
   };
 }
 
+/**
+ * Generates a deterministic synthetic memory graph topology for benchmarking and scale testing.
+ * Creates structured core, source, topic, and memory nodes with proportional containment and tagging edges.
+ *
+ * @param targetNodes - The desired node count (clamped between 10 and 50,000).
+ * @param seed - PRNG seed for deterministic repeatability.
+ */
 export function generateSyntheticMemoryGraph(targetNodes = 2000, seed = 42): MemoryGraphPayload {
   const count = Math.max(10, Math.min(50000, targetNodes));
   const rng = mulberry32(seed ? seed : count * 1337);

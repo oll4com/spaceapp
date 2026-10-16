@@ -23,6 +23,7 @@ import type {
   MemoryChangeSet,
   MemoryChangeSetSummary,
   MemoryGraphNode,
+  MemoryGraphNodeDetail,
   MemoryGraphPayload,
   Pane,
   Room,
@@ -667,9 +668,18 @@ export class DemoStore {
     };
   }
 
+  private lastSyntheticLimit = 0;
+  private syntheticGraphCache: MemoryGraphPayload | null = null;
+
   private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
+    if (query.limit && query.limit > 2000) {
+      this.lastSyntheticLimit = query.limit;
+      if (!this.syntheticGraphCache || this.syntheticGraphCache.nodes.length !== query.limit) {
+        this.syntheticGraphCache = generateSyntheticMemoryGraph(query.limit);
+      }
+    }
     const base = query.limit && query.limit > 2000
-      ? generateSyntheticMemoryGraph(query.limit)
+      ? this.syntheticGraphCache!
       : this.fixture.memoryWorkspace.graph;
     const needle = query.q?.trim().toLowerCase();
     const nodes = base.nodes.filter((node) => {
@@ -1551,9 +1561,51 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
-        const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
-        if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
-        return Promise.resolve(structuredClone(detail));
+        const nodeId = roomId ?? "";
+        const detail = this.fixture.memoryWorkspace.nodeDetails[nodeId];
+        if (detail) {
+          return Promise.resolve(structuredClone(detail));
+        }
+
+        // Resolve node from synthetic graph if query was for a large graph
+        const synthetic = this.syntheticGraphCache ?? (this.lastSyntheticLimit > 2000 ? generateSyntheticMemoryGraph(this.lastSyntheticLimit) : null);
+        if (synthetic) {
+          const node = synthetic.nodes.find((candidate) => candidate.id === nodeId);
+          if (node) {
+            const relatedEdges = synthetic.edges.filter((edge) => edge.source === nodeId || edge.target === nodeId);
+            const relatedIds = new Set(relatedEdges.flatMap((edge) => [edge.source, edge.target]));
+            relatedIds.delete(nodeId);
+            const relatedNodes = synthetic.nodes.filter((candidate) => candidate.id !== nodeId && relatedIds.has(candidate.id)).slice(0, 10);
+            const record = node.recordId ? {
+              id: node.recordId,
+              sectionId: `section:${node.recordId}`,
+              title: node.label,
+              body: `Synthetic memory record for ${node.label}. Generated for 3D memory exploration at scale.`,
+              scope: "ROOM" as const,
+              roomId: "room:demo-launch",
+              provenance: "Deterministic synthetic memory generator.",
+              contentHash: "0".repeat(64),
+              sourcePath: node.sourcePath ?? "/opt/spaceapp/docs/synthetic.md",
+              charCount: 256,
+              tags: ["synthetic", "graph3d"],
+              topics: [{ label: "exploration", origin: "DERIVED_TFIDF" as const, confidence: 0.86 }],
+              lifecycleStatus: "ACTIVE" as const,
+              createdAt: DEMO_FIXED_AT,
+              updatedAt: DEMO_FIXED_AT
+            } : null;
+
+            const syntheticDetail: MemoryGraphNodeDetail = {
+              node,
+              record,
+              relatedNodes,
+              relatedEdges,
+              issues: []
+            };
+            return Promise.resolve(syntheticDetail);
+          }
+        }
+
+        throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
       }
       case "memoryChangeSets": {
         const query = (args[0] ?? {}) as { kind?: string; status?: string; sourcePath?: string; recordId?: string; issueId?: string; page?: number; pageSize?: number };
