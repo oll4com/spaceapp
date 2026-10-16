@@ -39,6 +39,25 @@ capabilities or cross-service compatibility. Authentication/server bootstrap,
 worker, web build and installer environment fields outside `SpaceApiConfig` are
 outside this registry. Full cross-service configuration coverage remains open.
 
+## Environment fields outside the API registry
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is read directly from the process
+environment (it is not a `SpaceApiConfig` field) by the API and by every
+Temporal worker process — `worker.ts`, `memory-maintenance-worker.ts` and
+`memory-mutation-worker.ts`. When it names a collector base URL (http or
+https, no credentials, query or fragment), spans are exported as OTLP/HTTP
+JSON to `<endpoint>/v1/traces`: one SERVER span per API request (service
+`space-api`) and, from the workers, one span per workflow run plus one span
+per activity attempt (service name of the worker process, scope
+`space-worker`), all in the request's W3C trace. When the variable is unset
+or invalid, span export is off and nothing is sent. Export is best-effort:
+a bounded queue drops and counts spans rather than growing, each POST has a
+timeout, and a slow or failing collector never delays or fails request,
+workflow or activity work. Span attributes are allowlisted ids, types,
+attempt, status, stable error codes/categories and durations only — never
+prompts, model output, file paths, URLs, error messages or user text. See
+`docs/quality/observability.md` for the span model.
+
 ## Optional modules
 
 `SPACE_OPTIONAL_MODULES` turns on modules beyond the coding workspace:

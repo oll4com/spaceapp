@@ -7,6 +7,7 @@ import {
   memoryMaintenanceWorkerOptions
 } from "./memory-maintenance-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
+import { workerOtlp } from "./worker-otlp.js";
 
 const service = "space-memory-maintenance-worker";
 
@@ -25,6 +26,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
       taskQueue: MEMORY_MAINTENANCE_TASK_QUEUE,
       workflowsPath,
       activities,
+      ...workerOtlp(service).workerOptions,
       ...memoryMaintenanceWorkerOptions
     });
     console.log(JSON.stringify({

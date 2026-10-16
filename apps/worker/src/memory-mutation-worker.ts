@@ -3,6 +3,7 @@ import { NativeConnection, Worker } from "@temporalio/worker";
 import { executePersistedMemoryChangeSet } from "./memory-mutation-activity.js";
 import { MEMORY_MUTATION_TASK_QUEUE, memoryMutationsEnabled, memoryMutationWorkerOptions } from "./memory-mutation-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
+import { workerOtlp } from "./worker-otlp.js";
 
 const service = "space-memory-mutation-worker";
 
@@ -18,6 +19,7 @@ if (!memoryMutationsEnabled(process.env)) {
     taskQueue: MEMORY_MUTATION_TASK_QUEUE,
     workflowsPath: fileURLToPath(new URL("./memory-mutation-workflows.js", import.meta.url)),
     activities: { executePersistedMemoryChangeSet },
+    ...workerOtlp(service).workerOptions,
     ...memoryMutationWorkerOptions
   });
   console.log(JSON.stringify({ service, status: "running", address, namespace, taskQueue: MEMORY_MUTATION_TASK_QUEUE }));
