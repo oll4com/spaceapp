@@ -50,6 +50,115 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the full app from source
+
+`dev:api` gives you the API alone (a throwaway in-memory instance with a
+dev login). When you need the **whole product** — real PostgreSQL storage,
+Temporal workflows, the worker, and CLI panes — from a plain checkout, use
+the dev stack:
+
+```bash
+ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci   # once
+npm run dev:stack                        # one command, everything
+```
+
+Prerequisites: Node.js per `.nvmrc`, and a Docker engine — Docker Desktop,
+Colima (`brew install colima docker docker-compose && colima start`) or a
+Linux Docker daemon. Nothing else is installed globally: the stack even
+keeps its OpenCode binary inside its own state directory.
+
+The command starts, in order: PostgreSQL (pgvector) and Temporal in Docker
+— the exact digest-pinned images from
+`packages/run-spaceapp/templates/compose.yml`, parsed at runtime, never
+copied — then a dedicated Temporal namespace, the package builds, database
+migrations, the API (watch mode), the Vite web dev server, the Temporal
+worker and the CLI host from `packages/cli-host`, all from source. When
+`/readyz` reports `ok: true` it prints the URL and a **one-time owner
+setup token**: open the URL, choose owner setup, paste the token, create
+the owner account, sign in, open the Getting Started room, and start an
+OpenCode pane — the pane runs through the from-source CLI host and needs
+no AI provider account to open its terminal UI. (The token can be claimed
+for 15 minutes after the API starts; restarting the stack opens a fresh
+window. The stack never uses the dev-login shortcut.)
+
+Isolation: the dev stack is a separate *dev instance*. It has its own
+Compose project (`spaceapp-dev-stack`), its own database, Temporal
+namespace and task queue, its own CLI host socket, and all of its state —
+secrets, logs, the OpenCode install, wrapper commands, provider state —
+under `.dev-stack/` (git-ignored). It never touches an installed SpaceApp
+or its data. Every port binds to `127.0.0.1` only:
+
+| Service  | Default port | Override             |
+| -------- | ------------ | -------------------- |
+| Web (Vite) | 5911       | `SPACE_DEV_WEB_PORT` |
+| API      | 5910         | `SPACE_DEV_API_PORT` |
+| PostgreSQL | 55432      | `SPACE_DEV_POSTGRES_PORT` |
+| Temporal | 57233        | `SPACE_DEV_TEMPORAL_PORT` |
+
+(4910/4911 are refused: those belong to an install.) Secrets are generated
+per state directory with `0600` permissions and never printed — the setup
+token is the one exception, since it is the claim credential. The database
+password is handed to the two containers through the Compose process
+environment, read from that `0600` file by the stack script itself: a
+bind-mounted secret file would keep the host's `0600` mode inside the
+container, which the Temporal image's non-root user cannot read. Later starts
+reuse the same secrets and data; `Ctrl-C`, or from another terminal:
+
+```bash
+npm run dev:stack -- down     # stop everything the stack started
+npm run dev:stack -- reset    # …and remove only what it created
+npm run dev:stack -- status   # what is running right now
+```
+
+`reset` removes the stack's containers, its volumes and the whole
+`.dev-stack/` directory, then verifies nothing from the stack is left.
+Anything else on the machine — including an installed SpaceApp and its
+Docker data — is untouched.
+
+Hot reload: edits under `apps/api/src` restart the API (tsx watch); edits
+under `apps/web/src` hot-reload in the browser (Vite). Edits under
+`packages/*` rebuild that package and restart the worker, the CLI host and
+the API so the change is picked up. If a stack process dies, the command
+fails loudly — it names the process and its log under `.dev-stack/logs/`
+and shuts the stack down, instead of hanging silently.
+
+Platforms:
+
+- **macOS** — works with Docker Desktop or Colima (commands above). The
+  first Colima start takes a few minutes; give the VM at least 6 GB if
+  Temporal feels slow (`colima start --memory 6`).
+- **Windows 11** — run everything inside WSL2: install Docker Desktop
+  with the WSL2 backend (or a Docker engine inside the distro), clone the
+  repository into the WSL2 filesystem (not `/mnt/c` — socket paths and
+  file watching misbehave across the boundary), and use the exact Linux
+  commands above.
+
+Troubleshooting:
+
+- *Docker did not answer* — start Docker Desktop / Colima / the daemon;
+  the command says so and exits before changing anything.
+- *Port already in use* — the message names the variable (for example
+  `SPACE_DEV_API_PORT=6010 npm run dev:stack`) to move just that service.
+- *Setup token expired* — claiming is a 15-minute window from API start;
+  restart the stack and claim promptly.
+- *API exits on macOS with `EACCES ... mkdir '/opt/spaceapp'`* — that is
+  the installed layout's default data root; a source checkout cannot
+  write there. The dev stack already redirects every such root into
+  `.dev-stack/`; if you see this you are starting the API some other way.
+- *A pane stays IDLE on macOS and never starts* — node-pty's published
+  macOS prebuild ships its `spawn-helper` without the execute bit, so
+  every PTY spawn fails. The dev stack repairs the bit inside
+  `node_modules` on startup; if you spawn the CLI host some other way,
+  `chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper`.
+- *Something is wedged* — `npm run dev:stack -- reset`, then start again.
+  The state directory is disposable by design; exports from a real install
+  are never stored there.
+
+CI runs this end to end on Linux and macOS (`.github/workflows/dev-stack.yml`):
+it starts the stack without a TTY, completes owner setup over HTTP, opens
+an OpenCode pane through the API, checks the pane is running, resets, and
+verifies no container, volume or process is left.
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:

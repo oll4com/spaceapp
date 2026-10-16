@@ -30,6 +30,9 @@ agent-skills/**/__pycache__/
 
 # Live/deploy-adjacent runtime state. Do not delete with blanket git clean.
 secrets/
+# The from-source dev stack (npm run dev:stack): secrets, logs, containers'
+# state, the OpenCode install and provider state for the local stack only.
+.dev-stack/
 backups/
 bin/
 !packages/run-spaceapp/bin/

@@ -1,0 +1,141 @@
+name: dev-stack
+
+# End-to-end proof for `npm run dev:stack` (scripts/dev-stack.mjs): start the
+# whole from-source stack with no TTY, complete owner setup over HTTP, open
+# an OpenCode CLI pane through the API, then reset and prove nothing is left.
+# The macOS job covers the Colima path; Windows contributors run the same
+# command inside WSL2 (see CONTRIBUTING.md), where the Linux job's path
+# applies unchanged.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dev-stack-linux:
+    name: dev-stack (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Unit tests for the dev-stack scripts
+        run: node --test scripts/tests/dev-stack.test.mjs
+      - name: Install dependencies
+        run: ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+      - name: Start the dev stack (no TTY)
+        env:
+          SPACE_DEV_READY_TIMEOUT_MS: "600000"
+        run: |
+          nohup npm run dev:stack > dev-stack.log 2>&1 &
+          echo "stack supervisor started"
+      - name: Owner setup, sign-in and OpenCode pane over HTTP
+        env:
+          DEV_STACK_API_URL: http://127.0.0.1:5910
+          DEV_STACK_TOKEN_FILE: .dev-stack/secrets/setup-token
+        run: node scripts/dev-stack/ci-gate.mjs
+      - name: Print the dev-stack terminal output
+        if: always()
+        run: cat dev-stack.log
+      - name: Upload stack logs on failure
+        # Before the reset step: reset deletes .dev-stack/, logs included.
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dev-stack-linux-logs
+          path: |
+            dev-stack.log
+            .dev-stack/logs/
+          if-no-files-found: ignore
+          include-hidden-files: true
+      - name: Stop and reset the stack
+        if: always()
+        run: |
+          pkill -f "node scripts/dev-stack.mjs" || true
+          sleep 5
+          npm run dev:stack -- down
+          npm run dev:stack -- reset
+      - name: Verify reset left nothing behind
+        run: |
+          test -z "$(docker ps -aq --filter label=com.docker.compose.project=spaceapp-dev-stack)"
+          test -z "$(docker volume ls -q --filter label=com.docker.compose.project=spaceapp-dev-stack)"
+          test ! -d .dev-stack
+          ! curl -s --max-time 3 http://127.0.0.1:5910/readyz
+          echo "reset verified: no container, volume, state directory or listening process left"
+
+  dev-stack-macos:
+    name: dev-stack (macOS, Colima)
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install Docker CLI and Colima
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          brew install colima docker docker-compose
+          mkdir -p ~/.docker/cli-plugins
+          ln -sfn "$(brew --prefix)/opt/docker-compose/bin/docker-compose" ~/.docker/cli-plugins/docker-compose
+      - name: Start Colima
+        timeout-minutes: 25
+        run: |
+          colima start --cpu 2 --memory 6
+          docker version
+          docker compose version
+      - name: Unit tests for the dev-stack scripts
+        run: node --test scripts/tests/dev-stack.test.mjs
+      - name: Install dependencies
+        run: ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+      - name: Start the dev stack (no TTY)
+        env:
+          # Intel mac runners boot slowly under Colima CPU contention; the
+          # stack and the gate both get a longer readiness budget here.
+          SPACE_DEV_READY_TIMEOUT_MS: "900000"
+        run: |
+          nohup npm run dev:stack > dev-stack.log 2>&1 &
+          echo "stack supervisor started"
+      - name: Owner setup, sign-in and OpenCode pane over HTTP
+        env:
+          DEV_STACK_API_URL: http://127.0.0.1:5910
+          DEV_STACK_TOKEN_FILE: .dev-stack/secrets/setup-token
+          DEV_STACK_TIMEOUT_MS: "1500000"
+        run: node scripts/dev-stack/ci-gate.mjs
+      - name: Print the dev-stack terminal output
+        if: always()
+        run: cat dev-stack.log
+      - name: Upload stack logs on failure
+        # Before the reset step: reset deletes .dev-stack/, logs included.
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dev-stack-macos-logs
+          path: |
+            dev-stack.log
+            .dev-stack/logs/
+          if-no-files-found: ignore
+          include-hidden-files: true
+      - name: Stop and reset the stack
+        if: always()
+        run: |
+          pkill -f "node scripts/dev-stack.mjs" || true
+          sleep 5
+          npm run dev:stack -- down
+          npm run dev:stack -- reset
+      - name: Verify reset left nothing behind
+        run: |
+          test -z "$(docker ps -aq --filter label=com.docker.compose.project=spaceapp-dev-stack)"
+          test -z "$(docker volume ls -q --filter label=com.docker.compose.project=spaceapp-dev-stack)"
+          test ! -d .dev-stack
+          ! curl -s --max-time 3 http://127.0.0.1:5910/readyz
+          echo "reset verified: no container, volume, state directory or listening process left"
