@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { Worker } from "@temporalio/worker";
-import { ApplicationFailure } from "@temporalio/common";
 import proto from "@temporalio/proto";
 import { DeterminismViolationError } from "@temporalio/workflow";
 import { fileURLToPath } from "node:url";
@@ -84,12 +83,6 @@ function syntheticActivityError(message: string): Error {
   return error;
 }
 
-function syntheticApplicationFailure(message: string): ApplicationFailure {
-  const failure = ApplicationFailure.nonRetryable(message);
-  failure.stack = `${failure.name}: ${failure.message}`;
-  return failure;
-}
-
 const activities = {
   recordDummyTurnStarted: async () => { called("recordDummyTurnStarted"); return { workflowId: "synthetic" }; },
   recordDummyTurnCompleted: async () => { called("recordDummyTurnCompleted"); return { status: "COMPLETED", message: "synthetic" }; },
@@ -107,7 +100,7 @@ const activities = {
   runCliAgentTurn: async () => ({ status: "COMPLETED", message: "synthetic" }),
   runRoomAgentBackgroundAction: async () => {
     called("runRoomAgentBackgroundAction");
-    if (options.get("runRoomAgentBackgroundAction") === "always-fail") throw syntheticApplicationFailure("synthetic activity failure");
+    if (options.get("runRoomAgentBackgroundAction") === "always-fail") throw syntheticActivityError("synthetic activity failure");
     return { status: "COMPLETED" };
   },
   failRoomAgentBackgroundAction: async () => { called("failRoomAgentBackgroundAction"); },
@@ -235,8 +228,9 @@ describe.sequential("Temporal workflow integration", () => {
     options.set("runRoomAgentBackgroundAction", "always-fail");
     const actionInput = { bridge: { roomId: roomTurn.roomId, missionId: "mission:synthetic" }, traceId: roomTurn.traceId };
     const handle = await env.client.workflow.start("roomAgentActionWorkflow", { taskQueue: TASK_QUEUE, workflowId: "room-action-failure-synthetic", args: [actionInput] });
-    await vi.waitFor(() => expect(calls.get("failRoomAgentBackgroundAction")).toBe(1));
     await expect(handle.result()).rejects.toThrow();
+    expect(calls.get("runRoomAgentBackgroundAction")).toBe(5);
+    expect(calls.get("failRoomAgentBackgroundAction")).toBe(1);
     await recordHistory(handle, "room-action-failure");
     options.delete("runRoomAgentBackgroundAction");
   }, 30_000);
@@ -588,6 +582,11 @@ describe.sequential("Temporal workflow integration", () => {
     const negativeResults = [];
     for await (const result of Worker.runReplayHistories({ workflowsPath: changedPath }, [{ workflowId: "nondeterminism-negative-synthetic", history: negativeHistory }])) negativeResults.push(result);
     expect(negativeResults).toHaveLength(1);
-    expect(negativeResults[0]?.error).toBeInstanceOf(DeterminismViolationError);
+    const negativeWorkflowId = "nondeterminism-negative-synthetic";
+    const negativeFixture = `${negativeWorkflowId}.json`;
+    expect(
+      negativeResults[0]?.error,
+      `expected replay of ${negativeFixture} (${negativeWorkflowId}) to reject nondeterminism`
+    ).toBeInstanceOf(DeterminismViolationError);
   }, 60_000);
 });
