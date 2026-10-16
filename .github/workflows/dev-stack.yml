@@ -410,6 +410,13 @@ jobs:
             echo "no worker process found; the stack is not in the state this step needs."
             exit 1
           fi
+          # dev-stack deletes its own pid file once every service has stopped,
+          # and this step makes that happen on purpose. Keep a copy so the reset
+          # step below still has the processes to look for.
+          if [ -f .dev-stack/dev-stack.pids.json ]; then
+            cp .dev-stack/dev-stack.pids.json /tmp/dev-stack.pids.before-kill.json
+          fi
+
           echo "killing the worker (pid ${worker}) to see what the orchestrator says"
           kill "${worker}"
 
@@ -447,6 +454,13 @@ jobs:
           if [ -f .dev-stack/dev-stack.pids.json ]; then
             cp .dev-stack/dev-stack.pids.json /tmp/dev-stack.pids.json
             echo "--- host processes recorded before reset ---"
+            node -e 'for (const e of require("/tmp/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)'
+          elif [ -f /tmp/dev-stack.pids.before-kill.json ]; then
+            # "A service that dies is reported" stops the stack on purpose, and
+            # dev-stack then deletes its pid file. It leaves a copy here so this
+            # check still has a real list of processes to look for.
+            cp /tmp/dev-stack.pids.before-kill.json /tmp/dev-stack.pids.json
+            echo "--- host processes recorded before the stack was stopped on purpose ---"
             node -e 'for (const e of require("/tmp/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)'
           else
             echo "no pid file was recorded before reset"
@@ -856,6 +870,13 @@ jobs:
             echo "no worker process found; the stack is not in the state this step needs."
             exit 1
           fi
+          # dev-stack deletes its own pid file once every service has stopped,
+          # and this step makes that happen on purpose. Keep a copy so the reset
+          # step below still has the processes to look for.
+          if [ -f .dev-stack/dev-stack.pids.json ]; then
+            cp .dev-stack/dev-stack.pids.json /tmp/dev-stack.pids.before-kill.json
+          fi
+
           echo "killing the worker (pid ${worker}) to see what the orchestrator says"
           kill "${worker}"
 
@@ -890,6 +911,13 @@ jobs:
             cp .dev-stack/dev-stack.pids.json "${RUNNER_TEMP}/dev-stack.pids.json"
             echo "--- host processes recorded before reset ---"
             node -e 'for (const e of require(process.env.RUNNER_TEMP + "/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)'
+          elif [ -f /tmp/dev-stack.pids.before-kill.json ]; then
+            # "A service that dies is reported" stops the stack on purpose, and
+            # dev-stack then deletes its pid file. It leaves a copy here so this
+            # check still has a real list of processes to look for.
+            cp /tmp/dev-stack.pids.before-kill.json /tmp/dev-stack.pids.json
+            echo "--- host processes recorded before the stack was stopped on purpose ---"
+            node -e 'for (const e of require("/tmp/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)'
           else
             echo "no pid file was recorded before reset"
           fi
