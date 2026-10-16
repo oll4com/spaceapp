@@ -11,6 +11,7 @@ import type {
 } from "@space/contracts";
 import { expect } from "vitest";
 import { setTimeout as delay } from "node:timers/promises";
+import { performance } from "node:perf_hooks";
 import type { Scenario } from "./temporal-test-harness.js";
 
 type History = Awaited<ReturnType<WorkflowHandle["fetchHistory"]>>;
@@ -78,8 +79,8 @@ function timerSeconds(history: History): string[] {
 async function waitForTimer(handle: WorkflowHandle): Promise<History> {
   // Yield real time for the worker activation while the test server clock stays
   // locked. Counting fast RPCs races the worker on low-latency Linux runners.
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
+  const deadline = performance.now() + 10_000;
+  while (performance.now() < deadline) {
     const history = await handle.fetchHistory();
     if (timerSeconds(history).length) return history;
     await delay(20);
