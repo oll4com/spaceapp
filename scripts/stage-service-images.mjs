@@ -430,6 +430,18 @@ async function traceTarget(target, workspaceMap) {
       if (entry) enqueue(entry);
     }
   }
+  // A package that contributes any staged file also contributes its
+  // manifest: runtime code reads it (apps/api/dist/package-version.js
+  // reads ../package.json at import time, which crashed the browser
+  // image when @space/api was present only through traced files).
+  for (const file of [...files]) {
+    const relative = path.relative(ROOT, file);
+    const segments = relative.split(path.sep);
+    if ((segments[0] === "apps" || segments[0] === "packages") && segments.length > 2) {
+      const manifest = path.join(ROOT, segments[0], segments[1], "package.json");
+      if (existsSync(manifest)) files.add(manifest);
+    }
+  }
   return { files, packageDirs };
 }
 

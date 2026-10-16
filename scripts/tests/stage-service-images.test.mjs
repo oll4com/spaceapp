@@ -205,6 +205,8 @@ test("stage-service-images builds per-service closures with platform pruning", a
 
     // Browser: only the browser-host closure — no worker, no canvas, no skills.
     assert.ok(existsSync(browser("apps/api/dist/browser-host-main.js")));
+    assert.ok(existsSync(browser("apps/api/package.json")),
+      "a package contributing staged files also contributes its manifest (runtime version reads)");
     assert.ok(existsSync(browser("packages/db/migrations/0001_initial.sql")));
     assert.ok(existsSync(browser("node_modules/zod/index.js")));
     assert.ok(!existsSync(browser("apps/worker/dist/worker.js")));
