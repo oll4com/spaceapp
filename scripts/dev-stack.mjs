@@ -369,24 +369,34 @@ function compose(verb, extra = [], options = {}) {
 // without pulling in a dependency.
 const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
+// `docker inspect` renders the two template fields as one string, so a healthy
+// running container reads "running healthy" — the status first, the health
+// second, and the health field is empty when the image ships no healthcheck.
+// Split the fields and compare them individually; testing for a prefix of the
+// joined string silently never matches "running healthy".
+export function parseContainerState(raw) {
+  const [status = "", health = ""] = (raw ?? "").trim().split(/\s+/);
+  return { raw: (raw ?? "").trim(), status, health };
+}
+
 function containerState(name) {
   const r = run("docker", ["inspect", "--format", "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}", name], { capture: true });
-  return (r.stdout ?? "").trim();
+  return parseContainerState(r.stdout);
 }
 
 export function waitForInfrastructure(names = { postgres: `${COMPOSE_PROJECT}-postgres-1`, temporal: `${COMPOSE_PROJECT}-temporal-1` }, timeoutMs = 180_000) {
   const deadline = Date.now() + timeoutMs;
-  let postgres = "";
-  let temporal = "";
+  let postgres = parseContainerState("");
+  let temporal = parseContainerState("");
   while (Date.now() < deadline) {
     postgres = containerState(names.postgres);
     temporal = containerState(names.temporal);
-    // PostgreSQL must report healthy. Temporal only has to be running: its
-    // image's healthcheck shells out to the `temporal` CLI, which is not a
-    // contract this script should depend on.
-    if (postgres.startsWith("healthy") && temporal.startsWith("running")) {
-      say(`dev-stack: postgres ${postgres}; temporal ${temporal}`);
-      return { postgres, temporal };
+    // PostgreSQL must be running and report healthy. Temporal only has to be
+    // running: its image's healthcheck shells out to the `temporal` CLI, which
+    // is not a contract this script should depend on.
+    if (postgres.status === "running" && postgres.health === "healthy" && temporal.status === "running") {
+      say(`dev-stack: postgres ${postgres.raw}; temporal ${temporal.raw}`);
+      return { postgres: postgres.raw, temporal: temporal.raw };
     }
     sleepMs(2_000);
   }
@@ -402,7 +412,7 @@ export function waitForInfrastructure(names = { postgres: `${COMPOSE_PROJECT}-po
     process.stderr.write(logs.stdout ?? "");
     process.stderr.write(logs.stderr ?? "");
   }
-  fail(`Infrastructure did not become ready in ${Math.round(timeoutMs / 1000)}s (postgres=${postgres || "absent"}, temporal=${temporal || "absent"}).`);
+  fail(`Infrastructure did not become ready in ${Math.round(timeoutMs / 1000)}s (postgres=${postgres.raw || "absent"}, temporal=${temporal.raw || "absent"}).`);
 }
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // Import only the pure helpers. The CLI entry is guarded behind `invokedDirectly`.
 // pathToFileURL keeps this working on Windows, where a bare `d:\...` path is not
 // a valid ESM specifier.
-const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, waitForInfrastructure, PORTS } =
+const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, parseContainerState, waitForInfrastructure, PORTS } =
   await import(pathToFileURL(join(repoRoot, "scripts", "dev-stack.mjs")).href);
 
 const TEMPLATE = join(repoRoot, "packages/run-spaceapp/templates/compose.yml");
@@ -72,9 +72,25 @@ test("waitForInfrastructure treats a healthy postgres and a running temporal as 
   // shells out to the `temporal` CLI, which is not a dependency this script
   // takes on. PostgreSQL has to actually report healthy.
   const ready = waitForInfrastructure.toString();
-  assert.match(ready, /postgres\.startsWith\("healthy"\)/, "postgres must be required healthy");
-  assert.match(ready, /temporal\.startsWith\("running"\)/, "temporal only has to be running");
+  assert.match(ready, /postgres\.status === "running"/, "postgres must be running");
+  assert.match(ready, /postgres\.health === "healthy"/, "postgres must report healthy");
+  assert.match(ready, /temporal\.status === "running"/, "temporal only has to be running");
   assert.doesNotMatch(ready, /--wait/, "the readiness wait must not delegate to `compose up --wait`");
+});
+
+test("parseContainerState reads the status and health fields docker inspect joins", () => {
+  // `docker inspect --format "{{.State.Status}} {{.State.Health.Status}}"`
+  // renders "running healthy". Treating that string as if it began with the
+  // health word never matches, which stalled the stack until the 180s timeout
+  // even though both containers were up.
+  assert.deepEqual(parseContainerState("running healthy"), { raw: "running healthy", status: "running", health: "healthy" });
+  assert.deepEqual(parseContainerState("  running healthy\n"), { raw: "running healthy", status: "running", health: "healthy" });
+  // An image with no healthcheck renders the status alone.
+  assert.deepEqual(parseContainerState("running"), { raw: "running", status: "running", health: "" });
+  assert.deepEqual(parseContainerState("exited"), { raw: "exited", status: "exited", health: "" });
+  assert.deepEqual(parseContainerState("restarting unhealthy"), { raw: "restarting unhealthy", status: "restarting", health: "unhealthy" });
+  assert.deepEqual(parseContainerState(""), { raw: "", status: "", health: "" });
+  assert.deepEqual(parseContainerState(undefined), { raw: "", status: "", health: "" });
 });
 
 test("container secrets are world-readable so non-root container users can mount them", () => {
