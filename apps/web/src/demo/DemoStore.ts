@@ -52,6 +52,7 @@ import type { SpaceApiClient } from "../runtime/SpaceRuntime.js";
 import { DEMO_LOCAL_REPLY, SpaceApiError } from "../runtime/SpaceRuntime.js";
 import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-presentation.js";
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
+import { createSyntheticMemoryGraph } from "./synthetic-memory-graph.js";
 import { MockServices } from "./mock-services.js";
 import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
 
@@ -145,6 +146,10 @@ type DemoMemoryGraphQuery = {
   relationMode?: "CLUSTERED" | "RELATIONS";
   page?: number;
   pageSize?: number;
+  /** Node budget; above the fixture size the store serves a synthetic graph. */
+  limit?: number;
+  /** Explicit synthetic graph size for benchmark reproduction. */
+  graphSize?: number;
 };
 
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
@@ -667,6 +672,34 @@ export class DemoStore {
 
   private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
     const base = this.fixture.memoryWorkspace.graph;
+    // Benchmark reproduction: a requested size above the fixture graph
+    // generates a deterministic synthetic graph of exactly that many nodes.
+    const syntheticSize = query.graphSize ?? (query.limit !== undefined && query.limit > base.nodes.length ? query.limit : undefined);
+    if (syntheticSize !== undefined) {
+      const synthetic = createSyntheticMemoryGraph(syntheticSize);
+      return structuredClone({
+        ...base,
+        summary: {
+          sourceCount: synthetic.nodes.filter(node => node.type === "SOURCE").length,
+          recordCount: synthetic.nodes.filter(node => node.recordId).length,
+          nodeCount: synthetic.nodes.length,
+          edgeCount: synthetic.edges.length,
+          issueCount: 0
+        },
+        nodes: synthetic.nodes,
+        edges: synthetic.edges,
+        filters: {
+          q: query.q ?? null,
+          nodeType: query.nodeType ?? null,
+          scope: query.scope ?? null,
+          roomId: query.roomId ?? null,
+          sourcePath: query.sourcePath ?? null,
+          lifecycleStatus: query.lifecycleStatus ?? null,
+          relationMode: query.relationMode ?? "RELATIONS",
+          month: query.month ?? null
+        }
+      });
+    }
     const needle = query.q?.trim().toLowerCase();
     const nodes = base.nodes.filter((node) => {
       const record = node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;
