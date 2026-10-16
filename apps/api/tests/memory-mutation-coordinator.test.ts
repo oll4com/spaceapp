@@ -27,6 +27,7 @@ describe("Memory mutation coordinator", () => {
         workflowType: MEMORY_MUTATION_WORKFLOW_TYPE,
         options: {
           args: [input],
+          memo: { spaceTraceId: input.traceId },
           taskQueue: MEMORY_MUTATION_TASK_QUEUE,
           workflowId: result.workflowId,
           workflowIdReusePolicy: "REJECT_DUPLICATE",

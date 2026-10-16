@@ -21,6 +21,7 @@ describe("Memory consolidation coordinator", () => {
       workflowType: MEMORY_CONSOLIDATION_WORKFLOW_TYPE,
       options: {
         args: [input],
+          memo: { spaceTraceId: input.traceId },
         taskQueue: MEMORY_CONSOLIDATION_TASK_QUEUE,
         workflowId,
         workflowIdReusePolicy: "REJECT_DUPLICATE",

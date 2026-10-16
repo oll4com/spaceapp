@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { traceparentForTraceId, workflowCorrelationMemo } from "./trace-context.js";
 import { z } from "zod";
 import { Client, Connection, WorkflowExecutionAlreadyStartedError, WorkflowNotFoundError } from "@temporalio/client";
 import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
@@ -26,10 +27,10 @@ import type { DotGoalsRepository, DotsRepository } from "@space/db";
  * blocking question, cancellation, three consecutive failures or the budget.
  */
 export interface DotGoalWorkflowCoordinator {
-  start(goalId: string): Promise<void>;
+  start(goalId: string, traceId?: string): Promise<void>;
   wake(goalId: string): Promise<void>;
   /** Starts the Goal's workflow when none is running; true when it had to start one. */
-  ensure?(goalId: string): Promise<boolean>;
+  ensure?(goalId: string, traceId?: string): Promise<boolean>;
 }
 export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordinator {
   constructor(private readonly options: { address: string; namespace: string; taskQueue: string }) {}
@@ -38,11 +39,11 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
     try { return await action(new Client({ connection, namespace: this.options.namespace })); }
     finally { await connection.close(); }
   }
-  start(goalId: string) {
+  start(goalId: string, traceId?: string) {
     return this.client(async (client) => {
       try {
         await client.workflow.start("dotGoalWorkflow", { workflowId: dotGoalWorkflowId(goalId), taskQueue: this.options.taskQueue,
-          args: [{ goalId }], workflowIdReusePolicy: "REJECT_DUPLICATE" });
+          args: [{ goalId }], memo: workflowCorrelationMemo({ traceId, traceparent: traceparentForTraceId(traceId) }), workflowIdReusePolicy: "REJECT_DUPLICATE" });
       } catch (error) { if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error; }
     });
   }
@@ -52,11 +53,11 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
       catch (error) { if (!(error instanceof WorkflowNotFoundError)) throw error; }
     });
   }
-  ensure(goalId: string) {
+  ensure(goalId: string, traceId?: string) {
     return this.client(async (client) => {
       try {
         await client.workflow.start("dotGoalWorkflow", { workflowId: dotGoalWorkflowId(goalId), taskQueue: this.options.taskQueue,
-          args: [{ goalId }], workflowIdReusePolicy: "ALLOW_DUPLICATE" });
+          args: [{ goalId }], memo: workflowCorrelationMemo({ traceId, traceparent: traceparentForTraceId(traceId) }), workflowIdReusePolicy: "ALLOW_DUPLICATE" });
         return true;
       } catch (error) {
         if (error instanceof WorkflowExecutionAlreadyStartedError) return false;
@@ -125,7 +126,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
       if ((error as { code?: string }).code === "DOT_GOAL_OPEN") throw new DotGoalError(409, "DOT_GOAL_OPEN", "This conversation already has an open Goal.");
       throw error;
     }
-    try { await deps.workflow.start(goal.goalId); }
+    try { await deps.workflow.start(goal.goalId, request?.id); }
     catch {
       goal = await finish(goal, "FAILED", "The Goal runtime could not start. Try again.");
       throw new DotGoalError(503, "DOT_GOAL_RUNTIME", "The Goal runtime could not start. Try again.");

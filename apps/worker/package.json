@@ -10,7 +10,8 @@
     "start": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "telemetry:check": "tsc -p tsconfig.telemetry-tests.json"
   },
   "dependencies": {
     "@space/codex-app-server": "0.2.5",
@@ -23,11 +24,14 @@
     "@temporalio/client": "1.24.0",
     "@temporalio/worker": "1.24.0",
     "@temporalio/workflow": "1.24.0",
-    "undici": "8.10.2"
+    "undici": "8.10.2",
+    "@temporalio/common": "1.24.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "@temporalio/testing": "1.24.0",
+    "@temporalio/proto": "1.24.0"
   },
   "license": "BUSL-1.1"
 }

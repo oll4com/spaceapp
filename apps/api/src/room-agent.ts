@@ -225,6 +225,7 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
         workflowId,
         taskQueue: this.options.taskQueue,
         args: [{ roomId: item.turn.roomId, pending: [], processedCount: 0 }],
+        memo: workflowCorrelationMemo({ traceId: item.turn.traceId, traceparent: item.turn.traceparent, missionId: item.missionId }),
         signal: ROOM_AGENT_ENQUEUE_SIGNAL,
         signalArgs: [item]
       });
