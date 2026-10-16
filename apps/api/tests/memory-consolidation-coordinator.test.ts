@@ -24,7 +24,8 @@ describe("Memory consolidation coordinator", () => {
         taskQueue: MEMORY_CONSOLIDATION_TASK_QUEUE,
         workflowId,
         workflowIdReusePolicy: "REJECT_DUPLICATE",
-        workflowIdConflictPolicy: "USE_EXISTING"
+        workflowIdConflictPolicy: "USE_EXISTING",
+        memo: { spaceTraceId: input.traceId }
       }
     }]);
   });
