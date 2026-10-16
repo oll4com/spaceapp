@@ -21,6 +21,53 @@ The `large` profile, which adds managed browser sessions, requires:
 - 15 GiB RAM;
 - 11 GiB free disk.
 
+## Podman (alternative engine)
+
+Docker is the default engine. On Linux and macOS you can select rootless
+Podman at install time instead:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+The engine is stored in the installation and used by every later command.
+Supported configuration:
+
+- Podman **4.9 or newer** (5.x recommended), with the **Docker Compose v2**
+  binary as the Compose provider: `podman compose version` must succeed.
+  podman-compose is not supported because it cannot express every template
+  feature (profiles, health-gated `depends_on` with `required: false`,
+  file-based secrets).
+- Linux: rootless Podman on **cgroup v2**. For CPU and memory limits to
+  apply, the `cpu` and `memory` controllers must be delegated to your user
+  slice. The `doctor` command reports the engine, version, rootless/rootful
+  mode, cgroup version, and delegation state; when a limit cannot be
+  applied it fails with the one-time delegation fix:
+
+  ```bash
+  sudo mkdir -p /etc/systemd/system/user@.service.d
+  printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+  sudo systemctl daemon-reload
+  ```
+
+  (then log out and back in). Enable the user socket so the API answers:
+  `systemctl --user enable --now podman.socket`.
+- SELinux-enforcing hosts (Fedora, RHEL): no manual steps — workspace mounts
+  are rendered with `bind: selinux: "z"` and `userns_mode: keep-id`, so
+  agents read and write registered workspaces with your host ownership.
+- macOS: start a Podman machine first (`podman machine init && podman
+  machine start`). The machine must fit the profile (small: 4 CPUs, 7 GiB
+  memory, 6.5 GiB disk); the installer prints the exact
+  `podman machine set --cpus … --memory … --disk-size …` resize commands
+  when it does not.
+
+Differences from Docker: the launcher never installs Podman (it prints
+per-distribution install commands); `--access host-root` is refused with
+Podman — register directories with `workspace add` instead; and an
+installation cannot switch engines in place, because the two engines keep
+separate volume stores. Migrate with `backup`, `uninstall --purge-data`,
+a fresh `install --engine <other>`, and `restore`.
+
 ## Linux
 
 Install Node.js 20.11 or newer, then run as a normal non-root user:

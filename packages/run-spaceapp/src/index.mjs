@@ -18,6 +18,21 @@ import {
   stripTrailingLineEndings
 } from "./string-utils.mjs";
 import { UNIVERSAL_COMMAND } from "./package-info.mjs";
+import {
+  CONTAINER_ENGINES,
+  DEFAULT_ENGINE,
+  engineSwitchRefusal,
+  resolveInstallEngine
+} from "./engines.mjs";
+
+export { CONTAINER_ENGINES, DEFAULT_ENGINE, resolveInstallEngine };
+
+// The engine an installation uses. Configs written before Podman support have
+// no engine field; absence means Docker, which keeps every existing
+// installation and every stored byte of its config unchanged.
+export function configEngine(config) {
+  return config?.engine ?? DEFAULT_ENGINE;
+}
 
 const CONFIG_SCHEMA_VERSION = 4;
 const CONTAINER_SECRET_MODE = 0o644;
@@ -111,6 +126,7 @@ const CONFIG_KEYS = new Set([
   "telemetry",
   "profile",
   "accessMode",
+  "engine",
   "workspaces",
   "companionsEnabled",
   "optionalModules",
@@ -250,7 +266,7 @@ export async function inspectSystemResources(root) {
   };
 }
 
-export function installResourceChecks(resources, profile = "small", { requiredDiskBytes, operation = "fresh" } = {}) {
+export function installResourceChecks(resources, profile = "small", { requiredDiskBytes, operation = "fresh", engineLabel = "Docker" } = {}) {
   const cpuCount = Number(resources?.cpuCount);
   const totalMemoryBytes = Number(resources?.totalMemoryBytes);
   const freeDiskBytes = Number(resources?.freeDiskBytes);
@@ -277,9 +293,9 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
       ok: freeDiskBytes >= minFreeDisk,
       detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(minFreeDisk)} GiB required${operation === "fresh" ? "" : " additionally for " + operation}`
     },
-    ...(resources.engineMemoryBytes > 0 ? [{ name: "Docker memory", ok: resources.engineMemoryBytes >= engineMemoryBytes,
+    ...(resources.engineMemoryBytes > 0 ? [{ name: `${engineLabel} memory`, ok: resources.engineMemoryBytes >= engineMemoryBytes,
       detail: `${formatGibibytes(resources.engineMemoryBytes)} GiB allocated; ${formatGibibytes(engineMemoryBytes)} GiB required for ${profile}` }] : []),
-    ...(resources.engineCpuCount > 0 ? [{ name: "Docker CPU", ok: resources.engineCpuCount >= 4,
+    ...(resources.engineCpuCount > 0 ? [{ name: `${engineLabel} CPU`, ok: resources.engineCpuCount >= 4,
       detail: `${resources.engineCpuCount} allocated; 4 required` }] : [])
   ];
 }
@@ -288,6 +304,7 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
+  engine,
   companionsEnabled = false
 }) {
   assertVersion(version);
@@ -295,6 +312,7 @@ export function createDefaultConfig({
     throw new Error("Default config requires a resolved installation profile.");
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
+  const resolvedEngine = resolveInstallEngine(engine);
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
@@ -304,6 +322,9 @@ export function createDefaultConfig({
     telemetry: false,
     profile,
     accessMode: resolvedAccessMode,
+    // Only a non-default engine is recorded; Docker stays the implicit
+    // default so existing configs and defaults are byte-identical.
+    ...(resolvedEngine !== DEFAULT_ENGINE ? { engine: resolvedEngine } : {}),
     companionsEnabled,
     optionalModules: "none",
     workspaces: []
@@ -343,6 +364,9 @@ export function validateConfig(config) {
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
+  }
+  if (config.engine !== undefined && !CONTAINER_ENGINES.includes(config.engine)) {
+    throw new Error("engine must be docker or podman.");
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
@@ -577,15 +601,31 @@ export function renderRuntimeEnv(config) {
 
 export function renderWorkspaceCompose(config) {
   validateConfig(config);
+  const podman = configEngine(config) === "podman";
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    // Rootless Podman on SELinux-enforcing hosts (Fedora, RHEL, openSUSE)
+    // denies container access to host directories until they are relabeled
+    // as shared container content. "z" (shared) is correct here because the
+    // same directory is mounted by both the core and the CLI service.
+    ...(podman ? [
+      "        bind:",
+      "          selinux: \"z\""
+    ] : [])
   ]);
-  const service = mounts.length > 0
-    ? ["    volumes:", ...mounts]
-    : ["    volumes: []"];
+  const service = [
+    // Rootless Podman maps container user 10001 to a high subuid on the host
+    // by default, so files agents create in a workspace appear owned by a
+    // stranger. keep-id maps the runtime user (10001:10001) onto the invoking
+    // host user instead, which is the ownership the workspace owner expects.
+    ...(podman ? ["    userns_mode: \"keep-id:uid=10001,gid=10001\""] : []),
+    ...(mounts.length > 0
+      ? ["    volumes:", ...mounts]
+      : ["    volumes: []"])
+  ];
   return [
     "services:",
     "  spaceapp-core:",
@@ -627,6 +667,7 @@ export function renderHostAccessCompose(config) {
 
 export function composeCommand(action, root, options = {}) {
   validateHome(root);
+  const engine = resolveInstallEngine(options.engine);
   const stateRoot = options.stateRoot ?? root;
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
@@ -731,7 +772,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: engine, args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -768,6 +809,7 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
+  engine,
   companionsEnabled
 }) {
   validateHome(root);
@@ -790,8 +832,18 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
+      engine,
       companionsEnabled
     });
+  }
+  if (engine !== undefined) {
+    const existingEngine = configEngine(config);
+    const requestedEngine = resolveInstallEngine(engine);
+    if (requestedEngine !== existingEngine) {
+      // Data safety: the two engines keep separate image and volume stores.
+      // Refuse the switch instead of starting an empty stack beside the data.
+      throw new Error(engineSwitchRefusal(existingEngine, requestedEngine));
+    }
   }
   if (config.version !== version) {
     config = {
