@@ -10,6 +10,8 @@ on:
       - "starter-memory/**"
       - "Dockerfile"
       - "package-lock.json"
+      - "scripts/container-*.mjs"
+      - "scripts/container-*.sh"
   push:
     branches:
       - main
@@ -21,6 +23,8 @@ on:
       - "starter-memory/**"
       - "Dockerfile"
       - "package-lock.json"
+      - "scripts/container-*.mjs"
+      - "scripts/container-*.sh"
   workflow_dispatch:
 
 permissions:
@@ -71,3 +75,10 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke test target startup
+        run: >-
+          bash scripts/container-image-smoke.sh
+          "${{ matrix.target }}"
+          "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+          "pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b"

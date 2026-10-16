@@ -148,9 +148,12 @@ test("public path policy exports application tests except the reviewed private-o
   for (const path of [
     ".trivyignore",
     "scripts/container-image-size-budget.mjs",
+    "scripts/container-image-smoke.sh",
+    "scripts/create-runtime-bundles.mjs",
     "scripts/release-version.mjs",
     "scripts/tests/portable-backup-restore.test.mjs",
     "scripts/tests/container-image-size-budget.test.mjs",
+    "scripts/tests/create-runtime-bundles.test.mjs",
     "scripts/tests/public-compose-config.test.mjs",
     "scripts/tests/public-docker-distribution.test.mjs",
     "scripts/tests/public-export.test.mjs",

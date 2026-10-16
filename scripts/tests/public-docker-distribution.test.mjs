@@ -19,6 +19,7 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   assert.match(dockerfile, /FROM .* AS core/);
   assert.match(dockerfile, /FROM .* AS browser/);
   assert.match(dockerfile, /FROM .* AS cli/);
+  assert.ok(dockerfile.includes("sed -i 's/\\r$//' deploy/docker/*.sh"));
   assert.deepEqual(nodeStages, [
     { image: nodeImage, stage: "build" },
     { image: nodeImage, stage: "runtime-base" }
@@ -36,14 +37,56 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   );
   assert.match(dockerfile, /await r\.json\(\)/);
   assert.match(dockerfile, /body\.ok !== true/);
-  assert.match(dockerfile, /rotate-owner-setup-token\.mjs/);
+  const runtimeBundles = await readFile(join(root, "scripts", "create-runtime-bundles.mjs"), "utf8");
+  assert.match(runtimeBundles, /rotate-owner-setup-token\.mjs/);
   assert.match(dockerfile, /opencode-ai@1\.18\.4/);
+  assert.match(dockerfile, /SPACE_BROWSER_HOST_SOCKET=\/run\/spaceapp-browser\/browser-host\.sock/);
+  assert.match(dockerfile, /chromium fonts-liberation liblzma5 xvfb/);
   assert.doesNotMatch(dockerfile, /@openai\/codex|@google\/gemini-cli|@anthropic-ai\/claude-code|run-deepseek-cli/);
   const installer = await readFile(join(root, "deploy/docker/provider-install.mjs"), "utf8");
   assert.match(installer, /@openai\/codex@0\.145\.0/);
   assert.match(installer, /Unsupported optional provider/);
   assert.doesNotMatch(dockerfile, /docker\.sock/);
   assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/LICENSE \/app\/NOTICE \/app\/THIRD_PARTY_NOTICES\.md \.\//);
+});
+
+test("each image installs its production workspace closure and copies only its runtime bundle", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const runtimeBase = dockerfile.match(/FROM [^\n]+ AS runtime-base([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const coreDependencies = dockerfile.match(/FROM build AS core-dependencies([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const browserDependencies = dockerfile.match(/FROM build AS browser-dependencies([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const cliDependencies = dockerfile.match(/FROM build AS cli-dependencies([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const core = dockerfile.match(/FROM runtime-base AS core([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const browser = dockerfile.match(/FROM runtime-base AS browser([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const cli = dockerfile.match(/FROM runtime-base AS cli([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+
+  assert.match(dockerfile, /FROM build AS core-dependencies/);
+  assert.match(coreDependencies, /--workspace-selectors core/);
+  assert.match(browserDependencies, /--workspace-selectors browser/);
+  assert.match(cliDependencies, /--workspace-selectors cli/);
+  assert.doesNotMatch(runtimeBase, /COPY --from=build[^\n]*\/(?:node_modules|apps|packages|agent-skills)/);
+  assert.match(core, /COPY --from=core-dependencies[^\n]*\/app\/node_modules/);
+  assert.match(core, /COPY --from=core-dependencies[^\n]*\/tmp\/container-runtime\/core/);
+  assert.match(browser, /COPY --from=browser-dependencies[^\n]*\/app\/node_modules/);
+  assert.match(browser, /COPY --from=browser-dependencies[^\n]*\/tmp\/container-runtime\/browser/);
+  assert.match(cli, /COPY --from=cli-dependencies[^\n]*\/app\/node_modules/);
+  assert.match(cli, /COPY --from=cli-dependencies[^\n]*\/tmp\/container-runtime\/cli/);
+});
+
+test("container matrix smoke checks exercise each target against its real runtime dependencies", async () => {
+  const workflow = await readFile(join(root, ".github", "workflows", "containers.yml"), "utf8");
+  const smoke = await readFile(join(root, "scripts", "container-image-smoke.sh"), "utf8");
+
+  assert.match(workflow, /Smoke test target startup/);
+  assert.match(workflow, /bash scripts\/container-image-smoke\.sh/);
+  assert.match(workflow, /pgvector\/pgvector:0\.8\.3-pg17-trixie@sha256:/);
+  assert.match(smoke, /core migrations completed and \/readyz returned ok:true/);
+  assert.match(smoke, /type=volume,src=\$secrets_volume,dst=\/run\/secrets,readonly/);
+  assert.match(smoke, /node -e 'const value=JSON\.parse\(process\.argv\[1\]\);if\(value\.ok!==true\)/);
+  assert.match(smoke, /BrowserHostClient/);
+  assert.match(smoke, /\/usr\/bin\/Xvfb :99/);
+  assert.match(smoke, /\/usr\/bin\/chromium --headless/);
+  assert.match(smoke, /createConnection\("\/run\/spaceapp-cli\/host\.sock"\)/);
 });
 
 test("public container images identify their repository and license for GHCR", async () => {

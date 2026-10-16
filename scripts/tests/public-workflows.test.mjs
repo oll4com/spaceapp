@@ -73,6 +73,10 @@ test("container matrices load each image and enforce the public size budgets", a
     assert.match(content, /node scripts\/container-image-size-budget\.mjs/);
     assert.match(content, /--target "\$\{\{ matrix\.target \}\}"/);
     assert.match(content, /--image "spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"/);
+    if (name === "containers.yml") {
+      assert.match(content, /Smoke test target startup/);
+      assert.match(content, /bash scripts\/container-image-smoke\.sh/);
+    }
   }
 });
 
