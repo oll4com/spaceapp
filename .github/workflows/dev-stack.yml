@@ -338,3 +338,272 @@ jobs:
         if: failure() && steps.reset-stack.outcome == 'failure'
         run: |
           echo "=== reset.out ==="; cat reset.out || true
+
+  # The issue asks for the terminal output of a run on Linux *and* on at least
+  # one of macOS or WSL2. CI covers Linux above. GitHub's macOS runners ship a
+  # Docker CLI but no daemon, so this job starts Colima — the same path
+  # CONTRIBUTING.md gives macOS contributors — and runs the identical sequence.
+  #
+  # It is gated to workflow_dispatch for now: a macOS runner bills at ten times
+  # an Ubuntu one, and a job that has not yet been observed to pass must not be
+  # able to turn a pull request red. Flip the `if` to drop the gate once this job
+  # has a green run on the platform.
+  dev-stack-macos:
+    name: Run the full app from source (macOS)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js from .nvmrc
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Start Colima, the macOS Docker path CONTRIBUTING documents
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install colima docker
+          colima start --cpu 3 --memory 6 --disk 30
+          docker context use colima
+          docker version
+
+      - name: Install dependencies
+        shell: bash
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+          npm_config_fund: "false"
+          npm_config_audit: "false"
+
+      - name: Build the workspace
+        shell: bash
+        run: npm run build
+
+      # The process-group teardown, the /proc-based liveness probe and the file
+      # modes all branch on process.platform, so the unit tests matter here too.
+      - name: Unit tests for the dev-stack orchestrator
+        shell: bash
+        run: node --test scripts/tests/dev-stack.test.mjs
+
+      - name: Start the stack from source
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup npm run dev:stack > dev-stack.out 2>&1 &
+          echo "dev-stack pid $!"
+
+      - name: Wait for /readyz to report ok
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "waiting for http://127.0.0.1:${API_PORT}/readyz"
+          for ((i = 0; i < 150; i++)); do
+            if curl -fsS "http://127.0.0.1:${API_PORT}/readyz" -o readyz.json 2>/dev/null; then
+              echo "readyz: $(cat readyz.json)"
+              if grep -q '"ok"[: ]*true' readyz.json; then
+                echo "API is ready."
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          echo "readyz never reported ok"
+          echo "--- dev-stack.out ---"; cat dev-stack.out || true
+          echo "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "--- $f ---"; tail -n 120 "$f" || true
+          done
+          exit 1
+
+      - name: Claim owner setup over HTTP
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          TOKEN="$(cat .dev-stack/secrets/setup-token)"
+          echo "setup token loaded (${#TOKEN} chars)"
+
+          curl -fsS "${BASE}/api/setup/status" -o setup-status.json -w 'setup status: %{http_code}\n'
+          cat setup-status.json
+          grep -q '"setupRequired"[: ]*true' setup-status.json
+
+          curl -fsS -X POST "${BASE}/api/setup/claim" \
+            -H 'content-type: application/json' \
+            --data "{\"token\":\"${TOKEN}\",\"email\":\"ci-owner@example.test\",\"password\":\"ci-owner-password-1\"}" \
+            -c cookies.txt -o claim.json -w 'setup claim: %{http_code}\n'
+          cat claim.json
+
+          node -e '
+            const c = require("./claim.json");
+            if (c.isAuthenticated !== true) { console.error("claim did not authenticate"); process.exit(1); }
+            if (c.isSetupRequired !== false) { console.error("setup still required"); process.exit(1); }
+            if (!c.starterRoomId) { console.error("claim returned no starterRoomId"); process.exit(1); }
+            console.log("owner claimed; starter room:", c.starterRoomId);
+          '
+
+      - name: Fetch the CSRF token the session needs
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          curl -fsS -b cookies.txt "${BASE}/api/auth/csrf" -o csrf.json -w 'csrf: %{http_code}\n'
+          cat csrf.json
+          node -e '
+            const c = require("./csrf.json");
+            if (!c.csrfToken) { console.error("no csrfToken in the response"); process.exit(1); }
+            if (!c.headerName) { console.error("no headerName in the response"); process.exit(1); }
+            require("fs").writeFileSync("csrf-token.txt", c.csrfToken);
+            require("fs").writeFileSync("csrf-header.txt", c.headerName);
+            console.log("csrf header:", c.headerName);
+          '
+
+      - name: Ensure the Getting Started room
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          CSRF_HEADER="$(cat csrf-header.txt)"
+          CSRF_TOKEN="$(cat csrf-token.txt)"
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/setup/starter-room" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
+            -o starter-room.json -w '%{http_code}')"
+          echo "starter room: ${code}"
+          cat starter-room.json
+          if [ "${code}" != "200" ]; then echo "starter-room request failed"; exit 1; fi
+          node -e '
+            const s = require("./starter-room.json");
+            const id = s.room?.id;
+            if (!id) { console.error("no room id from /api/setup/starter-room"); process.exit(1); }
+            require("fs").writeFileSync("starter-room-id.txt", id);
+            console.log("starter room:", id);
+          '
+
+      - name: Open an OpenCode CLI pane and check it is running
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          ROOM_ID="$(cat starter-room-id.txt)"
+          CSRF_HEADER="$(cat csrf-header.txt)"
+          CSRF_TOKEN="$(cat csrf-token.txt)"
+
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/panes" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
+            -H 'content-type: application/json' \
+            -d "{\"roomId\":\"${ROOM_ID}\",\"title\":\"OpenCode CLI\",\"mode\":\"TERMINAL\",\"terminalRuntimeId\":\"cli:opencode\"}" \
+            -o pane.json -w '%{http_code}')"
+          echo "open pane: ${code}"
+          cat pane.json
+          if [ "${code}" != "200" ]; then echo "pane create failed"; exit 1; fi
+
+          node -e '
+            const p = require("./pane.json");
+            if (!p.id) { console.error("pane create returned no id"); process.exit(1); }
+            if (p.mode !== "TERMINAL") { console.error("pane mode is " + p.mode + ", expected TERMINAL"); process.exit(1); }
+            if (p.terminalRuntimeId !== "cli:opencode") { console.error("wrong runtime: " + p.terminalRuntimeId); process.exit(1); }
+            require("fs").writeFileSync("pane-id.txt", p.id);
+            console.log("pane:", p.id, p.mode, p.terminalRuntimeId);
+          '
+          PANE_ID="$(cat pane-id.txt)"
+
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/panes/${PANE_ID}/cli/session" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
+            -H 'content-type: application/json' \
+            -d '{"runtimeId":"cli:opencode"}' \
+            -o session-start.json -w '%{http_code}')"
+          echo "start cli session: ${code}"
+          cat session-start.json
+          if [ "${code}" != "200" ]; then echo "cli session start failed"; exit 1; fi
+
+          for ((i = 0; i < 45; i++)); do
+            rm -f cli-session.json
+            code="$(curl -sS -b cookies.txt "${BASE}/api/panes/${PANE_ID}/cli/session" -o cli-session.json -w '%{http_code}' || echo 000)"
+            STATE="$(node -e '
+              const fs = require("fs");
+              if (!fs.existsSync("cli-session.json")) { console.log("NO_RESPONSE"); process.exit(0); }
+              const raw = fs.readFileSync("cli-session.json", "utf8").trim();
+              if (raw === "null") { console.log("NO_SESSION"); process.exit(0); }
+              let d; try { d = JSON.parse(raw); } catch { console.log(""); process.exit(0); }
+              console.log((d && d.session && d.session.status) || "");
+            ')"
+            echo "cli session state: ${STATE} (http ${code})"
+            case "${STATE}" in
+              RUNNING|IDLE)
+                echo "OpenCode CLI session is up"; exit 0 ;;
+              EXITED|ERROR)
+                echo "OpenCode CLI session is ${STATE}"
+                tail -n 120 .dev-stack/logs/cli-host.log || true
+                exit 1 ;;
+            esac
+            sleep 2
+          done
+          echo "OpenCode CLI session never reached a running state"
+          tail -n 120 .dev-stack/logs/cli-host.log || true
+          exit 1
+
+      - name: Print what the one command produced
+        if: always()
+        shell: bash
+        run: cat dev-stack.out
+
+      - name: Dump logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== dev-stack.out ==="; cat dev-stack.out || true
+          echo "=== .dev-stack/logs ==="; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "=== $f ==="; tail -n 120 "$f" || true
+          done
+
+      - name: Reset and verify no resources remain
+        id: reset-stack-macos
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "[]" > "${RUNNER_TEMP}/dev-stack.pids.json"
+          if [ -f .dev-stack/dev-stack.pids.json ]; then
+            cp .dev-stack/dev-stack.pids.json "${RUNNER_TEMP}/dev-stack.pids.json"
+            echo "--- host processes recorded before reset ---"
+            node -e 'for (const e of require(process.env.RUNNER_TEMP + "/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)'
+          else
+            echo "no pid file was recorded before reset"
+          fi
+
+          npm run dev:stack -- reset 2>&1 | tee reset.out
+
+          echo "--- residual check ---"
+          if docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Names}}' | grep -q .; then
+            echo "containers left behind"; docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack"; exit 1
+          fi
+          if docker volume ls --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Name}}' | grep -q .; then
+            echo "volumes left behind"; docker volume ls --filter "label=com.docker.compose.project=spaceapp-dev-stack"; exit 1
+          fi
+          if [ -d .dev-stack ]; then
+            echo ".dev-stack still exists after reset"; ls -la .dev-stack; exit 1
+          fi
+
+          leaked=0
+          while read -r name pid; do
+            [ -n "${pid:-}" ] || continue
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "process still alive after reset: $name (pid $pid)"
+              ps -o pid,ppid,pgid,stat,command -p "$pid" || true
+              leaked=1
+            fi
+          done < <(node -e 'for (const e of require(process.env.RUNNER_TEMP + "/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)')
+          if [ "$leaked" -ne 0 ]; then
+            echo "reset left host processes running"; exit 1
+          fi
+
+          echo "no containers, no volumes, no state directory and no processes left."
