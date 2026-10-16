@@ -50,6 +50,41 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the full app from source
+
+Contributors can run the complete SpaceApp stack from source with hot-reload in a single command without interfering with an installed SpaceApp instance:
+
+```sh
+npm run dev:stack
+```
+
+### Lifecycle commands
+- **Start stack**: `npm run dev:stack` — Starts PostgreSQL (pgvector) and Temporal in Docker, applies database migrations, builds internal packages, prepares a local `opencode-ai` installation in `.dev-stack/`, and spawns the API (watch mode), the Vite web server, the Temporal worker, and the from-source CLI host.
+- **Stop stack**: `npm run dev:stack -- down` — Gracefully stops all child processes and halts the Docker containers.
+- **Full reset**: `npm run dev:stack -- reset` — Stops child processes, tears down containers, removes named volumes, and completely purges the `.dev-stack/` state directory.
+
+### Isolation and default ports
+The development stack uses its own Docker Compose project (`spaceapp-dev`), a git-ignored state directory (`.dev-stack/`), and ports that do not collide with an installed SpaceApp instance (4910/4911). All services strictly bind to `127.0.0.1`:
+- **Web UI**: `http://127.0.0.1:5911` (override via `SPACEAPP_DEV_WEB_PORT`)
+- **API Server**: `http://127.0.0.1:5910` (override via `SPACEAPP_DEV_API_PORT`)
+- **PostgreSQL**: `127.0.0.1:54329` (override via `SPACEAPP_DEV_POSTGRES_PORT`)
+- **Temporal**: `127.0.0.1:57233` (override via `SPACEAPP_DEV_TEMPORAL_PORT`)
+
+### Secrets and owner setup
+All credentials (database password, session secret, setup token) are generated inside `.dev-stack/secrets/` with strict mode `0600`. They are never printed, apart from the one-time owner setup token.
+Once the stack finishes starting, it prints the URL and setup token. Open `http://127.0.0.1:5911`, enter your email and password along with the setup token to create the initial owner account.
+
+### Hot reloading & CLI panes
+- Changes to `apps/api/src/` automatically restart the API server (`tsx watch`).
+- Changes to `apps/web/src/` are hot-reloaded by Vite in the browser.
+- Changes to `packages/*` are automatically watched and recompiled by `dev:stack`, or can be manually rebuilt at any time via `npm run build:demos` / package build scripts.
+- OpenCode runs through the from-source CLI host using the pinned `opencode-ai` version in `.dev-stack/`, without needing global installation or paid AI provider credentials.
+
+### Platform notes
+- **Linux**: Requires Docker or rootless Podman (with docker-compose plugin) and Node.js.
+- **macOS**: Supported with Docker Desktop or Colima (`colima start`).
+- **Windows 11**: Run inside WSL2 (Ubuntu 22.04/24.04 recommended).
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:
