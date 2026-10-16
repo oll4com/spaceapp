@@ -85,8 +85,16 @@ jobs:
           nohup npm run dev:stack > "$RUNNER_TEMP/dev-stack.log" 2>&1 < /dev/null &
           echo "DEV_STACK_PID=$!" >> "$GITHUB_ENV"
 
-      - name: Readiness, owner setup and an OpenCode pane over HTTP
+      - name: Readiness, owner setup, an OpenCode pane and hot reload over HTTP
+        env:
+          SPACE_DEV_STACK_LOG: ${{ runner.temp }}/dev-stack.log
         run: node scripts/dev-stack/ci-check.mjs
+
+      - name: A stopped worker is a clear failure
+        run: |
+          pkill -f "apps/worker/dist/worker.js"
+          timeout 60 tail --pid="$DEV_STACK_PID" -f /dev/null
+          grep "worker exited unexpectedly" "$RUNNER_TEMP/dev-stack.log"
 
       - name: Stop and reset
         if: always()

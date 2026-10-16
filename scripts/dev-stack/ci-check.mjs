@@ -127,5 +127,20 @@ async function apiStartedAfterEdit(file, label) {
 }
 await apiStartedAfterEdit("apps/api/src/config.ts", "apps/api/src change");
 await delay(3000);
+const logPath = process.env.SPACE_DEV_STACK_LOG;
+const logLength = logPath ? (await readFile(logPath, "utf8")).length : 0;
 await apiStartedAfterEdit("packages/contracts/src/index.ts", "packages/contracts/src change (rebuilt)");
+if (logPath) {
+  // The worker restarts on the rebuilt package and polls Temporal again.
+  await until("the worker to restart on the rebuilt package", 120_000, async () => {
+    const log = (await readFile(logPath, "utf8")).slice(logLength);
+    const restart = log.indexOf("restarting worker");
+    return restart >= 0 && /state: 'RUNNING'/.test(log.slice(restart));
+  });
+  const ready = await until("/readyz ok after the worker restart", 60_000, async () => {
+    const body = await request("GET", "/readyz");
+    return body.ok === true && body.dependencies?.worker === "RUNNING" ? body : null;
+  });
+  step(`worker restarted on the new build; /readyz ok, worker ${ready.dependencies.worker}`);
+}
 process.stdout.write(`${JSON.stringify({ passed: true, roomId: room.id, paneId: pane.id, sessionId: running.session.sessionId })}\n`);

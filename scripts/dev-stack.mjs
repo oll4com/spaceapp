@@ -175,9 +175,10 @@ function restartProcess(name) {
   if (!child || stopping || restarting.has(name)) return;
   restarting.add(name);
   killGroup(child.pid, "SIGTERM");
+  // The Temporal worker drains and stops on SIGTERM but its process can stay alive on open handles.
   setTimeout(() => {
     if (children.get(name) === child) killGroup(child.pid, "SIGKILL");
-  }, 10_000).unref();
+  }, 3_000).unref();
 }
 
 async function recordChildren() {
