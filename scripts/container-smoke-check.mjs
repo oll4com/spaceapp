@@ -160,7 +160,11 @@ async function checkCore() {
     "-e", "SPACE_STARTER_MEMORY_ROOT=/opt/spaceapp/starter-memory",
     "-e", "SPACE_ARTIFACT_ROOT=/var/lib/spaceapp/artifacts",
     "-e", "SPACE_CLI_HOST_SOCKET=/run/spaceapp-cli/host.sock",
-    "-e", "SPACE_CLI_ENABLED=true",
+    // The CLI host is a separate image, started by the launcher alongside
+    // core and sharing this socket; /readyz reports it UNAVAILABLE (never
+    // ok) while it is absent. It is proven in the cli leg of this matrix,
+    // so the core-only check disables the integration to isolate core.
+    "-e", "SPACE_CLI_ENABLED=false",
     "-e", "SPACE_BROWSER_SESSIONS_ENABLED=false",
     "-e", "SPACEAPP_WORKFLOWS_ENABLED=false",
     "-e", "SPACE_TELEMETRY_ENABLED=false",
@@ -178,6 +182,23 @@ async function checkCore() {
     if (!response.ok) return null;
     const parsed = await response.json().catch(() => null);
     return parsed && parsed.ok === true ? parsed : null;
+  }).catch(async (error) => {
+    // Distinguish "container died" from "up but not ready" before failing.
+    const state = await docker(
+      ["inspect", "--format", "{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}", APP],
+      { quiet: true }
+    );
+    console.error(`smoke: core container state: ${state.stdout.trim()}`);
+    const probe = await docker(
+      ["exec", APP, "node", "--input-type=module", "-e",
+       "const r = await fetch('http://127.0.0.1:4910/healthz').catch((e) => e);" +
+       "console.log('api healthz:', r && r.status ? r.status : String(r));" +
+       "const w = await fetch('http://127.0.0.1:4911/readyz').catch((e) => e);" +
+       "console.log('web readyz:', w && w.status ? w.status + ' ' + (await w.text()).slice(0, 300) : String(w));"],
+      { quiet: true }
+    );
+    console.error(`smoke: in-container probes:\n${probe.stdout}${probe.stderr}`);
+    throw error;
   });
   console.log(`smoke: core /readyz answered ${JSON.stringify(body)}`);
   console.log("smoke: core PASS");
