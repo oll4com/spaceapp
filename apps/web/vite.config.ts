@@ -17,6 +17,16 @@ export function manualChunkForModule(moduleId: string): string | undefined {
   return undefined;
 }
 
+// The dev proxy has to follow the API it is actually talking to. An installed
+// SpaceApp answers on 4910, and that stays the default so nothing changes for
+// anyone running the app as shipped. `npm run dev:stack` starts the API on a
+// different port so it cannot collide with an install, and it already hands
+// both services the same SPACE_API_HOST/SPACE_API_PORT pair — so the proxy
+// reads them here instead of pinning a port the dev stack never uses.
+const apiHost = process.env.SPACE_API_HOST ?? "127.0.0.1";
+const apiPort = Number.parseInt(process.env.SPACE_API_PORT ?? "4910", 10);
+const apiOrigin = `http://${apiHost}:${apiPort}`;
+
 export default defineConfig({
   plugins: [react(), demoBundleBoundaryPlugin(), retainOpenTabAssets()],
   // The icon package ships as source; the alias keeps worktrees (which share live node_modules) resolving this checkout.
@@ -34,11 +44,11 @@ export default defineConfig({
     host: process.env.SPACE_WEB_HOST ?? "0.0.0.0",
     port: Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10),
     proxy: {
-      "/api": "http://127.0.0.1:4910",
-      "/plugins": "http://127.0.0.1:4910",
-      "/healthz": "http://127.0.0.1:4910",
-      "/readyz": "http://127.0.0.1:4910",
-      "/version": "http://127.0.0.1:4910"
+      "/api": apiOrigin,
+      "/plugins": apiOrigin,
+      "/healthz": apiOrigin,
+      "/readyz": apiOrigin,
+      "/version": apiOrigin
     }
   },
   test: {
