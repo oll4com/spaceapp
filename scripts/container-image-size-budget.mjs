@@ -4,16 +4,14 @@ import { pathToFileURL } from "node:url";
 
 const mebibyte = 1024 * 1024;
 
-// 1.1.3 raised core and browser (998.7 / 1670.6 MiB measured): the current
-// application adds production dependencies pdfjs-dist with @napi-rs/canvas
-// (81 MiB, API PDF handling), typescript (23 MiB, peer of @t3-oss/env-core) and
-// js-tiktoken (22 MiB, Space Gateway token counting).
-// 1.1.5 raised core again: linux/arm64 measured 1066.9 MiB and linux/amd64 1045.0 MiB (sqlite3 in the image,
-// the 1.1.5 application); the first public release run failed the arm64 build at 1050 MiB.
+// 2026-10-16: native amd64 / arm64 image sizes after staging each service's
+// runtime closure: core 671.6 / 701.8 MiB, browser (with Xvfb) 1101.9 / 1131.7
+// MiB, CLI 753.5 / 618.8 MiB. These ceilings retain about 5-6% over each maximum.
+// https://github.com/elcuervo171234/spaceapp/actions/runs/38951388488
 export const containerImageSizeBudgets = Object.freeze({
-  core: 1100 * mebibyte,
-  browser: 1750 * mebibyte,
-  cli: 2800 * mebibyte
+  core: 740 * mebibyte,
+  browser: 1190 * mebibyte,
+  cli: 800 * mebibyte
 });
 
 export function evaluateContainerImageSize({ target, sizeBytes }) {

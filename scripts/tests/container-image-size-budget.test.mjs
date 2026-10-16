@@ -9,10 +9,13 @@ const mebibyte = 1024 * 1024;
 
 test("public container size budgets preserve the lightweight release ceilings", () => {
   assert.deepEqual(containerImageSizeBudgets, {
-    core: 1100 * mebibyte,
-    browser: 1750 * mebibyte,
-    cli: 2800 * mebibyte
+    core: 740 * mebibyte,
+    browser: 1190 * mebibyte,
+    cli: 800 * mebibyte
   });
+  assert.ok(containerImageSizeBudgets.core <= 850 * mebibyte);
+  assert.ok(containerImageSizeBudgets.browser <= 1350 * mebibyte);
+  assert.ok(containerImageSizeBudgets.cli <= 1000 * mebibyte);
 });
 
 test("container size budget accepts an image exactly at its target ceiling", () => {

@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 const root = resolve(import.meta.dirname, "../..");
+const executeFile = promisify(execFile);
 
 async function workflow(name) {
   return readFile(join(root, ".github", "workflows", name), "utf8");
@@ -51,6 +55,8 @@ test("launcher and container matrices cover the declared operating systems and a
   }
   assert.match(containers, /- amd64/);
   assert.match(containers, /- arm64/);
+  assert.match(containers, /runs-on: \$\{\{ matrix\.arch == 'arm64' && 'ubuntu-24\.04-arm' \|\| 'ubuntu-latest' \}\}/);
+  assert.doesNotMatch(containers, /docker\/setup-qemu-action/);
   assert.match(containers, /push: false/);
 });
 
@@ -121,6 +127,58 @@ test("security workflow scans secrets, dependencies, source, images, and emits a
   assert.match(security, /anchore\/sbom-action/);
   assert.match(security, /github\/codeql-action\/analyze/);
   assert.match(security, /actions\/dependency-review-action/);
+});
+
+test("security image filter follows runtime staging changes without scanning unrelated scripts or launcher changes", async () => {
+  const security = await workflow("security.yml");
+  const filter = security.match(
+    /      - name: Require image scans only for image source changes[\s\S]*?        run: \|\n((?:          .*\n|\n)+)/
+  )?.[1]?.replace(/^ {10}/gm, "");
+  assert.ok(filter, "the executable container source filter must be present");
+
+  const directory = await mkdtemp(join(tmpdir(), "space-image-filter-"));
+  const output = join(directory, "filter-output");
+  const cases = [
+    ["scripts/stage-container-runtime.mjs", "true"],
+    ["scripts/unrelated-tool.mjs", "false"],
+    ["packages/run-spaceapp/index.js", "false"],
+    ["apps/worker/src/main.ts", "true"]
+  ];
+  const git = (...args) => executeFile("git", args, { cwd: directory });
+  const commit = () => git("-c", "user.name=Workflow Test", "-c", "user.email=workflow-test@example.invalid", "commit", "-qm", "fixture");
+
+  try {
+    await git("init", "-q");
+    for (const [path] of cases) {
+      await mkdir(join(directory, path, ".."), { recursive: true });
+      await writeFile(join(directory, path), "baseline\n");
+    }
+    await git("add", ".");
+    await commit();
+    const { stdout: base } = await git("rev-parse", "HEAD");
+
+    for (const [path, expected] of cases) {
+      await git("reset", "--hard", base.trim());
+      await rm(output, { force: true });
+      await writeFile(join(directory, path), "changed\n");
+      await git("add", path);
+      await commit();
+      const { stdout: head } = await git("rev-parse", "HEAD");
+      await executeFile("bash", ["-e", "-c", filter], {
+        cwd: directory,
+        env: {
+          ...process.env,
+          BASE_SHA: base.trim(),
+          GITHUB_SHA: head.trim(),
+          EVENT_NAME: "pull_request",
+          GITHUB_OUTPUT: output
+        }
+      });
+      assert.equal((await readFile(output, "utf8")).trim(), `required=${expected}`, path);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("release is manual-only on main and publishes only approved sanitized artifacts", async () => {
