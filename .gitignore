@@ -53,3 +53,7 @@ projects/
 .local/
 
 run-spaceapp-*.tgz
+
+# Evidence collected while chasing a CI failure; the PR body carries the
+# excerpted transcripts, and the raw dumps are large and machine-specific.
+.ci-logs/
