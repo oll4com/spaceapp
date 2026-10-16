@@ -266,6 +266,9 @@ async function checkBrowser() {
     "-e", "SPACE_DATABASE_URL_FILE=/run/secrets/database-url",
     "-e", "SPACE_ARTIFACT_ROOT=/var/lib/spaceapp/artifacts",
     "-e", "SPACE_BROWSER_SESSIONS_ENABLED=true",
+    // The image ships no X server or Xvfb; the product's own switch runs
+    // its Chromium sessions without a virtual display (headless).
+    "-e", "SPACE_BROWSER_SESSIONS_XVFB_ENABLED=false",
     "-e", "SPACE_BROWSER_HOST_SOCKET=/run/spaceapp-browser/browser-host.sock",
     "-e", "SPACE_BROWSER_SESSIONS_DEFAULT_URL=about:blank",
     IMAGE
