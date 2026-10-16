@@ -18,6 +18,7 @@
     "@space/db": "0.2.5",
     "@space/memory-graph": "0.2.5",
     "@space/opencode-control": "0.2.5",
+    "@space/runtime": "0.2.5",
     "@space/streaming": "0.2.5",
     "@temporalio/activity": "1.24.0",
     "@temporalio/client": "1.24.0",

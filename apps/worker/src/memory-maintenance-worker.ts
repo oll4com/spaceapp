@@ -7,6 +7,7 @@ import {
   memoryMaintenanceWorkerOptions
 } from "./memory-maintenance-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
+import { configureWorkerOtlp } from "./worker-otlp.js";
 
 const service = "space-memory-maintenance-worker";
 
@@ -16,6 +17,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
   const address = process.env.SPACE_TEMPORAL_ADDRESS ?? DEFAULT_TEMPORAL_ADDRESS;
   const namespace = process.env.SPACE_TEMPORAL_NAMESPACE ?? DEFAULT_TEMPORAL_NAMESPACE;
   const workflowsPath = fileURLToPath(new URL("./memory-maintenance-workflows.js", import.meta.url));
+  const { sinks, interceptors } = configureWorkerOtlp(service);
 
   try {
     const connection = await NativeConnection.connect({ address });
@@ -25,6 +27,8 @@ if (!memoryMaintenanceEnabled(process.env)) {
       taskQueue: MEMORY_MAINTENANCE_TASK_QUEUE,
       workflowsPath,
       activities,
+      sinks,
+      interceptors,
       ...memoryMaintenanceWorkerOptions
     });
     console.log(JSON.stringify({

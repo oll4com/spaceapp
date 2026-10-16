@@ -212,23 +212,32 @@ Without the endpoint, every activity still writes `activity.started` and
 
 ## Traces (W3C trace context)
 
-The trace context is local by default. An optional OTLP/HTTP (JSON) exporter sends one
-SERVER span per API request when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no
-OpenTelemetry dependency; `apps/api/src/otlp-span-exporter.ts`).
-- **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
-  An invalid or missing header gets a new trace ID. Every API log line carries
-  `w3cTraceId` (Fastify `childLoggerFactory`).
-- **Propagation into turns:** API turn starters and the Room Agent coordinator add
-  the request's `traceparent` to the turn input (an optional contract field) and
-  to the Temporal memo. A bounded in-memory map from request ID to trace context
-  (`apps/api/src/trace-context.ts`) does this without passing the request object
-  through every service.
-- **Worker:** worker logs read the trace ID from the activity input. Internal
-  room-action calls from the worker send a child `traceparent`, so the internal
-  API request joins the same trace.
-- **Workflow code is unchanged.** Correlation is done in the API starter
-  (input/memo) and in an activity interceptor. The workflow bundle only gains the
-  optional contract field.
+The trace context is local by default. An optional OTLP/HTTP (JSON) exporter sends spans
+when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no OpenTelemetry dependency; shared
+via `packages/runtime/src/otlp-span-exporter.ts`). When configured, spans are exported
+across the API server and all Temporal workers (`worker.ts`, `memory-maintenance-worker.ts`,
+and `memory-mutation-worker.ts`).
+
+- **Span Tree:**
+  - **API Request Span (kind: SERVER):** continued from an inbound `traceparent` or started fresh.
+  - **Workflow Span (kind: INTERNAL):** parented by the API request span via `traceparent` in the
+    workflow memo or input arguments. Child workflows (e.g. `memoryConsolidationWorkflow` started
+    by `memoryMaintenanceWorkflow`) are properly nested under their parent workflow span.
+  - **Activity Spans (kind: INTERNAL):** parented by their enclosing workflow span. Emitted per
+    activity execution attempt with attempt count, duration, status, and stable reason/category codes.
+- **Determinism and Sinks:**
+  Workflow code performs zero network I/O. Workflow spans are exported via Temporal sinks
+  configured with `callDuringReplay: false`. During replay of execution history, the Temporal SDK
+  skips sink invocation, guaranteeing zero duplicate spans emitted on replay.
+- **Span Links:**
+  Asynchronous workflow transitions carry W3C span links:
+  - `continue-as-new` links to the previous execution run ID (`info.continuedFromExecutionRunId`).
+  - Durable background continuations (`room-background-continuation.ts`) link to the originating
+    source run ID.
+- **Strict Attribute Allowlist:**
+  Only safe identifiers (`space.*`, `temporal.*`), attempt counts, durations, status codes,
+  and categorized error codes are exported. Prompts, operator requests, response text,
+  URLs with query parameters, credentials, and filesystem paths are strictly excluded.
 
 ### Replay compatibility
 
@@ -314,9 +323,9 @@ No credential or transcript export was added.
 - **Some workflow-level faults are not in the trace lookup.** Workflow-task
   failures and nondeterminism appear only in Temporal history. The lookup returns
   events, audit entries and workflow rows, not `space_agent_runs` rows.
-- **Span export covers API requests only.** The optional OTLP exporter sends API
-  SERVER spans (method, route template, status, request id); workers and hosts emit
-  no spans, so worker and host work joins traces through log lines only.
+- **Span export covers API requests, workflows, and activities.** When `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT`
+  is configured, API server spans, workflow spans (via deterministic sinks), and activity spans are exported
+  as a unified trace tree. Host processes (browser-host, cli-host) emit no spans directly.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.
 - **Worker endpoints are not scraped yet.** Since 2026-10-14 stable's
