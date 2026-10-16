@@ -346,6 +346,92 @@ jobs:
             echo "=== docker logs $c ==="; docker logs --tail 80 "$c" 2>&1 || true
           done
 
+      # The contract asks that a change under apps/api be picked up without
+      # restarting anything by hand. dev-stack.mjs starts the API as
+      # `npx tsx watch apps/api/src/server.ts`, so a module-level line appended
+      # to that entry file must show up in .dev-stack/logs/api.log on its own.
+      # Asserting that from the orchestrator's source would only restate the
+      # intent; running it here demonstrates it.
+      - name: Edit the API entry file and let the watcher pick it up
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            exit 0
+          fi
+
+          TARGET=apps/api/src/server.ts
+          LOG=.dev-stack/logs/api.log
+          PROBE="dev-stack hot reload probe: this line came from an edit made while the stack was running"
+          cp "$TARGET" "${TARGET}.orig"
+          before="$(grep -c "$PROBE" "$LOG" 2>/dev/null || true)"
+          echo "probe lines in the API log before the edit: ${before:-0}"
+
+          printf '\nconsole.log("%s");\n' "$PROBE" >> "$TARGET"
+
+          seen=""
+          for ((i = 0; i < 60; i++)); do
+            sleep 2
+            seen="$(grep -c "$PROBE" "$LOG" 2>/dev/null || true)"
+            if [ "${seen:-0}" -gt "${before:-0}" ]; then
+              echo "probe lines in the API log after the edit:  ${seen}"
+              break
+            fi
+          done
+
+          cp "${TARGET}.orig" "$TARGET"
+          rm -f "${TARGET}.orig"
+
+          if [ "${seen:-0}" -le "${before:-0}" ]; then
+            echo "the API never picked up an edit to ${TARGET} within 120s."
+            echo "--- tail of ${LOG} ---"
+            tail -n 40 "$LOG" || true
+            exit 1
+          fi
+          echo "the running API picked up an edit to ${TARGET} with no restart by hand."
+
+      # The contract asks that a service which dies is a clear failure rather
+      # than a silent hang. dev-stack.mjs watches every child and, when one exits
+      # on its own, prints "dev-stack: <name> exited unexpectedly (…)" and stops
+      # the rest. Nothing in the suite had ever exercised that path, so kill the
+      # cheapest service to lose and read what the orchestrator says.
+      - name: A service that dies is reported, not left hanging
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            exit 0
+          fi
+
+          worker="$(pgrep -f 'apps/worker/dist/worker.js' | head -n 1 || true)"
+          if [ -z "${worker}" ]; then
+            echo "no worker process found; the stack is not in the state this step needs."
+            exit 1
+          fi
+          echo "killing the worker (pid ${worker}) to see what the orchestrator says"
+          kill "${worker}"
+
+          found=""
+          for ((i = 0; i < 30; i++)); do
+            sleep 2
+            if grep -q 'dev-stack: worker exited unexpectedly' dev-stack.out; then
+              found=yes
+              break
+            fi
+          done
+
+          echo "--- what the orchestrator wrote about it ---"
+          grep -n 'exited unexpectedly\|shutting the stack down' dev-stack.out || true
+
+          if [ -z "${found}" ]; then
+            echo "killing the worker produced no 'exited unexpectedly' line within 60s."
+            exit 1
+          fi
+          echo "a dead service is named, and the stack stops instead of hanging."
+
+
       - name: Reset and verify no resources remain
         id: reset-stack
         if: always()
@@ -705,6 +791,92 @@ jobs:
             [ -f "$f" ] || continue
             echo "=== $f ==="; tail -n 120 "$f" || true
           done
+
+      # The contract asks that a change under apps/api be picked up without
+      # restarting anything by hand. dev-stack.mjs starts the API as
+      # `npx tsx watch apps/api/src/server.ts`, so a module-level line appended
+      # to that entry file must show up in .dev-stack/logs/api.log on its own.
+      # Asserting that from the orchestrator's source would only restate the
+      # intent; running it here demonstrates it.
+      - name: Edit the API entry file and let the watcher pick it up (macOS)
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            exit 0
+          fi
+
+          TARGET=apps/api/src/server.ts
+          LOG=.dev-stack/logs/api.log
+          PROBE="dev-stack hot reload probe: this line came from an edit made while the stack was running"
+          cp "$TARGET" "${TARGET}.orig"
+          before="$(grep -c "$PROBE" "$LOG" 2>/dev/null || true)"
+          echo "probe lines in the API log before the edit: ${before:-0}"
+
+          printf '\nconsole.log("%s");\n' "$PROBE" >> "$TARGET"
+
+          seen=""
+          for ((i = 0; i < 60; i++)); do
+            sleep 2
+            seen="$(grep -c "$PROBE" "$LOG" 2>/dev/null || true)"
+            if [ "${seen:-0}" -gt "${before:-0}" ]; then
+              echo "probe lines in the API log after the edit:  ${seen}"
+              break
+            fi
+          done
+
+          cp "${TARGET}.orig" "$TARGET"
+          rm -f "${TARGET}.orig"
+
+          if [ "${seen:-0}" -le "${before:-0}" ]; then
+            echo "the API never picked up an edit to ${TARGET} within 120s."
+            echo "--- tail of ${LOG} ---"
+            tail -n 40 "$LOG" || true
+            exit 1
+          fi
+          echo "the running API picked up an edit to ${TARGET} with no restart by hand."
+
+      # The contract asks that a service which dies is a clear failure rather
+      # than a silent hang. dev-stack.mjs watches every child and, when one exits
+      # on its own, prints "dev-stack: <name> exited unexpectedly (…)" and stops
+      # the rest. Nothing in the suite had ever exercised that path, so kill the
+      # cheapest service to lose and read what the orchestrator says.
+      - name: A service that dies is reported, not left hanging (macOS)
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            exit 0
+          fi
+
+          worker="$(pgrep -f 'apps/worker/dist/worker.js' | head -n 1 || true)"
+          if [ -z "${worker}" ]; then
+            echo "no worker process found; the stack is not in the state this step needs."
+            exit 1
+          fi
+          echo "killing the worker (pid ${worker}) to see what the orchestrator says"
+          kill "${worker}"
+
+          found=""
+          for ((i = 0; i < 30; i++)); do
+            sleep 2
+            if grep -q 'dev-stack: worker exited unexpectedly' dev-stack.out; then
+              found=yes
+              break
+            fi
+          done
+
+          echo "--- what the orchestrator wrote about it ---"
+          grep -n 'exited unexpectedly\|shutting the stack down' dev-stack.out || true
+
+          if [ -z "${found}" ]; then
+            echo "killing the worker produced no 'exited unexpectedly' line within 60s."
+            exit 1
+          fi
+          echo "a dead service is named, and the stack stops instead of hanging."
+
 
       - name: Reset and verify no resources remain
         id: reset-stack-macos
