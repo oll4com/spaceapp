@@ -111,7 +111,12 @@ socket.close();
 // Hot reload: an API source change restarts the API; a package source change is rebuilt and the API
 // restarts on the new build. Each edit is a comment and the file is restored afterwards.
 async function apiStartedAfterEdit(file, label) {
-  const before = (await request("GET", "/readyz")).apiStartedAt;
+  // Restoring the previous file restarts the API too; start from a settled, ready API.
+  await delay(5000);
+  const before = (await until("a ready API before the edit", 180_000, async () => {
+    const body = await request("GET", "/readyz");
+    return body.ok === true ? body : null;
+  })).apiStartedAt;
   const path = new URL(`../../${file}`, import.meta.url);
   const original = await readFile(path, "utf8");
   try {
