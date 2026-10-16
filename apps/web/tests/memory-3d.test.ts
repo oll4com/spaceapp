@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { layoutMemoryNetwork3D, memory3DVolumeRatio, projectMemoryPoint, DEFAULT_MEMORY_CAMERA } from "../src/features/memory-workspace/memory-3d.js";
+import { layoutMemoryNetwork3D, layoutMemoryNetwork3DIncremental, memory3DVolumeRatio, projectMemoryPoint, DEFAULT_MEMORY_CAMERA } from "../src/features/memory-workspace/memory-3d.js";
+import { generateSyntheticMemoryGraph } from "../src/demo/synthetic-memory.js";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
 
 describe("3D memory projection", () => {
@@ -58,5 +59,53 @@ describe("3D memory projection", () => {
     const plane = Array.from({ length: 100 }, (_, i) => ({ x: i % 10, y: Math.floor(i / 10), z: i % 10 + Math.floor(i / 10) }));
     expect(memory3DVolumeRatio(plane)).toBeCloseTo(0);
     expect(layoutMemoryNetwork3D([], []).size).toBe(0);
+  });
+  it("streams incremental progress during layout and produces identical deterministic final result", async () => {
+    const { nodes, edges } = fixture();
+    const progressSteps: number[] = [];
+    const incrementalResult = await new Promise<Map<string, any>>((resolve) => {
+      layoutMemoryNetwork3DIncremental(nodes, edges, (intermediate: any, step: number, done: boolean) => {
+        progressSteps.push(step);
+        if (done) resolve(intermediate);
+      }, 30);
+    });
+    const standardResult = layoutMemoryNetwork3D(nodes, edges);
+    expect(progressSteps.length).toBeGreaterThanOrEqual(5);
+    expect(progressSteps).toContain(180);
+    expect([...incrementalResult]).toEqual([...standardResult]);
+  });
+  it("generates deterministic synthetic graphs across small and large scales", () => {
+    const graph2k = generateSyntheticMemoryGraph(2000, 3);
+    expect(graph2k.nodes.length).toBe(2000);
+    expect(graph2k.edges.length).toBe(6000);
+    expect(graph2k.summary.nodeCount).toBe(2000);
+    expect(graph2k.summary.edgeCount).toBe(6000);
+
+    const graph10k = generateSyntheticMemoryGraph(10000, 3);
+    expect(graph10k.nodes.length).toBe(10000);
+    expect(graph10k.edges.length).toBe(30000);
+
+    const graph50k = generateSyntheticMemoryGraph(50000, 3);
+    expect(graph50k.nodes.length).toBe(50000);
+    expect(graph50k.edges.length).toBe(150000);
+    expect(graph50k.summary.nodeCount).toBe(50000);
+    expect(graph50k.summary.edgeCount).toBe(150000);
+
+    // Verify first source links to root (no dangling source:file-0)
+    const firstSourceEdge = graph50k.edges.find(e => e.id === "edge:source-link-1");
+    expect(firstSourceEdge?.source).toBe("source:core-root");
+  });
+
+  it("roundtrips picking color encoding and decoding with boundary indices", async () => {
+    const { encodePickingColor, decodePickingColor } = await import("../src/features/memory-workspace/memory-graph-webgl.js");
+    const testIndices = [0, 1, 254, 255, 256, 1000, 49999];
+    for (const index of testIndices) {
+      const [r, g, b] = encodePickingColor(index);
+      const decoded = decodePickingColor(r, g, b, 255);
+      expect(decoded).toBe(index);
+    }
+    // Transparent pixel must decode to -1 (miss)
+    expect(decodePickingColor(0, 0, 0, 0)).toBe(-1);
+    expect(decodePickingColor(255, 255, 255, 0)).toBe(-1);
   });
 });

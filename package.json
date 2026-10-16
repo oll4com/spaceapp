@@ -59,6 +59,7 @@
     "test:architecture": "node --test scripts/tests/domain-boundaries.test.mjs scripts/tests/composition-root-size.test.mjs scripts/tests/quality-known-limitations.test.mjs && node scripts/domain-boundaries.mjs",
     "smoke:offline": "npm run build -w @space/cli-host && node scripts/contributor-smoke.mjs",
     "test:contributor": "node --test scripts/tests/contributor-smoke.test.mjs",
+    "benchmark:memory-3d": "tsx scripts/benchmark-memory-3d.mjs",
     "lint": "eslint --max-warnings=-1 apps packages scripts"
   },
   "devDependencies": {

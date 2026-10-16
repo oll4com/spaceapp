@@ -431,6 +431,42 @@ describe("Memory graph API", () => {
     expect(data.edges).toContainEqual(expect.objectContaining({ id: "edge:tag" }));
     expect(data.truncated).toBe(true);
     expect(data.totalMatchingNodes).toBe(2202);
+
+    // Request with higher limit to fetch full dataset without truncation
+    const responseWithLimit = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=5000", headers: { cookie } });
+    expect(responseWithLimit.statusCode).toBe(200);
+    const dataWithLimit = responseWithLimit.json().data;
+    expect(dataWithLimit.nodes).toHaveLength(2202);
+    expect(dataWithLimit.truncated).toBe(false);
+
+    // Conditional ETag response depends on requested limit
+    const defaultEtag = response.headers.etag;
+    const limitEtag = responseWithLimit.headers.etag;
+    expect(limitEtag).not.toBe(defaultEtag);
+
+    const revalidateDifferentLimit = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=5000",
+      headers: { cookie, "if-none-match": defaultEtag }
+    });
+    expect(revalidateDifferentLimit.statusCode).toBe(200);
+
+    const revalidateMatchingLimit = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=5000",
+      headers: { cookie, "if-none-match": limitEtag }
+    });
+    expect(revalidateMatchingLimit.statusCode).toBe(304);
+
+    // Verify small limit enforces strict upper bound
+    const smallLimitResponse = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=5", headers: { cookie } });
+    expect(smallLimitResponse.statusCode).toBe(200);
+    expect(smallLimitResponse.json().data.nodes.length).toBeLessThanOrEqual(5);
+
+    // Rejection on limit > 50000
+    const outOfRange = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=99999", headers: { cookie } });
+    expect(outOfRange.statusCode).toBe(400);
+
     await app.close();
   });
 

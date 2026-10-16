@@ -97,10 +97,16 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
   useEffect(() => {
     if (workspaceMode !== "atlas" || !atlas.nodes.length || typeof Worker === "undefined") return;
     const worker = new Worker(new URL("./memory-network-layout.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]> }>) => {
-      const coordinates = new Map(event.data.positions);
-      setLayout({ atlas, depth: new Map(event.data.depth), positions: new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }])) });
-      worker.terminate();
+    let resolvedPositions: Map<string, MemoryAtlasPosition> | null = null;
+    worker.onmessage = (event: MessageEvent<{ positions?: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]>; done?: boolean }>) => {
+      if (event.data.positions) {
+        const coordinates = new Map(event.data.positions);
+        resolvedPositions = new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }]));
+      }
+      setLayout({ atlas, depth: new Map(event.data.depth), positions: resolvedPositions ?? atlas.positions });
+      if (event.data.done !== false) {
+        worker.terminate();
+      }
     };
     worker.onerror = event => { setError(`Memory layout could not be calculated: ${event.message || "worker unavailable"}`); worker.terminate(); };
     worker.postMessage({ nodes: atlas.nodes, edges: atlas.edges });

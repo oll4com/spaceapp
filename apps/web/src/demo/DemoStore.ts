@@ -54,6 +54,7 @@ import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-prese
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
 import { MockServices } from "./mock-services.js";
 import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
+import { generateSyntheticMemoryGraph } from "./synthetic-memory.js";
 
 export const DEMO_WARNING = "DEMO MODE — Everything is simulated locally. No production service is connected.";
 export { DEMO_LOCAL_REPLY } from "../runtime/SpaceRuntime.js";
@@ -1469,6 +1470,11 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
+        const query = (args[0] ?? {}) as DemoMemoryGraphQuery & { limit?: number; syntheticSize?: number };
+        if (query.syntheticSize && query.syntheticSize > 0) {
+          const graph = generateSyntheticMemoryGraph(query.syntheticSize);
+          return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
+        }
         const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
