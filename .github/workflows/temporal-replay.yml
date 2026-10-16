@@ -26,6 +26,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: Install SQLite CLI required by worker tests
+        run: sudo apt-get update && sudo apt-get install --yes sqlite3
       - run: npm ci --no-audit --no-fund
       - name: Build workspace dependencies and typecheck
         run: npm run check
