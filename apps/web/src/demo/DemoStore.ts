@@ -52,6 +52,7 @@ import type { SpaceApiClient } from "../runtime/SpaceRuntime.js";
 import { DEMO_LOCAL_REPLY, SpaceApiError } from "../runtime/SpaceRuntime.js";
 import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-presentation.js";
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
+import { createSyntheticMemoryGraph } from "./synthetic-memory.js";
 import { MockServices } from "./mock-services.js";
 import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
 
@@ -143,6 +144,7 @@ type DemoMemoryGraphQuery = {
   lifecycleStatus?: "ACTIVE" | "ARCHIVED";
   month?: string;
   relationMode?: "CLUSTERED" | "RELATIONS";
+  limit?: number;
   page?: number;
   pageSize?: number;
 };
@@ -202,6 +204,10 @@ function initialSetupConnectionResults(): Map<string, DemoSetupConnectionResult>
 export class DemoStore {
   private fixture = cloneFixture();
   private sequence = 0;
+  // Issue #62: synthetic memory graphs let anyone reproduce the large-graph
+  // benchmark locally; sizes are cached so repeat visits stay stable.
+  private syntheticCache = new Map<number, MemoryGraphPayload>();
+  private syntheticNodes = new Map<string, MemoryGraphNode>();
   private cliRuntimeEnabled = new Map<CliToggleRuntimeId, boolean>(
     cliToggleRuntimeIds.map((runtimeId) => [runtimeId, true])
   );
@@ -665,8 +671,22 @@ export class DemoStore {
     };
   }
 
+  private syntheticMemoryGraph(size: number): MemoryGraphPayload {
+    const total = Math.max(2000, Math.min(50000, Math.floor(size)));
+    let graph = this.syntheticCache.get(total);
+    if (!graph) {
+      graph = createSyntheticMemoryGraph(total);
+      this.syntheticCache.set(total, graph);
+      for (const node of graph.nodes) this.syntheticNodes.set(node.id, node);
+    }
+    return structuredClone(graph);
+  }
+
   private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
-    const base = this.fixture.memoryWorkspace.graph;
+    // Issue #62: raising the overview limit above the 2,000 default serves a
+    // deterministic synthetic graph of that size, so the 3D benchmark works
+    // without a backend or embeddings provider.
+    const base = query.limit !== undefined && query.limit >= 2000 ? this.syntheticMemoryGraph(query.limit) : this.fixture.memoryWorkspace.graph;
     const needle = query.q?.trim().toLowerCase();
     const nodes = base.nodes.filter((node) => {
       const record = node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;
@@ -1548,8 +1568,14 @@ export class DemoStore {
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
         const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
-        if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
-        return Promise.resolve(structuredClone(detail));
+        if (detail) return Promise.resolve(structuredClone(detail));
+        // Issue #62: synthetic benchmark graphs have no fixture record; serve
+        // a contract-valid detail shell for their nodes.
+        const node = this.syntheticNodes.get(roomId ?? "");
+        if (node) {
+          return Promise.resolve({ node: structuredClone(node), record: null, relatedNodes: [], relatedEdges: [], issues: [] });
+        }
+        throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
       }
       case "memoryChangeSets": {
         const query = (args[0] ?? {}) as { kind?: string; status?: string; sourcePath?: string; recordId?: string; issueId?: string; page?: number; pageSize?: number };

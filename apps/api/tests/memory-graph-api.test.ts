@@ -434,6 +434,79 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  it("raises the overview cap through the limit parameter while keeping the 2,000 default and hard bounds", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = [
+      ...Array.from({ length: 3000 }, (_, index) => ({ id: `memory:big-${String(index).padStart(4, "0")}`, type: "MEMORY" as const, label: `Big memory ${index}`, sourcePath: null, recordId: null })),
+      { id: "source:root", type: "SOURCE" as const, label: "gemini.md", sourcePath: "/opt/spaceapp/docs/gemini.md", recordId: null }
+    ];
+    graphSnapshot.edges = [];
+    graphSnapshot.version = 2;
+    graphSnapshot.layoutVersion = 2;
+    graphSnapshot.taxonomyVersion = 1;
+    graphSnapshot.revisionHash = "e".repeat(64);
+    graphSnapshot.summary = { ...graphSnapshot.summary, nodeCount: graphSnapshot.nodes.length, edgeCount: 0 };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    const standard = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    expect(standard.statusCode).toBe(200);
+    expect(standard.json().data.nodes).toHaveLength(2000);
+    expect(standard.json().data.truncated).toBe(true);
+
+    const raised = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+    expect(raised.statusCode).toBe(200);
+    expect(raised.json().data.nodes).toHaveLength(3001);
+    expect(raised.json().data.truncated).toBe(false);
+
+    // Fastify maps the schema ZodError to 422.
+    expect((await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=199", headers: { cookie } })).statusCode).toBe(422);
+    expect((await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50001", headers: { cookie } })).statusCode).toBe(422);
+    await app.close();
+  });
+
+  it("budgets reserved sources and topics against the requested limit", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = [
+      ...Array.from({ length: 150 }, (_, index) => ({ id: `source:cap-${index}`, type: "SOURCE" as const, label: `cap-${index}.md`, sourcePath: `/opt/spaceapp/docs/cap-${index}.md`, recordId: null })),
+      ...Array.from({ length: 200 }, (_, index) => ({ id: `topic:cap-${index}`, type: "TOPIC" as const, label: `Cap topic ${index}`, sourcePath: null, recordId: null })),
+      ...Array.from({ length: 1000 }, (_, index) => ({ id: `memory:cap-${String(index).padStart(4, "0")}`, type: "MEMORY" as const, label: `Cap memory ${index}`, sourcePath: null, recordId: null }))
+    ];
+    graphSnapshot.edges = Array.from({ length: 200 }, (_, index) => ({
+      id: `edge:cap-${index}`,
+      type: "TAGGED_WITH" as const,
+      source: `memory:cap-${String(index).padStart(4, "0")}`,
+      target: `topic:cap-${index}`,
+      origin: "EXPLICIT_TAG" as const,
+      confidence: 1,
+      evidence: "Explicit tag for the limit budget test."
+    }));
+    graphSnapshot.version = 2;
+    graphSnapshot.layoutVersion = 2;
+    graphSnapshot.taxonomyVersion = 1;
+    graphSnapshot.revisionHash = "f".repeat(64);
+    graphSnapshot.summary = { ...graphSnapshot.summary, nodeCount: graphSnapshot.nodes.length, edgeCount: graphSnapshot.edges.length };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    const raised = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=200", headers: { cookie } });
+    expect(raised.statusCode).toBe(200);
+    const data = raised.json().data;
+    // 120 sources + 40 topics + 40 visible neighbors — never above the limit.
+    expect(data.nodes).toHaveLength(200);
+    expect(data.nodes.filter((node: { type: string }) => node.type === "SOURCE")).toHaveLength(120);
+    expect(data.nodes.filter((node: { type: string }) => node.type === "TOPIC")).toHaveLength(40);
+    expect(data.nodes).toContainEqual(expect.objectContaining({ id: "memory:cap-0000" }));
+    expect(data.truncated).toBe(true);
+
+    // A truncating mid-range limit still reserves the full taxonomy budget
+    // (120 sources + 160 topics + 160 visible neighbors = 440, then fill).
+    const mid = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=500", headers: { cookie } });
+    expect(mid.statusCode).toBe(200);
+    const midData = mid.json().data;
+    expect(midData.nodes).toHaveLength(500);
+    expect(midData.nodes.filter((node: { type: string }) => node.type === "TOPIC")).toHaveLength(160);
+    await app.close();
+  });
+
   it("serves the all-months archive and single-month filtering through the month query param", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     const archiveSnapshot = snapshot() as MemoryGraphSnapshot;

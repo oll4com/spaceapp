@@ -13,8 +13,15 @@ const unit = (seed: string) => {
   return ((hash ^ (hash >>> 16)) >>> 0) / 4294967295;
 };
 
-/** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
-export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+/** Incremental variant of the 3D force layout (issue #62): yields progress
+ * snapshots every `progressEvery` steps so large graphs can report movement
+ * instead of blocking for the whole simulation. */
+export function* layoutMemoryNetwork3DStream(
+  nodes: MemoryGraphNode[],
+  edges: MemoryGraphEdge[],
+  totalSteps = 180,
+  progressEvery = 24
+): Generator<{ step: number; totalSteps: number; positions: Map<string, MemoryPoint3D> }, Map<string, MemoryPoint3D>, void> {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const root = ordered.findIndex(node => node.type === "SOURCE" && isMemoryCoreLabel(node.label));
@@ -42,7 +49,7 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
   }
   const fx = new Float64Array(count), fy = new Float64Array(count), fz = new Float64Array(count);
   // Bounded spatial-grid repulsion and link springs act equally on all three axes.
-  for (let step = 0; step < 180; step++) {
+  for (let step = 0; step < totalSteps; step++) {
     fx.fill(0); fy.fill(0); fz.fill(0);
     const grid = new Map<string, number[]>();
     for (let i = 0; i < count; i++) {
@@ -53,7 +60,15 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
     for (let i = 0; i < count; i++) {
       const p = points[i]!, gx = Math.floor(p.x / 32), gy = Math.floor(p.y / 32), gz = Math.floor(p.z / 32);
       for (let x = gx - 1; x <= gx + 1; x++) for (let y = gy - 1; y <= gy + 1; y++) for (let z = gz - 1; z <= gz + 1; z++) {
-        for (const j of grid.get(`${x},${y},${z}`) ?? []) {
+        const bucket = grid.get(`${x},${y},${z}`) ?? [];
+        // Issue #62: the exact 27-cell scan is O(n^2/27) and stalls 50k-node
+        // layouts for tens of minutes. Above 12k nodes walk each cell with a
+        // deterministic stride (at most ~4 members per cell), keeping the
+        // repulsion stable while a step stays O(n); smaller graphs keep the
+        // exact upstream physics.
+        const stride = count > 12000 && bucket.length > 8 ? Math.ceil(bucket.length / 4) : 1;
+        for (let b = 0; b < bucket.length; b += stride) {
+          const j = bucket[b]!;
           if (j <= i) continue;
           const q = points[j]!, dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
           const distanceSquared = Math.max(1, dx * dx + dy * dy + dz * dz);
@@ -78,8 +93,19 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       const stepScale = Math.min(1, 4 / Math.max(0.01, Math.hypot(dx, dy, dz))) * cooling;
       p.x += dx * stepScale; p.y += dy * stepScale; p.z += dz * stepScale;
     }
+    if ((step + 1) % progressEvery === 0 || step + 1 === totalSteps) {
+      yield { step: step + 1, totalSteps, positions: new Map(ordered.map((node, i) => [node.id, { ...points[i]! }])) };
+    }
   }
   return new Map(ordered.map((node, i) => [node.id, points[i]!]));
+}
+
+/** Synchronous wrapper: runs the streaming layout to completion. */
+export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+  const iterator = layoutMemoryNetwork3DStream(nodes, edges);
+  let result = iterator.next();
+  while (!result.done) result = iterator.next();
+  return result.value;
 }
 
 export function projectMemoryPoint(point: MemoryPoint3D, camera: MemoryCamera3D, scale: number, width: number, height: number) {
@@ -89,6 +115,27 @@ export function projectMemoryPoint(point: MemoryPoint3D, camera: MemoryCamera3D,
   const z = point.y * Math.sin(camera.pitch) + depth * Math.cos(camera.pitch);
   const perspective = 650 / Math.max(120, 650 + z * scale);
   return { x: width / 2 + x * scale * camera.zoom * perspective, y: height / 2 - y * scale * camera.zoom * perspective, z, perspective };
+}
+
+/** Batched projection: hoists the camera trig out of the loop so the
+ * per-frame CPU cost stays flat even at 50k points (issue #62). */
+export function projectMemoryPointsBatch(
+  points: MemoryPoint3D[],
+  camera: MemoryCamera3D,
+  scale: number,
+  width: number,
+  height: number
+): Array<{ x: number; y: number; z: number; perspective: number }> {
+  const cosYaw = Math.cos(camera.yaw), sinYaw = Math.sin(camera.yaw);
+  const cosPitch = Math.cos(camera.pitch), sinPitch = Math.sin(camera.pitch);
+  return points.map((point) => {
+    const x = point.x * cosYaw + point.z * sinYaw;
+    const depth = -point.x * sinYaw + point.z * cosYaw;
+    const y = point.y * cosPitch - depth * sinPitch;
+    const z = point.y * sinPitch + depth * cosPitch;
+    const perspective = 650 / Math.max(120, 650 + z * scale);
+    return { x: width / 2 + x * scale * camera.zoom * perspective, y: height / 2 - y * scale * camera.zoom * perspective, z, perspective };
+  });
 }
 
 /** Normalized covariance determinant: 0 for a plane, 1 for equal spread in XYZ. */
