@@ -106,6 +106,12 @@ async function memoryGraphApp(
       SPACE_MEMORY_MUTATIONS_ENABLED: mutationsEnabled ? "true" : "false",
       SPACE_BROWSER_EVIDENCE_ENABLED: "false"
     }),
+    streamingService: {
+      initialize: async () => {},
+      dispose: async () => {},
+      close: async () => {},
+      overlaySnapshot: async () => ({})
+    } as any,
     auth: { sessionSecret, devLogin: false, secureCookies: false },
     canonicalMemory: {
       async list(query) {
@@ -431,6 +437,78 @@ describe("Memory graph API", () => {
     expect(data.edges).toContainEqual(expect.objectContaining({ id: "edge:tag" }));
     expect(data.truncated).toBe(true);
     expect(data.totalMatchingNodes).toBe(2202);
+    await app.close();
+  });
+
+  it("supports configurable overview limits up to 50,000 with validation, edge capping, and redaction", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    const totalNodes = 6000;
+    graphSnapshot.nodes = Array.from({ length: totalNodes }, (_, index) => ({
+      id: `memory:${String(index).padStart(5, "0")}`,
+      type: "MEMORY" as const,
+      label: `Memory ${index} token=sensitive-data-${index}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    graphSnapshot.edges = Array.from({ length: 18000 }, (_, index) => ({
+      id: `edge:${String(index).padStart(6, "0")}`,
+      source: graphSnapshot.nodes[index % totalNodes]!.id,
+      target: graphSnapshot.nodes[(index + 1) % totalNodes]!.id,
+      type: "CONTAINS" as const,
+      evidence: `Evidence with password=secret-${index}`
+    }));
+
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    // 1. Default limit is 2,000 when limit is omitted
+    const defaultRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    expect(defaultRes.statusCode).toBe(200);
+    const defaultData = defaultRes.json().data;
+    expect(defaultData.nodes).toHaveLength(2000);
+    expect(defaultData.edges.length).toBeLessThanOrEqual(6000);
+    expect(defaultData.truncated).toBe(true);
+
+    // 2. Custom limit: 5,000
+    const customRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=5000", headers: { cookie } });
+    expect(customRes.statusCode).toBe(200);
+    const customData = customRes.json().data;
+    expect(customData.nodes).toHaveLength(5000);
+    expect(customData.edges.length).toBeLessThanOrEqual(15000);
+
+    // 3. Redaction behavior preserved: tokens and passwords redacted
+    expect(customData.nodes[0].label).not.toContain("sensitive-data");
+    expect(customData.nodes[0].label).toContain("[REDACTED");
+    expect(customData.edges[0].evidence).not.toContain("secret-");
+    expect(customData.edges[0].evidence).toContain("[REDACTED");
+
+    // 4. 50,000 maximum accepted
+    const maxRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+    expect(maxRes.statusCode).toBe(200);
+    expect(maxRes.json().data.nodes).toHaveLength(totalNodes);
+    expect(maxRes.json().data.truncated).toBe(false);
+
+    // 5. Above maximum (> 50,000) rejected with 422 (Unprocessable Entity)
+    const aboveMaxRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50001", headers: { cookie } });
+    expect(aboveMaxRes.statusCode).toBe(422);
+
+    // 6. Invalid values (0, negative, string) rejected with 422
+    const zeroRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=0", headers: { cookie } });
+    expect(zeroRes.statusCode).toBe(422);
+
+    const negRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=-10", headers: { cookie } });
+    expect(negRes.statusCode).toBe(422);
+
+    const strRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=notanumber", headers: { cookie } });
+    expect(strRes.statusCode).toBe(422);
+
+    // 7. Admin authorization required: unauthenticated returns 401
+    const unauthRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=5000" });
+    expect(unauthRes.statusCode).toBe(401);
+
+    // 8. Backward compatibility: works with query filters (q, relationMode)
+    const filteredRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?q=Memory%2010&limit=3000&relationMode=RELATIONS", headers: { cookie } });
+    expect(filteredRes.statusCode).toBe(200);
+
     await app.close();
   });
 
