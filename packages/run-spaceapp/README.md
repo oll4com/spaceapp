@@ -62,6 +62,30 @@ before pausing writers. Existing data is kept in place; the launcher never delet
 images, backups or volumes to free space. Separate Docker disk capacity is checked
 when measurable and its availability is reported.
 
+## Container Engines: Docker and Rootless Podman
+
+SpaceApp supports both Docker and rootless Podman as container engines:
+
+- **Docker** (default): Docker Engine or Docker Desktop on Linux, macOS, and Windows.
+- **Rootless Podman**: Podman 5 or newer with Compose support (`podman compose version`) on Linux and macOS.
+
+To install with Podman:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+Or select Podman interactively during installation. If Docker is not found on Linux or macOS but Podman is available, the launcher automatically prompts to use Podman.
+
+### Podman Requirements and Characteristics
+
+- **Rootless execution**: Podman runs rootless under your user account with user namespace mapping (`keep-id:uid=10001,gid=10001` for unprivileged containers).
+- **SELinux compatibility**: Host workspace bind mounts automatically receive `:z` relabeling so containers can access registered workspaces under SELinux enforcing mode.
+- **cgroup v2 & Resource limits**: On Linux, cgroup v2 with CPU and memory controller delegation (`Delegate=cpu cpuset io memory pids`) is recommended for enforcing resource limits. If systemd controller delegation is not configured, containers run without CPU/memory limits.
+- **macOS Podman Machine**: On macOS, Podman runs inside a virtual machine. Ensure the machine has adequate resources for your profile (e.g. `podman machine set --cpus 4 --memory 11264 --disk-size 50`).
+- **Access mode limitation**: The `--access host-root` mode requires Docker daemon host mount semantics and is not supported with rootless Podman. Use `--access isolated` (the default) with Podman.
+- **Engine switching**: Switching the container engine of an existing installation is not supported directly. To switch between Docker and Podman, back up your installation with `run-spaceapp backup`, reinstall with `--engine <engine>`, and restore with `run-spaceapp restore`.
+
 ### Telemetry
 
 Telemetry is off unless you turn it on. The install wizard lists what is sent
