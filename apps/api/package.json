@@ -45,7 +45,8 @@
     "node-pty": "^1.1.0",
     "pdfjs-dist": "6.3.289",
     "sanitize-html": "^2.17.7",
-    "zod": "^4.2.1"
+    "zod": "^4.2.1",
+    "@space/telemetry": "0.2.5"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1",

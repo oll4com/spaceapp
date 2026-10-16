@@ -134,6 +134,7 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
+  onFinish?: (result: { outcome: ActivityOutcome; reasonCode: string | null; category: FailureCategory | null; durationMs: number }) => void;
 }
 
 export async function observeActivityExecution<T>(
@@ -175,6 +176,8 @@ export async function observeActivityExecution<T>(
       category = outcome === "CANCELLED" ? "CANCELLED" : categorizeFailureCode(reasonCode);
       metrics.activityFailures.inc({ activity_type: activityType, category, code: reasonCode ?? "UNSPECIFIED" });
     }
+    // Telemetry is best effort and must never change an activity result.
+    try { dependencies.onFinish?.({ outcome, reasonCode, category, durationMs }); } catch { /* drop telemetry */ }
     workerLog(outcome === "COMPLETED" ? "info" : outcome === "CANCELLED" ? "warn" : "error", "activity.finished", {
       ...base,
       outcome,
