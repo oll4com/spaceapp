@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -77,7 +77,7 @@ test("waitForInfrastructure treats a healthy postgres and a running temporal as 
   assert.doesNotMatch(ready, /--wait/, "the readiness wait must not delegate to `compose up --wait`");
 });
 
-test("generateSecrets writes every secret with mode 0600 and a valid setup token", () => {
+test("container secrets are world-readable so non-root container users can mount them", () => {
   const dir = mkdtempSync(join(tmpdir(), "devstack-secrets-"));
   try {
     const secrets = generateSecrets(dir);
@@ -86,12 +86,16 @@ test("generateSecrets writes every secret with mode 0600 and a valid setup token
       assert.ok(existsSync(join(dir, name)), `${name} missing`);
     }
 
-    // POSIX: the modes must actually be 0600. Windows has no POSIX mode bits,
-    // so the assertion is meaningful only on POSIX (see generateSecrets).
+    // POSIX: the four compose-mounted secrets must be 0644, exactly as
+    // packages/run-spaceapp/tests/cli.test.mjs:775 asserts. The temporalio/
+    // auto-setup entrypoint does `cat /run/secrets/postgres-password` as a
+    // non-root user; 0600 makes that EACCES and the container crash-loops.
+    // Windows has no POSIX mode bits, so the assertion is meaningful only on
+    // POSIX (see generateSecrets).
     if (process.platform !== "win32") {
       for (const name of ["postgres-password", "session-secret", "setup-token", "database-url"]) {
         const mode = statSync(join(dir, name)).mode & 0o777;
-        assert.equal(mode, 0o600, `${name} mode is ${mode.toString(8)}, expected 0600`);
+        assert.equal(mode, 0o644, `${name} mode is ${mode.toString(8)}, expected 0644`);
       }
     }
 
@@ -110,6 +114,51 @@ test("generateSecrets writes every secret with mode 0600 and a valid setup token
     const reread = readSecrets(dir);
     assert.equal(reread.setupToken, secrets.setupToken);
     assert.equal(reread.sessionSecret, secrets.sessionSecret);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a stray 0600 container secret is repaired to 0644 on the next pass", () => {
+  // Regression: the first CI run died with `cat: can't open
+  // '/run/secrets/postgres-password': Permission denied` and temporal stuck in
+  // Restarting (1). packages/run-spaceapp/tests/cli.test.mjs:778 chmods a secret
+  // to 0600 and expects initializeInstallation to repair it; generateSecrets
+  // must do the same so an already-populated state directory cannot wedge.
+  const dir = mkdtempSync(join(tmpdir(), "devstack-secret-repair-"));
+  try {
+    generateSecrets(dir);
+    if (process.platform !== "win32") {
+      const path = join(dir, "postgres-password");
+      chmodSync(path, 0o600);
+      assert.equal(statSync(path).mode & 0o777, 0o600);
+
+      generateSecrets(dir);
+      assert.equal(statSync(path).mode & 0o777, 0o644, "the second pass must repair the mode");
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the developer-facing copy of the secrets is owner-only", () => {
+  // owner-only.env is never bound into a container, so the 0600 requirement
+  // applies to it. It must carry the same values the containers see.
+  const dir = mkdtempSync(join(tmpdir(), "devstack-owner-only-"));
+  try {
+    const secrets = generateSecrets(dir);
+    const ownerOnly = join(dir, "owner-only.env");
+    assert.ok(existsSync(ownerOnly), "owner-only.env missing");
+
+    if (process.platform !== "win32") {
+      assert.equal(statSync(ownerOnly).mode & 0o777, 0o600, "owner-only.env must be 0600");
+    }
+
+    const text = readFileSync(ownerOnly, "utf8");
+    assert.ok(text.includes(`DATABASE_URL=${secrets.databaseUrl}`));
+    assert.ok(text.includes(`SPACE_SESSION_SECRET=${secrets.sessionSecret}`));
+    assert.ok(text.includes(`SPACE_OWNER_SETUP_TOKEN=${secrets.setupToken}`));
+    assert.ok(text.startsWith("#"), "the copy must be labelled");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

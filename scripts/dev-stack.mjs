@@ -126,15 +126,45 @@ export function readPinnedImages(templateText = readFileSync(COMPOSE_TEMPLATE, "
 }
 
 // ---------------------------------------------------------------------------
-// Secrets. Generated per state directory, mode 0600, never printed except the
-// owner setup token, never committed (.dev-stack/ is git-ignored).
+// Secrets. Generated per state directory, never printed except the owner setup
+// token, never committed (.dev-stack/ is git-ignored).
+//
+// Two mode classes, matching packages/run-spaceapp/src/index.mjs:23:
+//
+//   CONTAINER_SECRET_MODE (0644) for the four files the compose template binds
+//     into containers. They are read by the non-root user inside temporalio/
+//     auto-setup (`cat /run/secrets/postgres-password`), so they have to be
+//     world-readable on the host. packages/run-spaceapp/tests/cli.test.mjs:765
+//     names the contract outright — "container secrets are world-readable so
+//     non-root container users can mount them" — and its sibling test repairs a
+//     0600 file back to 0644. 0600 here provably crash-loops temporal with
+//     `cat: can't open '/run/secrets/postgres-password': Permission denied`.
+//
+//   OWNER_ONLY_MODE (0600) for owner-only.env, the developer-facing copy of the
+//     same values. It is never bound into a container, so it can stay 0600.
 // ---------------------------------------------------------------------------
+const CONTAINER_SECRET_MODE = 0o644;
+const OWNER_ONLY_MODE = 0o600;
+
+// Idempotent repair, as ensureContainerSecretReadable does upstream: an existing
+// container secret is chmod'ed back to CONTAINER_SECRET_MODE so a stray 0600 can
+// never wedge the stack. No-op on Windows, which has no POSIX permission bits.
+function ensureContainerSecretReadable(path) {
+  if (process.platform === "win32") return;
+  try {
+    chmodSync(path, CONTAINER_SECRET_MODE);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
 export function generateSecrets(dir = SECRETS_DIR) {
   mkdirSync(dir, { recursive: true });
   const write = (name, value) => {
     const path = join(dir, name);
-    writeFileSync(path, value, { mode: 0o600 });
-    chmodSync(path, 0o600);
+    writeFileSync(path, value, { mode: CONTAINER_SECRET_MODE });
+    chmodSync(path, CONTAINER_SECRET_MODE);
+    ensureContainerSecretReadable(path);
     return path;
   };
   // PostgreSQL password: URL-safe, no shell/URL metacharacters.
@@ -150,17 +180,40 @@ export function generateSecrets(dir = SECRETS_DIR) {
   write("setup-token", setupToken);
   write("database-url", `postgresql://spaceapp:${postgresPassword}@127.0.0.1:${PORTS.postgres}/spaceapp`);
 
+  // The developer-facing copy: same values, never mounted into a container, so
+  // it can and does stay owner-only. This is where the 0600 requirement applies.
+  const ownerOnlyPath = join(dir, "owner-only.env");
+  writeFileSync(
+    ownerOnlyPath,
+    [
+      "# Owner-only copy of the dev-stack secrets. Not mounted into any container.",
+      `DATABASE_URL=postgresql://spaceapp:${postgresPassword}@127.0.0.1:${PORTS.postgres}/spaceapp`,
+      `SPACE_SESSION_SECRET=${sessionSecret}`,
+      `SPACE_OWNER_SETUP_TOKEN=${setupToken}`,
+      ""
+    ].join("\n"),
+    { mode: OWNER_ONLY_MODE }
+  );
+  chmodSync(ownerOnlyPath, OWNER_ONLY_MODE);
+
   // Belt and braces on POSIX: assert the modes landed.
   // Windows has no POSIX permission bits — Node reports 0666 for every
   // user-writable file and chmodSync only toggles the read-only flag, so an
   // assertion there would be meaningless. There the secret is protected by the
   // per-user profile directory; chmodSync is still called so the file is at
   // least marked read-only where that helps. This is the same trade-off npm
-  // makes for ~/.npmrc credentials.
+  // makes for ~/.npmrc credentials, and the same guard packages/run-spaceapp/
+  // tests/cli.test.mjs:774 applies.
   if (process.platform !== "win32") {
     for (const name of ["postgres-password", "session-secret", "setup-token", "database-url"]) {
       const mode = statSync(join(dir, name)).mode & 0o777;
-      if (mode !== 0o600) fail(`Secret ${name} has mode ${mode.toString(8)}; expected 0600.`);
+      if (mode !== CONTAINER_SECRET_MODE) {
+        fail(`Container secret ${name} has mode ${mode.toString(8)}; expected 0644 so the container's non-root user can read it.`);
+      }
+    }
+    const ownerMode = statSync(ownerOnlyPath).mode & 0o777;
+    if (ownerMode !== OWNER_ONLY_MODE) {
+      fail(`owner-only.env has mode ${ownerMode.toString(8)}; expected 0600.`);
     }
   }
   return {
@@ -438,6 +491,13 @@ function cmdUp() {
   const secrets = existsSync(join(SECRETS_DIR, "setup-token"))
     ? readSecrets()
     : generateSecrets();
+
+  // A pre-existing state directory may carry a stray 0600 from an older run;
+  // repair it whether or not generateSecrets just wrote these. Without this the
+  // temporal container cannot `cat` its secret and crash-loops.
+  for (const name of ["postgres-password", "session-secret", "setup-token", "database-url"]) {
+    ensureContainerSecretReadable(join(SECRETS_DIR, name));
+  }
 
   writeFileSync(COMPOSE_FILE, renderCompose(images, secrets), "utf8");
 
