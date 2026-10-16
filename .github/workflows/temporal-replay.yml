@@ -37,3 +37,5 @@ jobs:
           elapsed=$((SECONDS - started))
           echo "Sandbox and replay suite: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
           test "$elapsed" -lt 180
+      - name: Run remaining worker regression tests
+        run: npm test -w @space/worker -- --exclude tests/temporal-sandbox.integration.test.ts
