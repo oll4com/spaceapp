@@ -212,9 +212,13 @@ Without the endpoint, every activity still writes `activity.started` and
 
 ## Traces (W3C trace context)
 
-The trace context is local by default. An optional OTLP/HTTP (JSON) exporter sends one
-SERVER span per API request when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no
-OpenTelemetry dependency; `apps/api/src/otlp-span-exporter.ts`).
+The trace context is local by default. An optional OTLP/HTTP (JSON) exporter
+sends spans when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no OpenTelemetry
+dependency). The exporter implementation is shared by the API and the workers
+(`packages/runtime/src/otlp-span-exporter.ts`, re-exported by
+`apps/api/src/otlp-span-exporter.ts`): a bounded queue that drops and counts
+drops, a timeout per POST, and a slow or failing collector never delays or
+fails request, workflow or activity work.
 - **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
   An invalid or missing header gets a new trace ID. Every API log line carries
   `w3cTraceId` (Fastify `childLoggerFactory`).
@@ -223,12 +227,40 @@ OpenTelemetry dependency; `apps/api/src/otlp-span-exporter.ts`).
   to the Temporal memo. A bounded in-memory map from request ID to trace context
   (`apps/api/src/trace-context.ts`) does this without passing the request object
   through every service.
-- **Worker:** worker logs read the trace ID from the activity input. Internal
+- **Worker logs:** worker logs read the trace ID from the activity input. Internal
   room-action calls from the worker send a child `traceparent`, so the internal
   API request joins the same trace.
-- **Workflow code is unchanged.** Correlation is done in the API starter
-  (input/memo) and in an activity interceptor. The workflow bundle only gains the
-  optional contract field.
+- **Worker and workflow spans:** every worker process (`worker.ts`,
+  `memory-maintenance-worker.ts`, `memory-mutation-worker.ts`) exports spans to
+  `<endpoint>/v1/traces` when the endpoint is set, and does nothing when it is
+  not (`apps/worker/src/worker-otlp.ts`). A workflow interceptor pair
+  (`apps/worker/src/otlp-workflow-interceptors.ts`) emits one span per workflow
+  run, parented by the propagated `traceparent` span (Temporal header from a
+  parent workflow first, then the memo, then the input). The outbound
+  interceptor stamps the trace context into Temporal headers for activities,
+  child workflows and continue-as-new, so child workflows nest under their
+  parent and the span tree continues across runs. The workflow span id is
+  derived deterministically from the Temporal run id
+  (`apps/worker/src/otlp-span-context.ts`), which lets the activity
+  observability interceptor parent one span per activity attempt to it, with
+  the attempt number, outcome and the existing `reasonCode`/`category`.
+  Continue-as-new runs carry a span link (`space.link.type=continue_as_new`)
+  to the previous run's span; background continuations carry a span link
+  (`space.link.type=background_continuation`, with
+  `space.continuation.source_run_id`) to the trace they continue when the
+  source turn carried a traceparent. Span attributes come from an allowlist
+  only (ids, workflow/activity type, attempt, status, stable error
+  code/category, durations); prompts, model output, file paths, URLs, error
+  messages and user text are never exported.
+- **Determinism:** workflow code does no I/O for tracing. Spans leave the
+  sandbox only through a Temporal sink registered with
+  `callDuringReplay: false` (`apps/worker/src/otlp-span-sink.ts`), and the
+  interceptors add no workflow commands, so replaying a history emits no spans
+  and changes no workflow behaviour. The integration test
+  (`apps/worker/tests/otlp-spans-integration.test.ts`) runs a real workflow in
+  a Temporal test environment against a fake OTLP collector and proves trace
+  continuity, the parent/child tree, per-attempt spans, the continue-as-new
+  link, the attribute allowlist and replay silence.
 
 ### Replay compatibility
 
@@ -295,9 +327,12 @@ No credential or transcript export was added.
   have no `trace_id` or error-code column, and the store ignores the `traceId`
   argument of those methods. Adding them needs a migration. Today the link is
   `TURN_FAILED` (with the run ID) plus the workflow ID suffix.
-- **Background continuations start a new trace.** They create
-  `trace:bg-<uuid>`, linked only through `roomAgentContinuation.sourceRunId`.
-  Chat-pane sends from room actions use `<actionId>:chat`.
+- **Background continuations start a new trace for logs.** They create
+  `trace:bg-<uuid>`, linked through `roomAgentContinuation.sourceRunId`.
+  Their workflow spans additionally carry an OTLP span link to the trace they
+  continue when the source turn carried a traceparent (see "Worker and
+  workflow spans" above). Chat-pane sends from room actions use
+  `<actionId>:chat`.
 - **CLI terminal task IDs are not linked.** `cliTaskId` and `revisionId` are not
   tied to request IDs.
 - **Hosts are observed from the API, not instrumented.** Since 2026-10-12 the
@@ -309,14 +344,17 @@ No credential or transcript export was added.
   The CLI hosts are checked every 30 s by the terminal manager; the Browser Host
   at each `/readyz`. Memory and CPU come from `/proc` only when the PID's command
   line is that host. The hosts themselves still have no metrics endpoint or
-  spans (a normal deploy never restarts them), and the memory-maintenance and
-  memory-mutation workers have no activity interceptor or metrics.
+  spans (a normal deploy never restarts them). The memory-maintenance and
+  memory-mutation workers run the same activity interceptor and span export
+  as the main worker, but expose no metrics endpoint of their own.
 - **Some workflow-level faults are not in the trace lookup.** Workflow-task
   failures and nondeterminism appear only in Temporal history. The lookup returns
   events, audit entries and workflow rows, not `space_agent_runs` rows.
-- **Span export covers API requests only.** The optional OTLP exporter sends API
-  SERVER spans (method, route template, status, request id); workers and hosts emit
-  no spans, so worker and host work joins traces through log lines only.
+- **Span export does not cover the hosts.** The optional OTLP exporter sends
+  API SERVER spans (method, route template, status, request id) and worker
+  workflow/activity spans (see "Worker and workflow spans" above); the CLI
+  Host and Browser Host emit no spans, so host work joins traces through log
+  lines only.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.
 - **Worker endpoints are not scraped yet.** Since 2026-10-14 stable's
