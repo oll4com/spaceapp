@@ -242,6 +242,7 @@ import { useAdminUsers } from "./features/rooms-dock/useAdminUsers.js";
 import { ensureProjectFolder, loadBoundedRoomCatalog, sortRoomsByOrder } from "./features/rooms-dock/room-catalog.js";
 import { useAppView } from "./features/help/useAppView.js";
 import { MemoryWorkspaceErrorBoundary } from "./features/memory-workspace/MemoryWorkspaceErrorBoundary.js";
+import { publishMemoryLaunchShell, readMemoryGraphLaunch } from "./features/memory-workspace/memory-graph-launch.js";
 import { useManageController } from "./features/server-actions/useManageController.js";
 import { CliRuntimeRestartAllDialog, ServerRestartDialog } from "./features/server-actions/RestartDialogs.js";
 import { CliLauncherMenu } from "./features/cli-launcher/CliLauncherMenu.js";
@@ -1083,7 +1084,7 @@ export function App() {
   const [minimizeAllPending, setMinimizeAllPending] = useState(false);
   const [isAgentsDashboardOpen, setIsAgentsDashboardOpen] = useState(false);
   const [agentsDashboardSummary, setAgentsDashboardSummary] = useState<AgentDashboardSummary | null>(null);
-  const [isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen] = useState(false);
+  const [isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen] = useState(() => readMemoryGraphLaunch() !== null);
   // Space Gateway as a full-screen page over the workspace, like the memory workspace (ADMIN).
   const [isSpaceGatewayOpen, setIsSpaceGatewayOpen] = useState(false);
   const [workspaceNavigationDetail, setWorkspaceNavigationDetail] = useState<string | null>(null);
@@ -1381,11 +1382,13 @@ export function App() {
     roomEventsRef.current = snapshot.events;
     swarmStateRef.current = snapshot.swarm;
     selectedPaneIdRef.current = snapshot.selectedPaneId;
-    setPanes(snapshot.panes);
-    setTurns(snapshot.turns);
-    setRoomEvents(snapshot.events);
-    setSwarmState(snapshot.swarm);
-    setSelectedPaneId(snapshot.selectedPaneId);
+    publishMemoryLaunchShell(() => {
+      setPanes(snapshot.panes);
+      setTurns(snapshot.turns);
+      setRoomEvents(snapshot.events);
+      setSwarmState(snapshot.swarm);
+      setSelectedPaneId(snapshot.selectedPaneId);
+    });
   }
 
   function clearActiveRoomRuntime() {
