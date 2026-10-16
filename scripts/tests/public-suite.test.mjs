@@ -14,6 +14,7 @@ import "./release-artifact-preflight.test.mjs";
 import "./release-version.test.mjs";
 import "./reset-owner-password.test.mjs";
 import "./rotate-owner-setup-token.test.mjs";
+import "./stage-service-images.test.mjs";
 import "./trivy-report-summary.test.mjs";
 import "./verify-export-provenance.test.mjs";
 

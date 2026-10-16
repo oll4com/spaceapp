@@ -27,6 +27,7 @@ const publicTestModules = [
   "release-version.test.mjs",
   "reset-owner-password.test.mjs",
   "rotate-owner-setup-token.test.mjs",
+  "stage-service-images.test.mjs",
   "trivy-report-summary.test.mjs",
   "verify-export-provenance.test.mjs"
 ];

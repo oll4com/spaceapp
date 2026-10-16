@@ -10,6 +10,8 @@ on:
       - "starter-memory/**"
       - "Dockerfile"
       - "package-lock.json"
+      - "scripts/stage-service-images.mjs"
+      - "scripts/container-smoke-check.mjs"
   push:
     branches:
       - main
@@ -21,6 +23,8 @@ on:
       - "starter-memory/**"
       - "Dockerfile"
       - "package-lock.json"
+      - "scripts/stage-service-images.mjs"
+      - "scripts/container-smoke-check.mjs"
   workflow_dispatch:
 
 permissions:
@@ -69,5 +73,11 @@ jobs:
       - name: Enforce container size budget
         run: >-
           node scripts/container-image-size-budget.mjs
+          --target "${{ matrix.target }}"
+          --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke check the built image
+        run: >-
+          node scripts/container-smoke-check.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
