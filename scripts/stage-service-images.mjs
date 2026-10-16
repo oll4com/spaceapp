@@ -373,7 +373,11 @@ async function traceTarget(target, workspaceMap) {
       ...Object.keys(manifest.optionalDependencies || {})
     ]);
     for (const depName of depNames) {
-      if (BUILTINS.has(depName)) continue;
+      // A declared dependency is the npm package even when its name
+      // collides with a Node builtin: readable-stream depends on the
+      // `process` and `string_decoder` packages (its sources require
+      // "process/" with a trailing slash, which is NOT the builtin).
+      // Skipping builtin-named deps crashed the API at startup in CI.
       const depDir = await findPackageDir(packageDir, depName);
       if (!depDir) continue; // optional dep not installed on this platform
       if (!packageDirs.has(depDir)) {
@@ -416,7 +420,10 @@ async function traceTarget(target, workspaceMap) {
         continue;
       }
       const { name, subpath } = splitBareSpecifier(specifier);
-      if (!name || BUILTINS.has(name)) continue;
+      if (!name) continue;
+      // The exact name of a builtin resolves to the builtin; a subpath
+      // form ("process/") resolves to the npm package of that name.
+      if (BUILTINS.has(name) && !subpath) continue;
       const packageDir = await findPackageDir(path.dirname(file), name);
       if (!packageDir) continue; // platform-optional package absent here
       if (!packageDirs.has(packageDir)) {

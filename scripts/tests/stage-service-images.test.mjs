@@ -89,8 +89,12 @@ async function makeFixture(root) {
 
   // Third-party node_modules.
   const nm = (p) => join(root, "node_modules", p);
-  await write(root, "node_modules/pg/package.json", JSON.stringify({ name: "pg", version: "0.0.0", main: "index.js" }));
+  await write(root, "node_modules/pg/package.json", JSON.stringify({ name: "pg", version: "0.0.0", main: "index.js", dependencies: { process: "*" } }));
   await write(root, "node_modules/pg/index.js", "module.exports = {};\n");
+  // The npm `process` package shadows the builtin name; readable-stream
+  // really depends on it in the wild ("process/" is not the builtin).
+  await write(root, "node_modules/process/package.json", JSON.stringify({ name: "process", version: "0.0.0", main: "index.js" }));
+  await write(root, "node_modules/process/index.js", "module.exports = {};\n");
   await write(root, "node_modules/zod/package.json", JSON.stringify({ name: "zod", version: "0.0.0", main: "index.js" }));
   await write(root, "node_modules/zod/index.js", "module.exports = {};\n");
   await write(root, "node_modules/leftpad-fixture/package.json", JSON.stringify({ name: "leftpad-fixture", version: "0.0.0", main: "index.js" }));
@@ -187,6 +191,7 @@ test("stage-service-images builds per-service closures with platform pruning", a
     assert.ok(existsSync(core("node_modules/@napi-rs/canvas-linux-x64-gnu/gnu.node")));
     assert.ok(existsSync(core("node_modules/@temporalio/core-bridge/releases/x86_64-unknown-linux-gnu/core.node")));
     assert.ok(existsSync(core("node_modules/leftpad-fixture/index.js")), "skill imports join the closure");
+    assert.ok(existsSync(core("node_modules/process/index.js")), "builtin-named npm dependencies are staged");
     assert.ok(existsSync(core("agent-skills/skill-a/scripts/run.mjs")));
 
     // Core: pruned payloads and non-closure packages stay out.
