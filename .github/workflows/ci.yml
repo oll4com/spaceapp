@@ -60,3 +60,30 @@ jobs:
       - name: Pack launcher candidate
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm run pack:dry-run -w run-spaceapp
+
+  dev-stack-gate:
+    name: Contributor dev:stack gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+
+      - name: Build internal packages
+        run: npm run build
+
+      - name: Run dev:stack unit tests
+        run: node --test scripts/tests/dev-stack.test.mjs
+
+      - name: Run dev:stack CI gate (non-TTY, readyz, owner setup, CLI pane, reset)
+        run: node scripts/ci-dev-stack-gate.mjs
+
