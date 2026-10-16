@@ -1,0 +1,36 @@
+name: Temporal sandbox and replay budget
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  temporal-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Create sanitized candidate
+        run: node scripts/public-export.mjs --output "$RUNNER_TEMP/spaceapp-temporal-export"
+      - name: Install locked dependencies
+        working-directory: ${{ runner.temp }}/spaceapp-temporal-export
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci
+      - name: Build dependencies and typecheck
+        working-directory: ${{ runner.temp }}/spaceapp-temporal-export
+        run: npm run check
+      - name: Run real sandbox and committed replay fixtures within three minutes
+        working-directory: ${{ runner.temp }}/spaceapp-temporal-export
+        run: timeout --signal=TERM --kill-after=10s 180s npm test -w @space/worker -- tests/temporal-workflows.test.ts
