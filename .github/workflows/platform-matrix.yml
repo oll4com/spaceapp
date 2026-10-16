@@ -57,3 +57,49 @@ jobs:
       - run: npm run check -w run-spaceapp
       - run: npm run pack:dry-run -w run-spaceapp
       - run: node packages/run-spaceapp/bin/spaceapp.mjs --version
+
+  podman-smoke:
+    name: Launcher / ubuntu-latest / Rootless Podman smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.23.0"
+          cache: npm
+
+      - name: Configure rootless Podman and Compose v2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+          sudo mkdir -p /etc/systemd/system/user@.service.d
+          printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf >/dev/null
+          sudo systemctl daemon-reload
+          sudo loginctl enable-linger "$USER" || true
+          systemctl --user enable --now podman.socket
+          podman --version
+          podman compose version
+          podman info --format "{{json .}}"
+
+      - name: Run rootless Podman lifecycle and keep-id workspace smoke test
+        run: |
+          export SPACEAPP_HOME="$RUNNER_TEMP/spaceapp-podman-smoke"
+          export SPACEAPP_TELEMETRY="0"
+          WORK_DIR="$RUNNER_TEMP/spaceapp-podman-workspace"
+          mkdir -p "$WORK_DIR"
+          node packages/run-spaceapp/bin/spaceapp.mjs install --engine podman --profile small --non-interactive --no-open --answers '{"confirm":true,"telemetry":false}'
+          curl --retry 30 --retry-delay 2 --retry-all-errors -fsS http://127.0.0.1:4911/readyz
+          node packages/run-spaceapp/bin/spaceapp.mjs workspace add "$WORK_DIR"
+          node packages/run-spaceapp/bin/spaceapp.mjs up
+          curl --retry 30 --retry-delay 2 --retry-all-errors -fsS http://127.0.0.1:4911/readyz
+          CLI_CONTAINER="$(podman ps --format '{{.Names}}' | grep 'spaceapp-cli' | head -n 1)"
+          podman exec --user 10001:10001 "$CLI_CONTAINER" sh -lc 'for d in /workspaces/*; do echo podman-keep-id-ok > "$d/smoke-write.txt"; done'
+          test "$(cat "$WORK_DIR/smoke-write.txt")" = "podman-keep-id-ok"
+          test "$(stat -c '%u:%g' "$WORK_DIR/smoke-write.txt")" = "$(id -u):$(id -g)"
+          node packages/run-spaceapp/bin/spaceapp.mjs backup
+          printf 'DELETE\n' | node packages/run-spaceapp/bin/spaceapp.mjs uninstall --purge-data
+

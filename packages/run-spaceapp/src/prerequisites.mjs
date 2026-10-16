@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { PROFILE_REQUIREMENTS } from "./index.mjs";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
@@ -1094,4 +1095,322 @@ function launchDetachedCommand(spec) {
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function parseDiskSizeValue(raw) {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    return raw < 1024 ** 2 ? Math.round(raw * 1024 ** 3) : Math.round(raw);
+  }
+  if (typeof raw === "string") {
+    const match = raw.trim().match(/^(\d+(?:\.\d+)?)\s*(gib|gb|g|mib|mb|m|tib|tb|t|b)?$/i);
+    if (match) {
+      const value = Number(match[1]);
+      const unit = (match[2] || "b").toLowerCase();
+      if (unit.startsWith("t")) return Math.round(value * 1024 ** 4);
+      if (unit.startsWith("g")) return Math.round(value * 1024 ** 3);
+      if (unit.startsWith("m")) return Math.round(value * 1024 ** 2);
+      return value < 1024 ** 2 ? Math.round(value * 1024 ** 3) : Math.round(value);
+    }
+  }
+  return null;
+}
+
+export function parsePodmanMachineDiskBytes(rawJson) {
+  let data = rawJson;
+  if (typeof rawJson === "string") {
+    try {
+      data = JSON.parse(rawJson);
+    } catch {
+      return null;
+    }
+  }
+  const items = Array.isArray(data) ? data : data && typeof data === "object" ? [data] : [];
+  for (const item of items) {
+    const candidate =
+      item?.Resources?.DiskSize ??
+      item?.resources?.diskSize ??
+      item?.DiskSize ??
+      item?.diskSize ??
+      item?.disk_size;
+    const parsed = parseDiskSizeValue(candidate);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+export function parsePodmanInfo(rawJson, machineInspectRaw = null) {
+  let info = rawJson;
+  if (typeof rawJson === "string") {
+    try {
+      info = JSON.parse(rawJson);
+    } catch {
+      return null;
+    }
+  }
+  if (!info || typeof info !== "object") {
+    return null;
+  }
+  const rootless = Boolean(info?.host?.security?.rootless);
+  const cgroupVersion = typeof info?.host?.cgroupVersion === "string"
+    ? info.host.cgroupVersion
+    : "unknown";
+  const cgroupControllers = Array.isArray(info?.host?.cgroupControllers)
+    ? info.host.cgroupControllers.filter((item) => typeof item === "string")
+    : [];
+  const cgroupV2 = cgroupVersion === "v2";
+  const cpuMemoryDelegated = !rootless || (
+    cgroupControllers.includes("cpu") &&
+    cgroupControllers.includes("memory")
+  );
+  const storeAllocated = Number.isFinite(info?.store?.graphRootAllocated) && info.store.graphRootAllocated > 0
+    ? info.store.graphRootAllocated
+    : null;
+  const machineDiskBytes =
+    parsePodmanMachineDiskBytes(machineInspectRaw) ??
+    parsePodmanMachineDiskBytes(info?.machine) ??
+    parseDiskSizeValue(info?.host?.machineDiskSize ?? info?.Resources?.DiskSize);
+  const effectiveDiskAllocated = machineDiskBytes ?? storeAllocated;
+  return {
+    version: info?.version?.Version ?? info?.host?.buildahVersion ?? "unknown",
+    rootless,
+    cgroupVersion,
+    cgroupControllers,
+    cgroupV2,
+    cpuMemoryDelegated,
+    cpus: Number.isFinite(info?.host?.cpus) ? info.host.cpus : null,
+    memTotal: Number.isFinite(info?.host?.memTotal) ? info.host.memTotal : null,
+    graphRoot: typeof info?.store?.graphRoot === "string" ? info.store.graphRoot : null,
+    graphRootAllocated: effectiveDiskAllocated,
+    machineDiskBytes: effectiveDiskAllocated,
+    arch: typeof info?.host?.arch === "string" ? info.host.arch : null,
+    remoteSocketPath: typeof info?.host?.remoteSocket?.path === "string" ? info.host.remoteSocket.path : null,
+    remoteSocketExists: Boolean(info?.host?.remoteSocket?.exists)
+  };
+}
+
+export function podmanMachineResizeCommand(profile = "small") {
+  const req = PROFILE_REQUIREMENTS[profile] ?? PROFILE_REQUIREMENTS.small;
+  const cpus = Math.max(4, req.cpuCount);
+  const memoryMib = {
+    small: 8192,
+    medium: 12288,
+    large: 16384,
+    light: 8192,
+    standard: 8192
+  }[profile] ?? 8192;
+  const diskGib = {
+    small: 20,
+    medium: 25,
+    large: 30,
+    light: 20,
+    standard: 25
+  }[profile] ?? 20;
+  return `podman machine stop && podman machine set --cpus ${cpus} --memory ${memoryMib} --disk-size ${diskGib} && podman machine start`;
+}
+
+export function podmanInstallInstructions(platform = process.platform, release = {}) {
+  if (platform === "win32") {
+    return (
+      "Podman is not supported natively on Windows in this release. " +
+      "Run SpaceApp with Podman inside a Linux WSL2 distribution, or use the default Docker Desktop engine on Windows."
+    );
+  }
+  if (platform === "darwin") {
+    return (
+      "Podman and a Compose provider are required for --engine podman on macOS.\n" +
+      "Install and start Podman Machine manually, then rerun the command:\n" +
+      "  brew install podman docker-compose\n" +
+      "  podman machine init --cpus 4 --memory 8192 --disk-size 20\n" +
+      "  podman machine start"
+    );
+  }
+  const id = String(release?.ID || "").toLowerCase();
+  const idLike = String(release?.ID_LIKE || "").toLowerCase().split(/\s+/);
+  const hasDistro = (name) => id === name || idLike.includes(name);
+  if (hasDistro("ubuntu") || hasDistro("debian")) {
+    return (
+      "Podman and a Compose provider are required for --engine podman.\n" +
+      "Install them with your package manager and enable the user socket:\n" +
+      "  sudo apt-get update && sudo apt-get install -y podman docker-compose-v2\n" +
+      "  systemctl --user enable --now podman.socket"
+    );
+  }
+  if (hasDistro("fedora") || hasDistro("rhel") || hasDistro("centos") || hasDistro("rocky") || hasDistro("almalinux")) {
+    return (
+      "Podman and a Compose provider are required for --engine podman.\n" +
+      "Install them with DNF and enable the user socket:\n" +
+      "  sudo dnf install -y podman docker-compose\n" +
+      "  systemctl --user enable --now podman.socket"
+    );
+  }
+  if (hasDistro("arch") || hasDistro("cachyos") || hasDistro("manjaro")) {
+    return (
+      "Podman and a Compose provider are required for --engine podman.\n" +
+      "Install them with Pacman and enable the user socket:\n" +
+      "  sudo pacman -S --needed podman docker-compose\n" +
+      "  systemctl --user enable --now podman.socket"
+    );
+  }
+  if (hasDistro("opensuse") || hasDistro("suse") || hasDistro("sles")) {
+    return (
+      "Podman and a Compose provider are required for --engine podman.\n" +
+      "Install them with Zypper and enable the user socket:\n" +
+      "  sudo zypper install -y podman docker-compose\n" +
+      "  systemctl --user enable --now podman.socket"
+    );
+  }
+  return (
+    "Podman (4.x+) and a Compose v2 provider (docker-compose v2 or podman-compose) are required for --engine podman.\n" +
+    "Install them with your Linux distribution package manager and enable the user socket:\n" +
+    "  systemctl --user enable --now podman.socket"
+  );
+}
+
+export async function capturePodmanInfo(execute, stdin = null) {
+  let output = "";
+  const stdout = new Writable({
+    write(chunk, _encoding, done) {
+      if (output.length < 1024 * 1024) {
+        output += chunk.toString();
+      }
+      done();
+    }
+  });
+  let code = 1;
+  try {
+    code = await execute(
+      { command: "podman", args: ["info", "--format", "{{json .}}"], timeoutMs: 15_000 },
+      { stdin, stdout, stderr: null }
+    );
+  } catch {
+    return { code: 127, info: null };
+  }
+  if (code !== 0) {
+    return { code, info: null };
+  }
+  let machineInspectOutput = "";
+  const parsedInitial = parsePodmanInfo(output.trim());
+  if (parsedInitial && parsedInitial.graphRootAllocated === null) {
+    const machineStdout = new Writable({
+      write(chunk, _encoding, done) {
+        if (machineInspectOutput.length < 1024 * 1024) {
+          machineInspectOutput += chunk.toString();
+        }
+        done();
+      }
+    });
+    try {
+      const inspectCode = await execute(
+        { command: "podman", args: ["machine", "inspect"], timeoutMs: 10_000 },
+        { stdin, stdout: machineStdout, stderr: null }
+      );
+      if (inspectCode !== 0 || !machineInspectOutput.trim()) {
+        machineInspectOutput = "";
+        await execute(
+          { command: "podman", args: ["machine", "list", "--format", "json"], timeoutMs: 10_000 },
+          { stdin, stdout: machineStdout, stderr: null }
+        );
+      }
+    } catch {
+      // Best-effort machine disk inspection.
+    }
+  }
+  return { code: 0, info: parsePodmanInfo(output.trim(), machineInspectOutput.trim() || null) };
+}
+
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  execute,
+  osRelease = readLinuxOsRelease,
+  profile = "small"
+}) {
+  if (platform === "win32") {
+    stderr.write(`${podmanInstallInstructions("win32")}\n`);
+    return { code: 1, reexecuted: false };
+  }
+  const cliCode = await execute(
+    { command: "podman", args: ["--version"] },
+    { stdin, stdout: null, stderr: null }
+  );
+  const composeCode = cliCode === 0
+    ? await execute(
+      { command: "podman", args: ["compose", "version"] },
+      { stdin, stdout: null, stderr: null }
+    )
+    : 1;
+  if (cliCode !== 0 || composeCode !== 0) {
+    let release = {};
+    if (platform === "linux") {
+      try {
+        release = await osRelease();
+      } catch {
+        release = {};
+      }
+    }
+    stderr.write(`${podmanInstallInstructions(platform, release)}\n`);
+    return { code: 1, reexecuted: false };
+  }
+
+  if (platform === "linux") {
+    try {
+      await execute(
+        { command: "systemctl", args: ["--user", "enable", "--now", "podman.socket"] },
+        { stdin, stdout: null, stderr: null }
+      );
+    } catch {
+      // Best-effort when systemd user session is unavailable.
+    }
+  }
+
+  const { code: infoCode, info } = await capturePodmanInfo(execute, stdin);
+  if (infoCode !== 0 || !info) {
+    if (platform === "darwin") {
+      stderr.write(
+        `Podman machine is not running or unreachable. Start it with "podman machine start" (or initialize and size it with "${podmanMachineResizeCommand(profile)}") and rerun "${UNIVERSAL_INSTALL_COMMAND} --engine podman".\n`
+      );
+    } else {
+      stderr.write(
+        `Podman is installed, but "podman info" failed. Verify rootless subuid/subgid mappings (/etc/subuid and /etc/subgid) and user socket ("systemctl --user enable --now podman.socket"), then rerun "${UNIVERSAL_INSTALL_COMMAND} --engine podman".\n`
+      );
+    }
+    return { code: 1, reexecuted: false };
+  }
+
+  if (platform === "linux" && info.rootless) {
+    if (!info.cgroupV2) {
+      stderr.write(
+        `Rootless Podman requires cgroup v2, but this Linux host reported cgroup ${info.cgroupVersion}. Enable unified cgroup v2 hierarchy on the host or use Docker.\n`
+      );
+      return { code: 1, reexecuted: false };
+    }
+    if (!info.cpuMemoryDelegated) {
+      stderr.write(
+        "Rootless Podman does not have CPU and memory cgroup v2 controllers delegated, so SpaceApp service mem_limit and cpus cannot be enforced.\n" +
+        "Delegate cpu and memory controllers for user sessions (for example in /etc/systemd/system/user@.service.d/delegate.conf with Delegate=cpu cpuset io memory pids, followed by \"sudo systemctl daemon-reload\") and rerun the command.\n"
+      );
+      return { code: 1, reexecuted: false };
+    }
+  }
+
+  if (platform === "darwin") {
+    const req = PROFILE_REQUIREMENTS[profile] ?? PROFILE_REQUIREMENTS.small;
+    const minEngineMem = ({ small: 3, medium: 5, large: 7, light: 3, standard: 3 }[profile] ?? 3) * 1024 ** 3;
+    const diskBytes = info.machineDiskBytes ?? info.graphRootAllocated;
+    const cpuInsufficient = info.cpus !== null && info.cpus < req.cpuCount;
+    const memInsufficient = info.memTotal !== null && info.memTotal < minEngineMem;
+    const diskInsufficient = diskBytes === null || diskBytes < req.freshDiskBytes;
+    if (cpuInsufficient || memInsufficient || diskInsufficient) {
+      stderr.write(
+        `Podman machine resources are below the ${profile} profile requirements. Resize the Podman VM with:\n  ${podmanMachineResizeCommand(profile)}\n`
+      );
+      return { code: 1, reexecuted: false };
+    }
+  }
+
+  return { code: 0, reexecuted: false, info };
 }

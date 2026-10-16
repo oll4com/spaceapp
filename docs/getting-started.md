@@ -39,6 +39,21 @@ starts the service. Before adding the current user to the `docker` group, it
 explains that the group grants root-level privileges, adds the user
 automatically, and continues in the same command.
 
+If you prefer **rootless Podman** without root-equivalent daemon privileges,
+install `podman` (4.x+) and a Compose v2 provider (`docker-compose-v2` or
+`podman-compose`) with your distribution package manager, enable the user
+socket (`systemctl --user enable --now podman.socket`), and run:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+Rootless Podman on Linux requires cgroup v2 with `cpu` and `memory` controller
+delegation enabled (`Delegate=cpu cpuset io memory pids`). Workspace bind mounts
+automatically use `userns_mode: "keep-id:uid=10001,gid=10001"` and SELinux `:z`
+relabeling so files created by agents inside registered workspaces belong to
+your host UID/GID.
+
 ## macOS
 
 Install Node.js 20.11 or newer, then run in Terminal:
@@ -52,6 +67,10 @@ Desktop's terms, downloads the official architecture-specific DMG, verifies
 its code signature, installs it, starts it, and waits until it is ready. Docker
 Desktop uses its managed lightweight Linux environment. Apple Silicon uses the
 native `linux/arm64` images and Intel Macs use `linux/amd64`.
+
+macOS also supports `podman machine` when you pass `--engine podman` after
+installing Podman (`brew install podman docker-compose`) and starting a machine
+sized for your chosen profile (`podman machine init --cpus 4 --memory 8192 --disk-size 20 && podman machine start`).
 
 ## Windows 11 — Command Prompt
 

@@ -114,9 +114,29 @@ before enabling it:
 npx --yes run-spaceapp@latest install --access host-root
 ```
 
-Host-root is supported only on Linux. Run
+Host-root is supported only on Linux with Docker. Run
 `npx --yes run-spaceapp@latest install --access isolated` to remove the host
 mount while keeping SpaceApp data and volumes.
+
+### Rootless Podman (Linux & macOS)
+
+To run SpaceApp with rootless Podman instead of Docker Engine on Linux or macOS,
+install Podman 4.x+ and a Compose v2 provider (`docker-compose` v2 or
+`podman-compose`) with your system package manager, then pass `--engine podman`:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+The selected container engine (`"engine": "podman"`) is stored in `config.json`
+and used automatically by all subsequent commands (`up`, `down`, `status`,
+`logs`, `backup`, `restore`, `update`, `rollback`, `doctor`, `repair`, and
+`uninstall`). On Linux, rootless Podman requires cgroup v2 with `cpu` and
+`memory` controller delegation enabled, and workspace bind mounts automatically
+configure `userns_mode: "keep-id:uid=10001,gid=10001"` and SELinux `:z` labels
+so container UID `10001` maps to your host user without `chown`. Host-root
+access (`--access host-root`) is not supported with Podman; register project
+directories with `npx --yes run-spaceapp@latest workspace add <path>`.
 
 Provider API keys are read from masked standard input and written to
 restrictive files outside Git. OAuth and device-code credentials remain in
