@@ -298,17 +298,31 @@ async function checkBrowser() {
   // Launch headless Chromium once, as the criterion requires. A full
   // Browser Host session runs Chromium headed under Xvfb, which the
   // image does not ship (unchanged by the per-service packaging), so the
-  // launch is exercised directly against the image's Chromium.
-  const launch = await docker(
-    ["exec", APP, "gosu", "spaceapp", "chromium",
-     "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-     "--dump-dom", "about:blank"],
-    { timeout: 120_000 }
-  );
-  if (!launch.ok || !launch.stdout.includes("<html")) {
-    throw new Error(
-      `headless Chromium launch failed:\n${launch.stdout}\n${launch.stderr}`
+  // launch is exercised directly against the image's Chromium. The
+  // second attempt adds the constrained-environment flags used for
+  // emulated (QEMU) runs, where the GPU process cannot start.
+  const launchAttempts = [
+    [],
+    ["--no-zygote", "--single-process"]
+  ];
+  let launched = false;
+  for (const extraFlags of launchAttempts) {
+    const launch = await docker(
+      ["exec", APP, "gosu", "spaceapp", "chromium",
+       "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+       ...extraFlags, "--dump-dom", "about:blank"],
+      { timeout: 120_000 }
     );
+    if (launch.ok && launch.stdout.includes("<html")) {
+      launched = true;
+      break;
+    }
+    console.log(
+      `smoke: headless launch attempt (${extraFlags.join(" ") || "default"}) did not produce a DOM; retrying`
+    );
+  }
+  if (!launched) {
+    throw new Error("headless Chromium launch failed on every attempt");
   }
   console.log("smoke: headless Chromium launched and dumped about:blank DOM");
   console.log("smoke: browser PASS");
