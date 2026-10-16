@@ -57,3 +57,44 @@ jobs:
       - run: npm run check -w run-spaceapp
       - run: npm run pack:dry-run -w run-spaceapp
       - run: node packages/run-spaceapp/bin/spaceapp.mjs --version
+
+  podman-linux:
+    name: Podman / ubuntu-latest / Node 22.23.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.23.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set up Podman Compose
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman podman-compose
+
+      - name: Verify Podman and Doctor
+        run: |
+          podman --version
+          podman compose version
+          node packages/run-spaceapp/bin/spaceapp.mjs doctor
+
+      - name: Install Small Profile with Podman
+        run: |
+          node packages/run-spaceapp/bin/spaceapp.mjs install --engine podman --profile small --non-interactive
+
+      - name: Backup SpaceApp Data
+        run: |
+          node packages/run-spaceapp/bin/spaceapp.mjs backup
+
+      - name: Uninstall and Purge Data
+        run: |
+          node packages/run-spaceapp/bin/spaceapp.mjs uninstall --purge-data
+

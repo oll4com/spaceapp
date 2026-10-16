@@ -15,7 +15,8 @@ import {
   resolveInstallAccessMode,
   resolveInstallProfile,
   resolveSpaceAppHome,
-  saveConfig
+  saveConfig,
+  validateConfig
 } from "../src/index.mjs";
 
 test("resolves an explicit home before platform defaults", () => {
@@ -299,6 +300,55 @@ test("installation preparation defers committed version and runtime changes", as
   assert.deepEqual(await loadConfig(root), prepared.config);
   assert.match(await readFile(join(root, "runtime.env"), "utf8"), /^SPACEAPP_IMAGE_TAG=0\.1\.13$/m);
 });
+
+test("validateConfig rejects unsupported engines and podman host-root access", () => {
+  const baseConfig = createDefaultConfig({ version: "0.1.0" });
+  assert.equal(validateConfig({ ...baseConfig, engine: "docker" }).engine, "docker");
+  assert.equal(validateConfig({ ...baseConfig, engine: "podman" }).engine, "podman");
+
+  assert.throws(
+    () => validateConfig({ ...baseConfig, engine: "containerd" }),
+    /engine must be docker or podman/i
+  );
+
+  assert.throws(
+    () => validateConfig({ ...baseConfig, engine: "podman", accessMode: "host-root" }),
+    /host-root access is not supported with the podman engine/i
+  );
+});
+
+test("prepareInstallation enforces engine switching safety and preserves podman engine", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-engine-safety-"));
+  const templateDir = join(root, "templates");
+  await mkdir(templateDir);
+  await writeFile(join(templateDir, "compose.yml"), "services: {}\n");
+
+  const initialized = await initializeInstallation(root, {
+    version: "0.1.10",
+    templateDir,
+    profile: "standard",
+    engine: "podman"
+  });
+  assert.equal(initialized.config.engine, "podman");
+  assert.equal((await loadConfig(root)).engine, "podman");
+
+  // Attempting to switch existing installation to docker must be rejected
+  await assert.rejects(
+    () => prepareInstallation(root, {
+      version: "0.1.11",
+      engine: "docker"
+    }),
+    /Switching container engine from "podman" to "docker"/i
+  );
+
+  // Upgrading with the same engine is allowed
+  const preparedSame = await prepareInstallation(root, {
+    version: "0.1.11",
+    engine: "podman"
+  });
+  assert.equal(preparedSame.config.engine, "podman");
+});
+
 
 async function assertOwnerOnlyFile(path) {
   const metadata = await stat(path);

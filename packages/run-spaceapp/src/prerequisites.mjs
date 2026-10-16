@@ -653,7 +653,7 @@ async function dockerCliAndComposeAreAvailable(execute) {
   return true;
 }
 
-async function dockerIsReady(execute) {
+export async function dockerIsReady(execute) {
   for (const spec of [
     { command: "docker", args: ["--version"] },
     { command: "docker", args: ["compose", "version"] },
@@ -664,6 +664,81 @@ async function dockerIsReady(execute) {
     }
   }
   return true;
+}
+
+export async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] },
+    { command: "podman", args: ["info"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export async function detectAvailableEngines(execute) {
+  const [docker, podman] = await Promise.all([
+    dockerIsReady(execute),
+    podmanIsReady(execute)
+  ]);
+  return { docker, podman };
+}
+
+export function podmanInstallHelp(platform) {
+  if (platform === "darwin") {
+    return "Install Podman and Podman Compose via Homebrew:\n  brew install podman podman-compose\n  podman machine init\n  podman machine start";
+  }
+  return "Install Podman and Podman Compose via your package manager:\n" +
+    "  Fedora/RHEL: sudo dnf install -y podman podman-compose\n" +
+    "  Ubuntu/Debian: sudo apt update && sudo apt install -y podman podman-compose\n" +
+    "  openSUSE: sudo zypper install podman podman-compose";
+}
+
+export async function ensureEngineAvailable({
+  engine = "docker",
+  platform = process.platform,
+  arch = process.arch,
+  env = process.env,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  execute,
+  launch = launchDetachedCommand,
+  download = downloadFile,
+  pathExists = fileExists,
+  sleep = wait,
+  osRelease,
+  installArgs,
+  scheduleResume = scheduleWindowsInstallResume,
+  confirmRestart = confirmWindowsRestart
+}) {
+  if (engine === "podman") {
+    if (await podmanIsReady(execute)) {
+      return { code: 0, reexecuted: false };
+    }
+    stderr.write("Podman and Podman Compose are required.\n" + podmanInstallHelp(platform) + "\n");
+    return { code: 1, reexecuted: false };
+  }
+  return ensureDockerAvailable({
+    platform,
+    arch,
+    env,
+    stdin,
+    stdout,
+    stderr,
+    execute,
+    launch,
+    download,
+    pathExists,
+    sleep,
+    osRelease,
+    installArgs,
+    scheduleResume,
+    confirmRestart
+  });
 }
 
 async function installLinuxDockerEngine({

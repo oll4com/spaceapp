@@ -175,4 +175,34 @@ test("workspace override renders explicit bind mounts without Docker socket acce
   assert.match(compose, /source: "\/home\/alice\/project"/);
   assert.match(compose, /target: "\/workspaces\/project"/);
   assert.doesNotMatch(compose, /docker\.sock/);
+  assert.doesNotMatch(compose, /selinux/i);
 });
+
+test("composeCommand supports Podman engine and retains project flags and user specs", () => {
+  const podmanUp = composeCommand("up", home, { engine: "podman" });
+  assert.equal(podmanUp.command, "podman");
+  assert.equal(podmanUp.args[0], "compose");
+  assert.deepEqual(podmanUp.args.slice(1, 5), [
+    "--project-name", podmanUp.args[2],
+    "--project-directory", home
+  ]);
+  assert.deepEqual(podmanUp.args.slice(-3), ["up", "-d", "--remove-orphans"]);
+
+  const podmanToken = composeCommand("rotateOwnerSetupToken", home, { engine: "podman" });
+  assert.equal(podmanToken.command, "podman");
+  assert.deepEqual(podmanToken.args.slice(-8), [
+    "exec", "-T", "--user", "10001:10001", "spaceapp-core",
+    "node", "scripts/rotate-owner-setup-token.mjs", "--stdin"
+  ]);
+});
+
+test("workspace override renders SELinux z relabeling when engine is podman", () => {
+  const podmanConfig = { ...config, engine: "podman" };
+  const compose = renderWorkspaceCompose(podmanConfig);
+  assert.match(compose, /type: bind/);
+  assert.match(compose, /source: "\/home\/alice\/project"/);
+  assert.match(compose, /target: "\/workspaces\/project"/);
+  assert.match(compose, /bind:\s*\n\s*selinux: "z"/);
+  assert.doesNotMatch(compose, /docker\.sock/);
+});
+

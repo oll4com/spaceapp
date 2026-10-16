@@ -6,7 +6,11 @@ import {
   ensureDockerAvailable,
   prepareDockerCliPath,
   windowsResumeScript,
-  windowsPowerShellArgs
+  windowsPowerShellArgs,
+  podmanIsReady,
+  detectAvailableEngines,
+  podmanInstallHelp,
+  ensureEngineAvailable
 } from "../src/prerequisites.mjs";
 
 function capture() {
@@ -954,3 +958,52 @@ test('Linux waits for a stopped engine to become ready without unnecessarily cha
   assert.ok(calls.some(s=>s.args.includes('systemctl')));
   assert.ok(!calls.some(s=>s.args.includes('usermod')));
 });
+
+test("podmanIsReady checks podman --version, compose version, and info", async () => {
+  const calls = [];
+  const ready = await podmanIsReady(async (spec) => {
+    calls.push(spec);
+    return 0;
+  });
+  assert.equal(ready, true);
+  assert.deepEqual(calls.map((s) => [s.command, ...s.args]), [
+    ["podman", "--version"],
+    ["podman", "compose", "version"],
+    ["podman", "info"]
+  ]);
+
+  const notReady = await podmanIsReady(async (spec) => {
+    return spec.args[0] === "compose" ? 1 : 0;
+  });
+  assert.equal(notReady, false);
+});
+
+test("detectAvailableEngines reports both docker and podman readiness", async () => {
+  const result = await detectAvailableEngines(async (spec) => {
+    if (spec.command === "docker") return 0;
+    if (spec.command === "podman") return 1;
+    return 0;
+  });
+  assert.deepEqual(result, { docker: true, podman: false });
+});
+
+test("ensureEngineAvailable routes to podman and reports install help when not ready", async () => {
+  const stderr = capture();
+  const failed = await ensureEngineAvailable({
+    engine: "podman",
+    platform: "linux",
+    stderr: stderr.stream,
+    execute: async () => 1
+  });
+  assert.equal(failed.code, 1);
+  assert.match(stderr.value(), /podman and podman compose are required/i);
+  assert.match(stderr.value(), /sudo apt install/i);
+
+  const ready = await ensureEngineAvailable({
+    engine: "podman",
+    platform: "linux",
+    execute: async () => 0
+  });
+  assert.equal(ready.code, 0);
+});
+

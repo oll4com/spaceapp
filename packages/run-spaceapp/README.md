@@ -41,7 +41,22 @@ credential-free config so Docker Desktop's graphical credential helper is never
 invoked outside an interactive logon.
 
 The launcher selects `small`, `medium`, or `large` automatically using CPU,
-RAM and free disk. Docker's CPU and RAM allocation is checked as well.
+RAM and free disk. Docker and Podman resource allocations are checked as well.
+
+### Container Engines: Docker and Podman
+
+The launcher defaults to Docker. It also supports **rootless Podman** (Podman ≥ 5 with `podman-compose` or `docker-compose` provider) on Linux and macOS (`podman machine`):
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+- **Selection**: Pass `--engine docker|podman`. The selected engine is saved in `config.json` and reused by all subsequent commands (`up`, `down`, `backup`, `restore`, `doctor`, etc.). When `--engine` is omitted, Docker is preferred if available. If only Podman is detected, interactive setup prompts to use it (or selects it automatically with `--non-interactive`).
+- **SELinux**: On Linux distributions with SELinux enforcing (such as Fedora/RHEL), bind mounts configured via `workspace add` are automatically tagged with `:z` (`selinux: "z"`) to ensure correct permissions.
+- **Data safety**: Docker volumes are not accessible to Podman (and vice-versa). Directly switching engines on an existing installation is blocked. To switch engines safely, run `spaceapp backup` to export an archive, reinstall with `--engine <new-engine>`, and run `spaceapp restore`.
+- **Host-root access**: `--access host-root` is strictly refused when running on Podman.
+- **macOS Podman Machine**: On macOS, the launcher inspects CPU, memory, and disk allocated to the default `podman machine` and guides you to resize it (`podman machine stop`, `podman machine set --cpus ... --memory ...`, `podman machine start`) if requirements are not met.
+
 
 | Profile | CPU | Usable RAM | Fresh free space | Services |
 | --- | --- | --- | --- | --- |
