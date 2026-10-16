@@ -244,7 +244,7 @@ services:
 
 networks:
   devstack:
-    internal: true
+    internal: false
 
 secrets:
   postgres-password:
@@ -340,6 +340,15 @@ export function waitForInfrastructure(names = { postgres: `${COMPOSE_PROJECT}-po
   const ps = run("docker", composeArgs("ps", ["-a"]), { capture: true });
   process.stderr.write(ps.stdout ?? "");
   process.stderr.write(ps.stderr ?? "");
+  // Without the container logs a crash-looping service is a mystery: the state
+  // says "restarting" but not why. Print every service's own output so the
+  // reason is in the failure instead of one `docker logs` away.
+  for (const name of Object.values(names)) {
+    const logs = run("docker", ["logs", "--tail", "80", name], { capture: true });
+    process.stderr.write(`\n--- docker logs ${name} ---\n`);
+    process.stderr.write(logs.stdout ?? "");
+    process.stderr.write(logs.stderr ?? "");
+  }
   fail(`Infrastructure did not become ready in ${Math.round(timeoutMs / 1000)}s (postgres=${postgres || "absent"}, temporal=${temporal || "absent"}).`);
 }
 

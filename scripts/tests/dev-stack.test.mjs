@@ -151,6 +151,26 @@ test("renderCompose namespaced resources never collide with an installed SpaceAp
   assert.ok(text.includes("devstack:"));
 });
 
+test("renderCompose keeps the dev network routable, as the shipped template does", () => {
+  const images = { postgres: "pgvector/pgvector:0.8.3-pg17-trixie@sha256:" + "a".repeat(64), temporal: "temporalio/auto-setup:1.29.1@sha256:" + "b".repeat(64) };
+  const secrets = { postgresPassword: "pw", sessionSecret: "ss", setupToken: "tt", databaseUrl: "db" };
+  const text = renderCompose(images, secrets);
+
+  // An `internal: true` network has no egress, and temporalio/auto-setup then
+  // crash-loops: the first CI run on GitHub left temporal in `Restarting (1)`.
+  // The shipped template says `internal: false`; the dev stack must agree.
+  assert.match(text, /devstack:\s*\r?\n\s*internal: false/);
+  assert.ok(!/internal: true/.test(text), "the dev network must not be internal");
+});
+
+test("waitForInfrastructure prints each container's logs before giving up", () => {
+  const source = waitForInfrastructure.toString();
+  // A crash-looping service only says "restarting"; the reason is in its own
+  // output. The failure has to include it instead of leaving one `docker logs` away.
+  assert.match(source, /docker", \["logs"/);
+  assert.match(source, /docker logs/);
+});
+
 test("dev-stack ports do not collide with an installed SpaceApp on 4910/4911", () => {
   assert.notEqual(PORTS.api, 4910);
   assert.notEqual(PORTS.web, 4911);
