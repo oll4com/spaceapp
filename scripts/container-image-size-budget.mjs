@@ -10,10 +10,13 @@ const mebibyte = 1024 * 1024;
 // js-tiktoken (22 MiB, Space Gateway token counting).
 // 1.1.5 raised core again: linux/arm64 measured 1066.9 MiB and linux/amd64 1045.0 MiB (sqlite3 in the image,
 // the 1.1.5 application); the first public release run failed the arm64 build at 1050 MiB.
+// Per-service container images: each image ships only the code and dependencies it runs.
+// Measured with scripts/container-image-size-budget.mjs on both linux/amd64 and linux/arm64:
+// core at most 850 MiB, browser at most 1350 MiB, cli at most 1000 MiB.
 export const containerImageSizeBudgets = Object.freeze({
-  core: 1100 * mebibyte,
-  browser: 1750 * mebibyte,
-  cli: 2800 * mebibyte
+  core: 850 * mebibyte,
+  browser: 1350 * mebibyte,
+  cli: 1000 * mebibyte
 });
 
 export function evaluateContainerImageSize({ target, sizeBytes }) {

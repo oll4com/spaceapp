@@ -71,3 +71,56 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke check core target
+        if: matrix.target == 'core' && matrix.arch == 'amd64'
+        run: |
+          docker network create spaceapp-smoke-net
+          docker run -d --name smoke-postgres --network spaceapp-smoke-net \
+            -e POSTGRES_DB=spaceapp -e POSTGRES_USER=spaceapp -e POSTGRES_PASSWORD=smokepass \
+            pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+          for i in $(seq 1 30); do
+            if docker exec smoke-postgres pg_isready -U spaceapp -d spaceapp >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          mkdir -p /tmp/smoke-secrets
+          echo "postgres://spaceapp:smokepass@smoke-postgres:5432/spaceapp" > /tmp/smoke-secrets/database-url
+          echo "smokesessionsecret1234567890123456" > /tmp/smoke-secrets/session-secret
+          echo "smokesetuptoken123" > /tmp/smoke-secrets/setup-token
+          docker run -d --name smoke-core --network spaceapp-smoke-net \
+            -v /tmp/smoke-secrets/database-url:/run/secrets/database-url:ro \
+            -v /tmp/smoke-secrets/session-secret:/run/secrets/session-secret:ro \
+            -v /tmp/smoke-secrets/setup-token:/run/secrets/setup-token:ro \
+            -e SPACEAPP_WORKFLOWS_ENABLED=false \
+            -p 4911:4911 \
+            spaceapp-ci:core-amd64
+          for i in $(seq 1 45); do
+            if curl -sf http://127.0.0.1:4911/readyz | grep '"ok":true' >/dev/null; then echo "core readyz ok"; break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:4911/readyz | grep '"ok":true' || { docker logs smoke-core; exit 1; }
+          docker rm -f smoke-core smoke-postgres || true
+          docker network rm spaceapp-smoke-net || true
+
+      - name: Smoke check cli target
+        if: matrix.target == 'cli' && matrix.arch == 'amd64'
+        run: |
+          mkdir -p /tmp/smoke-cli-run
+          docker run -d --name smoke-cli \
+            -e SPACE_CLI_HOST_SOCKET=/run/spaceapp-cli/host.sock \
+            -v /tmp/smoke-cli-run:/run/spaceapp-cli \
+            spaceapp-ci:cli-amd64
+          for i in $(seq 1 30); do
+            if [ -S /tmp/smoke-cli-run/host.sock ]; then echo "cli socket ready"; break; fi
+            sleep 1
+          done
+          test -S /tmp/smoke-cli-run/host.sock || { docker logs smoke-cli; exit 1; }
+          docker rm -f smoke-cli || true
+
+      - name: Smoke check browser target
+        if: matrix.target == 'browser' && matrix.arch == 'amd64'
+        run: |
+          docker run --rm --entrypoint /usr/bin/chromium \
+            spaceapp-ci:browser-amd64 \
+            --headless --no-sandbox --disable-gpu --dump-dom about:blank >/dev/null
+
