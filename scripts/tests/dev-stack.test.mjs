@@ -15,7 +15,7 @@ const devStack = await import(pathToFileURL(join(repoRoot, "scripts", "dev-stack
 const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, parseContainerState, waitForInfrastructure, buildServiceEnv, SETUP_TOKEN_FILE_VAR, PORTS, OPENCODE_PARITY_COMMAND, renderOpenCodeWrapper, writeOpenCodeWrapper } = devStack;
 // The teardown helpers stay off the module's public surface; they are reachable
 // through `__testing` with the rest of the internals these tests pin.
-const { signalProcessTree, processTreeAlive, stopProcessTrees, readPidFile, sleepSync } = devStack.__testing;
+const { signalProcessTree, processTreeAlive, stopProcessTrees, readPidFile, sleepSync, psRowsShowLiveMember } = devStack.__testing;
 
 const TEMPLATE = join(repoRoot, "packages/run-spaceapp/templates/compose.yml");
 const DOCKERFILE = join(repoRoot, "Dockerfile");
@@ -612,4 +612,46 @@ test("teardown reaches a child's own children, not just the leader it recorded",
     signalProcessTree(leader.pid, "SIGKILL");
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// The macOS half of that probe. This job runs on Linux, and it was Linux-only
+// coverage that let the bug through: /proc was consulted, macOS was not, and
+// the macOS leg of the workflow found the gap instead. Reading `ps` through a
+// command cannot be exercised from here, so the decision over its output is
+// split out and pinned against captured rows.
+
+test("ps rows count a live member of the group and ignore every other group", () => {
+  const listing = [
+    "    1     1 Ss ",
+    "  410   410 Ss ",
+    "  412   410 S  ",
+    "  999   999 S  "
+  ].join("\n");
+  assert.equal(psRowsShowLiveMember(listing, 410), true);
+  assert.equal(psRowsShowLiveMember(listing, 999), true);
+  assert.equal(psRowsShowLiveMember(listing, 500), false);
+});
+
+test("ps rows treat a group that is only zombies as stopped", () => {
+  // The exact shape the macOS leg hit: the leader was signalled, exited, and
+  // was never reaped by the test process that forked it. Every row in the group
+  // is then `Z`, `ps` still lists the group, and a probe that trusted signal 0
+  // reported a stopped stack as running forever.
+  const zombies = ["  410   410 Z  ", "  412   410 Z  "].join("\n");
+  assert.equal(psRowsShowLiveMember(zombies, 410), false);
+
+  // `X` is the other state that cannot run user code.
+  assert.equal(psRowsShowLiveMember("  410   410 X  ", 410), false);
+
+  // One live sibling keeps the group alive even when the leader is a zombie —
+  // which is the reason the whole group is asked rather than the leader alone.
+  const mixed = ["  410   410 Z  ", "  412   410 S  "].join("\n");
+  assert.equal(psRowsShowLiveMember(mixed, 410), true);
+});
+
+test("ps rows survive a header, blank lines and a truncated listing", () => {
+  const noisy = ["", "  PID  PGID STAT", "  410   410 S  ", "", "   "].join("\n");
+  assert.equal(psRowsShowLiveMember(noisy, 410), true);
+  assert.equal(psRowsShowLiveMember("", 410), false);
+  assert.equal(psRowsShowLiveMember("  410   410  ", 410), false);
 });

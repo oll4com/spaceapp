@@ -857,12 +857,90 @@ function linuxGroupHasLiveMember(pgid) {
 }
 
 /**
+ * Decide a `ps -a -x -o pid=,pgid=,stat=` listing, read as text. Split out from
+ * the spawn so the macOS rule can be proven on any platform: the CI job that
+ * found the bug runs on Linux, and a test that only ever runs on macOS would
+ * have missed it too.
+ *
+ * @param {string} stdout
+ * @param {number} pgid
+ * @returns {boolean} true when some row in `pgid` can still run user code.
+ */
+export function psRowsShowLiveMember(stdout, pgid) {
+  for (const line of stdout.split("\n")) {
+    const [pid, group, state] = line.trim().split(/\s+/);
+    if (!pid || !group || !state) continue;
+    if (Number(group) !== pgid) continue;
+    if (state[0] === "Z" || state[0] === "X") continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The macOS and BSD equivalent of `linuxGroupHasLiveMember`, reading `ps`
+ * instead of `/proc`.
+ *
+ * BSD `ps` reports the same scheduling-state letters as `/proc`, so the same
+ * zombie filter applies; it just has to be fetched through a command rather
+ * than a file. `-a -x` lists every process, because the question is about the
+ * whole group and not about one pid.
+ *
+ * @param {number} pgid
+ * @returns {boolean | null} null when `ps` could not answer.
+ */
+function bsdGroupHasLiveMember(pgid) {
+  const out = spawnSync("ps", ["-a", "-x", "-o", "pid=,pgid=,stat="], { encoding: "utf8" });
+  if (out.status !== 0 || typeof out.stdout !== "string") return null;
+  return psRowsShowLiveMember(out.stdout, pgid);
+}
+
+/**
+ * The macOS and BSD equivalent of `readProcStat` for a single pid. Only the
+ * state is needed here; the group is already known from the probe above.
+ *
+ * @param {number} pid
+ * @returns {string | null} the `ps` state string, or null when the pid is gone.
+ */
+function bsdProcessState(pid) {
+  const out = spawnSync("ps", ["-p", String(pid), "-o", "stat="], { encoding: "utf8" });
+  if (out.status !== 0 || typeof out.stdout !== "string") return null;
+  const state = out.stdout.trim();
+  return state === "" ? null : state;
+}
+
+/**
+ * Any still-live member of `pgid`, or null when this platform cannot say.
+ *
+ * @param {number} pgid
+ * @returns {boolean | null}
+ */
+function posixGroupHasLiveMember(pgid) {
+  if (process.platform === "linux") return linuxGroupHasLiveMember(pgid);
+  if (process.platform === "darwin" || process.platform.endsWith("bsd")) return bsdGroupHasLiveMember(pgid);
+  return null;
+}
+
+/**
+ * The scheduling state of one pid, or null when it is gone or unreadable.
+ *
+ * @param {number} pid
+ * @returns {string | null}
+ */
+function posixProcessState(pid) {
+  if (process.platform === "linux") return readProcStat(pid)?.state ?? null;
+  if (process.platform === "darwin" || process.platform.endsWith("bsd")) return bsdProcessState(pid);
+  return null;
+}
+
+/**
  * Report whether a process, or anything it forked, is still alive.
  *
- * Signal 0 is not sufficient on Linux. A process whose parent never reaps it
+ * Signal 0 is not sufficient on POSIX. A process whose parent never reaps it
  * stays visible as a zombie, and `process.kill(pid, 0)` succeeds for zombies,
  * so a service that has already finished would be reported as running forever.
- * /proc is therefore asked first and the zombie states are filtered out.
+ * The platform's process table — `/proc` on Linux, `ps` on macOS and BSD — is
+ * asked first, and the zombie states are filtered out.
  *
  * @param {number} pid
  * @returns {boolean}
@@ -873,15 +951,12 @@ function processTreeAlive(pid) {
     const out = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], { encoding: "utf8" });
     return (out.stdout ?? "").includes(`"${pid}"`);
   }
-  // Linux is where the acceptance contract's CI runs, and where /proc can answer
-  // precisely. Ask it first: the group, then the pid itself.
-  if (process.platform === "linux") {
-    const groupLive = linuxGroupHasLiveMember(pid);
-    if (groupLive !== null) {
-      if (groupLive) return true;
-      const own = readProcStat(pid);
-      return own !== null && own.state !== "Z" && own.state !== "X";
-    }
+  // Ask the process table first: the group, then the pid itself.
+  const groupLive = posixGroupHasLiveMember(pid);
+  if (groupLive !== null) {
+    if (groupLive) return true;
+    const own = posixProcessState(pid);
+    return own !== null && own[0] !== "Z" && own[0] !== "X";
   }
   for (const target of [-pid, pid]) {
     try {
@@ -1161,7 +1236,10 @@ export const __testing = {
   PORTS, STATE_DIR, COMPOSE_PROJECT, PID_FILE,
   // Teardown helpers: they reach a whole process group, which is what `down`
   // and `reset` rely on, so they are worth proving directly.
-  signalProcessTree, processTreeAlive, stopProcessTrees, readPidFile, sleepSync
+  signalProcessTree, processTreeAlive, stopProcessTrees, readPidFile, sleepSync,
+  // The macOS half of the liveness probe. `ps` output is parsed here so the
+  // rule can be tested wherever the suite runs, not only on a Mac.
+  psRowsShowLiveMember
 };
 
 const invokedDirectly =
