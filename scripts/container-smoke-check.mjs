@@ -305,7 +305,13 @@ async function checkBrowser() {
     [],
     ["--no-zygote", "--single-process",
      "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
-     "--disable-features=Vulkan"]
+     "--disable-features=Vulkan"],
+    // Emulated (QEMU user-mode) runs: Chromium's crashpad uses ptrace,
+    // which qemu-user does not implement, and the emulator dies with an
+    // internal SIGTRAP. Disable crashpad and the software rasterizer.
+    ["--no-zygote", "--single-process",
+     "--disable-crashpad", "--disable-breakpad", "--disable-software-rasterizer",
+     "--disable-features=Vulkan,Crashpad"]
   ];
   let launched = false;
   let lastLaunch;
