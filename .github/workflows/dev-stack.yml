@@ -1,0 +1,212 @@
+name: dev-stack
+
+# Runs the full SpaceApp from source on a clean ubuntu-latest runner with no
+# TTY: PostgreSQL + Temporal in Docker, then the API, web, worker and CLI host
+# from source. It waits for /readyz, claims owner setup over HTTP through the
+# real setup-token flow (no dev-login shortcut), opens an OpenCode CLI pane
+# through the API and checks the pane is running, then resets and verifies that
+# nothing is left behind.
+
+on:
+  pull_request:
+    paths:
+      - "scripts/dev-stack.mjs"
+      - "scripts/tests/**"
+      - "packages/run-spaceapp/templates/compose.yml"
+      - "deploy/docker/**"
+      - ".github/workflows/dev-stack.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: dev-stack-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  API_PORT: "5910"
+  WEB_PORT: "5911"
+
+jobs:
+  dev-stack:
+    name: Run the full app from source
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js from .nvmrc
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+          npm_config_fund: "false"
+          npm_config_audit: "false"
+
+      - name: Build the workspace
+        run: npm run build
+
+      - name: Unit tests for the dev-stack orchestrator
+        run: node --test scripts/tests/dev-stack.test.mjs
+
+      # ---------------------------------------------------------------
+      # The real run. No TTY on CI, which is exactly what the acceptance
+      # contract asks for.
+      # ---------------------------------------------------------------
+      - name: Start the stack from source
+        run: |
+          set -euo pipefail
+          nohup npm run dev:stack > dev-stack.out 2>&1 &
+          echo "dev-stack pid $!"
+
+      - name: Wait for /readyz to report ok
+        run: |
+          set -euo pipefail
+          echo "waiting for http://127.0.0.1:${API_PORT}/readyz"
+          for i in $(seq 1 150); do
+            if curl -fsS "http://127.0.0.1:${API_PORT}/readyz" -o readyz.json 2>/dev/null; then
+              echo "readyz: $(cat readyz.json)"
+              if grep -q '"ok"[: ]*true' readyz.json; then
+                echo "API is ready."
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          echo "readyz never reported ok"
+          echo "--- dev-stack.out ---"; cat dev-stack.out || true
+          echo "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true
+          echo "--- api.log ---"; tail -n 120 .dev-stack/logs/api.log 2>/dev/null || true
+          exit 1
+
+      # Owner setup goes through the real setup-token flow:
+      #   GET  /api/setup/status   -> { setupRequired, expiresAt }
+      #   POST /api/setup/claim    -> { token, email, password }  (password >= 12)
+      # The claim response sets the session cookie and returns starterRoomId.
+      - name: Claim owner setup over HTTP
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          TOKEN="$(cat .dev-stack/secrets/setup-token)"
+          echo "setup token loaded (${#TOKEN} chars)"
+
+          curl -fsS "${BASE}/api/setup/status" -o setup-status.json -w 'setup status: %{http_code}\n'
+          cat setup-status.json
+          grep -q '"setupRequired"[: ]*true' setup-status.json
+
+          curl -fsS -X POST "${BASE}/api/setup/claim" \
+            -H 'content-type: application/json' \
+            --data "{\"token\":\"${TOKEN}\",\"email\":\"ci-owner@example.test\",\"password\":\"ci-owner-password-1\"}" \
+            -c cookies.txt -o claim.json -w 'setup claim: %{http_code}\n'
+          cat claim.json
+
+          node -e '
+            const c = require("./claim.json");
+            if (c.isAuthenticated !== true) { console.error("claim did not authenticate"); process.exit(1); }
+            if (c.isSetupRequired !== false) { console.error("setup still required"); process.exit(1); }
+            if (!c.starterRoomId) { console.error("claim returned no starterRoomId"); process.exit(1); }
+            require("fs").writeFileSync("starter-room-id.txt", c.starterRoomId);
+            console.log("owner claimed; starter room:", c.starterRoomId);
+          '
+
+      # The starter room is created through the documented setup route, not by
+      # guessing a room id. It needs the ADMIN session the claim just issued.
+      - name: Ensure the Getting Started room
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          curl -fsS -b cookies.txt -X POST "${BASE}/api/setup/starter-room" \
+            -H 'content-type: application/json' \
+            -o starter-room.json -w 'starter room: %{http_code}\n'
+          cat starter-room.json
+          node -e '
+            const s = require("./starter-room.json");
+            const id = s.room?.id;
+            if (!id) { console.error("no room id from /api/setup/starter-room"); process.exit(1); }
+            require("fs").writeFileSync("starter-room-id.txt", id);
+            console.log("starter room:", id);
+          '
+
+      # OpenCode CLI pane: mode TERMINAL + terminalRuntimeId "cli:opencode".
+      # The runtime descriptor declares authMode "NONE", so no AI provider
+      # account is needed to open the pane.
+      - name: Open an OpenCode CLI pane and check it is running
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          ROOM_ID="$(cat starter-room-id.txt)"
+
+          curl -fsS -b cookies.txt -X POST "${BASE}/api/panes" \
+            -H 'content-type: application/json' \
+            -d "{\"roomId\":\"${ROOM_ID}\",\"title\":\"OpenCode CLI\",\"mode\":\"TERMINAL\",\"terminalRuntimeId\":\"cli:opencode\"}" \
+            -o pane.json -w 'open pane: %{http_code}\n'
+          cat pane.json
+
+          node -e '
+            const p = require("./pane.json");
+            if (!p.id) { console.error("pane create returned no id"); process.exit(1); }
+            if (p.mode !== "TERMINAL") { console.error("pane mode is " + p.mode + ", expected TERMINAL"); process.exit(1); }
+            if (p.terminalRuntimeId !== "cli:opencode") { console.error("wrong runtime: " + p.terminalRuntimeId); process.exit(1); }
+            require("fs").writeFileSync("pane-id.txt", p.id);
+            console.log("pane:", p.id, p.mode, p.terminalRuntimeId);
+          '
+          PANE_ID="$(cat pane-id.txt)"
+          export PANE_ID
+
+          for i in $(seq 1 45); do
+            curl -fsS -b cookies.txt "${BASE}/api/panes/${PANE_ID}" -o panes.json 2>/dev/null || true
+            if ! [ -s panes.json ]; then
+              curl -fsS -b cookies.txt "${BASE}/api/panes" -o panes.json 2>/dev/null || true
+            fi
+            STATE="$(node -e '
+              let d; try { d = require("./panes.json"); } catch { console.log(""); process.exit(0); }
+              const list = Array.isArray(d) ? d : (d.panes || d.items || []);
+              const p = list.find(x => x.id === process.env.PANE_ID) || d || list[0];
+              if (!p) { console.log(""); process.exit(0); }
+              console.log(p.status || p.cliStatus || (p.latestCliSession && p.latestCliSession.status) || "");
+            ')"
+            echo "pane state: ${STATE}"
+            case "${STATE}" in
+              RUNNING|running|active|ready|connected|IDLE|idle)
+                echo "pane is running"; exit 0 ;;
+              EXITED|FAILED|CRASHED|DEAD)
+                echo "pane is not running (${STATE})"
+                tail -n 120 .dev-stack/logs/cli-host.log || true
+                exit 1 ;;
+            esac
+            sleep 2
+          done
+          echo "pane never reported a running state"
+          tail -n 120 .dev-stack/logs/cli-host.log || true
+          exit 1
+
+      - name: Reset and verify no resources remain
+        if: always()
+        run: |
+          set -euo pipefail
+          npm run dev:stack -- reset 2>&1 | tee reset.out
+
+          echo "--- residual check ---"
+          if docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Names}}' | grep -q .; then
+            echo "containers left behind"; docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack"; exit 1
+          fi
+          if docker volume ls --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Name}}' | grep -q .; then
+            echo "volumes left behind"; docker volume ls --filter "label=com.docker.compose.project=spaceapp-dev-stack"; exit 1
+          fi
+          if [ -d .dev-stack ]; then
+            echo ".dev-stack still exists after reset"; ls -la .dev-stack; exit 1
+          fi
+          echo "no containers, no volumes, no state directory left."
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "=== dev-stack.out ==="; cat dev-stack.out || true
+          echo "=== .dev-stack/logs ==="; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "=== $f (tail 80) ==="; tail -n 80 "$f" || true
+          done
