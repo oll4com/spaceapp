@@ -27,6 +27,8 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci --no-audit --no-fund
+      # Build internal packages in dependency order, as required for a fresh clone.
+      - run: npm run check
       - name: Run sandbox and replay gates within three minutes
         shell: bash
         run: |
