@@ -10,9 +10,9 @@ import type {
   TurnWorkflowResult
 } from "@space/contracts";
 import { expect } from "vitest";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Scenario } from "./temporal-test-harness.js";
 
-type ScenarioContext = Parameters<Scenario["run"]>[0];
 type History = Awaited<ReturnType<WorkflowHandle["fetchHistory"]>>;
 
 function syntheticError(message: string): Error {
@@ -75,14 +75,16 @@ function timerSeconds(history: History): string[] {
     ? [String(event.timerStartedEventAttributes.startToFireTimeout?.seconds)] : []);
 }
 
-async function waitForTimer(ctx: ScenarioContext, handle: WorkflowHandle): Promise<History> {
-  // Advance milliseconds while waiting for worker activations, never the one-hour timer itself.
-  for (let attempt = 0; attempt < 100; attempt++) {
+async function waitForTimer(handle: WorkflowHandle): Promise<History> {
+  // Yield real time for the worker activation while the test server clock stays
+  // locked. Counting fast RPCs races the worker on low-latency Linux runners.
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
     const history = await handle.fetchHistory();
     if (timerSeconds(history).length) return history;
-    await ctx.env.sleep(1);
+    await delay(20);
   }
-  throw new Error("The goal workflow did not schedule its durable pause timer.");
+  throw new Error("The goal workflow did not schedule its durable pause timer within ten seconds.");
 }
 
 function dummyScenario(): Scenario {
@@ -325,7 +327,7 @@ function goalWakeScenario(): Scenario {
         await firstStepEntered;
         await handle.signal("dotGoalWake");
         releaseStep();
-        const paused = await waitForTimer(ctx, handle);
+        const paused = await waitForTimer(handle);
         expect(steps).toBe(2); // First wake was retained while the first activity was still running.
         expect(timerSeconds(paused)).toEqual(["3600"]);
         await handle.signal("dotGoalWake");
@@ -363,7 +365,7 @@ function goalTimeoutScenario(): Scenario {
     async run(ctx) {
       const input = { goalId: "dot_goal:timeout-test" };
       const handle = await ctx.start("dotGoalWorkflow", [input]);
-      await waitForTimer(ctx, handle);
+      await waitForTimer(handle);
       await ctx.env.sleep("30 seconds");
       await expect(handle.result()).resolves.toEqual({ goalStatus: "COMPLETED" });
       const history = await handle.fetchHistory();
