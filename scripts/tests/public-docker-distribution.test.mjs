@@ -166,10 +166,10 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
 });
 
 test("public Compose runs without host Docker access or development credentials", async () => {
-  const compose = await readFile(
+  const compose = (await readFile(
     join(root, "packages", "run-spaceapp", "templates", "compose.yml"),
     "utf8"
-  );
+  )).replace(/\r\n/g, "\n");
 
   for (const service of ["spaceapp-core", "spaceapp-cli", "spaceapp-browser", "postgres", "temporal"]) {
     assert.match(compose, new RegExp(`^  ${service}:`, "m"));
