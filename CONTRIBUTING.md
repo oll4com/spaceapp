@@ -105,3 +105,18 @@ attachment, room retention, control, readiness, polling or deployment.
 Keep changes reviewable and include the exact commands and limitations of your
 verification. Never include credentials, private transcripts or local runtime
 state in a contribution.
+
+## Temporal workflow replay histories
+
+Workflow changes in `apps/worker` are gated by replay determinism tests against
+synthetic histories in `apps/worker/tests/fixtures/workflow-histories/`. To
+record or refresh fixtures locally:
+
+```sh
+npm run temporal:record-histories -w @space/worker
+```
+
+Re-recording is allowed **only** together with a replay-safe `patched()` change
+(while retaining pre-patch fixtures for existing branches) or when adding a new
+workflow. Never re-record histories to make a failing replay test pass.
+
