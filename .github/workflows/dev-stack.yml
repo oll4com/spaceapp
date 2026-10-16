@@ -32,6 +32,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          # npm ci and the build run code from this checkout; the job needs no
+          # git credentials after that, so do not leave the token in .git/config
+          # where a lifecycle script could read it.
+          persist-credentials: false
 
       - name: Use Node.js from .nvmrc
         uses: actions/setup-node@v4
@@ -221,10 +226,16 @@ jobs:
           for i in $(seq 1 45); do
             rm -f cli-session.json
             code="$(curl -sS -b cookies.txt "${BASE}/api/panes/${PANE_ID}/cli/session" -o cli-session.json -w '%{http_code}' || echo 000)"
+            # JSON.parse, not require: require caches by resolved filename, so
+            # every poll after the first would re-read the first response and the
+            # loop could never observe a state change. A missing file is normal
+            # here -- curl writes nothing when it cannot reach the API.
             STATE="$(node -e '
               const fs = require("fs");
-              if (fs.readFileSync("cli-session.json", "utf8").trim() === "null") { console.log("NO_SESSION"); process.exit(0); }
-              let d; try { d = require("./cli-session.json"); } catch { console.log(""); process.exit(0); }
+              if (!fs.existsSync("cli-session.json")) { console.log("NO_RESPONSE"); process.exit(0); }
+              const raw = fs.readFileSync("cli-session.json", "utf8").trim();
+              if (raw === "null") { console.log("NO_SESSION"); process.exit(0); }
+              let d; try { d = JSON.parse(raw); } catch { console.log(""); process.exit(0); }
               console.log((d && d.session && d.session.status) || "");
             ')"
             echo "cli session state: ${STATE} (http ${code})"
