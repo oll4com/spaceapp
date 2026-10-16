@@ -260,7 +260,17 @@ jobs:
       # asks the pull request to carry.
       - name: Print what the one command produced
         if: always()
-        run: cat dev-stack.out
+        run: |
+          # `up` is launched with `nohup ... > dev-stack.out`, so a missing file
+          # means the stack step died before it could write anything — which that
+          # step has already reported. Say that plainly rather than letting a
+          # bare `cat` error become the last thing a reader sees.
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            echo "The cause is in that step; there is no transcript to print."
+            exit 0
+          fi
+          cat dev-stack.out
 
       # Evidence first, teardown second. `reset` deletes .dev-stack/, so a dump
       # that runs after it finds nothing left to read.
@@ -573,7 +583,15 @@ jobs:
       - name: Print what the one command produced
         if: always()
         shell: bash
-        run: cat dev-stack.out
+        run: |
+          # Same contract as the Linux job: a missing file means the stack step
+          # failed before writing anything, and that step carries the cause.
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            echo "The cause is in that step; there is no transcript to print."
+            exit 0
+          fi
+          cat dev-stack.out
 
       - name: Dump logs on failure
         if: failure()
