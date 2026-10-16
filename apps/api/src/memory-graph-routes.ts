@@ -10,6 +10,8 @@ import {
   idSchema,
   listMemoryGraphOverviewQuerySchema,
   listMemoryGraphQuerySchema,
+  MEMORY_GRAPH_OVERVIEW_DEFAULT_LIMIT,
+  MEMORY_GRAPH_OVERVIEW_EDGES_PER_NODE,
   listMemoryChangeSetsQuerySchema,
   listMemoryIssuesQuerySchema,
   memoryCalendarQuerySchema,
@@ -313,8 +315,11 @@ function memoryIssuesRevisionHash(snapshotRevision: string, states: MemoryIssueS
 }
 
 // Keep the same payload budget while retaining the taxonomy needed to interpret a large archive.
-export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): MemoryGraphNode[] {
-  if (nodes.length <= 2000) return nodes;
+// `limit` defaults to the historical 2,000-node sample; larger budgets (up to
+// the schema maximum) keep the same reservation order — sources, topics and
+// their neighbors first — and simply fill further before stopping.
+export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], limit: number = MEMORY_GRAPH_OVERVIEW_DEFAULT_LIMIT): MemoryGraphNode[] {
+  if (nodes.length <= limit) return nodes;
   const members = new Map<string, Set<string>>();
   const explicit = new Set<string>();
   const byId = new Map(nodes.map(node => [node.id, node]));
@@ -336,7 +341,7 @@ export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraph
     if (first) selected.set(first, byId.get(first)!);
   }
   for (const node of nodes) {
-    if (selected.size >= 2000) break;
+    if (selected.size >= limit) break;
     selected.set(node.id, node);
   }
   return [...selected.values()];
@@ -361,7 +366,12 @@ export function registerMemoryGraphRoutes(
       : await options.service.getSnapshot();
     const { isStale } = snapshotData;
     const snapshot = await options.service.withSourceTopology?.(snapshotData.snapshot) ?? snapshotData.snapshot;
-    if (setSnapshotEtag(request, reply, snapshot.revisionHash ?? snapshot.sourceHash)) return reply.code(304).send();
+    // The payload depends on the requested node budget, so a non-default
+    // `limit` gets its own ETag: a cached default sample must never answer a
+    // full-graph request with a 304 (or the other way around).
+    const revisionHash = snapshot.revisionHash ?? snapshot.sourceHash;
+    const etagSeed = query.limit === MEMORY_GRAPH_OVERVIEW_DEFAULT_LIMIT ? revisionHash : digest(`${revisionHash}:limit=${query.limit}`);
+    if (setSnapshotEtag(request, reply, etagSeed)) return reply.code(304).send();
     const availableMonths = await options.service.listAvailableMonths();
 
     const anchors = filterNodes(snapshot, query).sort((left, right) => left.id.localeCompare(right.id));
@@ -385,12 +395,16 @@ export function registerMemoryGraphRoutes(
       matchingNodeIds.has(edge.target) &&
       (query.relationMode !== "RELATIONS" || anchorIds.has(edge.source) || anchorIds.has(edge.target))
     );
-    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges);
+    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges, query.limit);
     const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
+    // The edge budget scales with the node budget so a full-graph response is
+    // not silently decapitated at the sample size's 6,000 edges; the default
+    // request keeps exactly the historical 6,000-edge budget.
+    const edgeLimit = Math.max(6000, query.limit * MEMORY_GRAPH_OVERVIEW_EDGES_PER_NODE);
     const selectedEdges = matchingEdges
       .filter((edge) => selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target))
       .sort((a, b) => Number(b.type === "CONTAINS" || b.type === "DERIVED_FROM") - Number(a.type === "CONTAINS" || a.type === "DERIVED_FROM"))
-      .slice(0, 6000);
+      .slice(0, edgeLimit);
     const data = memoryGraphOverviewPayloadSchema.parse({
       version: snapshot.version,
       layoutVersion: snapshot.layoutVersion,

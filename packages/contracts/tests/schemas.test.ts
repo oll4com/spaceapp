@@ -4070,6 +4070,12 @@ describe("Space contracts", () => {
       nodeType: "MEMORY",
       relationMode: "RELATIONS"
     });
+    // The overview limit defaults to the historical sample size, coerces
+    // query strings, and is hard-capped at the full-graph maximum.
+    expect(listMemoryGraphOverviewQuerySchema.parse({}).limit).toBe(2000);
+    expect(listMemoryGraphOverviewQuerySchema.parse({ limit: "50000" }).limit).toBe(50000);
+    expect(() => listMemoryGraphOverviewQuerySchema.parse({ limit: 50001 })).toThrow();
+    expect(() => listMemoryGraphOverviewQuerySchema.parse({ limit: 0 })).toThrow();
 
     expect(memoryCacheLinkSchema.parse({
       memoryRecordId: "memory:cache-record",
