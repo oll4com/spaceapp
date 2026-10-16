@@ -114,12 +114,14 @@ jobs:
 
       # The starter room is created through the documented setup route, not by
       # guessing a room id. It needs the ADMIN session the claim just issued.
+      # The route takes no body, and Fastify answers 400 "Body cannot be empty
+      # when content-type is set to 'application/json'" if we claim one anyway,
+      # so no content-type header here.
       - name: Ensure the Getting Started room
         run: |
           set -euo pipefail
           BASE="http://127.0.0.1:${API_PORT}"
           curl -fsS -b cookies.txt -X POST "${BASE}/api/setup/starter-room" \
-            -H 'content-type: application/json' \
             -o starter-room.json -w 'starter room: %{http_code}\n'
           cat starter-room.json
           node -e '
