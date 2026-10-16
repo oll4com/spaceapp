@@ -30,6 +30,7 @@
     "@space/gateway": "0.2.5",
     "@space/memory-graph": "0.2.5",
     "@space/opencode-control": "0.2.5",
+    "@space/otel-exporter": "0.1.0",
     "@space/runtime": "0.2.5",
     "@space/streaming": "0.2.5",
     "@t3-oss/env-core": "^0.13.11",

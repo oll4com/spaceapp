@@ -130,10 +130,34 @@ function isFailedResult(value: unknown): boolean {
   return Boolean(value && typeof value === "object" && (value as { status?: unknown }).status === "FAILED");
 }
 
+export interface WorkerSpanStartInput {
+  activityType: string;
+  activityId: string;
+  workflowType: string | null;
+  args: readonly unknown[];
+  startTimeUnixNano: bigint;
+}
+
+export interface WorkerSpanFinishInput {
+  endTimeUnixNano: bigint;
+  outcome: ActivityOutcome;
+  reasonCode: string | null;
+}
+
+/**
+ * Best-effort span hook (for example OTLP export). The interceptor guards
+ * every call, so a recorder can never break activity execution.
+ */
+export interface ActivitySpanRecorder {
+  start(input: WorkerSpanStartInput): unknown;
+  finish(span: unknown, input: WorkerSpanFinishInput): void;
+}
+
 export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
+  spanRecorder?: ActivitySpanRecorder;
 }
 
 export async function observeActivityExecution<T>(
@@ -165,6 +189,22 @@ export async function observeActivityExecution<T>(
   workerLog("info", "activity.started", { ...base, queueMs });
   const observation: ActivityObservation = { reasonCode: null };
 
+  // Optional OTLP span for this activity execution. Best effort: guarded.
+  const spanRecorder = dependencies.spanRecorder;
+  let openSpan: unknown = null;
+  try {
+    openSpan =
+      spanRecorder?.start({
+        activityType,
+        activityId: info.activityId,
+        workflowType: info.workflowType ?? null,
+        args,
+        startTimeUnixNano: BigInt(startedAt) * 1_000_000n
+      }) ?? null;
+  } catch {
+    openSpan = null;
+  }
+
   const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => {
     const durationMs = Math.max(0, now() - startedAt);
     metrics.activitiesInFlight.inc(labels, -1);
@@ -185,6 +225,17 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
+    if (openSpan && spanRecorder) {
+      try {
+        spanRecorder.finish(openSpan, {
+          endTimeUnixNano: BigInt(now()) * 1_000_000n,
+          outcome,
+          reasonCode
+        });
+      } catch {
+        // span export is best effort; never affects the activity
+      }
+    }
   };
 
   try {
