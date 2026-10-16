@@ -74,10 +74,24 @@ function fail(message) {
   throw new Error(`dev-stack: ${message}`);
 }
 
+/**
+ * Print one line to stdout. cmdUp is synchronous and prints in order, so every
+ * user-facing message goes through here rather than a bare console.log.
+ * @param {string} message
+ */
 function say(message) {
   process.stdout.write(`${message}\n`);
 }
 
+/**
+ * Run a command and hand back the raw result.
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{capture?: boolean}} [options] capture pipes stdout/stderr back to the
+ *   caller instead of inheriting the terminal, which is what the state-reading
+ *   helpers below need.
+ * @returns {import("node:child_process").SpawnSyncReturns<string>}
+ */
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit",
@@ -88,6 +102,10 @@ function run(command, args, options = {}) {
   return result;
 }
 
+/**
+ * Fail with an actionable message when Docker with the compose plugin is not
+ * usable, so the first line of output names the real problem.
+ */
 function requireDocker() {
   const probe = spawnSync("docker", ["compose", "version"], { stdio: "ignore" });
   if (probe.error || probe.status !== 0) {
@@ -574,6 +592,17 @@ export function writeOpenCodeWrapper(stateDir = STATE_DIR) {
   return { binDir, commandPath };
 }
 
+/**
+ * Install the pinned OpenCode version into the state directory and write the
+ * parity wrapper that SPACE_CLI_COMMAND_PATH has to contain.
+ *
+ * The install uses `npm install --prefix <stateDir>` on purpose: nothing lands
+ * in the user's global npm prefix, so an installed SpaceApp's own toolchain is
+ * left alone. A version stamp short-circuits the network on later runs.
+ *
+ * @param {string} [stateDir]
+ * @returns {{version: string, binDir: string, commandPath: string}}
+ */
 function ensureOpenCode(stateDir = STATE_DIR) {
   const version = readPinnedOpenCode();
   const { binDir, commandPath } = writeOpenCodeWrapper(stateDir);
@@ -611,6 +640,14 @@ const composeArgs = (verb, extra = []) => [
   "compose", "-p", COMPOSE_PROJECT, "-f", COMPOSE_FILE, verb, ...extra
 ];
 
+/**
+ * Run one `docker compose` verb against this checkout's own project and file.
+ * Every call is namespaced to COMPOSE_PROJECT and COMPOSE_FILE, so it cannot
+ * reach an installed SpaceApp's stack.
+ * @param {string} verb
+ * @param {string[]} [extra]
+ * @param {{capture?: boolean}} [options]
+ */
 function compose(verb, extra = [], options = {}) {
   return run("docker", composeArgs(verb, extra), options);
 }
@@ -643,6 +680,11 @@ export function parseContainerState(raw) {
   return { raw: (raw ?? "").trim(), status, health };
 }
 
+/**
+ * Read one container's status and health exactly as docker inspect reports them.
+ * @param {string} name
+ * @returns {{raw: string, status: string, health: string}}
+ */
 function containerState(name) {
   const r = run("docker", ["inspect", "--format", "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}", name], { capture: true });
   return parseContainerState(r.stdout);
@@ -701,6 +743,20 @@ const children = new Map();
 let stopping = false;
 let exitCode = 0;
 
+/**
+ * Start one host-side service (api, web, worker, cli-host) with its output going
+ * to its own file under LOG_DIR.
+ *
+ * A pipe is deliberately not used: `npx tsx watch` and `vite` keep the write
+ * end open past this process's own lifetime, and a piped child would hold the
+ * command open after it has already printed its banner.
+ *
+ * @param {string} name
+ * @param {string} command
+ * @param {string[]} args
+ * @param {Record<string, string>} env
+ * @param {{cwd?: string}} [options]
+ */
 function spawnService(name, command, args, env, options = {}) {
   mkdirSync(LOG_DIR, { recursive: true });
   const logPath = join(LOG_DIR, `${name}.log`);
@@ -800,6 +856,17 @@ function linuxGroupHasLiveMember(pgid) {
   return false;
 }
 
+/**
+ * Report whether a process, or anything it forked, is still alive.
+ *
+ * Signal 0 is not sufficient on Linux. A process whose parent never reaps it
+ * stays visible as a zombie, and `process.kill(pid, 0)` succeeds for zombies,
+ * so a service that has already finished would be reported as running forever.
+ * /proc is therefore asked first and the zombie states are filtered out.
+ *
+ * @param {number} pid
+ * @returns {boolean}
+ */
 function processTreeAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 1) return false;
   if (process.platform === "win32") {
@@ -859,6 +926,13 @@ function stopProcessTrees(entries, { graceMs = 6000 } = {}) {
   return pids.length;
 }
 
+/**
+ * Read the pids an earlier `up` recorded. A missing, truncated or hand-edited
+ * file reads as empty rather than throwing, so `down` and `reset` still work
+ * after an interrupted start.
+ * @param {string} [path]
+ * @returns {Array<{name: string, pid: number}>}
+ */
 function readPidFile(path = PID_FILE) {
   if (!existsSync(path)) return [];
   try {
@@ -871,6 +945,11 @@ function readPidFile(path = PID_FILE) {
   }
 }
 
+/**
+ * Ask every service this process spawned to stop, then hand off the state
+ * cleanup. Guarded by `stopping` so a second signal cannot re-enter it.
+ * @param {NodeJS.Signals} [signal]
+ */
 function stopAll(signal = "SIGTERM") {
   if (stopping) return;
   stopping = true;
@@ -895,6 +974,7 @@ function stopAll(signal = "SIGTERM") {
   }, 8000).unref();
 }
 
+/** Remove the pid file once every service has been asked to stop. */
 function cleanupFiles() {
   try { rmSync(PID_FILE, { force: true }); } catch { /* nothing to clean */ }
 }
@@ -1009,6 +1089,10 @@ function cmdUp() {
   say("");
 }
 
+/**
+ * `dev:stack -- down`: stop this project's containers and any host process an
+ * earlier `up` recorded. The state directory is kept so a later `up` is fast.
+ */
 function cmdDown() {
   requireDocker();
   if (existsSync(COMPOSE_FILE)) compose("down", ["--remove-orphans"]);
@@ -1024,6 +1108,11 @@ function cmdDown() {
   say("dev-stack: down.");
 }
 
+/**
+ * `dev:stack -- reset`: stop host processes, tear the project down including
+ * its volume, drop the state directory, then verify that nothing is left.
+ * Only what this project created is removed.
+ */
 function cmdReset() {
   requireDocker();
   // Stop the host processes before anything else: they keep the state directory
@@ -1055,6 +1144,7 @@ function cmdReset() {
   say("dev-stack: verified — no container, volume or process left from this project.");
 }
 
+/** `dev:stack -- status`: show the project's containers and recorded host pids. */
 function cmdStatus() {
   if (existsSync(COMPOSE_FILE)) compose("ps", [], {});
   else say("dev-stack: no state directory; the stack has not been started here.");
