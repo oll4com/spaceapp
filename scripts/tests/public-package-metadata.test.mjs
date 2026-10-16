@@ -13,6 +13,8 @@ const globalFollowUpCommand =
 const publicTestModules = [
   "publish-npm-candidate.test.mjs",
   "container-image-size-budget.test.mjs",
+  "container-prune-platform-binaries.test.mjs",
+  "create-runtime-bundles.test.mjs",
   "mcp-hono-compatibility.test.mjs",
   "portable-backup-restore.test.mjs",
   "published-container-verification.test.mjs",
@@ -88,6 +90,7 @@ test("public test command uses a portable one-file suite that imports every publ
     "@space/opencode-control",
     "@space/memory-graph",
     "@space/browser-host",
+    "@space/cli-host-client",
     "@space/cli-host",
     "@space/codex-app-server",
     "@space/runtime",

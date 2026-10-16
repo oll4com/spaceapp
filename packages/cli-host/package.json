@@ -19,6 +19,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@space/cli-host-client": "0.2.5",
     "node-pty": "^1.1.0"
   },
   "devDependencies": {
