@@ -52,6 +52,11 @@ test("launcher and container matrices cover the declared operating systems and a
   assert.match(containers, /- amd64/);
   assert.match(containers, /- arm64/);
   assert.match(containers, /push: false/);
+  assert.match(
+    containers,
+    /runs-on: \$\{\{ matrix\.arch == 'arm64' && 'ubuntu-24\.04-arm' \|\| 'ubuntu-latest' \}\}/
+  );
+  assert.doesNotMatch(containers, /setup-qemu-action/);
 });
 
 test("launcher-only source and workflow changes cannot trigger the container matrix", async () => {

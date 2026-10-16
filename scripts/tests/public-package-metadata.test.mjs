@@ -13,6 +13,8 @@ const globalFollowUpCommand =
 const publicTestModules = [
   "publish-npm-candidate.test.mjs",
   "container-image-size-budget.test.mjs",
+  "container-prune-platform-binaries.test.mjs",
+  "create-runtime-bundles.test.mjs",
   "mcp-hono-compatibility.test.mjs",
   "portable-backup-restore.test.mjs",
   "published-container-verification.test.mjs",
