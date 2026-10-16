@@ -219,6 +219,24 @@ async function checkCli() {
 }
 
 async function checkBrowser() {
+  // The Browser Host expects a migrated database (in production the core
+  // service migrates first). Apply the migrations with this image's own
+  // @space/db before starting the host, which also proves the browser
+  // image's database closure is complete.
+  const migrate = await docker(
+    [
+      "run", "--rm", "--network", NETWORK,
+      "--entrypoint", "node",
+      "-e", `SPACE_DATABASE_URL=${DATABASE_URL}`,
+      IMAGE, "packages/db/dist/migrate.js"
+    ],
+    { timeout: 180_000 }
+  );
+  if (!migrate.ok) {
+    throw new Error(`browser image could not run the database migrations:\n${migrate.stderr}`);
+  }
+  console.log("smoke: browser image applied the database migrations");
+
   const run = await docker([
     "run", "-d", "--name", APP, "--network", NETWORK,
     ...secretMount(),
