@@ -22,7 +22,7 @@
 <main>
   <article>
     <h1>Privacy Policy</h1>
-    <p class="meta">SpaceApp at <span data-instance-host>this instance</span> · Last updated October 12, 2026</p>
+    <p class="meta">SpaceApp at <span data-instance-host>this instance</span> · Last updated October 14, 2026</p>
 
     <p>SpaceApp is a private, self-hosted workspace for AI agents. This instance runs at <code data-instance-host>this server</code> and is operated by its owner. Only people with an account created by the owner can sign in. This policy explains what this instance does with information from your Google account.</p>
 
@@ -33,9 +33,18 @@
         <ul>
           <li>Gmail read-only (<code>gmail.readonly</code>): to read and search your messages when you ask an assistant to;</li>
           <li>Gmail compose (<code>gmail.compose</code>): to create drafts and to send email when you ask an assistant to;</li>
-          <li>Calendar events (<code>calendar.events</code>): to read your events and to create events when you ask an assistant to.</li>
+          <li>Calendar events (<code>calendar.events</code>): to read your events and to create events when you ask an assistant to;</li>
+          <li>Gmail organize (<code>gmail.modify</code>), for Mail Copilot and Job Copilot: to read, label, archive and move your messages and to send replies, within the autonomy level you set (by default every reply waits for your review).</li>
         </ul>
         Each email and event waits for your approval before it is sent or created, unless you turn off <em>Ask before sending email or creating events</em> in Settings → Dots.
+      </li>
+      <li><strong>YouTube</strong> (Streaming dock, connected by the owner for the owner's own channel), with <code>youtube.readonly</code>, <code>youtube.force-ssl</code> and <code>yt-analytics.readonly</code>:
+        <ul>
+          <li>channel and live-stream statistics for the stream overlay;</li>
+          <li>the live chat of the owner's broadcasts, so the chat assistant can answer viewer questions and post its replies;</li>
+          <li>chat moderation when the owner turns it on: warnings, short timeouts and deleting abusive messages.</li>
+        </ul>
+        The chat assistant answers only from public facts and memory the owner approved; it never uses the owner's private data.
       </li>
     </ul>
 
@@ -43,6 +52,7 @@
     <ul>
       <li>Google data is used only to carry out the requests you make in SpaceApp, at the moment you make them.</li>
       <li>To answer a request, the relevant messages or events are sent to the AI model provider selected for that conversation, only for that request.</li>
+      <li>To answer a live-chat question, the viewer's public chat message is sent to the AI model the owner chose for the chat assistant (Claude or OpenAI, through the owner's own gateway), only for that reply.</li>
       <li>We do not sell Google user data, use it for advertising, or use it to train AI models.</li>
       <li>SpaceApp's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</li>
     </ul>
@@ -51,12 +61,14 @@
     <ul>
       <li>Access tokens for connected accounts are stored on this server encrypted with AES-256-GCM and are never shown to assistants or other users.</li>
       <li>Content an assistant retrieved for you can appear in the conversation where you asked for it and in that request's activity record, inside your own workspace.</li>
+      <li>YouTube and other streaming tokens are stored on this server in files only the SpaceApp service can read. Recent chat activity (the last few hundred messages) and moderation actions are kept so the owner can review them.</li>
       <li>Data stays on this self-hosted server; it is not shared with other SpaceApp installations.</li>
     </ul>
 
     <h2>Your choices</h2>
     <ul>
       <li><strong>Disconnect</strong> an account in Connected accounts: SpaceApp revokes its access at Google and deletes the stored tokens.</li>
+      <li><strong>Disconnect</strong> YouTube in the Streaming dock (Overview): SpaceApp revokes its access at Google and stops reading the channel.</li>
       <li>You can also remove SpaceApp's access at any time at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</li>
       <li>You can delete conversations in your workspace, or ask the owner to delete your account and its data.</li>
     </ul>

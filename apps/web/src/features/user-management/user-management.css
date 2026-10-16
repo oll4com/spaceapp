@@ -251,3 +251,21 @@
   font-size: 0.78rem;
   margin-bottom: 0.85rem;
 }
+
+/* Phones: full-screen dialog, each user as a card with labelled fields instead of a 5-column table. */
+@media (max-width: 767px) {
+  .user-management-backdrop { padding: 0; }
+  .user-management-dialog { width: 100vw; max-height: 100dvh; height: 100dvh; border-radius: 0; }
+  .user-management-search { min-width: 0; }
+  .user-management-body { padding: 0.5rem; }
+  .user-management-table thead { display: none; }
+  .user-management-table,
+  .user-management-table tbody,
+  .user-management-table tr,
+  .user-management-table td { display: block; width: 100%; }
+  .user-management-table tr { padding: 0.5rem 0; border-bottom: 1px solid var(--room-border, #343638); }
+  .user-management-table td { padding: 0.3rem 0.5rem; border-bottom: 0; }
+  .user-management-table td[data-label] { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; }
+  .user-management-table td[data-label]::before { content: attr(data-label); flex: 0 0 6.5rem; color: var(--room-muted, #a7a59e); font-size: 0.72rem; }
+  .user-management-table .role-select { min-height: 2.75rem; font-size: 16px; }
+}

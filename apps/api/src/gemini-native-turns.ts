@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { promisify } from "node:util";
 import { findGeminiProcessTree, readPaneStateRecord } from "./gemini-session-verification.js";
 import { geminiNativeConversationIdPattern, normalizeGeminiPaneId } from "./gemini-native-session.js";

@@ -13,7 +13,9 @@ import {
   type McpServerConfig,
   type SpaceInstance,
   type VoiceTranscriptionModel,
-  type VoiceModelVoice
+  type VoiceModelVoice,
+  type VncPreset,
+  vncPresetSchema
 } from "@space/contracts";
 import { resolveCanonicalSpaceMemoryPaths } from "@space/runtime";
 import {
@@ -48,6 +50,8 @@ export interface SpaceApiConfig {
   workflowsEnabled?: boolean;
   /** The public SpaceApp installer (run-spaceapp) runs this API; CLIs there run as an unprivileged user. */
   publicDistribution?: boolean;
+  /** Invites and per-user sign-in (plan clipboard:VrMJ14wJPmVs); off until each user gets an isolated CLI container. */
+  multiUserEnabled?: boolean;
   enableDummyTurns: boolean;
   enableCodexTurns: boolean;
   agentPaneEnabled: boolean;
@@ -193,6 +197,8 @@ export interface SpaceApiConfig {
   roomAgentAutopilotEnabled: boolean;
   harnessEnabled: boolean;
   harnessOrigin: string;
+  /** VNC pane presets from SPACE_VNC_PRESETS (JSON array); none by default, so public installs list no operator hosts. */
+  vncPresets: VncPreset[];
   trustedProxies: string[];
   optionalModules: ReadonlySet<OptionalModuleId>;
   harnessHealthTimeoutMs: number;
@@ -251,7 +257,7 @@ function parseGatewayUrl(raw: string | undefined): string {
 }
 
 export const optionalModuleIds = [
-  "games", "job-copilot", "mail-copilot", "marketing-copilot", "channels", "telegram", "waitlist", "desktop-updates"
+  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "channels", "telegram", "waitlist", "desktop-updates"
 ] as const;
 export type OptionalModuleId = (typeof optionalModuleIds)[number];
 
@@ -294,6 +300,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     // Only the public small profile turns workflows off; private installations always require the worker.
     workflowsEnabled: !(env.SPACE_PUBLIC_DISTRIBUTION === "true" && env.SPACEAPP_WORKFLOWS_ENABLED === "false"),
     publicDistribution: env.SPACE_PUBLIC_DISTRIBUTION === "true",
+    multiUserEnabled: env.SPACE_MULTI_USER_ENABLED === "true",
     enableDummyTurns: valid.SPACE_ENABLE_DUMMY_TURNS === "true",
     enableCodexTurns: valid.SPACE_ENABLE_CODEX_TURNS === "true",
     agentPaneEnabled: valid.SPACE_AGENT_PANE_ENABLED === "true",
@@ -439,6 +446,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     // No default upstream address (review F11): without SPACE_HARNESS_ORIGIN the harness stays off.
     harnessEnabled: env.SPACE_HARNESS_ENABLED === "true" && Boolean(env.SPACE_HARNESS_ORIGIN),
     harnessOrigin: env.SPACE_HARNESS_ORIGIN || "",
+    vncPresets: env.SPACE_VNC_PRESETS?.trim() ? vncPresetSchema.array().max(32).parse(JSON.parse(env.SPACE_VNC_PRESETS)) : [],
     trustedProxies: (env.SPACE_TRUSTED_PROXIES ?? "").split(",").map((address) => address.trim()).filter(Boolean),
     optionalModules: parseOptionalModules(env.SPACE_OPTIONAL_MODULES, env.SPACE_PUBLIC_DISTRIBUTION === "true"),
     harnessHealthTimeoutMs: Math.min(parsePositiveInt(env.SPACE_HARNESS_HEALTH_TIMEOUT_MS, 3000), 15000),

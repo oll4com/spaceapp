@@ -2,7 +2,8 @@ import type { MutableRefObject } from "react";
 import type { Pane, Turn } from "@space/contracts";
 import type { PaneCompletionLifecycleState } from "../../pane-completion-lifecycle.js";
 import { PaneModeIcon, displayPaneTitle } from "../pane-card/PaneCard.js";
-import { Eye, Grid2X2, Minus } from "../ui-theme/app-icons.js";
+import { Eye, Grid2X2, Loader2, Minus, Zap } from "../ui-theme/app-icons.js";
+import { openManage } from "../server-actions/manage-navigation.js";
 import { MINIMIZED_PANE_BAR_ID } from "./MinimizedPaneBarToggle.js";
 import { MinimizedPaneChip, MinimizedPanePreviewCard } from "./MinimizedPanePreview.js";
 import { formatPaneFullTitle, minimizedPaneSubtitle, paneModeLabel } from "./pane-mode-labels.js";
@@ -26,7 +27,10 @@ export function MinimizedPaneBar({
   minimizeAllPending: boolean;
   restoreAllPending: boolean;
 }) {
-  const { minimizedPanes, minimizedBarPreviewMode, toggleMinimizedBarPreviewMode } = bar;
+  const { minimizedPanes, cliUpdate, minimizedBarPreviewMode, toggleMinimizedBarPreviewMode } = bar;
+  const cliUpdateTitle = !cliUpdate ? "" : !cliUpdate.finished
+    ? `Updating ${cliUpdate.label}`
+    : cliUpdate.error || cliUpdate.result?.overallStatus === "FAIL" ? "CLI update failed" : "CLI update finished";
   const minimizedPaneRestoreRefs = restoreRefs;
   return (
     <section
@@ -37,6 +41,20 @@ export function MinimizedPaneBar({
       <div className="minimized-pane-items">
         {visiblePaneCount === 0 ? (
           <span className="all-panes-minimized" role="status">All panes minimized</span>
+        ) : null}
+        {cliUpdate ? (
+          <button
+            type="button"
+            className={`minimized-pane-chip${cliUpdate.finished ? "" : " is-running"}`}
+            data-status={cliUpdate.finished ? "done" : "working"}
+            aria-label={`Restore ${cliUpdateTitle}`}
+            title={cliUpdateTitle}
+            onClick={() => openManage("cli-update-all")}
+          >
+            <span className="minimized-pane-chip-icon" aria-hidden="true"><Zap /></span>
+            <span className="minimized-pane-chip-label">{cliUpdateTitle}</span>
+            {cliUpdate.finished ? null : <Loader2 className="minimized-pane-run-indicator" aria-hidden="true" />}
+          </button>
         ) : null}
         {minimizedPanes.map((pane) => {
           const paneRunActive =

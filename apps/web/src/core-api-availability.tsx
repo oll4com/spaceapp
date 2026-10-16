@@ -1,5 +1,6 @@
 import { useEffect, useEffectEvent, useState } from "react";
 import { X } from "./features/ui-theme/app-icons.js";
+import { isTransientUpstreamErrorMessage } from "./app-shell-utils.js";
 
 export { CORE_API_RECOVERY_WINDOW_MS, reportCoreApiFailure, reportCoreApiSuccess, resetCoreApiAvailability } from "./core-api-state.js";
 import { getCoreApiUnavailable, subscribeCoreApiAvailability } from "./core-api-state.js";
@@ -52,8 +53,10 @@ export function GlobalApiErrorAlert({ actionError, onDismissActionError }: {
 }) {
   const [coreApiUnavailable, setCoreApiUnavailable] = useState(getCoreApiUnavailable());
   useEffect(() => subscribeCoreApiAvailability(setCoreApiUnavailable), []);
-  const message = actionError ?? (coreApiUnavailable ? outageMessage : null);
-  return message ? <ErrorBanner key={`${actionError !== null ? "action" : "outage"}:${message}`}
-    message={message} autoDismiss={actionError !== null}
-    onDismiss={actionError !== null ? onDismissActionError : undefined} /> : null;
+  // A brief API blip is not an action error; the outage banner reports it after 10 seconds.
+  const shownActionError = isTransientUpstreamErrorMessage(actionError) ? null : actionError;
+  const message = shownActionError ?? (coreApiUnavailable ? outageMessage : null);
+  return message ? <ErrorBanner key={`${shownActionError !== null ? "action" : "outage"}:${message}`}
+    message={message} autoDismiss={shownActionError !== null}
+    onDismiss={shownActionError !== null ? onDismissActionError : undefined} /> : null;
 }

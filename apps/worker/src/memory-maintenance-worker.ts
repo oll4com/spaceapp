@@ -22,6 +22,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
 
   try {
     const connection = await NativeConnection.connect({ address });
+
     const worker = await Worker.create({
       connection,
       namespace,
@@ -29,7 +30,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
       workflowsPath,
       activities,
       ...memoryMaintenanceWorkerOptions,
-      ...(spanExporter ? workerTracingOptions(spanExporter) : {})
+      ...workerTracingOptions(spanExporter)
     });
     console.log(JSON.stringify({
       service,

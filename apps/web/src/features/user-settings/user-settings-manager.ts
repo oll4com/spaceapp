@@ -30,7 +30,8 @@ import {
   readModernIconPack,
   writeModernIconPack,
   readUiBackground,
-  writeUiBackground
+  writeUiBackground,
+  writeLiquidGlassTint
 } from "../../ui-theme.js";
 
 export const WIDGETS_STATE_KEY = "space.desktop-widgets.state.v1";
@@ -93,6 +94,8 @@ export function syncFromServer(
       themeChanged = true;
     }
   }
+  // Applied live, like the zoom: no reload.
+  if (typeof settings.liquidGlassTint === "number") writeLiquidGlassTint(storage, settings.liquidGlassTint);
   if (typeof settings.uiZoom === "number") {
     storage.setItem("space.ui.zoom.v1", String(settings.uiZoom));
     if (typeof document !== "undefined") {

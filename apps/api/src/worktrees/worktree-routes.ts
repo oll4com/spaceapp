@@ -22,7 +22,7 @@ const worktreeItemCacheMaxEntries = 256;
 export interface WorktreeRoutesOptions {
   service: WorktreeService;
   rateLimitOptions?: Record<string, unknown>;
-  /** Authorizes merge, removal and cleanup. The composition root requires an
+  /** Authorizes listing, creation, merge, removal and cleanup. The composition root requires an
    * ADMIN or OPERATOR session; standalone route tests may omit it. */
   authorizeDestructive?: (request: FastifyRequest) => boolean;
   /** Managed checkout directory whose non-Git leftovers may be removed. */
@@ -35,7 +35,7 @@ export function registerWorktreeRoutes(app: FastifyInstance, options: WorktreeRo
   const { service, rateLimitOptions = {}, authorizeDestructive, managedWorktreesRoot = WORKTREES_ROOT } = options;
   const requireDestructiveAccess = (request: FastifyRequest) => {
     if (authorizeDestructive && !authorizeDestructive(request)) {
-      throw new WorktreeError("FORBIDDEN", "Worktree merge, removal and cleanup require ADMIN or OPERATOR access.", 403);
+      throw new WorktreeError("FORBIDDEN", "Worktree listing, creation, merge, removal and cleanup require ADMIN or OPERATOR access.", 403);
     }
   };
   const itemCacheTtlMs = Math.max(0, options.itemCacheTtlMs ?? WORKTREE_ITEM_CACHE_TTL_MS);
@@ -83,7 +83,8 @@ export function registerWorktreeRoutes(app: FastifyInstance, options: WorktreeRo
       }
       request.log.error({ err: error, body: request.body }, "Worktree unhandled error");
       return reply.code(500).send({
-        error: { code: "WORKTREE_OPERATION_FAILED", message: (error as Error).message || "Internal error." }
+        // The cause stays in the log; git and filesystem messages can name host paths (1.1.5 review F20).
+        error: { code: "WORKTREE_OPERATION_FAILED", message: "The worktree operation failed; the API log has the cause." }
       });
     }
   };
@@ -92,6 +93,7 @@ export function registerWorktreeRoutes(app: FastifyInstance, options: WorktreeRo
     "/api/worktrees",
     rateLimitOptions,
     handler(async (request) => {
+      requireDestructiveAccess(request);
       const query = z
         .object({
           repoPath: z.string().min(1).default("/opt/spaceapp")
@@ -106,6 +108,8 @@ export function registerWorktreeRoutes(app: FastifyInstance, options: WorktreeRo
     "/api/worktrees",
     rateLimitOptions,
     handler(async (request) => {
+      // Create may commit everything in an unborn repository and runs its hooks (1.1.5 review F20).
+      requireDestructiveAccess(request);
       const body = createWorktreeSchema.parse(request.body);
       const worktree = await invalidatingWorktreeItems(() => service.createWorktree(body));
       return { ok: true, data: worktree };

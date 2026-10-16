@@ -41,6 +41,8 @@ export function sessionCookieNameFor(instance: SpaceInstance): string {
 export const instanceBackgroundJobs = [
   "space-control-ticks",
   "dot-schedules",
+  // Scheduled Tasks dock entries are typed into their CLI panes; a dev copy must not run stable's tasks again.
+  "task-schedules",
   "maintenance-autopilot",
   "managed-plan-controller",
   "chess-tournament-resume",
@@ -55,7 +57,13 @@ export const instanceBackgroundJobs = [
   // Marketing Copilot starts runs for approved posts that are due; a dev copy must not publish them twice.
   "marketing-copilot-scheduler",
   // Marketing Copilot records daily public metrics (GitHub, npm); one instance per owner's analytics.
-  "marketing-copilot-metrics"
+  "marketing-copilot-metrics",
+  // Freelance Copilot reads work@example.invalid and starts runs for new mail and due follow-ups; one instance sends.
+  "freelance-copilot-scheduler",
+  // Notifies the admins when an exhausted Codex account is usable again; one instance announces it.
+  "codex-quota-reset-notify",
+  // Token usage page: reads Claude Code transcripts through the sudo helper, which only stable has.
+  "token-usage-claude"
 ] as const;
 export type InstanceBackgroundJob = (typeof instanceBackgroundJobs)[number];
 

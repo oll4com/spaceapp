@@ -3,10 +3,11 @@ import { MARKETING_CHANNEL_LABELS, type MarketingMetric, type MarketingPost } fr
 import { api } from "../../api.js";
 import { ExternalLink } from "../ui-theme/app-icons.js";
 
-const SOURCE_LABEL: Record<string, string> = { GITHUB: "GitHub", NPM: "npm" };
+const SOURCE_LABEL: Record<string, string> = { GITHUB: "GitHub", NPM: "npm", INSTALLS: "Self-hosted", GITHUB_TRAFFIC: "GitHub traffic", GITHUB_REFERRERS: "Visits (14 days) from" };
 const KEY_LABEL: Record<string, string> = {
   stars: "Stars", forks: "Forks", watchers: "Watchers", open_issues: "Open issues", release_downloads: "Release downloads",
-  downloads_day: "Downloads (last day)", downloads_week: "Downloads (last week)"
+  downloads_day: "Downloads (last day)", downloads_week: "Downloads (last week)", active_7d: "Active installs (7 days)",
+  views_14d: "Views (14 days)", visitors_14d: "Unique visitors (14 days)", clones_14d: "Clones (14 days)", cloners_14d: "Unique cloners (14 days)"
 };
 const DAY_MS = 86_400_000;
 
@@ -79,7 +80,7 @@ export function AnalyticsTab() {
   return (
     <div className="mk-posts" role="tabpanel" id="jc-panel-analytics" aria-labelledby="jc-tab-analytics">
       {rows.length === 0 ? (
-        <div className="jc-empty"><strong>No numbers yet</strong><span>Space records GitHub stars, forks, release downloads and npm downloads once a day while a Marketing Copilot pane is open.</span></div>
+        <div className="jc-empty"><strong>No numbers yet</strong><span>Space records GitHub stars, forks, release downloads, npm downloads and active self-hosted installs once a day while a Marketing Copilot pane is open.</span></div>
       ) : (
         <ul className="mk-tiles" aria-label="Public numbers">
           {rows.map((row) => {

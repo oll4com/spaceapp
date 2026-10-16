@@ -442,7 +442,7 @@ describe("SpaceGatewayDialog", () => {
     await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ lanMode: "ON", lanHost: "10.20.0.207", lanPort: 4925, lanAllowedSources: ["10.20.0.0/24", "10.20.1.0/24"] }));
     await waitFor(() => expect(api.reload).toHaveBeenCalled());
     expect(await screen.findByText(/A new gateway worker is taking over/)).toBeTruthy();
-    expect(screen.getByText(/Space sign-in replaces codex-lb's dashboard password/)).toBeTruthy();
+    expect(screen.getByText(/Space sign-in replaces a separate dashboard password/)).toBeTruthy();
   });
 
   it("shows an empty request log", async () => {

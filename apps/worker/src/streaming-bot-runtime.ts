@@ -7,8 +7,10 @@ import {
   TwitchEventSubChat,
   YouTubeChatConnector,
   YouTubeLiveChatStream,
+  StreamingProviderError,
   canReply,
   decideStreamingModeration,
+  isModerationCandidate,
   getStreamingBotLlmConfig,
   isSpam,
   isViewerQuestion,
@@ -135,8 +137,9 @@ export async function runStreamingBotCycle(options: StreamingBotRuntimeOptions):
   const day = now().toISOString().slice(0, 10);
   const youtubeQuota = await options.botRepository.getQuota("YOUTUBE", day);
   const tokenManager = new StreamingTokenManager({ credentialStore: options.credentialStore });
-  closeTwitchSessions(settings.platforms.TWITCH.enabled ? settings.platforms.TWITCH.accountId : null);
-  closeYouTubeSessions(settings.platforms.YOUTUBE.enabled ? settings.platforms.YOUTUBE.accountId : null);
+  // Moderation reads chat even while replies are off on a platform, so its session stays open.
+  closeTwitchSessions(settings.platforms.TWITCH.enabled || settings.moderationEnabled ? settings.platforms.TWITCH.accountId : null);
+  closeYouTubeSessions(settings.platforms.YOUTUBE.enabled || settings.moderationEnabled ? settings.platforms.YOUTUBE.accountId : null);
 
   const [accounts, authorizations] = await Promise.all([
     options.streamingRepository.listAccounts(),
@@ -253,6 +256,29 @@ async function pollPlatform(
     return { polled: { platform, live: true, newMessages: 0 }, replies: 0, skipped: 0, errors: 0 };
   }
 
+  const repliedIds = new Set<string>();
+  /** Every path that claimed messages ends here: chat state is saved and each claimed message is logged as IN activity. */
+  const finish = async (outcome: PollOutcome): Promise<PollOutcome> => {
+    const state = await options.botRepository.getChatState(platform, account.id, chatId);
+    await options.botRepository.upsertChatState({ platform, accountId: account.id, chatId, cursor: fetchResult.cursor,
+      lastPolledAt: context.now().toISOString(), lastReplyAt: state?.lastReplyAt ?? null, pendingCount: 0 });
+    for (const message of candidates) {
+      await appendActivity(options, platform, {
+        direction: "IN",
+        accountId: account.id,
+        channelId: chatId,
+        authorId: message.authorId,
+        messageId: message.id,
+        protectedAccount: message.protectedAccount === true,
+        author: message.author,
+        message: message.message.slice(0, 2000),
+        reply: null,
+        status: repliedIds.has(message.id) ? "REPLIED" : "SKIPPED"
+      });
+    }
+    return outcome;
+  };
+
   const replyCandidates: StreamingChatMessage[] = [];
   for (let offset = 0; offset < candidates.length; offset += 50) {
     const batch = candidates.slice(offset, offset + 50);
@@ -267,17 +293,13 @@ async function pollPlatform(
     }
   }
   if (!settings.enabled || !settings.platforms[platform].enabled || !replyCandidates.length) {
-    await options.botRepository.upsertChatState({ platform, accountId: account.id, chatId,
-      cursor: fetchResult.cursor, lastPolledAt: context.now().toISOString(),
-      lastReplyAt: (await options.botRepository.getChatState(platform, account.id, chatId))?.lastReplyAt ?? null, pendingCount: 0 });
-    return { polled: { platform, live: true, newMessages: candidates.length }, replies: 0, skipped: candidates.length, errors: 0 };
+    return finish({ polled: { platform, live: true, newMessages: candidates.length }, replies: 0, skipped: candidates.length, errors: 0 });
   }
 
-  const [modelProviders, models] = await Promise.all([options.spaceStore.listProviders(), options.spaceStore.listModels()]);
-  const primaryModel = resolveStreamingBotModel(settings.modelSelection, modelProviders, models, getStreamingBotLlmConfig());
+  const primaryModel = resolveStreamingBotModel(settings.modelSelection, getStreamingBotLlmConfig());
   if (!primaryModel.modelId) {
     options.log?.({ status: "MODEL_UNAVAILABLE", platform, errorCode: primaryModel.errorCode });
-    return { polled: { platform, live: true, newMessages: candidates.length }, replies: 0, skipped: candidates.length, errors: 1 };
+    return finish({ polled: { platform, live: true, newMessages: candidates.length }, replies: 0, skipped: candidates.length, errors: 1 });
   }
 
   const memorySummary = settings.memoryEnabled ? await summarizeMemory(options.memoryStore) : "";
@@ -299,7 +321,6 @@ async function pollPlatform(
   let replies = 0;
   let skipped = 0;
   let errors = 0;
-  const repliedIds = new Set<string>();
 
   const tools: BotTurnTools = {
     sendReply: async ({ platform: replyPlatform, message, replyToId }) => {
@@ -358,7 +379,6 @@ async function pollPlatform(
           reply: capped,
           status: "REPLIED"
         });
-        void id;
         return { ok: true };
       } catch (error) {
         errors += 1;
@@ -377,38 +397,18 @@ async function pollPlatform(
     }
   };
 
-  let turn = await runBotTurn({ context: contextPrompt, messages: turnMessages, tools }, { now: options.now, modelId: primaryModel.modelId });
+  let turn = await runBotTurn({ context: contextPrompt, messages: turnMessages, tools }, { now: options.now, modelId: primaryModel.modelId, route: primaryModel.route });
   if (turn.errorCode && turn.replies.length === 0 && settings.fallbackModelSelection) {
-    const fallback = resolveStreamingBotModel(settings.fallbackModelSelection, modelProviders, models, getStreamingBotLlmConfig());
+    const fallback = resolveStreamingBotModel(settings.fallbackModelSelection, getStreamingBotLlmConfig());
     if (fallback.modelId && fallback.modelId !== primaryModel.modelId) {
-      turn = await runBotTurn({ context: contextPrompt, messages: turnMessages, tools }, { now: options.now, modelId: fallback.modelId });
+      turn = await runBotTurn({ context: contextPrompt, messages: turnMessages, tools }, { now: options.now, modelId: fallback.modelId, route: fallback.route });
     }
   }
   if (turn.errorCode) {
     options.log?.({ status: "TURN_ERROR", platform, errorCode: turn.errorCode });
   }
 
-  for (const message of candidates) {
-    const status = repliedIds.has(message.id) ? "REPLIED" : "SKIPPED";
-    await appendActivity(options, platform, {
-      direction: "IN",
-      accountId: account.id,
-      channelId: chatId,
-      authorId: message.authorId,
-      messageId: message.id,
-      protectedAccount: message.protectedAccount === true,
-      author: message.author,
-      message: message.message.slice(0, 2000),
-      reply: null,
-      status
-    });
-  }
-  return {
-    polled: { platform, live: fetchResult.live, newMessages: candidates.length },
-    replies,
-    skipped,
-    errors
-  };
+  return finish({ polled: { platform, live: fetchResult.live, newMessages: candidates.length }, replies, skipped, errors });
 }
 
 async function jevModerationVerdict(message: string, options: StreamingBotRuntimeOptions): Promise<"SAFE" | "ABUSE" | "SEVERE" | "AMBIGUOUS" | null> {
@@ -465,9 +465,7 @@ async function moderateCandidateUnlocked(
   if (!userId) return false;
   const protectedAccount = message.protectedAccount === true || userId === account.externalAccountId;
   if (protectedAccount) return false;
-  const suspicious = /\b(?:kill|murder|hurt|address|phone|idiot|moron|worthless|harass|dox|die|stupid|hate)\b/i.test(message.message) ||
-    /(?:σκοτώσ|διεύθυνσ|τηλέφων|ηλίθι|αχρηστ|μισώ)/iu.test(message.message);
-  if (!suspicious) return false;
+  if (!isModerationCandidate(message.message)) return false;
   const since = new Date(context.now().getTime() - 24 * 60 * 60 * 1_000).toISOString();
   const strikes = await context.botRepository.moderationStrikes(platform, account.id, chatId, userId, since);
   const verdict = settings.jevEnabled ? await jevModerationVerdict(message.message, context) : null;
@@ -509,7 +507,9 @@ async function moderateCandidateUnlocked(
       const connector = new YouTubeChatConnector();
       const banId = await connector.timeoutUser(token, chatId, userId, duration);
       await context.botRepository.updateModerationAction(record.id, "SUCCEEDED", banId);
-      await connector.deleteChatMessage(token, message.id).catch(() => undefined);
+      await connector.deleteChatMessage(token, message.id).catch((error: unknown) => {
+        context.log?.({ status: "MODERATION_DELETE_FAILED", platform, errorCode: error instanceof StreamingProviderError ? error.code : "PLATFORM_ERROR" });
+      });
     } else {
       const client = await context.credentialStore.readClient("TWITCH");
       await new TwitchChatConnector({ clientId: client.clientId }).timeoutUser(token, account.externalAccountId, account.externalAccountId, userId, duration, decision.reason);
@@ -517,7 +517,7 @@ async function moderateCandidateUnlocked(
     }
     return true;
   } catch (error) {
-    const code = error instanceof Error ? error.message.slice(0, 100) : "PLATFORM_ERROR";
+    const code = error instanceof StreamingProviderError ? error.code.slice(0, 100) : "PLATFORM_ERROR";
     await context.botRepository.updateModerationAction(record.id, "FAILED", null, code);
     return true;
   }
@@ -531,9 +531,9 @@ async function fetchYouTube(
 ): Promise<{ live: boolean; messages: StreamingChatMessage[]; cursor: string | null; chatId: string | null }> {
   const connector = new YouTubeChatConnector();
   const cached = youtubeBroadcastCache.get(account.id);
-  const broadcast = cached && Date.now() - cached.checkedAt < (cached.broadcast ? 30_000 : 10_000)
-    ? cached.broadcast : await connector.findActiveBroadcast(token);
-  if (!cached || broadcast !== cached.broadcast) youtubeBroadcastCache.set(account.id, { checkedAt: Date.now(), broadcast });
+  const fresh = cached && Date.now() - cached.checkedAt < (cached.broadcast ? 30_000 : 10_000);
+  const broadcast = fresh ? cached.broadcast : await connector.findActiveBroadcast(token);
+  if (!fresh) youtubeBroadcastCache.set(account.id, { checkedAt: Date.now(), broadcast });
   if (!broadcast) {
     youtubeSessions.get(account.id)?.close();
     youtubeSessions.delete(account.id);

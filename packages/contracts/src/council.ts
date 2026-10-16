@@ -158,6 +158,16 @@ export type CouncilFinal = z.infer<typeof councilFinalSchema>;
 
 export const councilEventSchema = z.object({ at: isoDateTime, text: z.string().max(300) }).strict();
 
+/** "Create plan": the coordinator turns the final answer into a PLAN record in the owner's clipboard. */
+export const councilClipboardPlanSchema = z.object({
+  status: z.enum(["WRITING", "DONE", "FAILED"]),
+  /** The clipboard PLAN record once it is saved. */
+  itemId: z.string().min(1).max(200).nullable(),
+  title: z.string().max(160).nullable(),
+  error: z.string().max(300).nullable()
+}).strict();
+export type CouncilClipboardPlan = z.infer<typeof councilClipboardPlanSchema>;
+
 export const councilRunSchema = z.object({
   id: councilRunIdSchema,
   ownerUserId: z.string().min(1).max(200),
@@ -174,6 +184,7 @@ export const councilRunSchema = z.object({
   rounds: z.array(councilRoundSchema).max(COUNCIL_MAX_TOTAL_ROUNDS),
   final: councilFinalSchema.nullable(),
   events: z.array(councilEventSchema).max(200),
+  clipboardPlan: councilClipboardPlanSchema.nullable().optional(),
   error: z.string().max(500).nullable(),
   createdAt: isoDateTime,
   updatedAt: isoDateTime

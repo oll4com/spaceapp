@@ -1,20 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
-import {
-  Bot,
-  Boxes,
-  ClipboardList,
-  Mail,
-  Rocket,
-  Database,
-  Eye,
-  FolderPlus,
-  MessageSquare,
-  Mic,
-  Monitor,
-  Network,
-  Youtube
-} from "../ui-theme/app-icons.js";
+import { modeIcons } from "../pane-card/pane-mode-icons.js";
 import type { NonCliPaneType, PaneItemConfig } from "./pane-visibility-types.js";
 import { saveUserSettingDebounced } from "../user-settings/user-settings-save-queue.js";
 import { SERVER_MODULES_EVENT, serverModuleOn } from "./server-modules.js";
@@ -23,7 +9,8 @@ import { SERVER_MODULES_EVENT, serverModuleOn } from "./server-modules.js";
 const PANE_SERVER_MODULE: Partial<Record<NonCliPaneType, string>> = {
   jobs: "job-copilot",
   mail: "mail-copilot",
-  marketing: "marketing-copilot"
+  marketing: "marketing-copilot",
+  freelance: "freelance-copilot"
 };
 
 export const PANES_HIDDEN_STORAGE_KEY = "space:panes-hidden:v1";
@@ -35,63 +22,63 @@ export const NON_CLI_PANE_DEFINITIONS: PaneItemConfig[] = [
     actionId: "add-chat",
     label: "Chat",
     description: "Start a conversation with an AI assistant.",
-    icon: MessageSquare
+    icon: modeIcons.CHAT
   },
   {
     id: "browser",
     actionId: "add-browser",
     label: "Browser",
     description: "Browse the web inside this room.",
-    icon: Eye
+    icon: modeIcons.BROWSER
   },
   {
     id: "files",
     actionId: "add-files",
     label: "File Manager",
     description: "Open the native file manager pane in this room.",
-    icon: FolderPlus
+    icon: modeIcons.FILES
   },
   {
     id: "databases",
     actionId: "add-databases",
     label: "Databases",
     description: "Explore, query and manage relational databases.",
-    icon: Database
+    icon: modeIcons.DATABASES
   },
   {
     id: "demos",
     actionId: "add-demos",
     label: "Demo Projects",
     description: "Explore and run demo applications with live previews.",
-    icon: Boxes
+    icon: modeIcons.DEMOS
   },
   {
     id: "youtube",
     actionId: "add-youtube",
     label: "YouTube",
     description: "Watch a video alongside your work.",
-    icon: Youtube
+    icon: modeIcons.YOUTUBE
   },
   {
     id: "vnc",
     actionId: "add-vnc",
     label: "VNC",
     description: "Connect to a graphical remote desktop.",
-    icon: Monitor
+    icon: modeIcons.VNC
   },
   {
     id: "live",
     actionId: "add-live",
     label: "Live audio",
     description: "Interactive real-time voice and audio conversation.",
-    icon: Mic
+    icon: modeIcons.LIVE
   },
   {
     id: "harness",
     actionId: "add-harness",
     label: "DeepSeek Harness",
     description: "Open a DeepSeek Harness coding session.",
-    icon: Network,
+    icon: modeIcons.HARNESS,
     requiresHarness: true
   },
   {
@@ -99,28 +86,35 @@ export const NON_CLI_PANE_DEFINITIONS: PaneItemConfig[] = [
     actionId: "add-t3code",
     label: "T3 Code",
     description: "Supervise CLI agent execution with structured event streaming and visual diff review.",
-    icon: Bot
+    icon: modeIcons.T3CODE
   },
   {
     id: "jobs",
     actionId: "add-jobs",
     label: "Job Copilot",
     description: "A Claude Code agent and a live browser that find, fill and submit job applications from your CV.",
-    icon: ClipboardList
+    icon: modeIcons.JOB_APPLY
   },
   {
     id: "mail",
     actionId: "add-mail",
     label: "Mail Copilot",
     description: "All your Gmail accounts in one inbox, with an agent that learns how you handle mail and gradually answers for you.",
-    icon: Mail
+    icon: modeIcons.MAIL_COPILOT
   },
   {
     id: "marketing",
     actionId: "add-marketing",
     label: "Marketing Copilot",
     description: "An agent and a live browser that plan, write and publish posts promoting SpaceApp on your own accounts, after your approval.",
-    icon: Rocket
+    icon: modeIcons.MARKETING_COPILOT
+  },
+  {
+    id: "freelance",
+    actionId: "add-freelance",
+    label: "Freelance Copilot",
+    description: "An agent and a live browser that find clients on freelance platforms, send proposals and talk to clients until they are ready for you.",
+    icon: modeIcons.FREELANCE_COPILOT
   }
 ];
 
@@ -141,7 +135,8 @@ export const ACTION_TO_PANE_TYPE: Record<string, NonCliPaneType> = {
   "add-t3code": "t3code",
   "add-jobs": "jobs",
   "add-mail": "mail",
-  "add-marketing": "marketing"
+  "add-marketing": "marketing",
+  "add-freelance": "freelance"
 };
 
 export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
@@ -157,7 +152,8 @@ export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
   t3code: "add-t3code",
   jobs: "add-jobs",
   mail: "add-mail",
-  marketing: "add-marketing"
+  marketing: "add-marketing",
+  freelance: "add-freelance"
 };
 
 export type { NonCliPaneType, PaneItemConfig } from "./pane-visibility-types.js";

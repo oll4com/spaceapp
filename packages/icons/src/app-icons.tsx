@@ -142,7 +142,25 @@ import {
   Paperclip as LucidePaperclip,
   Pause as LucidePause,
   Pencil as LucidePencil,
+  Captions as LucideCaptions,
+  CaptionsOff as LucideCaptionsOff,
+  ChartColumn as LucideChartColumn,
+  MessageSquareText as LucideMessageSquareText,
+  MicOff as LucideMicOff,
+  PhoneOff as LucidePhoneOff,
+  Phone as LucidePhone,
+  Router as LucideRouter,
+  Maximize as LucideMaximize,
+  Minimize as LucideMinimize,
+  Presentation as LucidePresentation,
+  PenTool as LucidePenTool,
   Info as LucideInfo,
+  Briefcase as LucideBriefcase,
+  Megaphone as LucideMegaphone,
+  Handshake as LucideHandshake,
+  Blend as LucideBlend,
+  MessagesSquare as LucideMessagesSquare,
+  SquareCode as LucideSquareCode,
   TextCursorInput as LucideTextCursorInput,
   PictureInPicture as LucidePictureInPicture,
   PictureInPicture2 as LucidePictureInPicture2,
@@ -196,7 +214,6 @@ import {
   Highlighter as LucideHighlighter,
   ImagePlus as LucideImagePlus,
   PenLine as LucidePenLine,
-  Phone as LucidePhone,
   Slack as LucideSlack,
   SquarePen as LucideSquarePen,
   Redo2 as LucideRedo2,
@@ -209,7 +226,7 @@ import type { AppIconName } from "./app-icon-map.js";
 import { getLoadedAppIconPack, isAppIconPackReady, loadAppIconPack, type ModernIconPack } from "./icon-pack-registry.js";
 
 export type { LucideIcon, LucideProps } from "lucide-react";
-export { loadAppIconPack, type ModernIconPack } from "./icon-pack-registry.js";
+export { DEFAULT_ICON_PACK, loadAppIconPack, type ModernIconPack } from "./icon-pack-registry.js";
 
 const AppIconPackContext = createContext<ModernIconPack>("lucide");
 
@@ -229,34 +246,51 @@ export function AppIconProvider({ children, pack }: { children: ReactNode; pack:
   return <AppIconPackContext.Provider value={ready ? pack : "lucide"}>{children}</AppIconPackContext.Provider>;
 }
 
-const SpaceDumbbell = forwardRef<SVGSVGElement, LucideProps>(function SpaceDumbbell(
-  { size = 24, strokeWidth = 2, className, ...props },
-  ref
-) {
-  return (
-    <svg
-      {...props}
-      ref={ref}
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={strokeWidth}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={["lucide-dumbbell", className].filter(Boolean).join(" ")}
-      aria-hidden={props["aria-hidden"] ?? true}
-    >
-      <path d="M6 6v12" />
-      <path d="M2 9v6" />
-      <path d="M6 12h12" />
-      <path d="M18 6v12" />
-      <path d="M22 9v6" />
-    </svg>
-  );
-});
-SpaceDumbbell.displayName = "Dumbbell";
+// Space's own glyphs, drawn on the Lucide grid so every pack treats them like the rest.
+function spaceGlyph(name: string, className: string, children: ReactNode): LucideIcon {
+  const Glyph = forwardRef<SVGSVGElement, LucideProps>(function SpaceGlyph({ size = 24, strokeWidth = 2, className: extra, children: extraChildren, ...props }, ref) {
+    return (
+      <svg
+        {...props}
+        ref={ref}
+        viewBox="0 0 24 24"
+        width={size}
+        height={size}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className={["lucide", className, extra].filter(Boolean).join(" ")}
+        aria-hidden={props["aria-hidden"] ?? true}
+      >
+        {children}
+        {extraChildren}
+      </svg>
+    );
+  });
+  Glyph.displayName = name;
+  return Glyph as LucideIcon;
+}
+
+const SpaceDumbbell = spaceGlyph("Dumbbell", "lucide-dumbbell", <>
+  <path d="M6 6v12" />
+  <path d="M2 9v6" />
+  <path d="M6 12h12" />
+  <path d="M18 6v12" />
+  <path d="M22 9v6" />
+</>);
+// Agent Files: a folder holding what the agents made (the sparkle), never the File Manager's open folder.
+const SpaceAgentFiles = spaceGlyph("AgentFiles", "space-agent-files", <>
+  <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+  <path d="M12 9.5l1.1 2.9 2.9 1.1-2.9 1.1-1.1 2.9-1.1-2.9-2.9-1.1 2.9-1.1z" fill="currentColor" strokeWidth={1} />
+</>);
+// CLI floats: the controls that float over a CLI pane, a chip above the prompt.
+const SpaceCliFloats = spaceGlyph("CliFloats", "space-cli-floats", <>
+  <rect x="2" y="4" width="20" height="16" rx="2" />
+  <path d="m6 11 3 2.5L6 16" />
+  <rect x="13" y="7.5" width="5.5" height="3.5" rx="1" fill="currentColor" strokeWidth={1} />
+</>);
 export const lucideIcons = {
   ArrowDown: LucideArrowDown,
   ArrowUpCircle: LucideArrowUpCircle,
@@ -274,7 +308,9 @@ export const lucideIcons = {
   Compass: LucideCompass,
   CornerLeftUp: LucideCornerLeftUp,
   CreditCard: LucideCreditCard,
-  Dumbbell: SpaceDumbbell as LucideIcon,
+  Dumbbell: SpaceDumbbell,
+  AgentFiles: SpaceAgentFiles,
+  CliFloats: SpaceCliFloats,
   FileAudio: LucideFileAudio,
   FileCode: LucideFileCode,
   FileJson: LucideFileJson,
@@ -388,7 +424,25 @@ export const lucideIcons = {
   Paperclip: LucidePaperclip,
   Pause: LucidePause,
   Pencil: LucidePencil,
+  Captions: LucideCaptions,
+  CaptionsOff: LucideCaptionsOff,
+  ChartColumn: LucideChartColumn,
+  MessageSquareText: LucideMessageSquareText,
+  MicOff: LucideMicOff,
+  PhoneOff: LucidePhoneOff,
+  Phone: LucidePhone,
+  Router: LucideRouter,
+  Maximize: LucideMaximize,
+  Minimize: LucideMinimize,
+  Presentation: LucidePresentation,
+  PenTool: LucidePenTool,
   Info: LucideInfo,
+  Briefcase: LucideBriefcase,
+  Megaphone: LucideMegaphone,
+  Handshake: LucideHandshake,
+  Blend: LucideBlend,
+  MessagesSquare: LucideMessagesSquare,
+  SquareCode: LucideSquareCode,
   TextCursorInput: LucideTextCursorInput,
   Pin: LucidePin,
   PinOff: LucidePinOff,
@@ -478,6 +532,8 @@ export const {
   CornerLeftUp,
   CreditCard,
   Dumbbell,
+  AgentFiles,
+  CliFloats,
   FileAudio,
   FileCode,
   FileJson,
@@ -592,7 +648,25 @@ export const {
   Paperclip,
   Pause,
   Pencil,
+  Captions,
+  CaptionsOff,
+  ChartColumn,
+  MessageSquareText,
+  MicOff,
+  PhoneOff,
+  Phone,
+  Router,
+  Maximize,
+  Minimize,
+  Presentation,
+  PenTool,
   Info,
+  Briefcase,
+  Megaphone,
+  Handshake,
+  Blend,
+  MessagesSquare,
+  SquareCode,
   TextCursorInput,
   Pin,
   PinOff,
@@ -665,7 +739,6 @@ export const PenLine = LucidePenLine;
 export const Redo2 = LucideRedo2;
 export const Type = LucideType;
 // Dot pane header and info card (Space Dots Stage 8).
-export const Phone = LucidePhone;
 export const Slack = LucideSlack;
 export const SquarePen = LucideSquarePen;
 

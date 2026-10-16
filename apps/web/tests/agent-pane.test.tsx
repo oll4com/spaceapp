@@ -1795,10 +1795,10 @@ describe("Space native agent panes", () => {
 
     expect(await screen.findByLabelText("Native agent Deleted mobile room")).toBeTruthy();
     await waitFor(() => expect(screen.getByLabelText("Native agent Fallback room")).toBeTruthy(), { timeout: 7000 });
-    // The warm fallback pane can mount before the 30-second poll discovers the deleted room.
-    expect(await screen.findByText("Room room:stale no longer exists; switched to Fallback room.", {}, { timeout: 35000 })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss notification" }));
-    expect(screen.queryByText("Room room:stale no longer exists; switched to Fallback room.")).toBeNull();
+    // The warm fallback pane can mount before the 30-second poll discovers the deleted room;
+    // the switch stays silent (operator request 2026-10-14).
+    await waitFor(() => expect(roomListCalls).toBeGreaterThan(1), { timeout: 35000 });
+    expect(screen.queryByText(/no longer exists/i)).toBeNull();
 
     fireEvent.change(await screen.findByLabelText("Message Fallback room"), { target: { value: "mobile fallback prompt" } });
     fireEvent.click(await screen.findByRole("button", { name: "Send Fallback room" }));

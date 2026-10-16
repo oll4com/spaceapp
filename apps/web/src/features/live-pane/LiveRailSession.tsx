@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
-import { Mic, MicOff, Phone, PhoneOff, Trash2, Wrench, X } from "lucide-react";
+import { Mic, MicOff, Phone, PhoneOff, Trash2, Wrench, X } from "../ui-theme/app-icons.js";
 import { LiveStatsWindow } from "./LiveStatsWindow.js";
 import { useLiveCoordinator, useLiveSessionState } from "./LiveSessionProvider.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";

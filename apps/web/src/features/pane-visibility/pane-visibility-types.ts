@@ -13,7 +13,8 @@ export type NonCliPaneType =
   | "t3code"
   | "jobs"
   | "mail"
-  | "marketing";
+  | "marketing"
+  | "freelance";
 
 export interface PaneItemConfig {
   id: NonCliPaneType;

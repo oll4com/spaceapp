@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, realpath, rename, writeFile, access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn } from "./safe-child-process.js";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 

@@ -37,6 +37,7 @@ if (temporalCoreMetricsBind) {
 
 const spanExporter = otlpSpanExporterFromEnv(process.env, "space-worker", "space-temporal");
 const connection = await NativeConnection.connect({ address });
+
 const worker = await Worker.create({
   connection,
   namespace,

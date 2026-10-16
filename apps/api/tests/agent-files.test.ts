@@ -556,9 +556,10 @@ describe("Agent Files API", () => {
     });
     expect(missing.statusCode).toBe(401);
 
+    // The token is bound to its pane and session; it acts in the session's current room (a moved pane keeps working).
     const crossRoomToken = issueCliAgentFilesToken(config, {
       roomId: otherRoom.id,
-      paneId: normal.pane.id,
+      paneId: inactive.pane.id,
       cliSessionId: normal.session.sessionId
     })!;
     const crossRoom = await app.inject({

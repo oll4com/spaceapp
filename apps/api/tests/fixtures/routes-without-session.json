@@ -38,6 +38,7 @@
   "PATCH /api/demo-projects/preview/:runId/:token*",
   "POST *",
   "POST /api/auth/google/credential",
+  "POST /api/auth/invites/accept",
   "POST /api/auth/login",
   "POST /api/auth/logout",
   "POST /api/channels/slack/events",

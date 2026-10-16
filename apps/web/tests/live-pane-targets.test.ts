@@ -30,15 +30,25 @@ describe("exact Live pane groups", () => {
     expect(resolveLivePaneTargets("room:a", panes, { targetGroup: "lastOpened" }, { ...scope }, true)).toEqual(["codex", "chat"]);
     expect(resolveLivePaneTargets("room:a", panes, { targetGroup: "lastOpened" }, scope, false)).toEqual(["codex", "chat"]);
   });
+  it("lets the named panes win over lastOpened and narrows the group by cliType", () => {
+    rememberLivePaneGroup("room:a", ["codex", "control"], scope);
+    // 2026-10-16 dialogue: "Finn and Hugo" sent with targetGroup lastOpened was rejected and nothing reached the panes.
+    expect(resolveLivePaneTargets("room:a", panes, { targetGroup: "lastOpened", paneNames: ["Andy", "Bob"] }, scope, true)).toEqual(["codex", "chat"]);
+    expect(resolveLivePaneTargets("room:a", panes, { targetGroup: "lastOpened", paneNames: ["Bob"] }, {}, true)).toEqual(["chat"]);
+    expect(resolveLivePaneTargets("room:a", panes, { targetGroup: "lastOpened", cliType: "gemini" }, scope, true)).toEqual(["control"]);
+    expect(() => resolveLivePaneTargets("room:a", panes, { targetGroup: "lastOpened", cliType: "claude" }, scope, true)).toThrow("CLI type");
+  });
   it.each([
     { ...scope, userId: "other" }, { ...scope, liveSessionId: "new" }, {}
   ])("rejects another owner or session: %j", identity => {
     expect(() => resolveLivePaneTargets("room:a", panes, { targetGroup: "lastOpened" }, identity, true)).toThrow();
   });
-  it("rejects another room and a group containing a closed pane", () => {
+  it("rejects another room and drops panes of the group closed since it was opened", () => {
     rememberLivePaneGroup("room:a", ["codex", "chat"], scope);
     expect(() => resolveLivePaneTargets("room:b", panes, { targetGroup: "lastOpened" }, scope, true)).toThrow();
-    expect(() => resolveLivePaneTargets("room:a", [panes[0]], { targetGroup: "lastOpened" }, scope, true)).toThrow("chat");
+    expect(resolveLivePaneTargets("room:a", [panes[0]], { targetGroup: "lastOpened" }, scope, true)).toEqual(["codex"]);
+    expect(resolveLivePaneTargets("room:a", [panes[0], { ...panes[1], isClosed: true }], { targetGroup: "lastOpened" }, scope, true)).toEqual(["codex"]);
+    expect(() => resolveLivePaneTargets("room:a", [{ ...panes[0], isClosed: true }], { targetGroup: "lastOpened" }, scope, true)).toThrow("closed");
   });
   it.each([{ paneIds: ["codex", "missing"], all: true }, { paneIds: ["codex", "live"] }, { paneIds: [] }, {}, { targetGroup: "lastOpened", all: true }])(
     "never drops invalid IDs or broadens ambiguous selection: %j", args => {

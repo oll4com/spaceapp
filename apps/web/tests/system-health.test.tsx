@@ -356,7 +356,7 @@ describe("shared health UI", () => {
     const terminal = screen.getByRole("textbox", { name: "Active terminal" });
     act(() => window.dispatchEvent(new CustomEvent("space:system-health", { detail: { section: "ai" } })));
     fireEvent.change(screen.getByRole("combobox", { name: "Resource view" }), { target: { value: "usage" } });
-    await waitFor(() => expect(mocks.models).toHaveBeenCalledWith("24h"));
+    await waitFor(() => expect(mocks.models).toHaveBeenCalledWith("24h", "all"));
     expect(await screen.findByText("Tokens in / out / reasoning")).toBeTruthy();
     expect(terminal.isConnected).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Close Resources" }));

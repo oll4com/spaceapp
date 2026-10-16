@@ -195,6 +195,25 @@
   font-size: 0.64rem;
 }
 
+.cli-account-menu-forecast {
+  display: grid;
+  justify-items: end;
+  gap: 0.1rem;
+  margin-left: auto;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.cli-account-menu-forecast strong {
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.cli-account-menu-forecast small {
+  color: var(--cli-account-muted);
+  font-size: 0.6rem;
+}
+
 .cli-account-menu-list {
   display: grid;
   grid-auto-rows: max-content;

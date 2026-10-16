@@ -27,7 +27,7 @@ const OSK_SCALE_STEP = 0.1;
 const OSK_SCALE_DEFAULT = 1;
 
 type OskLanguage = "en" | "el";
-type OskKeyKind = "char" | "space" | "backspace" | "enter" | "tab" | "shift" | "escape" | "arrow";
+type OskKeyKind = "char" | "space" | "backspace" | "enter" | "tab" | "shift" | "ctrl" | "escape" | "arrow";
 
 type OskKey = {
   id: string;
@@ -43,6 +43,7 @@ export type OnScreenKeyboardInput = {
   key: string;
   code: string;
   shiftKey: boolean;
+  ctrlKey?: boolean;
   text: string | null;
   terminalData: string;
 };
@@ -168,12 +169,18 @@ const SPECIAL_KEYS: Record<string, OskKey> = {
   enter: { id: "enter", kind: "enter", label: "Enter", value: "Enter", code: "Enter", wide: true },
   tab: { id: "tab", kind: "tab", label: "Tab", value: "Tab", code: "Tab" },
   shift: { id: "shift", kind: "shift", label: "Shift", value: "Shift", code: "ShiftLeft", wide: true },
+  ctrl: { id: "ctrl", kind: "ctrl", label: "Ctrl", value: "Control", code: "ControlLeft" },
   space: { id: "space", kind: "space", label: "Space", value: " ", code: "Space", wide: true },
   arrowUp: { id: "arrow-up", kind: "arrow", label: "↑", value: "ArrowUp", code: "ArrowUp" },
   arrowDown: { id: "arrow-down", kind: "arrow", label: "↓", value: "ArrowDown", code: "ArrowDown" },
   arrowLeft: { id: "arrow-left", kind: "arrow", label: "←", value: "ArrowLeft", code: "ArrowLeft" },
   arrowRight: { id: "arrow-right", kind: "arrow", label: "→", value: "ArrowRight", code: "ArrowRight" }
 };
+
+// Held down, these keys repeat like a hardware keyboard.
+const REPEATING_KEY_IDS = new Set(["backspace", "arrow-up", "arrow-down", "arrow-left", "arrow-right"]);
+const KEY_REPEAT_DELAY_MS = 450;
+const KEY_REPEAT_INTERVAL_MS = 60;
 
 type PanelPosition = {
   left: number;
@@ -276,7 +283,12 @@ function dispatchKeyEvent(target: Element, type: "keydown" | "keyup" | "keypress
   target.dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true, composed: true, ...init }));
 }
 
-function resolveKeyboardInput(oskKey: OskKey, shiftHeld: boolean): OnScreenKeyboardInput {
+function resolveKeyboardInput(oskKey: OskKey, shiftHeld: boolean, ctrlHeld = false): OnScreenKeyboardInput {
+  // Ctrl + a letter key (by its physical code, so the Greek layout works too) sends the control character.
+  const ctrlLetter = ctrlHeld ? /^Key([A-Z])$/.exec(oskKey.code)?.[1]?.toLowerCase() : undefined;
+  if (ctrlLetter) {
+    return { key: ctrlLetter, code: oskKey.code, shiftKey: false, ctrlKey: true, text: null, terminalData: String.fromCharCode(ctrlLetter.charCodeAt(0) - 96) };
+  }
   let key = oskKey.value;
   if (oskKey.id === "space") key = " ";
   if (shiftHeld && oskKey.kind === "char" && oskKey.id.length === 1) {
@@ -311,7 +323,7 @@ function sendKeyToFocusedElement(oskKey: OskKey, input: OnScreenKeyboardInput) {
   if (!target || !(target instanceof HTMLElement)) return;
 
   const isEditable = isEditableElement(target);
-  if (isEditable && (oskKey.id === "space" || oskKey.kind === "char")) {
+  if (isEditable && !input.ctrlKey && (oskKey.id === "space" || oskKey.kind === "char")) {
     const beforeInput = new InputEvent("beforeinput", {
       bubbles: true,
       cancelable: true,
@@ -328,7 +340,7 @@ function sendKeyToFocusedElement(oskKey: OskKey, input: OnScreenKeyboardInput) {
     return;
   }
 
-  const eventInit = { key: input.key, code: input.code, shiftKey: input.shiftKey };
+  const eventInit = { key: input.key, code: input.code, shiftKey: input.shiftKey, ctrlKey: Boolean(input.ctrlKey) };
   dispatchKeyEvent(target, "keydown", eventInit);
   dispatchKeyEvent(target, "keypress", eventInit);
   dispatchKeyEvent(target, "keyup", eventInit);
@@ -419,6 +431,7 @@ export function OnScreenKeyboard({
   const dragRef = useRef<{ startX: number; startY: number; originLeft: number; originTop: number; moved: boolean } | null>(null);
   const latestPositionRef = useRef<{ left: number; top: number } | null>(null);
   const [shiftHeld, setShiftHeld] = useState(false);
+  const [ctrlHeld, setCtrlHeld] = useState(false);
   const [symbolLayer, setSymbolLayer] = useState(false);
   const [shortcutsVisible, setShortcutsVisible] = useState(defaultShowShortcuts);
   const [autocompleteEnabled, setAutocompleteEnabled] = useState<boolean>(() => defaultAutocomplete ?? readStoredAutocomplete());
@@ -554,7 +567,7 @@ export function OnScreenKeyboard({
     if (metaViewport) {
       metaViewport.setAttribute(
         "content",
-        "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+        "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
       );
     }
 
@@ -581,13 +594,8 @@ export function OnScreenKeyboard({
       lastNonButtonTouchEnd = now;
     };
 
-    const preventContextMenu = (event: Event) => {
-      event.preventDefault();
-    };
-
     window.addEventListener("gesturestart", preventGesture, { passive: false });
     window.addEventListener("gesturechange", preventGesture, { passive: false });
-    window.addEventListener("contextmenu", preventContextMenu, { capture: true });
     document.addEventListener("touchend", handleTouchEnd, { passive: false });
 
     return () => {
@@ -597,10 +605,32 @@ export function OnScreenKeyboard({
       }
       window.removeEventListener("gesturestart", preventGesture);
       window.removeEventListener("gesturechange", preventGesture);
-      window.removeEventListener("contextmenu", preventContextMenu, { capture: true });
       document.removeEventListener("touchend", handleTouchEnd);
     };
   }, [portalTarget, open]);
+
+  // On a phone a keyboard in the lower half reserves the board below its top edge, so the pane's prompt stays visible above it.
+  useEffect(() => {
+    if (!open || !mobile || portalTarget) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const root = document.documentElement;
+    const update = () => {
+      const rect = panel.getBoundingClientRect();
+      const boardBottom = document.querySelector(".space-shell .board")?.getBoundingClientRect().bottom ?? window.innerHeight;
+      const inset = rect.top > window.innerHeight / 2 ? Math.max(0, Math.round(boardBottom - rect.top)) : 0;
+      root.style.setProperty("--osk-sheet-inset", `${inset}px`);
+    };
+    update();
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(update) : null;
+    observer?.observe(panel);
+    window.addEventListener("resize", update);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", update);
+      root.style.removeProperty("--osk-sheet-inset");
+    };
+  }, [open, mobile, portalTarget, position.top, scale]);
 
   useEffect(() => {
     if (!open) return;
@@ -662,6 +692,10 @@ export function OnScreenKeyboard({
       setShiftHeld((current) => !current);
       return;
     }
+    if (oskKey.id === "ctrl") {
+      setCtrlHeld((current) => !current);
+      return;
+    }
 
     if (oskKey.kind === "char") {
       const ch = oskKey.value;
@@ -676,10 +710,36 @@ export function OnScreenKeyboard({
       setWordBuffer("");
     }
 
-    const input = resolveKeyboardInput(oskKey, shiftHeld);
+    const input = resolveKeyboardInput(oskKey, shiftHeld, ctrlHeld);
+    if (ctrlHeld) {
+      setCtrlHeld(false);
+      setWordBuffer("");
+    }
     if (onInput?.(input)) return;
     sendKeyToFocusedElement(oskKey, input);
-  }, [onInput, shiftHeld]);
+  }, [onInput, shiftHeld, ctrlHeld]);
+
+  const handleKeyPressRef = useRef(handleKeyPress);
+  handleKeyPressRef.current = handleKeyPress;
+  const repeatRef = useRef<{ timer: ReturnType<typeof setTimeout> | null; interval: ReturnType<typeof setInterval> | null; repeated: boolean }>({ timer: null, interval: null, repeated: false });
+  const stopKeyRepeat = useCallback(() => {
+    const repeat = repeatRef.current;
+    if (repeat.timer) clearTimeout(repeat.timer);
+    if (repeat.interval) clearInterval(repeat.interval);
+    repeat.timer = null;
+    repeat.interval = null;
+  }, []);
+  const startKeyRepeat = useCallback((oskKey: OskKey) => {
+    stopKeyRepeat();
+    repeatRef.current.repeated = false;
+    if (!REPEATING_KEY_IDS.has(oskKey.id)) return;
+    repeatRef.current.timer = setTimeout(() => {
+      repeatRef.current.repeated = true;
+      handleKeyPressRef.current(oskKey);
+      repeatRef.current.interval = setInterval(() => handleKeyPressRef.current(oskKey), KEY_REPEAT_INTERVAL_MS);
+    }, KEY_REPEAT_DELAY_MS);
+  }, [stopKeyRepeat]);
+  useEffect(() => stopKeyRepeat, [open, stopKeyRepeat]);
 
   const changeScale = useCallback((delta: number) => {
     setScale((current) => Math.round((Math.min(OSK_SCALE_MAX, Math.max(OSK_SCALE_MIN, current + delta))) * 100) / 100);
@@ -714,7 +774,7 @@ export function OnScreenKeyboard({
 
   const rows: OskKey[][] = [
     [SPECIAL_KEYS.escape!, ...activeRows[0]!, SPECIAL_KEYS.backspace!],
-    [...activeRows[1]!, SPECIAL_KEYS.enter!],
+    [SPECIAL_KEYS.ctrl!, ...activeRows[1]!, SPECIAL_KEYS.enter!],
     [SPECIAL_KEYS.shift!, ...activeRows[2]!, SPECIAL_KEYS.tab!],
     [...activeRows[3]!, SPECIAL_KEYS.space!, SPECIAL_KEYS.arrowLeft!, SPECIAL_KEYS.arrowUp!, SPECIAL_KEYS.arrowDown!, SPECIAL_KEYS.arrowRight!]
   ];
@@ -866,10 +926,22 @@ export function OnScreenKeyboard({
                 <button
                   key={oskKey.id}
                   type="button"
-                  className={`osk-key${oskKey.wide ? " is-wide" : ""}${oskKey.id === "shift" && shiftHeld ? " is-active" : ""}`}
+                  className={`osk-key${oskKey.wide ? " is-wide" : ""}${(oskKey.id === "shift" && shiftHeld) || (oskKey.id === "ctrl" && ctrlHeld) ? " is-active" : ""}`}
                   data-key={oskKey.id}
                   aria-label={oskKey.id === "space" ? "Space" : oskKey.kind === "char" && label !== oskKey.id ? `${label} (${oskKey.id})` : label}
-                  onClick={() => handleKeyPress(oskKey)}
+                  aria-pressed={oskKey.kind === "shift" ? shiftHeld : oskKey.kind === "ctrl" ? ctrlHeld : undefined}
+                  onPointerDown={() => startKeyRepeat(oskKey)}
+                  onPointerUp={stopKeyRepeat}
+                  onPointerCancel={stopKeyRepeat}
+                  onPointerLeave={stopKeyRepeat}
+                  onClick={() => {
+                    // A held key already typed through the repeat; its release click adds nothing.
+                    if (repeatRef.current.repeated) {
+                      repeatRef.current.repeated = false;
+                      return;
+                    }
+                    handleKeyPress(oskKey);
+                  }}
                 >
                   {label}
                 </button>

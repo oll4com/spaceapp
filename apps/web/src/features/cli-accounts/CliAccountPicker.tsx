@@ -6,6 +6,7 @@ import {
   cliAccountAvailability,
   cliAccountPlan,
   cliAccountPool,
+  cliAccountWeeklyForecast,
   type CliAccountAvailability,
   type CliAccountMenuRuntimeId,
 } from "./cli-account-availability.js";
@@ -84,6 +85,7 @@ export function CliAccountPicker({
   }), [balance, clock, identities, modelGroup, profiles, quota, runtimeId]);
   // Codex: the ChatGPT accounts Space Gateway picks from, listed for their quota; they cannot be chosen one by one.
   const pool = useMemo(() => cliAccountPool(runtimeId, quota, clock), [clock, quota, runtimeId]);
+  const forecast = useMemo(() => (open ? cliAccountWeeklyForecast(runtimeId, quota, clock, modelGroup) : null), [clock, modelGroup, open, quota, runtimeId]);
   const activeRow = Math.max(0, rows.findIndex((row) => row.profile.profileId === selectedProfileId));
   const active = rows[activeRow];
   // The Auto entry, when offered, comes first in the menu; item refs and keyboard moves count it.
@@ -228,6 +230,16 @@ export function CliAccountPicker({
                 {modelGroup ? ` · ${modelGroup === "gemini" ? "Gemini" : "Claude · GPT"} quota` : ""}
               </small>
             </span>
+            {forecast ? (
+              <span
+                className="cli-account-menu-forecast"
+                style={{ color: forecast.color }}
+                title={`At this week's pace, ${Math.round(forecast.percent)}% of the weekly quota of ${forecast.accounts} subscription ${forecast.accounts === 1 ? "account" : "accounts"} is still free when the last of their weeks resets ${forecast.resetWhen}. API keys are not counted.`}
+              >
+                <strong>{Math.round(forecast.percent)}%</strong>
+                <small>free {forecast.resetWhen}</small>
+              </span>
+            ) : null}
           </div>
           <div className="cli-account-menu-list" style={menuMaxHeight ? { maxHeight: `${menuMaxHeight - 82}px` } : undefined}>
             {auto ? (

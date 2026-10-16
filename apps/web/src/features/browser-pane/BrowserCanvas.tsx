@@ -431,8 +431,10 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
         }}
         onKeyDown={(event) => {
           if (!interactive || event.nativeEvent.isComposing) return;
+          // `code` keeps Ctrl+V a paste on non-Latin layouts (Greek reports key "ω"); the browser then fires `paste`.
           const isPasteShortcut =
-            (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v";
+            ((event.ctrlKey || event.metaKey) && !event.altKey && (event.code === "KeyV" || event.key.toLowerCase() === "v")) ||
+            (event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && event.key === "Insert");
           if (isPasteShortcut) return;
           event.preventDefault();
           inputRef.current({

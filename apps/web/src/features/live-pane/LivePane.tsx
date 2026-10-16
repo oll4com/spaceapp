@@ -10,7 +10,6 @@ import {
 } from "@space/contracts";
 import {
   loadLiveConversationSession,
-  getGreetingForThailandTime,
   mergeTranscriptText,
   type LiveInputPart,
   type LiveSessionHandle,
@@ -24,6 +23,7 @@ import { LiveCaption, LiveOrb, useLiveCaption } from "./useLiveRail.js";
 import "./live-pane.css";
 import { updateLiveSessionStats } from "./live-stats.js";
 import { captureLiveVisual } from "./live-visual-capture.js";
+import { noteLiveUserText, noteLiveUserTurn } from "./live-command-origin.js";
 import { createRealView, grabVideoFrame, type RealView, type RealViewSource, type RealViewState } from "./live-real-view.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { loadLivePaneConfig, saveLivePaneConfig, type LivePaneStoredConfig } from "./live-pane-config.js";
@@ -237,7 +237,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
   const [voice, setVoice] = useState(
     cfg.voice ?? getDefaultVoiceForProvider(initialProvider)
   );
-  const [language, setLanguage] = useState<"auto" | "el" | "en">(cfg.language ?? "auto");
+  const [language, setLanguage] = useState<"auto" | "el" | "en">(cfg.language === "el" ? "el" : "auto");
   const userName = personalMemories.find((m) => m.key.toLowerCase() === "username")?.value || "";
   const [timeZone, setTimeZone] = useState(cfg.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC");
   const [opening, setOpening] = useState(cfg.opening?.trim() || "");
@@ -891,6 +891,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
           },
           onTranscriptUpdate: (item) => {
             if (!isCurrent()) return;
+            if (item.role === "user" && !item.isDelta) noteLiveUserText(item.text);
             if (streamingMode && item.role === "user" && !item.isDelta && item.text.trim()) {
               streamingOperatorIntentRef.current = { text: item.text.trim(), at: Date.now() };
             }
@@ -1008,6 +1009,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       sessionRef.current = handle;
       setPendingInputs((prev) => {
         if (prev.length > 0) {
+          noteLiveUserTurn();
           handle.sendInput?.(prev);
         }
         return [];
@@ -1238,6 +1240,8 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       return;
     }
     if (!sessionRef.current || pendingInputs.length === 0) return;
+    noteLiveUserTurn();
+    noteLiveUserText(pendingInputs.map(part => part.type === "text" ? part.text : "").join(" "));
     sessionRef.current.sendInput?.(pendingInputs);
     setPendingInputs([]);
   }
@@ -1490,9 +1494,8 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                     onChange={(e) => setLanguage(e.target.value as "auto" | "el" | "en")}
                     disabled={isLive}
                   >
-                    <option value="auto">Auto (bilingual Greek / English)</option>
-                    <option value="el">Greek</option>
-                    <option value="en">English</option>
+                    <option value="auto">Auto: English first, then the language you speak</option>
+                    <option value="el">Greek only</option>
                   </select>
                 </div>
 

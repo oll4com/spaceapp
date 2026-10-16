@@ -15,6 +15,7 @@ if (!memoryMutationsEnabled(process.env)) {
   const address = process.env.SPACE_TEMPORAL_ADDRESS ?? DEFAULT_TEMPORAL_ADDRESS;
   const namespace = process.env.SPACE_TEMPORAL_NAMESPACE ?? DEFAULT_TEMPORAL_NAMESPACE;
   const connection = await NativeConnection.connect({ address });
+
   const worker = await Worker.create({
     connection,
     namespace,
@@ -22,7 +23,7 @@ if (!memoryMutationsEnabled(process.env)) {
     workflowsPath: fileURLToPath(new URL("./memory-mutation-workflows.js", import.meta.url)),
     activities: { executePersistedMemoryChangeSet },
     ...memoryMutationWorkerOptions,
-    ...(spanExporter ? workerTracingOptions(spanExporter) : {})
+    ...workerTracingOptions(spanExporter)
   });
   console.log(JSON.stringify({ service, status: "running", address, namespace, taskQueue: MEMORY_MUTATION_TASK_QUEUE }));
   try { await worker.run(); } finally { await spanExporter?.close(); }

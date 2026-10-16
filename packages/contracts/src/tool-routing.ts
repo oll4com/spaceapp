@@ -55,7 +55,7 @@ export const spaceToolPolicies: readonly ToolRoutingPolicyV1[] = [
   { toolId: "mcp:space_summary_tools", category: "OPERATOR_OPT_IN", capability: "summary" },
   { toolId: "mcp:space_capturelab", category: "NATIVE_PREFERRED", capability: "capture" },
   { toolId: "mcp:context7", category: "EXTERNAL_SERVICE" },
-  ...["space-control", "space_ops", "space_browser", "space_playwright_pane", "space_jobapply", "space_mailcopilot", "space_marketingcopilot", "space_services", "olla", "mission_control"].map((id) => ({
+  ...["space-control", "space_ops", "space_browser", "space_playwright_pane", "space_jobapply", "space_mailcopilot", "space_marketingcopilot", "space_freelancecopilot", "space_services", "olla", "mission_control"].map((id) => ({
     toolId: `mcp:${id}`, category: "SPACE_EXCLUSIVE" as const
   }))
 ];
@@ -89,6 +89,7 @@ const nativeAgentDenialReasons: Readonly<Record<string, string>> = {
   space_jobapply: "Job Applications tools belong to the CLI session of a Job Applications pane.",
   space_mailcopilot: "Mail Copilot tools belong to the CLI session of a Mail Copilot pane.",
   space_marketingcopilot: "Marketing Copilot tools belong to the CLI session of a Marketing Copilot pane.",
+  space_freelancecopilot: "Freelance Copilot tools belong to the CLI session of a Freelance Copilot pane.",
   space_services: "Service restarts are operator operations.",
   olla: "Storefront administration is an operator tool.",
   mission_control: "Mission Control changes are operator operations."

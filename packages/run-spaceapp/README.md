@@ -64,22 +64,31 @@ when measurable and its availability is reported.
 
 ### Telemetry
 
-Telemetry is off unless you turn it on. The install wizard asks "Enable
-anonymous usage telemetry?" and the default answer is No. Only when you answer
-Yes (or pass `"telemetry": true` in `--answers`) does a successful first
-install (not an upgrade or re-run) send one ping to
-`https://spaceapp.dev/install-ping.php`. Its body contains only: a random ID
-generated for that ping, the operating system and CPU architecture, the
-launcher and runtime versions, and the install date. It contains no files,
-credentials, workspace paths, or account details.
+Telemetry is off unless you turn it on. The install wizard lists what is sent
+and asks "Enable anonymous usage telemetry?"; the default answer is No. Only
+when you answer Yes (or pass `"telemetry": true` in `--answers`) does a first
+install (not an upgrade or re-run) get a random install ID, stored as
+`installId` in `config.json` and passed to SpaceApp as `SPACE_INSTALL_ID`, and
+send events to `https://spaceapp.dev/install-ping.php`, each with a new random
+event ID and that install ID:
 
-With the same Yes, SpaceApp 1.1.4 and later also send one `first_answer` event,
-once per installation, the first time an agent in the app finishes an answer. It
-goes to the same address and contains only the event name, a new random ID (not
-linked to the install ping or to anything in your installation), the SpaceApp
-version, the CPU architecture and the date. No prompt, answer, model, account or
-path is sent. A failed send is retried at most every ten minutes until it succeeds
-once. With telemetry No, nothing is sent.
+- `install_started`: operating system and its version, CPU architecture, CPU
+  count, RAM in GiB, profile, access mode, launcher and runtime versions.
+- `install_completed` or `install_failed`: the duration and, on failure, the
+  step that failed (`resources`, `docker`, `doctor`, `pull`, `storage`, `start`,
+  `ready`, `owner_setup`, `cleanup`).
+- From SpaceApp: `setup_completed` (the owner account was created), `first_cli`
+  (which CLI started first, for example `opencode`), `first_answer` (an agent
+  finished its first answer) and at most one `active` event a day when the owner
+  opens SpaceApp, with the screen size, pixel ratio, browser family and major
+  version, UI language and SpaceApp version.
+
+The site derives the country from the request and never stores the IP address.
+No files, prompts, answers, models, credentials, workspace paths or account
+details are sent. A failed send from SpaceApp is retried at most every ten
+minutes. Installations created by earlier launchers have no install ID and send
+only the single install ping and `first_answer` event they were told about.
+With telemetry No, nothing is sent.
 
 The environment variable `SPACEAPP_TELEMETRY` overrides the answer: `0`, `false`,
 `no` or `off` never send the ping or the `first_answer` event; `1`, `true`,

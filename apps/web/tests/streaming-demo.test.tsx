@@ -30,8 +30,15 @@ describe("streaming in the shared local demo", () => {
     await act(async () => { await vi.dynamicImportSettled(); });
     const dock = await screen.findByLabelText("Streaming controls");
     expect(dock).toBeTruthy();
-    expect(screen.getAllByText("Not available in the local demo")).toHaveLength(3);
+    expect(screen.getAllByText("Not available in the local demo")).toHaveLength(5);
     expect(screen.queryByText("DEMO_LOCAL_ONLY")).toBeNull();
+    // The bot tabs open on demo data instead of crashing on missing handlers.
+    fireEvent.click(within(dock).getByRole("tab", { name: "Bot" }));
+    expect(await within(dock).findByText("Not available in the local demo.")).toBeTruthy();
+    fireEvent.click(within(dock).getByRole("tab", { name: "Memory" }));
+    expect(await within(dock).findByText("Stream schedule")).toBeTruthy();
+    fireEvent.click(within(dock).getByRole("tab", { name: "Moderation" }));
+    expect(await within(dock).findByText("No moderation actions yet")).toBeTruthy();
 
     fireEvent.click(within(dock).getByRole("tab", { name: "Display" }));
     fireEvent.click(within(dock).getByRole("switch", { name: "Overlay" }));

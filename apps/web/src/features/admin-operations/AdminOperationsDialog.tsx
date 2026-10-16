@@ -47,12 +47,15 @@ export function AdminOperationsDialog({
   client = api,
   initialTool,
   embedded = false,
-  onClose
+  onClose,
+  onMinimize = onClose
 }: {
   client?: AdminOperationsClient;
   initialTool: AdminOperationTool;
   embedded?: boolean;
   onClose: () => void;
+  /** Hides the window while an update keeps running; defaults to closing it. */
+  onMinimize?: () => void;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -163,7 +166,7 @@ export function AdminOperationsDialog({
                 : <MaintenancePanel client={client} onBusyChange={setBusy} />}
             </>
           : activeTool === "update-all"
-            ? <CliUpdateAllPanel client={client} onBusyChange={setBusy} />
+            ? <CliUpdateAllPanel client={client} onBusyChange={setBusy} onMinimize={onMinimize} />
             : <ReleasePanel client={client} onBusyChange={setBusy} />}
       </section>
     </div>

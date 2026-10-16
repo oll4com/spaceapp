@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
   collectOpenCodeStatsFromRows,
   parseCodexRolloutStats,
+  readCodexRolloutTail,
   resolveCodexRolloutPaths,
   runSqliteSnapshotFallback
 } from "../toolbar-model-stats.js";
@@ -258,6 +259,24 @@ describe("batched Codex rollout resolution", () => {
         ["a", "/primary/a"], ["c", "/alternate/c"]
       ]));
       expect(await resolveCodexRolloutPaths([], root)).toEqual(new Map());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readCodexRolloutTail", () => {
+  it("keeps the session_meta line of a rollout too large to read whole, so its provider is known", async () => {
+    const root = mkdtempSync(join(tmpdir(), "space-rollout-tail-"));
+    try {
+      const path = join(root, "rollout.jsonl");
+      const meta = JSON.stringify({ type: "session_meta", payload: { id: "s1", model_provider: "space-gateway" } });
+      const filler = `${JSON.stringify({ type: "response_item", payload: { text: "x".repeat(1000) } })}\n`.repeat(9000);
+      await writeFile(path, `${meta}\n${filler}${JSON.stringify({ type: "event_msg", payload: { type: "token_count" } })}\n`);
+      const tail = await readCodexRolloutTail(path);
+      expect(tail.startsWith(`${meta}\n`)).toBe(true);
+      expect(tail.length).toBeLessThan(8 * 1024 * 1024 + meta.length + 2);
+      expect(tail.trimEnd().endsWith('"token_count"}}')).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

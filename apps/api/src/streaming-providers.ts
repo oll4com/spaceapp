@@ -106,6 +106,22 @@ function numberValue(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+const providerName: Record<StreamingOAuthProvider, string> = { YOUTUBE: "YouTube", TWITCH: "Twitch", TIKTOK: "TikTok", X: "X", DISCORD: "Discord" };
+
+/** An OAuth token endpoint answers invalid_grant when the sign-in expired or was revoked; only a reconnect helps. */
+async function failedResponseError(provider: StreamingOAuthProvider, response: Response): Promise<StreamingProviderError> {
+  if (response.status === 400 || response.status === 401) {
+    const body = await response.text().catch(() => "");
+    if (/"error"\s*:\s*"invalid_grant"/.test(body.slice(0, 4096))) {
+      return new StreamingProviderError(`${provider}_REAUTH_REQUIRED`,
+        `${providerName[provider]} sign-in expired or was revoked. Reconnect it in Overview.`, false, response.status);
+    }
+  } else {
+    await response.body?.cancel().catch(() => undefined);
+  }
+  return providerHttpError(provider, response);
+}
+
 function providerHttpError(provider: StreamingOAuthProvider, response: Response): StreamingProviderError {
   const transient = response.status === 408 || response.status === 429 || response.status >= 500;
   return new StreamingProviderError(
@@ -128,10 +144,7 @@ async function requestJson(
   } catch {
     throw new StreamingProviderError(`${provider}_NETWORK`, `${provider} could not be reached.`, true);
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
-    throw providerHttpError(provider, response);
-  }
+  if (!response.ok) throw await failedResponseError(provider, response);
   try {
     return asRecord(await response.json());
   } catch {
@@ -151,10 +164,7 @@ async function requestJsonArray(
   } catch {
     throw new StreamingProviderError(`${provider}_NETWORK`, `${provider} could not be reached.`, true);
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
-    throw providerHttpError(provider, response);
-  }
+  if (!response.ok) throw await failedResponseError(provider, response);
   try {
     const data = await response.json();
     return Array.isArray(data) ? data : [];
@@ -176,10 +186,7 @@ async function requestEmpty(
   } catch {
     throw new StreamingProviderError(`${provider}_NETWORK`, `${provider} could not be reached.`, true);
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
-    throw providerHttpError(provider, response);
-  }
+  if (!response.ok) throw await failedResponseError(provider, response);
   await response.body?.cancel().catch(() => undefined);
 }
 
@@ -345,7 +352,7 @@ class YouTubeAdapter implements StreamingProviderAdapter {
       try {
         input.quota.consume(1);
         const broadcastUrl = new URL("https://www.googleapis.com/youtube/v3/liveBroadcasts");
-        broadcastUrl.search = formBody({ part: "id,snippet,status", mine: "true", broadcastStatus: "active", broadcastType: "all", maxResults: "1" }).toString();
+        broadcastUrl.search = formBody({ part: "id,snippet,status", broadcastStatus: "active", broadcastType: "all", maxResults: "1" }).toString();
         const broadcastPayload = await requestJson(this.fetcher, this.provider, broadcastUrl.toString(), { headers: bearerHeaders(input.token) });
         const broadcastValue = asArray(broadcastPayload.items)[0];
         if (!broadcastValue) {

@@ -361,6 +361,13 @@ describe("User settings client persistence & server sync", () => {
       expect(result).toBeDefined();
     });
 
+    it("applies the account's Liquid Glass tint live, without a theme reload", () => {
+      const result = syncFromServer({ liquidGlassTint: 20 }, localStorage, "user-test");
+      expect(result.themeChanged).toBe(false);
+      expect(localStorage.getItem("space.liquidGlass.tint.v1")).toBe("20");
+      expect(document.documentElement.style.getPropertyValue("--lg-tint")).toBe("20");
+    });
+
     it("syncs Workspace Quick access pins, keeping an empty list as a deliberate choice", async () => {
       syncFromServer({ workspaceQuickActions: ["surface-media", "pane-layout"] }, localStorage, "user-test");
       expect(JSON.parse(localStorage.getItem("space:workspace-quick-actions:v1")!)).toEqual(["surface-media", "pane-layout"]);

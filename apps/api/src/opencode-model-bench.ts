@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn } from "./safe-child-process.js";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { SystemAnalyticsModel } from "@space/contracts";

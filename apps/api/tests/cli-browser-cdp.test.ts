@@ -8,7 +8,7 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import type { BrowserSessionManager } from "../src/browser-sessions.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
-import { cliBrowserCdpCloseCodes, cliBrowserCdpPath, cliBrowserCdpStatusPath, readChromeAutomationEndpoint } from "../src/cli-browser-cdp.js";
+import { cliBrowserCdpCloseCodes, cliBrowserCdpPath, cliBrowserCdpProxyIdBase, cliBrowserCdpStatusPath, createCliBrowserCdpTargetFilter, readChromeAutomationEndpoint } from "../src/cli-browser-cdp.js";
 import { getApiConfig } from "../src/config.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -178,6 +178,65 @@ describe("CLI browser CDP proxy", () => {
       expect(await client.closed).toBe(1000);
       store.updatePane(t3Pane.id, { isClosed: true });
       expect(await (await attach(app, jobPane.id, t3Token)).closed).toBe(cliBrowserCdpCloseCodes.TOKEN_INVALID);
+    } finally {
+      await app.close();
+      await chrome.close();
+    }
+  });
+
+  it("hides the pages of other panes that share the Chrome and never leaves them paused", () => {
+    const sent: Record<string, unknown>[] = [];
+    const filter = createCliBrowserCdpTargetFilter((message) => sent.push(message));
+    filter.setForeignPages(["other-page"]);
+    const page = (targetId: string) => ({ targetId, type: "page", url: "https://jobs.example/" });
+    // Target.getTargets: only this pane's (and unowned) pages come back.
+    expect(filter.fromClient(JSON.stringify({ id: 5, method: "Target.getTargets", params: {} }))).toEqual({ forward: true });
+    const listed = JSON.parse(filter.fromChrome(JSON.stringify({ id: 5, result: { targetInfos: [page("mine"), page("other-page"), { targetId: "sw", type: "service_worker" }] } }))!);
+    expect(listed.result.targetInfos.map((info: { targetId: string }) => info.targetId)).toEqual(["mine", "sw"]);
+    // Commands aimed at another pane's page are answered locally.
+    const refused = filter.fromClient(JSON.stringify({ id: 6, method: "Target.attachToTarget", params: { targetId: "other-page", flatten: true } }));
+    expect(refused.forward).toBe(false);
+    expect(JSON.parse((refused as { reply: string }).reply)).toMatchObject({ id: 6, error: { code: -32000 } });
+    expect(filter.fromClient(JSON.stringify({ id: 7, method: "Target.activateTarget", params: { targetId: "mine" } }))).toEqual({ forward: true });
+    // An auto-attach to another pane's page is hidden, resumed and detached by the proxy.
+    expect(filter.fromChrome(JSON.stringify({ method: "Target.attachedToTarget", params: { sessionId: "s-other", targetInfo: page("other-page"), waitingForDebugger: true } }))).toBeNull();
+    expect(sent).toEqual([
+      { id: cliBrowserCdpProxyIdBase + 1, method: "Runtime.runIfWaitingForDebugger", params: {}, sessionId: "s-other" },
+      { id: cliBrowserCdpProxyIdBase + 2, method: "Target.detachFromTarget", params: { sessionId: "s-other" } }
+    ]);
+    expect(filter.fromChrome(JSON.stringify({ id: cliBrowserCdpProxyIdBase + 1, result: {} }))).toBeNull();
+    expect(filter.fromChrome(JSON.stringify({ method: "Target.detachedFromTarget", params: { sessionId: "s-other" } }))).toBeNull();
+    expect(filter.fromChrome(JSON.stringify({ method: "Target.targetCreated", params: { targetInfo: page("other-page") } }))).toBeNull();
+    expect(filter.fromChrome(JSON.stringify({ method: "Target.targetDestroyed", params: { targetId: "other-page" } }))).toBeNull();
+    // This pane's pages, child-session events and ordinary replies pass through untouched.
+    const own = JSON.stringify({ method: "Target.attachedToTarget", params: { sessionId: "s-mine", targetInfo: page("mine"), waitingForDebugger: true } });
+    expect(filter.fromChrome(own)).toBe(own);
+    const child = JSON.stringify({ method: "Target.attachedToTarget", params: { sessionId: "s-frame", targetInfo: { targetId: "other-page", type: "page" } }, sessionId: "s-mine" });
+    expect(filter.fromChrome(child)).toBe(child);
+    const ordinary = JSON.stringify({ id: 9, result: { data: "x" } });
+    expect(filter.fromChrome(ordinary)).toBe(ordinary);
+  });
+
+  it("refuses commands for another pane's page of the same Chrome before they reach the browser", async () => {
+    const chrome = await fakeChrome();
+    const { app, store, room, token, jobPane, session } = await fixture(chrome.port);
+    try {
+      const otherPane = store.createPane({ roomId: room.id, title: "Browser 2", mode: "BROWSER" });
+      const other = store.createPaneBrowserSession({ paneId: otherPane.id, roomId: room.id, agentNumber: 2, profileId: "profile:test", profilePath: session.profilePath, viewport: "desktop" });
+      store.updatePaneBrowserSession(other.sessionId, { pages: [{ pageId: "other-page", kind: "PAGE", url: "https://jobs.example/", title: "Other", isActive: true, openerPageId: null, canGoBack: false, canGoForward: false }] });
+      // A pane whose own Chrome is another one may keep a tab in this Chrome's account.
+      const andy = store.createPane({ roomId: room.id, title: "Andy", mode: "MARKETING_COPILOT" });
+      const andySession = store.createPaneBrowserSession({ paneId: andy.id, roomId: room.id, agentNumber: 3, profileId: "profile:andy", profilePath: `${session.profilePath}-andy`, viewport: "desktop" });
+      store.updatePaneBrowserSession(andySession.sessionId, { pages: [{ pageId: "andy-account-tab", kind: "PAGE", url: "https://mail.example/", title: "Mail", isActive: true, openerPageId: null, canGoBack: false, canGoForward: false, account: { profileId: "google_account:test", label: null } }] });
+      const client = await attach(app, jobPane.id, token);
+      client.socket.send(JSON.stringify({ id: 1, method: "Target.attachToTarget", params: { targetId: "other-page", flatten: true } }));
+      client.socket.send(JSON.stringify({ id: 3, method: "Target.attachToTarget", params: { targetId: "andy-account-tab", flatten: true } }));
+      client.socket.send(JSON.stringify({ id: 2, method: "Browser.getVersion" }));
+      await waitFor(() => (client.messages.length >= 3 ? true : undefined), "every reply");
+      expect(JSON.parse(client.messages.find((text) => JSON.parse(text).id === 1)!)).toMatchObject({ id: 1, error: { code: -32000 } });
+      expect(JSON.parse(client.messages.find((text) => JSON.parse(text).id === 3)!)).toMatchObject({ id: 3, error: { code: -32000 } });
+      expect(chrome.received).toEqual([JSON.stringify({ id: 2, method: "Browser.getVersion" })]);
+      client.socket.close(1000, "done");
     } finally {
       await app.close();
       await chrome.close();

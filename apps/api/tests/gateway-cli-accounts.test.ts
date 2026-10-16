@@ -41,7 +41,7 @@ describe("Space Gateway account for new CLI panes", () => {
     const serves = vi.fn(async () => true);
     const registered = createGatewayCliAccounts({ gateway: { serves }, profileExists: claudeGatewayProfile });
     for (const runtimeId of ["cli:gemini", "cli:copilot", "cli:cursor", "cli:codex"]) {
-      // Copilot has a gateway profile, but it is not registered here.
+      // Gemini and Copilot have a gateway profile, but it is not registered here.
       expect(await registered.gatewayProfile(runtimeId)).toBeNull();
       expect(await registered.newPaneProfileId(runtimeId)).toBeNull();
     }
@@ -56,6 +56,18 @@ describe("Space Gateway account for new CLI panes", () => {
     expect(await accounts.gatewayProfile("cli:copilot")).toEqual({ profileId: "space-gateway", ready: true });
     expect(serves).toHaveBeenCalledWith("CODEX");
     expect(await accounts.gatewayProfile("cli:claude")).toEqual({ profileId: "space-gateway", ready: false });
+  });
+
+  it("serves the Antigravity gateway profile from the gateway's Antigravity accounts", async () => {
+    const serves = vi.fn(async (provider: string) => provider === "ANTIGRAVITY");
+    const accounts = createGatewayCliAccounts({ gateway: { serves }, profileExists: async (_runtimeId, profileId) => profileId === "space-gateway" });
+    expect(await accounts.newPaneProfileId("cli:gemini")).toBe("space-gateway");
+    expect(serves).toHaveBeenCalledWith("ANTIGRAVITY");
+    // Space Control opens a pane on the gateway unless the request names another account.
+    expect(await accounts.openProfileId("cli:gemini", undefined)).toBe("space-gateway");
+    expect(await accounts.openProfileId("cli:gemini", "space-gateway")).toBe("space-gateway");
+    expect(await accounts.openProfileId("cli:gemini", "work")).toBeNull();
+    expect(await accounts.openProfileId("cli:cursor", undefined)).toBeNull();
   });
 
   it("counts a failed gateway check as not ready", async () => {

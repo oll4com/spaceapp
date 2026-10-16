@@ -386,4 +386,22 @@ describe("parseCodexNativeTurns", () => {
     expect(turns[0]).toMatchObject({ providerId: "codex-lb", modelId: "gpt-5.6-sol", status: "ABORTED", tokensIn: 200, tokensOut: 20 });
     expect(turns[1]).toMatchObject({ providerId: "codex-lb", modelId: "gpt-5.6-sol", status: "RUNNING" });
   });
+
+  it("adds up every model call of a turn, with cached input, and skips a repeated count", () => {
+    const count = (total: number, input: number, cached: number, output: number) => JSON.stringify({ timestamp: "2027-01-15T07:59:45.000Z",
+      type: "event_msg", payload: { type: "token_count", turn_id: "turn:one", info: { total_token_usage: { total_tokens: total },
+        last_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output, reasoning_output_tokens: 1 } } } });
+    const content = [
+      JSON.stringify({ timestamp: "2027-01-15T07:59:40.000Z", type: "session_meta", payload: { model_provider: "space-gateway" } }),
+      JSON.stringify({ timestamp: "2027-01-15T07:59:42.000Z", type: "turn_context", payload: { turn_id: "turn:one", model: "gpt-6-astra" } }),
+      JSON.stringify({ timestamp: "2027-01-15T07:59:43.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn:one" } }),
+      count(220, 200, 150, 20),
+      count(220, 200, 150, 20), // repeated after a rate-limit refresh
+      count(550, 300, 280, 30),
+      JSON.stringify({ timestamp: "2027-01-15T07:59:50.000Z", type: "event_msg", payload: { type: "task_complete", turn_id: "turn:one" } })
+    ].join("\n");
+    expect(parseCodexNativeTurns(content, Date.parse("2027-01-15T07:50:00.000Z"), Date.parse(sampledAt))).toEqual([expect.objectContaining({
+      providerId: "space-gateway", status: "COMPLETED", tokensIn: 500, tokensOut: 50, tokensReasoning: 2, tokensCacheRead: 430
+    })]);
+  });
 });

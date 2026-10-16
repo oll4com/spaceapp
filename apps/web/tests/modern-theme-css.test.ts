@@ -237,3 +237,64 @@ describe("Modern theme CSS safety contract", () => {
     expect(gzipSync(modernCss).byteLength).toBeLessThanOrEqual(20 * 1024);
   });
 });
+
+describe("Liquid Glass theme CSS contract", () => {
+  const glassCss = readFileSync(resolve(testDir, "../src/features/ui-theme/liquid-glass-theme.css"), "utf8");
+  const ruleBody = (selector: string) =>
+    glassCss.match(new RegExp(`(?:^|\\n)${selector.replace(/[[\]().*"]/g, "\\$&")}\\s*\\{(?<body>[^}]*)\\}`))?.groups?.body ?? "";
+  const dark = ruleBody(':root[data-interface-theme="liquid-glass"] [data-ui-theme="modern"]');
+  const light = ruleBody(':root[data-interface-theme="liquid-glass"][data-color-mode="light"] [data-ui-theme="modern"]');
+
+  it("defines every Modern palette token in both Dark and Light", () => {
+    const modernTokens = [...(modernCss.match(/\[data-ui-theme="modern"\]\s*\{(?<body>[^}]*)\}/)?.groups?.body ?? "").matchAll(/(--modern-[a-z-]+):/g)].map((match) => match[1]!);
+    expect(modernTokens.length).toBeGreaterThan(20);
+    for (const token of modernTokens) {
+      expect(dark).toContain(`${token}:`);
+      if (!token.startsWith("--modern-terminal")) expect(light).toContain(`${token}:`);
+    }
+  });
+
+  it("keeps accent, faint text and filled buttons at WCAG AA in both modes", () => {
+    expect(contrastRatio(readHexToken(dark, "--modern-accent"), readHexToken(dark, "--modern-surface-raised"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(readHexToken(dark, "--modern-faint"), readHexToken(dark, "--modern-surface-raised"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(readHexToken(dark, "--modern-on-accent"), readHexToken(dark, "--modern-accent"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(readHexToken(light, "--modern-accent"), readHexToken(light, "--modern-bg"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(readHexToken(light, "--modern-faint"), readHexToken(light, "--modern-surface-raised"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(readHexToken(light, "--modern-on-accent"), readHexToken(light, "--modern-accent"))).toBeGreaterThanOrEqual(4.5);
+    for (const fill of glassCss.matchAll(/--lg-blue-fill:\s*(#[0-9a-f]{6})/gi)) {
+      expect(contrastRatio("#ffffff", fill[1]!)).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("gives native select options a solid, readable card in both modes", () => {
+    for (const selector of [':root[data-interface-theme="liquid-glass"] select option', ':root[data-interface-theme="liquid-glass"][data-color-mode="light"] select option']) {
+      const body = ruleBody(selector);
+      const [background, text] = [/background-color:\s*(#[0-9a-f]{6});/i, /(?:^|\s)color:\s*(#[0-9a-f]{6});/i].map((pattern) => body.match(pattern)?.[1] ?? "");
+      expect(contrastRatio(text!, background!)).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("adapts the glass to Reduce Transparency, Increase Contrast and Reduce Motion", () => {
+    expect(glassCss).toMatch(/@media \(prefers-reduced-transparency: reduce\)[\s\S]*?--lg-blur: none;/);
+    expect(glassCss).toMatch(/@media \(prefers-contrast: more\)[\s\S]*?--lg-blur: none;/);
+    expect(glassCss).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*?animation: none;/);
+    // The lens filter the CSS references is the one LiquidGlassLens renders, and it switches off with the blur.
+    expect(glassCss).toContain("--lg-lens: url(#space-liquid-glass-lens);");
+    expect(readFileSync(resolve(testDir, "../src/features/ui-theme/LiquidGlassLens.tsx"), "utf8")).toContain('id="space-liquid-glass-lens"');
+    expect(glassCss).toMatch(/@media \(prefers-reduced-transparency: reduce\)[\s\S]*?--lg-lens: none;/);
+    expect(glassCss).not.toContain(":has(");
+    expect(glassCss).not.toContain("!important");
+  });
+
+  it("paints the focus and completion rings inside the pane, where the pane grid cannot clip them", () => {
+    expect(glassCss).not.toMatch(/\.pane-card\.is-(?:target|completion-pending)\s*\{[^}]*box-shadow:\s*0 0 0/);
+    expect(glassCss).toMatch(/\.pane-card:is\(\.is-target, \.is-completion-pending\):not\(\.is-drop-target\)::after\s*\{[^}]*inset: 0;[^}]*box-shadow: inset 0 0 0 2px var\(--lg-pane-ring\);/);
+  });
+
+  it("is loaded by the app and both demo entries", () => {
+    expect(mainSource.match(/import\("\.\/features\/ui-theme\/liquid-glass-theme\.css"\)/g)).toHaveLength(2);
+    for (const entry of ["../src/demo/mock-entry.tsx", "../src/demo/feature-entry.tsx"]) {
+      expect(readFileSync(resolve(testDir, entry), "utf8")).toContain('import "../features/ui-theme/liquid-glass-theme.css";');
+    }
+  });
+});

@@ -10,10 +10,10 @@ let app: Awaited<ReturnType<typeof createApp>> | undefined;
 afterEach(async () => { await app?.close(); app = undefined; });
 
 it("defaults to every module on private installs and none on public ones", () => {
-  expect(parseOptionalModules(undefined, false).size).toBe(8);
+  expect(parseOptionalModules(undefined, false).size).toBe(9);
   expect(parseOptionalModules(undefined, true).size).toBe(0);
   expect([...parseOptionalModules("waitlist, games, unknown", true)]).toEqual(["games", "waitlist"]);
-  expect(parseOptionalModules("all", true).size).toBe(8);
+  expect(parseOptionalModules("all", true).size).toBe(9);
   expect(parseOptionalModules("none", false).size).toBe(0);
 });
 

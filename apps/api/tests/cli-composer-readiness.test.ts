@@ -48,6 +48,12 @@ it("holds a prompt until a freshly started CLI opens its composer", async () => 
   expect(ready).toBe(true);
 });
 
+it("finds the composer on the saved screen of a CLI that was idle before this attachment", async () => {
+  const { terminal, managed } = manager("cli:claude", "", 2000);
+  vi.spyOn(terminal, "observeRoomScreen").mockResolvedValue({ text: idle["cli:claude"], revision: 1 });
+  await expect(waitFor(terminal, managed, true)).resolves.toBeUndefined();
+});
+
 it("refuses a prompt when the composer never opens, but an answer or key does not wait for it", async () => {
   const { terminal, managed } = manager("cli:grok", "Do you trust the contents of this directory?", 60);
   await expect(waitFor(terminal, managed, true)).rejects.toThrow("no input was sent");
@@ -66,4 +72,24 @@ it("after the composer appears, waits until the CLI's output has been quiet for 
   await pending;
   // Output changed for ~600 ms, then 750 ms of quiet were required.
   expect(readyAt - started).toBeGreaterThanOrEqual(1300);
+});
+
+it("sends an interrupt key to a busy Codex that never showed its ready composer", async () => {
+  const session = { sessionId: "cli_session:codex-busy", purpose: "NORMAL", isActive: true, status: "RUNNING", runtimeId: "cli:codex" };
+  const runtime = { id: "cli:codex", adapterStatus: "ENABLED", authState: "READY", status: "ENABLED", detectedCommandPath: "/usr/local/bin/codex" };
+  const managed = { runtimeId: "cli:codex", sessionId: session.sessionId, inputReady: false, codexModelControlReady: false, closed: false,
+    startupOutput: "• Working (16s • esc to interrupt)", controlOutput: "", pendingHostEvents: [], turnMarkers: new Map() };
+  const input = vi.fn(async () => ({ accepted: true, acceptedAtMs: Date.now() }));
+  const terminal = new CliTerminalManager({ config: {}, hostClient: {}, startupReadyTimeoutMs: 50,
+    store: { getPaneCliSession: async () => session, touchPaneCliSessionActivity: async () => undefined },
+    discoverRuntimes: async () => ({ data: [runtime] }) } as never);
+  const internals = terminal as unknown as Record<string, unknown>;
+  internals.getOrSpawnSession = async () => ({ managed });
+  internals.flushHostOutput = async () => undefined;
+  internals.appendTranscript = async () => undefined;
+  internals.hostForRuntime = () => ({ input });
+  await expect(terminal.sendInput(session.sessionId, "\u001b", "trace:esc")).resolves.toMatchObject({ turnMarker: null });
+  expect(input).toHaveBeenCalledTimes(1);
+  // Any other input still waits for Codex to be ready.
+  await expect(terminal.sendInput(session.sessionId, "/model", "trace:cmd")).rejects.toThrow("did not become ready for input");
 });

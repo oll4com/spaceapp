@@ -2,7 +2,7 @@
   --room-accent: #82aaff;
 }
 
-/* Codex LB shares the Modern layout; these tokens also reach body portals. */
+/* Graphite (theme id "codex") shares the Modern layout; these tokens also reach body portals. */
 :root[data-interface-theme="codex"] [data-ui-theme="modern"] {
   --modern-bg: #090909;
   --modern-surface: #141414;
@@ -46,7 +46,7 @@
   border-bottom-color: var(--modern-border);
 }
 
-/* Codex LB CLI Shortcuts Popover */
+/* Graphite CLI Shortcuts Popover */
 :root[data-interface-theme="codex"] .terminal-shortcuts-popover,
 .terminal-shortcuts-popover[data-interface-theme="codex"],
 :root[data-interface-theme="codex"] .terminal-model-popover-quick {

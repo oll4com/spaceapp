@@ -1,0 +1,9 @@
+/* Space Duotone: closed shapes of an unfilled icon carry a soft tone of the icon colour; solid details stay solid. */
+.space-duotone-icon[fill="none"] :is(rect, circle, ellipse, polygon, path[d$="z"], path[d$="Z"]):not([fill]) {
+  fill: currentColor;
+  fill-opacity: var(--space-icon-tone, 0.18);
+}
+
+.space-duotone-plate {
+  fill-opacity: var(--space-icon-tone, 0.18);
+}

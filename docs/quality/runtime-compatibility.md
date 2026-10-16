@@ -169,7 +169,12 @@ launch forms through both gates), verdict `PASS`, recommendation
 `ELIGIBLE_FOR_REVIEWED_PROMOTION`, `promotion: NOT_PERFORMED`; the live
 `codex/current` link still read `0.152.0` afterwards.
 
-**Install note (repository files only; not installed by any deploy).**
+**Installed on public-host on 2026-10-16** (not by a deploy; next run Sunday 04:30 local).
+The first run (`systemctl start space-cli-canary.service`, 16 s) checked the three
+managed CLIs with a newer stable version: Codex `0.163.0` `PASS`, Gemini `1.4.0`
+`PASS`, Qwen `0.25.2` `BLOCKED` (`PATCH_REBASE_REQUIRED`: the reviewed Space patch
+must be rebased first). Nothing was promoted.
+
 `deploy/space-cli-canary.service` runs `--scheduled` weekly as `spaceapp-user`
 with `Nice=10`, `ProtectSystem=strict`, `ProtectHome=read-only` and only the
 canary and report directories writable. An operator installs it with:
@@ -216,8 +221,11 @@ for send/interrupt/reconnect the runtime-agnostic PTY host tests
 `packages/cli-host/tests/ipc.test.ts`, `session-registry.test.ts` and
 `apps/api/tests/cli-terminal-control.test.ts`), **SA** static admission
 (repository wrapper filter + sudoers), **UF** upstream flag probe of the exact
-version above, **LP** live proof at this SHA, **U** unverified. No LP exists for
-any runtime in this slice.
+version above, **LP** live proof on stable, **U** unverified. The LP entries are
+from 2026-10-16 on stable `fda4aae81a` (see "Live runtime proofs, 2026-10-16"
+below): **(I)** the authenticated `PROVE_CLI_INPUT` browser proof, **(R)**
+`PROVE_CODEX_RESUME`, **(C)** Space Control (`space-admin-action control`) on a real
+pane.
 
 **Live start proofs, 2026-10-14 (stable, `ADD_*_CLI` through the authenticated
 proof backend, disposable Agent Proof rooms, all deleted afterwards; reports in
@@ -235,18 +243,57 @@ proof backend, disposable Agent Proof rooms, all deleted afterwards; reports in
 These are start-only (visual/control) proofs: no prompt was sent, so they say
 nothing about execution or resume.
 
+**Live runtime proofs, 2026-10-16 (stable `fda4aae81a`; reports in
+`20261016-runtime-live-proofs`; every proof room deleted and every pane closed
+afterwards):**
+
+- **Codex and Claude Code, `PROVE_CLI_INPUT` (I).** A new single-pane proof room
+  started the CLI; the browser typed a draft with edits and a paste, submitted it,
+  and the model answered the exact uppercase value (`matchedAfterSubmit`, from the
+  transcript). Session, PID and generation stayed the same across a 15 s dwell
+  and a page reload that re-attached the terminal at the same geometry. The
+  evidence validator (`cliInputProofEvidenceIsValid`) accepts both. The proof's
+  overall `ok` was false only because the page also asked for the browser handoff
+  of a pane in another room whose handoff had expired (404); since `f3d78ee1a6`
+  the proof counts that like the closed-pane 409 it already accepted.
+- **Codex resume, `PROVE_CODEX_RESUME` (R).** The resume picker opened and was
+  dismissed; session and PID stayed the same and the terminal re-attached.
+- **Re-run after the promote to stable `2facc3b779` (same day):** `PROVE_CLI_INPUT`
+  for Codex and Claude Code and `PROVE_CODEX_RESUME` all report `ok: true`. One of
+  two resume attempts failed first ("Codex /resume picker did not open").
+- **OpenCode, Space Control (C).** A pane started in the operator's room; a
+  prompt got the exact answer; a stop during a `sleep 150` tool call left the
+  task `INTERRUPTED` (confirmed after about 25 s; Space Control's own 3.5 s
+  confirmation reported `UNKNOWN`), and the next prompt was answered in the same
+  session. The browser-typed proof failed twice for OpenCode: the CLI wrote
+  57 KB after the submit but the expected value never appeared contiguously in
+  the transcript within 137 s, and the proof read the rendered screen only for
+  Gemini. OpenCode 1.19.2 in tmux with a throwaway home shows the answer
+  contiguously on its screen, so since `98eb7d2339` the proof reads OpenCode's
+  screen too; the re-proof waits for the promote.
+- **Codex interrupt (C): failed.** A Space Control stop during a long tool call
+  answered "did not become ready for input before the startup timeout" and the
+  turn ran to completion: the Esc fallback waited for Codex's ready composer,
+  which a busy Codex never shows. Fixed on dev by sending interrupt keys without
+  that wait (queued 2026-10-16, `apps/api/tests/cli-composer-readiness.test.ts`);
+  the live re-proof waits for the promote.
+- **Not proven:** Gemini (`PROVE_CLI_INPUT` found no account with 5-hour and
+  weekly quota above 1%); `ADD_CLAUDE_CODE_CLI` and `ADD_GEMINI_CLI` (the proof
+  room was not created or did not become ready, twice); Hermes and the runtimes
+  disabled in the operator's settings; host-loss resume for every runtime.
+
 | Runtime | start | send | interrupt | native resume | reconnect |
 | --- | --- | --- | --- | --- | --- |
-| OpenCode | CT SA UF; LP U | CT; LP U | CT; LP U | REFERENCE + provider selection: CT SA UF; LP U | live host CT; host loss resumes (CT); LP U |
-| Codex | CT SA UF (resolved model required); LP U | CT; LP U | CT; LP U | REFERENCE (thread): CT SA UF; LP U | live host CT; host loss resumes once a thread is bound; LP U |
-| Claude Code | CT SA UF; LP U | CT; LP U | CT; LP U | REFERENCE + picker fallback: CT SA UF; LP U | live host CT; host loss resumes; LP U |
+| OpenCode | CT SA UF; LP pass (C) | CT; LP pass (C), browser-typed LP fail (see below) | CT; LP pass (C) | REFERENCE + provider selection: CT SA UF; LP U | live host CT; host loss resumes (CT); LP U |
+| Codex | CT SA UF (resolved model required); LP pass (I) | CT; LP pass (I) | CT; LP fail (C), fix queued | REFERENCE (thread): CT SA UF; resume picker LP pass (R) | live host CT; host loss resumes once a thread is bound; browser reattach LP pass (I) |
+| Claude Code | CT SA UF; LP pass (I) | CT; LP pass (I) | CT; LP U | REFERENCE + picker fallback: CT SA UF; LP U | live host CT; host loss resumes; browser reattach LP pass (I) |
 | Gemini | CT SA UF; LP U | CT; LP U | CT; LP U | provider selection, wrapper-steered reference: CT SA (env_keep) UF; exactness U | live host CT; host loss resumes; LP U |
 | Autohand | CT SA UF; LP U | CT; LP U | CT; LP U | unsupported (declared) | live host CT; host loss resumes the recorded or index-resolved task (CT), fresh only when none is found |
 | Qwen | CT SA UF; LP U | CT; LP U | CT; LP U | provider selection; reference passed, pending live proof: CT SA UF | live host CT; host loss resumes; LP U |
 | Kimi | CT SA UF; LP U | CT; LP U | CT; LP U | provider selection (picker): CT SA UF; LP U | live host CT; host loss resumes; LP U |
 | Grok | CT SA UF; LP U | CT; LP U | CT; LP U | provider selection: CT SA UF; LP U | live host CT; host loss resumes; LP U |
 | DeepSeek | CT SA UF; LP U | CT; LP U | CT; LP U | REFERENCE (task history): CT SA UF; LP U | live host CT; host loss restarts fresh (declared) |
-| Cursor | CT SA UF (`--disable-auto-update` U); LP U | CT; LP U | CT; LP U | provider selection: CT SA UF; LP U | live host CT; host loss resumes; LP U |
+| Cursor | CT SA UF (`--disable-auto-update`: upstream source, see below); LP U | CT; LP U | CT; LP U | provider selection: CT SA UF; LP U | live host CT; host loss resumes; LP U |
 | Copilot | CT SA UF; LP U | CT; LP U | CT; LP U | provider selection: CT SA UF; LP U | live host CT; host loss resumes; LP U |
 | Hermes | CT SA UF; LP U | CT; LP U | CT; LP U | provider selection: CT SA UF; LP U | live host CT; host loss resumes; LP U |
 | OMP | CT SA UF; LP U | CT; LP U | CT; LP U | provider selection: CT SA UF; LP U | live host CT; host loss resumes; LP U |
@@ -268,7 +315,12 @@ Findings from the inventory and the contract suite:
 - **Copilot accepts `--effort`** (the wrapper's model flag) as a hidden alias
   of `--reasoning-effort`; Grok accepts the hidden `--no-auto-update`. Both were
   checked against a parser that rejects unknown flags. Cursor's hidden
-  `--disable-auto-update` stays unverified because its parser accepts any flag.
+  `--disable-auto-update` cannot be checked by the parser probe (its parser accepts
+  any flag). Checked in the shipped bundle instead (2026-10-16, `2026.10.14-941492e`):
+  the option is declared (`index.js`, hidden "Disable auto-updates") and the agent
+  starts its background update check only when `disableAutoUpdate` is false and the
+  channel is not `static` (`7000.index.js`). The managed version directories are
+  root-owned and changed only through reviewed maintenance installs.
 - **Qwen's task-history resume does not pass its recorded reference.** Only
   the host-loss restore passes `--resume <uuid>`; task history starts a fresh
   session with Space context (no resolver in `cli-native-task-resume.ts`).

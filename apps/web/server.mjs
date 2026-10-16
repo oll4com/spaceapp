@@ -391,7 +391,7 @@ const demoWorkspaceContentSecurityPolicy = [
   "media-src 'none'",
   "connect-src 'none'",
   "worker-src 'none'",
-  "manifest-src 'none'"
+  "manifest-src 'self'"
 ].join("; ");
 
 function publicHomepageSecurityHeaders(request, filePath) {
@@ -407,7 +407,8 @@ function publicHomepageSecurityHeaders(request, filePath) {
       "x-frame-options": "SAMEORIGIN"
     };
   }
-  if (pathname !== "/homepage") return {};
+  // The operator app: no framing by other sites (1.1.5 review F12). A script policy needs a browser proof of every pane first.
+  if (pathname !== "/homepage") return { "content-security-policy": "frame-ancestors 'self'; object-src 'none'; base-uri 'self'", "x-frame-options": "SAMEORIGIN" };
   return {
     "content-security-policy": publicHomepageContentSecurityPolicy,
     "cross-origin-opener-policy": "same-origin",

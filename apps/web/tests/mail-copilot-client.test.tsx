@@ -6,7 +6,7 @@ import { useMailbox } from "../src/features/mail-copilot-pane/useMailbox.js";
 
 const apiMock = vi.hoisted(() => ({
   mailAccounts: vi.fn(), mailLabels: vi.fn(), mailThreads: vi.fn(), mailThread: vi.fn(), modifyMailThread: vi.fn(), sendMail: vi.fn(), saveMailDraft: vi.fn(),
-  updateMailCopilotView: vi.fn(), mailAttachmentUrl: (paneId: string | undefined, account: string, messageId: string, attachmentId: string) => `/api/mail-copilot/messages/${messageId}/attachments/${attachmentId}?account=${account}`
+  updateMailCopilotView: vi.fn(), requestMailFix: vi.fn(), mailAttachmentUrl: (paneId: string | undefined, account: string, messageId: string, attachmentId: string) => `/api/mail-copilot/messages/${messageId}/attachments/${attachmentId}?account=${account}`
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 
@@ -57,7 +57,11 @@ describe("MailClient", () => {
     expect(within(items[0]!).getByLabelText("Has attachment")).toBeTruthy();
     expect(within(items[1]!).getByRole("button", { name: "boss@corp.example: Standup" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: /Inbox/ }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("tab", { name: /Clients/ })).toBeTruthy();
+    // User labels sit in a picker that stays visible beside the scrolling chips.
+    expect(screen.queryByRole("tab", { name: /Clients/ })).toBeNull();
+    fireEvent.change(screen.getByRole("combobox", { name: "Show label" }), { target: { value: "Clients" } });
+    await waitFor(() => expect(apiMock.mailThreads).toHaveBeenLastCalledWith("pane:mail00001", { account: "all", labelId: "Clients", q: undefined }));
+    expect(screen.getByRole("combobox", { name: "Show label" }).closest("label")!.className).toContain("selected");
     fireEvent.click(screen.getByRole("tab", { name: /Starred/ }));
     await waitFor(() => expect(apiMock.mailThreads).toHaveBeenLastCalledWith("pane:mail00001", { account: "all", labelId: "STARRED", q: undefined }));
     fireEvent.change(screen.getByRole("combobox", { name: "Account" }), { target: { value: "work@gmail.com" } });
@@ -91,9 +95,22 @@ describe("MailClient", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: /Anna: Invoice/ })).toBeNull());
   });
 
+  it("sends the open conversation to the AI with an optional note to check and fix what it needs", async () => {
+    apiMock.requestMailFix.mockResolvedValue({ event: { id: "mailevt:e1" }, runStarted: true });
+    render(<Harness />);
+    fireEvent.click(await screen.findByRole("button", { name: "Unread: Anna: Invoice" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send conversation to AI" }));
+    const sheet = screen.getByRole("form", { name: "Send to AI" });
+    fireEvent.change(within(sheet).getByRole("textbox", { name: "What should the copilot check or fix?" }), { target: { value: "Why was it charged twice?" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(apiMock.requestMailFix).toHaveBeenCalledWith("pane:mail00001", { account: "me@gmail.com", threadId: "t1", note: "Why was it charged twice?" }));
+    expect(await screen.findByText("Sent to the copilot: it checks and fixes what this mail needs.")).toBeTruthy();
+    expect(screen.queryByRole("form", { name: "Send to AI" })).toBeNull();
+  });
+
   it("moves the open conversation to a user label: out of the inbox and closed", async () => {
     render(<Harness />);
-    fireEvent.click(await screen.findByRole("button", { name: /Anna: Invoice/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Unread: Anna: Invoice" }));
     const move = await screen.findByRole("combobox", { name: "Move to" });
     expect(within(move).getAllByRole("option").map((option) => option.textContent)).toEqual(["Move to…", "Clients"]);
     fireEvent.change(move, { target: { value: "Clients" } });
@@ -195,6 +212,53 @@ describe("MailClient", () => {
     await act(async () => { fireEvent.click(within(first).getByRole("button", { name: "Trash" })); });
     expect(await screen.findByText("Moved to trash")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Compose" })).toBeTruthy();
+  });
+
+  it("selects conversations by their avatar and acts on all of them from the selection bar, with one undo", async () => {
+    render(<Harness />);
+    await screen.findByRole("list", { name: "Inbox conversations" });
+    const first = screen.getByRole("button", { name: "Select Anna: Invoice" });
+    fireEvent.click(first);
+    expect(first.getAttribute("aria-pressed")).toBe("true");
+    expect(first.closest("[role='listitem']")?.querySelector(".mc-avatar.checked")).not.toBeNull();
+    // Selecting does not open the conversation; the search bar becomes the selection bar.
+    expect(apiMock.mailThread).not.toHaveBeenCalled();
+    const bar = screen.getByRole("toolbar", { name: "Selected conversations" });
+    expect(screen.queryByRole("search")).toBeNull();
+    expect(within(bar).getByText("1 selected")).toBeTruthy();
+    fireEvent.click(within(bar).getByRole("button", { name: "Select all" }));
+    expect(within(bar).getByText("2 selected")).toBeTruthy();
+    // Gmail's rule: any unread marks all read; star unless all are starred.
+    await act(async () => { fireEvent.click(within(bar).getByRole("button", { name: "Mark as read" })); });
+    expect(apiMock.modifyMailThread).toHaveBeenCalledWith("pane:mail00001", "t1", { account: "me@gmail.com", action: "read" });
+    expect(apiMock.modifyMailThread).toHaveBeenCalledWith("pane:mail00001", "wt1", { account: "work@gmail.com", action: "read" });
+    expect(within(bar).getByText("2 selected")).toBeTruthy();
+    expect(within(bar).getAllByRole("combobox", { name: "Move selected to" })).toHaveLength(1);
+    apiMock.modifyMailThread.mockClear();
+    await act(async () => { fireEvent.click(within(bar).getByRole("button", { name: "Trash selected" })); });
+    expect(apiMock.modifyMailThread.mock.calls.map((call) => call[1])).toEqual(["t1", "wt1"]);
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Anna: Invoice|Standup/ })).toBeNull());
+    expect(screen.getByRole("search")).toBeTruthy();
+    const snackbar = screen.getByText("Moved to trash · 2 conversations").closest("[role='status']") as HTMLElement;
+    await act(async () => { fireEvent.click(within(snackbar).getByRole("button", { name: "Undo" })); });
+    expect(apiMock.modifyMailThread).toHaveBeenCalledWith("pane:mail00001", "t1", { account: "me@gmail.com", action: "untrash" });
+    expect(apiMock.modifyMailThread).toHaveBeenLastCalledWith("pane:mail00001", "wt1", { account: "work@gmail.com", action: "untrash" });
+    // Rows that come back after an undo are not selected any more.
+    expect((await screen.findByRole("button", { name: "Select Anna: Invoice" })).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("reports the conversations a selection action could not change and keeps them selected", async () => {
+    render(<Harness />);
+    await screen.findByRole("list", { name: "Inbox conversations" });
+    fireEvent.click(screen.getByRole("button", { name: "Select Anna: Invoice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select boss@corp.example: Standup" }));
+    apiMock.modifyMailThread.mockImplementation(async (_pane: string, threadId: string) => { if (threadId === "wt1") throw new Error("Read-only account"); return { ok: true }; });
+    const bar = screen.getByRole("toolbar", { name: "Selected conversations" });
+    await act(async () => { fireEvent.click(within(bar).getByRole("button", { name: "Archive selected" })); });
+    expect(screen.getByText("1 of 2 conversations failed: Read-only account")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Anna: Invoice/ })).toBeNull();
+    expect(within(screen.getByRole("toolbar", { name: "Selected conversations" })).getByText("1 selected")).toBeTruthy();
+    expect(screen.getByText("Archived")).toBeTruthy();
   });
 
   it("resizes the list against the conversation by dragging or with the arrow keys, remembers it per pane and resets on double-click", async () => {

@@ -75,7 +75,9 @@ export function sanitizeControlExecute(raw:unknown):unknown{
        if(cleanKey === "qoder cli") cleanKey = "qoder";
        if(cleanKey === "muse code" || cleanKey === "muse cli") cleanKey = "muse";
        if(cleanKey === "factory" || cleanKey === "factory droid" || cleanKey === "droid cli") cleanKey = "droid";
-       const num=typeof v==="number"?v:1;
+       const num=typeof v==="number"?Math.floor(v):1;
+       // Agents list every type with 0 beside the one they want; the strict schema accepts only counts of 1 or more.
+       if(num<1)continue;
        cleanCounts[cleanKey]=(cleanCounts[cleanKey]||0)+num;
       }
      inputObj.counts=cleanCounts;

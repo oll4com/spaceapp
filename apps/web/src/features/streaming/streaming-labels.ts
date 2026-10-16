@@ -43,7 +43,7 @@ export function readinessStatusLabel(status: StreamingProviderReadinessStatus | 
 const readinessCodeLabels: Record<string, string> = {
   READY: "Ready to connect",
   CLIENT_FILE_MISSING: "Client credentials file is missing",
-  CLIENT_FILE_PERMISSIONS: "Client credentials file permissions are too open",
+  CLIENT_FILE_PERMISSIONS: "Client credentials file needs owner-only permissions",
   CLIENT_FILE_INVALID: "Client credentials file is not valid",
   DEMO_LOCAL_ONLY: "Not available in the local demo"
 };

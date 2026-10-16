@@ -193,6 +193,43 @@ describe("runBotTurn", () => {
     expect(result.model).toBe("deepseek-v4-flash-free");
   });
 
+  it("talks Anthropic Messages on a Claude route: system beside the messages, tool_use in, tool_result back", async () => {
+    const path = await keyFile();
+    const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = [];
+    const answers = [
+      { content: [{ type: "tool_use", id: "toolu_1", name: "space_send_reply", input: { platform: "YOUTUBE", message: "Mostly TypeScript.", replyToId: "m1" } }], stop_reason: "tool_use" }
+    ];
+    const sent: string[] = [];
+    const result = await runBotTurn(
+      { context: context(), messages: [{ id: "m1", author: "viewer", message: "What language is SpaceApp written in?", platform: "YOUTUBE" }],
+        tools: { ...emptyTools(), sendReply: async ({ message }) => { sent.push(message); return { ok: true }; } } },
+      {
+        env: {
+          SPACE_STREAMING_BOT_ENABLED: "true",
+          SPACE_STREAMING_BOT_BASE_URL: "http://127.0.0.1:4920/v1",
+          SPACE_STREAMING_BOT_KEY_FILE: path,
+          SPACE_STREAMING_BOT_KEY_NAME: "space-streaming-bot"
+        },
+        modelId: "claude-haiku-5-5",
+        route: { protocol: "anthropic", url: "http://127.0.0.1:4920/v1/messages" },
+        fetchImpl: async (url, init) => {
+          requests.push({ url: String(url), headers: init?.headers as Record<string, string>, body: JSON.parse(String(init?.body)) });
+          return new Response(JSON.stringify(answers.shift() ?? { content: [{ type: "text", text: "done" }], stop_reason: "end_turn" }), { status: 200 });
+        }
+      }
+    );
+    expect(sent).toEqual(["Mostly TypeScript."]);
+    expect(result).toMatchObject({ skipped: false, model: "claude-haiku-5-5", errorCode: null });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url).toBe("http://127.0.0.1:4920/v1/messages");
+    expect(requests[0]!.headers["x-api-key"]).toBe("secret-key-value");
+    expect(requests[0]!.headers.Authorization).toBeUndefined();
+    expect(typeof requests[0]!.body.system).toBe("string");
+    expect(JSON.stringify(requests[0]!.body.messages)).toContain("[id=m1 platform=YOUTUBE] viewer: What language is SpaceApp written in?");
+    expect((requests[0]!.body.messages as Array<{ role: string }>).map(message => message.role)).toEqual(["user"]);
+    expect((requests[0]!.body.tools as Array<{ name: string; input_schema: unknown }>)[0]).toMatchObject({ name: "space_send_reply", input_schema: { type: "object" } });
+  });
+
   it("skips when the model produces no tool call", async () => {
     const path = await keyFile();
     const body = JSON.stringify({ choices: [{ message: { role: "assistant", content: "Nothing to reply to." } }] });

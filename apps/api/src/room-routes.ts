@@ -1,5 +1,5 @@
 import type {} from "./request-context.js";
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -9,7 +9,7 @@ import type { FastifyInstance, RouteShorthandOptions } from "fastify";
 import {
   type AuthUser, createRoomInputSchema, MAX_ROOMS, paginationRequestSchema, type Pane, type PaneBrowserSession,
   type PaneCliSession, pickNextAvailableRoomName, reorderPanesInputSchema, reorderRoomsInputSchema, type Room,
-  roomCliActivityResponseSchema, updatePaneLayoutInputSchema, updateRoomInputSchema
+  roomCliActivityResponseSchema, roomKindSchema, updatePaneLayoutInputSchema, updateRoomInputSchema
 } from "@space/contracts";
 import { nowIso, SpaceConflictError, type SpaceStore } from "@space/runtime";
 import type { ActivityLogService } from "./activity-log.js";
@@ -254,6 +254,9 @@ export function registerRoomManagementRoutes(app: FastifyInstance, options: {
   app.delete("/api/rooms/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     await assertRoomAccess(params.id, request.user);
+    // ?kind=AGENT_PROOF: agents delete only their proof rooms, never an operator room by a wrong id.
+    const expected = (request.query as { kind?: unknown } | undefined)?.kind;
+    if (expected !== undefined && (await store.getRoom(params.id)).kind !== roomKindSchema.parse(expected)) throw new SpaceConflictError("The room is not of the expected kind.");
     const panes = await store.listPanes(params.id, true);
     const cliSessions: PaneCliSession[] = [];
     const browserSessions: PaneBrowserSession[] = [];

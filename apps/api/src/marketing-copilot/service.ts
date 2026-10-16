@@ -1,18 +1,21 @@
 import { randomBytes } from "node:crypto";
 import {
   effectiveMarketingAutonomy, MARKETING_CAMPAIGN_TEMPLATES, MARKETING_CHANNEL_LABELS, marketingRuleMatches, marketingUrlMatchesChannel, marketingWordingIssues, resolveMarketingCopilotPaneMetadata,
-  type MarketingCampaign, type MarketingCampaignCreate, type MarketingEvent, type MarketingMetric, type MarketingEventType, type MarketingMemoryCreate, type MarketingMemoryQuery, type MarketingPendingItem,
+  type MarketingBookmark, type MarketingBookmarkCreate, type MarketingCampaign, type MarketingCampaignCreate, type MarketingEvent, type MarketingMetric, type MarketingEventType, type MarketingMemoryCreate, type MarketingMemoryQuery, type MarketingPendingItem,
   type MarketingPost, type MarketingPostCreate, type MarketingPostReviewDecision, type MarketingPostUpdate, type MarketingRule, type MarketingRuleProposal, type MarketingRun,
   type MarketingRunView, type Pane
 } from "@space/contracts";
 import type { MarketingCopilotRepository, MarketingPostFilter } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
+import type { BrowserHostActorContext } from "@space/browser-host";
 
 export interface MarketingCopilotServiceOptions {
   /** Campaigns, posts, memory, activity, runs and rules. */
   repository: MarketingCopilotRepository;
   /** Every activity event, for the room stream and notifications. */
   onEvent?(event: MarketingEvent): void;
+  /** Opens a bookmark in a new tab of the pane browser with its Google account (the browser routes' openTab). */
+  openInBrowser?(owner: string, pane: Pane, bookmark: MarketingBookmark, traceId: string, actor: BrowserHostActorContext): Promise<unknown>;
   now?(): string;
 }
 
@@ -236,6 +239,17 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       channel: input.channel ?? null, tags: input.tags, source, pinned: input.pinned }),
     updateMemory: (owner: string, id: string, patch: { text?: string; pinned?: boolean }) => repository.updateMemory(owner, id, patch),
     forgetMemory: (owner: string, id: string) => repository.deleteMemory(owner, id),
+    // ---- bookmarks ----------------------------------------------------------------------------
+    listBookmarks: (owner: string) => repository.listBookmarks(owner),
+    createBookmark: (owner: string, input: MarketingBookmarkCreate) => repository.createBookmark({ ownerUserId: owner, url: input.url,
+      title: input.title ?? new URL(input.url).hostname.replace(/^www\./, ""), profileId: input.profileId, accountLabel: input.profileId ? input.accountLabel : null }),
+    deleteBookmark: (owner: string, id: string) => repository.deleteBookmark(owner, id),
+    async openBookmark(owner: string, pane: Pane, id: string, traceId: string, actor: BrowserHostActorContext) {
+      const bookmark = await repository.getBookmark(owner, id);
+      if (!bookmark) throw new SpaceNotFoundError(`Bookmark ${id} was not found.`);
+      if (!options.openInBrowser) throw new SpaceConflictError("The pane browser cannot open tabs on this runtime.");
+      return { bookmark, pages: await options.openInBrowser(owner, pane, bookmark, traceId, actor) };
+    },
     // ---- questions ----------------------------------------------------------------------------
     async askQuestion(owner: string, pane: Pane, input: { question: string; options?: string[]; postId?: string }) {
       const questionId = `mktq:${randomBytes(9).toString("base64url")}`;
@@ -410,7 +424,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
         const delta = change && points.length > 1 ? latest.value - points[0]!.value : null;
         return `${label} ${latest.value}${delta !== null ? ` (${delta >= 0 ? "+" : ""}${delta} this week)` : ""}`;
       };
-      const parts = [line("GitHub stars", "GITHUB", "stars", true), line("forks", "GITHUB", "forks", true), line("npm downloads last week", "NPM", "downloads_week", false)].filter(Boolean);
+      const parts = [line("GitHub stars", "GITHUB", "stars", true), line("forks", "GITHUB", "forks", true), line("npm downloads last week", "NPM", "downloads_week", false), line("active self-hosted installs", "INSTALLS", "active_7d", true)].filter(Boolean);
       if (!parts.length) return null;
       return record(owner, { paneId: pane.id, type: "METRICS", message: `This week: ${parts.join(", ")}`, payload: { digest: true } });
     },

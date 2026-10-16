@@ -52,7 +52,7 @@ describe("feed dates", () => {
 });
 
 describe("the feed", () => {
-  const props = { dot: { name: "Orbit", artwork: "/dots/orbit.svg" }, status: "ready" as const, hasOlder: false, loadingOlder: false,
+  const props = { dot: { name: "Orbit", character: "astronaut" as const }, status: "ready" as const, hasOlder: false, loadingOlder: false,
     onLoadOlder: vi.fn(), onRetry: vi.fn(), running: null, latestRun: null };
   it("shows bubbles, one-line events, notices with their link and a new-conversation divider", () => {
     render(<DotFeed {...props} items={[

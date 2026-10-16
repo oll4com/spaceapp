@@ -1,3 +1,4 @@
+import { rollbackKeepingError } from "./rollback.js";
 import { randomUUID } from "node:crypto";
 import { SpaceConflictError, SpaceNotFoundError, type GoogleAccount, type VerifiedGoogleIdentity } from "@space/runtime";
 import type { AuthUser } from "@space/contracts";
@@ -20,6 +21,7 @@ export class PostgresGoogleAccountsRepository {
   // A user-row lock serializes all account mutations, including final-login checks.
   private async mutate<T>(userId: string, operation: (client: PgClientLike) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     try {
       await client.query("BEGIN");
       const owner = await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [userId]);
@@ -28,9 +30,9 @@ export class PostgresGoogleAccountsRepository {
       await client.query("COMMIT");
       return result;
     } catch (error) {
-      await client.query("ROLLBACK");
+      rollbackFailed = await rollbackKeepingError(client);
       throw error;
-    } finally { client.release?.(); }
+    } finally { client.release?.(rollbackFailed || undefined); }
   }
 
   async link(userId: string, identity: VerifiedGoogleIdentity): Promise<GoogleAccount> {

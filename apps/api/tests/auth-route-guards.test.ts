@@ -199,6 +199,13 @@ describe("room and pane ownership for USER accounts", () => {
       }
       expect((await store.listPanes(roomId)).length).toBe(1);
 
+      // Mallory cannot move her own pane into Alice's room.
+      const malloryRoom = (await app.inject({ method: "POST", url: "/api/rooms", headers: mallory.headers, payload: { name: "Mallory room", initialPaneCount: 1 } })).json();
+      const malloryPane = (await store.listPanes(malloryRoom.room?.id ?? malloryRoom.id))[0]!;
+      const intrusion = await app.inject({ method: "POST", url: `/api/panes/${malloryPane.id}/move`, headers: mallory.headers, payload: { targetRoomId: roomId } });
+      expect(intrusion.statusCode, intrusion.body).toBe(404);
+      expect((await store.listPanes(roomId)).length).toBe(1);
+
       const ownerView = await app.inject({ method: "GET", url: `/api/rooms/${roomId}/room-agent`, headers: alice.headers });
       expect(ownerView.statusCode, ownerView.body).not.toBe(404);
       const ownerPane = await app.inject({

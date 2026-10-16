@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   InMemorySystemAnalyticsRepository,
   PostgresSystemAnalyticsRepository,
+  type SystemAnalyticsModelEventRecord,
   type SystemAnalyticsResourceSample
 } from "../src/system-analytics-repository.js";
 import type { PgPoolLike } from "../src/space-store.js";
@@ -86,6 +87,31 @@ describe("system analytics repositories", () => {
 
     await repository.rollupAndSweep(now);
     await expect(repository.listModelEvents("2026-01-01T00:00:00.000Z")).resolves.toEqual([]);
+  });
+
+  const modelEvent = (eventKey: string, extra: Partial<SystemAnalyticsModelEventRecord> = {}): SystemAnalyticsModelEventRecord => ({
+    eventKey, source: "codex", runtimeId: "cli:codex", providerId: "codex", modelId: "gpt-6-astra", roomId: null, paneId: null,
+    sessionId: null, turnId: null, status: "COMPLETED", coverage: "NATIVE", turnCount: 1, startedAt: now, endedAt: now,
+    tokensIn: 10, tokensOut: 2, tokensReasoning: null, ttftMs: null, durationMs: null, updatedAt: now, ...extra
+  });
+
+  it("keeps a stored route, account and API value when a later read does not know them", async () => {
+    const repository = new InMemorySystemAnalyticsRepository();
+    await repository.upsertModelEvents([modelEvent("codex:a", { route: "GATEWAY", accountKey: "gw_account:1", costUsd: 0.5, tokensCacheRead: 4 })]);
+    await repository.upsertModelEvents([modelEvent("codex:a", { tokensOut: 3 })]);
+    await expect(repository.listModelEvents("2026-01-01T00:00:00.000Z")).resolves.toEqual([
+      expect.objectContaining({ tokensOut: 3, route: "GATEWAY", accountKey: "gw_account:1", costUsd: 0.5, tokensCacheRead: 4, tokensCacheWrite: null })
+    ]);
+  });
+
+  it("upserts model events in batches of 500 with one row per key, keeping stored routes", async () => {
+    const { pool, queries } = recordingPool();
+    const repository = new PostgresSystemAnalyticsRepository(pool);
+    const events = Array.from({ length: 1001 }, (_, index) => modelEvent(`claude:msg_${index}`, { source: "claude" }));
+    await repository.upsertModelEvents([...events, modelEvent("claude:msg_0", { source: "claude", route: "DIRECT" })]);
+    expect(queries.map((entry) => entry.values.length)).toEqual([500 * 25, 500 * 25, 25]);
+    expect(queries[0]!.values[20]).toBe("DIRECT");
+    expect(queries[0]!.sql).toContain("route = COALESCE(EXCLUDED.route, system_analytics_model_events.route)");
   });
 
   it("uses conflict-safe inserts and transactional multi-resolution Postgres rollups", async () => {

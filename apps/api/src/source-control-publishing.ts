@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "./safe-child-process.js";
 import { z } from "zod";
 import {
   sourceControlConnectionSchema,

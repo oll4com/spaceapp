@@ -22,7 +22,8 @@ export function NotificationToastHost() {
           <button type="button" className="notification-toast-main" onClick={() => openNotification(notification)}>
             <Bell aria-hidden="true" />
             <span className="notification-toast-copy">
-              <strong>{NOTIFICATION_SOURCE_LABELS[notification.source]}: {notification.title}</strong>
+              <span className="notification-toast-source">{NOTIFICATION_SOURCE_LABELS[notification.source]}</span>
+              <strong>{notification.title}</strong>
               {notification.body ? <small>{notification.body.slice(0, 160)}</small> : null}
             </span>
           </button>

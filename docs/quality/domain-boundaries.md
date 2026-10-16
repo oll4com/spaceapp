@@ -1,6 +1,7 @@
 # Incremental domain boundaries
 
-`npm run test:architecture` runs during the root `test` and `check` commands.
+`npm run test:architecture` runs during the root `check` command (and the private repository's root `test`;
+the public export's `npm test` runs the public suites, so run `npm run test:architecture` there directly).
 It checks local TypeScript source dependencies in the API and web application.
 The policy in `domain-boundaries.json` records existing cyclic edges; the check
 rejects every new edge participating in a cycle, including an edge between

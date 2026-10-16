@@ -54,6 +54,29 @@ describe("Council dock", () => {
     expect(screen.getByText("The Council is available to administrators and operators")).toBeTruthy();
   });
 
+  it("turns the Council's notifications off and back on from its settings", async () => {
+    serve(null);
+    const served = vi.mocked(fetch).getMockImplementation()!;
+    const saved: Array<{ perSource: Record<string, unknown> }> = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) !== "/api/user-settings") return served(input, init);
+      if (init?.method === "PATCH") { saved.push(JSON.parse(String(init.body)).notifications); return Response.json({}); }
+      return Response.json({ notifications: null });
+    });
+    render(<CouncilDock canRun />);
+    fireEvent.click(await screen.findByRole("button", { name: "Council settings" }));
+    const toggle = await screen.findByRole("switch", { name: "Council notifications" }) as HTMLInputElement;
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]?.perSource.COUNCIL).toEqual({ inApp: false, desktop: false, telegram: false });
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(saved).toHaveLength(2));
+    expect(saved[1]?.perSource.COUNCIL).toEqual({ inApp: true });
+  });
+
   it("asks a question with the default coordinator", async () => {
     const posts = serve(null, (_url, body) => ({ ...base, status: "PLANNING", plan: null, estimate: null, question: body.question }));
     render(<CouncilDock canRun />);
@@ -107,11 +130,23 @@ describe("Council dock", () => {
     const top = await screen.findByRole("list", { name: "Top 3" });
     expect(within(top).getByText("Courier shift")).toBeTruthy();
     expect(within(top).getByText("9.0/10 · 1 of 1 agree")).toBeTruthy();
+    expect(within(screen.getByRole("list", { name: "Models" })).getByText("GPT-6 Astra")).toBeTruthy();
     expect(screen.getByText("courier shift").tagName).toBe("STRONG");
     expect(screen.getByRole("button", { name: "Another review round" })).toBeTruthy();
     const details = screen.getByText("Details: who said what").closest("details")!;
     expect(details.open).toBe(false);
     expect(within(details).getByRole("link", { name: "Wolt couriers" }).getAttribute("href")).toBe("https://wolt.com/couriers");
     expect(within(details).getAllByText("GPT-6 Astra").length).toBeGreaterThan(0);
+  });
+
+  it("asks the coordinator for a plan in the clipboard and shows where it was saved", async () => {
+    const done: CouncilRun = { ...base, status: "COMPLETED", stage: "DONE", final: { text: "## Answer\nDo a courier shift.", top: [] } };
+    const posts = serve(done, () => ({ ...done, clipboardPlan: { status: "WRITING", itemId: null, title: null, error: null } }));
+    render(<CouncilDock canRun />);
+    fireEvent.click(await screen.findByRole("button", { name: /How can I make 100 euros/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create plan" }));
+    expect((await screen.findByRole("button", { name: "Writing the plan…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(posts).toEqual([{ url: "/api/council/runs/council_run%3Aabcdef123456/clipboard-plan", body: null }]);
+    expect((screen.getByRole("button", { name: "Another review round" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

@@ -8,6 +8,13 @@ platform version lives in `version.json`; `npm run check:claims` verifies that
 the version, licence, Node requirement, runtime list and the constants quoted
 here and in the README match the code.
 
+**Reading this in the public repository.** This map describes the maintainers'
+development host: `deploy/`, `version.json`, `npm run check:claims` and
+`docker-compose.yml` are not part of the public tree, and the trust-boundary
+section below is that host's sudoers model. A public install runs the Docker
+Compose packaging of `packages/run-spaceapp/templates/compose.yml`; its trust
+boundaries are in `docs/security-model.md`.
+
 Related documents:
 
 - System topology and trust notes (earlier source map; still accurate for the diagrams it contains).
@@ -68,8 +75,9 @@ flowchart LR
 
 The public installer runs a different packaging (Docker Compose with
 `spaceapp-core`, `spaceapp-cli`, PostgreSQL, Temporal and an optional
-`spaceapp-browser`; see the README). That compose file ships with the
-`run-spaceapp` package, not with this repository.
+`spaceapp-browser`; see the README). In the public repository that compose file
+is `packages/run-spaceapp/templates/compose.yml`, shipped with the `run-spaceapp`
+package.
 
 ### Data stores
 

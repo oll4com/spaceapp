@@ -1,7 +1,7 @@
 import { NOTIFICATION_SOURCE_LABELS, notificationChannelEnabled, resolveNotificationSettings, type NotificationSettings, type SpaceNotification } from "@space/contracts";
 import { playChime } from "../desktop-widgets/audio-chime.js";
 import { showDesktopNotification } from "./desktop-notifications.js";
-import { openNotification, pushNotificationToast } from "./notification-store.js";
+import { notificationToastKey, openNotification, pushNotificationToast } from "./notification-store.js";
 
 /** The user's "Show notifications" kill switch (Settings → Notifications): no toast, chime or desktop pop-up. */
 export function notificationsSuppressed(): boolean {
@@ -13,8 +13,12 @@ export function deliverNotifications(notifications: SpaceNotification[], setting
   if (!notifications.length || notificationsSuppressed()) return;
   const channels = resolveNotificationSettings(settings);
   let chimed = false;
+  const shown = new Set<string>();
   for (const notification of notifications.slice(0, 5)) {
     if (!notificationChannelEnabled(channels, notification.source, "inApp")) continue;
+    // Newest first: only the newest record of a pane in this batch is shown.
+    if (shown.has(notificationToastKey(notification))) continue;
+    shown.add(notificationToastKey(notification));
     const title = `${NOTIFICATION_SOURCE_LABELS[notification.source]}: ${notification.title}`;
     const shownOnDesktop = notificationChannelEnabled(channels, notification.source, "desktop")
       && showDesktopNotification({ title, body: notification.body, tag: notification.id, onClick: () => openNotification(notification) });

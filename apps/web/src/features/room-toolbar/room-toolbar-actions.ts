@@ -21,11 +21,13 @@ import { WORKSPACE_TEXT_SIZE_PICKER_ID } from "../workspace-text-size-picker/Wor
 import type { IconToolbarAction } from "../../icon-toolbar.js";
 import type { Pane } from "@space/contracts";
 import {
-  ALargeSmall, Activity, Boxes, Camera, CircleHelp, ClipboardList, Mail, Clock3, Cpu, Crop, Crosshair, Database, Dumbbell, Eye, EyeOff,
-  FolderPlus, Gauge, Globe, Keyboard, LayoutDashboard, ListFilter, LogOut, Maximize2, MessageSquare, Mic, Minimize2,
+  ALargeSmall, Activity, Camera, CircleHelp, Clock3, Cpu, Crop, Crosshair, Database, Dumbbell, Eye, EyeOff,
+  Gauge, Globe, Keyboard, LayoutDashboard, ListFilter, LogOut, Maximize2, Minimize2,
   Monitor, MoreHorizontal, Music2, Network, Palette, PanelsTopLeft, Radio, RefreshCw, Rocket, ServerCog, Settings,
-  ShieldCheck, Shrink, SlidersHorizontal, Sparkles, Star, StickyNote, Terminal, Timer, Youtube
+  ShieldCheck, Shrink, SlidersHorizontal, Sparkles, Star, StickyNote, Terminal, Timer,
+  Brain, Router, Bug, Server, CliFloats, Maximize, Minimize
 } from "../ui-theme/app-icons.js";
+import { modeIcons } from "../pane-card/pane-mode-icons.js";
 import type { ToolbarPopovers } from "./useToolbarPopovers.js";
 import { serverModuleOn } from "../pane-visibility/server-modules.js";
 
@@ -76,6 +78,7 @@ export interface RoomToolbarActionsContext {
     addJobApplyPane: () => Promise<void>;
     addMailCopilotPane: () => Promise<void>;
     addMarketingCopilotPane: () => Promise<void>;
+    addFreelanceCopilotPane: () => Promise<void>;
     addLivePane: () => Promise<unknown>;
   };
   tools: {
@@ -126,7 +129,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
   } = context.popovers;
   const { cliFloatsHidden, toggleCliFloats, maskSensitiveData, toggleMaskSensitiveData, isRoomFocusMode, toggleRoomFocusMode, isRoomToolbarHidden, terminalFontSize } = context.preferences;
   const { activeRoom, selectedRoomId, panes, paneLayoutPending, setPaneLayoutError, activeRoomCategoryFilter, activeRoomCategoryColors, cycleRoomCategoryColor } = context.room;
-  const { isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane, addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane, addLivePane } = context.create;
+  const { isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane, addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane, addFreelanceCopilotPane, addLivePane } = context.create;
   const { desktopWidgets, openStickyNote, isBrowserFullscreen, captureRoomScreen, reloadRoomWindow } = context.tools;
   const { isSnipToolOpen, setIsSnipToolOpen } = context.tools.snip;
   const { toolbarVpnRoute, vpnCityPending, rotateVpnCityFromToolbar } = context.tools.vpn;
@@ -158,7 +161,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
     label: "Open memory workspace",
     title: "Open memory workspace",
     ariaLabel: "Open memory workspace",
-    icon: Network,
+    icon: Brain,
     onClick: () => {
       setSystemAnalyticsTab(null);
       setIsSpaceGatewayOpen(false);
@@ -172,7 +175,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
     label: "Space Gateway",
     title: "Open Space Gateway full screen: pooled accounts, API keys, request logs, routing and compression",
     ariaLabel: "Space Gateway",
-    icon: Network,
+    icon: Router,
     onClick: () => {
       setSystemAnalyticsTab(null);
       setIsMemoryWorkspaceOpen(false);
@@ -396,7 +399,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
     label: cliFloatsHidden ? "Show CLI floats" : "Hide CLI floats",
     title: cliFloatsHidden ? "Show CLI floats" : "Hide CLI floats",
     ariaLabel: cliFloatsHidden ? "Show CLI floats" : "Hide CLI floats",
-    icon: cliFloatsHidden ? Eye : EyeOff,
+    icon: CliFloats,
     onClick: toggleCliFloats,
     ariaPressed: cliFloatsHidden
   },
@@ -416,7 +419,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
     label: isDebugModeActive ? "Turn off Debug (App diagnostics)" : "Turn on Debug (App diagnostics)",
     title: isDebugModeActive ? "Turn off Debug (App diagnostics)" : "Turn on Debug (App diagnostics)",
     ariaLabel: isDebugModeActive ? "Turn off Debug (App diagnostics)" : "Turn on Debug (App diagnostics)",
-    icon: Activity,
+    icon: Bug,
     onClick: () => void toggleDebugMode(),
     ariaPressed: isDebugModeActive,
     disabled: debugModePending,
@@ -453,7 +456,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "Add chat pane",
         title: isCodexEnabled ? "Add chat pane" : "Enable Codex in Settings",
         ariaLabel: "Add chat pane",
-        icon: MessageSquare,
+        icon: modeIcons.CHAT,
         onClick: toggleChatLauncher,
         ariaControls: CHAT_LAUNCHER_MENU_ID,
         ariaExpanded: isChatLauncherOpen,
@@ -502,7 +505,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "Add browser pane",
         title: "Add browser pane",
         ariaLabel: "Add browser pane",
-        icon: Eye,
+        icon: modeIcons.BROWSER,
         onClick: () => addPane("BROWSER"),
         disabled: !selectedRoomId || panes.length >= 16
       }]
@@ -513,7 +516,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "File Manager",
         title: "Add File Manager pane",
         ariaLabel: "Add File Manager pane",
-        icon: FolderPlus,
+        icon: modeIcons.FILES,
         onClick: () => {
           if (!activeRoom) return;
           void addFilesPane();
@@ -527,7 +530,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "Databases",
         title: "Add Databases pane",
         ariaLabel: "Add Databases pane",
-        icon: Database,
+        icon: modeIcons.DATABASES,
         onClick: () => {
           if (!activeRoom) return;
           void addDatabasesPane();
@@ -541,7 +544,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "Demo Projects",
         title: "Add Demo Projects pane",
         ariaLabel: "Add Demo Projects pane",
-        icon: Boxes,
+        icon: modeIcons.DEMOS,
         onClick: () => {
           if (!activeRoom) return;
           void addDemosPane();
@@ -555,7 +558,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "Job Copilot",
         title: "Add Job Copilot pane",
         ariaLabel: "Add Job Copilot pane",
-        icon: ClipboardList,
+        icon: modeIcons.JOB_APPLY,
         onClick: () => {
           if (!activeRoom) return;
           void addJobApplyPane();
@@ -569,7 +572,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "Mail Copilot",
         title: "Add Mail Copilot pane",
         ariaLabel: "Add Mail Copilot pane",
-        icon: Mail,
+        icon: modeIcons.MAIL_COPILOT,
         onClick: () => {
           if (!activeRoom) return;
           void addMailCopilotPane();
@@ -583,10 +586,24 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "Marketing Copilot",
         title: "Add Marketing Copilot pane",
         ariaLabel: "Add Marketing Copilot pane",
-        icon: Rocket,
+        icon: modeIcons.MARKETING_COPILOT,
         onClick: () => {
           if (!activeRoom) return;
           void addMarketingCopilotPane();
+        },
+        disabled: !activeRoom || panes.length >= 16
+      }]
+    : []),
+  ...(!isPaneHidden("freelance")
+    ? [{
+        id: "add-freelance",
+        label: "Freelance Copilot",
+        title: "Add Freelance Copilot pane",
+        ariaLabel: "Add Freelance Copilot pane",
+        icon: modeIcons.FREELANCE_COPILOT,
+        onClick: () => {
+          if (!activeRoom) return;
+          void addFreelanceCopilotPane();
         },
         disabled: !activeRoom || panes.length >= 16
       }]
@@ -597,7 +614,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "T3 Code",
         title: "Add T3 Code pane",
         ariaLabel: "Add T3 Code pane",
-        icon: Cpu,
+        icon: modeIcons.T3CODE,
         onClick: () => {
           if (!activeRoom) return;
           void addT3CodePane();
@@ -611,7 +628,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "Add YouTube pane",
         title: "Add YouTube pane",
         ariaLabel: "Add YouTube pane",
-        icon: Youtube,
+        icon: modeIcons.YOUTUBE,
         onClick: () => addPane("YOUTUBE"),
         disabled: !selectedRoomId || panes.length >= 16
       }]
@@ -622,7 +639,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "Add VNC pane",
         title: "Add VNC pane",
         ariaLabel: "Add VNC pane",
-        icon: Monitor,
+        icon: modeIcons.VNC,
         onClick: () => addPane("VNC"),
         disabled: !selectedRoomId || panes.length >= 16
       }]
@@ -633,7 +650,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         label: "Add Live audio pane",
         title: "Add Live audio pane",
         ariaLabel: "Add Live audio pane",
-        icon: Mic,
+        icon: modeIcons.LIVE,
         onClick: () => void addLivePane(),
         disabled: !selectedRoomId || panes.length >= 16
       }]
@@ -661,7 +678,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
     label: isBrowserFullscreen ? "Exit full screen" : "Full screen browser",
     title: isBrowserFullscreen ? "Exit full screen (F11)" : "Full screen browser (F11)",
     ariaLabel: isBrowserFullscreen ? "Exit full screen" : "Full screen browser",
-    icon: isBrowserFullscreen ? Minimize2 : Maximize2,
+    icon: isBrowserFullscreen ? Minimize : Maximize,
     onClick: () => void toggleBrowserFullscreen(),
     ariaPressed: isBrowserFullscreen,
     disabled: false
@@ -756,7 +773,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
     label: "System services",
     title: "Inspect and control systemd services, background workers, and timers",
     ariaLabel: "System services",
-    icon: ServerCog,
+    icon: Server,
     onClick: () => openManage("system-services")
   }] : []),
   // The games are an optional server module (off by default in public installs).
