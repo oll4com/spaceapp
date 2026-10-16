@@ -242,6 +242,15 @@ jobs:
           tail -n 120 .dev-stack/logs/cli-host.log || true
           exit 1
 
+      # The step that starts the stack backgrounds it with `nohup ... > dev-stack.out`,
+      # so its own output never reaches the log. Print the file here, while it
+      # still exists: `reset` deletes .dev-stack/, and the failure dump below is
+      # skipped on a green run. This is also the Linux terminal output the issue
+      # asks the pull request to carry.
+      - name: Print what the one command produced
+        if: always()
+        run: cat dev-stack.out
+
       # Evidence first, teardown second. `reset` deletes .dev-stack/, so a dump
       # that runs after it finds nothing left to read.
       - name: Dump logs on failure
