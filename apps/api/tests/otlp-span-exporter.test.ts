@@ -53,6 +53,21 @@ describe("OTLP span export configuration", () => {
 });
 
 describe("OTLP span exporter", () => {
+  it.each([
+    [undefined, "space-worker"],
+    ["space-temporal", "space-temporal"]
+  ])("preserves service resource and scope selection (%s)", async (scopeName, expectedScope) => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = createOtlpSpanExporter({ endpoint: "http://127.0.0.1:4318", serviceName: "space-worker", scopeName, fetch: fetchImpl });
+    exporters.push(created);
+    created.record(span({ kind: 1 }));
+    await created.flush();
+    const resource = JSON.parse(fetchImpl.mock.calls[0]![1].body).resourceSpans[0];
+    expect(resource.resource.attributes).toEqual([{ key: "service.name", value: { stringValue: "space-worker" } }]);
+    expect(resource.scopeSpans[0].scope.name).toBe(expectedScope);
+    expect(resource.scopeSpans[0].spans[0].kind).toBe(1);
+  });
+
   it("posts OTLP/HTTP JSON server spans with only route-level attributes", async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true }));
     const created = exporter(fetchImpl);
