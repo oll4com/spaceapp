@@ -274,7 +274,7 @@ test("an OpenCode pane still starts when the first-run free-model check fails; c
 });
 
 test("public CLI wrapper isolates provider state and supports protected DeepSeek setup", async () => {
-  const wrapper = await readFile(join(root, "deploy", "docker", "public-cli-wrapper.sh"), "utf8");
+  const wrapper = (await readFile(join(root, "deploy", "docker", "public-cli-wrapper.sh"), "utf8")).replace(/\r\n/g, "\n");
   const credentialStatusBlock = wrapper.match(/credential-status\)[\s\S]*?;;/)?.[0] || "";
 
   assert.match(wrapper, /DISABLE_UPDATES=1/);

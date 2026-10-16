@@ -67,6 +67,7 @@ test("launcher-only source and workflow changes cannot trigger the container mat
   assert.match(trigger, /push:[\s\S]*branches:[\s\S]*- main[\s\S]*paths:/);
   assert.match(trigger, /- "packages\/\*\*"/);
   assert.match(trigger, /- "!packages\/run-spaceapp\/\*\*"/);
+  assert.equal((trigger.match(/- "scripts\/create-runtime-bundles\.mjs"/g) || []).length, 2);
   assert.doesNotMatch(trigger, /\.github\/workflows\/containers\.yml/);
 });
 

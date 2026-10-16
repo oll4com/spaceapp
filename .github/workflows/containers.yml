@@ -10,6 +10,7 @@ on:
       - "starter-memory/**"
       - "Dockerfile"
       - "package-lock.json"
+      - "scripts/create-runtime-bundles.mjs"
       - "scripts/container-*.mjs"
       - "scripts/container-*.sh"
   push:
@@ -23,6 +24,7 @@ on:
       - "starter-memory/**"
       - "Dockerfile"
       - "package-lock.json"
+      - "scripts/create-runtime-bundles.mjs"
       - "scripts/container-*.mjs"
       - "scripts/container-*.sh"
   workflow_dispatch:
