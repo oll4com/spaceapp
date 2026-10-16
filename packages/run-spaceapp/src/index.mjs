@@ -102,6 +102,8 @@ const PROVIDERS = Object.freeze({
   experimental: Object.freeze(["deepseek"])
 });
 const ALL_PROVIDERS = new Set(Object.values(PROVIDERS).flat());
+export const CONTAINER_ENGINES = Object.freeze(["docker", "podman"]);
+
 const CONFIG_KEYS = new Set([
   "schemaVersion",
   "version",
@@ -113,7 +115,8 @@ const CONFIG_KEYS = new Set([
   "accessMode",
   "workspaces",
   "companionsEnabled",
-  "optionalModules"
+  "optionalModules",
+  "engine"
 ]);
 
 // Optional SpaceApp modules (games, copilots, channels, ...): "all", "none" or a comma list.
@@ -171,6 +174,23 @@ export function resolveInstallAccessMode(requestedMode, existingMode = "isolated
     return requestedMode;
   }
   throw new Error("Install access mode must be isolated or host-root.");
+}
+
+export function configEngine(config) {
+  return config?.engine ?? "docker";
+}
+
+export function resolveInstallEngine(requestedEngine, existingEngine) {
+  if (requestedEngine === undefined) {
+    return existingEngine ?? "docker";
+  }
+  if (!CONTAINER_ENGINES.includes(requestedEngine)) {
+    throw new Error("Install container engine must be docker or podman.");
+  }
+  if (existingEngine !== undefined && existingEngine !== requestedEngine) {
+    throw new Error("Switching container engines on an existing installation is not supported. Use backup and restore to migrate across engines.");
+  }
+  return requestedEngine;
 }
 
 export function versionTuple(version) {
@@ -287,7 +307,8 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
-  companionsEnabled = false
+  companionsEnabled = false,
+  engine = "docker"
 }) {
   assertVersion(version);
   if (!INSTALL_PROFILES.includes(profile)) {
@@ -305,6 +326,7 @@ export function createDefaultConfig({
     accessMode: resolvedAccessMode,
     companionsEnabled,
     optionalModules: "none",
+    ...(engine === "podman" ? { engine: "podman" } : {}),
     workspaces: []
   };
 }
@@ -342,6 +364,12 @@ export function validateConfig(config) {
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
+  }
+  if (config.engine !== undefined && !CONTAINER_ENGINES.includes(config.engine)) {
+    throw new Error("engine must be docker or podman.");
+  }
+  if (config.engine === "podman" && config.accessMode === "host-root") {
+    throw new Error("Host-root access is not supported on Podman.");
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
@@ -569,11 +597,16 @@ export function renderRuntimeEnv(config) {
 
 export function renderWorkspaceCompose(config) {
   validateConfig(config);
+  const isPodman = config.engine === "podman";
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(isPodman ? [
+      "        bind:",
+      "          selinux: z"
+    ] : [])
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
@@ -582,8 +615,18 @@ export function renderWorkspaceCompose(config) {
     "services:",
     "  spaceapp-core:",
     ...service,
+    ...(isPodman ? [
+      '    userns_mode: "keep-id:uid=10001,gid=10001"'
+    ] : []),
     "  spaceapp-cli:",
     ...service,
+    ...(isPodman ? [
+      '    userns_mode: "keep-id:uid=10001,gid=10001"'
+    ] : []),
+    ...(isPodman ? [
+      "  spaceapp-browser:",
+      '    userns_mode: "keep-id:uid=10001,gid=10001"'
+    ] : []),
     ""
   ].join("\n");
 }
@@ -621,6 +664,10 @@ export function composeCommand(action, root, options = {}) {
   validateHome(root);
   const stateRoot = options.stateRoot ?? root;
   validateHome(stateRoot);
+  const engine = options.engine ?? "docker";
+  if (!CONTAINER_ENGINES.includes(engine)) {
+    throw new Error(`Unsupported container engine "${engine}".`);
+  }
   const profile = options.profile ?? "standard";
   const settings = profileRuntimeSettings(profile);
   const base = [
@@ -723,7 +770,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: engine, args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -760,7 +807,8 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -782,7 +830,8 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
-      companionsEnabled
+      companionsEnabled,
+      engine: resolveInstallEngine(engine)
     });
   }
   if (config.version !== version) {
@@ -801,6 +850,12 @@ export async function prepareInstallation(root, {
   }
   if (companionsEnabled !== undefined && config.companionsEnabled !== companionsEnabled) {
     config = { ...config, companionsEnabled };
+  }
+  if (engine !== undefined) {
+    const resolvedEngine = resolveInstallEngine(engine, configEngine(config));
+    if (resolvedEngine === "podman" || config.engine !== undefined) {
+      config = { ...config, engine: resolvedEngine };
+    }
   }
   validateConfig(config);
 

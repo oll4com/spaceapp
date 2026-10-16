@@ -641,7 +641,7 @@ async function confirmQuestion({ stdin, stdout, question }) {
   }
 }
 
-async function dockerCliAndComposeAreAvailable(execute) {
+export async function dockerCliAndComposeAreAvailable(execute) {
   for (const spec of [
     { command: "docker", args: ["--version"] },
     { command: "docker", args: ["compose", "version"] }
@@ -653,7 +653,7 @@ async function dockerCliAndComposeAreAvailable(execute) {
   return true;
 }
 
-async function dockerIsReady(execute) {
+export async function dockerIsReady(execute) {
   for (const spec of [
     { command: "docker", args: ["--version"] },
     { command: "docker", args: ["compose", "version"] },
@@ -664,6 +664,143 @@ async function dockerIsReady(execute) {
     }
   }
   return true;
+}
+
+export async function podmanCliAndComposeAreAvailable(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] },
+    { command: "podman", args: ["info"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export async function detectPodmanReady(execute, { platform = process.platform } = {}) {
+  return await podmanIsReady(execute);
+}
+
+export async function detectInstallEngine({ platform = process.platform, execute }) {
+  const dockerReady = await dockerIsReady(execute);
+  if (dockerReady) {
+    return { suggest: "docker", dockerReady: true, podmanReady: false };
+  }
+  const podmanReady = platform !== "win32" && await podmanIsReady(execute);
+  if (podmanReady) {
+    return { suggest: "podman", dockerReady: false, podmanReady: true };
+  }
+  return { suggest: "docker", dockerReady: false, podmanReady: false };
+}
+
+export function podmanInstallHelp(platform, osRelease) {
+  if (platform === "darwin") {
+    return (
+      'Install Podman and Docker Compose for macOS:\n' +
+      '  brew install podman docker-compose\n' +
+      '  podman machine init --cpus 4 --memory 8192\n' +
+      '  podman machine start\n'
+    );
+  }
+  const id = String(osRelease?.ID || "").toLowerCase();
+  if (id === "fedora" || id === "rhel" || id === "centos") {
+    return (
+      'Install Podman and Docker Compose on Fedora/RHEL:\n' +
+      '  sudo dnf install podman docker-compose\n' +
+      '  systemctl --user enable --now podman.socket\n'
+    );
+  }
+  return (
+    'Install Podman and Docker Compose on Linux:\n' +
+    '  sudo apt-get install podman docker-compose-v2\n' +
+    '  systemctl --user enable --now podman.socket\n'
+  );
+}
+
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  osRelease,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  execute
+} = {}) {
+  const ready = await podmanIsReady(execute);
+  if (ready) {
+    return { code: 0, reexecuted: false };
+  }
+  stderr.write(`Podman is not installed, not running, or docker-compose provider is missing.\n`);
+  stderr.write(podmanInstallHelp(platform, osRelease));
+  return { code: 1, reexecuted: false };
+}
+
+export async function ensureEngineAvailable({
+  engine = "docker",
+  ...rest
+}) {
+  if (engine === "podman") {
+    return ensurePodmanAvailable(rest);
+  }
+  return ensureDockerAvailable(rest);
+}
+
+export async function collectPodmanFacts(execute) {
+  let version = null;
+  let rootless = true;
+  let cgroupVersion = "v2";
+  let limitsDelegated = false;
+  let rawJson = null;
+
+  let versionOut = "";
+  const vCode = await execute({ command: "podman", args: ["--version"] }, {
+    stdout: { write(c) { versionOut += c.toString(); } },
+    stderr: null
+  }).catch(() => 1);
+  if (vCode === 0) {
+    const match = /version\s+([0-9]+\.[0-9]+\.[0-9]+)/i.exec(versionOut);
+    if (match) version = match[1];
+  }
+
+  let infoOut = "";
+  const iCode = await execute({ command: "podman", args: ["info", "--format", "json"] }, {
+    stdout: { write(c) { if (infoOut.length < 1024 * 1024) infoOut += c.toString(); } },
+    stderr: null
+  }).catch(() => 1);
+  if (iCode === 0) {
+    try {
+      rawJson = JSON.parse(infoOut);
+      rootless = rawJson.host?.security?.rootless ?? true;
+      const controllers = rawJson.host?.cgroupControllers ?? [];
+      const requiredControllers = ["cpu", "memory", "pids"];
+      limitsDelegated = !rootless || (
+        cgroupVersion === "v2" &&
+        Array.isArray(controllers) &&
+        requiredControllers.every((c) => controllers.includes(c))
+      );
+    } catch {}
+  }
+
+  return {
+    engine: "podman",
+    version: version || "unknown",
+    rootless,
+    cgroupVersion,
+    limitsDelegated,
+    raw: rawJson
+  };
 }
 
 async function installLinuxDockerEngine({

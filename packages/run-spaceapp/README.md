@@ -54,6 +54,26 @@ Use `install --profile small|medium|large` to choose explicitly. Existing
 profile unless you explicitly choose another one. Companions and additional AI
 CLIs remain optional and can be installed when needed.
 
+### Container Engines (Docker & Rootless Podman)
+
+SpaceApp supports both Docker and rootless Podman as container engines:
+
+- **Docker (default)**: Uses Docker Engine or Docker Desktop and `docker compose`.
+- **Podman**: Uses rootless Podman and `podman compose`.
+
+To install with Podman explicitly:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+When Podman is selected:
+- Workspace bind mounts automatically receive `:z` (shared SELinux relabeling) so containers can access host workspaces without SELinux permission errors.
+- `userns_mode: "keep-id:uid=10001,gid=10001"` maps the in-container non-root user `10001` directly to the host invoking user, preserving file ownership.
+- The `doctor` command inspects Podman CLI, Compose provider, rootless runtime, and cgroup v2 controller delegation.
+- Note: `--access host-root` is root-only and is safely rejected when using Podman.
+- Switching container engines on an existing installation is not permitted; migrate data across engines using `backup` and `restore`.
+
 An upgrade checks **additional** space: missing image layers, the database
 checkpoint and 0.5 GiB headroom. Cached target images require no extra image space.
 Shared layers are excluded when public registry metadata is available; otherwise
