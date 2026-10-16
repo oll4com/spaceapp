@@ -22,9 +22,13 @@ RUN set --; \
 
 FROM build AS browser-dependencies
 ARG TARGETARCH
-RUN set --; \
+RUN set -eu; \
+    cp -a /app/node_modules/@t3-oss/env-core /tmp/browser-env-core; \
+    set --; \
     for selector in $(node scripts/create-runtime-bundles.mjs --workspace-selectors browser); do set -- "$@" "$selector"; done; \
     npm ci --omit=dev --no-audit --no-fund "$@" \
+    && mkdir -p /app/node_modules/@t3-oss \
+    && cp -a /tmp/browser-env-core /app/node_modules/@t3-oss/env-core \
     && node scripts/container-prune-platform-binaries.mjs "$TARGETARCH" \
     && node scripts/create-runtime-bundles.mjs --include-workspace-node-modules browser --output /tmp/container-runtime
 
@@ -90,6 +94,7 @@ FROM runtime-base AS core
 COPY --from=core-dependencies --chown=spaceapp:spaceapp /app/node_modules ./node_modules
 COPY --from=core-dependencies --chown=spaceapp:spaceapp /tmp/container-runtime/core ./
 COPY --from=build --chown=spaceapp:spaceapp /app/starter-memory /opt/spaceapp/starter-memory
+COPY --from=build --chown=spaceapp:spaceapp /app/demos /opt/spaceapp/demos
 RUN install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
       /var/lib/spaceapp/artifacts \

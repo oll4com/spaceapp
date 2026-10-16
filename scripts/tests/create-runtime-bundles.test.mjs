@@ -46,6 +46,11 @@ function makeRepository(root) {
   });
   makeWorkspace(root, "apps/worker", "@space/worker", { "@space/db": "1.0.0" });
   makeWorkspace(root, "packages/browser-host", "@space/browser-host", { "@space/contracts": "1.0.0" });
+  makeWorkspace(root, "packages/memory-graph", "@space/memory-graph", { "@space/contracts": "1.0.0" });
+  makeWorkspace(root, "packages/runtime", "@space/runtime", {
+    "@space/contracts": "1.0.0",
+    "@space/memory-graph": "1.0.0"
+  });
   makeWorkspace(root, "packages/cli-host", "@space/cli-host");
   makeWorkspace(root, "packages/contracts", "@space/contracts");
   const icons = makeWorkspace(root, "packages/icons", "@space/icons");
@@ -53,6 +58,20 @@ function makeRepository(root) {
   const db = makeWorkspace(root, "packages/db", "@space/db", { "@space/contracts": "1.0.0" });
   const gateway = makeWorkspace(root, "packages/gateway", "@space/gateway", { "@space/db": "1.0.0" });
   writeFileSync(path.join(api, "dist", "browser-host-main.js"), "export {};\n");
+  writeFileSync(path.join(api, "dist", "browser-sessions.js"), "export {};\n");
+  writeFileSync(path.join(api, "dist", "config.js"), "export {};\n");
+  for (const file of [
+    "browser-errors.js",
+    "child-process-env.js",
+    "cli-runtime-descriptors.js",
+    "google-browser-session-check.js",
+    "live-model-policy.js",
+    "package-version.js",
+    "t3-env.js",
+    "youtube-ad-block.js"
+  ]) {
+    writeFileSync(path.join(api, "dist", file), "export {};\n");
+  }
   writeFileSync(path.join(web, "server.mjs"), "export {};\n");
   mkdirSync(path.join(db, "migrations"), { recursive: true });
   writeFileSync(path.join(db, "migrations", "0001.sql"), "select 1;\n");
@@ -84,12 +103,11 @@ test("runtime bundles keep built workspace dependency closures and target assets
     makeRepository(repositoryRoot);
     assert.deepEqual(runtimeWorkspaceSelectors("cli", repositoryRoot), ["--workspace=@space/cli-host"]);
     assert.deepEqual(runtimeWorkspaceSelectors("browser", repositoryRoot), [
-      "--workspace=@space/api",
       "--workspace=@space/browser-host",
-      "--workspace=@space/cli-host",
       "--workspace=@space/contracts",
       "--workspace=@space/db",
-      "--workspace=@space/gateway"
+      "--workspace=@space/memory-graph",
+      "--workspace=@space/runtime"
     ]);
     assert.throws(() => runtimeWorkspaceSelectors("unknown", repositoryRoot), /Unknown runtime target/);
     const bundles = createRuntimeBundles(repositoryRoot, outputRoot);
@@ -128,17 +146,25 @@ test("runtime bundles keep built workspace dependency closures and target assets
 
     const browser = path.join(outputRoot, "browser");
     assert.deepEqual(bundles.browser, [
-      "@space/api",
       "@space/browser-host",
-      "@space/cli-host",
       "@space/contracts",
       "@space/db",
-      "@space/gateway"
+      "@space/memory-graph",
+      "@space/runtime"
     ]);
     assert.ok(readFileSync(path.join(browser, "apps/api/dist/browser-host-main.js"), "utf8"));
+    assert.ok(readFileSync(path.join(browser, "apps/api/dist/browser-sessions.js"), "utf8"));
+    assert.ok(readFileSync(path.join(browser, "apps/api/dist/config.js"), "utf8"));
+    assert.ok(readFileSync(path.join(browser, "apps/api/package.json"), "utf8"));
+    assert.ok(readFileSync(path.join(browser, "apps/api/dist/browser-errors.js"), "utf8"));
+    assert.ok(readFileSync(path.join(browser, "apps/api/dist/google-browser-session-check.js"), "utf8"));
+    assert.ok(readFileSync(path.join(browser, "apps/api/dist/package-version.js"), "utf8"));
     assert.ok(readFileSync(path.join(browser, "packages/db/dist/index.js"), "utf8"));
     assert.ok(readFileSync(path.join(browser, "packages/db/migrations/0001.sql"), "utf8"));
-    assert.ok(readFileSync(path.join(browser, "packages/gateway/grammars/tree-sitter-typescript.wasm"), "utf8"));
+    assert.equal(existsSync(path.join(browser, "packages/cli-host")), false);
+    assert.equal(existsSync(path.join(browser, "node_modules/node-pty")), false);
+    assert.equal(existsSync(path.join(browser, "apps/api/dist/server.js")), false);
+    assert.equal(existsSync(path.join(browser, "packages/gateway")), false);
     assert.equal(existsSync(path.join(browser, "apps/worker")), false);
     assert.equal(existsSync(path.join(browser, "apps/web")), false);
     assert.equal(existsSync(path.join(browser, "agent-skills")), false);

@@ -17,6 +17,7 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   );
 
   assert.match(dockerfile, /FROM .* AS core/);
+  assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/demos \/opt\/spaceapp\/demos/);
   assert.match(dockerfile, /FROM .* AS browser/);
   assert.match(dockerfile, /FROM .* AS cli/);
   assert.ok(dockerfile.includes("sed -i 's/\\r$//' deploy/docker/*.sh"));
@@ -63,6 +64,7 @@ test("each image installs its production workspace closure and copies only its r
   assert.match(dockerfile, /FROM build AS core-dependencies/);
   assert.match(coreDependencies, /--workspace-selectors core/);
   assert.match(browserDependencies, /--workspace-selectors browser/);
+  assert.match(browserDependencies, /cp -a \/app\/node_modules\/@t3-oss\/env-core/);
   assert.match(cliDependencies, /--workspace-selectors cli/);
   assert.doesNotMatch(runtimeBase, /COPY --from=build[^\n]*\/(?:node_modules|apps|packages|agent-skills)/);
   assert.match(core, /COPY --from=core-dependencies[^\n]*\/app\/node_modules/);

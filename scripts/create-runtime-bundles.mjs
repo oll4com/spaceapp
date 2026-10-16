@@ -17,7 +17,21 @@ const targets = Object.freeze({
     ]
   },
   browser: {
-    workspaces: ["@space/api"],
+    workspaces: ["@space/browser-host", "@space/db", "@space/runtime"],
+    applicationFiles: [
+      "apps/api/package.json",
+      "apps/api/dist/browser-host-main.js",
+      "apps/api/dist/browser-sessions.js",
+      "apps/api/dist/browser-errors.js",
+      "apps/api/dist/child-process-env.js",
+      "apps/api/dist/cli-runtime-descriptors.js",
+      "apps/api/dist/config.js",
+      "apps/api/dist/google-browser-session-check.js",
+      "apps/api/dist/live-model-policy.js",
+      "apps/api/dist/package-version.js",
+      "apps/api/dist/t3-env.js",
+      "apps/api/dist/youtube-ad-block.js"
+    ],
     agentSkills: false,
     scripts: []
   },
@@ -133,6 +147,14 @@ export function createRuntimeBundles(
 
     for (const name of workspaceClosure(workspaces, config.workspaces)) {
       copyWorkspace(root, output, workspaces.get(name));
+    }
+
+    for (const file of config.applicationFiles ?? []) {
+      const source = path.join(root, file);
+      if (!existsSync(source)) throw new Error(`Required runtime file is missing: ${file}`);
+      const destination = path.join(output, file);
+      mkdirSync(path.dirname(destination), { recursive: true });
+      cpSync(source, destination);
     }
 
     if (config.agentSkills) copyOptionalDirectory(root, output, "agent-skills");
