@@ -54,7 +54,7 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
 test("each image installs its production workspace closure and copies only its runtime bundle", async () => {
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
   const runtimeBase = dockerfile.match(/FROM [^\n]+ AS runtime-base([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
-  const coreDependencies = dockerfile.match(/FROM build AS core-dependencies([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const coreDependencies = (dockerfile.match(/FROM build AS core-dependencies([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "").replace(/\\\r?\n\s*/g, " ").replace(/\r/g, "");
   const browserDependencies = dockerfile.match(/FROM build AS browser-dependencies([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
   const cliDependencies = dockerfile.match(/FROM build AS cli-dependencies([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
   const core = dockerfile.match(/FROM runtime-base AS core([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
@@ -63,6 +63,7 @@ test("each image installs its production workspace closure and copies only its r
 
   assert.match(dockerfile, /FROM build AS core-dependencies/);
   assert.match(coreDependencies, /--workspace-selectors core/);
+  assert.match(coreDependencies, /npm ci[\s\S]*?npm prune --omit=dev\s+&& rm -rf node_modules\/@space\/cli-host node_modules\/node-pty/);
   assert.match(browserDependencies, /--workspace-selectors browser/);
   assert.match(browserDependencies, /cp -a \/app\/node_modules\/@t3-oss\/env-core/);
   assert.match(cliDependencies, /--workspace-selectors cli/);

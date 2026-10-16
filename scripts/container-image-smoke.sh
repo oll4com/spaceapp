@@ -6,7 +6,7 @@ export MSYS_NO_PATHCONV=1
 target="${1:?usage: container-image-smoke.sh <core|browser|cli> <image> <pgvector-image> <port> }"
 image="${2:?usage: container-image-smoke.sh <core|browser|cli> <image> <pgvector-image> <port> }"
 pgvector_image="${3:?usage: container-image-smoke.sh <core|browser|cli> <image> <pgvector-image> <port> }"
-port="${4:-4911}"
+port="${4:-5004}"
 case "$target" in core|browser|cli) ;; *) echo "Unknown image target: $target" >&2; exit 2 ;; esac
 
 suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${target}"

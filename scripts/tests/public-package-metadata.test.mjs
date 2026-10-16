@@ -90,6 +90,7 @@ test("public test command uses a portable one-file suite that imports every publ
     "@space/opencode-control",
     "@space/memory-graph",
     "@space/browser-host",
+    "@space/cli-host-client",
     "@space/cli-host",
     "@space/codex-app-server",
     "@space/runtime",

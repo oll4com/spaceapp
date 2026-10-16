@@ -3,7 +3,10 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { createRuntimeBundles, includeWorkspaceNodeModules, runtimeWorkspaceSelectors } from "../create-runtime-bundles.mjs";
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 function writeJson(filePath, value) {
   mkdirSync(path.dirname(filePath), { recursive: true });
@@ -36,7 +39,7 @@ function makeRepository(root) {
 
   const api = makeWorkspace(root, "apps/api", "@space/api", {
     "@space/browser-host": "1.0.0",
-    "@space/cli-host": "1.0.0",
+    "@space/cli-host-client": "1.0.0",
     "@space/db": "1.0.0",
     "@space/gateway": "1.0.0"
   });
@@ -51,7 +54,8 @@ function makeRepository(root) {
     "@space/contracts": "1.0.0",
     "@space/memory-graph": "1.0.0"
   });
-  makeWorkspace(root, "packages/cli-host", "@space/cli-host");
+  makeWorkspace(root, "packages/cli-host", "@space/cli-host", { "@space/cli-host-client": "1.0.0" });
+  makeWorkspace(root, "packages/cli-host-client", "@space/cli-host-client");
   makeWorkspace(root, "packages/contracts", "@space/contracts");
   const icons = makeWorkspace(root, "packages/icons", "@space/icons");
   rmSync(path.join(icons, "dist"), { recursive: true, force: true });
@@ -101,7 +105,10 @@ test("runtime bundles keep built workspace dependency closures and target assets
   try {
     mkdirSync(repositoryRoot, { recursive: true });
     makeRepository(repositoryRoot);
-    assert.deepEqual(runtimeWorkspaceSelectors("cli", repositoryRoot), ["--workspace=@space/cli-host"]);
+    assert.deepEqual(runtimeWorkspaceSelectors("cli", repositoryRoot), [
+      "--workspace=@space/cli-host",
+      "--workspace=@space/cli-host-client"
+    ]);
     assert.deepEqual(runtimeWorkspaceSelectors("browser", repositoryRoot), [
       "--workspace=@space/browser-host",
       "--workspace=@space/contracts",
@@ -122,7 +129,7 @@ test("runtime bundles keep built workspace dependency closures and target assets
     assert.deepEqual(bundles.core, [
       "@space/api",
       "@space/browser-host",
-      "@space/cli-host",
+      "@space/cli-host-client",
       "@space/contracts",
       "@space/db",
       "@space/gateway",
@@ -143,6 +150,7 @@ test("runtime bundles keep built workspace dependency closures and target assets
     assert.equal(existsSync(path.join(core, "starter-memory")), false);
     assert.equal(existsSync(path.join(core, "apps/api/src/index.ts")), false);
     assert.equal(existsSync(path.join(core, "packages/contracts/tests/index.test.js")), false);
+    assert.equal(existsSync(path.join(core, "packages/cli-host")), false);
 
     const browser = path.join(outputRoot, "browser");
     assert.deepEqual(bundles.browser, [
@@ -171,8 +179,9 @@ test("runtime bundles keep built workspace dependency closures and target assets
     assert.equal(existsSync(path.join(browser, "starter-memory")), false);
 
     const cli = path.join(outputRoot, "cli");
-    assert.deepEqual(bundles.cli, ["@space/cli-host"]);
+    assert.deepEqual(bundles.cli, ["@space/cli-host", "@space/cli-host-client"]);
     assert.ok(readFileSync(path.join(cli, "packages/cli-host/dist/index.js"), "utf8"));
+    assert.ok(readFileSync(path.join(cli, "packages/cli-host-client/dist/index.js"), "utf8"));
     assert.ok(readFileSync(path.join(cli, "agent-skills/example/SKILL.md"), "utf8"));
     assert.equal(existsSync(path.join(cli, "apps/api")), false);
     assert.equal(existsSync(path.join(cli, "packages/db")), false);
@@ -180,4 +189,19 @@ test("runtime bundles keep built workspace dependency closures and target assets
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
   }
+});
+
+test("the core runtime depends on the CLI client protocol but not the PTY host", () => {
+  const api = JSON.parse(readFileSync(path.join(repositoryRoot, "apps/api/package.json"), "utf8"));
+  const client = JSON.parse(readFileSync(path.join(repositoryRoot, "packages/cli-host-client/package.json"), "utf8"));
+  const cliHost = JSON.parse(readFileSync(path.join(repositoryRoot, "packages/cli-host/package.json"), "utf8"));
+  const coreSelectors = runtimeWorkspaceSelectors("core", repositoryRoot);
+
+  assert.equal(api.dependencies["@space/cli-host-client"], "0.2.5");
+  assert.equal(api.dependencies["@space/cli-host"], undefined);
+  assert.equal(api.dependencies["node-pty"], undefined);
+  assert.equal(client.dependencies?.["node-pty"], undefined);
+  assert.equal(cliHost.dependencies["node-pty"], "^1.1.0");
+  assert.ok(coreSelectors.includes("--workspace=@space/cli-host-client"));
+  assert.equal(coreSelectors.includes("--workspace=@space/cli-host"), false);
 });

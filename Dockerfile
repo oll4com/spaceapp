@@ -17,6 +17,8 @@ ARG TARGETARCH
 RUN set --; \
     for selector in $(node scripts/create-runtime-bundles.mjs --workspace-selectors core); do set -- "$@" "$selector"; done; \
     npm ci --omit=dev --no-audit --no-fund "$@" \
+    && npm prune --omit=dev \
+    && rm -rf node_modules/@space/cli-host node_modules/node-pty \
     && node scripts/container-prune-platform-binaries.mjs "$TARGETARCH" \
     && node scripts/create-runtime-bundles.mjs --include-workspace-node-modules core --output /tmp/container-runtime
 
