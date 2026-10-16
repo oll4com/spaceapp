@@ -134,6 +134,14 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
+  /** Best-effort telemetry only; exceptions cannot change the activity result. */
+  onFinished?: (observation: {
+    startedAt: number;
+    finishedAt: number;
+    outcome: ActivityOutcome;
+    reasonCode: string | null;
+    category: FailureCategory | null;
+  }) => void;
 }
 
 export async function observeActivityExecution<T>(
@@ -166,7 +174,8 @@ export async function observeActivityExecution<T>(
   const observation: ActivityObservation = { reasonCode: null };
 
   const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => {
-    const durationMs = Math.max(0, now() - startedAt);
+    const finishedAt = now();
+    const durationMs = Math.max(0, finishedAt - startedAt);
     metrics.activitiesInFlight.inc(labels, -1);
     metrics.activityExecutions.inc({ activity_type: activityType, outcome });
     metrics.activityDuration.observe(labels, durationMs / 1000);
@@ -185,6 +194,7 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
+    try { dependencies.onFinished?.({ startedAt, finishedAt, outcome, reasonCode, category }); } catch { /* telemetry cannot fail work */ }
   };
 
   try {

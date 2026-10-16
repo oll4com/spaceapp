@@ -3,6 +3,7 @@ import { NativeConnection, Worker } from "@temporalio/worker";
 import { executePersistedMemoryChangeSet } from "./memory-mutation-activity.js";
 import { MEMORY_MUTATION_TASK_QUEUE, memoryMutationsEnabled, memoryMutationWorkerOptions } from "./memory-mutation-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
+import { createWorkerTracing } from "./worker-tracing.js";
 
 const service = "space-memory-mutation-worker";
 
@@ -12,14 +13,20 @@ if (!memoryMutationsEnabled(process.env)) {
   const address = process.env.SPACE_TEMPORAL_ADDRESS ?? DEFAULT_TEMPORAL_ADDRESS;
   const namespace = process.env.SPACE_TEMPORAL_NAMESPACE ?? DEFAULT_TEMPORAL_NAMESPACE;
   const connection = await NativeConnection.connect({ address });
-  const worker = await Worker.create({
-    connection,
-    namespace,
-    taskQueue: MEMORY_MUTATION_TASK_QUEUE,
-    workflowsPath: fileURLToPath(new URL("./memory-mutation-workflows.js", import.meta.url)),
-    activities: { executePersistedMemoryChangeSet },
-    ...memoryMutationWorkerOptions
-  });
-  console.log(JSON.stringify({ service, status: "running", address, namespace, taskQueue: MEMORY_MUTATION_TASK_QUEUE }));
-  await worker.run();
+  const tracing = createWorkerTracing(service);
+  try {
+    const worker = await Worker.create({
+      connection,
+      namespace,
+      taskQueue: MEMORY_MUTATION_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./memory-mutation-workflows.js", import.meta.url)),
+      activities: { executePersistedMemoryChangeSet },
+      ...memoryMutationWorkerOptions,
+      ...tracing.workerOptions
+    });
+    console.log(JSON.stringify({ service, status: "running", address, namespace, taskQueue: MEMORY_MUTATION_TASK_QUEUE }));
+    await worker.run();
+  } finally {
+    await tracing.close();
+  }
 }

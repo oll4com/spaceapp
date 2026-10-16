@@ -13,7 +13,7 @@ import { copilotLaunchSettingsSchema } from "./copilot.js";
 import { mailCopilotPaneMetadataSchema } from "./mail-copilot.js";
 import { marketingCopilotPaneMetadataSchema } from "./marketing-copilot.js";
 import { notificationSettingsSchema } from "./notifications.js";
-import { traceparentSchema } from "./observability.js";
+import { traceLinksSchema, traceparentSchema } from "./observability.js";
 import { demoProjectIdSchema, demoVariantIdSchema } from "./demo-projects.js";
 
 export const isoDateTimeSchema = z.string().datetime({ offset: true });
@@ -6671,6 +6671,8 @@ export const dummyTurnInputSchema = z.object({
   // Optional W3C trace context of the originating request (additive; see
   // docs/quality/observability.md). Never part of a workflow id.
   traceparent: traceparentSchema.optional(),
+  // A background turn starts a new trace linked to its preceding workflow.
+  traceLinks: traceLinksSchema.optional(),
   // Space Dots Stage 3 (additive): a gateway-enabled native Chat turn.
   dotId: dotIdSchema.optional(),
   toolGateway: z.literal("space-dot-tools-v1").optional(),

@@ -92,6 +92,23 @@ describe("additive observability contract fields", () => {
     expect(dummyTurnInputSchema.safeParse({ ...turn, traceparent: "not-a-trace" }).success).toBe(false);
   });
 
+  it("retains bounded causal links and rejects invalid identifiers or private attributes", () => {
+    const link = { traceId: "4bf92f3577b34da6a3ce929d0e0e4736", spanId: "00f067aa0ba902b7" };
+    expect(dummyTurnInputSchema.parse({ ...turn, traceLinks: [link] }).traceLinks).toEqual([link]);
+    expect(dummyTurnInputSchema.parse(turn).traceLinks).toBeUndefined();
+    expect(dummyTurnInputSchema.safeParse({ ...turn, traceLinks: Array(8).fill(link) }).success).toBe(true);
+    for (const traceLinks of [
+      Array(9).fill(link),
+      [{ ...link, traceId: "trace:bg-local" }],
+      [{ ...link, traceId: "0".repeat(32) }],
+      [{ ...link, spanId: "0".repeat(16) }],
+      [{ ...link, spanId: "invalid-span" }],
+      [{ ...link, prompt: "PRIVATE CONTENT" }]
+    ]) {
+      expect(dummyTurnInputSchema.safeParse({ ...turn, traceLinks }).success).toBe(false);
+    }
+  });
+
   it("accepts the old and the new file search response shapes", () => {
     expect(fileSearchResponseSchema.parse({ query: "a", results: [], totalCount: 0 }).code).toBeUndefined();
     expect(fileSearchResponseSchema.parse({ query: "a", results: [], totalCount: 0, code: "EMPTY_RESULT", truncated: false }).code)
