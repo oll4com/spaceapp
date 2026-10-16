@@ -130,7 +130,13 @@ const publicScripts = new Set([
   "scripts/tests/quality-known-limitations.test.mjs",
   "scripts/contributor-smoke.mjs",
   "scripts/fixtures/offline-cli.mjs",
-  "scripts/tests/contributor-smoke.test.mjs"
+  "scripts/tests/contributor-smoke.test.mjs",
+  // npm run dev:stack, documented in CONTRIBUTING (run the full app from source) and run by CI.
+  "scripts/dev-stack.mjs",
+  "scripts/dev-stack/config.mjs",
+  "scripts/dev-stack/cli-wrapper.sh",
+  "scripts/dev-stack/ci-check.mjs",
+  "scripts/tests/dev-stack.test.mjs"
 ]);
 
 // Root package.json scripts may name only files in the public tree: exported
