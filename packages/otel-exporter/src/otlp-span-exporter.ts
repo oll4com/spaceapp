@@ -47,6 +47,8 @@ export interface OtlpSpanExporterOptions {
   maxQueue?: number;
   flushIntervalMs?: number;
   timeoutMs?: number;
+  /** Upper bound for close()'s final flush; close never blocks shutdown past this. Defaults to 5000. */
+  closeTimeoutMs?: number;
 }
 
 const hexId = (length: number) => new RegExp(`^[0-9a-f]{${length}}$`);
@@ -101,6 +103,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   const batchSize = options.batchSize ?? 256;
   const maxQueue = options.maxQueue ?? 4096;
   const timeoutMs = options.timeoutMs ?? 3000;
+  const closeTimeoutMs = options.closeTimeoutMs ?? 5000;
   const queue: ServerSpan[] = [];
   const stats: SpanExporterStats = { exported: 0, dropped: 0, failed: 0 };
   let inFlight: Promise<void> | null = null;
@@ -149,7 +152,16 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
     flush,
     async close() {
       clearInterval(timer);
-      await flush();
+      // Never block shutdown: bound the final flush against a deadline.
+      // A full queue is 16 batches of 256; with timeoutMs per POST an
+      // unbounded flush can stall shutdown for ~48s, so race it.
+      await Promise.race([
+        flush(),
+        new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, closeTimeoutMs);
+          t.unref?.();
+        }),
+      ]);
     },
     stats: () => ({ ...stats })
   };
