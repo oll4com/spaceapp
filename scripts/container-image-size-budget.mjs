@@ -8,9 +8,11 @@ const mebibyte = 1024 * 1024;
 // one-size-fits-all layout in which every image carried the whole pruned
 // monorepo: each target now ships only its own dependency closure, so the
 // budgets are the per-service ceilings — core 850 MiB, browser 1350 MiB,
-// cli 1000 MiB on both linux/amd64 and linux/arm64. Before this change the
-// images measured core 1044.7 / 1066.9 MiB, browser 1719.9 / 1735.0 MiB and
-// cli 1386.0 / 1237.1 MiB (amd64 / arm64). Historical notes: 1.1.3 raised
+// cli 1000 MiB on both linux/amd64 and linux/arm64. Measured with this
+// script in the containers workflow: core 684.1 / 714.3 MiB, browser
+// 1078.7 / 1107.9 MiB, cli 753.6 / 618.8 MiB (amd64 / arm64). Before this
+// change the images measured core 1044.7 / 1066.9 MiB, browser
+// 1719.9 / 1735.0 MiB and cli 1386.0 / 1237.1 MiB (amd64 / arm64). Historical notes: 1.1.3 raised
 // core and browser (998.7 / 1670.6 MiB measured): the application added
 // production dependencies pdfjs-dist with @napi-rs/canvas (81 MiB, API PDF
 // handling), typescript (23 MiB, peer of @t3-oss/env-core) and js-tiktoken
