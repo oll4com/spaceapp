@@ -68,10 +68,12 @@ export function otlpTracesUrl(value: string | undefined): string | null {
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}/v1/traces`;
 }
 
+/** Encode integer attributes as decimal strings required by OTLP JSON. */
 function attributeValue(value: string | number) {
   return typeof value === "number" && Number.isInteger(value) ? { intValue: String(value) } : { stringValue: String(value) };
 }
 
+/** Serialize one service's spans, links and instrumentation scope to OTLP/HTTP JSON. */
 export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: string, scopeName = serviceName) {
   return {
     resourceSpans: [{
@@ -97,6 +99,7 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
   };
 }
 
+/** Create a bounded, timeout-limited exporter whose collector failures never reject a flush. */
 export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanExporter {
   const url = otlpTracesUrl(options.endpoint);
   if (!url) throw new Error("Invalid OTLP endpoint.");

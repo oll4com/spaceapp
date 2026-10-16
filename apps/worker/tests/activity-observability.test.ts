@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { request } from "node:http";
 import { MetricsRegistry } from "@space/runtime";
 import {
@@ -70,6 +70,21 @@ describe("activity correlation", () => {
 });
 
 describe("observeActivityExecution", () => {
+  it.each([false, true])("uses only the completion hook when both export paths are supplied (hook throws: %s)", async (throws) => {
+    const logs = capture(); restoreLogs = logs.restore;
+    const record = vi.fn();
+    const onFinish = vi.fn(() => { if (throws) throw new Error("collector unavailable"); });
+    const result = await observeActivityExecution(info(), [{ traceparent }], async () => "ok", {
+      metrics: createWorkerMetrics(new MetricsRegistry()),
+      onFinish,
+      spans: { record, flush: async () => undefined, close: async () => undefined, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) }
+    });
+    expect(result).toBe("ok");
+    expect(onFinish).toHaveBeenCalledOnce();
+    expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({ outcome: "COMPLETED" }));
+    expect(record).not.toHaveBeenCalled();
+  });
+
   it("logs start and finish with queue time, attempt and correlation and records metrics", async () => {
     const logs = capture(); restoreLogs = logs.restore;
     const metrics = createWorkerMetrics(new MetricsRegistry());

@@ -135,8 +135,9 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
+  /** Custom completion/export hook. When supplied, this replaces the legacy spans exporter. */
   onFinish?: (result: { outcome: ActivityOutcome; reasonCode: string | null; category: FailureCategory | null; durationMs: number }) => void;
-  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
+  /** Legacy OTLP export for traced activity inputs; ignored when onFinish is supplied. */
   spans?: SpanExporter | null;
 }
 
@@ -146,6 +147,7 @@ function activityTraceparent(args: readonly unknown[]) {
   return parseTraceparent(found.traceparent);
 }
 
+/** Record one attempt's metrics and outcome, using at most one optional export path. */
 export async function observeActivityExecution<T>(
   info: ActivityInfo,
   args: readonly unknown[],
@@ -197,7 +199,7 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
+    const parent = dependencies.spans && !dependencies.onFinish ? activityTraceparent(args) : null;
     if (parent) {
       dependencies.spans!.record({
         traceId: parent.traceId,

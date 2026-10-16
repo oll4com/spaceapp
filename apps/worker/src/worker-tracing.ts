@@ -5,6 +5,7 @@ import type { SpanExporter, ServerSpan } from "@space/telemetry";
 import { activityCorrelation, createActivityObservabilityInterceptors, observeActivityExecution } from "./activity-observability.js";
 import { contextFromHeaders, inputTraceContext, runSpanId, runTraceId, traceAttributes, validContext } from "./workflow-trace-context.js";
 
+/** Filter workflow sink data before best-effort export in the worker process. */
 function record(exporter: SpanExporter, span: ServerSpan): void {
   // Never forward arbitrary sink fields, attributes, errors or payloads.
   if (!validContext(span)) return;
@@ -18,6 +19,7 @@ function record(exporter: SpanExporter, span: ServerSpan): void {
   } catch { /* optional telemetry must not fail work */ }
 }
 
+/** Register activity logging and, when enabled, correlated spans with replay-disabled sinks. */
 export function workerTracingOptions(exporter: SpanExporter | null, workflowModule = fileURLToPath(new URL("./workflow-tracing.js", import.meta.url))): Pick<WorkerOptions, "interceptors" | "sinks"> {
   if (!exporter) return { interceptors: { activity: [createActivityObservabilityInterceptors()] } };
   const activity: ActivityInterceptorsFactory = context => ({ inbound: {

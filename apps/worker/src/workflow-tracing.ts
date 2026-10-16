@@ -7,6 +7,7 @@ export interface TraceSinks extends Sinks {
 }
 const sink = proxySinks<TraceSinks>();
 
+/** Propagate deterministic workflow context and send completion spans through the worker sink. */
 export function interceptors(): WorkflowInterceptors {
   const info = workflowInfo();
   let context: TraceContext = { traceId: runTraceId(info.runId), spanId: runSpanId(info.runId) };

@@ -7,15 +7,18 @@ export interface SpanContext { traceId: string; spanId: string }
 export interface TraceContext extends SpanContext { links?: SpanContext[] }
 const tracePattern = /^(?!0{32}$)[0-9a-f]{32}$/;
 const spanPattern = /^(?!0{16}$)[0-9a-f]{16}$/;
+/** Accept only nonzero W3C trace/span identifiers at the workflow boundary. */
 export function validContext(value: unknown): value is SpanContext {
   if (!value || typeof value !== "object") return false;
   const v = value as SpanContext;
   return typeof v.traceId === "string" && tracePattern.test(v.traceId) && typeof v.spanId === "string" && spanPattern.test(v.spanId);
 }
+/** Extract a caller's trace and parent span from a valid W3C traceparent. */
 export function contextFromTraceparent(value: unknown): SpanContext | null {
   const p = parseTraceparent(value);
   return p ? { traceId: p.traceId, spanId: p.parentId } : null;
 }
+/** Decode the private Temporal trace header, dropping malformed context and excess links. */
 export function contextFromHeaders(headers: Headers): TraceContext | null {
   try {
     const payload = headers[TRACE_HEADER];
@@ -25,9 +28,11 @@ export function contextFromHeaders(headers: Headers): TraceContext | null {
     return { traceId: value.traceId, spanId: value.spanId, ...(Array.isArray(links) ? { links: links.filter(validContext).slice(0, 4).map(({ traceId, spanId }) => ({ traceId, spanId })) } : {}) };
   } catch { return null; }
 }
+/** Add propagation context without replacing unrelated Temporal headers. */
 export function withTraceHeader(headers: Headers, context: TraceContext): Headers {
   return { ...headers, [TRACE_HEADER]: defaultPayloadConverter.toPayload(context)! };
 }
+/** Read traceparents only from the allowlisted input envelopes, at bounded depth. */
 export function inputTraceContext(args: readonly unknown[]): SpanContext | null {
   function visit(value: unknown, depth: number): SpanContext | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -45,7 +50,9 @@ export function inputTraceContext(args: readonly unknown[]): SpanContext | null 
 }
 /** Run IDs are UUIDs supplied by Temporal; no randomness or additional workflow commands. */
 export function runSpanId(runId: string): string { return runId.replace(/-/g, "").slice(-16); }
+/** Use the Temporal run UUID as a deterministic trace ID for unparented executions. */
 export function runTraceId(runId: string): string { return runId.replace(/-/g, ""); }
+/** Identify room-agent continuation inputs that need links to prior execution context. */
 export function isBackgroundContinuation(args: readonly unknown[]): boolean {
   return args.some(arg => Boolean(arg && typeof arg === "object" && (
     (arg as { roomAgentContinuation?: unknown }).roomAgentContinuation ||
