@@ -56,3 +56,18 @@ run-spaceapp-*.tgz
 
 # local PR draft, not part of the change
 PR_BODY.md
+# CI scratch files pulled down while debugging a run
+_pr-payload.json
+_pr-result.json
+_pr.json
+_st.json
+_cr.json
+_wf.json
+_runs.json
+_fruns.json
+_r.json
+_j.json
+_disp.json
+_perm.json
+_log.txt
+pr-number.txt

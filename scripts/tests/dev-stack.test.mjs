@@ -10,7 +10,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // Import only the pure helpers. The CLI entry is guarded behind `invokedDirectly`.
 // pathToFileURL keeps this working on Windows, where a bare `d:\...` path is not
 // a valid ESM specifier.
-const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, PORTS } =
+const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, waitForInfrastructure, PORTS } =
   await import(pathToFileURL(join(repoRoot, "scripts", "dev-stack.mjs")).href);
 
 const TEMPLATE = join(repoRoot, "packages/run-spaceapp/templates/compose.yml");
@@ -48,6 +48,33 @@ test("readPinnedImages fails closed when a digest is missing", () => {
   const images = readPinnedImages(crlf);
   assert.ok(images.postgres.includes("@"), "CRLF postgres image lost its digest");
   assert.ok(images.temporal.includes("@"), "CRLF temporal image lost its digest");
+});
+
+test("generateSecrets returns the database URL that migrations need", () => {
+  // Regression: cmdUp passes `SPACE_DATABASE_URL: secrets.databaseUrl` to
+  // packages/db/dist/migrate.js. generateSecrets() used to return only the raw
+  // pieces, so the URL was undefined and every run died on
+  // "SPACE_DATABASE_URL or DATABASE_URL is required to run migrations."
+  const dir = mkdtempSync(join(tmpdir(), "spaceapp-devstack-test-"));
+  try {
+    const secrets = generateSecrets(dir);
+    assert.equal(typeof secrets.databaseUrl, "string", "generateSecrets must return databaseUrl");
+    assert.match(secrets.databaseUrl, /^postgresql:\/\/spaceapp:[^:@/]+@127\.0\.0\.1:\d+\/spaceapp$/);
+    assert.ok(secrets.databaseUrl.includes(secrets.postgresPassword), "the URL must carry the generated password");
+    assert.equal(readSecrets(dir).databaseUrl, secrets.databaseUrl, "what is written must be what is read back");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("waitForInfrastructure treats a healthy postgres and a running temporal as ready", () => {
+  // A container being `running` is enough for Temporal: its image healthcheck
+  // shells out to the `temporal` CLI, which is not a dependency this script
+  // takes on. PostgreSQL has to actually report healthy.
+  const ready = waitForInfrastructure.toString();
+  assert.match(ready, /postgres\.startsWith\("healthy"\)/, "postgres must be required healthy");
+  assert.match(ready, /temporal\.startsWith\("running"\)/, "temporal only has to be running");
+  assert.doesNotMatch(ready, /--wait/, "the readiness wait must not delegate to `compose up --wait`");
 });
 
 test("generateSecrets writes every secret with mode 0600 and a valid setup token", () => {

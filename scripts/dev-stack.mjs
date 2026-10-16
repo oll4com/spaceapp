@@ -163,7 +163,13 @@ export function generateSecrets(dir = SECRETS_DIR) {
       if (mode !== 0o600) fail(`Secret ${name} has mode ${mode.toString(8)}; expected 0600.`);
     }
   }
-  return { postgresPassword, sessionSecret, setupToken, platform: process.platform };
+  return {
+    postgresPassword,
+    sessionSecret,
+    setupToken,
+    databaseUrl: `postgresql://spaceapp:${postgresPassword}@127.0.0.1:${PORTS.postgres}/spaceapp`,
+    platform: process.platform
+  };
 }
 
 export function readSecrets(dir = SECRETS_DIR) {
@@ -305,6 +311,38 @@ function compose(verb, extra = [], options = {}) {
   return run("docker", composeArgs(verb, extra), options);
 }
 
+// Synchronous sleep — cmdUp is synchronous by design so `npm run dev:stack`
+// prints everything in order, and Atomics.wait is the one portable way to block
+// without pulling in a dependency.
+const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function containerState(name) {
+  const r = run("docker", ["inspect", "--format", "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}", name], { capture: true });
+  return (r.stdout ?? "").trim();
+}
+
+export function waitForInfrastructure(names = { postgres: `${COMPOSE_PROJECT}-postgres-1`, temporal: `${COMPOSE_PROJECT}-temporal-1` }, timeoutMs = 180_000) {
+  const deadline = Date.now() + timeoutMs;
+  let postgres = "";
+  let temporal = "";
+  while (Date.now() < deadline) {
+    postgres = containerState(names.postgres);
+    temporal = containerState(names.temporal);
+    // PostgreSQL must report healthy. Temporal only has to be running: its
+    // image's healthcheck shells out to the `temporal` CLI, which is not a
+    // contract this script should depend on.
+    if (postgres.startsWith("healthy") && temporal.startsWith("running")) {
+      say(`dev-stack: postgres ${postgres}; temporal ${temporal}`);
+      return { postgres, temporal };
+    }
+    sleepMs(2_000);
+  }
+  const ps = run("docker", composeArgs("ps", ["-a"]), { capture: true });
+  process.stderr.write(ps.stdout ?? "");
+  process.stderr.write(ps.stderr ?? "");
+  fail(`Infrastructure did not become ready in ${Math.round(timeoutMs / 1000)}s (postgres=${postgres || "absent"}, temporal=${temporal || "absent"}).`);
+}
+
 // ---------------------------------------------------------------------------
 // Process supervision. Each child writes to its own log; if one dies the whole
 // stack prints a clear failure and shuts down — never a silent hang.
@@ -401,7 +439,18 @@ function cmdUp() {
   say(`dev-stack: ports            api=${PORTS.api} web=${PORTS.web} postgres=${PORTS.postgres} temporal=${PORTS.temporal} (all 127.0.0.1 only)`);
   say("");
   say("dev-stack: starting PostgreSQL and Temporal in Docker...");
-  compose("up", ["-d", "--wait"]);
+  const up = compose("up", ["-d"]);
+  if (up.status !== 0) {
+    process.stderr.write(up.stdout ?? "");
+    process.stderr.write(up.stderr ?? "");
+    fail("docker compose up failed.");
+  }
+  // Deliberately not `--wait`: the Temporal auto-setup image's healthcheck
+  // depends on the `temporal` CLI being on PATH inside the container, which is
+  // not something this script should assume. Waiting on observable facts
+  // (PostgreSQL healthy, then Temporal answering on its gRPC port) is
+  // deterministic and gives a real message when something is stuck.
+  waitForInfrastructure();
 
   say("dev-stack: running migrations...");
   const migrate = run("node", ["packages/db/dist/migrate.js"], {
