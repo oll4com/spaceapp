@@ -14,6 +14,8 @@ const sessionToken = signSession(
   sessionSecret
 );
 const cookie = `space_session=${sessionToken}`;
+const adminCookie = `space_session=${signSession({ id: "user:admin", email: "admin@space.test", role: "ADMIN" }, sessionSecret)}`;
+const userCookie = `space_session=${signSession({ id: "user:member", email: "member@space.test", role: "USER" }, sessionSecret)}`;
 const csrfToken = createCsrfToken(sessionToken, sessionSecret)!;
 const mutationHeaders = {
   cookie,
@@ -432,6 +434,106 @@ describe("Memory graph API", () => {
     expect(data.truncated).toBe(true);
     expect(data.totalMatchingNodes).toBe(2202);
     await app.close();
+  });
+
+  describe("overview limit", () => {
+    const largeSnapshot = (memories: number, extra: (graph: MemoryGraphSnapshot) => void = () => {}) => {
+      const graph = snapshot() as MemoryGraphSnapshot;
+      graph.nodes = Array.from({ length: memories }, (_, index) => ({ id: `memory:${String(index).padStart(6, "0")}`, type: "MEMORY" as const, label: `Memory ${index}`, sourcePath: null, recordId: null }));
+      graph.edges = Array.from({ length: memories - 1 }, (_, index) => ({ id: `edge:${String(index).padStart(6, "0")}`, source: `memory:${String(index).padStart(6, "0")}`, target: `memory:${String(index + 1).padStart(6, "0")}`, type: "SEMANTICALLY_RELATED" as const, origin: "DETERMINISTIC_TFIDF" as const, confidence: 0.5, evidence: "Shared terms." }));
+      graph.revisionHash = "e".repeat(64);
+      extra(graph);
+      return graph;
+    };
+    const get = (app: Awaited<ReturnType<typeof memoryGraphApp>>, query: string, headers: Record<string, string> = { cookie: adminCookie }) =>
+      app.inject({ method: "GET", url: `/api/admin/memory/graph/overview${query}`, headers });
+
+    it("keeps the 2,000 node and 6,000 edge defaults when the limit is omitted", async () => {
+      const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: largeSnapshot(9000) });
+      const data = (await get(app, "")).json().data;
+      expect(data.nodes).toHaveLength(2000);
+      expect(data.edges.length).toBeLessThanOrEqual(6000);
+      expect(data.truncated).toBe(true);
+      await app.close();
+    });
+
+    it("returns more nodes and a proportionally larger edge cap for a larger limit", async () => {
+      const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: largeSnapshot(9000) });
+      const data = (await get(app, "?limit=8000")).json().data;
+      expect(data.nodes).toHaveLength(8000);
+      expect(data.edges.length).toBeGreaterThan(6000);
+      expect(data.edges.length).toBeLessThanOrEqual(24_000);
+      expect(data.totalMatchingNodes).toBe(9000);
+      await app.close();
+    });
+
+    it("rejects limits outside 200..50,000 and non-numeric limits (422 is this API's status for every invalid query)", async () => {
+      const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: largeSnapshot(300) });
+      for (const bad of ["50001", "199", "0", "-5", "abc", "1.5"]) expect((await get(app, `?limit=${bad}`)).statusCode, bad).toBe(422);
+      expect((await get(app, "?limit=50000")).statusCode).toBe(200);
+      expect((await get(app, "?limit=200")).statusCode).toBe(200);
+      await app.close();
+    });
+
+    it("gates limits above 2,000 to ADMIN while the default stays open to every signed-in user", async () => {
+      const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: largeSnapshot(3000) });
+      const forbidden = await get(app, "?limit=50000", { cookie: userCookie });
+      expect(forbidden.statusCode).toBe(403);
+      expect(forbidden.json().error.code).toBe("ADMIN_REQUIRED");
+      expect((await get(app, "?limit=2001", { cookie })).statusCode).toBe(403); // OPERATOR is not ADMIN
+      expect((await get(app, "?limit=50000", { cookie: adminCookie })).statusCode).toBe(200);
+      expect((await get(app, "", { cookie: userCookie })).statusCode).toBe(200);
+      expect((await get(app, "?limit=2000", { cookie: userCookie })).statusCode).toBe(200);
+      expect((await get(app, "?limit=50000", {})).statusCode).toBe(401);
+      expect((await get(app, "", {})).statusCode).toBe(401);
+      await app.close();
+    });
+
+    it("redacts labels at a large limit", async () => {
+      const graph = largeSnapshot(5000, g => { g.nodes[4999] = { ...g.nodes[4999]!, label: "Deploy token=raw-large-limit-value" }; });
+      const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: graph });
+      const response = await get(app, "?limit=5000");
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain("raw-large-limit-value");
+      expect(response.json().data.nodes).toHaveLength(5000);
+      await app.close();
+    });
+
+    it("never exceeds a small limit even with many reserved sources, topics and neighbors", async () => {
+      const graph = largeSnapshot(1500, g => {
+        for (let i = 0; i < 400; i++) {
+          g.nodes.push({ id: `source:file-${i}`, type: "SOURCE", label: `file-${i}.md`, sourcePath: `/opt/spaceapp/docs/file-${i}.md`, recordId: null });
+          g.nodes.push({ id: `topic:item-${i}`, type: "TOPIC", label: `Topic ${i}`, sourcePath: null, recordId: null });
+          g.edges.push({ id: `edge:tag-${i}`, source: `memory:${String(i).padStart(6, "0")}`, target: `topic:item-${i}`, type: "TAGGED_WITH", origin: "EXPLICIT_TAG", confidence: 1, evidence: "Explicit tag." });
+        }
+      });
+      const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: graph });
+      for (const limit of [200, 250, 1000]) {
+        const response = await get(app, `?limit=${limit}`);
+        expect(response.statusCode, response.body.slice(0, 400)).toBe(200);
+        const data = response.json().data;
+        expect(data.nodes.length, `limit ${limit}`).toBe(limit);
+        expect(data.edges.length).toBeLessThanOrEqual(limit * 3);
+        const ids = new Set(data.nodes.map((node: { id: string }) => node.id));
+        for (const edge of data.edges) { expect(ids.has(edge.source)).toBe(true); expect(ids.has(edge.target)).toBe(true); }
+      }
+      await app.close();
+    });
+
+    it("uses a different ETag per limit and honors If-None-Match only for the same limit", async () => {
+      const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: largeSnapshot(3000) });
+      const base = await get(app, "");
+      const explicitDefault = await get(app, "?limit=2000");
+      const large = await get(app, "?limit=3000");
+      expect(base.headers.etag).toBe(`"${"e".repeat(64)}"`);
+      expect(explicitDefault.headers.etag).toBe(base.headers.etag);
+      expect(large.headers.etag).not.toBe(base.headers.etag);
+      expect((await get(app, "?limit=3000", { cookie: adminCookie, "if-none-match": large.headers.etag as string })).statusCode).toBe(304);
+      const crossed = await get(app, "?limit=3000", { cookie: adminCookie, "if-none-match": base.headers.etag as string });
+      expect(crossed.statusCode).toBe(200);
+      expect(crossed.json().data.nodes).toHaveLength(3000);
+      await app.close();
+    });
   });
 
   it("serves the all-months archive and single-month filtering through the month query param", async () => {

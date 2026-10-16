@@ -1,5 +1,6 @@
 import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, taskScheduleNextRunAt, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
+import { generateSyntheticMemoryGraphAsync, syntheticNodeDetail, type SyntheticMemoryGraph } from "./synthetic-memory-graph.js";
 import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom, summarizeDotProactiveUsage } from "@space/contracts";
 import type { DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
 import type {
@@ -148,6 +149,7 @@ type DemoMemoryGraphQuery = {
   relationMode?: "CLUSTERED" | "RELATIONS";
   page?: number;
   pageSize?: number;
+  limit?: number;
 };
 
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
@@ -666,6 +668,16 @@ export class DemoStore {
       ],
       checkedAt: DEMO_FIXED_AT
     };
+  }
+
+  private readonly syntheticGraphs = new Map<number, Promise<SyntheticMemoryGraph>>();
+
+  /** One deterministic graph per size, cached so repeated requests and node details agree; built in slices so a click never blocks the main thread. */
+  private syntheticGraph(size: number): Promise<SyntheticMemoryGraph> {
+    if (!Number.isInteger(size) || size < 200 || size > 50_000) throw new SpaceApiError("The synthetic graph limit must be an integer from 200 to 50000.", { status: 422, code: "VALIDATION_ERROR" });
+    let graph = this.syntheticGraphs.get(size);
+    if (!graph) this.syntheticGraphs.set(size, graph = generateSyntheticMemoryGraphAsync(size));
+    return graph;
   }
 
   private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
@@ -1490,6 +1502,12 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
+        const limit = (args[0] as DemoMemoryGraphQuery | undefined)?.limit;
+        if (limit !== undefined) {
+          // An explicit limit asks for the deterministic synthetic archive of exactly that many nodes.
+          const { nodes: _nodes, edges: _edges, summary: _summary, ...rest } = this.memoryGraph();
+          return this.syntheticGraph(limit).then(synthetic => ({ data: { ...rest, summary: synthetic.summary, months: synthetic.months, nodes: synthetic.nodes, edges: synthetic.edges, totalMatchingNodes: synthetic.nodes.length, totalMatchingEdges: synthetic.edges.length, truncated: false } }));
+        }
         const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
@@ -1568,6 +1586,14 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
+        const synthetic = /^(?:memory|source|topic):synthetic-(\d+)-/.exec(roomId ?? "");
+        if (synthetic) {
+          return this.syntheticGraph(Number(synthetic[1])).then(graph => {
+            const found = syntheticNodeDetail(graph, roomId!, DEMO_FIXED_AT);
+            if (!found) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
+            return found;
+          });
+        }
         const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));
