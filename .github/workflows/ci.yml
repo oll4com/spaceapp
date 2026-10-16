@@ -15,6 +15,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  temporal-compatibility:
+    name: Temporal sandbox and replay compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Create sanitized Temporal candidate
+        working-directory: ${{ github.workspace }}
+        run: node scripts/public-export.mjs --output "$RUNNER_TEMP/spaceapp-temporal-export"
+      - name: Install dependencies
+        working-directory: ${{ runner.temp }}/spaceapp-temporal-export
+        run: ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+      - name: Build dependencies and typecheck
+        working-directory: ${{ runner.temp }}/spaceapp-temporal-export
+        run: npm run check && npm run temporal:check -w @space/worker
+      - name: Run real workflows and replay within three minutes
+        working-directory: ${{ runner.temp }}/spaceapp-temporal-export
+        run: timeout 180s npm test -w @space/worker -- tests/temporal-workflows.test.ts
+
   public-quality:
     name: Sanitized public quality gates
     runs-on: ubuntu-latest
