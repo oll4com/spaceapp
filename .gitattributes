@@ -1,0 +1,2 @@
+apps/worker/tests/fixtures/workflow-histories/*.json linguist-generated=true -diff
+apps/worker/tests/fixtures/workflow-histories/*.json text eol=lf
