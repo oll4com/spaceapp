@@ -2,7 +2,8 @@ name: Worker OTLP validation
 
 on:
   push:
-    branches: [codex/worker-otlp-tracing]
+    branches: [main, codex/worker-otlp-tracing]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -34,6 +35,9 @@ jobs:
       - run: npm test -w @space/api -- otlp trace-correlation dot-goals memory-consolidation-coordinator memory-mutation-coordinator
 
   repository:
+    # The main CI workflow already runs the complete public suite on every PR.
+    # Keep this independent full-source check available for manual diagnosis.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
