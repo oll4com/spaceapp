@@ -357,7 +357,16 @@ async function up(ctx) {
       if (workerStarted || !/Watching for file changes/.test(line)) return;
       workerStarted = true;
       if (/Found [1-9]\d* errors?/.test(line)) fail("the worker has type errors; it runs the code that was emitted.");
-      startProcess("worker", process.execPath, ["apps/worker/dist/worker.js"], { env });
+      // A signalled Temporal worker drains and logs STOPPED, but its process can stay alive on open
+      // handles; outside a restart that is a failure, not a silent hang.
+      startProcess("worker", process.execPath, ["apps/worker/dist/worker.js"], {
+        env,
+        onLine: (workerLine) => {
+          if (!/state: 'STOPPED'/.test(workerLine) || stopping || restarting.has("worker")) return;
+          fail("worker stopped polling Temporal (state STOPPED). Stopping the dev stack; start it again when fixed.");
+          void shutdown(1);
+        }
+      });
       void recordChildren();
       watchWorkerBuild();
     }

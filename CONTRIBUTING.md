@@ -130,7 +130,8 @@ that package; the API and the web pick up the new build, and the worker (and
 the CLI host, for `packages/cli-host`) restart. Restarting the CLI host ends
 open panes, as a restart of the installed CLI container does.
 
-If a process exits, the dev stack names it and stops. If `/readyz` stops
+If a process exits, or the worker stops polling Temporal, the dev stack names
+it and stops. If `/readyz` stops
 reporting ready (for example when the worker no longer polls Temporal), it
 prints the failing dependency, and says so again when it recovers. The browser
 service and the optional companion services stay disabled.

@@ -94,7 +94,7 @@ jobs:
         run: |
           pkill -f "apps/worker/dist/worker.js"
           timeout 60 tail --pid="$DEV_STACK_PID" -f /dev/null
-          grep "worker exited unexpectedly" "$RUNNER_TEMP/dev-stack.log"
+          grep -E "worker (exited unexpectedly|stopped polling Temporal)" "$RUNNER_TEMP/dev-stack.log"
 
       - name: Stop and reset
         if: always()
