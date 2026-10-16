@@ -71,6 +71,100 @@ exit, and check cleanup after both. Restore the intended behavior before
 submitting a change. Use the tests for the affected workspace as well; the
 offline smoke is not a substitute for them.
 
+## Run the full app from source
+
+One command starts a working SpaceApp from this checkout, with hot reload:
+
+```sh
+npm run dev:stack
+```
+
+It starts, in order: PostgreSQL (pgvector) and Temporal in Docker, the
+database migrations, then the API (`tsx watch`), the Vite web dev server, the
+Temporal worker and the CLI host (`packages/cli-host`) from source. When
+`/readyz` reports `ok: true` it prints the URL and the one-time owner setup
+token. Open the URL, create the owner with the token and sign in; the Getting
+Started room opens with an OpenCode pane. The dev-login shortcut is not used.
+
+```sh
+npm run dev:stack -- down
+npm run dev:stack -- reset
+npm run dev:stack -- status
+```
+
+`down` stops a running dev stack from another terminal (Ctrl-C in its own
+terminal does the same). `reset` removes its containers, volume and state
+directory. `status` says whether it runs and shows its containers.
+
+Prerequisites: the Node version above, `npm ci`, Docker with the compose plugin
+(running), Bash, and network access on the first start (images and OpenCode).
+
+What it creates, and nothing else:
+
+- the Docker Compose project `spaceapp-devstack` (two containers, one
+  `postgres` volume), with the PostgreSQL and Temporal images pinned by digest
+  in `packages/run-spaceapp/templates/compose.yml` (read from that file);
+- the git-ignored state directory `.dev-stack/`: secrets (database password,
+  session secret, setup token; mode 0600, never printed except the setup token),
+  memory, workspaces, the CLI host socket and the CLI state. OpenCode is
+  installed there at the version the `Dockerfile` pins, never globally; its
+  provider state and the `opencode-vscode-parity` command the API launches live
+  there too. No AI provider account is needed to reach OpenCode's UI.
+
+It runs beside an installed SpaceApp. Every port binds to `127.0.0.1`:
+
+| Service    | Default | Variable                  |
+| ---------- | ------- | ------------------------- |
+| Web (Vite) | 4811    | `SPACE_DEV_WEB_PORT`      |
+| API        | 4810    | `SPACE_DEV_API_PORT`      |
+| PostgreSQL | 54329   | `SPACE_DEV_POSTGRES_PORT` |
+| Temporal   | 47233   | `SPACE_DEV_TEMPORAL_PORT` |
+
+`SPACE_DEV_STATE_DIR` and `SPACE_DEV_COMPOSE_PROJECT` choose another state
+directory and compose project, for example for a second checkout.
+
+Hot reload: a change in `apps/api/src` restarts the API, a change in
+`apps/web/src` hot-reloads in the browser, a change in `apps/worker/src`
+recompiles and restarts the worker, and a change in `packages/*/src` rebuilds
+that package; the API and the web pick up the new build, and the worker (and
+the CLI host, for `packages/cli-host`) restart. Restarting the CLI host ends
+open panes, as a restart of the installed CLI container does.
+
+If a process exits, or the worker stops polling Temporal, the dev stack names
+it and stops. If `/readyz` stops
+reporting ready (for example when the worker no longer polls Temporal), it
+prints the failing dependency, and says so again when it recovers. The browser
+service and the optional companion services stay disabled.
+
+Platform notes:
+
+- **Linux**: Docker Engine with the compose plugin, or Docker Desktop.
+- **macOS**: Docker Desktop, or Colima (`colima start`, with the `docker` CLI
+  and its compose plugin). Install Node with your usual version manager.
+- **Windows 11**: run everything inside WSL2 (Ubuntu), with the checkout in the
+  Linux file system (`~/...`, not `/mnt/c/...`). Use Docker Desktop with WSL
+  integration enabled for the distribution, or Docker Engine installed in WSL.
+  Install Node inside WSL too: the CLI host needs Unix sockets and PTYs, so a
+  native Windows shell is not supported. Open the printed URL in a Windows
+  browser; WSL forwards localhost.
+
+Troubleshooting:
+
+- *Port ... is in use*: another process, or a dev stack from another checkout,
+  has it. Set the variable from the table.
+- *Docker with the compose plugin is required*: start Docker Desktop, Colima or
+  the Docker service, and check `docker compose version`.
+- *`docker-credential-desktop.exe: exec format error`* in WSL: the image pull
+  goes through Docker Desktop's Windows credential helper. Enable WSL
+  integration in Docker Desktop, or remove `credsStore` from
+  `~/.docker/config.json` inside WSL; the images are public.
+- *The CLI host exits at once, or `node-pty` crashes*: the native module was
+  built for another Node (for example a distribution `npm` beside a newer
+  `node`). Run `npm ci` again with the Node and npm you start the dev stack with.
+- *The setup token has expired*: it is valid for 15 minutes after the API
+  starts. Restart the dev stack, or `reset` and start again.
+- Anything else: `npm run dev:stack -- reset`, then start again.
+
 ## Checks before a commit
 
 After `npm ci`, these commands work in this order, also on a fresh clone:

@@ -52,3 +52,6 @@ projects/
 .local/
 
 run-spaceapp-*.tgz
+
+# State of npm run dev:stack (secrets, database volume names, CLI installs).
+.dev-stack/
