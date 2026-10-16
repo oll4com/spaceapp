@@ -425,13 +425,13 @@ jobs:
   # stack publishes is bound to 127.0.0.1 and reached over localhost, which keeps
   # working.
   #
-  # It is gated to workflow_dispatch for now: a macOS runner bills at ten times
-  # an Ubuntu one, and a job that has not yet been observed to pass must not be
-  # able to turn a pull request red. Flip the `if` to drop the gate once this job
-  # has a green run on the platform.
+  # It was gated to workflow_dispatch while it was being brought up. It has a
+  # green run now, so it runs alongside the Linux job, scoped by the same `paths`
+  # filter. It bills at ten times an Ubuntu one: re-add
+  # `if: github.event_name == 'workflow_dispatch'` if the macOS minutes matter
+  # more than the platform coverage.
   dev-stack-macos:
     name: Run the full app from source (macOS)
-    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15-intel
     timeout-minutes: 60
     steps:
