@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
 import test from "node:test";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -10,8 +11,11 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // Import only the pure helpers. The CLI entry is guarded behind `invokedDirectly`.
 // pathToFileURL keeps this working on Windows, where a bare `d:\...` path is not
 // a valid ESM specifier.
-const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, parseContainerState, waitForInfrastructure, buildServiceEnv, SETUP_TOKEN_FILE_VAR, PORTS, OPENCODE_PARITY_COMMAND, renderOpenCodeWrapper, writeOpenCodeWrapper } =
-  await import(pathToFileURL(join(repoRoot, "scripts", "dev-stack.mjs")).href);
+const devStack = await import(pathToFileURL(join(repoRoot, "scripts", "dev-stack.mjs")).href);
+const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, parseContainerState, waitForInfrastructure, buildServiceEnv, SETUP_TOKEN_FILE_VAR, PORTS, OPENCODE_PARITY_COMMAND, renderOpenCodeWrapper, writeOpenCodeWrapper } = devStack;
+// The teardown helpers stay off the module's public surface; they are reachable
+// through `__testing` with the rest of the internals these tests pin.
+const { signalProcessTree, processTreeAlive, stopProcessTrees, readPidFile, sleepSync } = devStack.__testing;
 
 const TEMPLATE = join(repoRoot, "packages/run-spaceapp/templates/compose.yml");
 const DOCKERFILE = join(repoRoot, "Dockerfile");
@@ -93,7 +97,7 @@ test("parseContainerState reads the status and health fields docker inspect join
   assert.deepEqual(parseContainerState(undefined), { raw: "", status: "", health: "" });
 });
 
-test("container secrets are world-readable so non-root container users can mount them", () => {
+test("only the password a container reads is 0644; the host-only secrets stay 0600", () => {
   const dir = mkdtempSync(join(tmpdir(), "devstack-secrets-"));
   try {
     const secrets = generateSecrets(dir);
@@ -102,16 +106,36 @@ test("container secrets are world-readable so non-root container users can mount
       assert.ok(existsSync(join(dir, name)), `${name} missing`);
     }
 
-    // POSIX: the four compose-mounted secrets must be 0644, exactly as
-    // packages/run-spaceapp/tests/cli.test.mjs:775 asserts. The temporalio/
-    // auto-setup entrypoint does `cat /run/secrets/postgres-password` as a
-    // non-root user; 0600 makes that EACCES and the container crash-loops.
-    // Windows has no POSIX mode bits, so the assertion is meaningful only on
-    // POSIX (see generateSecrets).
+    // Windows has no POSIX mode bits, so every half of this is POSIX-only (see
+    // generateSecrets).
     if (process.platform !== "win32") {
-      for (const name of ["postgres-password", "session-secret", "setup-token", "database-url"]) {
+      // The directory is the real door, and the reason one 0644 file is safe.
+      // At 0700 no other local user can traverse into `secrets/` to reach it,
+      // which is what closes the "secrets in directories other local users may
+      // traverse" finding and is stricter than the installed app's directory.
+      const dirMode = statSync(dir).mode & 0o777;
+      assert.equal(dirMode, 0o700, `secrets dir mode is ${dirMode.toString(8)}, expected 0700`);
+
+      // postgres-password is the ONLY secret that crosses into a container, and
+      // the container reads it as a non-root user: temporalio/auto-setup:1.29.1
+      // declares `User: temporal` and its entrypoint runs
+      // `cat /run/secrets/postgres-password`. At 0600 that cat fails with
+      // `Permission denied`, temporal crash-loops, the worker dialing it exits
+      // 1 and dev-stack tears the whole stack down — measured, not theorised:
+      // CI run 38892278575 failed exactly this way with postgres Healthy.
+      const containerMode = statSync(join(dir, "postgres-password")).mode & 0o777;
+      assert.equal(
+        containerMode,
+        0o644,
+        "postgres-password is bind-mounted and read by a non-root container user"
+      );
+
+      // These four never leave the host: session-secret and database-url travel
+      // as environment values, setup-token is read by the API through
+      // SPACE_SETUP_TOKEN_FILE, and owner-only.env is the developer-facing copy.
+      for (const name of ["session-secret", "setup-token", "database-url", "owner-only.env"]) {
         const mode = statSync(join(dir, name)).mode & 0o777;
-        assert.equal(mode, 0o644, `${name} mode is ${mode.toString(8)}, expected 0644`);
+        assert.equal(mode, 0o600, `${name} mode is ${mode.toString(8)}, expected 0600`);
       }
     }
 
@@ -199,22 +223,37 @@ test("the token file the API is handed exists and survives the API's own validat
   }
 });
 
-test("a stray 0600 container secret is repaired to 0644 on the next pass", () => {
-  // Regression: the first CI run died with `cat: can't open
-  // '/run/secrets/postgres-password': Permission denied` and temporal stuck in
-  // Restarting (1). packages/run-spaceapp/tests/cli.test.mjs:778 chmods a secret
-  // to 0600 and expects initializeInstallation to repair it; generateSecrets
-  // must do the same so an already-populated state directory cannot wedge.
+test("an existing state directory is moved to the declared mode in both directions", () => {
+  // A state directory written by an earlier version of this script can carry any
+  // mode. generateSecrets must land each file on its declared mode anyway,
+  // because writeFileSync only applies `mode` when it creates the file — an
+  // existing file keeps whatever bits it already had. Only the re-chmod makes
+  // the contract hold on every pass, not just on a fresh state directory.
   const dir = mkdtempSync(join(tmpdir(), "devstack-secret-repair-"));
   try {
     generateSecrets(dir);
     if (process.platform !== "win32") {
-      const path = join(dir, "postgres-password");
-      chmodSync(path, 0o600);
-      assert.equal(statSync(path).mode & 0o777, 0o600);
+      // A host secret left readable by others is tightened.
+      const hostOnly = join(dir, "session-secret");
+      chmodSync(hostOnly, 0o644);
+      assert.equal(statSync(hostOnly).mode & 0o777, 0o644);
+
+      // And the one container secret left unreadable by the container is opened
+      // back up. Without this direction an older 0600 state directory would
+      // crash-loop temporal forever, with no way out but `rm -rf .dev-stack`.
+      const container = join(dir, "postgres-password");
+      chmodSync(container, 0o600);
+      assert.equal(statSync(container).mode & 0o777, 0o600);
+
+      // A directory an older run left world-traversable is narrowed.
+      chmodSync(dir, 0o755);
+      assert.equal(statSync(dir).mode & 0o777, 0o755);
 
       generateSecrets(dir);
-      assert.equal(statSync(path).mode & 0o777, 0o644, "the second pass must repair the mode");
+
+      assert.equal(statSync(hostOnly).mode & 0o777, 0o600, "the second pass must tighten the mode");
+      assert.equal(statSync(container).mode & 0o777, 0o644, "the container secret must be readable again");
+      assert.equal(statSync(dir).mode & 0o777, 0o700, "the secrets directory must be narrowed");
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -222,8 +261,8 @@ test("a stray 0600 container secret is repaired to 0644 on the next pass", () =>
 });
 
 test("the developer-facing copy of the secrets is owner-only", () => {
-  // owner-only.env is never bound into a container, so the 0600 requirement
-  // applies to it. It must carry the same values the containers see.
+  // owner-only.env is the convenience copy of the same values. Like every other
+  // file here it is never bound into a container and stays 0600.
   const dir = mkdtempSync(join(tmpdir(), "devstack-owner-only-"));
   try {
     const secrets = generateSecrets(dir);
@@ -256,6 +295,41 @@ test("renderCompose binds every published port to 127.0.0.1 only", () => {
     assert.ok(entry.startsWith("127.0.0.1:"), `port ${entry} is not bound to 127.0.0.1`);
   }
   assert.ok(!text.includes("0.0.0.0"), "compose must not bind 0.0.0.0");
+});
+
+test("only postgres-password is mounted into a container, so it is the only one that may be 0644", () => {
+  // This is the contract that decides the modes. Of the four generated secrets
+  // exactly one is handed to a container: postgres-password, declared under the
+  // compose file's top-level `secrets:`. session-secret and database-url travel
+  // as environment values and setup-token is read by the API on the host, so
+  // none of the three has to be readable by any container user — and that is why
+  // they can hold 0600 while the mounted one cannot.
+  //
+  // This test is what keeps the split honest: if a later change mounts another
+  // secret, the reasoning in generateSecrets stops holding and this fails first,
+  // before the mode is wrong in a way only CI would notice.
+  const images = { postgres: "pgvector/pgvector:0.8.3-pg17-trixie@sha256:" + "a".repeat(64), temporal: "temporalio/auto-setup:1.29.1@sha256:" + "b".repeat(64) };
+  // Long, distinctive values: a short value like "pw" would match inside an
+  // ordinary word such as "password" and make the value-leak assertion lie.
+  const secrets = {
+    postgresPassword: "ZZQQPOSTGRESVALUEZZ",
+    sessionSecret: "ZZQQSESSIONVALUEZZ",
+    setupToken: "ZZQQSETUPVALUEZZ",
+    databaseUrl: "postgresql://ZZQQDBVALUEZZ@127.0.0.1:5432/db"
+  };
+  const text = renderCompose(images, secrets);
+
+  const mounted = text.slice(text.indexOf("\nsecrets:\n"));
+  assert.ok(mounted.includes("postgres-password"), "postgres-password must be mounted");
+  for (const name of ["session-secret", "setup-token", "database-url"]) {
+    assert.ok(!mounted.includes(name), `${name} must not be mounted into a container`);
+  }
+
+  // No secret value is ever written into the generated file, not even the one
+  // that is mounted: it reaches the container as a file the runtime reads.
+  for (const value of Object.values(secrets)) {
+    assert.ok(!text.includes(value), `${value} must not appear in the compose text`);
+  }
 });
 
 test("renderCompose uses the digest-pinned images verbatim", () => {
@@ -448,5 +522,85 @@ test("buildServiceEnv points the CLI command path at the wrapper directory", () 
     assert.ok((env.PATH ?? "").startsWith(`${binDir}${process.platform === "win32" ? ";" : ":"}`));
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Teardown. `down` and `reset` have to reach a whole process tree, and the
+// acceptance contract's last CI step checks that reset leaves nothing behind.
+// ---------------------------------------------------------------------------
+
+test("readPidFile survives a missing, truncated or hand-edited pid file", () => {
+  // `down` must not throw before it has stopped anything: the containers would
+  // come down while the host processes kept running.
+  const dir = mkdtempSync(join(tmpdir(), "devstack-pidfile-"));
+  const path = join(dir, "dev-stack.pids.json");
+  try {
+    assert.deepEqual(readPidFile(path), [], "a missing pid file means nothing to stop");
+
+    writeFileSync(path, '{"not":"an array"}', "utf8");
+    assert.deepEqual(readPidFile(path), [], "a non-array is not a pid list");
+
+    writeFileSync(path, '[{"name":"api","pid":', "utf8");
+    assert.deepEqual(readPidFile(path), [], "a truncated file must not throw");
+
+    writeFileSync(path, JSON.stringify([
+      { name: "api", pid: 4242 },
+      { name: "init", pid: 1 },
+      { name: "junk", pid: "nope" },
+      { name: "nopid" }
+    ]), "utf8");
+    // pid 1 is init and a non-integer is not a pid. Signalling either is how a
+    // teardown takes out something it never started.
+    assert.deepEqual(readPidFile(path), [{ name: "api", pid: 4242 }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("teardown reaches a child's own children, not just the leader it recorded", () => {
+  // Regression: `down` and `reset` signalled only the pid recorded at spawn
+  // time. spawnService starts every child with `detached`, so that pid is a
+  // process-group leader and the workers it forked — `npx tsx watch`, `vite` —
+  // survived the teardown.
+  if (process.platform === "win32") {
+    // Windows has no POSIX process groups; signalProcessTree goes through
+    // taskkill /T there and needs a real console process to prove anything,
+    // which a unit test cannot create reliably.
+    return;
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), "devstack-tree-"));
+  const marker = join(dir, "grandchild.pid");
+  // A leader that forks a grandchild and then idles: the shape `npx tsx watch`
+  // produces. The grandchild outlives a leader-only signal.
+  const leaderScript = [
+    'const { spawn } = require("node:child_process");',
+    'const { writeFileSync } = require("node:fs");',
+    'const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });',
+    "writeFileSync(process.argv[1], String(grandchild.pid));",
+    "setInterval(() => {}, 1000);"
+  ].join("\n");
+
+  const leader = spawn(process.execPath, ["-e", leaderScript, marker], { detached: true, stdio: "ignore" });
+  leader.unref();
+
+  try {
+    const deadline = Date.now() + 10000;
+    while (!existsSync(marker) && Date.now() < deadline) sleepSync(50);
+    assert.ok(existsSync(marker), "the leader never recorded its grandchild");
+
+    const grandchildPid = Number(readFileSync(marker, "utf8"));
+    assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 1, `bad grandchild pid ${grandchildPid}`);
+    assert.ok(processTreeAlive(grandchildPid), "the grandchild should be running before teardown");
+
+    assert.equal(stopProcessTrees([{ name: "fixture", pid: leader.pid }]), 1);
+
+    assert.ok(!processTreeAlive(leader.pid), "the leader must be gone");
+    assert.ok(!processTreeAlive(grandchildPid), "the grandchild must be gone too");
+  } finally {
+    // Never leave the fixture behind if an assertion above failed.
+    signalProcessTree(leader.pid, "SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
   }
 });

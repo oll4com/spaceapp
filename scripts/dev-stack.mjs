@@ -129,42 +129,62 @@ export function readPinnedImages(templateText = readFileSync(COMPOSE_TEMPLATE, "
 // Secrets. Generated per state directory, never printed except the owner setup
 // token, never committed (.dev-stack/ is git-ignored).
 //
-// Two mode classes, matching packages/run-spaceapp/src/index.mjs:23:
+// Two modes, decided by whether a file crosses the container boundary.
 //
-//   CONTAINER_SECRET_MODE (0644) for the four files the compose template binds
-//     into containers. They are read by the non-root user inside temporalio/
-//     auto-setup (`cat /run/secrets/postgres-password`), so they have to be
-//     world-readable on the host. packages/run-spaceapp/tests/cli.test.mjs:765
-//     names the contract outright — "container secrets are world-readable so
-//     non-root container users can mount them" — and its sibling test repairs a
-//     0600 file back to 0644. 0600 here provably crash-loops temporal with
-//     `cat: can't open '/run/secrets/postgres-password': Permission denied`.
+// Exactly ONE file does. `postgres-password` is declared under the compose
+// file's top-level `secrets:` and bind-mounted at /run/secrets/, and the
+// temporal service reads it as a NON-ROOT user: temporalio/auto-setup:1.29.1
+// sets `User: temporal`, and its entrypoint runs `cat /run/secrets/
+// postgres-password`. A 0600 host file makes that `cat` fail with
+// `Permission denied`, which crash-loops temporal; the worker that dials it
+// then exits 1 and takes the whole stack down. That is a measured failure, not
+// a guess: CI run 38892278575 died exactly this way, with postgres Healthy
+// (pgvector/pgvector runs as root, so it reads the same file fine) and temporal
+// stuck at `running starting`.
 //
-//   OWNER_ONLY_MODE (0600) for owner-only.env, the developer-facing copy of the
-//     same values. It is never bound into a container, so it can stay 0600.
+// packages/run-spaceapp already keeps its container secrets at 0644 for the
+// same reason, and its contract test says so outright:
+// packages/run-spaceapp/tests/cli.test.mjs:765 — "container secrets are
+// world-readable so non-root container users can mount them".
+//
+// The other three never leave the host, so they stay 0600:
+//
+//   session-secret  → SPACE_SESSION_SECRET, an environment value
+//   database-url    → SPACE_DATABASE_URL, an environment value
+//   setup-token     → SPACE_SETUP_TOKEN_FILE, read by the API on the host
+//
+// owner-only.env is the developer-facing copy of the same values and is 0600
+// for the same reason.
+//
+// The one 0644 file is not exposed by that mode, because the directory holding
+// it is 0700: another local user cannot traverse into `secrets/` to reach it.
+// That is strictly tighter than the installed app, which leaves its secrets
+// directory traversable, and it is what closes the "secrets in directories
+// other local users may traverse" finding.
 // ---------------------------------------------------------------------------
+const SECRET_MODE = 0o600;
 const CONTAINER_SECRET_MODE = 0o644;
-const OWNER_ONLY_MODE = 0o600;
-
-// Idempotent repair, as ensureContainerSecretReadable does upstream: an existing
-// container secret is chmod'ed back to CONTAINER_SECRET_MODE so a stray 0600 can
-// never wedge the stack. No-op on Windows, which has no POSIX permission bits.
-function ensureContainerSecretReadable(path) {
-  if (process.platform === "win32") return;
-  try {
-    chmodSync(path, CONTAINER_SECRET_MODE);
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-}
+const SECRETS_DIR_MODE = 0o700;
+const SECRET_MODES = {
+  "postgres-password": CONTAINER_SECRET_MODE,
+  "session-secret": SECRET_MODE,
+  "setup-token": SECRET_MODE,
+  "database-url": SECRET_MODE
+};
+const SECRET_FILES = Object.keys(SECRET_MODES);
 
 export function generateSecrets(dir = SECRETS_DIR) {
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: SECRETS_DIR_MODE });
+  // mkdirSync's mode only applies to directories it creates, so a state
+  // directory left behind by an older run has to be narrowed explicitly.
+  if (process.platform !== "win32") chmodSync(dir, SECRETS_DIR_MODE);
   const write = (name, value) => {
     const path = join(dir, name);
-    writeFileSync(path, value, { mode: CONTAINER_SECRET_MODE });
-    chmodSync(path, CONTAINER_SECRET_MODE);
-    ensureContainerSecretReadable(path);
+    const mode = SECRET_MODES[name];
+    // writeFileSync's mode only applies at creation, so an existing file needs
+    // an explicit chmod to move between the two mode classes.
+    writeFileSync(path, value, { mode });
+    chmodSync(path, mode);
     return path;
   };
   // PostgreSQL password: URL-safe, no shell/URL metacharacters.
@@ -180,8 +200,7 @@ export function generateSecrets(dir = SECRETS_DIR) {
   write("setup-token", setupToken);
   write("database-url", `postgresql://spaceapp:${postgresPassword}@127.0.0.1:${PORTS.postgres}/spaceapp`);
 
-  // The developer-facing copy: same values, never mounted into a container, so
-  // it can and does stay owner-only. This is where the 0600 requirement applies.
+  // The developer-facing copy: same values, same mode, never mounted anywhere.
   const ownerOnlyPath = join(dir, "owner-only.env");
   writeFileSync(
     ownerOnlyPath,
@@ -192,9 +211,9 @@ export function generateSecrets(dir = SECRETS_DIR) {
       `SPACE_OWNER_SETUP_TOKEN=${setupToken}`,
       ""
     ].join("\n"),
-    { mode: OWNER_ONLY_MODE }
+    { mode: SECRET_MODE }
   );
-  chmodSync(ownerOnlyPath, OWNER_ONLY_MODE);
+  chmodSync(ownerOnlyPath, SECRET_MODE);
 
   // Belt and braces on POSIX: assert the modes landed.
   // Windows has no POSIX permission bits — Node reports 0666 for every
@@ -205,15 +224,16 @@ export function generateSecrets(dir = SECRETS_DIR) {
   // makes for ~/.npmrc credentials, and the same guard packages/run-spaceapp/
   // tests/cli.test.mjs:774 applies.
   if (process.platform !== "win32") {
-    for (const name of ["postgres-password", "session-secret", "setup-token", "database-url"]) {
-      const mode = statSync(join(dir, name)).mode & 0o777;
-      if (mode !== CONTAINER_SECRET_MODE) {
-        fail(`Container secret ${name} has mode ${mode.toString(8)}; expected 0644 so the container's non-root user can read it.`);
-      }
+    const dirMode = statSync(dir).mode & 0o777;
+    if (dirMode !== SECRETS_DIR_MODE) {
+      fail(`${dir} has mode ${dirMode.toString(8)}; expected 0700 so other local users cannot reach the secrets.`);
     }
-    const ownerMode = statSync(ownerOnlyPath).mode & 0o777;
-    if (ownerMode !== OWNER_ONLY_MODE) {
-      fail(`owner-only.env has mode ${ownerMode.toString(8)}; expected 0600.`);
+    const expected = { ...SECRET_MODES, "owner-only.env": SECRET_MODE };
+    for (const name of Object.keys(expected)) {
+      const mode = statSync(join(dir, name)).mode & 0o777;
+      if (mode !== expected[name]) {
+        fail(`${name} has mode ${mode.toString(8)}; expected 0${expected[name].toString(8)}.`);
+      }
     }
   }
   return {
@@ -567,20 +587,104 @@ function spawnService(name, command, args, env, options = {}) {
   return child;
 }
 
+// A child spawned with `detached` leads its own process group, so `-pid` is the
+// only address that reaches the whole tree. `npx tsx watch` and `vite` each fork
+// workers of their own, and a leader-only signal leaves those children running —
+// which is exactly what the acceptance contract's "nothing left behind" check
+// looks for after `reset`.
+function signalProcessTree(pid, signal = "SIGTERM") {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  if (process.platform === "win32") {
+    // Windows has no POSIX signals. taskkill /T is the only way to reach the
+    // grandchildren npx and vite fork, and console processes do not honour a
+    // graceful close request, so /F is the form that actually works.
+    return spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" }).status === 0;
+  }
+  for (const target of [-pid, pid]) {
+    try {
+      process.kill(target, signal);
+      return true;
+    } catch (error) {
+      // EPERM means the process exists but is not ours to signal; anything else
+      // (ESRCH) means try the other address, then give up.
+      if (error?.code === "EPERM") return true;
+    }
+  }
+  return false;
+}
+
+function processTreeAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  if (process.platform === "win32") {
+    const out = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], { encoding: "utf8" });
+    return (out.stdout ?? "").includes(`"${pid}"`);
+  }
+  for (const target of [-pid, pid]) {
+    try {
+      process.kill(target, 0);
+      return true;
+    } catch (error) {
+      if (error?.code === "EPERM") return true;
+    }
+  }
+  return false;
+}
+
+// Synchronous sleep: cmdDown/cmdReset have to be sure the tree is gone before
+// they report success, and they run outside any event loop turn that could await.
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+// SIGTERM the tree, give it a bounded grace period, then SIGKILL whatever is
+// left and verify. Returns true only when nothing survives.
+function stopProcessTrees(entries, { graceMs = 6000 } = {}) {
+  const pids = [...new Set(entries.map((entry) => entry.pid))].filter((pid) => Number.isInteger(pid) && pid > 1);
+  for (const { name, pid } of entries) {
+    if (signalProcessTree(pid, "SIGTERM")) say(`dev-stack: stopping ${name} (pid ${pid})`);
+  }
+  const deadline = Date.now() + graceMs;
+  let alive = pids.filter(processTreeAlive);
+  while (alive.length && Date.now() < deadline) {
+    sleepSync(100);
+    alive = alive.filter(processTreeAlive);
+  }
+  for (const pid of alive) signalProcessTree(pid, "SIGKILL");
+  const survivors = alive.filter(processTreeAlive);
+  if (survivors.length) {
+    fail(`Could not stop pid ${survivors.join(", ")}. Stop them before continuing.`);
+  }
+  return pids.length;
+}
+
+function readPidFile(path = PID_FILE) {
+  if (!existsSync(path)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry) => entry && Number.isInteger(entry.pid) && entry.pid > 1);
+  } catch {
+    // A truncated or hand-edited pid file must not wedge `down` or `reset`.
+    return [];
+  }
+}
+
 function stopAll(signal = "SIGTERM") {
   if (stopping) return;
   stopping = true;
   for (const [name, { child }] of children) {
-    try {
-      if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
-      else child.kill(signal);
-    } catch { /* already gone */ }
+    // The group address covers the workers `npx tsx watch` and `vite` fork; the
+    // child handle is the fallback for anything that never rejoined a group.
+    if (!signalProcessTree(child.pid, signal)) {
+      try { child.kill(signal); } catch { /* already gone */ }
+    }
     void name;
   }
-  // Last child's exit handler calls process.exit; add a hard deadline anyway.
+  // The last child's exit handler calls process.exit; add a hard deadline
+  // anyway, and make it reach the group so nothing outlives the command.
   setTimeout(() => {
     for (const { child } of children.values()) {
-      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      if (!signalProcessTree(child.pid, "SIGKILL")) {
+        try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      }
     }
     cleanupFiles();
     process.exit(exitCode);
@@ -611,11 +715,16 @@ function cmdUp() {
     ? readSecrets()
     : generateSecrets();
 
-  // A pre-existing state directory may carry a stray 0600 from an older run;
-  // repair it whether or not generateSecrets just wrote these. Without this the
-  // temporal container cannot `cat` its secret and crash-loops.
-  for (const name of ["postgres-password", "session-secret", "setup-token", "database-url"]) {
-    ensureContainerSecretReadable(join(SECRETS_DIR, name));
+  // A pre-existing state directory may carry modes from an older run. Re-apply
+  // both classes whether or not generateSecrets just wrote these, so the
+  // contract holds on every run and not only for a fresh state directory.
+  if (process.platform !== "win32") {
+    chmodSync(SECRETS_DIR, SECRETS_DIR_MODE);
+    for (const name of SECRET_FILES) {
+      const path = join(SECRETS_DIR, name);
+      if (!existsSync(path)) continue;
+      chmodSync(path, SECRET_MODES[name]);
+    }
   }
 
   writeFileSync(COMPOSE_FILE, renderCompose(images, secrets), "utf8");
@@ -699,30 +808,29 @@ function cmdUp() {
 function cmdDown() {
   requireDocker();
   if (existsSync(COMPOSE_FILE)) compose("down", ["--remove-orphans"]);
-  // Stop anything still alive that we spawned (up was interrupted, etc).
-  if (existsSync(PID_FILE)) {
-    try {
-      for (const { name, pid } of JSON.parse(readFileSync(PID_FILE, "utf8"))) {
-        try { process.kill(pid, "SIGTERM"); say(`dev-stack: stopped ${name} (pid ${pid})`); }
-        catch { /* already gone */ }
-      }
-    } catch { /* unreadable pid file */ }
-    rmSync(PID_FILE, { force: true });
+  // Stop anything still alive that we spawned (up was interrupted, etc). The pid
+  // file names children from an earlier process, so this can only address them by
+  // pid — and only the process-group address reaches what they forked.
+  const spawned = readPidFile();
+  if (spawned.length) {
+    const stopped = stopProcessTrees(spawned);
+    say(`dev-stack: stopped ${stopped} host process(es) from this stack.`);
   }
+  cleanupFiles();
   say("dev-stack: down.");
 }
 
 function cmdReset() {
   requireDocker();
+  // Stop the host processes before anything else: they keep the state directory
+  // busy, and the acceptance contract checks that reset leaves no process behind.
+  const spawned = readPidFile();
+  if (spawned.length) {
+    const stopped = stopProcessTrees(spawned);
+    say(`dev-stack: stopped ${stopped} host process(es) from this stack.`);
+  }
   if (existsSync(COMPOSE_FILE)) {
     compose("down", ["-v", "--remove-orphans"]);
-  }
-  if (existsSync(PID_FILE)) {
-    try {
-      for (const { pid } of JSON.parse(readFileSync(PID_FILE, "utf8"))) {
-        try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
-      }
-    } catch { /* unreadable pid file */ }
   }
   // Remove only what this command created: the state directory. Nothing else.
   if (existsSync(STATE_DIR)) {
@@ -736,25 +844,31 @@ function cmdReset() {
   const volumes = spawnSync("docker", ["volume", "ls", "--filter", `label=com.docker.compose.project=${COMPOSE_PROJECT}`, "--format", "{{.Name}}"], { encoding: "utf8" });
   const leftover = [...(ps.stdout ?? "").split("\n"), ...(volumes.stdout ?? "")].map((s) => s.trim()).filter(Boolean);
   if (leftover.length) fail(`reset left resources behind: ${leftover.join(", ")}`);
+  const survivors = spawned.filter((entry) => processTreeAlive(entry.pid));
+  if (survivors.length) {
+    fail(`reset left processes behind: ${survivors.map((entry) => `${entry.name}(${entry.pid})`).join(", ")}`);
+  }
   say("dev-stack: verified — no container, volume or process left from this project.");
 }
 
 function cmdStatus() {
   if (existsSync(COMPOSE_FILE)) compose("ps", [], {});
   else say("dev-stack: no state directory; the stack has not been started here.");
-  if (existsSync(PID_FILE)) {
-    for (const { name, pid } of JSON.parse(readFileSync(PID_FILE, "utf8"))) {
-      let alive = true;
-      try { process.kill(pid, 0); } catch { alive = false; }
-      say(`dev-stack: ${name} pid ${pid} ${alive ? "running" : "stopped"}`);
-    }
+  for (const { name, pid } of readPidFile()) {
+    say(`dev-stack: ${name} pid ${pid} ${processTreeAlive(pid) ? "running" : "stopped"}`);
   }
 }
 
 // ---------------------------------------------------------------------------
 // entry — guarded so the pure helpers above can be imported by tests.
 // ---------------------------------------------------------------------------
-export const __testing = { renderCompose, readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, PORTS, STATE_DIR, COMPOSE_PROJECT };
+export const __testing = {
+  renderCompose, readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets,
+  PORTS, STATE_DIR, COMPOSE_PROJECT, PID_FILE,
+  // Teardown helpers: they reach a whole process group, which is what `down`
+  // and `reset` rely on, so they are worth proving directly.
+  signalProcessTree, processTreeAlive, stopProcessTrees, readPidFile, sleepSync
+};
 
 const invokedDirectly =
   process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
