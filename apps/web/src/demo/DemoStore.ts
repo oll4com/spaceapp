@@ -1,5 +1,6 @@
 import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
+import { generateSyntheticMemoryGraph, syntheticNodeDetail, type SyntheticMemoryGraph } from "./synthetic-memory-graph.js";
 import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom, summarizeDotProactiveUsage } from "@space/contracts";
 import type { DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
 import type {
@@ -145,6 +146,7 @@ type DemoMemoryGraphQuery = {
   relationMode?: "CLUSTERED" | "RELATIONS";
   page?: number;
   pageSize?: number;
+  limit?: number;
 };
 
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
@@ -663,6 +665,16 @@ export class DemoStore {
       ],
       checkedAt: DEMO_FIXED_AT
     };
+  }
+
+  private readonly syntheticGraphs = new Map<number, SyntheticMemoryGraph>();
+
+  /** One deterministic graph per size, cached so repeated requests and node details agree. */
+  private syntheticGraph(size: number): SyntheticMemoryGraph {
+    if (!Number.isInteger(size) || size < 200 || size > 50_000) throw new SpaceApiError("The synthetic graph limit must be an integer from 200 to 50000.", { status: 422, code: "VALIDATION_ERROR" });
+    let graph = this.syntheticGraphs.get(size);
+    if (!graph) this.syntheticGraphs.set(size, graph = generateSyntheticMemoryGraph(size));
+    return graph;
   }
 
   private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
@@ -1469,7 +1481,51 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
+        const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
+        const limit = query.limit;
+        if (limit !== undefined) {
+          // An explicit limit asks for the deterministic synthetic archive of exactly that many nodes.
+          const synthetic = this.syntheticGraph(limit);
+          const needle = query.q?.trim().toLowerCase();
+          const expectedMonthPath = query.month && query.month !== "all"
+            ? `space_memory_${query.month}.md`
+            : null;
+          let nodes = synthetic.nodes;
+          if (needle || query.nodeType || query.sourcePath || expectedMonthPath) {
+            nodes = nodes.filter((node) => {
+              return (!needle || [node.label, node.sourcePath].some((value) => value?.toLowerCase().includes(needle))) &&
+                (!query.nodeType || node.type === query.nodeType) &&
+                (!query.sourcePath || node.sourcePath === query.sourcePath) &&
+                (!expectedMonthPath || node.sourcePath?.split("/").at(-1) === expectedMonthPath);
+            });
+          }
+          const visibleIds = new Set(nodes.map((node) => node.id));
+          const edges = synthetic.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+          const { nodes: _nodes, edges: _edges, summary: _summary, ...rest } = this.memoryGraph();
+          return Promise.resolve({
+            data: {
+              ...rest,
+              filters: {
+                q: query.q ?? null,
+                nodeType: query.nodeType ?? null,
+                scope: query.scope ?? null,
+                roomId: query.roomId ?? null,
+                sourcePath: query.sourcePath ?? null,
+                lifecycleStatus: query.lifecycleStatus ?? null,
+                relationMode: query.relationMode ?? "RELATIONS",
+                month: query.month ?? null
+              },
+              summary: synthetic.summary,
+              months: synthetic.months,
+              nodes,
+              edges,
+              totalMatchingNodes: nodes.length,
+              totalMatchingEdges: edges.length,
+              truncated: false
+            }
+          });
+        }
+        const graph = this.memoryGraph(query);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
       case "memoryCalendar": {
@@ -1547,6 +1603,12 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
+        const synthetic = /^(?:memory|source|topic):synthetic-(\d+)-/.exec(roomId ?? "");
+        if (synthetic) {
+          const found = syntheticNodeDetail(this.syntheticGraph(Number(synthetic[1])), roomId!, DEMO_FIXED_AT);
+          if (!found) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
+          return Promise.resolve(found);
+        }
         const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));
