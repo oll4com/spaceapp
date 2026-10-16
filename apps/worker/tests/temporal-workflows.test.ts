@@ -34,6 +34,7 @@ let maintenanceRun: Promise<void>;
 let mutationRun: Promise<void>;
 let legacyRun: Promise<void>;
 const calls = new Map<string, number>();
+const finishedLegacyMissionIds: string[] = [];
 const checkedSupervisorTurns: string[] = [];
 const options = new Map<string, "fail-once" | "always-fail">();
 let supervisorReady: (() => void) | undefined;
@@ -119,7 +120,10 @@ const activities = {
   },
   dotGoalObserve: async () => ({ run: "COMPLETED", goalStatus: "COMPLETED" }),
   markRoomAgentMissionStarted: async () => { called("markRoomAgentMissionStarted"); },
-  markRoomAgentMissionFinished: async () => { called("markRoomAgentMissionFinished"); },
+  markRoomAgentMissionFinished: async (input: { missionId: string }) => {
+    called("markRoomAgentMissionFinished");
+    finishedLegacyMissionIds.push(input.missionId);
+  },
   markRoomAgentMissionContinued: async () => undefined,
   settleRoomAgentBackgroundMission: async () => { called("settleRoomAgentBackgroundMission"); return legacySettleResult; },
   checkRoomAgentSupervisorTurn: async (item: { missionId: string; turn: { agentRunId?: string; roomAgentContinuation?: unknown } }) => {
@@ -310,11 +314,17 @@ describe.sequential("Temporal workflow integration", () => {
     await recordHistory(legacy, "room-supervisor-pre-patch");
 
     const finishCountBeforeLegacyCarry = calls.get("markRoomAgentMissionFinished") ?? 0;
+    const finishedIdsBeforeLegacyCarry = finishedLegacyMissionIds.length;
+    const legacyMonitoringId = "mission:legacy-monitoring-carry";
     const legacyCarryItems = Array.from({ length: 51 }, (_, index) => ({
       missionId: `mission:legacy-carry-${index}`,
       turn: { ...roomTurn, agentRunId: `run:legacy-carry-${index}` }
     }));
-    const legacyCarryInput = roomAgentSupervisorInputSchema.parse({ roomId: roomTurn.roomId, pending: legacyCarryItems });
+    const legacyCarryInput = roomAgentSupervisorInputSchema.parse({
+      roomId: roomTurn.roomId,
+      pending: legacyCarryItems,
+      monitoringMissionIds: [legacyMonitoringId]
+    });
     const legacyCarry = await env.client.workflow.start("roomAgentSupervisorWorkflow", {
       taskQueue: LEGACY_QUEUE, workflowId: "room-supervisor-legacy-carry-synthetic", args: [legacyCarryInput]
     });
@@ -322,6 +332,20 @@ describe.sequential("Temporal workflow integration", () => {
     await vi.waitFor(() => expect((calls.get("markRoomAgentMissionFinished") ?? 0) - finishCountBeforeLegacyCarry).toBeGreaterThanOrEqual(51), { timeout: 30_000 });
     const legacyCarryHistory = await legacyCarryFirstRun.fetchHistory() as { events: Array<{ eventType: number }> };
     expect(legacyCarryHistory.events.some(event => event.eventType === proto.temporal.api.enums.v1.EventType.EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW)).toBe(true);
+    const legacyCarryNextInput = continuedAsNewInput(legacyCarryHistory) as {
+      pending: Array<{ missionId: string; turn: { agentRunId: string } }>;
+      monitoringMissionIds: string[];
+      processedCount: number;
+    };
+    expect(legacyCarryNextInput.pending).toEqual([{
+      missionId: "mission:legacy-carry-50",
+      turn: expect.objectContaining({ agentRunId: "run:legacy-carry-50" })
+    }]);
+    expect(legacyCarryNextInput.monitoringMissionIds).toEqual([legacyMonitoringId]);
+    expect(legacyCarryNextInput.processedCount).toBe(0);
+    const finishedLegacyCarryIds = finishedLegacyMissionIds.slice(finishedIdsBeforeLegacyCarry);
+    expect(finishedLegacyCarryIds).toHaveLength(51);
+    expect(new Set(finishedLegacyCarryIds)).toEqual(new Set(legacyCarryItems.map(item => item.missionId)));
     await recordHistory(legacyCarryFirstRun, "room-supervisor-pre-patch-continue-as-new");
     await env.client.workflow.getHandle("room-supervisor-legacy-carry-synthetic").terminate("synthetic fixture complete");
 
