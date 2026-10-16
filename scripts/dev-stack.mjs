@@ -354,6 +354,20 @@ export const SETUP_TOKEN_FILE_VAR = "SPACE_SETUP_TOKEN_FILE";
  */
 export function buildServiceEnv(secrets, opencode) {
   const pathSep = process.platform === "win32" ? ";" : ":";
+  // The installed product roots itself at /opt/spaceapp and derives a dozen
+  // more paths from it. A from-source run must inherit none of them: /opt is
+  // not writable on macOS without root — the API dies in
+  // AppDiagnosticsService with `EACCES: mkdir '/opt/spaceapp'` before /readyz
+  // can answer — and even where it is writable (Linux CI, where this went
+  // unnoticed for a dozen green runs) writing a contributor's run into a real
+  // install's data directory is simply the wrong directory.
+  //
+  // One root, derived once, is what closes the whole default set: a list of
+  // individual overrides drifts the moment someone adds another path to
+  // config.ts. Every entry below exists because config.ts falls back to
+  // /opt/spaceapp for it; the unit test named "overrides every installed-root
+  // default" fails if a new one appears without an entry here.
+  const installRoot = join(STATE_DIR, "install");
   return {
     // Real owner setup, not the dev-login shortcut.
     SPACE_DEV_LOGIN: "false",
@@ -378,7 +392,22 @@ export function buildServiceEnv(secrets, opencode) {
     SPACE_CODEX_HOME: join(STATE_DIR, "providers/codex"),
     SPACE_MEMORY_ROOT: join(STATE_DIR, "memory"),
     SPACE_MEMORY_GRAPH_ROOT: join(STATE_DIR, "memory-graph"),
-    SPACE_ARTIFACT_ROOT: join(STATE_DIR, "artifacts")
+    SPACE_ARTIFACT_ROOT: join(STATE_DIR, "artifacts"),
+    // Everything config.ts would otherwise root at /opt/spaceapp.
+    SPACE_INSTALL_ROOT: installRoot,
+    SPACE_APP_DIAGNOSTICS_ROOT: join(installRoot, "var/app-diagnostics"),
+    SPACE_MAINTENANCE_AUTOPILOT_STATE_FILE: join(installRoot, "var/maintenance-autopilot/state.json"),
+    SPACE_TELEGRAM_SECRET_ROOT: join(installRoot, "secrets/telegram"),
+    SPACE_STREAMING_SECRET_ROOT: join(installRoot, "var/streaming-secrets"),
+    SPACE_DEMO_PROJECTS_ROOT: join(installRoot, "demos"),
+    SPACE_PROJECTS_ROOT: join(installRoot, "projects"),
+    SPACE_DEMO_PROJECTS_VAR_ROOT: join(installRoot, "var/demo-projects"),
+    SPACE_CODEX_APP_SERVER_COMMAND: join(installRoot, "bin/codex-vscode-parity"),
+    SPACE_CLI_VPN_LAUNCHER: join(installRoot, "bin/space-cli-vpn-launcher")
+    // SPACE_AGENT_TOOLS_WRITER is deliberately absent: config.ts only falls
+    // back to /opt/spaceapp/bin/space-agent-tools-writer when that file
+    // exists, and yields null otherwise. Forcing it to a path that does not
+    // exist would turn a null into a spawn attempt.
   };
 }
 

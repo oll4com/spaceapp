@@ -655,3 +655,82 @@ test("ps rows survive a header, blank lines and a truncated listing", () => {
   assert.equal(psRowsShowLiveMember("", 410), false);
   assert.equal(psRowsShowLiveMember("  410   410  ", 410), false);
 });
+
+test("the Vite dev proxy follows the port the dev stack puts the API on", () => {
+  // The browser never reaches the API directly: it calls the Vite server, which
+  // proxies these five prefixes onward. The proxy used to name the installed
+  // default, 4910, whatever port dev:stack had chosen, so the printed URL served
+  // the shell and every request behind it failed while the API itself still
+  // looked healthy from outside. The rule is that the origin is derived from the
+  // same SPACE_API_HOST/SPACE_API_PORT pair the API service already receives,
+  // and that an install keeps 4910 when neither variable is set.
+  const config = readFileSync(join(repoRoot, "apps", "web", "vite.config.ts"), "utf8");
+
+  assert.match(config, /const apiHost = process\.env\.SPACE_API_HOST \?\? "127\.0\.0\.1";/);
+  assert.match(config, /const apiPort = Number\.parseInt\(process\.env\.SPACE_API_PORT \?\? "4910", 10\);/);
+  assert.match(config, /const apiOrigin = `http:\/\/\$\{apiHost\}:\$\{apiPort\}`;/);
+
+  const entries = [...config.matchAll(/"(\/(?:api|plugins|healthz|readyz|version))"\s*:\s*([A-Za-z_$][\w$]*)/g)];
+  assert.equal(entries.length, 5, "expected the five proxied prefixes");
+  assert.deepEqual(
+    entries.map(([, route]) => route).sort(),
+    ["/api", "/healthz", "/plugins", "/readyz", "/version"]
+  );
+  // One derived origin for all five. A single entry left on a literal port is
+  // the exact shape the bug had, so the values must be one shared identifier.
+  assert.deepEqual([...new Set(entries.map(([, , value]) => value))], ["apiOrigin"]);
+  assert.ok(
+    !/"http:\/\/127\.0\.0\.1:4910"/.test(config),
+    "no proxy entry may pin the installed API port once the API is free to move"
+  );
+});
+
+test("the from-source run overrides every path config.ts roots at the installed product", () => {
+  // The installed SpaceApp lives at /opt/spaceapp, and config.ts derives a
+  // dozen paths from it. A from-source run must inherit none of them. /opt is
+  // not writable on macOS without root and the API does not survive finding
+  // out: AppDiagnosticsService calls mkdir on its root during initialize, so
+  // one leaked default kills the process before /readyz can answer. Linux
+  // runners create /opt/spaceapp without complaint, which is why a dozen green
+  // runs said nothing about it — the macOS job is what surfaced it.
+  //
+  // The set is read out of config.ts rather than hand-listed, so adding a new
+  // /opt/spaceapp default without an override here fails this test instead of
+  // failing on a contributor's Mac.
+  const config = readFileSync(join(repoRoot, "apps", "api", "src", "config.ts"), "utf8");
+  const env = buildServiceEnv(
+    {
+      sessionSecret: "session",
+      databaseUrl: "postgres://dev-stack:dev-stack@127.0.0.1:55432/spaceapp",
+      setupToken: "token",
+      postgresPassword: "postgres"
+    },
+    { binDir: join(repoRoot, ".dev-stack", "bin") }
+  );
+
+  // `env.SPACE_X || "/opt/spaceapp..."` and `valid.SPACE_X ?? "/opt/spaceapp..."`.
+  const leaks = [
+    ...config.matchAll(/\b(?:env|valid)\.(SPACE_[A-Z0-9_]+)\s*(?:\|\||\?\?)\s*"(\/opt\/spaceapp[^"]*)"/g)
+  ];
+  assert.ok(leaks.length > 0, "expected config.ts to still root paths at /opt/spaceapp");
+
+  const names = [...new Set(leaks.map(([, name]) => name))].sort();
+  // SPACE_AGENT_TOOLS_WRITER is the one guarded default: config.ts yields null
+  // rather than the path when the file is absent, and null is what a
+  // from-source run wants. Forcing a path that does not exist would turn a
+  // clean null into a spawn attempt.
+  assert.deepEqual(
+    names.filter((name) => name !== "SPACE_AGENT_TOOLS_WRITER" && env[name] === undefined),
+    [],
+    "buildServiceEnv must override every installed-root default"
+  );
+
+  // And nothing it hands over may point into the installed product.
+  for (const [name, value] of Object.entries(env)) {
+    if (typeof value !== "string") continue;
+    assert.ok(
+      !value.startsWith("/opt/spaceapp") && !value.includes("/opt/spaceapp"),
+      `${name} points into the installed product: ${value}`
+    );
+  }
+});

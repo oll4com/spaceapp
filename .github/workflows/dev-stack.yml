@@ -14,6 +14,10 @@ on:
       - "scripts/tests/**"
       - "packages/run-spaceapp/templates/compose.yml"
       - "deploy/docker/**"
+      # The web dev server proxies to the API, and it has to follow the port the
+      # dev stack picked rather than the installed default. A change here can
+      # break the browser half of the stack on its own, so it belongs in the list.
+      - "apps/web/vite.config.ts"
       - ".github/workflows/dev-stack.yml"
   workflow_dispatch:
 
@@ -84,6 +88,59 @@ jobs:
           echo "readyz never reported ok"
           # The API is not necessarily the process that died: dev-stack stops the
           # whole stack as soon as any child exits, so every service log matters.
+          echo "--- dev-stack.out ---"; cat dev-stack.out || true
+          echo "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "--- $f ---"; tail -n 120 "$f" || true
+          done
+          exit 1
+
+      # /opt is the installed product's root, and it is not writable on macOS
+      # without root. The API used to die on exactly that: the default
+      # appDiagnosticsRoot is /opt/spaceapp/var/app-diagnostics, mkdir threw
+      # EACCES, and /readyz never answered — on macOS only, because a Linux
+      # runner creates /opt/spaceapp without complaint. Thirteen green Linux
+      # runs said nothing; the macOS job found it on its second attempt.
+      #
+      # The unit test pins the environment dev-stack hands over. This pins what
+      # the processes actually did with it, on both platforms, so a path that
+      # escapes the environment some other way cannot pass unremarked again.
+      - name: Check no service reached into the installed product's root
+        shell: bash
+        run: |
+          set -euo pipefail
+          hits=$(grep -rn "/opt/spaceapp" .dev-stack/logs/ || true)
+          if [ -n "$hits" ]; then
+            echo "a service used the installed product's root instead of the state directory:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "no service touched /opt/spaceapp; every path resolved inside .dev-stack"
+
+      # The browser never reaches the API directly. It calls the Vite server,
+      # which proxies /api, /healthz, /readyz and /version onward. That proxy
+      # used to name the installed default — 4910 — no matter which port the
+      # dev stack had actually chosen, so the URL printed at the end could serve
+      # the shell and still fail every request made from it. Asking the web port
+      # for /readyz is the cheapest proof that the two halves are wired together,
+      # and it is the half a screenshot of the API would not catch.
+      - name: Check the web server proxies to this stack's API
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "waiting for http://127.0.0.1:${WEB_PORT}/readyz (proxied to ${API_PORT})"
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:${WEB_PORT}/readyz" -o readyz-web.json 2>/dev/null; then
+              echo "readyz through Vite: $(cat readyz-web.json)"
+              if grep -q '"ok"[: ]*true' readyz-web.json; then
+                echo "The web server proxies to the dev-stack API on ${API_PORT}."
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          echo "the web server never proxied /readyz to the API on ${API_PORT}"
           echo "--- dev-stack.out ---"; cat dev-stack.out || true
           echo "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true
           for f in .dev-stack/logs/*.log; do
@@ -446,6 +503,51 @@ jobs:
             sleep 2
           done
           echo "readyz never reported ok"
+          echo "--- dev-stack.out ---"; cat dev-stack.out || true
+          echo "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "--- $f ---"; tail -n 120 "$f" || true
+          done
+          exit 1
+
+      # This is the step that would have caught the macOS-only failure the
+      # issue's platform requirement was written for. /opt is not writable
+      # without root here, so one default rooted at the installed product —
+      # appDiagnosticsRoot — took the API down before /readyz could answer,
+      # while the identical run passed on Linux because a Linux runner creates
+      # /opt/spaceapp without complaint.
+      - name: Check no service reached into the installed product's root (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          hits=$(grep -rn "/opt/spaceapp" .dev-stack/logs/ || true)
+          if [ -n "$hits" ]; then
+            echo "a service used the installed product's root instead of the state directory:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "no service touched /opt/spaceapp; every path resolved inside .dev-stack"
+
+      # Same proxy contract as the Linux job. macOS is where this step earns its
+      # keep twice over: it is the platform whose Docker path differs most, and
+      # the one whose transcript the issue asks for.
+      - name: Check the web server proxies to this stack's API (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "waiting for http://127.0.0.1:${WEB_PORT}/readyz (proxied to ${API_PORT})"
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:${WEB_PORT}/readyz" -o readyz-web.json 2>/dev/null; then
+              echo "readyz through Vite: $(cat readyz-web.json)"
+              if grep -q '"ok"[: ]*true' readyz-web.json; then
+                echo "The web server proxies to the dev-stack API on ${API_PORT}."
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          echo "the web server never proxied /readyz to the API on ${API_PORT}"
           echo "--- dev-stack.out ---"; cat dev-stack.out || true
           echo "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true
           for f in .dev-stack/logs/*.log; do
