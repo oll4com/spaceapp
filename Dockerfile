@@ -8,8 +8,70 @@ RUN apt-get update \
 COPY . .
 RUN npm ci --no-audit --no-fund \
     && npm run build \
+    && npm pkg delete dependencies -w @space/web -w @space/icons \
+    && npm pkg delete dependencies.react dependencies.react-dom \
     && npm prune --omit=dev \
-    && find node_modules -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
+    && rm -rf \
+      node_modules/typescript \
+      node_modules/@swc/core-linux-*-musl \
+      node_modules/@napi-rs/canvas-linux-*-musl \
+      node_modules/node-pty/prebuilds/win32-* \
+      node_modules/node-pty/prebuilds/darwin-* \
+      node_modules/node-pty/third_party \
+      node_modules/node-pty/deps \
+      node_modules/node-pty/src \
+      node_modules/@temporalio/core-bridge/sdk-core \
+      node_modules/@temporalio/core-bridge/releases/*windows* \
+      node_modules/@temporalio/core-bridge/releases/*darwin* \
+      apps/web/public \
+      apps/web/src \
+      apps/web/tests \
+      apps/web/node_modules \
+      apps/*/src \
+      apps/*/tests \
+      packages/*/src \
+      packages/*/tests \
+      packages/run-spaceapp \
+    && if [ "$(uname -m)" = "x86_64" ]; then \
+         rm -rf node_modules/@temporalio/core-bridge/releases/aarch64-unknown-linux-gnu; \
+       else \
+         rm -rf node_modules/@temporalio/core-bridge/releases/x86_64-unknown-linux-gnu; \
+       fi \
+    && find node_modules apps packages -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' -o -name '*.d.ts' -o -name '*.d.ts.map' -o -name '*.tsbuildinfo' \) -delete \
+    && install -d /stage/browser/apps/api /stage/browser/packages /stage/browser/node_modules \
+    && cp -a apps/api/package.json apps/api/dist /stage/browser/apps/api/ \
+    && cp -a node_modules/. /stage/browser/node_modules/ \
+    && rm -rf \
+      /stage/browser/node_modules/@space \
+      /stage/browser/node_modules/@temporalio \
+      /stage/browser/node_modules/@swc \
+      /stage/browser/node_modules/@napi-rs \
+      /stage/browser/node_modules/pdfjs-dist \
+      /stage/browser/node_modules/js-tiktoken \
+      /stage/browser/node_modules/webpack \
+      /stage/browser/node_modules/web-tree-sitter \
+      /stage/browser/node_modules/node-pty \
+      /stage/browser/node_modules/fastify \
+      /stage/browser/node_modules/@fastify \
+      /stage/browser/node_modules/@modelcontextprotocol \
+      /stage/browser/node_modules/@ai-sdk \
+      /stage/browser/node_modules/hono \
+      /stage/browser/node_modules/@xterm \
+      /stage/browser/node_modules/imapflow \
+      /stage/browser/node_modules/mammoth \
+      /stage/browser/node_modules/mysql2 \
+      /stage/browser/node_modules/jszip \
+    && install -d /stage/browser/node_modules/@space \
+    && cp -a packages/browser-host packages/contracts packages/db packages/runtime packages/memory-graph /stage/browser/packages/ \
+    && ln -s ../../packages/browser-host /stage/browser/node_modules/@space/browser-host \
+    && ln -s ../../packages/contracts /stage/browser/node_modules/@space/contracts \
+    && ln -s ../../packages/db /stage/browser/node_modules/@space/db \
+    && ln -s ../../packages/runtime /stage/browser/node_modules/@space/runtime \
+    && ln -s ../../packages/memory-graph /stage/browser/node_modules/@space/memory-graph \
+    && install -d /stage/cli/packages /stage/cli/node_modules/@space \
+    && cp -a packages/cli-host /stage/cli/packages/cli-host \
+    && ln -s ../../packages/cli-host /stage/cli/node_modules/@space/cli-host \
+    && cp -a node_modules/node-pty node_modules/node-addon-api /stage/cli/node_modules/
 
 FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS runtime-base
 ARG TARGETARCH
@@ -55,15 +117,7 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/spaceapp-cli --shell /bin/bash spaceapp
 WORKDIR /app
 COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.json ./
-COPY --from=build --chown=spaceapp:spaceapp /app/node_modules ./node_modules
-COPY --from=build --chown=spaceapp:spaceapp /app/apps ./apps
-COPY --from=build --chown=spaceapp:spaceapp /app/packages ./packages
-COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
 COPY --from=build --chown=spaceapp:spaceapp /app/LICENSE /app/NOTICE /app/THIRD_PARTY_NOTICES.md ./
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
 COPY --chown=spaceapp:spaceapp deploy/docker ./deploy/docker
 RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint.sh deploy/docker/cli-entrypoint.sh \
     && install -m 0755 deploy/docker/public-cli-wrapper.sh /usr/local/bin/spaceapp-cli-wrapper \
@@ -72,6 +126,14 @@ RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint
        done
 
 FROM runtime-base AS core
+COPY --from=build --chown=spaceapp:spaceapp /app/node_modules ./node_modules
+COPY --from=build --chown=spaceapp:spaceapp /app/apps ./apps
+COPY --from=build --chown=spaceapp:spaceapp /app/packages ./packages
+COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
 COPY --chown=spaceapp:spaceapp starter-memory /opt/spaceapp/starter-memory
 RUN install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
@@ -84,6 +146,9 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
 ENTRYPOINT ["/app/deploy/docker/core-entrypoint.sh"]
 
 FROM runtime-base AS browser
+COPY --from=build --chown=spaceapp:spaceapp /stage/browser/node_modules ./node_modules
+COPY --from=build --chown=spaceapp:spaceapp /stage/browser/apps ./apps
+COPY --from=build --chown=spaceapp:spaceapp /stage/browser/packages ./packages
 RUN apt-get update \
     && apt-get install -y --no-install-recommends chromium fonts-liberation liblzma5 \
     && rm -rf /var/lib/apt/lists/* \
@@ -96,6 +161,9 @@ ENV SPACE_BROWSER_CHROME_PATH=/usr/bin/chromium \
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
 FROM runtime-base AS cli
+COPY --from=build --chown=spaceapp:spaceapp /stage/cli/node_modules ./node_modules
+COPY --from=build --chown=spaceapp:spaceapp /stage/cli/packages ./packages
+COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
 COPY --chown=root:root starter-memory/AGENTS.md /etc/AGENTS.md
 COPY --chown=root:root starter-memory/installation-guide.md /etc/spaceapp-installation-guide.md
 RUN chmod 0644 /etc/AGENTS.md

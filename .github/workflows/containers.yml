@@ -71,3 +71,138 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke test container entrypoint
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          IMAGE: spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          PG_IMAGE: pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          net_name="spaceapp-smoke-${TARGET}-${ARCH}"
+          pg_name="spaceapp-smoke-pg-${TARGET}-${ARCH}"
+          app_name="spaceapp-smoke-app-${TARGET}-${ARCH}"
+          cleanup() {
+            docker rm -f "$app_name" "$pg_name" >/dev/null 2>&1 || true
+            docker network rm "$net_name" >/dev/null 2>&1 || true
+            rm -rf "$smoke_dir"
+          }
+          trap cleanup EXIT
+
+          case "$TARGET" in
+            core)
+              docker network create "$net_name" >/dev/null
+              docker run -d --name "$pg_name" --network "$net_name" --network-alias postgres \
+                -e POSTGRES_DB=spaceapp \
+                -e POSTGRES_USER=spaceapp \
+                -e POSTGRES_PASSWORD=spaceapp-smoke-pw \
+                "$PG_IMAGE" >/dev/null
+              for _ in $(seq 1 30); do
+                if docker exec "$pg_name" pg_isready -U spaceapp -d spaceapp >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 1
+              done
+              docker exec "$pg_name" pg_isready -U spaceapp -d spaceapp
+
+              printf 'postgres://spaceapp:spaceapp-smoke-pw@postgres:5432/spaceapp' > "$smoke_dir/database-url"
+              printf 'smoke-session-secret-0123456789abcdef0123456789abcdef' > "$smoke_dir/session-secret"
+              printf 'smoke-setup-token-0123456789abcdef0123456789abcdef' > "$smoke_dir/setup-token"
+              chmod 0644 "$smoke_dir/database-url" "$smoke_dir/session-secret" "$smoke_dir/setup-token"
+
+              docker run -d --name "$app_name" --platform "linux/${ARCH}" --network "$net_name" \
+                -e SPACE_PUBLIC_DISTRIBUTION=true \
+                -e SPACE_RUNTIME_STORE=postgres \
+                -e SPACEAPP_WORKFLOWS_ENABLED=false \
+                -e SPACE_CLI_ENABLED=false \
+                -e SPACE_BROWSER_SESSIONS_ENABLED=false \
+                -v "$smoke_dir/database-url:/run/secrets/database-url:ro" \
+                -v "$smoke_dir/session-secret:/run/secrets/session-secret:ro" \
+                -v "$smoke_dir/setup-token:/run/secrets/setup-token:ro" \
+                "$IMAGE" >/dev/null
+
+              ready=false
+              for _ in $(seq 1 90); do
+                if docker exec "$app_name" node -e "fetch('http://127.0.0.1:4911/readyz').then(async r=>{const b=await r.json();if(!r.ok||b.ok!==true)process.exit(1)}).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+                  ready=true
+                  break
+                fi
+                sleep 2
+              done
+              if [ "$ready" != "true" ]; then
+                docker logs "$app_name" >&2 || true
+                exit 1
+              fi
+              docker exec "$app_name" gosu spaceapp node --input-type=module -e "await import('./apps/worker/dist/activities.js'); await import('./scripts/reset-owner-password.mjs'); await import('./scripts/rotate-owner-setup-token.mjs'); await import('./scripts/portable-backup.mjs'); await import('./scripts/portable-restore.mjs');"
+              ;;
+
+            cli)
+              docker run -d --name "$app_name" --platform "linux/${ARCH}" \
+                -e SPACE_PUBLIC_DISTRIBUTION=true \
+                -e SPACE_CLI_HOST_SOCKET=/run/spaceapp-cli/host.sock \
+                "$IMAGE" >/dev/null
+
+              ready=false
+              for _ in $(seq 1 45); do
+                if timeout 15 docker exec "$app_name" gosu spaceapp node --input-type=module -e "import { CliHostClient } from './packages/cli-host/dist/index.js'; const c = new CliHostClient({ socketPath: '/run/spaceapp-cli/host.sock' }); const r = await c.ping(); await c.close(); if (!r?.ok) process.exit(1);" >/dev/null 2>&1; then
+                  ready=true
+                  break
+                fi
+                sleep 2
+              done
+              if [ "$ready" != "true" ]; then
+                docker logs "$app_name" >&2 || true
+                exit 1
+              fi
+              timeout 15 docker exec "$app_name" gosu spaceapp opencode --version
+              ;;
+
+            browser)
+              docker network create "$net_name" >/dev/null
+              docker run -d --name "$pg_name" --network "$net_name" --network-alias postgres \
+                -e POSTGRES_DB=spaceapp \
+                -e POSTGRES_USER=spaceapp \
+                -e POSTGRES_PASSWORD=spaceapp-smoke-pw \
+                "$PG_IMAGE" >/dev/null
+              for _ in $(seq 1 30); do
+                if docker exec "$pg_name" pg_isready -U spaceapp -d spaceapp >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 1
+              done
+              docker exec "$pg_name" pg_isready -U spaceapp -d spaceapp
+
+              printf 'postgres://spaceapp:spaceapp-smoke-pw@postgres:5432/spaceapp' > "$smoke_dir/database-url"
+              chmod 0644 "$smoke_dir/database-url"
+
+              docker run --rm --platform "linux/${ARCH}" --network "$net_name" \
+                -e SPACE_DATABASE_URL=postgres://spaceapp:spaceapp-smoke-pw@postgres:5432/spaceapp \
+                --entrypoint node \
+                "$IMAGE" packages/db/dist/migrate.js
+
+              docker run -d --name "$app_name" --platform "linux/${ARCH}" --network "$net_name" \
+                -e SPACE_PUBLIC_DISTRIBUTION=true \
+                -e SPACE_RUNTIME_STORE=postgres \
+                -e SPACE_BROWSER_SESSIONS_ENABLED=true \
+                -e SPACE_BROWSER_HOST_SOCKET=/run/spaceapp-browser/browser-host.sock \
+                -v "$smoke_dir/database-url:/run/secrets/database-url:ro" \
+                "$IMAGE" >/dev/null
+
+              ready=false
+              for _ in $(seq 1 45); do
+                if timeout 15 docker exec "$app_name" gosu spaceapp node --input-type=module -e "import { BrowserHostClient } from './packages/browser-host/dist/index.js'; const c = new BrowserHostClient({ socketPath: '/run/spaceapp-browser/browser-host.sock' }); const h = await c.health(); await c.close(); if (!h?.hostPid) process.exit(1);" >/dev/null 2>&1; then
+                  ready=true
+                  break
+                fi
+                sleep 2
+              done
+              if [ "$ready" != "true" ]; then
+                docker logs "$app_name" >&2 || true
+                exit 1
+              fi
+              timeout 30 docker exec "$app_name" gosu spaceapp sh -ec 'chromium --headless --no-sandbox --disable-gpu --disable-dev-shm-usage --dump-dom about:blank >/dev/null || chromium --headless --no-sandbox --no-zygote --single-process --disable-gpu --disable-dev-shm-usage --dump-dom about:blank >/dev/null'
+              ;;
+          esac

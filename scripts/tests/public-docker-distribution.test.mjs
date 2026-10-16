@@ -81,6 +81,32 @@ test("CLI image resolves the default room project /opt/spaceapp to the documente
   assert.match(agents, /cwd=\/etc/);
 });
 
+test("container targets stage only the runtime code and dependencies each service runs", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const runtimeStage =
+    dockerfile.match(/FROM [^\n]+ AS runtime-base([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const coreStage =
+    dockerfile.match(/FROM runtime-base AS core([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const browserStage =
+    dockerfile.match(/FROM runtime-base AS browser([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const cliStage =
+    dockerfile.match(/FROM runtime-base AS cli([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+
+  assert.doesNotMatch(runtimeStage, /COPY --from=build[^\n]*\/app\/(?:node_modules|apps|packages|agent-skills)/);
+  assert.match(coreStage, /COPY --from=build --chown=spaceapp:spaceapp \/app\/node_modules \.\/node_modules/);
+  assert.match(coreStage, /COPY --from=build --chown=spaceapp:spaceapp \/app\/apps \.\/apps/);
+  assert.match(coreStage, /COPY --from=build --chown=spaceapp:spaceapp \/app\/packages \.\/packages/);
+  assert.match(coreStage, /COPY --from=build --chown=spaceapp:spaceapp \/app\/agent-skills \.\/agent-skills/);
+  assert.match(browserStage, /COPY --from=build --chown=spaceapp:spaceapp \/stage\/browser\/node_modules \.\/node_modules/);
+  assert.match(browserStage, /COPY --from=build --chown=spaceapp:spaceapp \/stage\/browser\/apps \.\/apps/);
+  assert.match(browserStage, /COPY --from=build --chown=spaceapp:spaceapp \/stage\/browser\/packages \.\/packages/);
+  assert.doesNotMatch(browserStage, /agent-skills/);
+  assert.match(cliStage, /COPY --from=build --chown=spaceapp:spaceapp \/stage\/cli\/node_modules \.\/node_modules/);
+  assert.match(cliStage, /COPY --from=build --chown=spaceapp:spaceapp \/stage\/cli\/packages \.\/packages/);
+  assert.match(cliStage, /COPY --from=build --chown=spaceapp:spaceapp \/app\/agent-skills \.\/agent-skills/);
+  assert.doesNotMatch(cliStage, /\/app\/apps/);
+});
+
 test("runtime images patch fixable vulnerabilities in npm's bundled dependencies", async () => {
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
   const runtimeStage =

@@ -65,7 +65,7 @@ test("launcher-only source and workflow changes cannot trigger the container mat
   assert.doesNotMatch(trigger, /\.github\/workflows\/containers\.yml/);
 });
 
-test("container matrices load each image and enforce the public size budgets", async () => {
+test("container matrices load each image, enforce the public size budgets, and smoke test entrypoints", async () => {
   for (const name of ["containers.yml", "release.yml"]) {
     const content = await workflow(name);
 
@@ -74,6 +74,12 @@ test("container matrices load each image and enforce the public size budgets", a
     assert.match(content, /--target "\$\{\{ matrix\.target \}\}"/);
     assert.match(content, /--image "spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"/);
   }
+  const containers = await workflow("containers.yml");
+  assert.match(containers, /name: Smoke test container entrypoint/);
+  assert.match(containers, /http:\/\/127\.0\.0\.1:4911\/readyz/);
+  assert.match(containers, /CliHostClient/);
+  assert.match(containers, /BrowserHostClient/);
+  assert.match(containers, /chromium --headless/);
 });
 
 test("security workflow scans secrets, dependencies, source, images, and emits an SBOM", async () => {
