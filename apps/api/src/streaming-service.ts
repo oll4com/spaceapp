@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   streamingCatalogResponseSchema,
   streamingDisconnectAuthorizationResponseSchema,
@@ -641,7 +642,7 @@ export class StreamingService {
   async dispose(): Promise<void> {
     await this.options.repository.dispose();
     if (this.options.cleanupCredentialRootOnDispose) {
-      const allowedPrefix = `${tmpdir().replace(/\/$/, "")}/space-streaming-secrets-`;
+      const allowedPrefix = join(tmpdir(), "space-streaming-secrets-");
       if (!this.options.credentialStore.root.startsWith(allowedPrefix)) {
         throw new Error("Refusing to clean a non-temporary streaming credential root.");
       }

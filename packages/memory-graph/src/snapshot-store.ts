@@ -34,6 +34,13 @@ export function createMemoryGraphSnapshotStore(options: CreateMemoryGraphSnapsho
     }
     try {
       await directoryHandle.sync();
+    } catch (e) {
+      // Windows NTFS does not support fsync on directory handles, throwing EPERM, EINVAL, or EISDIR.
+      // On POSIX platforms where directory sync is supported, persistence errors are propagated.
+      if (process.platform === "win32" && ((e as NodeJS.ErrnoException).code === "EPERM" || (e as NodeJS.ErrnoException).code === "EINVAL" || (e as NodeJS.ErrnoException).code === "EISDIR")) {
+        return;
+      }
+      throw e;
     } finally {
       await directoryHandle.close();
     }

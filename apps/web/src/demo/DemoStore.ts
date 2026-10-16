@@ -54,6 +54,7 @@ import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-prese
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
 import { MockServices } from "./mock-services.js";
 import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
+import { generateSyntheticMemoryGraph, getSyntheticNodeDetail } from "./synthetic-memory.js";
 
 export const DEMO_WARNING = "DEMO MODE — Everything is simulated locally. No production service is connected.";
 export { DEMO_LOCAL_REPLY } from "../runtime/SpaceRuntime.js";
@@ -1469,7 +1470,13 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
+        const query = (args[0] ?? {}) as DemoMemoryGraphQuery & { limit?: number; syntheticSize?: number };
+        const requestedLimit = query.syntheticSize ?? query.limit;
+        if (requestedLimit && requestedLimit > 7) {
+          const synth = generateSyntheticMemoryGraph(requestedLimit);
+          return Promise.resolve({ data: { ...synth, totalMatchingNodes: synth.nodes.length, totalMatchingEdges: synth.edges.length, truncated: false } });
+        }
+        const graph = this.memoryGraph(query);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
       case "memoryCalendar": {
@@ -1547,7 +1554,7 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
-        const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
+        const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""] ?? (roomId ? getSyntheticNodeDetail(roomId) : null);
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));
       }

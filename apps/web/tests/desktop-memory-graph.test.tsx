@@ -128,7 +128,7 @@ describe("DesktopMemoryGraph", () => {
     expect(screen.getByRole("status").textContent).toContain("Loading memory map");
     expect(screen.getByLabelText("Memory map legend").textContent).toContain("Explicit tag");
     expect(screen.getByLabelText("Memory map legend").textContent).toContain("Derived topic");
-    expect(screen.getByText(/0 explicit tags · 0 derived topics · 0 semantic links/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`${(0).toLocaleString()} explicit tags · ${(0).toLocaleString()} derived topics · ${(0).toLocaleString()} semantic links`))).toBeTruthy();
 
     rerender(<DesktopMemoryGraph {...common} error="Memory map request failed." />);
     expect(screen.getByRole("alert").textContent).toContain("Memory map request failed.");
@@ -137,7 +137,7 @@ describe("DesktopMemoryGraph", () => {
     expect(screen.getByText("No memories found. Try another search.")).toBeTruthy();
 
     rerender(<DesktopMemoryGraph {...common} truncated totalNodes={2_400} totalEdges={7_500} />);
-    expect(screen.getByText(/Exploring/).textContent).toContain("2,400 archive nodes");
+    expect(screen.getByText(/Exploring/).textContent).toContain(`${(2_400).toLocaleString()} archive nodes`);
   });
 
   it("keeps one Sigma renderer through repeated graph, display-mode, and relation-mode changes", () => {

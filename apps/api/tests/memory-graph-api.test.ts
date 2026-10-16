@@ -434,6 +434,54 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  it("supports limit parameter on overview endpoint up to 50k nodes with proportional edges", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 3500 }, (_, index) => ({
+      id: `memory:${String(index).padStart(4, "0")}`,
+      type: "MEMORY" as const,
+      label: `Memory ${index}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    graphSnapshot.edges = Array.from({ length: 7000 }, (_, index) => ({
+      id: `edge:${String(index).padStart(8, "0")}`,
+      source: `memory:${String(index % 3500).padStart(4, "0")}`,
+      target: `memory:${String((index + 1) % 3500).padStart(4, "0")}`,
+      type: "CONTAINS" as const
+    }));
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    // Without limit param, defaults to 2000 nodes
+    const defaultRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    expect(defaultRes.statusCode).toBe(200);
+    const defaultData = defaultRes.json().data;
+    expect(defaultData.nodes).toHaveLength(2000);
+    expect(defaultData.edges).toHaveLength(3998);
+    expect(defaultData.truncated).toBe(true);
+
+    // With limit=3000, returns 3000 nodes and all edges between them (5998)
+    const customRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=3000", headers: { cookie } });
+    expect(customRes.statusCode).toBe(200);
+    const customData = customRes.json().data;
+    expect(customData.nodes).toHaveLength(3000);
+    expect(customData.edges).toHaveLength(5998);
+    expect(customData.truncated).toBe(true);
+
+    // With limit=5000 (exceeding 3500 total), returns all 3500 nodes and all matching edges without truncation
+    const fullRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=5000", headers: { cookie } });
+    expect(fullRes.statusCode).toBe(200);
+    const fullData = fullRes.json().data;
+    expect(fullData.nodes).toHaveLength(3500);
+    expect(fullData.edges).toHaveLength(7000);
+    expect(fullData.truncated).toBe(false);
+
+    // Route requires admin/operator auth
+    const anonRes = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=5000" });
+    expect(anonRes.statusCode).toBe(401);
+
+    await app.close();
+  });
+
   it("serves the all-months archive and single-month filtering through the month query param", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     const archiveSnapshot = snapshot() as MemoryGraphSnapshot;
