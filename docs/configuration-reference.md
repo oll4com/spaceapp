@@ -52,3 +52,14 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## OTLP trace export (`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT`)
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is read by the API (`space-api`) and by all
+three Temporal worker processes (`space-worker`, `space-memory-maintenance-worker`,
+`space-memory-mutation-worker`). It is unset by default (no spans are exported).
+When set to a plain `http://` or `https://` collector base URL without credentials,
+query parameters or fragments (for example `http://127.0.0.1:4318`), each process
+batches OTLP/HTTP JSON spans to `<endpoint>/v1/traces` with a bounded queue, per-POST
+timeout and allowlisted identifier/status/duration attributes. See
+[observability.md](quality/observability.md#traces-w3c-trace-context).

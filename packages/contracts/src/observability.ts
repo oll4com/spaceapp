@@ -201,3 +201,135 @@ export const traceLookupResponseSchema = z.object({
   logQueries: z.object({ api: z.string(), worker: z.string() })
 });
 export type TraceLookupResponse = z.infer<typeof traceLookupResponseSchema>;
+
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+  attributes?: Readonly<Record<string, string | number>>;
+}
+
+function fnv1a32(input: string, seed: number): number {
+  let hash = seed >>> 0;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b) >>> 0;
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35) >>> 0;
+  hash ^= hash >>> 16;
+  return hash >>> 0;
+}
+
+function hex32(value: number): string {
+  return (value >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * Replay-safe 16-hex W3C span id derived from an identifier seed without
+ * touching Node crypto or workflow PRNG state.
+ */
+export function deterministicSpanId(seed: string): string {
+  const high = fnv1a32(`span:hi:${seed}`, 0x811c9dc5);
+  const low = fnv1a32(`span:lo:${seed}`, 0x9e3779b9);
+  const value = `${hex32(high)}${hex32(low)}`;
+  return /^0+$/.test(value) ? "0000000000000001" : value;
+}
+
+/**
+ * Replay-safe 32-hex W3C trace id derived from an identifier seed when no
+ * inbound W3C traceparent was supplied.
+ */
+export function deterministicTraceId(seed: string): string {
+  const p0 = fnv1a32(`trace:0:${seed}`, 0x811c9dc5);
+  const p1 = fnv1a32(`trace:1:${seed}`, 0x9e3779b9);
+  const p2 = fnv1a32(`trace:2:${seed}`, 0x7f4a7c15);
+  const p3 = fnv1a32(`trace:3:${seed}`, 0x6c62272e);
+  const value = `${hex32(p0)}${hex32(p1)}${hex32(p2)}${hex32(p3)}`;
+  return /^0+$/.test(value) ? "00000000000000000000000000000001" : value;
+}
+
+/** Deterministic span id for a specific Temporal workflow execution run. */
+export function workflowExecutionSpanId(workflowId: string, runId: string): string {
+  return deterministicSpanId(`workflow:${workflowId}:${runId}`);
+}
+
+/**
+ * Explicit allowlist of OTLP span attribute keys across API, workflow and
+ * activity spans. Prompts, model output, file paths, URLs, error messages and
+ * free-form user text are never allowed.
+ */
+export const ALLOWED_SPAN_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set([
+  "http.request.method",
+  "http.route",
+  "http.response.status_code",
+  "space.request_id",
+  "space.trace_id",
+  "space.parent_trace_id",
+  "space.workflow_id",
+  "space.workflow_type",
+  "space.run_id",
+  "space.continued_from_run_id",
+  "space.parent_workflow_id",
+  "space.parent_run_id",
+  "space.activity_type",
+  "space.activity_id",
+  "space.attempt",
+  "space.status",
+  "space.outcome",
+  "space.reason_code",
+  "space.error_code",
+  "space.category",
+  "space.error_category",
+  "space.duration_ms",
+  "space.queue_ms",
+  "space.room_id",
+  "space.pane_id",
+  "space.mission_id",
+  "space.agent_run_id",
+  "space.agent_session_id",
+  "space.action_id",
+  "space.goal_id",
+  "space.dot_id",
+  "space.turn_id",
+  "space.cli_task_id",
+  "space.revision_id",
+  "space.change_set_id",
+  "space.continuation_generation",
+  "space.source_run_id",
+  "space.link_kind",
+  "space.task_queue"
+]);
+
+const spanIdentifierValuePattern = /^[A-Za-z0-9:._-]{1,240}$/;
+const spanRouteTemplatePattern = /^(?:\/|\/(?:api|auth|ws|healthz|readyz|metrics)(?:\/[A-Za-z0-9:._*-]+)*)$/;
+const spanHttpMethodPattern = /^[A-Z]{3,10}$/;
+const secretTokenPrefixPattern = /^(?:sk-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_]+|Bearer\b)/i;
+
+/** True when both the attribute key and value satisfy the OTLP allowlist. */
+export function isSafeSpanAttributeValue(key: string, value: unknown): value is string | number {
+  if (!ALLOWED_SPAN_ATTRIBUTE_KEYS.has(key)) return false;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "string") return false;
+  if (secretTokenPrefixPattern.test(value)) return false;
+  if (key === "http.route") {
+    return value === "unmatched" || (spanRouteTemplatePattern.test(value) && !value.includes(".."));
+  }
+  if (key === "http.request.method") {
+    return spanHttpMethodPattern.test(value);
+  }
+  return spanIdentifierValuePattern.test(value);
+}
+
+/** Filters an attribute bag down to allowlisted keys and identifier/numeric values. */
+export function sanitizeSpanAttributes(attributes: Readonly<Record<string, unknown>>): Record<string, string | number> {
+  const sanitized: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(attributes)) {
+    if (isSafeSpanAttributeValue(key, value)) {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
+}
+

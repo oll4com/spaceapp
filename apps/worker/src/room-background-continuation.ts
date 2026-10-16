@@ -1,6 +1,10 @@
 import {
   buildCodexAppServerTurnWorkflowId,
   buildRoomAgentSupervisorWorkflowId,
+  deterministicSpanId,
+  deterministicTraceId,
+  formatTraceparent,
+  parseTraceparent,
   roomAgentSupervisorQueueItemSchema,
   spaceAgentRoomActionRequestSchema,
   type RoomAgentActionRecord,
@@ -122,15 +126,27 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  const nextTraceId = `trace:bg-${input.continuationId}`;
+  const parsedSourceTraceparent = parseTraceparent(source.queueItem.turn.traceparent);
+  const sourceTraceparent = parsedSourceTraceparent
+    ? formatTraceparent(parsedSourceTraceparent.traceId, deterministicSpanId(source.run.runId), parsedSourceTraceparent.flags)
+    : formatTraceparent(deterministicTraceId(source.queueItem.turn.traceId), deterministicSpanId(source.run.runId));
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
-    roomAgentContinuation: { sourceRunId: source.run.runId, generation },
+    roomAgentContinuation: {
+      sourceRunId: source.run.runId,
+      generation,
+      sourceTraceId: source.queueItem.turn.traceId,
+      sourceTraceparent
+    },
     artifactIds: [], agentRunId: runId,
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,
     // Resolve the current native thread from the durable session when executing.
-    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`
+    agentThreadId: null,
+    traceId: nextTraceId,
+    traceparent: formatTraceparent(deterministicTraceId(nextTraceId), deterministicSpanId(`bg:${input.continuationId}`))
   } });
   try {
     const enqueued = await store.enqueueRoomAgentMission({

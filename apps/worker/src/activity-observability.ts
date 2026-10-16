@@ -4,21 +4,27 @@ import type { Context } from "@temporalio/activity";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import {
   categorizeFailureCode,
+  deterministicSpanId,
+  deterministicTraceId,
   formatTraceparent,
   isSafeErrorCode,
   parseTraceparent,
+  sanitizeSpanAttributes,
   traceIdFromTraceparent,
-  type FailureCategory
+  workflowExecutionSpanId,
+  type FailureCategory,
+  type SpanLink
 } from "@space/contracts";
 import type { SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
+import { defaultWorkflowTraceRegistry, type WorkflowTraceRegistry } from "./worker-observability.js";
 
 /**
- * One structured start/finish record and metrics per activity execution, with
- * the correlation ids the API put into the workflow input. Runs in the worker
- * process (activity interceptor), never inside the deterministic workflow
- * sandbox, so it cannot affect replay.
+ * One structured start/finish record, metrics and optional OTLP activity span
+ * per activity execution, with the correlation ids the API put into the
+ * workflow input. Runs in the worker process (activity interceptor), never
+ * inside the deterministic workflow sandbox, so it cannot affect replay.
  */
 
 type ActivityInfo = Pick<
@@ -30,6 +36,7 @@ export type ActivityOutcome = "COMPLETED" | "FAILED_RESULT" | "FAILED" | "CANCEL
 
 interface ActivityObservation {
   reasonCode: string | null;
+  spanId: string | null;
 }
 
 const observations = new AsyncLocalStorage<ActivityObservation>();
@@ -51,7 +58,7 @@ export function noteActivityFailureReason(reasonCode: string): void {
 export function failureReasonScope<T>(execute: () => Promise<T>): { promise: Promise<T>; reasonCode: () => string | null } {
   const existing = observations.getStore();
   if (existing) return { promise: execute(), reasonCode: () => existing.reasonCode };
-  const observation: ActivityObservation = { reasonCode: null };
+  const observation: ActivityObservation = { reasonCode: null, spanId: null };
   return { promise: observations.run(observation, execute), reasonCode: () => observation.reasonCode };
 }
 
@@ -60,7 +67,7 @@ export function childTraceparent(traceparent: string | null | undefined): string
   const parsed = parseTraceparent(traceparent);
   if (!parsed) return null;
   let spanId = randomBytes(8).toString("hex");
-  while (/^0+$/.test(spanId)) spanId = randomBytes(8).toString("hex");
+  while (/^0+$/.test(spanId) || spanId === parsed.parentId) spanId = randomBytes(8).toString("hex");
   return formatTraceparent(parsed.traceId, spanId, parsed.flags);
 }
 
@@ -80,13 +87,27 @@ const correlationKeys = [
   "dotId",
   "turnId",
   "cliTaskId",
-  "revisionId"
+  "revisionId",
+  "changeSetId"
 ] as const;
 const nestedKeys = ["turn", "item", "bridge", "input", "turnInput"] as const;
 
 type CorrelationKey = (typeof correlationKeys)[number];
 
-function readCorrelation(value: unknown, into: Partial<Record<CorrelationKey, string>>, depth: number): void {
+interface ExtraTraceDetails {
+  traceparent?: string;
+  continuationSourceRunId?: string;
+  continuationGeneration?: number;
+  continuationSourceTraceId?: string;
+  continuationSourceTraceparent?: string;
+}
+
+function readCorrelation(
+  value: unknown,
+  into: Partial<Record<CorrelationKey, string>>,
+  extra: ExtraTraceDetails,
+  depth: number
+): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const record = value as Record<string, unknown>;
   for (const key of correlationKeys) {
@@ -94,14 +115,31 @@ function readCorrelation(value: unknown, into: Partial<Record<CorrelationKey, st
     const identifier = logIdentifier(record[key]);
     if (identifier !== null) into[key] = identifier;
   }
+  if (!extra.traceparent && into.traceparent) {
+    extra.traceparent = into.traceparent;
+  }
+  const continuation = record.roomAgentContinuation;
+  if (continuation && typeof continuation === "object" && !Array.isArray(continuation)) {
+    const cont = continuation as Record<string, unknown>;
+    const sourceRunId = logIdentifier(cont.sourceRunId);
+    if (sourceRunId && !extra.continuationSourceRunId) extra.continuationSourceRunId = sourceRunId;
+    if (typeof cont.generation === "number" && Number.isInteger(cont.generation) && cont.generation > 0) {
+      extra.continuationGeneration = cont.generation;
+    }
+    const sourceTraceId = logIdentifier(cont.sourceTraceId);
+    if (sourceTraceId && !extra.continuationSourceTraceId) extra.continuationSourceTraceId = sourceTraceId;
+    const sourceTraceparent = logIdentifier(cont.sourceTraceparent);
+    if (sourceTraceparent && !extra.continuationSourceTraceparent) extra.continuationSourceTraceparent = sourceTraceparent;
+  }
   if (depth <= 0) return;
-  for (const key of nestedKeys) readCorrelation(record[key], into, depth - 1);
+  for (const key of nestedKeys) readCorrelation(record[key], into, extra, depth - 1);
 }
 
 /** Allowlisted correlation fields from activity arguments (identifiers only). */
 export function activityCorrelation(args: readonly unknown[]): Record<string, string> {
   const found: Partial<Record<CorrelationKey, string>> = {};
-  for (const arg of args) readCorrelation(arg, found, 2);
+  const extra: ExtraTraceDetails = {};
+  for (const arg of args) readCorrelation(arg, found, extra, 2);
   const correlation: Record<string, string> = {};
   if (found.traceId) correlation.traceId = found.traceId;
   const w3cTraceId = traceIdFromTraceparent(found.traceparent);
@@ -109,10 +147,20 @@ export function activityCorrelation(args: readonly unknown[]): Record<string, st
   if (found.requestId && found.requestId !== found.traceId) correlation.parentTraceId = found.requestId;
   const missionId = found.missionId ?? found.roomAgentMissionId;
   if (missionId) correlation.missionId = missionId;
-  for (const key of ["roomId", "paneId", "agentRunId", "agentSessionId", "actionId", "goalId", "dotId", "turnId", "cliTaskId", "revisionId"] as const) {
+  for (const key of ["roomId", "paneId", "agentRunId", "agentSessionId", "actionId", "goalId", "dotId", "turnId", "cliTaskId", "revisionId", "changeSetId"] as const) {
     if (found[key]) correlation[key] = found[key]!;
   }
   return correlation;
+}
+
+function extractActivityTraceDetails(args: readonly unknown[]): {
+  correlation: Record<string, string>;
+  extra: ExtraTraceDetails;
+} {
+  const found: Partial<Record<CorrelationKey, string>> = {};
+  const extra: ExtraTraceDetails = {};
+  for (const arg of args) readCorrelation(arg, found, extra, 2);
+  return { correlation: activityCorrelation(args), extra };
 }
 
 function errorCodeOf(error: unknown): string {
@@ -131,18 +179,31 @@ function isFailedResult(value: unknown): boolean {
   return Boolean(value && typeof value === "object" && (value as { status?: unknown }).status === "FAILED");
 }
 
+const correlationAttributeKeyMap: Readonly<Record<string, string>> = {
+  traceId: "space.trace_id",
+  parentTraceId: "space.parent_trace_id",
+  roomId: "space.room_id",
+  paneId: "space.pane_id",
+  missionId: "space.mission_id",
+  agentRunId: "space.agent_run_id",
+  agentSessionId: "space.agent_session_id",
+  actionId: "space.action_id",
+  goalId: "space.goal_id",
+  dotId: "space.dot_id",
+  turnId: "space.turn_id",
+  cliTaskId: "space.cli_task_id",
+  revisionId: "space.revision_id",
+  changeSetId: "space.change_set_id"
+};
+
 export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
+  spanExporter?: SpanExporter | null;
+  traceRegistry?: WorkflowTraceRegistry;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
-}
-
-function activityTraceparent(args: readonly unknown[]) {
-  const found: Partial<Record<CorrelationKey, string>> = {};
-  for (const arg of args) readCorrelation(arg, found, 2);
-  return parseTraceparent(found.traceparent);
 }
 
 export async function observeActivityExecution<T>(
@@ -153,26 +214,51 @@ export async function observeActivityExecution<T>(
 ): Promise<T> {
   const metrics = dependencies.metrics ?? workerMetrics;
   const now = dependencies.now ?? Date.now;
+  const spanExporter = dependencies.spanExporter ?? null;
+  const traceRegistry = dependencies.traceRegistry ?? defaultWorkflowTraceRegistry;
   const activityType = logIdentifier(info.activityType) ?? "unknown";
   const startedAt = now();
   const queueMs = Number.isFinite(info.currentAttemptScheduledTimestampMs)
     ? Math.max(0, startedAt - info.currentAttemptScheduledTimestampMs)
     : null;
+  const { correlation, extra } = extractActivityTraceDetails(args);
+  const workflowId = info.workflowExecution?.workflowId ?? null;
+  const temporalRunId = info.workflowExecution?.runId ?? null;
+  const workflowTrace = workflowId && temporalRunId
+    ? traceRegistry.getByExecution(workflowId, temporalRunId)
+    : null;
+
+  const w3cTraceId = correlation.w3cTraceId
+    ?? workflowTrace?.w3cTraceId
+    ?? (correlation.traceId
+      ? traceRegistry.getBySpaceTraceId(correlation.traceId)?.w3cTraceId ?? null
+      : null);
+
+  const effectiveCorrelation: Record<string, string> = {
+    ...correlation,
+    ...(w3cTraceId && !correlation.w3cTraceId ? { w3cTraceId } : {}),
+    ...(!correlation.traceId && workflowTrace?.spaceTraceId ? { traceId: workflowTrace.spaceTraceId } : {})
+  };
+
   const base: Record<string, WorkerLogValue> = {
     activityType,
     activityId: info.activityId,
     workflowType: info.workflowType ?? null,
-    workflowId: info.workflowExecution?.workflowId ?? null,
-    temporalRunId: info.workflowExecution?.runId ?? null,
+    workflowId,
+    temporalRunId,
     attempt: info.attempt,
-    ...activityCorrelation(args)
+    ...effectiveCorrelation
   };
   const labels = { activity_type: activityType };
   if (info.attempt > 1) metrics.activityRetries.inc(labels);
   if (queueMs !== null) metrics.activityScheduleToStart.observe(labels, queueMs / 1000);
   metrics.activitiesInFlight.inc(labels);
   workerLog("info", "activity.started", { ...base, queueMs });
-  const observation: ActivityObservation = { reasonCode: null };
+
+  const activitySpanId = deterministicSpanId(
+    `activity:${workflowId ?? "none"}:${temporalRunId ?? "none"}:${info.activityId}:${info.attempt}`
+  );
+  const observation: ActivityObservation = { reasonCode: null, spanId: activitySpanId };
 
   const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => {
     const durationMs = Math.max(0, now() - startedAt);
@@ -194,19 +280,92 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
-        traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
-        parentSpanId: parent.parentId,
-        name: `activity ${activityType}`,
-        startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
-        endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
-        error: outcome === "FAILED" || outcome === "FAILED_RESULT",
-        kind: 1
-      });
+
+    if (spanExporter) {
+      const spanTraceId = w3cTraceId
+        ?? (effectiveCorrelation.traceId ? deterministicTraceId(effectiveCorrelation.traceId) : null)
+        ?? (workflowId ? deterministicTraceId(workflowId) : null);
+      if (spanTraceId) {
+        const parentSpanId = workflowId && temporalRunId
+          ? workflowExecutionSpanId(workflowId, temporalRunId)
+          : (parseTraceparent(extra.traceparent)?.parentId ?? null);
+        const startNs = BigInt(Math.round(startedAt * 1_000_000));
+        const endNs = startNs + BigInt(Math.max(0, Math.round(durationMs * 1_000_000)));
+        const mappedCorrelation: Record<string, string | number> = {};
+        for (const [key, value] of Object.entries(effectiveCorrelation)) {
+          const targetKey = correlationAttributeKeyMap[key];
+          if (targetKey) mappedCorrelation[targetKey] = value;
+        }
+        if (effectiveCorrelation.traceId) {
+          mappedCorrelation["space.request_id"] = effectiveCorrelation.traceId;
+        }
+        const links: SpanLink[] = [];
+        if (extra.continuationSourceRunId) {
+          const sourceEntry = traceRegistry.getByAgentRunId(extra.continuationSourceRunId)
+            ?? traceRegistry.getBySpaceTraceId(extra.continuationSourceTraceId);
+          const parsedSource = parseTraceparent(extra.continuationSourceTraceparent);
+          const linkTraceId = sourceEntry?.w3cTraceId
+            ?? parsedSource?.traceId
+            ?? deterministicTraceId(extra.continuationSourceTraceId ?? extra.continuationSourceRunId);
+          const linkSpanId = sourceEntry?.spanId ?? parsedSource?.parentId ?? deterministicSpanId(extra.continuationSourceRunId);
+          links.push({
+            traceId: linkTraceId,
+            spanId: linkSpanId,
+            attributes: sanitizeSpanAttributes({
+              "space.link_kind": "background_continuation",
+              "space.source_run_id": extra.continuationSourceRunId,
+              ...(extra.continuationGeneration !== undefined ? { "space.continuation_generation": extra.continuationGeneration } : {}),
+              ...(extra.continuationSourceTraceId ? { "space.parent_trace_id": extra.continuationSourceTraceId } : {})
+            })
+          });
+        }
+        spanExporter.record({
+          traceId: spanTraceId,
+          spanId: activitySpanId,
+          parentSpanId,
+          name: activityType,
+          kind: 1,
+          startTimeUnixNano: startNs,
+          endTimeUnixNano: endNs,
+          attributes: sanitizeSpanAttributes({
+            ...(workflowTrace?.attributes ?? {}),
+            ...mappedCorrelation,
+            "space.activity_type": activityType,
+            "space.activity_id": info.activityId,
+            "space.attempt": info.attempt,
+            "space.outcome": outcome,
+            "space.status": outcome,
+            "space.duration_ms": durationMs,
+            ...(queueMs !== null ? { "space.queue_ms": queueMs } : {}),
+            ...(info.workflowType ? { "space.workflow_type": info.workflowType } : {}),
+            ...(workflowId ? { "space.workflow_id": workflowId } : {}),
+            ...(temporalRunId ? { "space.run_id": temporalRunId } : {}),
+            ...(reasonCode ? { "space.reason_code": reasonCode, "space.error_code": reasonCode } : {}),
+            ...(category ? { "space.category": category, "space.error_category": category } : {})
+          }),
+          ...(links.length ? { links } : {}),
+          error: outcome !== "COMPLETED"
+        });
+      }
+    } else if (dependencies.spans) {
+      const parent = parseTraceparent(extra.traceparent);
+      if (parent) {
+        dependencies.spans.record({
+          traceId: parent.traceId,
+          spanId: activitySpanId,
+          parentSpanId: parent.parentId,
+          name: `activity ${activityType}`,
+          startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
+          endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
+          attributes: sanitizeSpanAttributes({
+            "space.activity_type": activityType,
+            "space.outcome": outcome,
+            "space.attempt": info.attempt
+          }),
+          error: outcome === "FAILED" || outcome === "FAILED_RESULT",
+          kind: 1
+        });
+      }
     }
   };
 
