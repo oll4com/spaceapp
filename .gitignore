@@ -71,3 +71,7 @@ _disp.json
 _perm.json
 _log.txt
 pr-number.txt
+
+# Scratch JSON/log dumps from debugging CI runs (never repo content)
+_*.json
+_*.txt
