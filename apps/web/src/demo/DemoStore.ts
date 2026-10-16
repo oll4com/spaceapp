@@ -21,8 +21,11 @@ import type {
   CreateUserLinkRequest,
   MemoryChangeSet,
   MemoryChangeSetSummary,
+  MemoryGraphEdge,
   MemoryGraphNode,
+  MemoryGraphNodeDetail,
   MemoryGraphPayload,
+  MemoryGraphSummary,
   Pane,
   Room,
   RoomAgentSession,
@@ -145,7 +148,184 @@ type DemoMemoryGraphQuery = {
   relationMode?: "CLUSTERED" | "RELATIONS";
   page?: number;
   pageSize?: number;
+  limit?: number;
+  syntheticSize?: number;
 };
+
+const SYNTHETIC_TOPICS = [
+  "architecture",
+  "temporal",
+  "webgl",
+  "security",
+  "gateway",
+  "agents",
+  "memory",
+  "runtime"
+] as const;
+
+const SYNTHETIC_MONTHS = ["2026-06", "2026-07", "2026-08", "2026-09", "2026-10"] as const;
+
+export function generateSyntheticMemoryGraph(
+  requestedNodes: number,
+  requestedEdges = requestedNodes * 3
+): {
+  nodes: MemoryGraphNode[];
+  edges: MemoryGraphEdge[];
+  summary: MemoryGraphSummary;
+  months: string[];
+} {
+  const totalNodes = Math.max(10, Math.min(50000, Math.floor(requestedNodes)));
+  const targetEdges = Math.max(0, Math.min(150000, Math.floor(requestedEdges)));
+  const fileCount = Math.min(25, Math.max(2, Math.ceil(totalNodes / 2000)));
+  const topicCount = Math.min(SYNTHETIC_TOPICS.length, Math.max(2, Math.floor(totalNodes / 8)));
+  const nodes: MemoryGraphNode[] = new Array(totalNodes);
+  let nodeCursor = 0;
+
+  const rootPath = "/demo/memory/space.md";
+  nodes[nodeCursor++] = {
+    id: "source:synthetic-root",
+    type: "SOURCE",
+    label: "space.md",
+    sourcePath: rootPath,
+    recordId: null,
+    position: { clustered: { x: 0, y: 0 }, relations: { x: 0, y: 0 } }
+  };
+
+  const sourceIds: string[] = [];
+  const sourcePaths: string[] = [];
+  for (let s = 0; s < fileCount && nodeCursor < totalNodes; s++) {
+    const month = SYNTHETIC_MONTHS[s % SYNTHETIC_MONTHS.length]!;
+    const suffix = String(s + 1).padStart(2, "0");
+    const id = `source:synthetic-${suffix}`;
+    const path = `/demo/memory/space_memory_${month}_${suffix}.md`;
+    sourceIds.push(id);
+    sourcePaths.push(path);
+    nodes[nodeCursor++] = {
+      id,
+      type: "SOURCE",
+      label: `space_memory_${month}_${suffix}.md`,
+      sourcePath: path,
+      recordId: null,
+      position: {
+        clustered: { x: ((s % 5) - 2) * 32, y: (Math.floor(s / 5) - 2) * 32 },
+        relations: { x: ((s % 5) - 2) * 28, y: (Math.floor(s / 5) - 2) * 28 }
+      }
+    };
+  }
+
+  const topicIds: string[] = [];
+  for (let t = 0; t < topicCount && nodeCursor < totalNodes; t++) {
+    const label = SYNTHETIC_TOPICS[t]!;
+    const id = `topic:synthetic-${label}`;
+    topicIds.push(id);
+    nodes[nodeCursor++] = {
+      id,
+      type: "TOPIC",
+      label,
+      sourcePath: null,
+      recordId: null,
+      position: {
+        clustered: { x: Math.cos((t / topicCount) * Math.PI * 2) * 48, y: Math.sin((t / topicCount) * Math.PI * 2) * 48 },
+        relations: { x: Math.cos((t / topicCount) * Math.PI * 2) * 40, y: Math.sin((t / topicCount) * Math.PI * 2) * 40 }
+      }
+    };
+  }
+
+  const memoryStart = nodeCursor;
+  const memoryCount = totalNodes - memoryStart;
+  for (let m = 0; m < memoryCount; m++) {
+    const id = `memory:synthetic-${String(m).padStart(5, "0")}`;
+    const fileIdx = m % sourcePaths.length;
+    nodes[nodeCursor++] = {
+      id,
+      type: "MEMORY",
+      label: `Synthetic memory #${m + 1} (${SYNTHETIC_TOPICS[m % topicIds.length]})`,
+      sourcePath: sourcePaths[fileIdx]!,
+      recordId: id,
+      position: {
+        clustered: { x: (m % 200) - 100, y: Math.floor(m / 200) - 125 },
+        relations: { x: (m % 250) - 125, y: Math.floor(m / 250) - 100 }
+      }
+    };
+  }
+
+  const edges: MemoryGraphEdge[] = [];
+  for (let s = 0; s < sourceIds.length && edges.length < targetEdges; s++) {
+    edges.push({
+      id: `edge:synthetic-root-${s}`,
+      type: "DERIVED_FROM",
+      source: "source:synthetic-root",
+      target: sourceIds[s]!
+    });
+  }
+
+  for (let m = 0; m < memoryCount && edges.length < targetEdges; m++) {
+    const memId = nodes[memoryStart + m]!.id;
+    const srcId = sourceIds[m % sourceIds.length]!;
+    edges.push({
+      id: `edge:synthetic-contains-${m}`,
+      type: "CONTAINS",
+      source: srcId,
+      target: memId
+    });
+    if (edges.length >= targetEdges) break;
+
+    const topicId = topicIds[m % topicIds.length]!;
+    edges.push({
+      id: `edge:synthetic-tag-${m}`,
+      type: "TAGGED_WITH",
+      source: memId,
+      target: topicId,
+      origin: "EXPLICIT_TAG",
+      confidence: 1
+    });
+    if (edges.length >= targetEdges) break;
+
+    if (memoryCount > 1) {
+      const peerOffset = (m + 1 + (m % 7)) % memoryCount;
+      if (peerOffset !== m) {
+        edges.push({
+          id: `edge:synthetic-sem-${m}`,
+          type: "SEMANTICALLY_RELATED",
+          source: memId,
+          target: nodes[memoryStart + peerOffset]!.id,
+          origin: "DETERMINISTIC_TFIDF",
+          confidence: 0.85
+        });
+      }
+    }
+  }
+
+  let extraIdx = 0;
+  while (edges.length < targetEdges && memoryCount > 2) {
+    const a = extraIdx % memoryCount;
+    const b = (a + 13 + (extraIdx % 29)) % memoryCount;
+    if (a !== b) {
+      edges.push({
+        id: `edge:synthetic-extra-${extraIdx}`,
+        type: "SEMANTICALLY_RELATED",
+        source: nodes[memoryStart + a]!.id,
+        target: nodes[memoryStart + b]!.id,
+        origin: "DETERMINISTIC_TFIDF",
+        confidence: 0.78
+      });
+    }
+    extraIdx++;
+  }
+
+  return {
+    nodes,
+    edges,
+    summary: {
+      sourceCount: 1 + sourceIds.length,
+      recordCount: memoryCount,
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+      issueCount: 0
+    },
+    months: [...SYNTHETIC_MONTHS]
+  };
+}
 
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
   const { beforeSnapshot: _before, afterSnapshot: _after, ...summary } = changeSet;
@@ -311,6 +491,8 @@ export class DemoStore {
     this.streamingSettings = initialStreamingSettings();
     this.streamingBotSettings = initialStreamingBotSettings();
     this.streamingBotStatus = initialStreamingBotStatus();
+    this.syntheticGraphSize = null;
+    this.cachedSyntheticGraph = null;
   }
 
   private nextId(prefix: string): string {
@@ -665,34 +847,129 @@ export class DemoStore {
     };
   }
 
+  private syntheticGraphSize: number | null = null;
+  private cachedSyntheticGraph: {
+    size: number;
+    graph: ReturnType<typeof generateSyntheticMemoryGraph>;
+    nodeById: Map<string, MemoryGraphNode>;
+  } | null = null;
+
+  setSyntheticMemoryGraphSize(nodeCount: number | null): void {
+    if (nodeCount === null || !Number.isFinite(nodeCount) || nodeCount <= 0) {
+      this.syntheticGraphSize = null;
+      this.cachedSyntheticGraph = null;
+      return;
+    }
+    const clamped = Math.max(10, Math.min(50000, Math.floor(nodeCount)));
+    this.syntheticGraphSize = clamped;
+    if (this.cachedSyntheticGraph?.size !== clamped) {
+      const graph = generateSyntheticMemoryGraph(clamped);
+      this.cachedSyntheticGraph = {
+        size: clamped,
+        graph,
+        nodeById: new Map(graph.nodes.map(node => [node.id, node]))
+      };
+    }
+  }
+
+  getSyntheticMemoryGraphSize(): number | null {
+    return this.syntheticGraphSize;
+  }
+
+  private resolveActiveSyntheticGraph(requestedSize?: number) {
+    let targetSize = requestedSize ?? this.syntheticGraphSize;
+    if (!targetSize && typeof window !== "undefined") {
+      try {
+        const param = new URLSearchParams(window.location.search).get("memoryNodes");
+        if (param) {
+          const parsed = Number.parseInt(param, 10);
+          if (Number.isFinite(parsed) && parsed >= 10) targetSize = parsed;
+        }
+      } catch {
+        // Ignore URL parsing in non-standard environments.
+      }
+    }
+    if (!targetSize) return null;
+    const clamped = Math.max(10, Math.min(50000, Math.floor(targetSize)));
+    if (this.cachedSyntheticGraph?.size !== clamped) {
+      const graph = generateSyntheticMemoryGraph(clamped);
+      this.cachedSyntheticGraph = {
+        size: clamped,
+        graph,
+        nodeById: new Map(graph.nodes.map(node => [node.id, node]))
+      };
+    }
+    return this.cachedSyntheticGraph;
+  }
+
+  private syntheticNodeDetail(nodeId: string): MemoryGraphNodeDetail | null {
+    const active = this.resolveActiveSyntheticGraph();
+    const node = active?.nodeById.get(nodeId);
+    if (!node) return null;
+    const relatedEdges = active!.graph.edges.filter(edge => edge.source === nodeId || edge.target === nodeId).slice(0, 32);
+    const neighborIds = new Set(relatedEdges.flatMap(edge => [edge.source, edge.target]).filter(id => id !== nodeId));
+    const relatedNodes = [...neighborIds].map(id => active!.nodeById.get(id)).filter((n): n is MemoryGraphNode => Boolean(n)).slice(0, 32);
+    return {
+      node,
+      record: node.type === "MEMORY" ? {
+        id: node.recordId ?? node.id,
+        sourcePath: node.sourcePath ?? "/demo/memory/space.md",
+        sectionId: `section:${node.id}`,
+        title: node.label,
+        body: `## ${node.label}\n- Synthetic benchmark memory record generated locally in DemoStore.`,
+        createdAt: DEMO_FIXED_AT,
+        scope: "ROOM",
+        roomId: "room:demo-launch",
+        provenance: "Deterministic synthetic demo benchmark.",
+        contentHash: "b".repeat(64),
+        lifecycleStatus: "ACTIVE",
+        tags: [SYNTHETIC_TOPICS[0]],
+        topics: [{ label: SYNTHETIC_TOPICS[0], origin: "EXPLICIT_TAG", confidence: 1 }]
+      } : null,
+      relatedNodes,
+      relatedEdges,
+      issues: []
+    };
+  }
+
   private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
+    const synthetic = this.resolveActiveSyntheticGraph(query.syntheticSize);
     const base = this.fixture.memoryWorkspace.graph;
+    const sourceNodes = synthetic ? synthetic.graph.nodes : base.nodes;
+    const sourceEdges = synthetic ? synthetic.graph.edges : base.edges;
     const needle = query.q?.trim().toLowerCase();
-    const nodes = base.nodes.filter((node) => {
-      const record = node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;
-      const expectedMonthPath = query.month && query.month !== "all"
-        ? `space_memory_${query.month}.md`
-        : null;
-      return (!needle || [node.label, node.sourcePath, record?.body].some((value) => value?.toLowerCase().includes(needle))) &&
-        (!query.nodeType || node.type === query.nodeType) &&
-        (!query.sourcePath || node.sourcePath === query.sourcePath) &&
-        (!query.scope || record?.scope === query.scope) &&
-        (!query.roomId || record?.roomId === query.roomId) &&
-        (!query.lifecycleStatus || record?.lifecycleStatus === query.lifecycleStatus) &&
-        (!expectedMonthPath || node.sourcePath?.split("/").at(-1) === expectedMonthPath);
-    });
-    const nodeIds = new Set(nodes.map((node) => node.id));
-    const edges = base.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
-    const recordCount = nodes.filter((node) => node.recordId).length;
-    return structuredClone({
+    const expectedMonthPath = query.month && query.month !== "all"
+      ? `space_memory_${query.month}`
+      : null;
+    const hasFilter = Boolean(needle || query.nodeType || query.sourcePath || query.scope || query.roomId || query.lifecycleStatus || expectedMonthPath);
+    const nodes = !hasFilter
+      ? sourceNodes
+      : sourceNodes.filter((node) => {
+          const record = !synthetic && node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;
+          return (!needle || [node.label, node.sourcePath, record?.body].some((value) => value?.toLowerCase().includes(needle))) &&
+            (!query.nodeType || node.type === query.nodeType) &&
+            (!query.sourcePath || node.sourcePath === query.sourcePath) &&
+            (!query.scope || (synthetic ? query.scope === "ROOM" : record?.scope === query.scope)) &&
+            (!query.roomId || (synthetic ? query.roomId === "room:demo-launch" : record?.roomId === query.roomId)) &&
+            (!query.lifecycleStatus || (synthetic ? query.lifecycleStatus === "ACTIVE" : record?.lifecycleStatus === query.lifecycleStatus)) &&
+            (!expectedMonthPath || Boolean(node.sourcePath?.includes(expectedMonthPath)));
+        });
+    const allMatched = nodes.length === sourceNodes.length;
+    const nodeIds = allMatched ? null : new Set(nodes.map((node) => node.id));
+    const edges = allMatched ? sourceEdges : sourceEdges.filter((edge) => nodeIds!.has(edge.source) && nodeIds!.has(edge.target));
+    const summary = synthetic && allMatched
+      ? synthetic.graph.summary
+      : {
+          sourceCount: new Set(nodes.flatMap((node) => node.sourcePath ? [node.sourcePath] : [])).size,
+          recordCount: nodes.filter((node) => node.recordId).length,
+          nodeCount: nodes.length,
+          edgeCount: edges.length,
+          issueCount: synthetic ? 0 : this.fixture.memoryWorkspace.issues.filter((issue) => !issue.recordId || nodes.some((node) => node.recordId === issue.recordId)).length
+        };
+    const payload: MemoryGraphPayload = {
       ...base,
-      summary: {
-        sourceCount: new Set(nodes.flatMap((node) => node.sourcePath ? [node.sourcePath] : [])).size,
-        recordCount,
-        nodeCount: nodes.length,
-        edgeCount: edges.length,
-        issueCount: this.fixture.memoryWorkspace.issues.filter((issue) => !issue.recordId || nodes.some((node) => node.recordId === issue.recordId)).length
-      },
+      months: synthetic ? synthetic.graph.months : base.months,
+      summary,
       nodes,
       edges,
       filters: {
@@ -705,7 +982,8 @@ export class DemoStore {
         relationMode: query.relationMode ?? "RELATIONS",
         month: query.month ?? null
       }
-    });
+    };
+    return nodes.length > 2000 ? payload : structuredClone(payload);
   }
 
   private invokeStreamingBot(method: string, args: unknown[]): unknown {
@@ -1469,8 +1747,24 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
-        return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
+        const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
+        const graph = this.memoryGraph(query);
+        const nodeLimit = Math.max(1, Math.min(50000, Math.floor(query.limit ?? 2000)));
+        const edgeLimit = Math.min(150000, nodeLimit * 3);
+        const nodes = graph.nodes.length <= nodeLimit ? graph.nodes : graph.nodes.slice(0, nodeLimit);
+        const nodeIds = nodes.length === graph.nodes.length ? null : new Set(nodes.map(node => node.id));
+        const filteredEdges = nodeIds ? graph.edges.filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target)) : graph.edges;
+        const edges = filteredEdges.length <= edgeLimit ? filteredEdges : filteredEdges.slice(0, edgeLimit);
+        return Promise.resolve({
+          data: {
+            ...graph,
+            nodes,
+            edges,
+            totalMatchingNodes: graph.nodes.length,
+            totalMatchingEdges: graph.edges.length,
+            truncated: nodes.length < graph.nodes.length || edges.length < graph.edges.length
+          }
+        });
       }
       case "memoryCalendar": {
         const query = (args[0] ?? {}) as { year?: number; month?: string; date?: string };
@@ -1547,7 +1841,7 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
-        const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
+        const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""] ?? this.syntheticNodeDetail(roomId ?? "");
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));
       }

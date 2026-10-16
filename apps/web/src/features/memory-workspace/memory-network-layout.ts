@@ -32,20 +32,28 @@ export function layoutMemoryNetwork(nodes: MemoryGraphNode[], edges: MemoryGraph
   });
   const count = points.length;
   const fx = new Float64Array(count), fy = new Float64Array(count);
-  for (let step = 0; step < 150; step++) {
+  const totalSteps = count > 10000 ? 18 : count > 2500 ? 45 : 150;
+  const maxCellChecks = count > 2500 ? 16 : Infinity;
+  for (let step = 0; step < totalSteps; step++) {
     fx.fill(0); fy.fill(0);
-    const grid = new Map<string, number[]>();
+    const grid = new Map<number, number[]>();
     for (let i = 0; i < count; i++) {
       const p = points[i]!;
-      const key = `${Math.floor(p.x / 25)},${Math.floor(p.y / 25)}`;
-      if (!grid.has(key)) grid.set(key, []);
-      grid.get(key)!.push(i);
+      const key = (Math.floor(p.x / 25) + 32768) * 65536 + (Math.floor(p.y / 25) + 32768);
+      let cell = grid.get(key);
+      if (!cell) { cell = []; grid.set(key, cell); }
+      cell.push(i);
     }
     for (let i = 0; i < count; i++) {
       const p = points[i]!, gx = Math.floor(p.x / 25), gy = Math.floor(p.y / 25);
-      for (let x = gx - 1; x <= gx + 1; x++) for (let y = gy - 1; y <= gy + 1; y++) {
-        for (const j of grid.get(`${x},${y}`) ?? []) {
+      let checked = 0;
+      for (let x = gx - 1; x <= gx + 1 && checked < maxCellChecks; x++) for (let y = gy - 1; y <= gy + 1 && checked < maxCellChecks; y++) {
+        const cell = grid.get((x + 32768) * 65536 + (y + 32768));
+        if (!cell) continue;
+        for (let idx = 0; idx < cell.length && checked < maxCellChecks; idx++) {
+          const j = cell[idx]!;
           if (j <= i) continue;
+          checked++;
           const q = points[j]!;
           const dx = p.x - q.x || 0.01, dy = p.y - q.y || 0.01;
           const distanceSquared = Math.max(4, dx * dx + dy * dy);
@@ -62,7 +70,7 @@ export function layoutMemoryNetwork(nodes: MemoryGraphNode[], edges: MemoryGraph
       fx[link.a]! += dx * spring; fy[link.a]! += dy * spring;
       fx[link.b]! -= dx * spring; fy[link.b]! -= dy * spring;
     }
-    const cooling = 1 - step / 190;
+    const cooling = 1 - step / (totalSteps * 190 / 150);
     for (let i = 0; i < count; i++) {
       if (i === rootIndex) continue;
       const p = points[i]!;

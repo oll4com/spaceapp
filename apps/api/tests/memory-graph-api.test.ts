@@ -1545,4 +1545,85 @@ describe("Memory graph API", () => {
     ]));
     await app.close();
   });
+
+  it("supports configurable overview node limits up to 50,000 while preserving redaction and default 2,000 cap", async () => {
+    const base = snapshot();
+    const nodes: MemoryGraphSnapshot["nodes"] = [
+      {
+        id: "source:root",
+        type: "SOURCE",
+        label: "space.md",
+        sourcePath: "/opt/spaceapp/docs/space.md",
+        recordId: null
+      }
+    ];
+    const edges: MemoryGraphSnapshot["edges"] = [];
+    for (let i = 0; i < 2500; i++) {
+      const id = `memory:scale-${i}`;
+      nodes.push({
+        id,
+        type: "MEMORY",
+        label: i === 0 ? "Scale memory password=super-secret-token" : `Scale memory ${i}`,
+        sourcePath: "/opt/spaceapp/docs/space.md",
+        recordId: id
+      });
+      edges.push({
+        id: `edge:scale-${i}`,
+        type: "CONTAINS",
+        source: "source:root",
+        target: id,
+        evidence: i === 0 ? "secret token=raw-edge-secret" : undefined
+      });
+    }
+    const largeSnapshot: MemoryGraphSnapshot = {
+      ...base,
+      nodes,
+      edges,
+      summary: {
+        sourceCount: 1,
+        recordCount: 2500,
+        nodeCount: nodes.length,
+        edgeCount: edges.length,
+        issueCount: 0
+      }
+    };
+
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, {
+      graphSnapshot: largeSnapshot,
+      archiveSnapshot: largeSnapshot
+    });
+
+    const defaultRes = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?month=all&relationMode=RELATIONS",
+      headers: { cookie }
+    });
+    expect(defaultRes.statusCode).toBe(200);
+    const defaultJson = defaultRes.json();
+    expect(defaultJson.data.nodes).toHaveLength(2000);
+    expect(defaultJson.data.totalMatchingNodes).toBe(2501);
+    expect(defaultJson.data.truncated).toBe(true);
+
+    const expandedRes = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?month=all&relationMode=RELATIONS&limit=50000",
+      headers: { cookie }
+    });
+    expect(expandedRes.statusCode).toBe(200);
+    const expandedJson = expandedRes.json();
+    expect(expandedJson.data.nodes).toHaveLength(2501);
+    expect(expandedJson.data.edges).toHaveLength(2500);
+    expect(expandedJson.data.truncated).toBe(false);
+    expect(JSON.stringify(expandedJson)).not.toContain("super-secret-token");
+    expect(JSON.stringify(expandedJson)).not.toContain("raw-edge-secret");
+
+    const invalidOverMax = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=50001",
+      headers: { cookie }
+    });
+    expect(invalidOverMax.statusCode).toBe(422);
+
+    await app.close();
+  });
 });

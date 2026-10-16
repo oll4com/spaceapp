@@ -5,8 +5,25 @@ import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
 export const ATLAS_COLORS = ["#57ccff", "#ff79bc", "#ab95ff", "#53e2ba", "#ffc56c", "#fa887e", "#a0df73", "#8caaff"];
 export type MemoryAtlasPosition = { x: number; y: number; color: string; hub: boolean; groupId: string; monthLabel?: string };
 export type MemoryAtlasGroup = { id: string; label: string; color: string; count: number; kind: "tag" | "topic" | "month" | "archive" };
-export const memorySourceMonth = (node: MemoryGraphNode) => node.sourcePath?.match(/(?:^|[_/-])(20\d{2}-(?:0[1-9]|1[0-2]))(?:[_. /-]|$)/)?.[1] ?? null;
-export const memoryMonthLabel = (month: string) => new Date(`${month}-01T00:00:00Z`).toLocaleDateString("en", { month: "short", year: "numeric", timeZone: "UTC" });
+const sourceMonthCache = new Map<string, string | null>();
+export const memorySourceMonth = (node: MemoryGraphNode) => {
+  const path = node.sourcePath;
+  if (!path) return null;
+  const cached = sourceMonthCache.get(path);
+  if (cached !== undefined) return cached;
+  const parsed = path.match(/(?:^|[_/-])(20\d{2}-(?:0[1-9]|1[0-2]))(?:[_. /-]|$)/)?.[1] ?? null;
+  if (sourceMonthCache.size > 4096) sourceMonthCache.clear();
+  sourceMonthCache.set(path, parsed);
+  return parsed;
+};
+const monthLabelCache = new Map<string, string>();
+export const memoryMonthLabel = (month: string) => {
+  const cached = monthLabelCache.get(month);
+  if (cached !== undefined) return cached;
+  const formatted = new Date(`${month}-01T00:00:00Z`).toLocaleDateString("en", { month: "short", year: "numeric", timeZone: "UTC" });
+  monthLabelCache.set(month, formatted);
+  return formatted;
+};
 
 export const MIN_ATLAS_TAG_COUNT = 10;
 

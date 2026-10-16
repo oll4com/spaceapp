@@ -7,7 +7,7 @@ import { MemoryNodeDetail } from "./MemoryNodeDetail.js";
 import { createMemoryAtlas, type MemoryAtlasPosition } from "./memory-atlas.js";
 import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
 import { MemoryGraph3D } from "./MemoryGraph3D.js";
-import type { MemoryPoint3D } from "./memory-3d.js";
+import { PackedMemoryCoordinates3D, type MemoryPoint3D } from "./memory-3d.js";
 import { MemoryCalendarView } from "./MemoryCalendarView.js";
 import "./memory-atlas.css";
 
@@ -72,12 +72,31 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
     setError(null);
     closeDetail();
     // Search covers the entire archive; removing the month picker must not hide old memories.
-    void api.memoryGraphOverview({ q: query || undefined, month: "all", relationMode: "RELATIONS" })
+    const requestOptions: { q?: string; month: string; relationMode: "RELATIONS"; limit?: number } = {
+      q: query || undefined,
+      month: "all",
+      relationMode: "RELATIONS"
+    };
+    if (view3D) {
+      requestOptions.limit = 50000;
+    }
+    void api.memoryGraphOverview(requestOptions)
       .then(payload => { if (active) setGraph(payload); })
       .catch(caught => { if (active) setError(caught instanceof Error ? caught.message : "Memory could not be loaded."); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [workspaceMode, query, closeDetail]);
+
+  useEffect(() => {
+    if (workspaceMode !== "atlas" || !view3D || !graph?.data.truncated || graph.data.nodes.length > 2000) return;
+    let active = true;
+    setLoading(true);
+    void api.memoryGraphOverview({ q: query || undefined, month: "all", relationMode: "RELATIONS", limit: 50000 })
+      .then(payload => { if (active) setGraph(payload); })
+      .catch(caught => { if (active) setError(caught instanceof Error ? caught.message : "Memory could not be loaded."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [workspaceMode, view3D, graph?.data.truncated, graph?.data.nodes.length, query]);
 
   useEffect(() => () => { detailRequest.current++; }, []);
   const selectNode = useCallback((nodeId: string) => {
@@ -93,14 +112,36 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
   }, []);
 
   const atlas = useMemo(() => createMemoryAtlas(graph?.data.nodes ?? [], graph?.data.edges ?? [], false), [graph]);
-  const [layout, setLayout] = useState<{ atlas: typeof atlas; positions: Map<string, MemoryAtlasPosition>; depth: Map<string, MemoryPoint3D> } | null>(null);
+  const [layout, setLayout] = useState<{ atlas: typeof atlas; positions: Map<string, MemoryAtlasPosition>; depth: Map<string, MemoryPoint3D>; converging?: boolean } | null>(null);
   useEffect(() => {
     if (workspaceMode !== "atlas" || !atlas.nodes.length || typeof Worker === "undefined") return;
     const worker = new Worker(new URL("./memory-network-layout.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]> }>) => {
-      const coordinates = new Map(event.data.positions);
-      setLayout({ atlas, depth: new Map(event.data.depth), positions: new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }])) });
-      worker.terminate();
+    let cachedPositions: Map<string, MemoryAtlasPosition> | null = null;
+    worker.onmessage = (event: MessageEvent<{
+      positions?: Array<[string, { x: number; y: number }]> | null;
+      depth?: Array<[string, MemoryPoint3D]>;
+      xyz?: Float32Array;
+      ids?: string[];
+      depthBuffer?: Float32Array;
+      nodeIds?: string[];
+      done?: boolean;
+    }>) => {
+      if (event.data.positions) {
+        const coordinates = new Map(event.data.positions);
+        cachedPositions = new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }]));
+      }
+      const nextPositions = cachedPositions ?? atlas.positions;
+      const packedBuffer = event.data.xyz ?? event.data.depthBuffer;
+      const packedIds = event.data.ids ?? event.data.nodeIds;
+      const nextDepth: Map<string, MemoryPoint3D> =
+        packedBuffer instanceof Float32Array && Array.isArray(packedIds)
+          ? new PackedMemoryCoordinates3D(packedIds, packedBuffer)
+          : new Map(event.data.depth ?? []);
+      const isDone = event.data.done !== false;
+      setLayout({ atlas, depth: nextDepth, positions: nextPositions, converging: !isDone });
+      if (isDone) {
+        worker.terminate();
+      }
     };
     worker.onerror = event => { setError(`Memory layout could not be calculated: ${event.message || "worker unavailable"}`); worker.terminate(); };
     worker.postMessage({ nodes: atlas.nodes, edges: atlas.edges });
