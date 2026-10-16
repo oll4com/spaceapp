@@ -3,7 +3,7 @@
 // readiness, owner setup with the one-time token, then an OpenCode pane in the
 // Getting Started room started through the from-source CLI host.
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
 import { resolvePorts, resolveStateDir, statePaths } from "./config.mjs";
@@ -107,4 +107,25 @@ const escapeSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]
 const showsOpencode = /opencode/i.test(output.replace(escapeSequence, ""));
 step(`pane ${pane.id} is ${running.session.status}; terminal sent ${output.length} bytes${showsOpencode ? " including the OpenCode UI" : ""}`);
 socket.close();
+
+// Hot reload: an API source change restarts the API; a package source change is rebuilt and the API
+// restarts on the new build. Each edit is a comment and the file is restored afterwards.
+async function apiStartedAfterEdit(file, label) {
+  const before = (await request("GET", "/readyz")).apiStartedAt;
+  const path = new URL(`../../${file}`, import.meta.url);
+  const original = await readFile(path, "utf8");
+  try {
+    await writeFile(path, `${original}// dev-stack hot reload check\n`);
+    const after = await until(`the API to restart after ${label}`, 180_000, async () => {
+      const body = await request("GET", "/readyz");
+      return body.ok === true && body.apiStartedAt !== before ? body : null;
+    });
+    step(`${label}: API restarted (${before} -> ${after.apiStartedAt}) and is ready`);
+  } finally {
+    await writeFile(path, original);
+  }
+}
+await apiStartedAfterEdit("apps/api/src/config.ts", "apps/api/src change");
+await delay(3000);
+await apiStartedAfterEdit("packages/contracts/src/index.ts", "packages/contracts/src change (rebuilt)");
 process.stdout.write(`${JSON.stringify({ passed: true, roomId: room.id, paneId: pane.id, sessionId: running.session.sessionId })}\n`);
