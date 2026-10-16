@@ -4,9 +4,9 @@ import { pathToFileURL } from "node:url";
 
 const mebibyte = 1024 * 1024;
 
-// Measured with `docker image inspect` on 2026-10-16 (MiB, amd64 / arm64):
-// core 290.1 / 301.6, browser 410.7 / 412.4, cli 280.2 / 223.9.
-// Budgets leave roughly 8-11% headroom over the largest measured image per target.
+// Measured at PR head 7db1fcb on 2026-10-16 with `docker image inspect` (MiB, amd64):
+// core 290.1, browser 410.7, cli 280.2. ARM64 requires the native CI runner here.
+// Budgets leave roughly 9-12% headroom over the current amd64 measurements.
 export const containerImageSizeBudgets = Object.freeze({
   core: 325 * mebibyte,
   browser: 450 * mebibyte,
