@@ -856,10 +856,75 @@ function readProcStat(pid) {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    return { state: fields[0], pgrp: Number(fields[2]) };
+    // After the closing paren the fields are `state ppid pgrp ...`. `starttime`
+    // is field 22 of the whole line, so it lands at index 19 here.
+    return { state: fields[0], pgrp: Number(fields[2]), started: fields[19] };
   } catch {
     return null;
   }
+}
+
+/**
+ * An identity for whatever currently holds `pid`.
+ *
+ * A pid is not an identity. The kernel reuses the number once the process is
+ * gone, and `stopProcessTrees` signals a whole process group, so a record left
+ * behind by an earlier run can name a group this stack never started — and
+ * `down` or `reset` would then signal something else entirely.
+ *
+ * Both platforms expose a start time that is fixed for the life of a process and
+ * different for the next one to take the number, which is all the comparison
+ * needs: Linux reads `starttime` from `/proc/<pid>/stat`, and BSD and macOS
+ * report it through `ps`'s `lstart`.
+ *
+ * @param {number} pid
+ * @returns {string | null} null when the pid is gone or this platform cannot say.
+ */
+export function processStartIdentity(pid) {
+  if (!Number.isInteger(pid) || pid <= 1) return null;
+  if (process.platform === "linux") {
+    const stat = readProcStat(pid);
+    return stat && stat.started ? stat.started : null;
+  }
+  if (process.platform === "darwin" || process.platform.endsWith("bsd")) {
+    const out = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8" });
+    if (out.status !== 0 || typeof out.stdout !== "string") return null;
+    // Collapse the padding `ps` uses to align columns so the string compares
+    // equal to the one recorded at spawn.
+    const started = out.stdout.trim().replace(/\s+/g, " ");
+    return started === "" ? null : started;
+  }
+  return null;
+}
+
+/**
+ * Split recorded processes into the ones this stack can still claim and the ones
+ * whose number has moved on.
+ *
+ * A record whose identity does not match is not a survivor to report and must not
+ * be signalled: either the process is gone, or the pid has been reused by
+ * something unrelated. Both cases mean "nothing of ours is here".
+ *
+ * A record written before identities were stored has nothing to compare; it is
+ * kept, because refusing to act on it would strand a stack that is still running.
+ *
+ * @param {Array<{name: string, pid: number, started?: string|null}>} entries
+ * @param {(pid: number) => string | null} [identityOf] injectable for tests
+ * @returns {{ live: Array<{name: string, pid: number, started?: string|null}>, stale: Array<{name: string, pid: number, started?: string|null}> }}
+ */
+export function partitionStaleRecords(entries, identityOf = processStartIdentity) {
+  const live = [];
+  const stale = [];
+  for (const entry of entries) {
+    if (!entry.started) {
+      live.push(entry);
+      continue;
+    }
+    const current = identityOf(entry.pid);
+    if (current !== null && current === entry.started) live.push(entry);
+    else stale.push(entry);
+  }
+  return { live, stale };
 }
 
 // True when any process in `pgid` can still do work. `Z` is a zombie and `X` is
@@ -1005,8 +1070,15 @@ const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),
 // SIGTERM the tree, give it a bounded grace period, then SIGKILL whatever is
 // left and verify. Returns true only when nothing survives.
 function stopProcessTrees(entries, { graceMs = 6000 } = {}) {
-  const pids = [...new Set(entries.map((entry) => entry.pid))].filter((pid) => Number.isInteger(pid) && pid > 1);
-  for (const { name, pid } of entries) {
+  // Only signal what this stack can still claim. A record whose pid has been
+  // reused names an unrelated process group, and `-pid` would reach every member
+  // of it.
+  const { live: ours, stale } = partitionStaleRecords(entries);
+  for (const { name, pid } of stale) {
+    say(`dev-stack: ${name} (pid ${pid}) is no longer the process this stack started; leaving it alone.`);
+  }
+  const pids = [...new Set(ours.map((entry) => entry.pid))].filter((pid) => Number.isInteger(pid) && pid > 1);
+  for (const { name, pid } of ours) {
     if (signalProcessTree(pid, "SIGTERM")) say(`dev-stack: stopping ${name} (pid ${pid})`);
   }
   const deadline = Date.now() + graceMs;
@@ -1029,7 +1101,6 @@ function stopProcessTrees(entries, { graceMs = 6000 } = {}) {
   }
   return pids.length;
 }
-
 /**
  * Read the pids an earlier `up` recorded. A missing, truncated or hand-edited
  * file reads as empty rather than throwing, so `down` and `reset` still work
@@ -1172,7 +1243,10 @@ function cmdUp() {
   spawnService("worker", "node", ["apps/worker/dist/worker.js"], commonEnv);
   spawnService("cli-host", "node", ["packages/cli-host/dist/main.js"], commonEnv);
 
-  writeFileSync(PID_FILE, JSON.stringify([...children.entries()].map(([name, { child }]) => ({ name, pid: child.pid })), null, 2), "utf8");
+  // Record what each child *is*, not only what number it has: `down` and `reset`
+  // may run long after this process exited, and the kernel hands a retired pid to
+  // whatever asks for one next.
+  writeFileSync(PID_FILE, JSON.stringify([...children.entries()].map(([name, { child }]) => ({ name, pid: child.pid, started: processStartIdentity(child.pid) })), null, 2), "utf8");
 
   const url = `http://127.0.0.1:${PORTS.web}`;
   say("");
@@ -1217,6 +1291,33 @@ function cmdDown() {
  * its volume, drop the state directory, then verify that nothing is left.
  * Only what this project created is removed.
  */
+/**
+ * Decide what a `reset` verification actually saw.
+ *
+ * Both `docker ps` and `docker volume ls` are asked to list this project's
+ * resources, and an empty result means clean. A command that *failed* also
+ * returns an empty result, so reading the two outputs without looking at their
+ * status would let reset announce "verified" after a check that never ran —
+ * exactly the claim the acceptance contract wants proven. Kept as a pure
+ * function of the two results so the distinction is testable without Docker.
+ *
+ * @param {{ status?: number|null, stdout?: string|null, stderr?: string|null, error?: Error|null }} ps
+ * @param {{ status?: number|null, stdout?: string|null, stderr?: string|null, error?: Error|null }} volumes
+ * @returns {{ unverifiable: string|null, leftover: string[] }} `unverifiable` is a
+ *   non-null reason when a listing could not be trusted; `leftover` is the names
+ *   the listings did report.
+ */
+export function judgeResetVerification(ps, volumes) {
+  const broken = [["docker ps", ps], ["docker volume ls", volumes]].find(([, result]) => result.error || result.status !== 0);
+  if (broken) {
+    const [label, result] = broken;
+    const detail = result.error ? result.error.message : `exited ${result.status}: ${(result.stderr ?? "").trim()}`;
+    return { unverifiable: `${label} ${detail}`, leftover: [] };
+  }
+  const names = (output) => (output ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
+  return { unverifiable: null, leftover: [...names(ps.stdout), ...names(volumes.stdout)] };
+}
+
 function cmdReset() {
   requireDocker();
   // Stop the host processes before anything else: they keep the state directory
@@ -1239,9 +1340,13 @@ function cmdReset() {
   // The acceptance contract asks reset to prove nothing is left behind.
   const ps = spawnSync("docker", ["ps", "-a", "--filter", `label=com.docker.compose.project=${COMPOSE_PROJECT}`, "--format", "{{.Names}}"], { encoding: "utf8" });
   const volumes = spawnSync("docker", ["volume", "ls", "--filter", `label=com.docker.compose.project=${COMPOSE_PROJECT}`, "--format", "{{.Name}}"], { encoding: "utf8" });
-  const leftover = [...(ps.stdout ?? "").split("\n"), ...(volumes.stdout ?? "")].map((s) => s.trim()).filter(Boolean);
-  if (leftover.length) fail(`reset left resources behind: ${leftover.join(", ")}`);
-  const survivors = spawned.filter((entry) => processTreeAlive(entry.pid));
+  const verification = judgeResetVerification(ps, volumes);
+  if (verification.unverifiable) fail(`could not verify the reset: ${verification.unverifiable}`);
+  if (verification.leftover.length) fail(`reset left resources behind: ${verification.leftover.join(", ")}`);
+  // A record whose identity no longer matches was already left alone by
+  // `stopProcessTrees`; counting it as a survivor would report a leak that is not
+  // this stack's.
+  const survivors = partitionStaleRecords(spawned).live.filter((entry) => processTreeAlive(entry.pid));
   if (survivors.length) {
     fail(`reset left processes behind: ${survivors.map((entry) => `${entry.name}(${entry.pid})`).join(", ")}`);
   }
@@ -1268,7 +1373,12 @@ export const __testing = {
   signalProcessTree, processTreeAlive, stopProcessTrees, readPidFile, sleepSync,
   // The macOS half of the liveness probe. `ps` output is parsed here so the
   // rule can be tested wherever the suite runs, not only on a Mac.
-  psRowsShowLiveMember
+  psRowsShowLiveMember,
+  // What `reset` is allowed to conclude from its two listings.
+  judgeResetVerification,
+  // Telling a recorded child apart from whatever holds its number now, so a
+  // recycled pid is never signalled.
+  processStartIdentity, partitionStaleRecords
 };
 
 const invokedDirectly =

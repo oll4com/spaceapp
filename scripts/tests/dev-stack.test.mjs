@@ -15,7 +15,7 @@ const devStack = await import(pathToFileURL(join(repoRoot, "scripts", "dev-stack
 const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, parseContainerState, waitForInfrastructure, buildServiceEnv, SETUP_TOKEN_FILE_VAR, PORTS, OPENCODE_PARITY_COMMAND, renderOpenCodeWrapper, writeOpenCodeWrapper } = devStack;
 // The teardown helpers stay off the module's public surface; they are reachable
 // through `__testing` with the rest of the internals these tests pin.
-const { signalProcessTree, processTreeAlive, stopProcessTrees, readPidFile, sleepSync, psRowsShowLiveMember } = devStack.__testing;
+const { signalProcessTree, processTreeAlive, stopProcessTrees, readPidFile, sleepSync, psRowsShowLiveMember, judgeResetVerification, processStartIdentity, partitionStaleRecords } = devStack.__testing;
 
 const TEMPLATE = join(repoRoot, "packages/run-spaceapp/templates/compose.yml");
 const DOCKERFILE = join(repoRoot, "Dockerfile");
@@ -654,6 +654,92 @@ test("ps rows survive a header, blank lines and a truncated listing", () => {
   assert.equal(psRowsShowLiveMember(noisy, 410), true);
   assert.equal(psRowsShowLiveMember("", 410), false);
   assert.equal(psRowsShowLiveMember("  410   410  ", 410), false);
+});
+
+test("reset verifies clean when both listings come back empty", () => {
+  // The ordinary outcome: no container and no volume carries the project label.
+  const verdict = judgeResetVerification({ status: 0, stdout: "" }, { status: 0, stdout: "\n" });
+  assert.equal(verdict.unverifiable, null);
+  assert.deepEqual(verdict.leftover, []);
+});
+
+test("reset reports leftover resources by name, not one entry per character", () => {
+  // The listing is a newline-separated string. Spreading it instead of splitting
+  // it turns one leftover volume into "s, p, a, c, e, ..." and hides which
+  // resource actually survived.
+  const verdict = judgeResetVerification(
+    { status: 0, stdout: "spaceapp-dev-stack-postgres-1\n" },
+    { status: 0, stdout: "spaceapp-dev-stack_postgres-data\n\n" }
+  );
+  assert.equal(verdict.unverifiable, null);
+  assert.deepEqual(verdict.leftover, ["spaceapp-dev-stack-postgres-1", "spaceapp-dev-stack_postgres-data"]);
+});
+
+test("a listing that failed is unverifiable, never a clean reset", () => {
+  // `docker ps` failing (daemon down, no permission, wrong context) also yields an
+  // empty stdout. Reading only stdout would make reset announce "verified" after a
+  // check that did not run, which is the one claim this verification exists to make.
+  const verdict = judgeResetVerification(
+    { status: 1, stdout: "", stderr: "cannot connect to the Docker daemon" },
+    { status: 0, stdout: "" }
+  );
+  assert.equal(verdict.leftover.length, 0);
+  assert.match(verdict.unverifiable, /docker ps exited 1: cannot connect to the Docker daemon/);
+});
+
+test("a docker binary that never started is unverifiable too", () => {
+  const verdict = judgeResetVerification(
+    { status: null, error: new Error("spawnSync docker ENOENT") },
+    { status: 0, stdout: "" }
+  );
+  assert.match(verdict.unverifiable, /docker ps spawnSync docker ENOENT/);
+});
+
+test("a recorded child is kept when the process it describes is still there", () => {
+  const record = { name: "api", pid: 4242, started: "1234567" };
+  const { live, stale } = partitionStaleRecords([record], (pid) => (pid === 4242 ? "1234567" : null));
+  assert.deepEqual(live, [record]);
+  assert.deepEqual(stale, []);
+});
+
+test("a record whose pid now belongs to something else is left alone, not signalled", () => {
+  // The kernel reuses a retired pid, and teardown signals a whole process group.
+  // Signalling on a number alone reaches a tree this stack never started.
+  const gone = { name: "worker", pid: 4242, started: "1234567" };
+  const reused = partitionStaleRecords([gone], () => "9999999");
+  assert.deepEqual(reused.live, []);
+  assert.deepEqual(reused.stale, [gone]);
+
+  const vanished = partitionStaleRecords([gone], () => null);
+  assert.deepEqual(vanished.live, []);
+  assert.deepEqual(vanished.stale, [gone]);
+});
+
+test("a record written before identities were stored is still acted on", () => {
+  // Otherwise an upgrade would strand a stack that is running right now.
+  const old = { name: "web", pid: 7 };
+  const { live, stale } = partitionStaleRecords([old], () => "anything");
+  assert.deepEqual(live, [old]);
+  assert.deepEqual(stale, []);
+});
+
+test("the identity of a live pid is stable, and a reaped pid has none", async () => {
+  // Whatever the platform can say, it must say the same thing twice for a process
+  // that is still here, because that equality is the whole check.
+  if (process.platform !== "linux" && process.platform !== "darwin") return;
+  const first = processStartIdentity(process.pid);
+  assert.equal(typeof first, "string");
+  assert.equal(first, processStartIdentity(process.pid));
+
+  const child = spawn(process.execPath, ["-e", ""]);
+  const deadPid = child.pid;
+  await new Promise((settle) => child.on("exit", settle));
+  let identity = processStartIdentity(deadPid);
+  for (let attempt = 0; attempt < 50 && identity !== null; attempt += 1) {
+    sleepSync(20);
+    identity = processStartIdentity(deadPid);
+  }
+  assert.equal(identity, null);
 });
 
 test("the Vite dev proxy follows the port the dev stack puts the API on", () => {

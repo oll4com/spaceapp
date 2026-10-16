@@ -1,0 +1,1451 @@
+[Set up job] ﻿2026-10-16T12:56:45.3968267Z Current runner version: '2.337.0'
+[Set up job] ##[group]Runner Image Provisioner
+[Set up job] Hosted Compute Agent
+[Set up job] Version: 20261012.601
+[Set up job] Commit: f3dc54e1fb89da6852db922499a0233137369e1d
+[Set up job] Build Date: 2026-10-12T17:48:21Z
+[Set up job] Worker ID: {85bae8a5-0532-4176-8f11-053c0503beec}
+[Set up job] Region: westus
+[Set up job] Cloud: Azure
+[Set up job] ##[endgroup]
+[Set up job] ##[group]Operating System
+[Set up job] Ubuntu
+[Set up job] 24.04.5
+[Set up job] LTS
+[Set up job] ##[endgroup]
+[Set up job] ##[group]Runner Image
+[Set up job] Image: ubuntu-24.04
+[Set up job] Version: 20261012.334.1
+[Set up job] Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md
+[Set up job] Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334
+[Set up job] ##[endgroup]
+[Set up job] ##[group]GITHUB_TOKEN Permissions
+[Set up job] Contents: read
+[Set up job] Metadata: read
+[Set up job] Packages: read
+[Set up job] ##[endgroup]
+[Set up job] Secret source: Actions
+[Set up job] Cache mode: write
+[Set up job] Prepare workflow directory
+[Set up job] Prepare all required actions
+[Set up job] Getting action download info
+[Set up job] Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+[Set up job] Download action repository 'actions/setup-node@v4' (SHA:49933ea5288caeca8642d1e84afbd3f7d6820020)
+[Set up job] Complete job name: Run the full app from source
+[Run actions/checkout@v4] ﻿2026-10-16T12:56:46.2312084Z ##[group]Run actions/checkout@v4
+[Run actions/checkout@v4] with:
+[Run actions/checkout@v4]   persist-credentials: false
+[Run actions/checkout@v4]   repository: yhhjm/spaceapp
+[Run actions/checkout@v4]   token: ***
+[Run actions/checkout@v4]   ssh-strict: true
+[Run actions/checkout@v4]   ssh-user: git
+[Run actions/checkout@v4]   clean: true
+[Run actions/checkout@v4]   sparse-checkout-cone-mode: true
+[Run actions/checkout@v4]   fetch-depth: 1
+[Run actions/checkout@v4]   fetch-tags: false
+[Run actions/checkout@v4]   show-progress: true
+[Run actions/checkout@v4]   lfs: false
+[Run actions/checkout@v4]   submodules: false
+[Run actions/checkout@v4]   set-safe-directory: true
+[Run actions/checkout@v4]   allow-unsafe-pr-checkout: false
+[Run actions/checkout@v4] env:
+[Run actions/checkout@v4]   API_PORT: 5910
+[Run actions/checkout@v4]   WEB_PORT: 5911
+[Run actions/checkout@v4] ##[endgroup]
+[Run actions/checkout@v4] Syncing repository: yhhjm/spaceapp
+[Run actions/checkout@v4] ##[group]Getting Git version info
+[Run actions/checkout@v4] Working directory is '/home/runner/work/spaceapp/spaceapp'
+[Run actions/checkout@v4] [command]/usr/bin/git version
+[Run actions/checkout@v4] git version 2.55.0
+[Run actions/checkout@v4] ##[endgroup]
+[Run actions/checkout@v4] Temporarily overriding HOME='/home/runner/work/_temp/b6182d11-d0f8-42f5-88c4-b3f99c128445' before making global git config changes
+[Run actions/checkout@v4] Adding repository directory to the temporary git global config as a safe directory
+[Run actions/checkout@v4] [command]/usr/bin/git config --global --add safe.directory /home/runner/work/spaceapp/spaceapp
+[Run actions/checkout@v4] Deleting the contents of '/home/runner/work/spaceapp/spaceapp'
+[Run actions/checkout@v4] ##[group]Initializing the repository
+[Run actions/checkout@v4] [command]/usr/bin/git init /home/runner/work/spaceapp/spaceapp
+[Run actions/checkout@v4] hint: Using 'master' as the name for the initial branch. This default branch name
+[Run actions/checkout@v4] hint: will change to "main" in Git 3.0. To configure the initial branch name
+[Run actions/checkout@v4] hint: to use in all of your new repositories, which will suppress this warning,
+[Run actions/checkout@v4] hint: call:
+[Run actions/checkout@v4] hint:
+[Run actions/checkout@v4] hint: 	git config --global init.defaultBranch <name>
+[Run actions/checkout@v4] hint:
+[Run actions/checkout@v4] hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+[Run actions/checkout@v4] hint: 'development'. The just-created branch can be renamed via this command:
+[Run actions/checkout@v4] hint:
+[Run actions/checkout@v4] hint: 	git branch -m <name>
+[Run actions/checkout@v4] hint:
+[Run actions/checkout@v4] hint: Disable this message with "git config set advice.defaultBranchName false"
+[Run actions/checkout@v4] Initialized empty Git repository in /home/runner/work/spaceapp/spaceapp/.git/
+[Run actions/checkout@v4] [command]/usr/bin/git remote add origin https://github.com/yhhjm/spaceapp
+[Run actions/checkout@v4] ##[endgroup]
+[Run actions/checkout@v4] ##[group]Disabling automatic garbage collection
+[Run actions/checkout@v4] [command]/usr/bin/git config --local gc.auto 0
+[Run actions/checkout@v4] ##[endgroup]
+[Run actions/checkout@v4] ##[group]Setting up auth
+[Run actions/checkout@v4] [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+[Run actions/checkout@v4] [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+[Run actions/checkout@v4] [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+[Run actions/checkout@v4] [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+[Run actions/checkout@v4] [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+[Run actions/checkout@v4] [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+[Run actions/checkout@v4] [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+[Run actions/checkout@v4] ##[endgroup]
+[Run actions/checkout@v4] ##[group]Fetching the repository
+[Run actions/checkout@v4] [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +16fff66ede7894a6b115d5e241e1ea18c6223598:refs/remotes/origin/feat/dev-stack-from-source
+[Run actions/checkout@v4] From https://github.com/yhhjm/spaceapp
+[Run actions/checkout@v4]  * [new ref]         16fff66ede7894a6b115d5e241e1ea18c6223598 -> origin/feat/dev-stack-from-source
+[Run actions/checkout@v4] ##[endgroup]
+[Run actions/checkout@v4] ##[group]Determining the checkout info
+[Run actions/checkout@v4] ##[endgroup]
+[Run actions/checkout@v4] [command]/usr/bin/git sparse-checkout disable
+[Run actions/checkout@v4] [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+[Run actions/checkout@v4] ##[group]Checking out the ref
+[Run actions/checkout@v4] [command]/usr/bin/git checkout --progress --force -B feat/dev-stack-from-source refs/remotes/origin/feat/dev-stack-from-source
+[Run actions/checkout@v4] Switched to a new branch 'feat/dev-stack-from-source'
+[Run actions/checkout@v4] branch 'feat/dev-stack-from-source' set up to track 'origin/feat/dev-stack-from-source'.
+[Run actions/checkout@v4] ##[endgroup]
+[Run actions/checkout@v4] [command]/usr/bin/git log -1 --format=%H
+[Run actions/checkout@v4] 16fff66ede7894a6b115d5e241e1ea18c6223598
+[Run actions/checkout@v4] ##[group]Removing auth
+[Run actions/checkout@v4] [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+[Run actions/checkout@v4] [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+[Run actions/checkout@v4] [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+[Run actions/checkout@v4] http.https://github.com/.extraheader
+[Run actions/checkout@v4] [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+[Run actions/checkout@v4] [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+[Run actions/checkout@v4] [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+[Run actions/checkout@v4] [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+[Run actions/checkout@v4] ##[endgroup]
+[Use Node.js from .nvmrc] ﻿2026-10-16T12:56:48.7756093Z ##[group]Run actions/setup-node@v4
+[Use Node.js from .nvmrc] with:
+[Use Node.js from .nvmrc]   node-version-file: .nvmrc
+[Use Node.js from .nvmrc]   cache: npm
+[Use Node.js from .nvmrc]   always-auth: false
+[Use Node.js from .nvmrc]   check-latest: false
+[Use Node.js from .nvmrc]   token: ***
+[Use Node.js from .nvmrc] env:
+[Use Node.js from .nvmrc]   API_PORT: 5910
+[Use Node.js from .nvmrc]   WEB_PORT: 5911
+[Use Node.js from .nvmrc] ##[endgroup]
+[Use Node.js from .nvmrc] Node version file is not JSON file
+[Use Node.js from .nvmrc] Resolved .nvmrc as 22.23.0
+[Use Node.js from .nvmrc] Attempting to download 22.23.0...
+[Use Node.js from .nvmrc] (node:2362) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+[Use Node.js from .nvmrc] (Use `node --trace-deprecation ...` to show where the warning was created)
+[Use Node.js from .nvmrc] Acquiring 22.23.0 - x64 from https://github.com/actions/node-versions/releases/download/22.23.0-27765725320/node-22.23.0-linux-x64.tar.gz
+[Use Node.js from .nvmrc] Extracting ...
+[Use Node.js from .nvmrc] [command]/usr/bin/tar xz --strip 1 --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/8b8c620d-012f-4fb2-ab72-0c878d858654 -f /home/runner/work/_temp/308289db-c93a-41b5-a6d1-d48f2b7d9c8c
+[Use Node.js from .nvmrc] Adding to the cache ...
+[Use Node.js from .nvmrc] ##[group]Environment details
+[Use Node.js from .nvmrc] node: v22.23.0
+[Use Node.js from .nvmrc] npm: 10.9.8
+[Use Node.js from .nvmrc] yarn: 1.22.22
+[Use Node.js from .nvmrc] ##[endgroup]
+[Use Node.js from .nvmrc] [command]/opt/hostedtoolcache/node/22.23.0/x64/bin/npm config get cache
+[Use Node.js from .nvmrc] /home/runner/.npm
+[Use Node.js from .nvmrc] Cache hit for: node-cache-Linux-x64-npm-531823d7c1884d324095149d4e1c69a18cb08b14104b5bd99eb99879400e25a6
+[Use Node.js from .nvmrc] (node:2362) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+[Use Node.js from .nvmrc] Received 4194304 of 196862663 (2.1%), 4.0 MBs/sec
+[Use Node.js from .nvmrc] Received 130023424 of 196862663 (66.0%), 62.0 MBs/sec
+[Use Node.js from .nvmrc] Received 192668359 of 196862663 (97.9%), 61.2 MBs/sec
+[Use Node.js from .nvmrc] Received 196862663 of 196862663 (100.0%), 59.3 MBs/sec
+[Use Node.js from .nvmrc] Cache Size: ~188 MB (196862663 B)
+[Use Node.js from .nvmrc] [command]/usr/bin/tar -xf /home/runner/work/_temp/33921d4a-9224-4d34-9cb9-bd6c26e15cdd/cache.tzst -P -C /home/runner/work/spaceapp/spaceapp --use-compress-program unzstd
+[Use Node.js from .nvmrc] Cache restored successfully
+[Use Node.js from .nvmrc] Cache restored from key: node-cache-Linux-x64-npm-531823d7c1884d324095149d4e1c69a18cb08b14104b5bd99eb99879400e25a6
+[Install dependencies] ﻿2026-10-16T12:56:57.7692821Z ##[group]Run npm ci
+[Install dependencies] ^[[36;1mnpm ci^[[0m
+[Install dependencies] shell: /usr/bin/bash -e {0}
+[Install dependencies] env:
+[Install dependencies]   API_PORT: 5910
+[Install dependencies]   WEB_PORT: 5911
+[Install dependencies]   ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+[Install dependencies]   npm_config_fund: false
+[Install dependencies]   npm_config_audit: false
+[Install dependencies] ##[endgroup]
+[Install dependencies] 
+[Install dependencies] added 772 packages in 17s
+[Build the workspace] ﻿2026-10-16T12:57:15.3817773Z ##[group]Run npm run build
+[Build the workspace] ^[[36;1mnpm run build^[[0m
+[Build the workspace] shell: /usr/bin/bash -e {0}
+[Build the workspace] env:
+[Build the workspace]   API_PORT: 5910
+[Build the workspace]   WEB_PORT: 5911
+[Build the workspace] ##[endgroup]
+[Build the workspace] 
+[Build the workspace] > space@0.2.5 build
+[Build the workspace] > npm run build -w @space/contracts && npm run build -w @space/icons && npm run build -w @space/streaming && npm run build -w @space/opencode-control && npm run build -w @space/memory-graph && npm run build -w @space/browser-host && npm run build -w @space/cli-host && npm run build -w @space/codex-app-server && npm run build -w @space/runtime && npm run build -w @space/db && npm run build -w @space/gateway && node scripts/build-demo-projects.mjs && npm run build -w @space/api && npm run build -w @space/worker && npm run build -w @space/web && node scripts/fix-build-permissions.mjs
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/contracts@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/icons@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/streaming@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/opencode-control@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/memory-graph@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/browser-host@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/cli-host@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/codex-app-server@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/runtime@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/db@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/gateway@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json && node scripts/bundle.mjs
+[Build the workspace] 
+[Build the workspace] [demos] built web preview for project-1-salesforce-crm/javascript-react-node
+[Build the workspace] [demos] built web preview for project-1-salesforce-crm/typescript-react-node
+[Build the workspace] [demos] type-checked web sources for project-1-salesforce-crm/typescript-react-node
+[Build the workspace] [demos] compiled TypeScript server for project-1-salesforce-crm/typescript-react-node
+[Build the workspace] [demos] built web preview for project-2-crud-playground/javascript-react-node
+[Build the workspace] [demos] built web preview for project-2-crud-playground/typescript-react-node
+[Build the workspace] [demos] type-checked web sources for project-2-crud-playground/typescript-react-node
+[Build the workspace] [demos] compiled TypeScript server for project-2-crud-playground/typescript-react-node
+[Build the workspace] [demos] 4 demo variant(s) ready.
+[Build the workspace] 
+[Build the workspace] > @space/api@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json && cp src/databases/sqlite-worker.py dist/databases/sqlite-worker.py && chmod +x dist/databases/sqlite-worker.py
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/worker@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json
+[Build the workspace] 
+[Build the workspace] 
+[Build the workspace] > @space/web@0.2.5 build
+[Build the workspace] > tsc -p tsconfig.json && vite build && node scripts/compress-dist-assets.mjs && node scripts/fix-dist-permissions.mjs
+[Build the workspace] 
+[Build the workspace] ^[[36mvite v7.3.6 ^[[32mbuilding client environment for production...^[[36m^[[39m
+[Build the workspace] transforming...
+[Build the workspace] ^[[32m✓^[[39m 3289 modules transformed.
+[Build the workspace] rendering chunks...
+[Build the workspace] computing gzip size...
+[Build the workspace] ^[[2mdist/^[[22m^[[32mdemo-bundle-boundary.json                            ^[[39m^[[1m^[[2m    0.60 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.34 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[32mindex.html                                           ^[[39m^[[1m^[[2m    0.98 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.51 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[32mmemory-network-layout.worker-Bwn_KV6F.js      ^[[39m^[[1m^[[2m    4.29 kB^[[22m^[[1m^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[32mgemini-logo-DBmUfr7n.svg                      ^[[39m^[[1m^[[2m   62.51 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  44.35 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[32mqoder-logo-D2WxikME.svg                       ^[[39m^[[1m^[[2m   73.38 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  29.00 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[32mhermes-agent-BoiHb2zG.png                     ^[[39m^[[1m^[[2m  131.62 kB^[[22m^[[1m^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mUiThemeSettingsCard-DCPrX0EA.css              ^[[39m^[[1m^[[2m    0.12 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.11 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mDemoSpaceApp-DyP_wObE.css                     ^[[39m^[[1m^[[2m    0.74 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.39 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mT3CodePane-Coht41_P.css                       ^[[39m^[[1m^[[2m    1.08 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.52 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mDateTimeSettingsCard-D70hm-Yf.css             ^[[39m^[[1m^[[2m    1.23 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.49 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mMediaDock-Cf4mkLt4.css                        ^[[39m^[[1m^[[2m    1.88 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.77 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mKeyboardAutocorrectSettingsCard-B2DxIRoW.css  ^[[39m^[[1m^[[2m    2.10 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.68 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mAgentSessionsDock-1tgYOtCp.css                ^[[39m^[[1m^[[2m    2.60 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.89 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mSourceControlPublishingCard-CjPktHPk.css      ^[[39m^[[1m^[[2m    2.68 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.84 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mdocks-settings-DrQpnym8.css                   ^[[39m^[[1m^[[2m    2.72 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.96 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mcodex-theme-DCZ4N93I.css                      ^[[39m^[[1m^[[2m    3.29 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.67 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mMarketingCopilotPane-Es2gi353.css             ^[[39m^[[1m^[[2m    3.32 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.05 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mCliDock-C7X7bAgA.css                          ^[[39m^[[1m^[[2m    3.37 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.03 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mMaintenanceHub-CoKwDIrh.css                   ^[[39m^[[1m^[[2m    3.54 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.12 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mProviderConnectForm-BBc4lFYu.css              ^[[39m^[[1m^[[2m    3.60 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.03 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mvendor-xterm-DDGTF8rc.css                     ^[[39m^[[1m^[[2m    3.62 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.99 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mAgentCapabilitiesCard-C8cw30X7.css            ^[[39m^[[1m^[[2m    3.84 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.06 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mServerActionsMenu-B5Z5oKID.css                ^[[39m^[[1m^[[2m    3.86 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.24 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mUserManagementDialog-B1DVt13C.css             ^[[39m^[[1m^[[2m    3.98 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.19 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35maurora-theme-CTls5dpN.css                     ^[[39m^[[1m^[[2m    4.22 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.29 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mReleasesSettingsCard-BwJ9riqn.css             ^[[39m^[[1m^[[2m    4.36 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.17 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mDemoModeOverlay-BZU9365p.css                  ^[[39m^[[1m^[[2m    5.04 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.56 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mProjectSourcePicker-C_T5PnN6.css              ^[[39m^[[1m^[[2m    5.89 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.56 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mSharedChatDock-Cl6qKFJ1.css                   ^[[39m^[[1m^[[2m    6.00 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.44 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mEnvironmentPresetCard-BtAR_xJV.css            ^[[39m^[[1m^[[2m    6.73 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.71 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mConfigurationMigrationCard-BJb4uVtS.css       ^[[39m^[[1m^[[2m    8.91 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.93 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mAgentFilesDock-D43LyHWT.css                   ^[[39m^[[1m^[[2m    9.12 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.16 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mPromptVariablesSettingsCard-DQqS8bh3.css      ^[[39m^[[1m^[[2m    9.82 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.04 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mAdminCodexToolsDialog-Bx1CwS4M.css            ^[[39m^[[1m^[[2m   11.71 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.81 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mMemoryWorkspace-B34kYIp5.css                  ^[[39m^[[1m^[[2m   12.18 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.95 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mOnScreenKeyboard-D5btgrhA.css                 ^[[39m^[[1m^[[2m   12.79 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.25 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mmemory-atlas-BxDdNoV2.css                     ^[[39m^[[1m^[[2m   13.62 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.56 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mRoomAgentDock-DKjrztNh.css                    ^[[39m^[[1m^[[2m   13.66 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.54 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mSetupConnectionsWizard-N425NhhK.css           ^[[39m^[[1m^[[2m   14.71 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.79 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mVibeMusicPlayer-CT8m61a1.css                  ^[[39m^[[1m^[[2m   15.26 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.82 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mDemosPane-KdM954PV.css                        ^[[39m^[[1m^[[2m   15.74 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.22 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mSpaceappAsteroids-C_fq3_29.css                ^[[39m^[[1m^[[2m   17.31 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.58 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mSnipToolOverlay-elPct-lL.css                  ^[[39m^[[1m^[[2m   17.72 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.91 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mPluginsSettingsCard-D0EDM0Bg.css              ^[[39m^[[1m^[[2m   17.84 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.20 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mMailCopilotPane-C75pM2pr.css                  ^[[39m^[[1m^[[2m   17.87 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.03 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mFilesPane-CfLxbGuW.css                        ^[[39m^[[1m^[[2m   18.40 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.61 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mmotion-theme-CLeIJzu9.css                     ^[[39m^[[1m^[[2m   18.54 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.88 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mDatabasesPane-dE-f2Zum.css                    ^[[39m^[[1m^[[2m   19.01 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.65 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mSpaceGatewayDialog-BzL6ADkt.css               ^[[39m^[[1m^[[2m   22.97 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.81 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mSystemServicesDialog-CKo5pn5P.css             ^[[39m^[[1m^[[2m   23.33 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.77 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mAgentsDashboard-D37Yeya8.css                  ^[[39m^[[1m^[[2m   24.01 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.22 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mBenchmarkPage-B35TUzZv.css                    ^[[39m^[[1m^[[2m   25.44 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.02 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mAdminOperationsDialog-C2UP_7bz.css            ^[[39m^[[1m^[[2m   25.68 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.43 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mSystemAnalyticsWorkspace-C8z9CCsW.css         ^[[39m^[[1m^[[2m   27.02 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.08 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mlive-pane-BlIPnKj8.css                        ^[[39m^[[1m^[[2m   31.16 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   6.53 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mcopilot-pane-CLEtcroL.css                     ^[[39m^[[1m^[[2m   32.24 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.92 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mSourceControlDock-Btx1wKnq.css                ^[[39m^[[1m^[[2m   33.88 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   6.17 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mdots-chat-Cw6FIO90.css                        ^[[39m^[[1m^[[2m   36.97 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   6.30 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mmodern-theme-_Xhrh56u.css                     ^[[39m^[[1m^[[2m   66.17 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   8.74 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mApp-BosMwhxn.css                              ^[[39m^[[1m^[[2m  416.85 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  63.12 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[35mstyles-BhNLD-FY.css                           ^[[39m^[[1m^[[2m  450.21 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  72.19 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mJobCopilotSettingsCard-Bk5trqQv.js            ^[[39m^[[1m^[[2m    0.51 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.31 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mMailCopilotSettingsCard-wREgVXDU.js           ^[[39m^[[1m^[[2m    0.51 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.32 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mMarketingCopilotSettingsCard-D9hle2nC.js      ^[[39m^[[1m^[[2m    0.51 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.32 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mgateway-log-query-BgH86skw.js                 ^[[39m^[[1m^[[2m    0.55 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.27 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36muse-pane-polling-D_IMCZDi.js                  ^[[39m^[[1m^[[2m    0.69 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.40 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36madmin-operation-utils-DIF3Dp_J.js             ^[[39m^[[1m^[[2m    0.81 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.39 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36museTranscriptScroll-DL1wcfO9.js               ^[[39m^[[1m^[[2m    0.96 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.48 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mInstanceBadge-D-6rIYbk.js                     ^[[39m^[[1m^[[2m    0.96 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.56 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36maurora-icons-r1cJ2xn5.js                      ^[[39m^[[1m^[[2m    1.04 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.62 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mcopilot-layout-CM4zjAjV.js                    ^[[39m^[[1m^[[2m    1.41 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.73 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mHandoffOverlay-Bo1zcYEk.js                    ^[[39m^[[1m^[[2m    1.62 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.75 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mclient-error-reporter-D4pH1zEB.js             ^[[39m^[[1m^[[2m    1.64 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.90 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mui-theme-DC07ZjVz.js                          ^[[39m^[[1m^[[2m    1.76 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.71 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mLiveSpaceApp-CagAgHSn.js                      ^[[39m^[[1m^[[2m    1.84 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.79 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mStreamingMetricsWidget-CWWn-pT6.js            ^[[39m^[[1m^[[2m    2.16 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.99 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mChatMarkdown-5YSTuf7M.js                      ^[[39m^[[1m^[[2m    2.31 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.07 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAgentAccountField-DH-X32uV.js                 ^[[39m^[[1m^[[2m    2.33 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.04 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mPanesSettingsCard-CZEPWj3t.js                 ^[[39m^[[1m^[[2m    2.45 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.08 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mEmbeddedDashboardDialog-I0vSo11f.js           ^[[39m^[[1m^[[2m    2.56 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.12 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mPaneSpanAllMenu-BocS296L.js                   ^[[39m^[[1m^[[2m    2.64 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.27 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mSpaceAppPromoWidget-BYnOy3Dk.js               ^[[39m^[[1m^[[2m    2.65 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.96 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mNotificationCenterDock-DtU5GAuK.js            ^[[39m^[[1m^[[2m    2.86 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.31 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mWidgetsSettingsCard-DMdEIRc2.js               ^[[39m^[[1m^[[2m    2.92 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.29 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mcore-api-state-D1rImtco.js                    ^[[39m^[[1m^[[2m    2.94 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.41 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mClockWidget-B8OSnA-z.js                       ^[[39m^[[1m^[[2m    3.19 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.28 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mHarnessPane-AO9Y43p5.js                       ^[[39m^[[1m^[[2m    3.21 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.61 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mDateTimeSettingsCard-D70Ea3g8.js              ^[[39m^[[1m^[[2m    3.24 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.13 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mProviderConnectForm-BadROJ4x.js               ^[[39m^[[1m^[[2m    3.28 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.59 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mUiThemeSettingsCard-DiAGi8uB.js               ^[[39m^[[1m^[[2m    3.35 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.95 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mCopilotSettingsCard-DTETi4E7.js               ^[[39m^[[1m^[[2m    3.81 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.57 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mCopilotLaunchDialog-pSMW7_En.js               ^[[39m^[[1m^[[2m    4.19 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.80 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAgentChip-DDWTwZam.js                         ^[[39m^[[1m^[[2m    4.31 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.85 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mKeyboardAutocorrectSettingsCard-KPhcmjJM.js   ^[[39m^[[1m^[[2m    4.36 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.49 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mServerActionsMenu-CytpE298.js                 ^[[39m^[[1m^[[2m    4.61 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.97 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mGoogleAccountMenuItems-Cc4OL1aO.js            ^[[39m^[[1m^[[2m    4.74 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.91 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mChatLauncherMenu-DLRmfjIJ.js                  ^[[39m^[[1m^[[2m    4.88 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.81 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36myoutubePlaylistPlayer-BYqP1WAz.js             ^[[39m^[[1m^[[2m    4.95 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.08 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mCountdownTimerWidget-C7RKm18y.js              ^[[39m^[[1m^[[2m    5.22 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.78 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mUserManagementDialog-HsFYFGgS.js              ^[[39m^[[1m^[[2m    5.25 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.06 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mlive-visual-capture-CGWiVbpF.js               ^[[39m^[[1m^[[2m    5.26 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.12 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mDocksSettingsCard-ybf7uf08.js                 ^[[39m^[[1m^[[2m    5.30 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.24 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mT3CodePane-gl_BxWNv.js                        ^[[39m^[[1m^[[2m    5.52 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.38 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mapp-diagnostics-performance-CG0f0QD4.js       ^[[39m^[[1m^[[2m    5.60 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.48 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAppDiagnosticsSettingsCard-CPOqWugQ.js        ^[[39m^[[1m^[[2m    5.61 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.29 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mReleasesSettingsCard-D3IpPGAi.js              ^[[39m^[[1m^[[2m    5.69 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.90 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mSourceControlPublishingCard-BzBsdU8g.js       ^[[39m^[[1m^[[2m    6.00 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.17 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mMaintenanceHub-mC6b4AXS.js                    ^[[39m^[[1m^[[2m    6.13 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.67 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mbrowser-diagnostics-DvbTTaWG.js               ^[[39m^[[1m^[[2m    7.06 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.89 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mlive-transcript-nc1m7A50.js                   ^[[39m^[[1m^[[2m    7.28 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.29 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mDesktopWidgetContainer-2RU7Ufgi.js            ^[[39m^[[1m^[[2m    7.99 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.13 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mTaskDock-C8zVWnzT.js                          ^[[39m^[[1m^[[2m    8.21 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.27 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mindex-BJev4k_i.js                             ^[[39m^[[1m^[[2m    8.31 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.32 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mMediaDock-CrQWFsmL.js                         ^[[39m^[[1m^[[2m    9.66 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.70 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAgentSessionsDock-AjZ8NBMp.js                 ^[[39m^[[1m^[[2m    9.83 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.84 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mPushupReminderWidget-DrDCvHL2.js              ^[[39m^[[1m^[[2m    9.98 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.86 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mPromptVariablesSettingsCard-BtVLxSZU.js       ^[[39m^[[1m^[[2m    9.99 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.12 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAgentCapabilitiesCard-BtxVe6Yx.js             ^[[39m^[[1m^[[2m   11.17 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.07 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mbrowser-status-Bn2w5RrC.js                    ^[[39m^[[1m^[[2m   11.43 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.46 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mTelegramIntegrationCard-BlxGKBfW.js           ^[[39m^[[1m^[[2m   11.46 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.67 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mEnvironmentPresetCard-TDATBSIT.js             ^[[39m^[[1m^[[2m   12.02 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.65 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mClipboardDock-CaxLe1mV.js                     ^[[39m^[[1m^[[2m   12.18 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.51 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAnimatedNumber-DHA4lKhy.js                    ^[[39m^[[1m^[[2m   12.21 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.20 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mDemoModeOverlay-BemoujtV.js                   ^[[39m^[[1m^[[2m   12.93 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.85 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mapp-icons-CMs1r4L5.js                         ^[[39m^[[1m^[[2m   13.71 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.97 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAdminCodexToolsDialog-DLn_GSQw.js             ^[[39m^[[1m^[[2m   13.75 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.89 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mGoogleAccountSettingsCard-g4PwajA4.js         ^[[39m^[[1m^[[2m   13.81 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.58 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mmotion-geometric-icons-uM8kiccP.js            ^[[39m^[[1m^[[2m   15.10 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.50 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mapp-diagnostics-collector-DeXwBJIi.js         ^[[39m^[[1m^[[2m   15.64 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.87 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mSharedChatDock-DBkfGsWB.js                    ^[[39m^[[1m^[[2m   15.82 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.39 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mProjectSourcePicker-BtPE-WPm.js               ^[[39m^[[1m^[[2m   16.07 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.32 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mPluginsSettingsCard-DpCRLmyQ.js               ^[[39m^[[1m^[[2m   16.97 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.98 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mCodexModelPicker-DwvDnSAg.js                  ^[[39m^[[1m^[[2m   17.48 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.39 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mConfigurationMigrationCard-DziHHIJ2.js        ^[[39m^[[1m^[[2m   18.17 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.88 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mSystemServicesDialog-7_sj3CR8.js              ^[[39m^[[1m^[[2m   19.57 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.78 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAgentsDashboard-Dw5RxrAa.js                   ^[[39m^[[1m^[[2m   20.70 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   7.00 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mSetupConnectionsWizard-Dd9vFcqV.js            ^[[39m^[[1m^[[2m   21.38 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   7.04 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAiQuotaWidget-BMQCXMqO.js                     ^[[39m^[[1m^[[2m   22.02 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   7.11 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mdots-chat-DihThkll.js                         ^[[39m^[[1m^[[2m   22.58 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   7.29 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mOnScreenKeyboard-FCBkmI-M.js                  ^[[39m^[[1m^[[2m   22.94 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   8.25 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mRoomAgentDock-CmWKyf1W.js                     ^[[39m^[[1m^[[2m   27.77 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   9.81 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mSystemTopologyMap-BYiGbzTt.js                 ^[[39m^[[1m^[[2m   31.65 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   8.19 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mVibeMusicPlayer-Cr4dSmBt.js                   ^[[39m^[[1m^[[2m   35.81 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  11.61 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAgentFilesDock-DV75ZOSV.js                    ^[[39m^[[1m^[[2m   36.45 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  10.99 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mYouTubePane-DsSw8bxR.js                       ^[[39m^[[1m^[[2m   36.74 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  11.68 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAdminOperationsDialog-Cb2YMceh.js             ^[[39m^[[1m^[[2m   36.93 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  10.35 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mMemoryWorkspace-Dd_RPS9i.js                   ^[[39m^[[1m^[[2m   39.18 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  13.21 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mMarketingCopilotPane-CS9ByXMQ.js              ^[[39m^[[1m^[[2m   43.15 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  13.15 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mSystemAnalyticsWorkspace-D5cYroM4.js          ^[[39m^[[1m^[[2m   43.19 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  10.73 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mDotsSettingsCard-Cl-41-IK.js                  ^[[39m^[[1m^[[2m   45.21 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  13.06 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mLivePane-7r63MKvj.js                          ^[[39m^[[1m^[[2m   45.91 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  13.07 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mDemosPane-DmuKc5PY.js                         ^[[39m^[[1m^[[2m   47.57 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  11.19 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mHelpPage-Mg2URbBV.js                          ^[[39m^[[1m^[[2m   47.63 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  15.37 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mStreamingDock-zxLcF7iB.js                     ^[[39m^[[1m^[[2m   51.39 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  13.17 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mvendor-icons-DG0EVKDf.js                      ^[[39m^[[1m^[[2m   52.87 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  16.23 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mFilesPane-CuMhuquv.js                         ^[[39m^[[1m^[[2m   53.86 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  13.73 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mBenchmarkPage-BpS_YC1U.js                     ^[[39m^[[1m^[[2m   58.89 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  18.72 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mCliDock-CDUJvIJq.js                           ^[[39m^[[1m^[[2m   59.23 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  16.15 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mSnipToolOverlay-BmEMS0qY.js                   ^[[39m^[[1m^[[2m   59.62 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  20.54 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mBrowserPane-St2ryAx4.js                       ^[[39m^[[1m^[[2m   59.86 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  17.09 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mMailCopilotPane-Bbyxjb6w.js                   ^[[39m^[[1m^[[2m   63.28 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  18.91 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mSourceControlDock-5qWrcmLi.js                 ^[[39m^[[1m^[[2m   65.65 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  19.69 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mSpaceappAsteroids-Ck91vryB.js                 ^[[39m^[[1m^[[2m   66.95 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  21.34 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mJobCopilotPane-DFdaueAh.js                    ^[[39m^[[1m^[[2m   72.23 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  21.32 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mvendor-validation-BXBRTD2d.js                 ^[[39m^[[1m^[[2m   79.24 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  21.11 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mmaterial-rounded-icons-CUkxyB2I.js            ^[[39m^[[1m^[[2m   81.36 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  23.97 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mAgentPane-HkLX9yb0.js                         ^[[39m^[[1m^[[2m   87.80 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  27.51 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mlive-api-CKZG3-IC.js                          ^[[39m^[[1m^[[2m   88.02 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  17.54 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mgateway-realtime-CcEmPuL5.js                  ^[[39m^[[1m^[[2m  117.83 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  32.81 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mSpaceGatewayDialog-BqgiBL7k.js                ^[[39m^[[1m^[[2m  143.59 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  36.95 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mindex-Cr6TnYXm.js                             ^[[39m^[[1m^[[2m  157.29 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  47.67 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mDesktopMemoryGraph-D444jNrm.js                ^[[39m^[[1m^[[2m  169.59 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  42.08 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mDemoSpaceApp-B_svqSDR.js                      ^[[39m^[[1m^[[2m  181.92 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  52.18 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mlive-session-Bt1lOasZ.js                      ^[[39m^[[1m^[[2m  186.34 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  56.51 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mVncPane-Dh-82bez.js                           ^[[39m^[[1m^[[2m  187.79 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  56.75 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mvendor-react-D8SuotAj.js                      ^[[39m^[[1m^[[2m  221.82 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  69.02 kB^[[22m
+[Build the workspace] ^[[33m
+[Build the workspace] (!) Some chunks are larger than 500 kB after minification. Consider:
+[Build the workspace] - Using dynamic import() to code-split the application
+[Build the workspace] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[Build the workspace] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.^[[39m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mvendor-xterm-Dre15qCx.js                      ^[[39m^[[1m^[[2m  330.84 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  83.50 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mindex-BORgUCQg.js                             ^[[39m^[[1m^[[2m  398.47 kB^[[22m^[[1m^[[22m^[[2m │ gzip: 102.34 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mDatabasesPane-J3Y55apD.js                     ^[[39m^[[1m^[[33m  578.63 kB^[[39m^[[22m^[[2m │ gzip: 181.41 kB^[[22m
+[Build the workspace] ^[[2mdist/^[[22m^[[2massets/^[[22m^[[36mApp-C90o_HL7.js                               ^[[39m^[[1m^[[33m1,366.21 kB^[[39m^[[22m^[[2m │ gzip: 421.63 kB^[[22m
+[Build the workspace] ^[[32m✓ built in 13.95s^[[39m
+[Build the workspace] {"sourceFiles":198,"rawBytes":8026687,"brotliBytes":1884194,"gzipBytes":2240754}
+[Unit tests for the dev-stack orchestrator] ﻿2026-10-16T12:59:34.1718103Z ##[group]Run node --test scripts/tests/dev-stack.test.mjs
+[Unit tests for the dev-stack orchestrator] ^[[36;1mnode --test scripts/tests/dev-stack.test.mjs^[[0m
+[Unit tests for the dev-stack orchestrator] shell: /usr/bin/bash -e {0}
+[Unit tests for the dev-stack orchestrator] env:
+[Unit tests for the dev-stack orchestrator]   API_PORT: 5910
+[Unit tests for the dev-stack orchestrator]   WEB_PORT: 5911
+[Unit tests for the dev-stack orchestrator] ##[endgroup]
+[Unit tests for the dev-stack orchestrator] TAP version 13
+[Unit tests for the dev-stack orchestrator] # dev-stack: stopping fixture (pid 3014)
+[Unit tests for the dev-stack orchestrator] # Subtest: readPinnedImages extracts both digest-pinned images from the compose template
+[Unit tests for the dev-stack orchestrator] ok 1 - readPinnedImages extracts both digest-pinned images from the compose template
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 1.58224
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: readPinnedImages fails closed when a digest is missing
+[Unit tests for the dev-stack orchestrator] ok 2 - readPinnedImages fails closed when a digest is missing
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.557193
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: generateSecrets returns the database URL that migrations need
+[Unit tests for the dev-stack orchestrator] ok 3 - generateSecrets returns the database URL that migrations need
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 2.237846
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: waitForInfrastructure treats a healthy postgres and a running temporal as ready
+[Unit tests for the dev-stack orchestrator] ok 4 - waitForInfrastructure treats a healthy postgres and a running temporal as ready
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.17093
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: parseContainerState reads the status and health fields docker inspect joins
+[Unit tests for the dev-stack orchestrator] ok 5 - parseContainerState reads the status and health fields docker inspect joins
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.888612
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: only the password a container reads is 0644; the host-only secrets stay 0600
+[Unit tests for the dev-stack orchestrator] ok 6 - only the password a container reads is 0644; the host-only secrets stay 0600
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 3.46345
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: buildServiceEnv hands the owner setup token over as a file, the only form the API reads
+[Unit tests for the dev-stack orchestrator] ok 7 - buildServiceEnv hands the owner setup token over as a file, the only form the API reads
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.701232
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: the setup token env var is the one apps/api/src/owner-setup.ts actually reads
+[Unit tests for the dev-stack orchestrator] ok 8 - the setup token env var is the one apps/api/src/owner-setup.ts actually reads
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.286225
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: the token file the API is handed exists and survives the API's own validator
+[Unit tests for the dev-stack orchestrator] ok 9 - the token file the API is handed exists and survives the API's own validator
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 1.340298
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: an existing state directory is moved to the declared mode in both directions
+[Unit tests for the dev-stack orchestrator] ok 10 - an existing state directory is moved to the declared mode in both directions
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 2.158448
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: the developer-facing copy of the secrets is owner-only
+[Unit tests for the dev-stack orchestrator] ok 11 - the developer-facing copy of the secrets is owner-only
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.857304
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: renderCompose binds every published port to 127.0.0.1 only
+[Unit tests for the dev-stack orchestrator] ok 12 - renderCompose binds every published port to 127.0.0.1 only
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.305371
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: only postgres-password is mounted into a container, so it is the only one that may be 0644
+[Unit tests for the dev-stack orchestrator] ok 13 - only postgres-password is mounted into a container, so it is the only one that may be 0644
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.207288
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: renderCompose uses the digest-pinned images verbatim
+[Unit tests for the dev-stack orchestrator] ok 14 - renderCompose uses the digest-pinned images verbatim
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.202639
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: renderCompose namespaced resources never collide with an installed SpaceApp
+[Unit tests for the dev-stack orchestrator] ok 15 - renderCompose namespaced resources never collide with an installed SpaceApp
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.148929
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: renderCompose keeps the dev network routable, as the shipped template does
+[Unit tests for the dev-stack orchestrator] ok 16 - renderCompose keeps the dev network routable, as the shipped template does
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.163085
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: waitForInfrastructure prints each container's logs before giving up
+[Unit tests for the dev-stack orchestrator] ok 17 - waitForInfrastructure prints each container's logs before giving up
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.159498
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: dev-stack ports do not collide with an installed SpaceApp on 4910/4911
+[Unit tests for the dev-stack orchestrator] ok 18 - dev-stack ports do not collide with an installed SpaceApp on 4910/4911
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.182291
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: the dev stack never enables the dev-login shortcut
+[Unit tests for the dev-stack orchestrator] ok 19 - the dev stack never enables the dev-login shortcut
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.318256
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: gitignore covers the dev-stack state directory
+[Unit tests for the dev-stack orchestrator] ok 20 - gitignore covers the dev-stack state directory
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.126346
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: readPinnedOpenCode reads the pinned OpenCode version from the Dockerfile
+[Unit tests for the dev-stack orchestrator] ok 21 - readPinnedOpenCode reads the pinned OpenCode version from the Dockerfile
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.275936
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: readPinnedOpenCode fails closed when the pin is missing
+[Unit tests for the dev-stack orchestrator] ok 22 - readPinnedOpenCode fails closed when the pin is missing
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.203811
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: dev-stack installs OpenCode into the state directory, never globally
+[Unit tests for the dev-stack orchestrator] ok 23 - dev-stack installs OpenCode into the state directory, never globally
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.331841
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: the pane command is named exactly what the API's descriptor fixes
+[Unit tests for the dev-stack orchestrator] ok 24 - the pane command is named exactly what the API's descriptor fixes
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.284192
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: renderOpenCodeWrapper isolates provider state and execs the pinned launcher
+[Unit tests for the dev-stack orchestrator] ok 25 - renderOpenCodeWrapper isolates provider state and execs the pinned launcher
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.300733
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: writeOpenCodeWrapper writes an executable file where the API looks for it
+[Unit tests for the dev-stack orchestrator] ok 26 - writeOpenCodeWrapper writes an executable file where the API looks for it
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.802301
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: buildServiceEnv points the CLI command path at the wrapper directory
+[Unit tests for the dev-stack orchestrator] ok 27 - buildServiceEnv points the CLI command path at the wrapper directory
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.586808
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: readPidFile survives a missing, truncated or hand-edited pid file
+[Unit tests for the dev-stack orchestrator] ok 28 - readPidFile survives a missing, truncated or hand-edited pid file
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 1.120746
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: teardown reaches a child's own children, not just the leader it recorded
+[Unit tests for the dev-stack orchestrator] ok 29 - teardown reaches a child's own children, not just the leader it recorded
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 65.17974
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: ps rows count a live member of the group and ignore every other group
+[Unit tests for the dev-stack orchestrator] ok 30 - ps rows count a live member of the group and ignore every other group
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.305662
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: ps rows treat a group that is only zombies as stopped
+[Unit tests for the dev-stack orchestrator] ok 31 - ps rows treat a group that is only zombies as stopped
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.142797
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: ps rows survive a header, blank lines and a truncated listing
+[Unit tests for the dev-stack orchestrator] ok 32 - ps rows survive a header, blank lines and a truncated listing
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.118742
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: the Vite dev proxy follows the port the dev stack puts the API on
+[Unit tests for the dev-stack orchestrator] ok 33 - the Vite dev proxy follows the port the dev stack puts the API on
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.362168
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] # Subtest: the from-source run overrides every path config.ts roots at the installed product
+[Unit tests for the dev-stack orchestrator] ok 34 - the from-source run overrides every path config.ts roots at the installed product
+[Unit tests for the dev-stack orchestrator]   ---
+[Unit tests for the dev-stack orchestrator]   duration_ms: 0.553585
+[Unit tests for the dev-stack orchestrator]   type: 'test'
+[Unit tests for the dev-stack orchestrator]   ...
+[Unit tests for the dev-stack orchestrator] 1..34
+[Unit tests for the dev-stack orchestrator] # tests 34
+[Unit tests for the dev-stack orchestrator] # suites 0
+[Unit tests for the dev-stack orchestrator] # pass 34
+[Unit tests for the dev-stack orchestrator] # fail 0
+[Unit tests for the dev-stack orchestrator] # cancelled 0
+[Unit tests for the dev-stack orchestrator] # skipped 0
+[Unit tests for the dev-stack orchestrator] # todo 0
+[Unit tests for the dev-stack orchestrator] # duration_ms 179.613274
+[Start the stack from source] ﻿2026-10-16T12:59:34.4020193Z ##[group]Run set -euo pipefail
+[Start the stack from source] ^[[36;1mset -euo pipefail^[[0m
+[Start the stack from source] ^[[36;1mnohup npm run dev:stack > dev-stack.out 2>&1 &^[[0m
+[Start the stack from source] ^[[36;1mecho "dev-stack pid $!"^[[0m
+[Start the stack from source] shell: /usr/bin/bash -e {0}
+[Start the stack from source] env:
+[Start the stack from source]   API_PORT: 5910
+[Start the stack from source]   WEB_PORT: 5911
+[Start the stack from source] ##[endgroup]
+[Start the stack from source] dev-stack pid 3029
+[Wait for /readyz to report ok] ﻿2026-10-16T12:59:34.4205687Z ##[group]Run set -euo pipefail
+[Wait for /readyz to report ok] ^[[36;1mset -euo pipefail^[[0m
+[Wait for /readyz to report ok] ^[[36;1mecho "waiting for http://127.0.0.1:${API_PORT}/readyz"^[[0m
+[Wait for /readyz to report ok] ^[[36;1mfor i in $(seq 1 150); do^[[0m
+[Wait for /readyz to report ok] ^[[36;1m  if curl -fsS "http://127.0.0.1:${API_PORT}/readyz" -o readyz.json 2>/dev/null; then^[[0m
+[Wait for /readyz to report ok] ^[[36;1m    echo "readyz: $(cat readyz.json)"^[[0m
+[Wait for /readyz to report ok] ^[[36;1m    if grep -q '"ok"[: ]*true' readyz.json; then^[[0m
+[Wait for /readyz to report ok] ^[[36;1m      echo "API is ready."^[[0m
+[Wait for /readyz to report ok] ^[[36;1m      exit 0^[[0m
+[Wait for /readyz to report ok] ^[[36;1m    fi^[[0m
+[Wait for /readyz to report ok] ^[[36;1m  fi^[[0m
+[Wait for /readyz to report ok] ^[[36;1m  sleep 2^[[0m
+[Wait for /readyz to report ok] ^[[36;1mdone^[[0m
+[Wait for /readyz to report ok] ^[[36;1mecho "readyz never reported ok"^[[0m
+[Wait for /readyz to report ok] ^[[36;1m# The API is not necessarily the process that died: dev-stack stops the^[[0m
+[Wait for /readyz to report ok] ^[[36;1m# whole stack as soon as any child exits, so every service log matters.^[[0m
+[Wait for /readyz to report ok] ^[[36;1mecho "--- dev-stack.out ---"; cat dev-stack.out || true^[[0m
+[Wait for /readyz to report ok] ^[[36;1mecho "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true^[[0m
+[Wait for /readyz to report ok] ^[[36;1mfor f in .dev-stack/logs/*.log; do^[[0m
+[Wait for /readyz to report ok] ^[[36;1m  [ -f "$f" ] || continue^[[0m
+[Wait for /readyz to report ok] ^[[36;1m  echo "--- $f ---"; tail -n 120 "$f" || true^[[0m
+[Wait for /readyz to report ok] ^[[36;1mdone^[[0m
+[Wait for /readyz to report ok] ^[[36;1mexit 1^[[0m
+[Wait for /readyz to report ok] shell: /usr/bin/bash -e {0}
+[Wait for /readyz to report ok] env:
+[Wait for /readyz to report ok]   API_PORT: 5910
+[Wait for /readyz to report ok]   WEB_PORT: 5911
+[Wait for /readyz to report ok] ##[endgroup]
+[Wait for /readyz to report ok] waiting for http://127.0.0.1:5910/readyz
+[Wait for /readyz to report ok] readyz: {"ok":true,"apiStartedAt":"2026-10-16T13:00:09.669Z","dependencies":{"store":"postgres","runtimeStore":"postgres","database":"RUNNING","eventBus":"in-process","temporal":"disabled","worker":"RUNNING","cliHost":"RUNNING","cliAdminHost":"disabled","browserHost":"DISABLED","browserHostBuildCommit":null,"browserHostCaptureMetrics":null,"appDiagnostics":{"isEnabled":false,"captureId":null,"usageBytes":0,"quotaBytes":8589934592,"recorderStatus":"IDLE"},"codexTurns":"disabled","codexLb":"disabled"}}
+[Wait for /readyz to report ok] API is ready.
+[Check no service reached into the installed product's root] ﻿2026-10-16T13:00:10.7342651Z ##[group]Run set -euo pipefail
+[Check no service reached into the installed product's root] ^[[36;1mset -euo pipefail^[[0m
+[Check no service reached into the installed product's root] ^[[36;1mhits=$(grep -rn "/opt/spaceapp" .dev-stack/logs/ || true)^[[0m
+[Check no service reached into the installed product's root] ^[[36;1mif [ -n "$hits" ]; then^[[0m
+[Check no service reached into the installed product's root] ^[[36;1m  echo "a service used the installed product's root instead of the state directory:"^[[0m
+[Check no service reached into the installed product's root] ^[[36;1m  echo "$hits"^[[0m
+[Check no service reached into the installed product's root] ^[[36;1m  exit 1^[[0m
+[Check no service reached into the installed product's root] ^[[36;1mfi^[[0m
+[Check no service reached into the installed product's root] ^[[36;1mecho "no service touched /opt/spaceapp; every path resolved inside .dev-stack"^[[0m
+[Check no service reached into the installed product's root] shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+[Check no service reached into the installed product's root] env:
+[Check no service reached into the installed product's root]   API_PORT: 5910
+[Check no service reached into the installed product's root]   WEB_PORT: 5911
+[Check no service reached into the installed product's root] ##[endgroup]
+[Check no service reached into the installed product's root] no service touched /opt/spaceapp; every path resolved inside .dev-stack
+[Check the web server proxies to this stack's API] ﻿2026-10-16T13:00:10.7562818Z ##[group]Run set -euo pipefail
+[Check the web server proxies to this stack's API] ^[[36;1mset -euo pipefail^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1mecho "waiting for http://127.0.0.1:${WEB_PORT}/readyz (proxied to ${API_PORT})"^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1mfor i in $(seq 1 60); do^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1m  if curl -fsS "http://127.0.0.1:${WEB_PORT}/readyz" -o readyz-web.json 2>/dev/null; then^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1m    echo "readyz through Vite: $(cat readyz-web.json)"^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1m    if grep -q '"ok"[: ]*true' readyz-web.json; then^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1m      echo "The web server proxies to the dev-stack API on ${API_PORT}."^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1m      exit 0^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1m    fi^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1m  fi^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1m  sleep 2^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1mdone^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1mecho "the web server never proxied /readyz to the API on ${API_PORT}"^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1mecho "--- dev-stack.out ---"; cat dev-stack.out || true^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1mecho "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1mfor f in .dev-stack/logs/*.log; do^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1m  [ -f "$f" ] || continue^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1m  echo "--- $f ---"; tail -n 120 "$f" || true^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1mdone^[[0m
+[Check the web server proxies to this stack's API] ^[[36;1mexit 1^[[0m
+[Check the web server proxies to this stack's API] shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+[Check the web server proxies to this stack's API] env:
+[Check the web server proxies to this stack's API]   API_PORT: 5910
+[Check the web server proxies to this stack's API]   WEB_PORT: 5911
+[Check the web server proxies to this stack's API] ##[endgroup]
+[Check the web server proxies to this stack's API] waiting for http://127.0.0.1:5911/readyz (proxied to 5910)
+[Check the web server proxies to this stack's API] readyz through Vite: {"ok":true,"apiStartedAt":"2026-10-16T13:00:09.669Z","dependencies":{"store":"postgres","runtimeStore":"postgres","database":"RUNNING","eventBus":"in-process","temporal":"disabled","worker":"RUNNING","cliHost":"RUNNING","cliAdminHost":"disabled","browserHost":"DISABLED","browserHostBuildCommit":null,"browserHostCaptureMetrics":null,"appDiagnostics":{"isEnabled":false,"captureId":null,"usageBytes":0,"quotaBytes":8589934592,"recorderStatus":"IDLE"},"codexTurns":"disabled","codexLb":"disabled"}}
+[Check the web server proxies to this stack's API] The web server proxies to the dev-stack API on 5910.
+[Claim owner setup over HTTP] ﻿2026-10-16T13:00:10.8033108Z ##[group]Run set -euo pipefail
+[Claim owner setup over HTTP] ^[[36;1mset -euo pipefail^[[0m
+[Claim owner setup over HTTP] ^[[36;1mBASE="http://127.0.0.1:${API_PORT}"^[[0m
+[Claim owner setup over HTTP] ^[[36;1mTOKEN="$(cat .dev-stack/secrets/setup-token)"^[[0m
+[Claim owner setup over HTTP] ^[[36;1mecho "setup token loaded (${#TOKEN} chars)"^[[0m
+[Claim owner setup over HTTP] ^[[36;1m^[[0m
+[Claim owner setup over HTTP] ^[[36;1mcurl -fsS "${BASE}/api/setup/status" -o setup-status.json -w 'setup status: %{http_code}\n'^[[0m
+[Claim owner setup over HTTP] ^[[36;1mcat setup-status.json^[[0m
+[Claim owner setup over HTTP] ^[[36;1mgrep -q '"setupRequired"[: ]*true' setup-status.json^[[0m
+[Claim owner setup over HTTP] ^[[36;1m^[[0m
+[Claim owner setup over HTTP] ^[[36;1mcurl -fsS -X POST "${BASE}/api/setup/claim" \^[[0m
+[Claim owner setup over HTTP] ^[[36;1m  -H 'content-type: application/json' \^[[0m
+[Claim owner setup over HTTP] ^[[36;1m  --data "{\"token\":\"${TOKEN}\",\"email\":\"ci-owner@example.test\",\"password\":\"ci-owner-password-1\"}" \^[[0m
+[Claim owner setup over HTTP] ^[[36;1m  -c cookies.txt -o claim.json -w 'setup claim: %{http_code}\n'^[[0m
+[Claim owner setup over HTTP] ^[[36;1mcat claim.json^[[0m
+[Claim owner setup over HTTP] ^[[36;1m^[[0m
+[Claim owner setup over HTTP] ^[[36;1mnode -e '^[[0m
+[Claim owner setup over HTTP] ^[[36;1m  const c = require("./claim.json");^[[0m
+[Claim owner setup over HTTP] ^[[36;1m  if (c.isAuthenticated !== true) { console.error("claim did not authenticate"); process.exit(1); }^[[0m
+[Claim owner setup over HTTP] ^[[36;1m  if (c.isSetupRequired !== false) { console.error("setup still required"); process.exit(1); }^[[0m
+[Claim owner setup over HTTP] ^[[36;1m  if (!c.starterRoomId) { console.error("claim returned no starterRoomId"); process.exit(1); }^[[0m
+[Claim owner setup over HTTP] ^[[36;1m  require("fs").writeFileSync("starter-room-id.txt", c.starterRoomId);^[[0m
+[Claim owner setup over HTTP] ^[[36;1m  console.log("owner claimed; starter room:", c.starterRoomId);^[[0m
+[Claim owner setup over HTTP] ^[[36;1m'^[[0m
+[Claim owner setup over HTTP] shell: /usr/bin/bash -e {0}
+[Claim owner setup over HTTP] env:
+[Claim owner setup over HTTP]   API_PORT: 5910
+[Claim owner setup over HTTP]   WEB_PORT: 5911
+[Claim owner setup over HTTP] ##[endgroup]
+[Claim owner setup over HTTP] setup token loaded (64 chars)
+[Claim owner setup over HTTP] setup status: 200
+[Claim owner setup over HTTP] {"setupRequired":true,"expiresAt":"2026-10-16T13:15:09.657Z"}setup claim: 200
+[Claim owner setup over HTTP] {"user":{"id":"user:owner","email":"ci-owner@example.test","role":"ADMIN"},"isAuthenticated":true,"isSetupRequired":false,"onboardingVersion":1,"isOnboardingComplete":false,"starterRoomId":"room:Yk8K7AlTWZ7N","optionalModules":["games","job-copilot","mail-copilot","marketing-copilot","channels","telegram","waitlist","desktop-updates"]}owner claimed; starter room: room:Yk8K7AlTWZ7N
+[Fetch the CSRF token the session needs] ﻿2026-10-16T13:00:10.9725448Z ##[group]Run set -euo pipefail
+[Fetch the CSRF token the session needs] ^[[36;1mset -euo pipefail^[[0m
+[Fetch the CSRF token the session needs] ^[[36;1mBASE="http://127.0.0.1:${API_PORT}"^[[0m
+[Fetch the CSRF token the session needs] ^[[36;1mcurl -fsS -b cookies.txt "${BASE}/api/auth/csrf" -o csrf.json -w 'csrf: %{http_code}\n'^[[0m
+[Fetch the CSRF token the session needs] ^[[36;1mcat csrf.json^[[0m
+[Fetch the CSRF token the session needs] ^[[36;1mnode -e '^[[0m
+[Fetch the CSRF token the session needs] ^[[36;1m  const c = require("./csrf.json");^[[0m
+[Fetch the CSRF token the session needs] ^[[36;1m  if (!c.csrfToken) { console.error("no csrfToken in the response"); process.exit(1); }^[[0m
+[Fetch the CSRF token the session needs] ^[[36;1m  if (!c.headerName) { console.error("no headerName in the response"); process.exit(1); }^[[0m
+[Fetch the CSRF token the session needs] ^[[36;1m  require("fs").writeFileSync("csrf-token.txt", c.csrfToken);^[[0m
+[Fetch the CSRF token the session needs] ^[[36;1m  require("fs").writeFileSync("csrf-header.txt", c.headerName);^[[0m
+[Fetch the CSRF token the session needs] ^[[36;1m  console.log("csrf header:", c.headerName);^[[0m
+[Fetch the CSRF token the session needs] ^[[36;1m'^[[0m
+[Fetch the CSRF token the session needs] shell: /usr/bin/bash -e {0}
+[Fetch the CSRF token the session needs] env:
+[Fetch the CSRF token the session needs]   API_PORT: 5910
+[Fetch the CSRF token the session needs]   WEB_PORT: 5911
+[Fetch the CSRF token the session needs] ##[endgroup]
+[Fetch the CSRF token the session needs] csrf: 200
+[Fetch the CSRF token the session needs] {"csrfToken":"Qc9XY7ZpAlCuzFE5aYuJIn5KmwQvkEns1blC6trXMvM","headerName":"x-space-csrf-token"}csrf header: x-space-csrf-token
+[Ensure the Getting Started room] ﻿2026-10-16T13:00:11.0322016Z ##[group]Run set -euo pipefail
+[Ensure the Getting Started room] ^[[36;1mset -euo pipefail^[[0m
+[Ensure the Getting Started room] ^[[36;1mBASE="http://127.0.0.1:${API_PORT}"^[[0m
+[Ensure the Getting Started room] ^[[36;1mCSRF_HEADER="$(cat csrf-header.txt)"^[[0m
+[Ensure the Getting Started room] ^[[36;1mCSRF_TOKEN="$(cat csrf-token.txt)"^[[0m
+[Ensure the Getting Started room] ^[[36;1mcode="$(curl -sS -b cookies.txt -X POST "${BASE}/api/setup/starter-room" \^[[0m
+[Ensure the Getting Started room] ^[[36;1m  -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \^[[0m
+[Ensure the Getting Started room] ^[[36;1m  -o starter-room.json -w '%{http_code}')"^[[0m
+[Ensure the Getting Started room] ^[[36;1mecho "starter room: ${code}"^[[0m
+[Ensure the Getting Started room] ^[[36;1mcat starter-room.json^[[0m
+[Ensure the Getting Started room] ^[[36;1mif [ "${code}" != "200" ]; then echo "starter-room request failed"; exit 1; fi^[[0m
+[Ensure the Getting Started room] ^[[36;1mnode -e '^[[0m
+[Ensure the Getting Started room] ^[[36;1m  const s = require("./starter-room.json");^[[0m
+[Ensure the Getting Started room] ^[[36;1m  const id = s.room?.id;^[[0m
+[Ensure the Getting Started room] ^[[36;1m  if (!id) { console.error("no room id from /api/setup/starter-room"); process.exit(1); }^[[0m
+[Ensure the Getting Started room] ^[[36;1m  require("fs").writeFileSync("starter-room-id.txt", id);^[[0m
+[Ensure the Getting Started room] ^[[36;1m  console.log("starter room:", id);^[[0m
+[Ensure the Getting Started room] ^[[36;1m'^[[0m
+[Ensure the Getting Started room] shell: /usr/bin/bash -e {0}
+[Ensure the Getting Started room] env:
+[Ensure the Getting Started room]   API_PORT: 5910
+[Ensure the Getting Started room]   WEB_PORT: 5911
+[Ensure the Getting Started room] ##[endgroup]
+[Ensure the Getting Started room] starter room: 200
+[Ensure the Getting Started room] {"room":{"id":"room:Yk8K7AlTWZ7N","name":"Getting Started","description":"Workspace for your agent tasks and sessions.","projectPath":"/opt/spaceapp","kind":"WORKSPACE","order":0,"paneLayoutColumns":null,"paneLayoutHeight":1,"createdAt":"2026-10-16T13:00:10.923Z","updatedAt":"2026-10-16T13:00:10.923Z","archivedAt":null,"paneCap":16,"traceId":"trace:fP_VHqAzgifC","ownerUserId":"user:owner"},"onboarding":{"onboardingVersion":1,"isComplete":false,"completedAt":null,"starterRoomId":"room:Yk8K7AlTWZ7N"}}starter room: room:Yk8K7AlTWZ7N
+[Open an OpenCode CLI pane and check it is running] ﻿2026-10-16T13:00:11.0944984Z ##[group]Run set -euo pipefail
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mset -euo pipefail^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mBASE="http://127.0.0.1:${API_PORT}"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mROOM_ID="$(cat starter-room-id.txt)"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mCSRF_HEADER="$(cat csrf-header.txt)"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mCSRF_TOKEN="$(cat csrf-token.txt)"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mcode="$(curl -sS -b cookies.txt -X POST "${BASE}/api/panes" \^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  -H 'content-type: application/json' \^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  -d "{\"roomId\":\"${ROOM_ID}\",\"title\":\"OpenCode CLI\",\"mode\":\"TERMINAL\",\"terminalRuntimeId\":\"cli:opencode\"}" \^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  -o pane.json -w '%{http_code}')"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mecho "open pane: ${code}"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mcat pane.json^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mif [ "${code}" != "200" ]; then echo "pane create failed"; exit 1; fi^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mnode -e '^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  const p = require("./pane.json");^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  if (!p.id) { console.error("pane create returned no id"); process.exit(1); }^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  if (p.mode !== "TERMINAL") { console.error("pane mode is " + p.mode + ", expected TERMINAL"); process.exit(1); }^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  if (p.terminalRuntimeId !== "cli:opencode") { console.error("wrong runtime: " + p.terminalRuntimeId); process.exit(1); }^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  require("fs").writeFileSync("pane-id.txt", p.id);^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  console.log("pane:", p.id, p.mode, p.terminalRuntimeId);^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m'^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mPANE_ID="$(cat pane-id.txt)"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mcode="$(curl -sS -b cookies.txt -X POST "${BASE}/api/panes/${PANE_ID}/cli/session" \^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  -H 'content-type: application/json' \^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  -d '{"runtimeId":"cli:opencode"}' \^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  -o session-start.json -w '%{http_code}')"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mecho "start cli session: ${code}"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mcat session-start.json^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mif [ "${code}" != "200" ]; then echo "cli session start failed"; exit 1; fi^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mnode -e '^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  const s = require("./session-start.json");^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  const session = s.session;^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  if (!session) { console.error("cli session start returned no session"); process.exit(1); }^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  if (session.runtimeId !== "cli:opencode") { console.error("cli session runtime is " + session.runtimeId); process.exit(1); }^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  if (session.status === "EXITED" || session.status === "ERROR") {^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m    console.error("cli session started in " + session.status); process.exit(1);^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  }^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  console.log("cli session:", session.sessionId, session.status);^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m'^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mfor i in $(seq 1 45); do^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  rm -f cli-session.json^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  code="$(curl -sS -b cookies.txt "${BASE}/api/panes/${PANE_ID}/cli/session" -o cli-session.json -w '%{http_code}' || echo 000)"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  # JSON.parse, not require: require caches by resolved filename, so^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  # every poll after the first would re-read the first response and the^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  # loop could never observe a state change. A missing file is normal^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  # here -- curl writes nothing when it cannot reach the API.^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  STATE="$(node -e '^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m    const fs = require("fs");^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m    if (!fs.existsSync("cli-session.json")) { console.log("NO_RESPONSE"); process.exit(0); }^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m    const raw = fs.readFileSync("cli-session.json", "utf8").trim();^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m    if (raw === "null") { console.log("NO_SESSION"); process.exit(0); }^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m    let d; try { d = JSON.parse(raw); } catch { console.log(""); process.exit(0); }^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m    console.log((d && d.session && d.session.status) || "");^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  ')"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  echo "cli session state: ${STATE} (http ${code})"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  case "${STATE}" in^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m    RUNNING|IDLE)^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m      echo "OpenCode CLI session is up"; exit 0 ;;^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m    EXITED|ERROR)^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m      echo "OpenCode CLI session is ${STATE}"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m      tail -n 120 .dev-stack/logs/cli-host.log || true^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m      exit 1 ;;^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  esac^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1m  sleep 2^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mdone^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mecho "OpenCode CLI session never reached a running state"^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mtail -n 120 .dev-stack/logs/cli-host.log || true^[[0m
+[Open an OpenCode CLI pane and check it is running] ^[[36;1mexit 1^[[0m
+[Open an OpenCode CLI pane and check it is running] shell: /usr/bin/bash -e {0}
+[Open an OpenCode CLI pane and check it is running] env:
+[Open an OpenCode CLI pane and check it is running]   API_PORT: 5910
+[Open an OpenCode CLI pane and check it is running]   WEB_PORT: 5911
+[Open an OpenCode CLI pane and check it is running] ##[endgroup]
+[Open an OpenCode CLI pane and check it is running] open pane: 200
+[Open an OpenCode CLI pane and check it is running] {"id":"pane:Gh_6uAgjMZfm","roomId":"room:Yk8K7AlTWZ7N","title":"OpenCode CLI","titleSource":"auto","taskMetadata":null,"t3CodeMetadata":null,"jobApplyMetadata":null,"mailCopilotMetadata":null,"marketingCopilotMetadata":null,"paneName":"Bob","mode":"TERMINAL","status":"IDLE","providerId":null,"modelId":null,"terminalRuntimeId":"cli:opencode","reasoningEffort":"medium","cwd":"/opt/spaceapp","order":1,"columnSpan":1,"isMaximized":false,"isMinimized":false,"isClosed":false,"split":{"parentId":null,"direction":null,"size":null},"categoryColor":null,"vncTarget":null,"createdAt":"2026-10-16T13:00:11.126Z","updatedAt":"2026-10-16T13:00:11.126Z"}pane: pane:Gh_6uAgjMZfm TERMINAL cli:opencode
+[Open an OpenCode CLI pane and check it is running] start cli session: 200
+[Open an OpenCode CLI pane and check it is running] {"session":{"sessionId":"cli_session:OsODU44UqBWZ","paneId":"pane:Gh_6uAgjMZfm","roomId":"room:Yk8K7AlTWZ7N","runtimeId":"cli:opencode","providerId":"opencode","agentId":"opencode","modelId":null,"reasoningEffort":"medium","launchMode":"FRESH","purpose":"NORMAL","cwd":"/opt/spaceapp","codexThreadId":null,"cliTaskId":"cli_session:OsODU44UqBWZ","cliTaskRevisionId":"cli_session:OsODU44UqBWZ","accountProfileId":null,"terminalGeometry":null,"status":"IDLE","statusReason":"CLI session allocated; waiting for terminal transport attach.","exitCode":null,"isActive":true,"startedAt":"2026-10-16T13:00:11.187Z","updatedAt":"2026-10-16T13:00:11.187Z","endedAt":null},"runtime":{"id":"cli:opencode","providerId":"opencode","providerName":"OpenCode","agentId":"opencode","agentName":"OpenCode CLI","displayName":"OpenCode CLI","capabilities":["CLI"],"cliAdapter":{"contractVersion":1,"operations":{"start":"PTY_SPAWN","send":"PTY_INPUT","interrupt":"PROCESS_TERMINATE","inspect":"HOST_PROCESS","events":"PTY_OUTPUT_AND_PROCESS_EXIT","reconnect":"LIVE_HOST_PROCESS"},"nativeResumeModes":["REFERENCE","PROVIDER_SELECTION"],"completion":"OPENCODE_NATIVE_STATUS","context":{"owner":"PROVIDER_NATIVE","spaceCompaction":"NONE","usageReporting":"UNAVAILABLE"},"limitations":[{"operation":"login","code":"LOGIN_NOT_IN_TERMINAL","detail":"Authentication happens inside the CLI or through managed credentials; a terminal login is refused before a session is allocated."}],"evidence":"DECLARED_ONLY"},"adapterStatus":"ENABLED","authMode":"NONE","authState":"READY","authReason":"OpenCode is available without credentials. A working free model is checked on first launch.","canStartLogin":false,"status":"ENABLED","statusReason":"OpenCode is available without credentials. A working free model is checked on first launch.","commandName":"opencode-vscode-parity","detectedCommandPath":"/home/runner/work/spaceapp/spaceapp/.dev-stack/bin/opencode-vscode-parity","defaultModelId":null,"supportedReasoningEfforts":[],"checkedAt":"2026-10-16T13:00:11.175Z"},"transcript":[{"chunkId":"cli_chunk:D_0CflN2YNLU","sessionId":"cli_session:OsODU44UqBWZ","paneId":"pane:Gh_6uAgjMZfm","roomId":"room:Yk8K7AlTWZ7N","sequence":0,"stream":"system","content":"OpenCode CLI session allocated by Space. Terminal transport is gated behind runtime attach.","byteLength":91,"hostGenerationId":null,"hostOutputSequence":null,"createdAt":"2026-10-16T13:00:11.195Z"}],"websocket":{"paneId":"pane:Gh_6uAgjMZfm","sessionId":"cli_session:OsODU44UqBWZ","token":"7Dvl-Ud2B0I2Un21YUM6p_9RrIwXFGLEk7CcCMXyH2w","expiresAt":"2026-10-16T13:01:11.201Z"}}cli session: cli_session:OsODU44UqBWZ IDLE
+[Open an OpenCode CLI pane and check it is running] cli session state: IDLE (http 200)
+[Open an OpenCode CLI pane and check it is running] OpenCode CLI session is up
+[Print what the one command produced] ﻿2026-10-16T13:00:11.2782256Z ##[group]Run # `up` is launched with `nohup ... > dev-stack.out`, so a missing file
+[Print what the one command produced] ^[[36;1m# `up` is launched with `nohup ... > dev-stack.out`, so a missing file^[[0m
+[Print what the one command produced] ^[[36;1m# means the stack step died before it could write anything — which that^[[0m
+[Print what the one command produced] ^[[36;1m# step has already reported. Say that plainly rather than letting a^[[0m
+[Print what the one command produced] ^[[36;1m# bare `cat` error become the last thing a reader sees.^[[0m
+[Print what the one command produced] ^[[36;1mif [ ! -f dev-stack.out ]; then^[[0m
+[Print what the one command produced] ^[[36;1m  echo "dev-stack.out is absent: the stack step failed before writing it."^[[0m
+[Print what the one command produced] ^[[36;1m  echo "The cause is in that step; there is no transcript to print."^[[0m
+[Print what the one command produced] ^[[36;1m  exit 0^[[0m
+[Print what the one command produced] ^[[36;1mfi^[[0m
+[Print what the one command produced] ^[[36;1mcat dev-stack.out^[[0m
+[Print what the one command produced] shell: /usr/bin/bash -e {0}
+[Print what the one command produced] env:
+[Print what the one command produced]   API_PORT: 5910
+[Print what the one command produced]   WEB_PORT: 5911
+[Print what the one command produced] ##[endgroup]
+[Print what the one command produced] 
+[Print what the one command produced] > space@0.2.5 dev:stack
+[Print what the one command produced] > node scripts/dev-stack.mjs
+[Print what the one command produced] 
+[Print what the one command produced] dev-stack: state directory  /home/runner/work/spaceapp/spaceapp/.dev-stack
+[Print what the one command produced] dev-stack: compose project  spaceapp-dev-stack
+[Print what the one command produced] dev-stack: postgres         pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+[Print what the one command produced] dev-stack: temporal         temporalio/auto-setup:1.29.1@sha256:5b3502a3b685f9eff1b925af90c57c9e3dbeccbef367cc28a2a9712c63379312
+[Print what the one command produced] dev-stack: ports            api=5910 web=5911 postgres=55432 temporal=57233 (all 127.0.0.1 only)
+[Print what the one command produced] 
+[Print what the one command produced] dev-stack: starting PostgreSQL and Temporal in Docker...
+[Print what the one command produced]  temporal Pulling 
+[Print what the one command produced]  postgres Pulling 
+[Print what the one command produced]  fe07684b16b8 Pulling fs layer 
+[Print what the one command produced]  8625de8a7c49 Pulling fs layer 
+[Print what the one command produced]  5a632533374f Pulling fs layer 
+[Print what the one command produced]  d03efd77259a Pulling fs layer 
+[Print what the one command produced]  cbdf4df88106 Pulling fs layer 
+[Print what the one command produced]  eb1aa676e0d5 Pulling fs layer 
+[Print what the one command produced]  80106278f56c Pulling fs layer 
+[Print what the one command produced]  b33271db48bf Pulling fs layer 
+[Print what the one command produced]  34cec3f21afa Pulling fs layer 
+[Print what the one command produced]  0659d08ea8a7 Pulling fs layer 
+[Print what the one command produced]  0ec0c1231ccc Pulling fs layer 
+[Print what the one command produced]  e50b856c6879 Pulling fs layer 
+[Print what the one command produced]  e75438311f63 Pulling fs layer 
+[Print what the one command produced]  dfd4f98ed5a6 Pulling fs layer 
+[Print what the one command produced]  5c7c43d19247 Pulling fs layer 
+[Print what the one command produced]  4a8070346cf0 Pulling fs layer 
+[Print what the one command produced]  bfef1a555f99 Pulling fs layer 
+[Print what the one command produced]  4f4fb700ef54 Pulling fs layer 
+[Print what the one command produced]  bab263f6b26f Pulling fs layer 
+[Print what the one command produced]  d44b3b2d1045 Pulling fs layer 
+[Print what the one command produced]  f20bd1bfe2c6 Pulling fs layer 
+[Print what the one command produced]  8195da654516 Pulling fs layer 
+[Print what the one command produced]  cbdf4df88106 Waiting 
+[Print what the one command produced]  eb1aa676e0d5 Waiting 
+[Print what the one command produced]  80106278f56c Waiting 
+[Print what the one command produced]  b33271db48bf Waiting 
+[Print what the one command produced]  34cec3f21afa Waiting 
+[Print what the one command produced]  0659d08ea8a7 Waiting 
+[Print what the one command produced]  0ec0c1231ccc Waiting 
+[Print what the one command produced]  e50b856c6879 Waiting 
+[Print what the one command produced]  e75438311f63 Waiting 
+[Print what the one command produced]  dfd4f98ed5a6 Waiting 
+[Print what the one command produced]  5c7c43d19247 Waiting 
+[Print what the one command produced]  4a8070346cf0 Waiting 
+[Print what the one command produced]  8195da654516 Waiting 
+[Print what the one command produced]  bfef1a555f99 Waiting 
+[Print what the one command produced]  4f4fb700ef54 Waiting 
+[Print what the one command produced]  bab263f6b26f Waiting 
+[Print what the one command produced]  d44b3b2d1045 Waiting 
+[Print what the one command produced]  f20bd1bfe2c6 Waiting 
+[Print what the one command produced]  d03efd77259a Waiting 
+[Print what the one command produced]  72c03230f136 Pulling fs layer 
+[Print what the one command produced]  74930e0d0424 Pulling fs layer 
+[Print what the one command produced]  83adeb451413 Pulling fs layer 
+[Print what the one command produced]  8c1a14aff9b6 Pulling fs layer 
+[Print what the one command produced]  32bf4f64baf0 Pulling fs layer 
+[Print what the one command produced]  72c03230f136 Waiting 
+[Print what the one command produced]  14b667adca5d Pulling fs layer 
+[Print what the one command produced]  2116a3f7d919 Pulling fs layer 
+[Print what the one command produced]  efc98c1ef209 Pulling fs layer 
+[Print what the one command produced]  a42464a6c940 Pulling fs layer 
+[Print what the one command produced]  726a8c705531 Pulling fs layer 
+[Print what the one command produced]  74930e0d0424 Waiting 
+[Print what the one command produced]  ba2e32d3fbb8 Pulling fs layer 
+[Print what the one command produced]  83adeb451413 Waiting 
+[Print what the one command produced]  0ae601208f89 Pulling fs layer 
+[Print what the one command produced]  8ea845e45dec Pulling fs layer 
+[Print what the one command produced]  677876578f8b Pulling fs layer 
+[Print what the one command produced]  8c1a14aff9b6 Waiting 
+[Print what the one command produced]  78a34d086947 Pulling fs layer 
+[Print what the one command produced]  9a3c8b17e7b0 Pulling fs layer 
+[Print what the one command produced]  32bf4f64baf0 Waiting 
+[Print what the one command produced]  14b667adca5d Waiting 
+[Print what the one command produced]  2116a3f7d919 Waiting 
+[Print what the one command produced]  efc98c1ef209 Waiting 
+[Print what the one command produced]  a42464a6c940 Waiting 
+[Print what the one command produced]  726a8c705531 Waiting 
+[Print what the one command produced]  ba2e32d3fbb8 Waiting 
+[Print what the one command produced]  0ae601208f89 Waiting 
+[Print what the one command produced]  8ea845e45dec Waiting 
+[Print what the one command produced]  677876578f8b Waiting 
+[Print what the one command produced]  78a34d086947 Waiting 
+[Print what the one command produced]  9a3c8b17e7b0 Waiting 
+[Print what the one command produced]  8625de8a7c49 Downloading [=====================>                             ]  3.477kB/7.942kB
+[Print what the one command produced]  5a632533374f Downloading [>                                                  ]  48.49kB/3.635MB
+[Print what the one command produced]  8625de8a7c49 Downloading [==================================================>]  7.942kB/7.942kB
+[Print what the one command produced]  8625de8a7c49 Verifying Checksum 
+[Print what the one command produced]  8625de8a7c49 Download complete 
+[Print what the one command produced]  fe07684b16b8 Downloading [>                                                  ]  48.51kB/3.797MB
+[Print what the one command produced]  5a632533374f Downloading [==================================================>]  3.635MB/3.635MB
+[Print what the one command produced]  5a632533374f Verifying Checksum 
+[Print what the one command produced]  5a632533374f Download complete 
+[Print what the one command produced]  fe07684b16b8 Verifying Checksum 
+[Print what the one command produced]  fe07684b16b8 Download complete 
+[Print what the one command produced]  fe07684b16b8 Extracting [>                                                  ]  65.54kB/3.797MB
+[Print what the one command produced]  fe07684b16b8 Extracting [==================================================>]  3.797MB/3.797MB
+[Print what the one command produced]  fe07684b16b8 Extracting [==================================================>]  3.797MB/3.797MB
+[Print what the one command produced]  fe07684b16b8 Pull complete 
+[Print what the one command produced]  8625de8a7c49 Extracting [==================================================>]  7.942kB/7.942kB
+[Print what the one command produced]  8625de8a7c49 Extracting [==================================================>]  7.942kB/7.942kB
+[Print what the one command produced]  8625de8a7c49 Pull complete 
+[Print what the one command produced]  5a632533374f Extracting [>                                                  ]  65.54kB/3.635MB
+[Print what the one command produced]  d03efd77259a Downloading [>                                                  ]  81.28kB/7.066MB
+[Print what the one command produced]  cbdf4df88106 Downloading [==================================================>]     117B/117B
+[Print what the one command produced]  cbdf4df88106 Verifying Checksum 
+[Print what the one command produced]  cbdf4df88106 Download complete 
+[Print what the one command produced]  eb1aa676e0d5 Downloading [==================================================>]     456B/456B
+[Print what the one command produced]  eb1aa676e0d5 Verifying Checksum 
+[Print what the one command produced]  eb1aa676e0d5 Download complete 
+[Print what the one command produced]  d03efd77259a Verifying Checksum 
+[Print what the one command produced]  d03efd77259a Download complete 
+[Print what the one command produced]  5a632533374f Extracting [============================>                      ]  2.097MB/3.635MB
+[Print what the one command produced]  5a632533374f Extracting [==================================================>]  3.635MB/3.635MB
+[Print what the one command produced]  5a632533374f Pull complete 
+[Print what the one command produced]  d03efd77259a Extracting [>                                                  ]   98.3kB/7.066MB
+[Print what the one command produced]  b33271db48bf Downloading [==================================================>]     137B/137B
+[Print what the one command produced]  b33271db48bf Verifying Checksum 
+[Print what the one command produced]  b33271db48bf Download complete 
+[Print what the one command produced]  80106278f56c Downloading [==================================================>]     952B/952B
+[Print what the one command produced]  80106278f56c Verifying Checksum 
+[Print what the one command produced]  80106278f56c Download complete 
+[Print what the one command produced]  34cec3f21afa Downloading [==================================================>]     144B/144B
+[Print what the one command produced]  34cec3f21afa Verifying Checksum 
+[Print what the one command produced]  34cec3f21afa Download complete 
+[Print what the one command produced]  d03efd77259a Extracting [==================================================>]  7.066MB/7.066MB
+[Print what the one command produced]  d03efd77259a Extracting [==================================================>]  7.066MB/7.066MB
+[Print what the one command produced]  d03efd77259a Pull complete 
+[Print what the one command produced]  cbdf4df88106 Extracting [==================================================>]     117B/117B
+[Print what the one command produced]  cbdf4df88106 Extracting [==================================================>]     117B/117B
+[Print what the one command produced]  cbdf4df88106 Pull complete 
+[Print what the one command produced]  eb1aa676e0d5 Extracting [==================================================>]     456B/456B
+[Print what the one command produced]  eb1aa676e0d5 Extracting [==================================================>]     456B/456B
+[Print what the one command produced]  eb1aa676e0d5 Pull complete 
+[Print what the one command produced]  80106278f56c Extracting [==================================================>]     952B/952B
+[Print what the one command produced]  80106278f56c Extracting [==================================================>]     952B/952B
+[Print what the one command produced]  80106278f56c Pull complete 
+[Print what the one command produced]  b33271db48bf Extracting [==================================================>]     137B/137B
+[Print what the one command produced]  b33271db48bf Extracting [==================================================>]     137B/137B
+[Print what the one command produced]  b33271db48bf Pull complete 
+[Print what the one command produced]  34cec3f21afa Extracting [==================================================>]     144B/144B
+[Print what the one command produced]  34cec3f21afa Extracting [==================================================>]     144B/144B
+[Print what the one command produced]  34cec3f21afa Pull complete 
+[Print what the one command produced]  0659d08ea8a7 Downloading [>                                                  ]  277.9kB/26.31MB
+[Print what the one command produced]  0ec0c1231ccc Downloading [>                                                  ]  130.4kB/12.29MB
+[Print what the one command produced]  e50b856c6879 Downloading [>                                                  ]  458.1kB/45.1MB
+[Print what the one command produced]  0ec0c1231ccc Verifying Checksum 
+[Print what the one command produced]  0ec0c1231ccc Download complete 
+[Print what the one command produced]  0659d08ea8a7 Verifying Checksum 
+[Print what the one command produced]  0659d08ea8a7 Download complete 
+[Print what the one command produced]  0659d08ea8a7 Extracting [>                                                  ]  294.9kB/26.31MB
+[Print what the one command produced]  e50b856c6879 Downloading [===================================>               ]  31.65MB/45.1MB
+[Print what the one command produced]  e50b856c6879 Verifying Checksum 
+[Print what the one command produced]  e50b856c6879 Download complete 
+[Print what the one command produced]  0659d08ea8a7 Extracting [=============>                                     ]  7.078MB/26.31MB
+[Print what the one command produced]  e75438311f63 Downloading [>                                                  ]  524.6kB/71.67MB
+[Print what the one command produced]  dfd4f98ed5a6 Downloading [==================================================>]     201B/201B
+[Print what the one command produced]  dfd4f98ed5a6 Verifying Checksum 
+[Print what the one command produced]  dfd4f98ed5a6 Download complete 
+[Print what the one command produced]  0659d08ea8a7 Extracting [==========================>                        ]  14.16MB/26.31MB
+[Print what the one command produced]  e75438311f63 Downloading [=====================>                             ]  31.53MB/71.67MB
+[Print what the one command produced]  5c7c43d19247 Downloading [==================================================>]  3.218kB/3.218kB
+[Print what the one command produced]  5c7c43d19247 Verifying Checksum 
+[Print what the one command produced]  5c7c43d19247 Download complete 
+[Print what the one command produced]  0659d08ea8a7 Extracting [==================================================>]  26.31MB/26.31MB
+[Print what the one command produced]  e75438311f63 Downloading [====================================>              ]  52.88MB/71.67MB
+[Print what the one command produced]  4a8070346cf0 Downloading [==================================================>]     812B/812B
+[Print what the one command produced]  4a8070346cf0 Verifying Checksum 
+[Print what the one command produced]  4a8070346cf0 Download complete 
+[Print what the one command produced]  0659d08ea8a7 Pull complete 
+[Print what the one command produced]  0ec0c1231ccc Extracting [>                                                  ]  131.1kB/12.29MB
+[Print what the one command produced]  e75438311f63 Verifying Checksum 
+[Print what the one command produced]  e75438311f63 Download complete 
+[Print what the one command produced]  bfef1a555f99 Downloading [==================================================>]     430B/430B
+[Print what the one command produced]  bfef1a555f99 Verifying Checksum 
+[Print what the one command produced]  bfef1a555f99 Download complete 
+[Print what the one command produced]  0ec0c1231ccc Extracting [===============================================>   ]  11.67MB/12.29MB
+[Print what the one command produced]  0ec0c1231ccc Extracting [==================================================>]  12.29MB/12.29MB
+[Print what the one command produced]  0ec0c1231ccc Pull complete 
+[Print what the one command produced]  e50b856c6879 Extracting [>                                                  ]  458.8kB/45.1MB
+[Print what the one command produced]  4f4fb700ef54 Downloading [==================================================>]      32B/32B
+[Print what the one command produced]  4f4fb700ef54 Verifying Checksum 
+[Print what the one command produced]  4f4fb700ef54 Download complete 
+[Print what the one command produced]  bab263f6b26f Downloading [>                                                  ]    196kB/18.04MB
+[Print what the one command produced]  e50b856c6879 Extracting [=========>                                         ]  8.258MB/45.1MB
+[Print what the one command produced]  bab263f6b26f Verifying Checksum 
+[Print what the one command produced]  bab263f6b26f Download complete 
+[Print what the one command produced]  d44b3b2d1045 Downloading [>                                                  ]  245.1kB/23.07MB
+[Print what the one command produced]  e50b856c6879 Extracting [===============>                                   ]  13.76MB/45.1MB
+[Print what the one command produced]  d44b3b2d1045 Verifying Checksum 
+[Print what the one command produced]  d44b3b2d1045 Download complete 
+[Print what the one command produced]  f20bd1bfe2c6 Downloading [====>                                              ]  3.499kB/38.09kB
+[Print what the one command produced]  f20bd1bfe2c6 Downloading [==================================================>]  38.09kB/38.09kB
+[Print what the one command produced]  f20bd1bfe2c6 Verifying Checksum 
+[Print what the one command produced]  f20bd1bfe2c6 Download complete 
+[Print what the one command produced]  e50b856c6879 Extracting [======================>                            ]  20.19MB/45.1MB
+[Print what the one command produced]  8195da654516 Downloading [==================================================>]  3.198kB/3.198kB
+[Print what the one command produced]  8195da654516 Verifying Checksum 
+[Print what the one command produced]  8195da654516 Download complete 
+[Print what the one command produced]  e50b856c6879 Extracting [=============================================>     ]  41.29MB/45.1MB
+[Print what the one command produced]  72c03230f136 Downloading [>                                                  ]  310.7kB/29.79MB
+[Print what the one command produced]  e50b856c6879 Extracting [==================================================>]   45.1MB/45.1MB
+[Print what the one command produced]  e50b856c6879 Pull complete 
+[Print what the one command produced]  74930e0d0424 Downloading [==================================================>]  1.167kB/1.167kB
+[Print what the one command produced]  74930e0d0424 Verifying Checksum 
+[Print what the one command produced]  74930e0d0424 Download complete 
+[Print what the one command produced]  72c03230f136 Downloading [==================================>                ]  20.54MB/29.79MB
+[Print what the one command produced]  83adeb451413 Downloading [>                                                  ]  65.54kB/6.443MB
+[Print what the one command produced]  e75438311f63 Extracting [>                                                  ]  557.1kB/71.67MB
+[Print what the one command produced]  72c03230f136 Verifying Checksum 
+[Print what the one command produced]  72c03230f136 Download complete 
+[Print what the one command produced]  83adeb451413 Verifying Checksum 
+[Print what the one command produced]  83adeb451413 Download complete 
+[Print what the one command produced]  72c03230f136 Extracting [>                                                  ]  327.7kB/29.79MB
+[Print what the one command produced]  8c1a14aff9b6 Downloading [>                                                  ]  15.74kB/1.257MB
+[Print what the one command produced]  8c1a14aff9b6 Download complete 
+[Print what the one command produced]  e75438311f63 Extracting [====>                                              ]  6.128MB/71.67MB
+[Print what the one command produced]  72c03230f136 Extracting [=========>                                         ]  5.571MB/29.79MB
+[Print what the one command produced]  e75438311f63 Extracting [========>                                          ]   11.7MB/71.67MB
+[Print what the one command produced]  32bf4f64baf0 Downloading [>                                                  ]  97.66kB/8.204MB
+[Print what the one command produced]  14b667adca5d Downloading [>                                                  ]  15.74kB/1.312MB
+[Print what the one command produced]  14b667adca5d Verifying Checksum 
+[Print what the one command produced]  14b667adca5d Download complete 
+[Print what the one command produced]  32bf4f64baf0 Verifying Checksum 
+[Print what the one command produced]  32bf4f64baf0 Download complete 
+[Print what the one command produced]  72c03230f136 Extracting [===============>                                   ]  9.503MB/29.79MB
+[Print what the one command produced]  2116a3f7d919 Downloading [==================================================>]     116B/116B
+[Print what the one command produced]  2116a3f7d919 Download complete 
+[Print what the one command produced]  e75438311f63 Extracting [===========>                                       ]  16.71MB/71.67MB
+[Print what the one command produced]  72c03230f136 Extracting [===================>                               ]   11.8MB/29.79MB
+[Print what the one command produced]  e75438311f63 Extracting [============>                                      ]  18.38MB/71.67MB
+[Print what the one command produced]  efc98c1ef209 Downloading [==================================================>]   3.14kB/3.14kB
+[Print what the one command produced]  efc98c1ef209 Verifying Checksum 
+[Print what the one command produced]  efc98c1ef209 Download complete 
+[Print what the one command produced]  72c03230f136 Extracting [============================>                      ]  16.71MB/29.79MB
+[Print what the one command produced]  a42464a6c940 Downloading [>                                                  ]    528kB/114.2MB
+[Print what the one command produced]  726a8c705531 Downloading [================>                                  ]  3.499kB/10.39kB
+[Print what the one command produced]  726a8c705531 Downloading [==================================================>]  10.39kB/10.39kB
+[Print what the one command produced]  726a8c705531 Verifying Checksum 
+[Print what the one command produced]  726a8c705531 Download complete 
+[Print what the one command produced]  e75438311f63 Extracting [==============>                                    ]  20.61MB/71.67MB
+[Print what the one command produced]  72c03230f136 Extracting [=====================================>             ]  22.61MB/29.79MB
+[Print what the one command produced]  a42464a6c940 Downloading [===>                                               ]  7.897MB/114.2MB
+[Print what the one command produced]  e75438311f63 Extracting [=================>                                 ]  25.07MB/71.67MB
+[Print what the one command produced]  ba2e32d3fbb8 Downloading [==================================================>]     128B/128B
+[Print what the one command produced]  ba2e32d3fbb8 Verifying Checksum 
+[Print what the one command produced]  ba2e32d3fbb8 Download complete 
+[Print what the one command produced]  a42464a6c940 Downloading [=======>                                           ]  16.88MB/114.2MB
+[Print what the one command produced]  0ae601208f89 Downloading [==================================================>]     168B/168B
+[Print what the one command produced]  0ae601208f89 Verifying Checksum 
+[Print what the one command produced]  0ae601208f89 Download complete 
+[Print what the one command produced]  e75438311f63 Extracting [======================>                            ]  31.75MB/71.67MB
+[Print what the one command produced]  a42464a6c940 Downloading [=================>                                 ]   40.4MB/114.2MB
+[Print what the one command produced]  e75438311f63 Extracting [=========================>                         ]  36.77MB/71.67MB
+[Print what the one command produced]  72c03230f136 Extracting [============================================>      ]  26.21MB/29.79MB
+[Print what the one command produced]  8ea845e45dec Downloading [============================>                      ]    3.5kB/6.096kB
+[Print what the one command produced]  8ea845e45dec Downloading [==================================================>]  6.096kB/6.096kB
+[Print what the one command produced]  8ea845e45dec Verifying Checksum 
+[Print what the one command produced]  8ea845e45dec Download complete 
+[Print what the one command produced]  a42464a6c940 Downloading [=============================>                     ]  68.14MB/114.2MB
+[Print what the one command produced]  677876578f8b Downloading [==================================================>]     185B/185B
+[Print what the one command produced]  677876578f8b Verifying Checksum 
+[Print what the one command produced]  677876578f8b Download complete 
+[Print what the one command produced]  e75438311f63 Extracting [============================>                      ]  40.67MB/71.67MB
+[Print what the one command produced]  a42464a6c940 Downloading [==========================================>        ]  96.99MB/114.2MB
+[Print what the one command produced]  72c03230f136 Extracting [===============================================>   ]  28.51MB/29.79MB
+[Print what the one command produced]  e75438311f63 Extracting [================================>                  ]  46.79MB/71.67MB
+[Print what the one command produced]  a42464a6c940 Verifying Checksum 
+[Print what the one command produced]  a42464a6c940 Download complete 
+[Print what the one command produced]  78a34d086947 Downloading [=>                                                 ]  3.499kB/126kB
+[Print what the one command produced]  78a34d086947 Downloading [==================================================>]    126kB/126kB
+[Print what the one command produced]  78a34d086947 Verifying Checksum 
+[Print what the one command produced]  78a34d086947 Download complete 
+[Print what the one command produced]  e75438311f63 Extracting [================================================>  ]  69.63MB/71.67MB
+[Print what the one command produced]  9a3c8b17e7b0 Downloading [>                                                  ]  19.16kB/1.451MB
+[Print what the one command produced]  9a3c8b17e7b0 Verifying Checksum 
+[Print what the one command produced]  9a3c8b17e7b0 Download complete 
+[Print what the one command produced]  e75438311f63 Extracting [==================================================>]  71.67MB/71.67MB
+[Print what the one command produced]  72c03230f136 Extracting [================================================>  ]  29.16MB/29.79MB
+[Print what the one command produced]  72c03230f136 Extracting [==================================================>]  29.79MB/29.79MB
+[Print what the one command produced]  72c03230f136 Pull complete 
+[Print what the one command produced]  74930e0d0424 Extracting [==================================================>]  1.167kB/1.167kB
+[Print what the one command produced]  74930e0d0424 Extracting [==================================================>]  1.167kB/1.167kB
+[Print what the one command produced]  74930e0d0424 Pull complete 
+[Print what the one command produced]  e75438311f63 Pull complete 
+[Print what the one command produced]  83adeb451413 Extracting [>                                                  ]  65.54kB/6.443MB
+[Print what the one command produced]  dfd4f98ed5a6 Extracting [==================================================>]     201B/201B
+[Print what the one command produced]  dfd4f98ed5a6 Extracting [==================================================>]     201B/201B
+[Print what the one command produced]  dfd4f98ed5a6 Pull complete 
+[Print what the one command produced]  5c7c43d19247 Extracting [==================================================>]  3.218kB/3.218kB
+[Print what the one command produced]  5c7c43d19247 Extracting [==================================================>]  3.218kB/3.218kB
+[Print what the one command produced]  5c7c43d19247 Pull complete 
+[Print what the one command produced]  4a8070346cf0 Extracting [==================================================>]     812B/812B
+[Print what the one command produced]  4a8070346cf0 Extracting [==================================================>]     812B/812B
+[Print what the one command produced]  4a8070346cf0 Pull complete 
+[Print what the one command produced]  bfef1a555f99 Extracting [==================================================>]     430B/430B
+[Print what the one command produced]  bfef1a555f99 Extracting [==================================================>]     430B/430B
+[Print what the one command produced]  bfef1a555f99 Pull complete 
+[Print what the one command produced]  4f4fb700ef54 Extracting [==================================================>]      32B/32B
+[Print what the one command produced]  4f4fb700ef54 Extracting [==================================================>]      32B/32B
+[Print what the one command produced]  4f4fb700ef54 Pull complete 
+[Print what the one command produced]  bab263f6b26f Extracting [>                                                  ]  196.6kB/18.04MB
+[Print what the one command produced]  83adeb451413 Extracting [==========================================>        ]  5.439MB/6.443MB
+[Print what the one command produced]  83adeb451413 Extracting [==================================================>]  6.443MB/6.443MB
+[Print what the one command produced]  bab263f6b26f Extracting [================>                                  ]  5.898MB/18.04MB
+[Print what the one command produced]  83adeb451413 Pull complete 
+[Print what the one command produced]  8c1a14aff9b6 Extracting [=>                                                 ]  32.77kB/1.257MB
+[Print what the one command produced]  8c1a14aff9b6 Extracting [==================================================>]  1.257MB/1.257MB
+[Print what the one command produced]  bab263f6b26f Extracting [==============================================>    ]  16.71MB/18.04MB
+[Print what the one command produced]  8c1a14aff9b6 Pull complete 
+[Print what the one command produced]  32bf4f64baf0 Extracting [>                                                  ]   98.3kB/8.204MB
+[Print what the one command produced]  bab263f6b26f Extracting [==================================================>]  18.04MB/18.04MB
+[Print what the one command produced]  bab263f6b26f Pull complete 
+[Print what the one command produced]  d44b3b2d1045 Extracting [>                                                  ]  262.1kB/23.07MB
+[Print what the one command produced]  32bf4f64baf0 Extracting [===================>                               ]  3.244MB/8.204MB
+[Print what the one command produced]  d44b3b2d1045 Extracting [==============>                                    ]  6.816MB/23.07MB
+[Print what the one command produced]  32bf4f64baf0 Extracting [=============================>                     ]  4.915MB/8.204MB
+[Print what the one command produced]  d44b3b2d1045 Extracting [===============================>                   ]  14.42MB/23.07MB
+[Print what the one command produced]  d44b3b2d1045 Extracting [==================================================>]  23.07MB/23.07MB
+[Print what the one command produced]  d44b3b2d1045 Extracting [==================================================>]  23.07MB/23.07MB
+[Print what the one command produced]  32bf4f64baf0 Extracting [========================================>          ]  6.685MB/8.204MB
+[Print what the one command produced]  d44b3b2d1045 Pull complete 
+[Print what the one command produced]  f20bd1bfe2c6 Extracting [===========================================>       ]  32.77kB/38.09kB
+[Print what the one command produced]  f20bd1bfe2c6 Extracting [==================================================>]  38.09kB/38.09kB
+[Print what the one command produced]  32bf4f64baf0 Extracting [==================================================>]  8.204MB/8.204MB
+[Print what the one command produced]  32bf4f64baf0 Pull complete 
+[Print what the one command produced]  14b667adca5d Extracting [=>                                                 ]  32.77kB/1.312MB
+[Print what the one command produced]  f20bd1bfe2c6 Pull complete 
+[Print what the one command produced]  8195da654516 Extracting [==================================================>]  3.198kB/3.198kB
+[Print what the one command produced]  8195da654516 Extracting [==================================================>]  3.198kB/3.198kB
+[Print what the one command produced]  14b667adca5d Extracting [==================================================>]  1.312MB/1.312MB
+[Print what the one command produced]  8195da654516 Pull complete 
+[Print what the one command produced]  temporal Pulled 
+[Print what the one command produced]  14b667adca5d Pull complete 
+[Print what the one command produced]  2116a3f7d919 Extracting [==================================================>]     116B/116B
+[Print what the one command produced]  2116a3f7d919 Extracting [==================================================>]     116B/116B
+[Print what the one command produced]  2116a3f7d919 Pull complete 
+[Print what the one command produced]  efc98c1ef209 Extracting [==================================================>]   3.14kB/3.14kB
+[Print what the one command produced]  efc98c1ef209 Extracting [==================================================>]   3.14kB/3.14kB
+[Print what the one command produced]  efc98c1ef209 Pull complete 
+[Print what the one command produced]  a42464a6c940 Extracting [>                                                  ]  557.1kB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [===>                                               ]  8.356MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [=====>                                             ]   11.7MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [=======>                                           ]  16.15MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [=========>                                         ]  21.73MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [============>                                      ]  28.97MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [================>                                  ]  38.44MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [====================>                              ]  47.91MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [========================>                          ]  55.15MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [==========================>                        ]  61.28MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [==============================>                    ]  70.75MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [===================================>               ]  80.22MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [=======================================>           ]  89.13MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [==========================================>        ]  96.37MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [===========================================>       ]  100.3MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [============================================>      ]  102.5MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [==============================================>    ]  106.4MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [===============================================>   ]  108.6MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [================================================>  ]  110.3MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [=================================================> ]  112.5MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [=================================================> ]  113.6MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [==================================================>]  114.2MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Extracting [==================================================>]  114.2MB/114.2MB
+[Print what the one command produced]  a42464a6c940 Pull complete 
+[Print what the one command produced]  726a8c705531 Extracting [==================================================>]  10.39kB/10.39kB
+[Print what the one command produced]  726a8c705531 Extracting [==================================================>]  10.39kB/10.39kB
+[Print what the one command produced]  726a8c705531 Pull complete 
+[Print what the one command produced]  ba2e32d3fbb8 Extracting [==================================================>]     128B/128B
+[Print what the one command produced]  ba2e32d3fbb8 Extracting [==================================================>]     128B/128B
+[Print what the one command produced]  ba2e32d3fbb8 Pull complete 
+[Print what the one command produced]  0ae601208f89 Extracting [==================================================>]     168B/168B
+[Print what the one command produced]  0ae601208f89 Extracting [==================================================>]     168B/168B
+[Print what the one command produced]  0ae601208f89 Pull complete 
+[Print what the one command produced]  8ea845e45dec Extracting [==================================================>]  6.096kB/6.096kB
+[Print what the one command produced]  8ea845e45dec Extracting [==================================================>]  6.096kB/6.096kB
+[Print what the one command produced]  8ea845e45dec Pull complete 
+[Print what the one command produced]  677876578f8b Extracting [==================================================>]     185B/185B
+[Print what the one command produced]  677876578f8b Extracting [==================================================>]     185B/185B
+[Print what the one command produced]  677876578f8b Pull complete 
+[Print what the one command produced]  78a34d086947 Extracting [=============>                                     ]  32.77kB/126kB
+[Print what the one command produced]  78a34d086947 Extracting [==================================================>]    126kB/126kB
+[Print what the one command produced]  78a34d086947 Pull complete 
+[Print what the one command produced]  9a3c8b17e7b0 Extracting [=>                                                 ]  32.77kB/1.451MB
+[Print what the one command produced]  9a3c8b17e7b0 Extracting [==================================================>]  1.451MB/1.451MB
+[Print what the one command produced]  9a3c8b17e7b0 Pull complete 
+[Print what the one command produced]  postgres Pulled 
+[Print what the one command produced]  Network spaceapp-dev-stack_devstack  Creating
+[Print what the one command produced]  Network spaceapp-dev-stack_devstack  Created
+[Print what the one command produced]  Volume "spaceapp-dev-stack_postgres-data"  Creating
+[Print what the one command produced]  Volume "spaceapp-dev-stack_postgres-data"  Created
+[Print what the one command produced]  Container spaceapp-dev-stack-postgres-1  Creating
+[Print what the one command produced]  Container spaceapp-dev-stack-postgres-1  Created
+[Print what the one command produced]  Container spaceapp-dev-stack-temporal-1  Creating
+[Print what the one command produced]  Container spaceapp-dev-stack-temporal-1  Created
+[Print what the one command produced]  Container spaceapp-dev-stack-postgres-1  Starting
+[Print what the one command produced]  Container spaceapp-dev-stack-postgres-1  Started
+[Print what the one command produced]  Container spaceapp-dev-stack-postgres-1  Waiting
+[Print what the one command produced]  Container spaceapp-dev-stack-postgres-1  Healthy
+[Print what the one command produced]  Container spaceapp-dev-stack-temporal-1  Starting
+[Print what the one command produced]  Container spaceapp-dev-stack-temporal-1  Started
+[Print what the one command produced] dev-stack: postgres running healthy; temporal running starting
+[Print what the one command produced] dev-stack: running migrations...
+[Print what the one command produced] dev-stack: installing opencode-ai@1.18.4 into /home/runner/work/spaceapp/spaceapp/.dev-stack (not global)...
+[Print what the one command produced] dev-stack: OpenCode 1.18.4 installed; pane command /home/runner/work/spaceapp/spaceapp/.dev-stack/bin/opencode-vscode-parity
+[Print what the one command produced] dev-stack: OpenCode        1.18.4 (state-dir only, not global)
+[Print what the one command produced] dev-stack: pane command    /home/runner/work/spaceapp/spaceapp/.dev-stack/bin/opencode-vscode-parity
+[Print what the one command produced] dev-stack: starting the API (watch), web (Vite), worker and CLI host from source...
+[Print what the one command produced] 
+[Print what the one command produced] ════════════════════════════════════════════════════════════
+[Print what the one command produced]   SpaceApp (from source)  →  http://127.0.0.1:5911
+[Print what the one command produced] 
+[Print what the one command produced]   One-time owner setup token:  ce9b69b788f30f2bebc8d1f068e4864a7432ff858ff7131933ba72dc3f244b98
+[Print what the one command produced] 
+[Print what the one command produced]   Open the URL, choose owner setup, paste the token, create the owner,
+[Print what the one command produced]   sign in, open the Getting Started room and start an OpenCode pane.
+[Print what the one command produced] 
+[Print what the one command produced]   API    http://127.0.0.1:5910   (/readyz reports ok:true)
+[Print what the one command produced]   Logs   /home/runner/work/spaceapp/spaceapp/.dev-stack/logs
+[Print what the one command produced] 
+[Print what the one command produced]   Stop:   npm run dev:stack -- down
+[Print what the one command produced]   Clean:  npm run dev:stack -- reset
+[Print what the one command produced] ════════════════════════════════════════════════════════════
+[Print what the one command produced] 
+[Reset and verify no resources remain] ﻿2026-10-16T13:00:11.3195062Z ##[group]Run set -euo pipefail
+[Reset and verify no resources remain] ^[[36;1mset -euo pipefail^[[0m
+[Reset and verify no resources remain] ^[[36;1m^[[0m
+[Reset and verify no resources remain] ^[[36;1m# Record the host processes the stack started BEFORE reset removes the^[[0m
+[Reset and verify no resources remain] ^[[36;1m# state directory that lists them, so the post-reset check below has^[[0m
+[Reset and verify no resources remain] ^[[36;1m# something to assert against. `npm run dev:stack` spawns the API, web,^[[0m
+[Reset and verify no resources remain] ^[[36;1m# worker and CLI host as real children; a reset that stopped only the^[[0m
+[Reset and verify no resources remain] ^[[36;1m# containers would leave all four running.^[[0m
+[Reset and verify no resources remain] ^[[36;1mecho "[]" > /tmp/dev-stack.pids.json^[[0m
+[Reset and verify no resources remain] ^[[36;1mif [ -f .dev-stack/dev-stack.pids.json ]; then^[[0m
+[Reset and verify no resources remain] ^[[36;1m  cp .dev-stack/dev-stack.pids.json /tmp/dev-stack.pids.json^[[0m
+[Reset and verify no resources remain] ^[[36;1m  echo "--- host processes recorded before reset ---"^[[0m
+[Reset and verify no resources remain] ^[[36;1m  node -e 'for (const e of require("/tmp/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)'^[[0m
+[Reset and verify no resources remain] ^[[36;1melse^[[0m
+[Reset and verify no resources remain] ^[[36;1m  echo "no pid file was recorded before reset"^[[0m
+[Reset and verify no resources remain] ^[[36;1mfi^[[0m
+[Reset and verify no resources remain] ^[[36;1m^[[0m
+[Reset and verify no resources remain] ^[[36;1mnpm run dev:stack -- reset 2>&1 | tee reset.out^[[0m
+[Reset and verify no resources remain] ^[[36;1m^[[0m
+[Reset and verify no resources remain] ^[[36;1mecho "--- residual check ---"^[[0m
+[Reset and verify no resources remain] ^[[36;1mif docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Names}}' | grep -q .; then^[[0m
+[Reset and verify no resources remain] ^[[36;1m  echo "containers left behind"; docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack"; exit 1^[[0m
+[Reset and verify no resources remain] ^[[36;1mfi^[[0m
+[Reset and verify no resources remain] ^[[36;1mif docker volume ls --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Name}}' | grep -q .; then^[[0m
+[Reset and verify no resources remain] ^[[36;1m  echo "volumes left behind"; docker volume ls --filter "label=com.docker.compose.project=spaceapp-dev-stack"; exit 1^[[0m
+[Reset and verify no resources remain] ^[[36;1mfi^[[0m
+[Reset and verify no resources remain] ^[[36;1mif [ -d .dev-stack ]; then^[[0m
+[Reset and verify no resources remain] ^[[36;1m  echo ".dev-stack still exists after reset"; ls -la .dev-stack; exit 1^[[0m
+[Reset and verify no resources remain] ^[[36;1mfi^[[0m
+[Reset and verify no resources remain] ^[[36;1m^[[0m
+[Reset and verify no resources remain] ^[[36;1m# The acceptance criteria name processes alongside containers and^[[0m
+[Reset and verify no resources remain] ^[[36;1m# volumes. Any pid recorded above that still answers kill -0 means reset^[[0m
+[Reset and verify no resources remain] ^[[36;1m# left a host process behind — the worker forks its own children, so a^[[0m
+[Reset and verify no resources remain] ^[[36;1m# leader-only signal would show up here.^[[0m
+[Reset and verify no resources remain] ^[[36;1mleaked=0^[[0m
+[Reset and verify no resources remain] ^[[36;1mwhile read -r name pid; do^[[0m
+[Reset and verify no resources remain] ^[[36;1m  [ -n "${pid:-}" ] || continue^[[0m
+[Reset and verify no resources remain] ^[[36;1m  if kill -0 "$pid" 2>/dev/null; then^[[0m
+[Reset and verify no resources remain] ^[[36;1m    echo "process still alive after reset: $name (pid $pid)"^[[0m
+[Reset and verify no resources remain] ^[[36;1m    ps -o pid,ppid,pgid,stat,command -p "$pid" || true^[[0m
+[Reset and verify no resources remain] ^[[36;1m    leaked=1^[[0m
+[Reset and verify no resources remain] ^[[36;1m  fi^[[0m
+[Reset and verify no resources remain] ^[[36;1mdone < <(node -e 'for (const e of require("/tmp/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)')^[[0m
+[Reset and verify no resources remain] ^[[36;1mif [ "$leaked" -ne 0 ]; then^[[0m
+[Reset and verify no resources remain] ^[[36;1m  echo "reset left host processes running"; exit 1^[[0m
+[Reset and verify no resources remain] ^[[36;1mfi^[[0m
+[Reset and verify no resources remain] ^[[36;1m^[[0m
+[Reset and verify no resources remain] ^[[36;1mecho "no containers, no volumes, no state directory and no processes left."^[[0m
+[Reset and verify no resources remain] shell: /usr/bin/bash -e {0}
+[Reset and verify no resources remain] env:
+[Reset and verify no resources remain]   API_PORT: 5910
+[Reset and verify no resources remain]   WEB_PORT: 5911
+[Reset and verify no resources remain] ##[endgroup]
+[Reset and verify no resources remain] --- host processes recorded before reset ---
+[Reset and verify no resources remain] api 3868
+[Reset and verify no resources remain] web 3869
+[Reset and verify no resources remain] worker 3870
+[Reset and verify no resources remain] cli-host 3871
+[Reset and verify no resources remain] 
+[Reset and verify no resources remain] > space@0.2.5 dev:stack
+[Reset and verify no resources remain] > node scripts/dev-stack.mjs reset
+[Reset and verify no resources remain] 
+[Reset and verify no resources remain] dev-stack: stopping api (pid 3868)
+[Reset and verify no resources remain] dev-stack: stopping web (pid 3869)
+[Reset and verify no resources remain] dev-stack: stopping worker (pid 3870)
+[Reset and verify no resources remain] dev-stack: stopping cli-host (pid 3871)
+[Reset and verify no resources remain] dev-stack: stopped 4 host process(es) from this stack.
+[Reset and verify no resources remain]  Container spaceapp-dev-stack-temporal-1  Stopping
+[Reset and verify no resources remain]  Container spaceapp-dev-stack-temporal-1  Stopped
+[Reset and verify no resources remain]  Container spaceapp-dev-stack-temporal-1  Removing
+[Reset and verify no resources remain]  Container spaceapp-dev-stack-temporal-1  Removed
+[Reset and verify no resources remain]  Container spaceapp-dev-stack-postgres-1  Stopping
+[Reset and verify no resources remain]  Container spaceapp-dev-stack-postgres-1  Stopped
+[Reset and verify no resources remain]  Container spaceapp-dev-stack-postgres-1  Removing
+[Reset and verify no resources remain]  Container spaceapp-dev-stack-postgres-1  Removed
+[Reset and verify no resources remain]  Volume spaceapp-dev-stack_postgres-data  Removing
+[Reset and verify no resources remain]  Network spaceapp-dev-stack_devstack  Removing
+[Reset and verify no resources remain]  Network spaceapp-dev-stack_devstack  Removed
+[Reset and verify no resources remain]  Volume spaceapp-dev-stack_postgres-data  Removed
+[Reset and verify no resources remain] dev-stack: removed /home/runner/work/spaceapp/spaceapp/.dev-stack
+[Reset and verify no resources remain] dev-stack: reset. Containers, volumes and the state directory are gone.
+[Reset and verify no resources remain] dev-stack: verified — no container, volume or process left from this project.
+[Reset and verify no resources remain] --- residual check ---
+[Reset and verify no resources remain] no containers, no volumes, no state directory and no processes left.
+[Post Use Node.js from .nvmrc] ﻿2026-10-16T13:00:14.7936821Z Post job cleanup.
+[Post Use Node.js from .nvmrc] (node:4428) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+[Post Use Node.js from .nvmrc] (Use `node --trace-deprecation ...` to show where the warning was created)
+[Post Use Node.js from .nvmrc] Cache hit occurred on the primary key node-cache-Linux-x64-npm-531823d7c1884d324095149d4e1c69a18cb08b14104b5bd99eb99879400e25a6, not saving cache.
+[Post Run actions/checkout@v4] ﻿2026-10-16T13:00:14.9341956Z Post job cleanup.
+[Post Run actions/checkout@v4] [command]/usr/bin/git version
+[Post Run actions/checkout@v4] git version 2.55.0
+[Post Run actions/checkout@v4] Temporarily overriding HOME='/home/runner/work/_temp/44af3e4d-009f-4be6-95f4-350b32669f45' before making global git config changes
+[Post Run actions/checkout@v4] Adding repository directory to the temporary git global config as a safe directory
+[Post Run actions/checkout@v4] [command]/usr/bin/git config --global --add safe.directory /home/runner/work/spaceapp/spaceapp
+[Post Run actions/checkout@v4] [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+[Post Run actions/checkout@v4] [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+[Post Run actions/checkout@v4] [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+[Post Run actions/checkout@v4] [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+[Post Run actions/checkout@v4] [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+[Post Run actions/checkout@v4] [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+[Complete job] ﻿2026-10-16T13:00:15.1859584Z Cleaning up orphan processes
+[Complete job] ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
