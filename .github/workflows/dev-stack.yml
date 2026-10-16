@@ -83,6 +83,14 @@ jobs:
                 exit 0
               fi
             fi
+            # A cold `npm install opencode-ai` on a macOS runner can take
+            # minutes, which is what the ceiling above is sized for. Fail early
+            # only when the orchestrator itself is gone — then nothing will ever
+            # answer, and waiting out the rest of the budget proves nothing.
+            if [ "${i}" -ge 15 ] && ! pgrep -f 'scripts/dev-stack.mjs' >/dev/null 2>&1; then
+              echo "the orchestrator exited, so /readyz will never answer."
+              break
+            fi
             sleep 2
           done
           echo "readyz never reported ok"
@@ -592,13 +600,21 @@ jobs:
         run: |
           set -euo pipefail
           echo "waiting for http://127.0.0.1:${API_PORT}/readyz"
-          for ((i = 0; i < 150; i++)); do
+          for ((i = 0; i < 300; i++)); do
             if curl -fsS "http://127.0.0.1:${API_PORT}/readyz" -o readyz.json 2>/dev/null; then
               echo "readyz: $(cat readyz.json)"
               if grep -q '"ok"[: ]*true' readyz.json; then
                 echo "API is ready."
                 exit 0
               fi
+            fi
+            # A cold `npm install opencode-ai` on a macOS runner can take
+            # minutes, which is what the ceiling above is sized for. Fail early
+            # only when the orchestrator itself is gone — then nothing will ever
+            # answer, and waiting out the rest of the budget proves nothing.
+            if [ "${i}" -ge 15 ] && ! pgrep -f 'scripts/dev-stack.mjs' >/dev/null 2>&1; then
+              echo "the orchestrator exited, so /readyz will never answer."
+              break
             fi
             sleep 2
           done
