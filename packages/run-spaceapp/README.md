@@ -62,6 +62,48 @@ before pausing writers. Existing data is kept in place; the launcher never delet
 images, backups or volumes to free space. Separate Docker disk capacity is checked
 when measurable and its availability is reported.
 
+### Podman instead of Docker
+
+On Linux and macOS you can run the same stack on rootless Podman:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+Supported setup: **Podman 4.9 or newer** (5.x recommended) with the
+**Docker Compose v2 binary as the Compose provider** — `podman compose
+version` must succeed. podman-compose is not supported: it cannot express
+every feature of the SpaceApp template (profiles, health-gated `depends_on`
+entries with `required: false`, file-based secrets, socket-sharing named
+volumes). The launcher never installs Podman for you; when it is missing it
+prints the install commands for your distribution (or Homebrew on macOS).
+
+The chosen engine is saved in the installation configuration and used by
+every later command (`up`, `backup`, `update`, `doctor`, `uninstall`, …).
+If Docker cannot be made ready on a fresh install and Podman is present,
+the launcher offers Podman instead of failing; unattended runs
+(`--non-interactive` with `confirm:true`) pick it automatically.
+
+Limits and differences compared to Docker:
+
+- Linux support targets **rootless Podman on cgroup v2**. `doctor` reports
+  the engine, version, rootless/rootful mode, the cgroup version, and
+  whether the cpu/memory controllers are delegated to your user slice; if a
+  limit cannot be applied it says so instead of failing late.
+- Workspace bind mounts are relabeled for SELinux (`bind: selinux: "z"`) and
+  mapped with `userns_mode: keep-id` so files agents create in a workspace
+  keep your host ownership on Fedora and other SELinux-enforcing hosts.
+- On macOS the Podman machine must fit the chosen profile; the launcher
+  checks its CPU, memory and disk and prints the exact
+  `podman machine set` resize commands when it is too small.
+- `--access host-root` is refused with Podman: it would defeat the isolation
+  rootless Podman is chosen for. Use `spaceapp workspace add` instead.
+- **Engines cannot be switched in place.** Docker and Podman keep separate
+  image and volume stores, so `--engine` with the other engine on an existing
+  installation is refused. To migrate: run `backup` with the current engine,
+  then `uninstall --purge-data`, reinstall with the new engine, and finish
+  with `restore`.
+
 ### Telemetry
 
 Telemetry is off unless you turn it on. The install wizard asks "Enable
