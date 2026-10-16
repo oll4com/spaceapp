@@ -1,0 +1,44 @@
+name: Temporal workflows
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  temporal-workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Build worker dependencies
+        run: |
+          npm run build -w @space/contracts
+          npm run build -w @space/streaming
+          npm run build -w @space/opencode-control
+          npm run build -w @space/memory-graph
+          npm run build -w @space/codex-app-server
+          npm run build -w @space/runtime
+          npm run build -w @space/db
+      - name: Typecheck worker
+        run: npm run check -w @space/worker
+      - name: Real workflows and saved-history replay (three-minute budget)
+        run: timeout 180s npm test -w @space/worker -- tests/temporal-workflows.test.ts
+      - name: Existing worker regressions
+        run: npm test -w @space/worker -- --exclude tests/temporal-workflows.test.ts
