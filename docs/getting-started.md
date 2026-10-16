@@ -1,9 +1,10 @@
 # Getting started
 
 SpaceApp packages its application services and redistributable AI coding CLIs
-in Docker. The host needs Node.js only for the small `spaceapp` launcher,
+in OCI containers (Docker or rootless Podman). The host needs Node.js only for the small `spaceapp` launcher,
 and enough resources for the stack. The launcher installs and starts Docker
-automatically when it is missing.
+automatically when it is missing, or uses an existing rootless Podman setup when
+`--engine podman` is specified.
 
 ## Requirements
 
@@ -86,6 +87,74 @@ before scheduling it. Save your work, approve the restart, and sign back in;
 the installer resumes automatically in Command Prompt without entering the
 command again. SpaceApp reuses Docker Desktop's WSL2 Linux environment and does
 not install a second full virtual machine.
+
+## Rootless Podman (Linux & macOS)
+
+For users who prefer a daemonless, rootless container architecture, SpaceApp
+supports rootless **Podman** as an alternative to Docker on Linux and macOS.
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+Or pass `{"engine": "podman"}` in non-interactive `--answers`. If Docker is not
+installed and rootless Podman is already configured and running on Linux or macOS,
+the launcher auto-detects Podman.
+
+### Prerequisites
+
+#### Linux
+1. Install `podman` and `podman-compose` through your distribution package manager
+   (e.g., `apt-get install podman podman-compose` or `dnf install podman podman-compose`).
+2. Verify rootless subuid/subgid mapping:
+   ```bash
+   grep "$USER" /etc/subuid /etc/subgid
+   ```
+3. Enable the user socket so Compose and the Podman API service are accessible:
+   ```bash
+   systemctl --user enable --now podman.socket
+   ```
+4. SpaceApp requires **cgroup v2** with user delegation for resource limits
+   (`cpu`, `memory`, `pids`). To delegate controllers to your user session, ensure
+   `/etc/systemd/system/user@.service.d/delegate.conf` contains:
+   ```ini
+   [Service]
+   Delegate=cpu memory pids
+   ```
+   Then reload systemd with `systemctl daemon-reload`.
+
+#### macOS
+1. Install Podman and `podman-compose` using Homebrew:
+   ```bash
+   brew install podman podman-compose
+   ```
+2. Initialize and start a Podman machine with enough resources for the selected profile:
+   ```bash
+   podman machine init --cpus 4 --memory 7168 --disk-size 20
+   podman machine start
+   ```
+   If a machine already exists with smaller resources, stop it and reconfigure:
+   ```bash
+   podman machine stop
+   podman machine set --cpus 4 --memory 7168
+   podman machine start
+   ```
+
+### Architecture & Security Guarantees
+
+- **User Namespaces**: SpaceApp's container services run as unprivileged internal users
+  (UID/GID 10001). On Podman, the launcher injects `compose.podman.yml` with
+  `userns_mode: "keep-id:uid=10001,gid=10001"` so container users map seamlessly to
+  the host user without permission errors on mounted files.
+- **SELinux Relabeling**: Workspaces and runtime directories (`./backups`, `./secrets/providers`)
+  are mounted with the `:z` SELinux relabeling flag (`bind: { selinux: "z" }`), preventing
+  permission denied errors on SELinux-enforcing systems like Fedora and RHEL.
+- **Isolation Mode**: Rootless Podman always runs in `isolated` mode. `--access host-root`
+  is incompatible with rootless namespaces and is strictly rejected by the launcher on Podman.
+- **Configuration Persistence**: The selected engine is stored in `config.json` and
+  preserved across `update`, `repair`, and `factory-reset`. Switching container engines
+  on an active installation requires creating a backup (`spaceapp backup`) and performing
+  a clean reinstall.
 
 ## Installation profiles
 
@@ -296,9 +365,13 @@ npx --yes run-spaceapp@latest status
 npx --yes run-spaceapp@latest logs
 ```
 
-`doctor` checks Node.js, Docker CLI, Docker Compose, Docker Engine, CPU,
-memory, and free disk exactly once each. It distinguishes a missing CLI or
-Compose plugin from an installed engine that is stopped or inaccessible.
+`doctor` checks system requirements and engine prerequisites. For Docker, it
+checks Node.js, Docker CLI, Docker Compose, Docker Engine, CPU, memory, and free
+disk exactly once each. For Podman (`--engine podman`), `doctor` verifies Podman
+CLI, Compose compatibility, rootless mode, cgroup v2, controller delegation
+(`cpu`, `memory`, `pids`), and VM machine resource allocations on macOS. It
+distinguishes a missing CLI or Compose plugin from an installed engine that is
+stopped or inaccessible.
 The `small` profile should show core, CLI, and PostgreSQL running; `medium`
 adds Temporal, and `large` also adds the browser service. If startup is still
 in progress, wait for the health checks and inspect bounded logs.

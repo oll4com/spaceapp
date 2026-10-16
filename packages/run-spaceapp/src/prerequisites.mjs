@@ -9,6 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
+import { PROFILE_REQUIREMENTS } from "./index.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -133,10 +134,16 @@ export async function ensureDockerAvailable({
   osRelease,
   installArgs,
   scheduleResume = scheduleWindowsInstallResume,
-  confirmRestart = confirmWindowsRestart
+  confirmRestart = confirmWindowsRestart,
+  autoDetectPodman = false
 }) {
   if (await dockerIsReady(execute)) {
     return { code: 0, reexecuted: false };
+  }
+  if (autoDetectPodman && platform !== "win32") {
+    if (await podmanIsReady(execute)) {
+      return { code: 0, reexecuted: false, engine: "podman" };
+    }
   }
   if (platform === "win32") {
     return ensureWindowsDocker({
@@ -659,11 +666,261 @@ async function dockerIsReady(execute) {
     { command: "docker", args: ["compose", "version"] },
     { command: "docker", args: ["info"] }
   ]) {
-    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+    try {
+      if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+        return false;
+      }
+    } catch {
       return false;
     }
   }
   return true;
+}
+
+export async function podmanCliAndComposeAreAvailable(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] }
+  ]) {
+    try {
+      if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+export async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] },
+    { command: "podman", args: ["info"] }
+  ]) {
+    try {
+      if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+export async function detectEngineAvailability({ execute, platform = process.platform }) {
+  const dockerReady = await dockerIsReady(execute).catch(() => false);
+  const dockerAvailable = dockerReady || await dockerCliAndComposeAreAvailable(execute).catch(() => false);
+  const podmanReady = platform !== "win32" && await podmanIsReady(execute).catch(() => false);
+  const podmanAvailable = platform !== "win32" && (podmanReady || await podmanCliAndComposeAreAvailable(execute).catch(() => false));
+  return {
+    dockerReady,
+    dockerAvailable,
+    podmanReady,
+    podmanAvailable
+  };
+}
+
+export function podmanInstallInstructions(platform) {
+  if (platform === "darwin") {
+    return "On macOS, install Podman and podman-compose via Homebrew:\n" +
+      "  brew install podman podman-compose\n" +
+      "  podman machine init --cpus 4 --memory 7168 --disk-size 20\n" +
+      "  podman machine start";
+  }
+  return "Install Podman and Compose plugin on Linux:\n" +
+    "  Fedora/RHEL: sudo dnf install -y podman podman-compose\n" +
+    "  Ubuntu/Debian: sudo apt-get install -y podman podman-compose\n" +
+    "  Arch: sudo pacman -S podman podman-compose";
+}
+
+export function podmanComposeInstructions(platform) {
+  if (platform === "darwin") {
+    return "Install a compose provider for Podman on macOS:\n" +
+      "  brew install podman-compose";
+  }
+  return "Install a compose provider for Podman:\n" +
+    "  Fedora/RHEL: sudo dnf install -y podman-compose\n" +
+    "  Ubuntu/Debian: sudo apt-get install -y podman-compose\n" +
+    "  Arch: sudo pacman -S podman-compose";
+}
+
+export function podmanEngineHelp(platform) {
+  if (platform === "darwin") {
+    return "Podman machine is not running. Start it with:\n  podman machine start";
+  }
+  return "Podman rootless service is not running or accessible. Start it with:\n  systemctl --user enable --now podman.socket";
+}
+
+export async function checkPodmanMachineResources(optsOrExecute, maybeProfile = "small", maybeStderr = null) {
+  const isObject = typeof optsOrExecute === "object" && optsOrExecute !== null && typeof optsOrExecute.execute === "function";
+  const execute = isObject ? optsOrExecute.execute : optsOrExecute;
+  const profile = isObject ? (optsOrExecute.profile ?? "small") : (maybeProfile ?? "small");
+  const stderr = isObject ? optsOrExecute.stderr : maybeStderr;
+  const req = PROFILE_REQUIREMENTS[profile] ?? PROFILE_REQUIREMENTS.small;
+  const { captureProbe } = await import("./storage.mjs");
+  
+  let machine = null;
+  const inspectOutput = await captureProbe(execute, {
+    command: "podman",
+    args: ["machine", "inspect", "--format", "{{json .}}"]
+  });
+  if (inspectOutput) {
+    try {
+      const parsed = JSON.parse(inspectOutput);
+      machine = Array.isArray(parsed) ? parsed[0] : parsed;
+    } catch {}
+  }
+  
+  let infoHost = null;
+  const infoOutput = await captureProbe(execute, {
+    command: "podman",
+    args: ["info", "--format", "{{json .}}"]
+  });
+  if (infoOutput) {
+    try {
+      const parsed = JSON.parse(infoOutput);
+      infoHost = parsed?.host;
+    } catch {}
+  }
+  
+  let diskBytes = null;
+  if (machine?.Resources?.DiskSize) {
+    diskBytes = Number(machine.Resources.DiskSize);
+  }
+  if (!diskBytes) {
+    const listOutput = await captureProbe(execute, {
+      command: "podman",
+      args: ["machine", "list", "--format", "{{json .}}"]
+    });
+    if (listOutput) {
+      try {
+        const parsed = JSON.parse(listOutput);
+        const item = Array.isArray(parsed) ? parsed[0] : parsed;
+        if (item?.DiskSize) {
+          const str = String(item.DiskSize).trim();
+          const match = str.match(/^(\d+(?:\.\d+)?)\s*([KMGT]?B)?$/i);
+          if (match) {
+            const val = Number(match[1]);
+            const unit = (match[2] || "").toUpperCase();
+            const mul = unit === "TB" ? 1024 ** 4 : unit === "GB" ? 1024 ** 3 : unit === "MB" ? 1024 ** 2 : 1;
+            diskBytes = val * mul;
+          }
+        }
+      } catch {}
+    }
+  }
+
+  const actualCpus = machine?.Resources?.CPUs ?? infoHost?.cpus ?? 0;
+  const actualMemoryBytes = machine?.Resources?.Memory
+    ? machine.Resources.Memory * 1024 * 1024
+    : (infoHost?.memTotal ?? 0);
+  const actualDiskBytes = diskBytes ?? 0;
+
+  const cpuOk = actualCpus >= req.cpuCount;
+  const memOk = actualMemoryBytes >= req.memoryBytes;
+  const diskOk = actualDiskBytes >= req.freshDiskBytes;
+
+  if (!cpuOk || !memOk || !diskOk) {
+    const issues = [];
+    const setArgs = [];
+    if (!cpuOk) {
+      issues.push(`CPU: ${actualCpus} allocated, ${req.cpuCount} required`);
+      setArgs.push(`--cpus ${req.cpuCount}`);
+    }
+    if (!memOk) {
+      const actualGiB = (actualMemoryBytes / (1024 ** 3)).toFixed(1);
+      const reqGiB = (req.memoryBytes / (1024 ** 3)).toFixed(1);
+      issues.push(`Memory: ${actualGiB} GiB allocated, ${reqGiB} GiB required`);
+      const reqMiB = Math.ceil(req.memoryBytes / (1024 * 1024));
+      setArgs.push(`--memory ${reqMiB}`);
+    }
+    if (!diskOk) {
+      const actualGiB = (actualDiskBytes / (1024 ** 3)).toFixed(1);
+      const reqGiB = (req.freshDiskBytes / (1024 ** 3)).toFixed(1);
+      issues.push(`Disk: ${actualGiB} GiB configured, ${reqGiB} GiB required`);
+      const reqGiBInt = Math.ceil(req.freshDiskBytes / (1024 ** 3));
+      if (actualDiskBytes < req.freshDiskBytes) {
+        setArgs.push(`--disk-size ${reqGiBInt}`);
+      }
+    }
+    
+    if (stderr) {
+      stderr.write(
+        `Podman machine does not meet the requirements for profile "${profile}": ${issues.join("; ")}.\n` +
+        "To resize your Podman machine, run:\n" +
+        "  podman machine stop\n" +
+        `  podman machine set ${setArgs.join(" ")}\n` +
+        "  podman machine start\n"
+      );
+    }
+    return {
+      ok: false,
+      actualCpus,
+      actualMemoryBytes,
+      actualDiskBytes,
+      issues
+    };
+  }
+
+  return {
+    ok: true,
+    actualCpus,
+    actualMemoryBytes,
+    actualDiskBytes
+  };
+}
+
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  arch = process.arch,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  execute,
+  profile = "small"
+}) {
+  if (platform === "win32") {
+    stderr.write("The Podman container engine is supported on Linux and macOS only. Windows uses Docker Desktop.\n");
+    return { code: 1, reexecuted: false };
+  }
+  const cliCode = await execute(
+    { command: "podman", args: ["--version"] },
+    { stdin: null, stdout: null, stderr: null }
+  );
+  if (cliCode !== 0) {
+    stderr.write(`Podman CLI is not installed or not found on PATH.\n${podmanInstallInstructions(platform)}\n`);
+    return { code: cliCode || 127, reexecuted: false };
+  }
+  const composeCode = await execute(
+    { command: "podman", args: ["compose", "version"] },
+    { stdin: null, stdout: null, stderr: null }
+  );
+  if (composeCode !== 0) {
+    stderr.write(`Podman Compose provider is not available.\n${podmanComposeInstructions(platform)}\n`);
+    return { code: composeCode || 1, reexecuted: false };
+  }
+  const infoCode = await execute(
+    { command: "podman", args: ["info"] },
+    { stdin: null, stdout: null, stderr: null }
+  );
+  if (infoCode !== 0) {
+    if (platform === "darwin") {
+      stderr.write("Podman machine is not running. Start it with \"podman machine start\" or initialize one with \"podman machine init\".\n");
+    } else {
+      stderr.write("Podman service is not reachable or rootless configuration is incomplete. Run \"podman info\" to diagnose.\n");
+    }
+    return { code: infoCode || 1, reexecuted: false };
+  }
+  if (platform === "darwin") {
+    const machineCheck = await checkPodmanMachineResources({ execute, profile, stderr });
+    if (!machineCheck.ok) {
+      return { code: 1, reexecuted: false };
+    }
+  }
+  return { code: 0, reexecuted: false };
 }
 
 async function installLinuxDockerEngine({

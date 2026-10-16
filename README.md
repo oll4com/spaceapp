@@ -92,7 +92,7 @@ Coordinate multi-step tasks conversationally through the Room Agent or speak nat
 - **Hardware**:
   - Minimum (`small` profile): 4 CPU cores, 8 GB-class RAM (at least 7 GiB reported by the operating system), 6.5 GiB free disk.
   - `large` profile (adds the managed browser): 8 CPU cores, 15 GiB RAM, 11 GiB free disk.
-- **Docker**: If Docker is not installed, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+- **Container Engine**: Docker or rootless Podman (Linux & macOS). If no engine is installed and Podman is not specified, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux). To use rootless Podman, pass `--engine podman`.
 
 ### Run the Installation Command
 
@@ -105,7 +105,7 @@ npx --yes run-spaceapp@latest install
 > **Windows 11 Tip**: Use **Command Prompt** (`cmd.exe`) or the Command Prompt profile in Windows Terminal. If PowerShell has a restricted execution policy, run `npx.cmd --yes run-spaceapp@latest install`.
 
 ### What Happens Next (Step-by-Step Onboarding):
-1. **System & Docker Verification**: The launcher verifies CPU, RAM, and disk space, and installs/starts Docker if needed.
+1. **System & Container Engine Verification**: The launcher verifies CPU, RAM, and disk space, and installs/starts Docker if needed (or verifies rootless Podman when `--engine podman` is passed).
 2. **Container Initialization**: Pulls SpaceApp's images by exact version tag (published with SBOM and provenance attestations that the release workflow verifies) and the third-party images pinned by digest, then starts the container stack.
 3. **One-Time Setup Token**: The terminal prints a secure 15-minute setup token and automatically opens `http://127.0.0.1:4911`.
 4. **Create Your Operator Account**: Paste the token into the setup screen, enter your email and password, and click Create Owner.
@@ -128,9 +128,9 @@ You can run any command using `npx --yes run-spaceapp@latest <command>` or simpl
 
 | Command | Description | Example |
 | :--- | :--- | :--- |
-| `install` | Full setup: installs Docker if needed, creates secrets, starts stack, and opens browser. | `npx --yes run-spaceapp@latest install --profile auto` |
+| `install` | Full setup: verifies engine (Docker or Podman), creates secrets, starts stack, and opens browser. | `npx --yes run-spaceapp@latest install --engine podman --profile small` |
 | `reinstall` | Clean reinstallation of containers while preserving existing data, credentials, and workspaces. | `npx --yes run-spaceapp@latest reinstall --keep-data` |
-| `up` | Starts the Docker application containers in the background. | `npx --yes run-spaceapp@latest up` |
+| `up` | Starts the container application in the background. | `npx --yes run-spaceapp@latest up` |
 | `down` | Stops all SpaceApp containers cleanly without removing data. | `npx --yes run-spaceapp@latest down` |
 | `status` | Checks running container status, health checks, and port bindings. | `npx --yes run-spaceapp@latest status` |
 | `logs` | Shows the most recent container log lines (bounded tail) for troubleshooting. | `npx --yes run-spaceapp@latest logs` |

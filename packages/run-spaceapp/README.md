@@ -59,8 +59,35 @@ checkpoint and 0.5 GiB headroom. Cached target images require no extra image spa
 Shared layers are excluded when public registry metadata is available; otherwise
 a conservative estimate is shown. Space is checked again after pulling and
 before pausing writers. Existing data is kept in place; the launcher never deletes
-images, backups or volumes to free space. Separate Docker disk capacity is checked
-when measurable and its availability is reported.
+images, backups or volumes to free space. Separate container engine disk capacity is
+checked when measurable, and its availability is reported.
+
+## Container Engines: Docker and Rootless Podman
+
+SpaceApp supports both **Docker** (default) and **rootless Podman** on Linux and macOS.
+
+To install with rootless Podman:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+Or pass `{"engine": "podman"}` in `--answers`. If Docker is not installed and rootless Podman is already running on Linux or macOS, the launcher auto-detects Podman.
+
+#### Rootless Podman Prerequisites & Configuration:
+- **Linux**: Requires cgroup v2 with user controller delegation (`cpu`, `memory`, `pids`). Start the user socket with:
+  ```bash
+  systemctl --user enable --now podman.socket
+  ```
+- **macOS**: Requires Podman and `podman-compose` with a machine configured to meet profile resources:
+  ```bash
+  brew install podman podman-compose
+  podman machine init --cpus 4 --memory 7168 --disk-size 20
+  podman machine start
+  ```
+- **SELinux & User Namespaces**: The launcher automatically applies `userns_mode: "keep-id:uid=10001,gid=10001"` and SELinux `:z` volume relabeling on Podman so container services run with proper permissions under non-root user namespaces.
+- **Access mode**: Podman runs strictly in `isolated` mode. `--access host-root` is exclusive to Docker on Linux and is blocked on Podman.
+- **Engine persistence**: Once installed, the configured engine is stored in `config.json` and preserved across `update`, `repair`, and `factory-reset`. Switching engines on an existing installation requires a clean reinstall (after backing up data with `spaceapp backup`).
 
 ### Telemetry
 
