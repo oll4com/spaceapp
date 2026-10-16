@@ -382,10 +382,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install colima docker
-          # qemu is Colima's default on x64 as well; naming it keeps the choice
-          # explicit so a future default change cannot silently alter this job.
-          colima start --vm-type qemu --cpu 3 --memory 6 --disk 30
+          # No vm-type is forced: Colima picks its own default (vz on macOS 13+),
+          # which is also what a contributor following CONTRIBUTING.md gets. An
+          # earlier revision pinned `--vm-type qemu` and failed, because the
+          # colima formula no longer pulls qemu in:
+          #   cannot use vmType: 'qemu', error: qemu-img not found
+          brew install colima docker docker-compose
+          mkdir -p "$HOME/.docker/cli-plugins"
+          ln -sfn "$(brew --prefix)/opt/docker-compose/bin/docker-compose" \
+            "$HOME/.docker/cli-plugins/docker-compose"
+          colima start --cpu 3 --memory 6 --disk 30
           docker context use colima
           docker version
 
