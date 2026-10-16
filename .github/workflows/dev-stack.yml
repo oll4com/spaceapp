@@ -344,6 +344,20 @@ jobs:
   # Docker CLI but no daemon, so this job starts Colima — the same path
   # CONTRIBUTING.md gives macOS contributors — and runs the identical sequence.
   #
+  # The runner must be an Intel (x64) image, not `macos-latest`. `macos-latest`
+  # is arm64 (M-series), and those runners expose no nested virtualization, so
+  # Colima cannot start its VM at all:
+  #
+  #   level=fatal msg="error starting vm: error at 'creating and starting':
+  #   exit status 1"
+  #
+  # Apple added nested virtualization only on M3+ with macOS 15, and GitHub has
+  # not enabled it for its arm64 images. `macos-15-intel` is x64 and does support
+  # it. Apple's Local Network Privacy on macOS 15+ does hide the Colima VM's own
+  # address from user processes, but that is irrelevant here: every port this
+  # stack publishes is bound to 127.0.0.1 and reached over localhost, which keeps
+  # working.
+  #
   # It is gated to workflow_dispatch for now: a macOS runner bills at ten times
   # an Ubuntu one, and a job that has not yet been observed to pass must not be
   # able to turn a pull request red. Flip the `if` to drop the gate once this job
@@ -351,7 +365,7 @@ jobs:
   dev-stack-macos:
     name: Run the full app from source (macOS)
     if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -369,7 +383,9 @@ jobs:
         run: |
           set -euo pipefail
           brew install colima docker
-          colima start --cpu 3 --memory 6 --disk 30
+          # qemu is Colima's default on x64 as well; naming it keeps the choice
+          # explicit so a future default change cannot silently alter this job.
+          colima start --vm-type qemu --cpu 3 --memory 6 --disk 30
           docker context use colima
           docker version
 
