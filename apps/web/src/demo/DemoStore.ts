@@ -1,5 +1,6 @@
 import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
+import { generateSyntheticMemoryGraph } from "./synthetic-memory.js";
 import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom, summarizeDotProactiveUsage } from "@space/contracts";
 import type { DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
 import type {
@@ -145,6 +146,7 @@ type DemoMemoryGraphQuery = {
   relationMode?: "CLUSTERED" | "RELATIONS";
   page?: number;
   pageSize?: number;
+  limit?: number;
 };
 
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
@@ -666,7 +668,9 @@ export class DemoStore {
   }
 
   private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
-    const base = this.fixture.memoryWorkspace.graph;
+    const base = query.limit && query.limit > 2000
+      ? generateSyntheticMemoryGraph(query.limit)
+      : this.fixture.memoryWorkspace.graph;
     const needle = query.q?.trim().toLowerCase();
     const nodes = base.nodes.filter((node) => {
       const record = node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;

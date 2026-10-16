@@ -65,6 +65,7 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [closeDetail, onClose, queryDraft, selectedNodeId]);
 
+  const effectiveLimit = view3D ? 50000 : undefined;
   useEffect(() => {
     if (workspaceMode !== "atlas") return;
     let active = true;
@@ -72,12 +73,12 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
     setError(null);
     closeDetail();
     // Search covers the entire archive; removing the month picker must not hide old memories.
-    void api.memoryGraphOverview({ q: query || undefined, month: "all", relationMode: "RELATIONS" })
+    void api.memoryGraphOverview({ q: query || undefined, month: "all", relationMode: "RELATIONS", ...(effectiveLimit ? { limit: effectiveLimit } : {}) })
       .then(payload => { if (active) setGraph(payload); })
       .catch(caught => { if (active) setError(caught instanceof Error ? caught.message : "Memory could not be loaded."); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [workspaceMode, query, closeDetail]);
+  }, [workspaceMode, query, closeDetail, effectiveLimit]);
 
   useEffect(() => () => { detailRequest.current++; }, []);
   const selectNode = useCallback((nodeId: string) => {
@@ -93,20 +94,27 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
   }, []);
 
   const atlas = useMemo(() => createMemoryAtlas(graph?.data.nodes ?? [], graph?.data.edges ?? [], false), [graph]);
-  const [layout, setLayout] = useState<{ atlas: typeof atlas; positions: Map<string, MemoryAtlasPosition>; depth: Map<string, MemoryPoint3D> } | null>(null);
+  const [layout, setLayout] = useState<{ atlas: typeof atlas; positions: Map<string, MemoryAtlasPosition>; depth: Map<string, MemoryPoint3D>; done?: boolean } | null>(null);
   useEffect(() => {
     if (workspaceMode !== "atlas" || !atlas.nodes.length || typeof Worker === "undefined") return;
     const worker = new Worker(new URL("./memory-network-layout.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]> }>) => {
+    worker.onmessage = (event: MessageEvent<{ positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]>; done?: boolean }>) => {
       const coordinates = new Map(event.data.positions);
-      setLayout({ atlas, depth: new Map(event.data.depth), positions: new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }])) });
-      worker.terminate();
+      setLayout({
+        atlas,
+        depth: new Map(event.data.depth),
+        positions: new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }])),
+        done: event.data.done ?? true
+      });
+      if (event.data.done) {
+        worker.terminate();
+      }
     };
     worker.onerror = event => { setError(`Memory layout could not be calculated: ${event.message || "worker unavailable"}`); worker.terminate(); };
     worker.postMessage({ nodes: atlas.nodes, edges: atlas.edges });
     return () => worker.terminate();
   }, [workspaceMode, atlas]);
-  const layoutPending = typeof Worker !== "undefined" && atlas.nodes.length > 0 && layout?.atlas !== atlas;
+  const layoutPending = typeof Worker !== "undefined" && atlas.nodes.length > 0 && (layout?.atlas !== atlas || !layout?.done);
   const atlasPositions = layout?.atlas === atlas ? layout.positions : atlas.positions;
   const summary = graph?.data.summary;
   const memoryCount = atlas.nodes.filter(node => node.type === "MEMORY").length;
