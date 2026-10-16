@@ -303,9 +303,12 @@ async function checkBrowser() {
   // emulated (QEMU) runs, where the GPU process cannot start.
   const launchAttempts = [
     [],
-    ["--no-zygote", "--single-process"]
+    ["--no-zygote", "--single-process",
+     "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
+     "--disable-features=Vulkan"]
   ];
   let launched = false;
+  let lastLaunch;
   for (const extraFlags of launchAttempts) {
     const launch = await docker(
       ["exec", APP, "gosu", "spaceapp", "chromium",
@@ -313,6 +316,7 @@ async function checkBrowser() {
        ...extraFlags, "--dump-dom", "about:blank"],
       { timeout: 120_000 }
     );
+    lastLaunch = launch;
     if (launch.ok && launch.stdout.includes("<html")) {
       launched = true;
       break;
@@ -322,7 +326,9 @@ async function checkBrowser() {
     );
   }
   if (!launched) {
-    throw new Error("headless Chromium launch failed on every attempt");
+    throw new Error(
+      `headless Chromium launch failed on every attempt:\n${lastLaunch?.stdout ?? ""}\n${lastLaunch?.stderr ?? ""}`
+    );
   }
   console.log("smoke: headless Chromium launched and dumped about:blank DOM");
   console.log("smoke: browser PASS");
