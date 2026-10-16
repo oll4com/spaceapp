@@ -236,6 +236,57 @@ export function readSecrets(dir = SECRETS_DIR) {
 }
 
 // ---------------------------------------------------------------------------
+// The environment every from-source service shares.
+//
+// Exported so a test can assert the shape, because two of these are contracts
+// that fail quietly when they are wrong:
+//
+//   SPACE_SETUP_TOKEN_FILE — the API reads the owner setup token from the file
+//     this names, never from a `SPACE_SETUP_TOKEN` value
+//     (apps/api/src/owner-setup.ts:29), and arms a 15 minute TTL when it loads
+//     it. deploy/docker/core-entrypoint.sh hands its container the same
+//     variable. Passing the token through the environment instead leaves
+//     GET /api/setup/status reporting `expiresAt: null`, and POST
+//     /api/setup/claim then fails closed with 409 "The SpaceApp setup token is
+//     not valid." — which is exactly how the first green /readyz run failed.
+//
+//   SPACE_DEV_LOGIN — pinned to "false". The repository's own dev script sets
+//     it true and ships a fixed session secret; the acceptance contract forbids
+//     that shortcut, so the dev stack goes through real owner setup instead.
+// ---------------------------------------------------------------------------
+export const SETUP_TOKEN_FILE_VAR = "SPACE_SETUP_TOKEN_FILE";
+
+export function buildServiceEnv(secrets, opencode) {
+  const pathSep = process.platform === "win32" ? ";" : ":";
+  return {
+    // Real owner setup, not the dev-login shortcut.
+    SPACE_DEV_LOGIN: "false",
+    SPACE_SESSION_SECRET: secrets.sessionSecret,
+    [SETUP_TOKEN_FILE_VAR]: join(SECRETS_DIR, "setup-token"),
+    SPACE_DATABASE_URL: secrets.databaseUrl,
+    SPACE_RUNTIME_STORE: "postgres",
+    SPACE_API_HOST: "127.0.0.1",
+    SPACE_API_PORT: String(PORTS.api),
+    SPACE_API_ORIGIN: `http://127.0.0.1:${PORTS.api}`,
+    SPACE_WEB_HOST: "127.0.0.1",
+    SPACE_WEB_PORT: String(PORTS.web),
+    SPACE_TEMPORAL_ADDRESS: `127.0.0.1:${PORTS.temporal}`,
+    SPACEAPP_WORKFLOWS_ENABLED: "true",
+    SPACE_CLI_ENABLED: "true",
+    SPACE_CLI_HOST_SOCKET: join(STATE_DIR, "cli-host.sock"),
+    // The state-dir bin dir is prepended so panes resolve `opencode` to the
+    // pinned build we just installed, not to anything on the user's PATH.
+    SPACE_CLI_COMMAND_PATH: opencode.binDir,
+    PATH: `${opencode.binDir}${pathSep}${process.env.PATH ?? ""}`,
+    SPACE_CLI_WORKSPACE_ROOT: join(STATE_DIR, "workspaces"),
+    SPACE_CODEX_HOME: join(STATE_DIR, "providers/codex"),
+    SPACE_MEMORY_ROOT: join(STATE_DIR, "memory"),
+    SPACE_MEMORY_GRAPH_ROOT: join(STATE_DIR, "memory-graph"),
+    SPACE_ARTIFACT_ROOT: join(STATE_DIR, "artifacts")
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Generated compose file. Only the Docker services (postgres + temporal). The
 // application processes run from source on the host, which is the whole point.
 // ---------------------------------------------------------------------------
@@ -555,32 +606,7 @@ function cmdUp() {
     mkdirSync(join(STATE_DIR, sub), { recursive: true });
   }
 
-  const commonEnv = {
-    // Real owner setup, not the dev-login shortcut.
-    SPACE_DEV_LOGIN: "false",
-    SPACE_SESSION_SECRET: secrets.sessionSecret,
-    SPACE_SETUP_TOKEN: secrets.setupToken,
-    SPACE_DATABASE_URL: secrets.databaseUrl,
-    SPACE_RUNTIME_STORE: "postgres",
-    SPACE_API_HOST: "127.0.0.1",
-    SPACE_API_PORT: String(PORTS.api),
-    SPACE_API_ORIGIN: `http://127.0.0.1:${PORTS.api}`,
-    SPACE_WEB_HOST: "127.0.0.1",
-    SPACE_WEB_PORT: String(PORTS.web),
-    SPACE_TEMPORAL_ADDRESS: `127.0.0.1:${PORTS.temporal}`,
-    SPACEAPP_WORKFLOWS_ENABLED: "true",
-    SPACE_CLI_ENABLED: "true",
-    SPACE_CLI_HOST_SOCKET: join(STATE_DIR, "cli-host.sock"),
-    // The state-dir bin dir is prepended so panes resolve `opencode` to the
-    // pinned build we just installed, not to anything on the user's PATH.
-    SPACE_CLI_COMMAND_PATH: opencode.binDir,
-    PATH: `${opencode.binDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
-    SPACE_CLI_WORKSPACE_ROOT: join(STATE_DIR, "workspaces"),
-    SPACE_CODEX_HOME: join(STATE_DIR, "providers/codex"),
-    SPACE_MEMORY_ROOT: join(STATE_DIR, "memory"),
-    SPACE_MEMORY_GRAPH_ROOT: join(STATE_DIR, "memory-graph"),
-    SPACE_ARTIFACT_ROOT: join(STATE_DIR, "artifacts")
-  };
+  const commonEnv = buildServiceEnv(secrets, opencode);
 
   say("dev-stack: starting the API (watch), web (Vite), worker and CLI host from source...");
   spawnService("api", "npx", ["tsx", "watch", "apps/api/src/server.ts"], commonEnv);

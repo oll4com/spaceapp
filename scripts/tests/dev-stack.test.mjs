@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
@@ -10,7 +10,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // Import only the pure helpers. The CLI entry is guarded behind `invokedDirectly`.
 // pathToFileURL keeps this working on Windows, where a bare `d:\...` path is not
 // a valid ESM specifier.
-const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, parseContainerState, waitForInfrastructure, PORTS } =
+const { readPinnedImages, readPinnedOpenCode, generateSecrets, readSecrets, renderCompose, parseContainerState, waitForInfrastructure, buildServiceEnv, SETUP_TOKEN_FILE_VAR, PORTS } =
   await import(pathToFileURL(join(repoRoot, "scripts", "dev-stack.mjs")).href);
 
 const TEMPLATE = join(repoRoot, "packages/run-spaceapp/templates/compose.yml");
@@ -130,6 +130,70 @@ test("container secrets are world-readable so non-root container users can mount
     const reread = readSecrets(dir);
     assert.equal(reread.setupToken, secrets.setupToken);
     assert.equal(reread.sessionSecret, secrets.sessionSecret);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("buildServiceEnv hands the owner setup token over as a file, the only form the API reads", () => {
+  // Regression: the first CI run that got /readyz to report ok still failed at
+  // `POST /api/setup/claim` with 409 "The SpaceApp setup token is not valid.",
+  // because GET /api/setup/status answered `expiresAt: null` — loading the token
+  // from a plain environment value never registers it.
+  const env = buildServiceEnv(
+    { setupToken: "x".repeat(64), sessionSecret: "s", databaseUrl: "postgresql://u:p@127.0.0.1:1/db" },
+    { binDir: join(repoRoot, ".dev-stack", "bin") }
+  );
+
+  assert.ok(env[SETUP_TOKEN_FILE_VAR], `${SETUP_TOKEN_FILE_VAR} missing from the service environment`);
+  assert.equal(env.SPACE_SETUP_TOKEN, undefined, "the API never reads a plain SPACE_SETUP_TOKEN value");
+  assert.equal(SETUP_TOKEN_FILE_VAR, "SPACE_SETUP_TOKEN_FILE");
+
+  // And the path has to be the generated secret, not something else.
+  const tokenPath = env[SETUP_TOKEN_FILE_VAR];
+  assert.equal(basename(tokenPath), "setup-token");
+  assert.equal(basename(dirname(tokenPath)), "secrets");
+  assert.equal(basename(dirname(dirname(tokenPath))), ".dev-stack");
+});
+
+test("the setup token env var is the one apps/api/src/owner-setup.ts actually reads", () => {
+  // This is the cross-file half of the contract. Asserting a string literal in
+  // our own source would pass even if the API renamed the variable, so read the
+  // consumer and pin the name to it.
+  const ownerSetup = readFileSync(join(repoRoot, "apps/api/src/owner-setup.ts"), "utf8");
+  assert.ok(
+    ownerSetup.includes(`env.${SETUP_TOKEN_FILE_VAR}`),
+    `apps/api/src/owner-setup.ts no longer reads env.${SETUP_TOKEN_FILE_VAR}`
+  );
+
+  // deploy/docker/core-entrypoint.sh hands its container the same variable —
+  // scripts/tests/public-docker-distribution.test.mjs:191 asserts that half.
+  const entrypoint = readFileSync(join(repoRoot, "deploy/docker/core-entrypoint.sh"), "utf8");
+  assert.ok(
+    entrypoint.includes(`export ${SETUP_TOKEN_FILE_VAR}`),
+    `deploy/docker/core-entrypoint.sh no longer exports ${SETUP_TOKEN_FILE_VAR}`
+  );
+});
+
+test("the token file the API is handed exists and survives the API's own validator", () => {
+  const dir = mkdtempSync(join(tmpdir(), "devstack-tokenfile-"));
+  try {
+    const secrets = generateSecrets(dir);
+    const tokenPath = join(dir, "setup-token");
+
+    // loadOwnerSetupBootstrap rejects anything but a regular file, and only up
+    // to 4 KiB (apps/api/src/owner-setup.ts:33), so the generated secret has to
+    // be plain, small and newline-free — it strips only a trailing newline.
+    assert.ok(statSync(tokenPath).isFile());
+    assert.ok(statSync(tokenPath).size <= 4 * 1024);
+
+    const token = readFileSync(tokenPath, "utf8").replace(/[\r\n]+$/, "");
+    assert.equal(token, secrets.setupToken);
+    assert.equal(token, readFileSync(tokenPath, "utf8"), "no trailing newline to strip");
+
+    // The same bounds createOwnerSetupBootstrap enforces.
+    assert.ok(token.length >= 32 && token.length <= 500);
+    assert.ok(!/[\0\r\n]/.test(token));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

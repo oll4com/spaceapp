@@ -132,7 +132,14 @@ jobs:
 
       # OpenCode CLI pane: mode TERMINAL + terminalRuntimeId "cli:opencode".
       # The runtime descriptor declares authMode "NONE", so no AI provider
-      # account is needed to open the pane.
+      # account is needed to start the session.
+      #
+      # POST /api/panes only creates the pane; the CLI session that actually
+      # execs OpenCode starts on POST /api/panes/:id/cli/session, and
+      # GET /api/panes/:id/cli/session reports its state (null when no session
+      # is active). Session status is IDLE | RUNNING | INTERRUPTING | EXITED |
+      # ERROR; the pane's own status field is a different enum and does not
+      # describe the CLI process.
       - name: Open an OpenCode CLI pane and check it is running
         run: |
           set -euo pipefail
@@ -154,32 +161,45 @@ jobs:
             console.log("pane:", p.id, p.mode, p.terminalRuntimeId);
           '
           PANE_ID="$(cat pane-id.txt)"
-          export PANE_ID
+
+          curl -fsS -b cookies.txt -X POST "${BASE}/api/panes/${PANE_ID}/cli/session" \
+            -H 'content-type: application/json' \
+            -d '{"runtimeId":"cli:opencode"}' \
+            -o session-start.json -w 'start cli session: %{http_code}\n'
+          cat session-start.json
+
+          node -e '
+            const s = require("./session-start.json");
+            const session = s.session;
+            if (!session) { console.error("cli session start returned no session"); process.exit(1); }
+            if (session.runtimeId !== "cli:opencode") { console.error("cli session runtime is " + session.runtimeId); process.exit(1); }
+            if (session.status === "EXITED" || session.status === "ERROR") {
+              console.error("cli session started in " + session.status); process.exit(1);
+            }
+            console.log("cli session:", session.sessionId, session.status);
+          '
 
           for i in $(seq 1 45); do
-            curl -fsS -b cookies.txt "${BASE}/api/panes/${PANE_ID}" -o panes.json 2>/dev/null || true
-            if ! [ -s panes.json ]; then
-              curl -fsS -b cookies.txt "${BASE}/api/panes" -o panes.json 2>/dev/null || true
-            fi
+            rm -f cli-session.json
+            code="$(curl -sS -b cookies.txt "${BASE}/api/panes/${PANE_ID}/cli/session" -o cli-session.json -w '%{http_code}' || echo 000)"
             STATE="$(node -e '
-              let d; try { d = require("./panes.json"); } catch { console.log(""); process.exit(0); }
-              const list = Array.isArray(d) ? d : (d.panes || d.items || []);
-              const p = list.find(x => x.id === process.env.PANE_ID) || d || list[0];
-              if (!p) { console.log(""); process.exit(0); }
-              console.log(p.status || p.cliStatus || (p.latestCliSession && p.latestCliSession.status) || "");
+              const fs = require("fs");
+              if (fs.readFileSync("cli-session.json", "utf8").trim() === "null") { console.log("NO_SESSION"); process.exit(0); }
+              let d; try { d = require("./cli-session.json"); } catch { console.log(""); process.exit(0); }
+              console.log((d && d.session && d.session.status) || "");
             ')"
-            echo "pane state: ${STATE}"
+            echo "cli session state: ${STATE} (http ${code})"
             case "${STATE}" in
-              RUNNING|running|active|ready|connected|IDLE|idle)
-                echo "pane is running"; exit 0 ;;
-              EXITED|FAILED|CRASHED|DEAD)
-                echo "pane is not running (${STATE})"
+              RUNNING|IDLE)
+                echo "OpenCode CLI session is up"; exit 0 ;;
+              EXITED|ERROR)
+                echo "OpenCode CLI session is ${STATE}"
                 tail -n 120 .dev-stack/logs/cli-host.log || true
                 exit 1 ;;
             esac
             sleep 2
           done
-          echo "pane never reported a running state"
+          echo "OpenCode CLI session never reached a running state"
           tail -n 120 .dev-stack/logs/cli-host.log || true
           exit 1
 
