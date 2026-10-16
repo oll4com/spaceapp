@@ -262,13 +262,23 @@ async function checkBrowser() {
 
   const result = await execNode(
     APP,
-    `import { BrowserHostClient } from "/app/packages/browser-host/dist/client.js";
+    `import { readFileSync } from "node:fs";
+     import { PostgresSpaceStore } from "/app/packages/db/dist/index.js";
+     import { BrowserHostClient } from "/app/packages/browser-host/dist/client.js";
+     // The host resolves the pane's room from the database (in production
+     // the core API created it); seed one through the store itself.
+     const databaseUrl = readFileSync("/run/secrets/database-url", "utf8").trim();
+     const store = PostgresSpaceStore.fromConnectionString(databaseUrl);
+     const room = await store.createRoom(
+       { name: "Container smoke check" }, "container-smoke", null
+     );
+     console.log("room " + room.id);
      const client = new BrowserHostClient({ socketPath: "/run/spaceapp-browser/browser-host.sock" });
      const health = await client.health();
      console.log("health " + JSON.stringify(health));
      const now = new Date().toISOString();
      const pane = {
-       id: "smoke-pane-1", roomId: "smoke-room-1", title: "Container smoke check",
+       id: "smoke-pane-1", roomId: room.id, title: "Container smoke check",
        mode: "BROWSER", status: "IDLE", providerId: null, modelId: null,
        cwd: null, order: 0, columnSpan: 1, isMaximized: false,
        isMinimized: false, isClosed: false,
@@ -281,7 +291,8 @@ async function checkBrowser() {
      );
      console.log("opened " + JSON.stringify(opened).slice(0, 400));
      await client.stopPane("smoke-pane-1", "container-smoke", undefined);
-     await client.close();`
+     await client.close();
+     process.exit(0);`
   );
   console.log(`smoke: browser host session -> ${result.split("\n").join(" | ")}`);
   console.log("smoke: browser PASS (health + headless Chromium page opened)");
