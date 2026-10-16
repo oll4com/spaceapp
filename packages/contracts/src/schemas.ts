@@ -7152,6 +7152,8 @@ export const listMemoryGraphOverviewQuerySchema = listMemoryGraphQuerySchema.omi
   pageSize: true,
   sortBy: true,
   sortOrder: true
+}).extend({
+  limit: z.coerce.number().int().min(1).max(50_000).default(2000).optional()
 });
 
 export const memoryCalendarQuerySchema = z.object({
