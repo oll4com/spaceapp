@@ -1,28 +1,36 @@
 /**
- * Optional OTLP/HTTP (JSON) export of API server spans and worker activity spans. Off unless
- * SPACE_OTEL_EXPORTER_OTLP_ENDPOINT names a collector base URL (spans go to
- * `<base>/v1/traces`). No dependency, no collector required: Space logs stay
- * joinable by W3C trace id without it.
+ * Optional OTLP/HTTP (JSON) export of spans for API server and Temporal workers.
+ * Off unless SPACE_OTEL_EXPORTER_OTLP_ENDPOINT names a collector base URL (spans
+ * go to `<base>/v1/traces`). No dependency, no collector required.
  *
- * Spans carry only the method, route template, status code, service name and
- * Space request id; never URLs with parameters, headers, bodies or user data.
+ * Spans carry only strictly allowlisted identifiers and metrics (IDs, types,
+ * status codes, attempts, durations); never URLs with parameters, query strings,
+ * headers, bodies, prompts or user data.
  * Export is best effort: a bounded queue drops (and counts) spans instead of
- * growing, each POST has a timeout, and a failing collector never affects a
- * request.
+ * growing indefinitely, each POST has a timeout, and a slow or failing collector
+ * never blocks or affects business execution.
  */
 
-export interface ServerSpan {
+export interface OtlpSpanLink {
+  traceId: string;
+  spanId: string;
+  attributes?: Readonly<Record<string, string | number>>;
+}
+
+export interface OtlpSpan {
   traceId: string;
   spanId: string;
   parentSpanId: string | null;
   name: string;
+  kind?: number;
   startTimeUnixNano: bigint;
   endTimeUnixNano: bigint;
   attributes: Readonly<Record<string, string | number>>;
   error: boolean;
-  /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
-  kind?: number;
+  links?: readonly OtlpSpanLink[];
 }
+
+export type ServerSpan = OtlpSpan;
 
 export interface SpanExporterStats {
   exported: number;
@@ -31,17 +39,18 @@ export interface SpanExporterStats {
 }
 
 export interface SpanExporter {
-  record(span: ServerSpan): void;
+  record(span: OtlpSpan): void;
   flush(): Promise<void>;
   close(): Promise<void>;
   stats(): SpanExporterStats;
 }
 
-type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal }) => Promise<{ ok: boolean }>;
+export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal }) => Promise<{ ok: boolean }>;
 
 export interface OtlpSpanExporterOptions {
   endpoint: string;
   serviceName: string;
+  scopeName?: string;
   fetch?: FetchLike;
   batchSize?: number;
   maxQueue?: number;
@@ -50,8 +59,8 @@ export interface OtlpSpanExporterOptions {
 }
 
 const hexId = (length: number) => new RegExp(`^[0-9a-f]{${length}}$`);
-const traceIdPattern = hexId(32);
-const spanIdPattern = hexId(16);
+export const traceIdPattern = hexId(32);
+export const spanIdPattern = hexId(16);
 
 /** The collector base URL, or null when export is off or the value is unsafe. */
 export function otlpTracesUrl(value: string | undefined): string | null {
@@ -70,23 +79,32 @@ function attributeValue(value: string | number) {
   return typeof value === "number" && Number.isInteger(value) ? { intValue: String(value) } : { stringValue: String(value) };
 }
 
-export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: string) {
+export function otlpTraceRequest(spans: readonly OtlpSpan[], serviceName: string, scopeName?: string) {
+  const resolvedScope = scopeName ?? (serviceName === "space-api" ? "space-api" : "space-worker");
   return {
     resourceSpans: [{
       resource: { attributes: [{ key: "service.name", value: { stringValue: serviceName } }] },
       scopeSpans: [{
-        scope: { name: serviceName },
+        scope: { name: resolvedScope },
         spans: spans.map(span => ({
           traceId: span.traceId,
           spanId: span.spanId,
           ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
           name: span.name,
-          kind: span.kind ?? 2,
+          kind: span.kind ?? (serviceName === "space-api" ? 2 : 1),
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
-          // STATUS_CODE_ERROR or STATUS_CODE_UNSET
-          status: { code: span.error ? 2 : 0 }
+          status: { code: span.error ? 2 : 0 },
+          ...(span.links && span.links.length > 0 ? {
+            links: span.links.map(link => ({
+              traceId: link.traceId,
+              spanId: link.spanId,
+              ...(link.attributes && Object.keys(link.attributes).length > 0 ? {
+                attributes: Object.entries(link.attributes).map(([key, value]) => ({ key, value: attributeValue(value) }))
+              } : {})
+            }))
+          } : {})
         }))
       }]
     }]
@@ -100,7 +118,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   const batchSize = options.batchSize ?? 256;
   const maxQueue = options.maxQueue ?? 4096;
   const timeoutMs = options.timeoutMs ?? 3000;
-  const queue: ServerSpan[] = [];
+  const queue: OtlpSpan[] = [];
   const stats: SpanExporterStats = { exported: 0, dropped: 0, failed: 0 };
   let inFlight: Promise<void> | null = null;
 
@@ -111,7 +129,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
       const response = await send(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(otlpTraceRequest(batch, options.serviceName)),
+        body: JSON.stringify(otlpTraceRequest(batch, options.serviceName, options.scopeName)),
         signal: AbortSignal.timeout(timeoutMs)
       });
       if (response.ok) stats.exported += batch.length;
@@ -155,7 +173,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
 }
 
 /** The exporter configured by SPACE_OTEL_EXPORTER_OTLP_ENDPOINT, or null when export is off. */
-export function otlpSpanExporterFromEnv(env: NodeJS.ProcessEnv, serviceName: string): SpanExporter | null {
+export function otlpSpanExporterFromEnv(env: NodeJS.ProcessEnv, serviceName: string, scopeName?: string): SpanExporter | null {
   const endpoint = env.SPACE_OTEL_EXPORTER_OTLP_ENDPOINT;
-  return otlpTracesUrl(endpoint) ? createOtlpSpanExporter({ endpoint: endpoint!, serviceName }) : null;
+  return otlpTracesUrl(endpoint) ? createOtlpSpanExporter({ endpoint: endpoint!, serviceName, scopeName }) : null;
 }
