@@ -52,3 +52,13 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## Telemetry and tracing
+
+- `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT`: Optional OTLP/HTTP collector base URL (e.g. `http://127.0.0.1:4318/`).
+  When set, both the API and all Temporal worker processes (`worker.ts`, `memory-maintenance-worker.ts`,
+  `memory-mutation-worker.ts`) export traces to `<endpoint>/v1/traces` over OTLP/HTTP JSON without heavy
+  external SDK dependencies. API requests emit `SERVER` spans; Temporal workers emit `INTERNAL` workflow
+  spans (parented to the API request) and per-attempt activity spans. When unset (default), span export is
+  disabled, no spans are exported, and no network requests are made.
+
