@@ -156,6 +156,9 @@ export function prepareTargets() {
       // Preserve browser-host-main.js exclusion (runs exclusively in browser-host image)
       safeRemove(join(dest, "apps/api/dist/browser-host-main.js"));
 
+      // Decouple node-pty: lazy-loaded on-demand in CLI container, not needed in core
+      safeRemove(join(nodeModulesDest, "node-pty"));
+
     } else if (target === "browser") {
       // Browser Host service only
       safeCopy(join(repoRoot, "apps/api/dist"), join(dest, "apps/api/dist"));
