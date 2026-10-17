@@ -87,6 +87,30 @@ the installer resumes automatically in Command Prompt without entering the
 command again. SpaceApp reuses Docker Desktop's WSL2 Linux environment and does
 not install a second full virtual machine.
 
+## Container engines: Docker and Rootless Podman
+
+SpaceApp supports Docker and rootless Podman as container engines:
+
+- **Docker** (default): Docker Engine or Docker Desktop on Linux, macOS, and Windows.
+- **Rootless Podman**: Podman 5+ with Compose support (`podman compose version`) on Linux and macOS.
+
+To install using Podman:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+On Linux and macOS, if Docker is unavailable but Podman is detected on PATH, the interactive installation wizard automatically offers to use Podman.
+
+### Podman considerations
+
+- **Rootless by default**: Podman executes under your user account with user namespace mapping (`keep-id:uid=10001,gid=10001` for unprivileged containers).
+- **SELinux compatibility**: Registered workspace bind mounts are automatically annotated with `:z` relabeling for SELinux enforcing environments.
+- **cgroup v2 & Resource limits**: On Linux, cgroup v2 with CPU and memory delegation (`Delegate=cpu cpuset io memory pids` in systemd) enables resource limit enforcement. If controller delegation is not configured, containers run without CPU/memory limits.
+- **macOS virtual machine resources**: Ensure your Podman machine has sufficient CPU, RAM, and disk for your selected profile (e.g. `podman machine set --cpus 4 --memory 11264 --disk-size 50`).
+- **Access mode limitation**: The `--access host-root` mode requires Docker daemon host mount semantics and is not supported with rootless Podman. Use `--access isolated` (the default).
+- **Engine switching**: Switching the container engine on an existing installation is not directly supported. To migrate between Docker and Podman, create a backup with `run-spaceapp backup`, reinstall with `--engine <engine>`, and restore with `run-spaceapp restore`.
+
 ## Installation profiles
 
 The universal install command defaults to `--profile auto`:
