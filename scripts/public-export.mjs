@@ -92,6 +92,8 @@ const publicScripts = new Set([
   "scripts/build-demo-projects.mjs",
   "scripts/tests/opencode-first-run.test.mjs",
   "scripts/container-image-size-budget.mjs",
+  "scripts/smoke-container-image.mjs",
+  "scripts/stage-container-runtime.mjs",
   "scripts/fix-build-permissions.mjs",
   "scripts/portable-backup.mjs",
   "scripts/portable-restore.mjs",

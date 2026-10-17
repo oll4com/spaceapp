@@ -74,6 +74,13 @@ test("container matrices load each image and enforce the public size budgets", a
     assert.match(content, /--target "\$\{\{ matrix\.target \}\}"/);
     assert.match(content, /--image "spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"/);
   }
+
+  const containers = await workflow("containers.yml");
+  assert.match(containers, /node scripts\/smoke-container-image\.mjs/);
+  assert.match(
+    containers,
+    /--target "\$\{\{ matrix\.target \}\}"[\s\S]*--arch "\$\{\{ matrix\.arch \}\}"[\s\S]*--image "spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"/
+  );
 });
 
 test("security workflow scans secrets, dependencies, source, images, and emits an SBOM", async () => {
