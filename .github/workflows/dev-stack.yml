@@ -88,6 +88,10 @@ jobs:
           colima start --profile spaceapp-dev-proof --cpu 3 --memory 6 --disk 30
           docker context use colima-spaceapp-dev-proof
 
+      - name: Prepare hosted Linux search tool
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
       - name: Verify existing Docker, Compose, browser and search tools
         run: |
           docker version
