@@ -61,9 +61,10 @@ The setting applies to `space-api`, `space-worker`,
 workers still require their existing feature flags. API spans have kind SERVER;
 workflow runs and activity attempts have kind INTERNAL. Propagation links the
 actual API span to its workflow and activity attempts. Ordinary children inherit
-the workflow parent; continue-as-new links consecutive runs, and background
-turns start a fresh trace linked to their source when available. Replay suppresses
-the export sink.
+the workflow parent. A later operator turn under a long-lived supervisor uses its
+own API span and links to the supervisor. Continue-as-new links consecutive runs,
+and background turns start a fresh trace linked to their source when available.
+Replay suppresses the export sink.
 
 Production defaults are 256 spans per batch, 4096 queued spans, a 5-second flush
 interval and a 3-second timeout per POST. There are no additional environment

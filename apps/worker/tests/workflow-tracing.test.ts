@@ -70,14 +70,17 @@ describe("workflow tracing interceptors", () => {
     expect(spans[0]).toMatchObject({ traceId: headerContext.traceId, parentSpanId: headerContext.spanId });
   });
 
-  it("passes both child workflow promises through and uses the actual supervisor parent", async () => {
-    const { inbound, outbound } = harness({ memo: { traceparent } });
+  it.each([
+    ["dummyTurnWorkflow", "child"],
+    ["roomAgentSupervisorWorkflow", "codexAppServerTurnWorkflow"]
+  ])("passes both child workflow promises through and keeps the same-request parent (%s -> %s)", async (workflowType, childWorkflowType) => {
+    const { inbound, outbound } = harness({ workflowType, memo: { traceparent } });
     await inbound.execute!({ args: [], headers: {} }, async () => {
       const started = Promise.resolve("child-run");
       const result = Promise.resolve({ status: "COMPLETED" });
       const pair: [Promise<string>, Promise<unknown>] = [started, result];
       const promise = Promise.resolve(pair);
-      const input = { workflowType: "child", headers: {}, seq: 1, options: { args: [{ traceparent }], workflowId: "child:1" } } as OutboundInput<"startChildWorkflowExecution">;
+      const input = { workflowType: childWorkflowType, headers: {}, seq: 1, options: { args: [{ traceparent }], workflowId: "child:1" } } as OutboundInput<"startChildWorkflowExecution">;
       const returned = outbound.startChildWorkflowExecution!(input, async child => {
         expect(readTraceHeader(child.headers)?.context.spanId).toBe(workflowSpanId(runId));
         return pair;
@@ -87,6 +90,38 @@ describe("workflow tracing interceptors", () => {
       expect((await returned)[1]).toBe(result);
       expect(outbound.startChildWorkflowExecution!(input, () => promise)).toBe(promise);
     });
+  });
+
+  it.each([
+    ["new trace", "3".repeat(32)],
+    ["shared trace", api.traceId]
+  ])("joins a later queued turn to its own request while linking the existing supervisor (%s)", async (_case, requestTraceId) => {
+    const supervisor = harness({ workflowType: "roomAgentSupervisorWorkflow", memo: { traceparent } });
+    const laterRequest = { traceId: requestTraceId!, spanId: "4".repeat(16), flags: "01" };
+    const laterTraceparent = `00-${laterRequest.traceId}-${laterRequest.spanId}-01`;
+    const turn = { traceId: "req:later-turn", traceparent: laterTraceparent, prompt: privateText };
+    const child = harness({ runId: "later-turn-run", workflowType: "codexAppServerTurnWorkflow" });
+    await supervisor.inbound.execute!({ args: [], headers: {} }, async () => {
+      // The original supervisor context is already in use before request B arrives.
+      await supervisor.outbound.scheduleActivity!(activity, async () => undefined);
+      await supervisor.inbound.handleSignal!({ signalName: "enqueue", args: [{ turn }], headers: {} }, async () => undefined);
+      const input = { workflowType: "codexAppServerTurnWorkflow", headers: {}, seq: 1,
+        options: { args: [turn], workflowId: "child:later-turn" } } as OutboundInput<"startChildWorkflowExecution">;
+      await supervisor.outbound.startChildWorkflowExecution!(input, async scheduled => {
+        expect(scheduled.options).toBe(input.options);
+        await child.inbound.execute!({ args: [turn], headers: scheduled.headers }, async () => {
+          await child.outbound.scheduleActivity!(activity, async scheduledActivity => {
+            expect(readTraceHeader(scheduledActivity.headers)?.context).toEqual({ ...laterRequest, spanId: workflowSpanId("later-turn-run") });
+          });
+        });
+        return [Promise.resolve("later-turn-run"), Promise.resolve(undefined)];
+      });
+    });
+    expect(child.spans).toHaveLength(1);
+    expect(child.spans[0]).toMatchObject({ traceId: laterRequest.traceId, parentSpanId: laterRequest.spanId,
+      links: [{ traceId: api.traceId, spanId: workflowSpanId(runId) }] });
+    expect(supervisor.spans[0]).toMatchObject({ traceId: api.traceId, parentSpanId: api.spanId });
+    expect(JSON.stringify([...supervisor.spans, ...child.spans])).not.toContain(privateText);
   });
 
   it("keeps the original parent across continue-as-new, links runs and treats the SDK control exception as success", async () => {

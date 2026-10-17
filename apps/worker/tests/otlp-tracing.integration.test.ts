@@ -1,7 +1,7 @@
 import { Context } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import { Worker } from "@temporalio/worker";
-import { roomAgentSupervisorQueueItemSchema } from "@space/contracts";
+import { ROOM_AGENT_ENQUEUE_SIGNAL, roomAgentSupervisorQueueItemSchema } from "@space/contracts";
 import { describe, expect, it } from "vitest";
 import { noteActivityFailureReason } from "../src/activity-observability.js";
 import { createBackgroundTraceContext } from "../src/activity-trace-context.js";
@@ -223,6 +223,61 @@ describe("worker OTLP tracing against real Temporal and HTTP", () => {
       expect(ctx.tracing.stats()).toEqual({ exported: 0, dropped: 0, failed: 0 });
       expect(ctx.collector.bodies).toEqual([]);
     }, { enabled: false });
+  }, 60_000);
+
+  it.each([
+    ["new trace", "3".repeat(32)],
+    ["shared trace", traceId]
+  ])("connects a later request's real child turn to that request and links the long-lived supervisor (%s)", async (_case, laterTraceId) => {
+    const initial = roomAgentSupervisorQueueItemSchema.parse({ missionId: "mission:first-request", turn: {
+      ...input(), agentRunId: "agent-run:first-request", roomAgentMissionId: "mission:first-request"
+    } });
+    const laterParentSpanId = "4".repeat(16);
+    const later = roomAgentSupervisorQueueItemSchema.parse({ missionId: "mission:later-request", turn: {
+      ...input(), traceId: "request:later", traceparent: `00-${laterTraceId}-${laterParentSpanId}-01`,
+      agentRunId: "agent-run:later-request", roomAgentMissionId: "mission:later-request"
+    } });
+    const finished = new Set<string>();
+    await withOtlpHarness({
+      checkRoomAgentSupervisorTurn: async () => "READY",
+      runCodexAppServerTurn: async () => ({ status: "COMPLETED" }),
+      finishRoomAgentSupervisorTurn: async ({ item }) => { finished.add(item.missionId); },
+      discardRoomAgentSupervisorTurn: async () => undefined
+    }, async (ctx) => {
+      const handle = await ctx.start("roomAgentSupervisorWorkflow", [{ roomId: "room:otlp", pending: [initial] }], { traceparent });
+      const waitForFinish = async (missionId: string) => {
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const description = await handle.describe();
+          if (finished.has(missionId) && !description.raw.pendingActivities?.length && !description.raw.pendingChildren?.length) return;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error(`Synthetic mission did not finish: ${missionId}`);
+      };
+      await waitForFinish(initial.missionId);
+      await handle.signal(ROOM_AGENT_ENQUEUE_SIGNAL, later);
+      await waitForFinish(later.missionId);
+      await handle.cancel();
+      await expect(handle.result()).rejects.toThrow();
+      const spans = await ctx.collectUntil((value) => value.some((span) => span.name === "workflow.roomAgentSupervisorWorkflow"));
+      const supervisor = one(spans, "workflow.roomAgentSupervisorWorkflow");
+      const turns = spans.filter((span) => span.name === "workflow.codexAppServerTurnWorkflow");
+      expect(turns).toHaveLength(2);
+      const firstTurn = turns.find((span) => attributes(span)["space.trace_id"] === initial.turn.traceId)!;
+      const laterTurn = turns.find((span) => attributes(span)["space.trace_id"] === later.turn.traceId)!;
+      expect(supervisor).toMatchObject({ traceId, parentSpanId });
+      expect(firstTurn).toMatchObject({ traceId, parentSpanId: supervisor.spanId });
+      expect(laterTurn).toMatchObject({ traceId: laterTraceId, parentSpanId: laterParentSpanId,
+        links: [{ traceId, spanId: supervisor.spanId }] });
+      const laterActivities = spans.filter((span) => span.name === "activity.runCodexAppServerTurn" && attributes(span)["space.mission_id"] === later.missionId);
+      expect(laterActivities).toHaveLength(1);
+      expect(laterActivities[0]).toMatchObject({ traceId: laterTraceId, parentSpanId: laterTurn.spanId });
+      const beforeReplay = ctx.tracing.stats();
+      await Worker.runReplayHistory({ workflowBundle: await otlpWorkflowBundle(), sinks: ctx.tracing.workerOptions.sinks }, await handle.fetchHistory());
+      await ctx.tracing.flush();
+      expect(ctx.tracing.stats()).toEqual(beforeReplay);
+      privateDataAbsent(ctx.collector.bodies);
+    });
   }, 60_000);
 
   it("completes workflows when the real HTTP collector rejects every export", async () => {
