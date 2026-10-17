@@ -35,7 +35,7 @@
           "seconds": "10"
         },
         "originalExecutionRunId": "ee465454-57fa-44ad-9ed2-b315cd5193f3",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "firstExecutionRunId": "ee465454-57fa-44ad-9ed2-b315cd5193f3",
         "attempt": 1,
         "firstWorkflowTaskBackoff": {},
@@ -69,7 +69,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "2",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "historySizeBytes": "362"
       }
     },
@@ -82,7 +82,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "2",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "binaryChecksum": "@temporalio/worker@1.24.0+262099436a5edc3a386ed9cd6d97883575e6ddc391a87b3ac25bde63164a919e",
         "sdkMetadata": {
           "coreUsedFlags": [
@@ -155,7 +155,7 @@
       "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
       "activityTaskStartedEventAttributes": {
         "scheduledEventId": "5",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "attempt": 1
       }
     },
@@ -179,7 +179,7 @@
         },
         "scheduledEventId": "5",
         "startedEventId": "6",
-        "identity": "85805@MacBook-Air-M5.local"
+        "identity": "space-history-recorder@space.local"
       }
     },
     {
@@ -209,7 +209,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "8",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "historySizeBytes": "1080"
       }
     },
@@ -222,7 +222,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "8",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "binaryChecksum": "@temporalio/worker@1.24.0+262099436a5edc3a386ed9cd6d97883575e6ddc391a87b3ac25bde63164a919e",
         "sdkMetadata": {},
         "meteringMetadata": {}
@@ -287,7 +287,7 @@
       "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
       "activityTaskStartedEventAttributes": {
         "scheduledEventId": "11",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "attempt": 1
       }
     },
@@ -310,7 +310,7 @@
         },
         "scheduledEventId": "11",
         "startedEventId": "12",
-        "identity": "85805@MacBook-Air-M5.local"
+        "identity": "space-history-recorder@space.local"
       }
     },
     {
@@ -340,7 +340,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "14",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "historySizeBytes": "1697"
       }
     },
@@ -353,7 +353,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "14",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "binaryChecksum": "@temporalio/worker@1.24.0+262099436a5edc3a386ed9cd6d97883575e6ddc391a87b3ac25bde63164a919e",
         "sdkMetadata": {},
         "meteringMetadata": {}
@@ -409,7 +409,7 @@
       "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
       "activityTaskStartedEventAttributes": {
         "scheduledEventId": "17",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "attempt": 1
       }
     },
@@ -432,7 +432,7 @@
         },
         "scheduledEventId": "17",
         "startedEventId": "18",
-        "identity": "85805@MacBook-Air-M5.local"
+        "identity": "space-history-recorder@space.local"
       }
     },
     {
@@ -462,7 +462,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "20",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "historySizeBytes": "2220"
       }
     },
@@ -475,7 +475,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "20",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "binaryChecksum": "@temporalio/worker@1.24.0+262099436a5edc3a386ed9cd6d97883575e6ddc391a87b3ac25bde63164a919e",
         "sdkMetadata": {},
         "meteringMetadata": {}
@@ -540,7 +540,7 @@
       "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
       "activityTaskStartedEventAttributes": {
         "scheduledEventId": "23",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "attempt": 1
       }
     },
@@ -564,7 +564,7 @@
         },
         "scheduledEventId": "23",
         "startedEventId": "24",
-        "identity": "85805@MacBook-Air-M5.local"
+        "identity": "space-history-recorder@space.local"
       }
     },
     {
@@ -594,7 +594,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "26",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "historySizeBytes": "2925"
       }
     },
@@ -607,7 +607,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "26",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "binaryChecksum": "@temporalio/worker@1.24.0+262099436a5edc3a386ed9cd6d97883575e6ddc391a87b3ac25bde63164a919e",
         "sdkMetadata": {},
         "meteringMetadata": {}
@@ -696,7 +696,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "31",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "historySizeBytes": "3524"
       }
     },
@@ -709,7 +709,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "31",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "binaryChecksum": "@temporalio/worker@1.24.0+262099436a5edc3a386ed9cd6d97883575e6ddc391a87b3ac25bde63164a919e",
         "sdkMetadata": {},
         "meteringMetadata": {}
@@ -772,7 +772,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "35",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "historySizeBytes": "3983"
       }
     },
@@ -785,7 +785,7 @@
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "35",
-        "identity": "85805@MacBook-Air-M5.local",
+        "identity": "space-history-recorder@space.local",
         "binaryChecksum": "@temporalio/worker@1.24.0+262099436a5edc3a386ed9cd6d97883575e6ddc391a87b3ac25bde63164a919e",
         "sdkMetadata": {},
         "meteringMetadata": {}

@@ -59,6 +59,7 @@ async function recordAll() {
     const defaultWorker = await Worker.create({
       connection: testEnv.nativeConnection,
       taskQueue: DEFAULT_TASK_QUEUE,
+      identity: "space-history-recorder@space.local",
       workflowsPath,
       activities: defaultActivities
     });
@@ -68,6 +69,7 @@ async function recordAll() {
     const legacyWorker = await Worker.create({
       connection: testEnv.nativeConnection,
       taskQueue: legacyTaskQueue,
+      identity: "space-history-recorder@space.local",
       workflowsPath,
       activities: defaultActivities,
       patchActivationCallback: () => false
@@ -77,6 +79,7 @@ async function recordAll() {
     const maintenanceWorker = await Worker.create({
       connection: testEnv.nativeConnection,
       taskQueue: MEMORY_MAINTENANCE_TASK_QUEUE,
+      identity: "space-history-recorder@space.local",
       workflowsPath: maintenanceWorkflowsPath,
       activities: maintenanceActivities
     });
@@ -85,6 +88,7 @@ async function recordAll() {
     const mutationWorker = await Worker.create({
       connection: testEnv.nativeConnection,
       taskQueue: MEMORY_MUTATION_TASK_QUEUE,
+      identity: "space-history-recorder@space.local",
       workflowsPath: mutationWorkflowsPath,
       activities: mutationActivities
     });
@@ -123,13 +127,15 @@ async function recordAll() {
           throw new Error(`Fetched history for ${name} does not end with continued-as-new event: ${JSON.stringify(lastEvent)}`);
         }
         const filePath = resolve(fixturesDir, `${name}.json`);
-        writeFileSync(filePath, JSON.stringify(history, null, 2), "utf8");
+        const json = JSON.stringify(history, null, 2).replace(/"identity":\s*"[^"]+"/g, '"identity": "space-history-recorder@space.local"');
+        writeFileSync(filePath, json, "utf8");
         console.log(`Saved ${name}.json (${history.events.length} events)`);
       } else {
         await handle.result();
         const history = await handle.fetchHistory();
         const filePath = resolve(fixturesDir, `${name}.json`);
-        writeFileSync(filePath, JSON.stringify(history, null, 2), "utf8");
+        const json = JSON.stringify(history, null, 2).replace(/"identity":\s*"[^"]+"/g, '"identity": "space-history-recorder@space.local"');
+        writeFileSync(filePath, json, "utf8");
         console.log(`Saved ${name}.json (${history.events.length} events)`);
       }
     }
