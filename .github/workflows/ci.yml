@@ -60,3 +60,48 @@ jobs:
       - name: Pack launcher candidate
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm run pack:dry-run -w run-spaceapp
+
+  dev-stack:
+    name: Contributor source stack smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Create sanitized candidate
+        run: >-
+          node scripts/public-export.mjs
+          --output "$RUNNER_TEMP/spaceapp-public-export"
+
+      - name: Install candidate dependencies
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+
+      - name: Start full contributor stack from source
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run dev:stack -- up --detach
+
+      - name: Verify API, web dev server, owner claim, and OpenCode CLI pane
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: |
+          curl -fsS http://127.0.0.1:5910/livez
+          curl -fsS http://127.0.0.1:5910/readyz
+          curl -fsS http://127.0.0.1:5911/ | grep -q '<div id="root">'
+          curl -fsS http://127.0.0.1:5911/api/setup/status
+          npm run dev:stack -- verify
+
+      - name: Reset contributor stack
+        if: always()
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: |
+          npm run dev:stack -- reset
+          test ! -d .dev-stack
+          test -z "$(docker ps -aq --filter name=space-dev-)"
+
