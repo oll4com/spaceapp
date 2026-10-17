@@ -127,7 +127,7 @@ function ttyStdin(...answers) {
   return stream;
 }
 
-const FRESH_APPROVALS = ["", "", "", "", "", "y"];
+const FRESH_APPROVALS = ["", "", "", "", "", "", "y"];
 const FRESH_APPROVALS_WINDOWS = ["", "", "", "", "", "y", ""];
 
 const eightGigabyteClassLinuxGuest = Object.freeze({
@@ -1464,7 +1464,7 @@ test("macOS authorization failure stops the install before SpaceApp image pulls"
     arch: "x64",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: ttyStdin("", "", "", "", "", "y", "yes"),
+    stdin: ttyStdin(...FRESH_APPROVALS),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     prepareDockerPath: async () => null,
     ensureDocker: async (options) => ensureDockerAvailable({
