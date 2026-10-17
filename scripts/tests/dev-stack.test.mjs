@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { composeDocument, extractPins, initialize, loadOwner, locations, ownerLabel, privateWrite, secrets, serviceEnvironment } from '../dev-stack/state.mjs';
 import { descendants, LaunchBarrier, lineRedactor, processIdentity, sameProcess, stopRecorded } from '../dev-stack/processes.mjs';
-import { assertOwnedDocker, composeArgs, diagnoseOwnedDocker, dockerEnvironment, removeOwnedDocker, run } from '../dev-stack/resources.mjs';
+import { assertLoopbackPublications, assertOwnedDocker, composeArgs, diagnoseOwnedDocker, dockerEnvironment, readOwnedPortPublications, removeOwnedDocker, run } from '../dev-stack/resources.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const pins = extractPins(await readFile(join(root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(root, 'Dockerfile'), 'utf8'));
@@ -32,6 +32,70 @@ test('ports are isolated, distinct and explicitly configurable', () => {
   assert.equal(locations(root, { SPACE_DEV_API_PORT: '5810' }).ports.api, 5810);
   for (const value of ['4910', '4911', '0', '99999', '4810suffix', '0.0.0.0']) assert.throws(() => locations(root, { SPACE_DEV_API_PORT: value }));
   assert.throws(() => locations(root, { SPACE_DEV_API_PORT: '4811' }), /distinct/);
+});
+
+// Synthetic schema fixture derived from Compose v2.38.2 ps.go; not a captured live response.
+const publishedPorts = { postgres: 54329, temporal: 47233 };
+function portFixture() {
+  return [
+    { Service: 'postgres', Publishers: [{ URL: '127.0.0.1', TargetPort: 5432, PublishedPort: 54329, Protocol: 'tcp' }], NetworkSettingsPorts: { '5432/tcp': [{ HostIp: '127.0.0.1', HostPort: '54329' }] } },
+    { Service: 'temporal', Publishers: [{ URL: '', TargetPort: 7234, PublishedPort: 0, Protocol: 'tcp' }, { URL: '127.0.0.1', TargetPort: 7233, PublishedPort: 47233, Protocol: 'tcp' }], NetworkSettingsPorts: { '7234/tcp': null, '7233/tcp': [{ HostIp: '127.0.0.1', HostPort: '47233' }] } }
+  ];
+}
+test('port proof distinguishes exposed container ports from exact loopback host publications', () => {
+  const services = portFixture();
+  // Preserve the observed old empty-URL assertion failure against the documented synthetic schema.
+  assert.throws(() => { for (const service of services) for (const binding of service.Publishers) assert.equal(binding.URL, '127.0.0.1'); });
+  assert.doesNotThrow(() => assertLoopbackPublications(services, publishedPorts));
+});
+test('positive published ports with empty, wildcard or IPv6 host addresses always fail', () => {
+  for (const host of ['', '0.0.0.0', '::', '::1', '[::]', 'localhost']) {
+    const services = portFixture(); services[0].Publishers[0].URL = host;
+    assert.throws(() => assertLoopbackPublications(services, publishedPorts), /host address/);
+  }
+  const contradictory = portFixture(); contradictory[1].Publishers[0].URL = '0.0.0.0';
+  assert.throws(() => assertLoopbackPublications(contradictory, publishedPorts), /unpublished/);
+});
+test('missing, extra, mismatched, duplicated or malformed Compose publications fail', () => {
+  for (const mutate of [
+    services => { services[0].Publishers = []; },
+    services => { services[0].Publishers.push({ URL: '127.0.0.1', TargetPort: 5432, PublishedPort: 54330, Protocol: 'tcp' }); },
+    services => { services[0].Publishers[0].TargetPort = 5433; },
+    services => { services[0].Publishers[0].Protocol = 'udp'; },
+    services => { services[0].Publishers.push({ ...services[0].Publishers[0] }); },
+    services => { services[1].Publishers[0].PublishedPort = '0'; },
+    services => { services[1].Service = 'postgres'; },
+    services => { services.pop(); }
+  ]) { const services = portFixture(); mutate(services); assert.throws(() => assertLoopbackPublications(services, publishedPorts)); }
+});
+test('selected engine inspection independently rejects missing, wildcard, extra or mismatched bindings', () => {
+  for (const mutate of [
+    services => { services[0].NetworkSettingsPorts['5432/tcp'] = null; },
+    services => { services[0].NetworkSettingsPorts['5432/tcp'][0].HostIp = ''; },
+    services => { services[0].NetworkSettingsPorts['5432/tcp'][0].HostIp = '0.0.0.0'; },
+    services => { services[0].NetworkSettingsPorts['5432/tcp'][0].HostIp = '::'; },
+    services => { services[0].NetworkSettingsPorts['5432/tcp'][0].HostPort = '54330'; },
+    services => { services[0].NetworkSettingsPorts['5433/tcp'] = [{ HostIp: '127.0.0.1', HostPort: '54329' }]; },
+    services => { services[1].NetworkSettingsPorts['7234/tcp'] = [{ HostIp: '127.0.0.1', HostPort: '47234' }]; },
+    services => { services[0].NetworkSettingsPorts['5432/tcp'].push({ HostIp: '127.0.0.1', HostPort: '54329' }); }
+  ]) { const services = portFixture(); mutate(services); assert.throws(() => assertLoopbackPublications(services, publishedPorts)); }
+});
+test('port evidence reads only owned selected metadata and never returns Compose commands or environment', async () => {
+  const owner = { nonce: 'owned', project: 'owned-project' }, fixture = portFixture(), calls = [];
+  const ids = ['a'.repeat(64), 'b'.repeat(64)];
+  const invoke = async (command, args) => {
+    calls.push([command, ...args]);
+    if (args.includes('ls')) return args[0] === 'container' ? ids.join('\n') : '';
+    if (args.includes('{{json .Config.Labels}}')) return JSON.stringify({ [ownerLabel]: owner.nonce });
+    if (args[0] === 'compose') return fixture.map((service, i) => JSON.stringify({ ...service, ID: ids[i], Command: 'must-not-be-retained', Env: ['must-not-be-retained'] })).join('\n');
+    if (args.includes('{{json .NetworkSettings.Ports}}')) return JSON.stringify(fixture[ids.indexOf(args.at(-1))].NetworkSettingsPorts);
+    throw new Error('Unexpected port proof command');
+  };
+  const selected = await readOwnedPortPublications({ compose: 'private-compose.json' }, owner, { invoke, env: {} });
+  assert.deepEqual(selected, fixture); assert.doesNotThrow(() => assertLoopbackPublications(selected, publishedPorts));
+  assert.equal(JSON.stringify(selected).includes('must-not-be-retained'), false);
+  assert.equal(calls.some(call => call.includes('{{json .Config.Env}}')), false);
+  assert.equal(calls.filter(call => call.includes('{{json .NetworkSettings.Ports}}')).length, 2);
 });
 test('deletion targets are confined to named direct checkout children', () => {
   for (const value of ['..', '../data', '/', 'node_modules', '.git', '.dev-stack/../secrets', '/tmp/.dev-stack']) assert.throws(() => locations(root, { SPACE_DEV_STATE_DIR: value }));

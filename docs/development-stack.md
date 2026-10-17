@@ -116,7 +116,7 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners and checks the exact source. Both run all 29 launcher
+and `macos-15-intel` runners and checks the exact source. Both run all 34 launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
 Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
 private-instance API regressions in the four `instance-storage`/`dev-*-storage`

@@ -9,7 +9,7 @@ import WebSocket from 'ws';
 import { locations, loadOwner, readJson } from './state.mjs';
 import { sameProcess, delay } from './processes.mjs';
 import { browserProof, eventually } from './browser-proof.mjs';
-import { compose, run, dockerEnvironment } from './resources.mjs';
+import { assertLoopbackPublications, readOwnedPortPublications, run, dockerEnvironment } from './resources.mjs';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url))), config = locations(root, process.env), owner = await loadOwner(config);
 const artifacts = process.env.SPACE_DEV_PROOF_DIR;
@@ -57,10 +57,10 @@ try {
     if (terminalError) throw new Error('Actual CLI terminal WebSocket failed.');
     return running && /opencode/i.test(stripVTControlCharacters(ui));
   }, 'Real pinned OpenCode PTY terminal UI'); marker('source CLI host/PTY and actual OpenCode UI; no model prompt sent');
-  const docker = (await compose(config, owner, ['ps', '--format', 'json'])).trim();
-  const services = docker.startsWith('[') ? JSON.parse(docker) : docker.split('\n').filter(Boolean).map(line => JSON.parse(line));
-  assert.equal(services.length, 2);
-  for (const service of services) for (const binding of service.Publishers || []) assert.equal(binding.URL, '127.0.0.1'); marker('Docker service ports bind only loopback');
+  const services = await readOwnedPortPublications(config, owner);
+  // Preserve actual selected metadata before validation, including failures; no environment or command fields.
+  await writeFile(join(artifacts, 'docker-port-bindings.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, services }, null, 2) + '\n', { mode: 0o600 });
+  assertLoopbackPublications(services, owner.ports); marker('exact expected Docker service ports bind only loopback');
   // Read-only host socket listings: assert all relevant Node listeners use loopback as well.
   const sockets = await run(process.platform === 'darwin' ? 'lsof' : 'ss', process.platform === 'darwin' ? ['-nP', '-iTCP', '-sTCP:LISTEN'] : ['-ltn'], { env: dockerEnvironment() });
   for (const port of [owner.ports.api, owner.ports.web]) {

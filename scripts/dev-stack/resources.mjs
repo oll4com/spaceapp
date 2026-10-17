@@ -43,6 +43,54 @@ export async function assertOwnedDocker(owner, invoke = run, env = dockerEnviron
 export async function compose(config, owner, args, options = {}) {
   return run('docker', composeArgs(config, owner, args), { env: dockerEnvironment(), ...options });
 }
+export async function readOwnedPortPublications(config, owner, { invoke = run, env = dockerEnvironment() } = {}) {
+  await assertOwnedDocker(owner, invoke, env);
+  const raw = (await invoke('docker', composeArgs(config, owner, ['ps', '--format', 'json']), { env })).trim();
+  const services = raw.startsWith('[') ? JSON.parse(raw) : raw.split('\n').filter(Boolean).map(line => JSON.parse(line));
+  const selected = [];
+  for (const service of services) {
+    if (!/^[a-f0-9]{12,64}$/.test(service.ID || '')) throw new Error('Invalid owned container ID in port proof.');
+    // These fields contain port metadata only. Never return the Compose command or inspect Config.Env.
+    const ports = JSON.parse(await invoke('docker', ['container', 'inspect', '--format', '{{json .NetworkSettings.Ports}}', service.ID], { env }));
+    selected.push({ Service: service.Service, Publishers: Array.isArray(service.Publishers) ? service.Publishers.map(({ URL, TargetPort, PublishedPort, Protocol }) => ({ URL, TargetPort, PublishedPort, Protocol })) : null, NetworkSettingsPorts: ports });
+  }
+  return selected;
+}
+export function assertLoopbackPublications(services, ports) {
+  const require = (condition, message) => { if (!condition) throw new Error(`Docker loopback proof: ${message}`); };
+  const expected = { postgres: { target: 5432, published: ports.postgres }, temporal: { target: 7233, published: ports.temporal } };
+  require(Array.isArray(services) && services.length === 2, 'expected exactly the two owned services.');
+  const seen = new Set();
+  for (const service of services) {
+    const wanted = expected[service.Service];
+    require(wanted && !seen.has(service.Service), 'unexpected or duplicate service.'); seen.add(service.Service);
+    const check = (host, target, published, protocol) => {
+      require(host === '127.0.0.1', 'a published host address is not IPv4 loopback.');
+      require(target === wanted.target && published === wanted.published && protocol === 'tcp', 'a missing or extra host mapping differs from the expected service port.');
+    };
+    require(Array.isArray(service.Publishers), 'missing Compose port metadata.');
+    let composeCount = 0;
+    for (const binding of service.Publishers) {
+      require(Number.isInteger(binding.PublishedPort) && binding.PublishedPort >= 0 && binding.PublishedPort <= 65535 && Number.isInteger(binding.TargetPort) && binding.TargetPort > 0 && binding.TargetPort <= 65535 && ['tcp', 'udp'].includes(binding.Protocol), 'malformed Compose port metadata.');
+      // Compose includes merely EXPOSED container ports here too. Only numeric zero is unpublished.
+      if (binding.PublishedPort === 0) { require(binding.URL === '', 'contradictory unpublished host address.'); continue; }
+      check(binding.URL, binding.TargetPort, binding.PublishedPort, binding.Protocol); composeCount++;
+    }
+    require(composeCount === 1, 'missing or duplicate expected Compose host mapping.');
+    require(service.NetworkSettingsPorts && typeof service.NetworkSettingsPorts === 'object' && !Array.isArray(service.NetworkSettingsPorts), 'missing selected container port inspection.');
+    let inspectedCount = 0;
+    for (const [key, bindings] of Object.entries(service.NetworkSettingsPorts)) {
+      const match = /^(\d+)\/(tcp|udp)$/.exec(key); require(match && +match[1] > 0 && +match[1] <= 65535, 'malformed inspected container port.');
+      if (bindings === null) continue; // An exposed port without a host publication.
+      require(Array.isArray(bindings), 'malformed inspected bindings.');
+      for (const binding of bindings) {
+        require(typeof binding.HostPort === 'string' && /^\d+$/.test(binding.HostPort), 'malformed inspected host port.');
+        check(binding.HostIp, +match[1], +binding.HostPort, match[2]); inspectedCount++;
+      }
+    }
+    require(inspectedCount === 1, 'missing or duplicate expected inspected host mapping.');
+  }
+}
 export async function diagnoseOwnedDocker(config, owner, { output = () => {}, secrets = [], invoke = run, env = dockerEnvironment() } = {}) {
   const signal = AbortSignal.timeout(15000);
   const control = (command, args, options = {}) => invoke(command, args, { env, timeout: 5000, signal, ...options });
