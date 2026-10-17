@@ -1,6 +1,6 @@
 import { createMemorySourceTopology } from "./memory-source-topology.js";
 import { readFile, readdir } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { spawn } from "./safe-child-process.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { MemoryGraphSnapshot, MemoryGraphSource } from "@space/memory-graph";

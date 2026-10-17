@@ -286,7 +286,9 @@ export const gatewayRequestLogSchema = z.object({
     waste: z.record(z.string().max(40), z.number().int().min(0)),
     /** The output policy the gateway added to the request's system prompt, when one was. */
     outputPolicy: gatewayOutputPolicySchema.optional()
-  }).strict().nullable()
+  }).strict().nullable(),
+  /** The Anthropic `request-id` of a Claude request; Claude Code stores it as the message's `requestId`. */
+  upstreamRequestId: z.string().max(120).nullable().optional()
 }).strict();
 
 export const gatewayRequestLogListSchema = z.object({

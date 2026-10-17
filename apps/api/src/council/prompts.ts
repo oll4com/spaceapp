@@ -199,3 +199,16 @@ export function buildSearchPrompt(query: string, question: string): string {
     "At most 3 findings, only from pages you actually found. No other text."
   ].join("\n");
 }
+
+export function buildClipboardPlanPrompt(input: { question: string; personalContext: string; final: string }): string {
+  const head = [
+    "You coordinate a Research Council. The council answered the operator's question (FINAL ANSWER below). Turn its agreed answer into a plan the operator, or an AI agent, can carry out step by step.",
+    "Reply with ONLY one JSON object, in the language of the question:",
+    '{"title":"plan title, at most 120 characters","summary":"2 to 4 sentences: the goal and the chosen approach","minimumModel":"the least capable AI model name that can carry out the plan, e.g. GPT-5.6 Sol","minimumReasoning":"low|medium|high","steps":[{"title":"at most 120 characters","instructions":"what to do, concrete, at most 1500 characters","completionCriteria":["how to tell the step is done"]}]}',
+    "3 to 12 steps in order. Keep the council's numbers, risks and caveats where they matter; add no facts the answer does not contain. Never name a model of the council.",
+    "",
+    `QUESTION:\n${input.question}`,
+    `\nABOUT THE OPERATOR:\n${clip(input.personalContext || "(nothing shared)", 1_000)}`
+  ].join("\n");
+  return assemble(head, `\nFINAL ANSWER:\n${input.final}`);
+}

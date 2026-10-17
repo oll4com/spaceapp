@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Zap, Play, Save, ClipboardList, Wrench, Gauge, Rocket, Shield,
   BrainCircuit, History, Activity, Eraser, CircleHelp, Radio, Terminal,
-  Archive, ArrowUpToLine, ArrowDownToLine,
+  Archive, ArrowUpToLine, ArrowDownToLine, ArrowUpCircle,
   type LucideIcon
 } from "../ui-theme/app-icons.js";
 import { OSK_CLI_COMMANDS, OSK_ESC_COMMAND, OSK_ENTER_COMMAND, orderVisibleCliShortcuts, type OskCliCommand } from "../osk-keyboard/cli-shortcuts.js";
@@ -37,7 +37,7 @@ export function cliTranscriptCommand(runtimeId: string | null | undefined): OskC
 
 export const SHORTCUT_ICONS: Record<string, LucideIcon> = {
   transcript: History, continue: Play, memory: Save, plan: ClipboardList, build: Wrench,
-  plan_progress: Gauge, deploy: Rocket, permissions: Shield,
+  plan_progress: Gauge, deploy: Rocket, promote: ArrowUpCircle, permissions: Shield,
   model: BrainCircuit, resume: History, usage: Activity,
   clear: Eraser, help: CircleHelp, status: Radio, test: Terminal,
   clean_worktree: Archive,
@@ -52,6 +52,7 @@ export const SHORTCUT_TITLES: Record<string, string> = {
   build: "Build mode",
   plan_progress: "Plan completion percentage",
   deploy: "Deploy",
+  promote: "Promote",
   permissions: "Permissions",
   model: "Model",
   resume: "Restore tasks",
@@ -257,7 +258,9 @@ export function CliShortcutsMenu({
         onKeyDown={moveFocus}
         onBlur={(event) => {
           if (shouldPreserveForSnipTool(event)) return;
-          if (event.relatedTarget !== buttonRef.current && !event.currentTarget.contains(event.relatedTarget as Node | null)) setPosition(null);
+          // Clicks on the gaps between shortcuts move focus nowhere; outside clicks close through pointerdown.
+          const next = event.relatedTarget as Node | null;
+          if (next && next !== buttonRef.current && !event.currentTarget.contains(next)) setPosition(null);
         }}>
         {visibleCommands.map((command) => {
           const Icon = SHORTCUT_ICONS[command.id];

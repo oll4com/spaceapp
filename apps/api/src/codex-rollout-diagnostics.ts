@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { constants } from "node:fs";
 import { open, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";

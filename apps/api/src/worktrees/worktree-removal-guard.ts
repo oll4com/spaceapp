@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile } from "../safe-child-process.js";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";

@@ -7,7 +7,7 @@ import type {
   CodexUsageAccountList,
 } from "@space/contracts";
 import type { SharedQuotaCache } from "../desktop-widgets/shared-quota-cache.js";
-import { availabilityLabel, bestAvailability, classifyQuota, quotaCapacity, type AvailabilityState } from "../toolbar-metrics/account-availability.js";
+import { availabilityLabel, bestAvailability, classifyQuota, formatUntil, quotaCapacity, type AvailabilityState } from "../toolbar-metrics/account-availability.js";
 import {
   antigravityAccountEntries,
   antigravityStatusLabel,
@@ -21,6 +21,8 @@ export type CliAccountRuntimeId = "cli:gemini" | "cli:claude" | "cli:copilot" | 
 // Space Gateway, which picks one for each thread.
 export type CliAccountMenuRuntimeId = CliAccountRuntimeId | "cli:codex";
 export const CODEX_GATEWAY_PROFILE_ID = "space-gateway";
+// Antigravity's Space Gateway profile (the same id Claude and Copilot use).
+const GATEWAY_PROFILE_ID = CODEX_GATEWAY_PROFILE_ID;
 
 // Antigravity meters Gemini models and Claude/GPT models separately.
 export type AntigravityModelGroup = "gemini" | "claude";
@@ -206,6 +208,15 @@ export function cliAccountPool(runtimeId: CliAccountMenuRuntimeId, quota: Shared
 }
 
 // A pane on a known model group is judged by that group's quota; otherwise by the best group.
+function antigravityEntry(account: AntigravityUsageAccount, clock: number, modelGroup: AntigravityModelGroup | null): { entry: QuotaEntry; scope: string } {
+  const group = modelGroup === "gemini" ? account.gemini : modelGroup === "claude" ? account.claude : null;
+  if (group && (group.fiveHourRemainingPercent != null || group.weeklyRemainingPercent != null)) {
+    return { entry: { availability: classifyQuota(group, clock), capacity: quotaCapacity([group]) },
+      scope: modelGroup === "gemini" ? "For Gemini models · " : "For Claude · GPT models · " };
+  }
+  return { entry: antigravityAccountEntries([account], clock, { proOnly: false, geminiOnly: false })[0]!, scope: "" };
+}
+
 function antigravityAvailability(
   account: AntigravityUsageAccount,
   clock: number,
@@ -219,13 +230,20 @@ function antigravityAvailability(
     { label: "Gemini", percent: tightest(account.gemini.fiveHourRemainingPercent, account.gemini.weeklyRemainingPercent) },
     { label: "Claude · GPT", percent: tightest(account.claude.fiveHourRemainingPercent, account.claude.weeklyRemainingPercent) },
   ].filter((window) => window.percent != null);
-  const group = modelGroup === "gemini" ? account.gemini : modelGroup === "claude" ? account.claude : null;
-  if (group && (group.fiveHourRemainingPercent != null || group.weeklyRemainingPercent != null)) {
-    const entry: QuotaEntry = { availability: classifyQuota(group, clock), capacity: quotaCapacity([group]) };
-    return fromQuota(entry, windows, clock, modelGroup === "gemini" ? "For Gemini models · " : "For Claude · GPT models · ");
-  }
-  const entry = antigravityAccountEntries([account], clock, { proOnly: false, geminiOnly: false })[0]!;
-  return fromQuota(entry, windows, clock);
+  const { entry, scope } = antigravityEntry(account, clock, modelGroup);
+  return fromQuota(entry, windows, clock, scope);
+}
+
+// Space Gateway picks a pooled Google account for each model call, so it is as available as the best of them.
+// shortcut: judges the pool by the Space profiles' quota (every profile's account is in the pool today); read the
+// gateway's own Antigravity accounts if the two ever differ.
+function antigravityGatewayAvailability(accounts: AntigravityUsageAccount[], clock: number, modelGroup: AntigravityModelGroup | null): CliAccountAvailability {
+  const entries = accounts.filter((account) => account.status === "CONNECTED").map((account) => antigravityEntry(account, clock, modelGroup).entry);
+  if (!entries.length) return { ...blocked("No accounts", "Not available now · no pooled Google account is signed in"), detail: "No pooled accounts" };
+  const states = entries.map((entry) => entry.availability);
+  const detail = poolDetail(states, accounts.length);
+  const entry: QuotaEntry = { availability: bestAvailability(states), capacity: Math.max(-1, ...entries.map((candidate) => candidate.capacity)) };
+  return { ...fromQuota(entry, [], clock, detail), detail };
 }
 
 function identityAvailability(identity: CliAccountIdentity | null): CliAccountAvailability {
@@ -297,11 +315,66 @@ export function cliAccountAvailability(input: {
     if (account) return claudeAvailability(account, clock);
   }
   if (runtimeId === "cli:gemini") {
+    if (profileId === GATEWAY_PROFILE_ID && quota?.agy) return antigravityGatewayAvailability(quota.agy.data, clock, input.modelGroup ?? null);
     const account = quota?.agy?.data.find((candidate) => candidate.id === profileId);
     if (account) return antigravityAvailability(account, clock, input.modelGroup ?? null);
   }
   const entry = input.balance?.runtimeId === runtimeId ? input.balance.profiles.find((candidate) => candidate.profileId === profileId) : undefined;
   return (entry ? balanceAvailability(entry, clock) : null) ?? identityAvailability(identity);
+}
+
+const weekMs = 7 * 24 * 3_600_000;
+
+export interface CliAccountWeeklyForecast {
+  // Share of the subscription accounts' weekly quota still free when their weeks reset, at this week's pace.
+  percent: number;
+  accounts: number;
+  color: string;
+  // When the last of the accounts' weeks resets: "at Tue 10:00", or "in 3h 20m" within a day.
+  resetWhen: string;
+}
+
+const resetWhen = (until: string | null) => (!until ? "at reset" : until.startsWith("in ") ? until : `at ${until}`);
+
+// Claude, Codex and Antigravity (the pane's model group) report weekly windows; API keys and Space Gateway rows are
+// not subscriptions of their own. Pure arithmetic over the cached quota sample, so the menu opens without waiting.
+// shortcut: extrapolates each account's average pace since its week began and lets one account's overflow use another's
+// room (Auto and Space Gateway move work between accounts); keep a usage history if a recent-days pace is wanted.
+export function cliAccountWeeklyForecast(
+  runtimeId: CliAccountMenuRuntimeId,
+  quota: SharedQuotaCache | null,
+  clock: number,
+  modelGroup: AntigravityModelGroup | null = null,
+): CliAccountWeeklyForecast | null {
+  const weeks: Array<{ remaining: number | null | undefined; resetAt: string | null | undefined }> =
+    runtimeId === "cli:claude" ? (quota?.claude?.data ?? []).filter((account) => account.status === "CONNECTED")
+      .map((account) => ({ remaining: account.weeklyRemainingPercent, resetAt: account.weeklyResetAt }))
+    : runtimeId === "cli:codex" ? (quota?.codex?.data ?? []).map((account) => ({ remaining: account.weeklyRemainingPercent, resetAt: account.weeklyResetAt }))
+    : runtimeId === "cli:gemini" && modelGroup ? (quota?.agy?.data ?? []).filter((account) => account.status === "CONNECTED")
+      .map((account) => ({ remaining: account[modelGroup].weeklyRemainingPercent, resetAt: account[modelGroup].weeklyResetAt }))
+    : [];
+  let used = 0;
+  let accounts = 0;
+  let lastReset = 0;
+  for (const week of weeks) {
+    const resetMs = week.resetAt ? Date.parse(week.resetAt) : Number.NaN;
+    if (week.remaining == null || !(resetMs > clock)) continue;
+    const spent = 100 - week.remaining;
+    // At least an hour, so the first minutes of a week do not extrapolate wildly.
+    const elapsed = Math.max(clock - (resetMs - weekMs), 3_600_000);
+    // An account at its limit uses nothing more until its week resets.
+    used += week.remaining > 0 ? spent + (spent / elapsed) * (resetMs - clock) : spent;
+    accounts += 1;
+    lastReset = Math.max(lastReset, resetMs);
+  }
+  if (!accounts) return null;
+  const percent = Math.max(0, 100 - used / accounts);
+  return {
+    percent,
+    accounts,
+    color: percent >= 1 ? cliAccountAvailabilityColor(percent) : CLI_ACCOUNT_BLOCKED_COLOR,
+    resetWhen: resetWhen(formatUntil(new Date(lastReset).toISOString(), clock)),
+  };
 }
 
 // The plan each provider reports, shortened for a badge: "Google AI Pro" -> "AI Pro".

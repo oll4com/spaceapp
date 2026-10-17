@@ -140,6 +140,9 @@ describe("Claude proxy", () => {
     expect(log!.costUsd).toBeCloseTo((10 * 3 + 1000 * 0.3 + 200 * 3.75 + 42 * 15) / 1e6, 10);
     const accounts = await repository.listAccounts();
     expect(accounts.find((account) => account.id === accountA)!.primaryWindow.usedPercent).toBe(20);
+    // Claude Code stores the Anthropic request id; the token usage page uses it to tell gateway calls apart.
+    expect(await repository.claudeLogKeys("2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z")).toEqual([
+      expect.objectContaining({ upstreamRequestId: "req_up_1", outputTokens: 42 })]);
   });
 
   it("moves to another account when the first one hits its subscription limit", async () => {

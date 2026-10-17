@@ -63,6 +63,16 @@ describe("BrowserCanvas input surface", () => {
     fireEvent.keyDown(canvas, { key: "Enter", code: "Enter" });
     expect(onInput).toHaveBeenCalledWith(expect.objectContaining({ type: "KEY", eventType: "keyDown", key: "Enter", text: "\r" }));
   });
+  it("leaves Ctrl+V on a Greek layout and Shift+Insert to the browser's paste", () => {
+    const onInput = vi.fn();
+    render(<BrowserCanvas ariaLabel="Paste" interactive viewportSize={{ width: 800, height: 600 }} onInput={onInput} />);
+    const canvas = screen.getByRole("img", { name: "Paste" });
+    expect(fireEvent.keyDown(canvas, { key: "ω", code: "KeyV", ctrlKey: true })).toBe(true);
+    expect(fireEvent.keyDown(canvas, { key: "Insert", code: "Insert", shiftKey: true })).toBe(true);
+    expect(onInput).not.toHaveBeenCalled();
+    fireEvent.paste(canvas, { clipboardData: { getData: () => "κωδικός" } });
+    expect(onInput).toHaveBeenCalledWith(expect.objectContaining({ type: "KEY", eventType: "char", text: "κωδικός" }));
+  });
   it("is keyboard focusable and emits normalized pointer, wheel and key input", () => {
     const inputs: Array<Record<string, unknown>> = [];
     const canvasRef = createRef<BrowserCanvasHandle>();

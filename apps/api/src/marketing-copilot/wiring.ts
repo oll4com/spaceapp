@@ -1,8 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { eventSchema, MARKETING_CHANNEL_LABELS, type MarketingEvent, type MarketingRun, type Pane } from "@space/contracts";
 import { InMemoryMarketingCopilotRepository, PostgresMarketingCopilotRepository, type MarketingCopilotRepository } from "@space/db";
-import { makeSpaceId, SpaceConflictError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
+import { makeSpaceId, SpaceConflictError, SpaceFeatureDisabledError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
 import type { CliTerminalManager } from "../cli-terminal.js";
+import type { PaneBrowserAccountControl } from "../pane-browser-routes.js";
+import { GitControlError } from "../source-control/errors.js";
 import type { NotificationService } from "../notifications/service.js";
 import { apiPackageVersion } from "../package-version.js";
 import { registerMarketingCopilotRoutes, type MarketingCopilotRouteDependencies } from "./routes.js";
@@ -21,13 +23,15 @@ export interface MarketingCopilotWiring extends Omit<MarketingCopilotRouteDepend
   terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput">;
   notifications: Pick<NotificationService, "raise" | "resolve">;
   roomOwner(roomId: string): Promise<string | null>;
+  /** The browser routes' account control (set once they register): bookmarks open through its openTab. */
+  paneBrowserAccounts: { current: PaneBrowserAccountControl | null };
   /** The instance jobs `marketing-copilot-scheduler` and `marketing-copilot-metrics` (stable; dev opts in). */
   scheduler: boolean;
   metrics: boolean;
   log: { warn(details: unknown, message: string): void };
 }
 
-const KICKOFF = (runId: string) => `Marketing Copilot run ${runId} started in this pane. Read the space-marketing-copilot skill (SKILL.md and references/channels.md), then loop: call space_marketingcopilot space_marketing_next until it returns done=true; ground every claim in space_marketing_facts, recall memory before drafting, ask for a review under Assist and on capped channels, publish only after space_marketing_publish_begin succeeds, and report the published URL with space_marketing_publish_done.`;
+const KICKOFF = (runId: string) => `Marketing Copilot run ${runId} started in this pane. Read the space-marketing-copilot skill (SKILL.md and references/channels.md), then loop: call space_marketingcopilot space_marketing_next until it returns done=true (without MCP tools in this session, call them on demand: JSON {"serverId","toolName","arguments"} on stdin to space-capability call); ground every claim in space_marketing_facts, recall memory before drafting, ask for a review under Assist and on capped channels, publish only after space_marketing_publish_begin succeeds, and report the published URL with space_marketing_publish_done.`;
 
 /** Which notification an event raises or resolves: the key pairs a request with the decision that ends it. */
 export function marketingNotificationFor(event: MarketingEvent): { action: "raise" | "resolve" | "published"; key: string } | null {
@@ -79,6 +83,13 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
   const paneRooms = new Map<string, string>();
   const service = createMarketingCopilotService({
     repository,
+    openInBrowser: async (owner, pane, bookmark, traceId, actor) => {
+      // Tabs in another Google account are ADMIN-only, like the browser's account menu and the CLI bridge's SELECT_ACCOUNT.
+      if (bookmark.profileId !== null && (await store.getControlActor(owner))?.role !== "ADMIN") throw new GitControlError("ADMIN_REQUIRED", "Google account selection requires a room owned by an ADMIN.", 403);
+      const accounts = deps.paneBrowserAccounts.current;
+      if (!accounts) throw new SpaceFeatureDisabledError("BROWSER_ACCOUNTS_UNAVAILABLE", "Google account selection is unavailable on this runtime.");
+      return accounts.openTab(owner, pane, bookmark.url, bookmark.profileId, traceId, actor);
+    },
     onEvent: (event) => {
       void (async () => {
         if (!event.paneId) return;
@@ -135,7 +146,7 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
     app.addHook("onClose", async () => scheduler.stop());
   }
   if (deps.metrics) {
-    const metrics = createMarketingCopilotMetrics({ service, store, log: deps.log });
+    const metrics = createMarketingCopilotMetrics({ service, store, log: deps.log, githubTrafficToken: process.env.SPACE_GITHUB_TRAFFIC_TOKEN || undefined });
     metrics.start();
     app.addHook("onClose", async () => metrics.stop());
   }

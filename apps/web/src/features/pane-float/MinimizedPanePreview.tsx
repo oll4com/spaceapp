@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode, type Ref } from "react";
 import type { Pane, Turn } from "@space/contracts";
 import { CircleAlert, Loader2, Maximize2 } from "../ui-theme/app-icons.js";
+import { setPaneDragData } from "../pane-drag/pane-drag.js";
 import {
   getTerminalPreviewSummary,
   subscribeTerminalPreview,
@@ -232,6 +233,8 @@ export function MinimizedPanePreviewCard({
       className={`minimized-preview-card${isRunning ? " is-running" : ""}`}
       data-status={status ?? undefined}
       data-category-color={pane.categoryColor ?? undefined}
+      draggable
+      onDragStart={(event) => setPaneDragData(event, pane, null)}
       onClick={onRestore}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -293,6 +296,8 @@ export function MinimizedPaneChip({
       data-category-color={pane.categoryColor ?? undefined}
       aria-label={`Restore pane ${fullTitle}`}
       title={`${fullTitle}${statusSuffix}`}
+      draggable
+      onDragStart={(event) => setPaneDragData(event, pane, null)}
       onClick={onRestore}
     >
       <span className="minimized-pane-chip-icon" aria-hidden="true">{icon}</span>

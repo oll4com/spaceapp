@@ -169,7 +169,7 @@ function createDemoSystemAnalytics(): Pick<DemoFixture,
       sessionId: "cli_session:demo-codex",
       runtimeId: "cli:codex",
       runtimeName: "Codex CLI",
-      providerId: "codex-lb",
+      providerId: "codex",
       modelId: "gpt-5.6-sol",
       processCount: 5,
       cpuOneCorePercent: 42.7,
@@ -253,11 +253,11 @@ function createDemoSystemAnalytics(): Pick<DemoFixture,
     range: "10m",
     sampledAt: DEMO_FIXED_AT,
     providers: [
-      { providerId: "codex-lb", modelCount: 1, activeSessions: 1, completedTurns: 8, tokensIn: 87_400, tokensOut: 14_200, lastActivityAt: DEMO_FIXED_AT },
+      { providerId: "codex", modelCount: 1, activeSessions: 1, completedTurns: 8, tokensIn: 87_400, tokensOut: 14_200, lastActivityAt: DEMO_FIXED_AT },
       { providerId: "opencode", modelCount: 1, activeSessions: 1, completedTurns: 12, tokensIn: 64_110, tokensOut: 10_240, lastActivityAt: DEMO_FIXED_AT }
     ],
     models: [
-      { providerId: "codex-lb", modelId: "gpt-5.6-sol", runtimeIds: ["cli:codex"], coverage: "NATIVE", activeSessions: 1, activeTurns: 1, completedTurns: 8, abortedTurns: 1, tokensIn: 87_400, tokensOut: 14_200, tokensReasoning: 3_140, avgTtftMs: 1_420, avgDurationMs: 24_500, avgTokPerSec: 72.4, firstActivityAt: "2026-07-18T11:00:00.000Z", lastActivityAt: DEMO_FIXED_AT },
+      { providerId: "codex", modelId: "gpt-5.6-sol", runtimeIds: ["cli:codex"], coverage: "NATIVE", activeSessions: 1, activeTurns: 1, completedTurns: 8, abortedTurns: 1, tokensIn: 87_400, tokensOut: 14_200, tokensReasoning: 3_140, avgTtftMs: 1_420, avgDurationMs: 24_500, avgTokPerSec: 72.4, firstActivityAt: "2026-07-18T11:00:00.000Z", lastActivityAt: DEMO_FIXED_AT },
       { providerId: "opencode", modelId: "deepseek-v4-flash-free", runtimeIds: ["cli:opencode"], coverage: "NATIVE", activeSessions: 1, activeTurns: 1, completedTurns: 12, abortedTurns: 0, tokensIn: 64_110, tokensOut: 10_240, tokensReasoning: 1_050, avgTtftMs: null, avgDurationMs: 12_400, avgTokPerSec: 38.2, firstActivityAt: "2026-07-18T10:40:00.000Z", lastActivityAt: DEMO_FIXED_AT }
     ],
     backfill
@@ -277,7 +277,7 @@ function createDemoSystemAnalytics(): Pick<DemoFixture,
     sampledAt: DEMO_FIXED_AT,
     summary: { running: 2, attached: 2, detached: 0, cleanupEligible: 0 },
     sessions: [
-      { sessionId: "cli_session:demo-codex", roomId: "room:demo-launch", roomName: "Launch Control", paneId: "pane:demo-codex", paneTitle: "Codex CLI", runtimeId: "cli:codex", runtimeName: "Codex CLI", providerId: "codex-lb", modelId: "gpt-5.6-sol", reasoningEffort: "high", status: "RUNNING", attachmentCount: 1, cleanupEligible: false, processCount: 5, pid: 4101, rssBytes: 805_306_368, cpuOneCorePercent: 42.7, startedAt: "2026-07-18T10:30:00.000Z", detachedAt: null, endedAt: null, durationSeconds: 5400, avgRssBytes: 721_420_288, maxRssBytes: 922_746_880, avgCpuOneCorePercent: 31.4, maxCpuOneCorePercent: 88.2 },
+      { sessionId: "cli_session:demo-codex", roomId: "room:demo-launch", roomName: "Launch Control", paneId: "pane:demo-codex", paneTitle: "Codex CLI", runtimeId: "cli:codex", runtimeName: "Codex CLI", providerId: "codex", modelId: "gpt-5.6-sol", reasoningEffort: "high", status: "RUNNING", attachmentCount: 1, cleanupEligible: false, processCount: 5, pid: 4101, rssBytes: 805_306_368, cpuOneCorePercent: 42.7, startedAt: "2026-07-18T10:30:00.000Z", detachedAt: null, endedAt: null, durationSeconds: 5400, avgRssBytes: 721_420_288, maxRssBytes: 922_746_880, avgCpuOneCorePercent: 31.4, maxCpuOneCorePercent: 88.2 },
       { sessionId: "cli_session:demo-opencode", roomId: "room:demo-ops", roomName: "Operations", paneId: "pane:demo-ops-cli", paneTitle: "OpenCode Diagnostics", runtimeId: "cli:opencode", runtimeName: "OpenCode CLI", providerId: "opencode", modelId: "deepseek-v4-flash-free", reasoningEffort: "medium", status: "RUNNING", attachmentCount: 1, cleanupEligible: false, processCount: 4, pid: 4103, rssBytes: 536_870_912, cpuOneCorePercent: 18.3, startedAt: "2026-07-18T11:06:40.000Z", detachedAt: null, endedAt: null, durationSeconds: 3200, avgRssBytes: 498_073_600, maxRssBytes: 603_979_776, avgCpuOneCorePercent: 15.2, maxCpuOneCorePercent: 63.7 }
     ],
     backfill
@@ -771,7 +771,8 @@ export function createDemoFixture(): DemoFixture {
       occurrenceCount: 1,
       characterCount: Array.from("Run the guided tour of this demo workspace.").length,
       createdAt: DEMO_FIXED_AT,
-      lastUsedAt: DEMO_FIXED_AT
+      lastUsedAt: DEMO_FIXED_AT,
+      schedule: null
     }, {
       id: "task:demo-verify",
       title: "Verify release",
@@ -784,7 +785,8 @@ export function createDemoFixture(): DemoFixture {
       occurrenceCount: 1,
       characterCount: Array.from("Verify the release candidate passes readyz checks.").length,
       createdAt: DEMO_FIXED_AT,
-      lastUsedAt: DEMO_FIXED_AT
+      lastUsedAt: DEMO_FIXED_AT,
+      schedule: null
     }],
     links: [{
       id: "link:demo-space-guide",
@@ -828,7 +830,7 @@ export function createDemoFixture(): DemoFixture {
       {
         id: "demo-codex",
         displayName: "Codex Demo",
-        type: "CODEX_LB",
+        type: "SPACE_GATEWAY",
         status: "VERIFIED",
         statusReason: "Local deterministic provider fixture.",
         healthCheckedAt: DEMO_FIXED_AT,

@@ -77,9 +77,14 @@ export function ingestNotificationStreamPayload(payload: NotificationStreamPaylo
   refreshTimer = window.setTimeout(() => void refreshNotifications(), 250);
 }
 
+/** A pane's notifications share one toast: one moment can raise several records (question, browser handoff, Room Agent). */
+export function notificationToastKey(notification: SpaceNotification): string { return notification.paneId ?? notification.id; }
+/** Shows the toast; a newer notification of the same pane replaces the one on screen instead of stacking. */
 export function pushNotificationToast(notification: SpaceNotification): void {
   if (state.toasts.some((toast) => toast.notification.id === notification.id)) return;
-  emit({ ...state, toasts: [...state.toasts, { id: notification.id, notification, shownAt: Date.now() }].slice(-3) });
+  const key = notificationToastKey(notification);
+  const others = state.toasts.filter((toast) => notificationToastKey(toast.notification) !== key);
+  emit({ ...state, toasts: [...others, { id: notification.id, notification, shownAt: Date.now() }].slice(-3) });
 }
 export function dismissNotificationToast(id: string): void {
   emit({ ...state, toasts: state.toasts.filter((toast) => toast.id !== id) });

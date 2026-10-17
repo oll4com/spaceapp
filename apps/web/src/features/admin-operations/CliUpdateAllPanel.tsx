@@ -1,24 +1,29 @@
 import {
   type CliUpdateAllDetection,
+  type CliUpdateAllEndpoint,
   type CliUpdateAllRequest,
   type CliUpdateAllResult
 } from "@space/contracts";
 import {
   AlertTriangle,
+  ArrowRight,
   ArrowUp,
   Check,
   CheckCircle2,
+  ChevronDown,
+  CircleAlert,
   Loader2,
+  Minus,
   RefreshCw,
   Search,
   ShieldCheck,
-  Terminal,
   Wrench,
   Zap
 } from "../ui-theme/app-icons.js";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { errorMessage } from "./admin-operation-utils.js";
+import { startCliUpdateRun, useCliUpdatePanelOpen, useCliUpdateRun } from "./cli-update-run.js";
 
 export interface CliUpdateAllClient {
   detectCliUpdateAll(): Promise<CliUpdateAllDetection>;
@@ -26,24 +31,78 @@ export interface CliUpdateAllClient {
 }
 
 type FilterTab = "all" | "updates" | "custom" | "managed";
+type CheckStatus = CliUpdateAllResult["overallStatus"];
+
+const FILTERS: ReadonlyArray<{ id: FilterTab; label: string; match: (entry: CliUpdateAllEndpoint) => boolean }> = [
+  { id: "all", label: "All", match: () => true },
+  { id: "updates", label: "Updates", match: (entry) => entry.updateAvailable === true },
+  { id: "custom", label: "Custom", match: (entry) => entry.hasCustom },
+  { id: "managed", label: "Managed", match: (entry) => entry.managed }
+];
+
+const statusTone: Record<CheckStatus, string> = { PASS: "ok", WARN: "warn", FAIL: "fail", SKIPPED: "muted" };
+const statusIcon: Record<CheckStatus, typeof CheckCircle2> = {
+  PASS: CheckCircle2,
+  WARN: AlertTriangle,
+  FAIL: CircleAlert,
+  SKIPPED: Minus
+};
+
+function presentCustom(entry: { custom: CliUpdateAllEndpoint["custom"] }) {
+  return entry.custom.filter((item) => item.present);
+}
+
+function versionState(entry: CliUpdateAllEndpoint): { tone: string; label: string } {
+  if (entry.updateAvailable) return { tone: "warn", label: "Update available" };
+  if (!entry.managed) return { tone: "muted", label: "Standalone" };
+  if (!entry.installedVersion) return { tone: "muted", label: "Not installed" };
+  if (!entry.availableVersion) return { tone: "muted", label: "Latest unknown" };
+  return { tone: "ok", label: "Up to date" };
+}
+
+function toggled(set: ReadonlySet<string>, key: string): ReadonlySet<string> {
+  const next = new Set(set);
+  if (!next.delete(key)) next.add(key);
+  return next;
+}
+
+function plural(count: number, noun: string) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function clock(iso: string) {
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function StatusIcon({ status }: { status: CheckStatus }) {
+  const Icon = statusIcon[status];
+  return <Icon className={`cli-upd-status-icon ${statusTone[status]}`} aria-hidden="true" />;
+}
 
 export function CliUpdateAllPanel({
   client,
-  onBusyChange
+  onBusyChange,
+  onMinimize
 }: {
   client: CliUpdateAllClient;
   onBusyChange: (busy: boolean) => void;
+  /** Hides the window while the run goes on; the minimized bar brings it back. */
+  onMinimize?: () => void;
 }) {
+  useCliUpdatePanelOpen();
+  const run = useCliUpdateRun();
+  const running = run && !run.finished ? run : null;
+  const result = run?.result ?? null;
   const [detection, setDetection] = useState<CliUpdateAllDetection | null>(null);
   const [loading, setLoading] = useState(false);
-  const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<CliUpdateAllResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const error = loadError ?? (run?.finished ? run.error : null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [reinstall, setReinstall] = useState(true);
-  const [runStartedAt, setRunStartedAt] = useState<string | null>(null);
   const [filterTab, setFilterTab] = useState<FilterTab>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const mountedRef = useRef(true);
   const loadingRef = useRef(false);
   const resultRef = useRef<HTMLElement | null>(null);
@@ -65,13 +124,13 @@ export function CliUpdateAllPanel({
     if (loadingRef.current) return;
     loadingRef.current = true;
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     try {
       const detectionValue = await client.detectCliUpdateAll();
       if (!Array.isArray(detectionValue?.cliTypes)) throw new Error("Update detection returned no CLI list.");
       if (mountedRef.current) setDetection(detectionValue);
     } catch (reason) {
-      if (mountedRef.current) setError(errorMessage(reason, "Custom procedure detection could not be loaded."));
+      if (mountedRef.current) setLoadError(errorMessage(reason, "Custom procedure detection could not be loaded."));
     } finally {
       loadingRef.current = false;
       if (mountedRef.current) setLoading(false);
@@ -82,510 +141,403 @@ export function CliUpdateAllPanel({
     void load();
   }, [load]);
 
+  // A finished update changes the installed versions.
   useEffect(() => {
-    onBusyChange(running);
+    if (run?.finished) void load();
+  }, [load, run?.finished]);
+
+  useEffect(() => {
+    onBusyChange(running !== null);
   }, [onBusyChange, running]);
 
-  const customTypes = useMemo(
-    () => detection?.cliTypes.filter((entry) => entry.hasCustom) ?? [],
-    [detection]
-  );
-  const customCount = customTypes.length;
-  const totalTypes = detection?.cliTypes.length ?? 0;
-  const managedTypes = useMemo(
-    () => detection?.cliTypes.filter((entry) => entry.managed) ?? [],
-    [detection]
-  );
-  const updatesAvailableList = useMemo(
-    () => detection?.cliTypes.filter((entry) => entry.updateAvailable) ?? [],
-    [detection]
-  );
-  const updatesAvailableCount = updatesAvailableList.length;
-  // What the one-click update installs: managed, already installed, newer version available.
-  const pendingUpdates = useMemo(
-    () => updatesAvailableList.filter((entry) => entry.managed && entry.installedVersion),
-    [updatesAvailableList]
-  );
+  // Updates take minutes and the API answers only at the end: a live elapsed time shows the run is alive.
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
 
+  const cliTypes = useMemo(() => detection?.cliTypes ?? [], [detection]);
+  const managedTypes = useMemo(() => cliTypes.filter((entry) => entry.managed), [cliTypes]);
+  const customTypes = useMemo(() => cliTypes.filter((entry) => entry.hasCustom), [cliTypes]);
   const presentCustomCount = useMemo(
-    () => customTypes.flatMap((entry) => entry.custom).filter((item) => item.present).length,
+    () => customTypes.reduce((total, entry) => total + presentCustom(entry).length, 0),
     [customTypes]
   );
-
-  const allSelected = managedTypes.length > 0
-    ? managedTypes.every((entry) => selected.has(entry.key))
-    : false;
+  // What the one-click update installs: managed, already installed, newer version available.
+  const pendingUpdates = useMemo(
+    () => cliTypes.filter((entry) => entry.updateAvailable && entry.managed && entry.installedVersion),
+    [cliTypes]
+  );
+  const allSelected = managedTypes.length > 0 && managedTypes.every((entry) => selected.has(entry.key));
 
   const filteredCliTypes = useMemo(() => {
-    if (!detection?.cliTypes) return [];
-    let list = detection.cliTypes;
-
-    if (filterTab === "updates") {
-      list = list.filter((e) => e.updateAvailable);
-    } else if (filterTab === "custom") {
-      list = list.filter((e) => e.hasCustom);
-    } else if (filterTab === "managed") {
-      list = list.filter((e) => e.managed);
-    }
-
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase().trim();
-      list = list.filter(
-        (e) =>
-          e.displayName.toLowerCase().includes(query) ||
-          e.key.toLowerCase().includes(query) ||
-          e.cliType.toLowerCase().includes(query)
-      );
-    }
-
-    return list;
-  }, [detection, filterTab, searchQuery]);
+    const filter = FILTERS.find((item) => item.id === filterTab) ?? FILTERS[0]!;
+    const query = searchQuery.toLowerCase().trim();
+    return cliTypes.filter((entry) =>
+      filter.match(entry) &&
+      (!query || [entry.displayName, entry.key, entry.cliType].some((value) => value.toLowerCase().includes(query)))
+    );
+  }, [cliTypes, filterTab, searchQuery]);
 
   function toggleSelectAll() {
-    if (!detection) return;
     setSelected(allSelected ? new Set() : new Set(managedTypes.map((entry) => entry.key)));
   }
 
-  function toggleKey(key: string) {
-    setSelected((previous) => {
-      const next = new Set(previous);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+  function runUpdateAll(keys: string[], label: string, forceReinstall = false) {
+    const input: CliUpdateAllRequest = reinstall || forceReinstall ? { reinstall: true } : {};
+    if (keys.length > 0) input.keys = keys as NonNullable<CliUpdateAllRequest["keys"]>;
+    setNow(Date.now());
+    setLoadError(null);
+    void startCliUpdateRun((value) => client.runCliUpdateAll(value), input, label);
   }
 
-  async function runUpdateAll(keys: string[], forceReinstall = false) {
-    if (running) return;
-    setRunning(true);
-    setRunStartedAt(new Date().toISOString());
-    setResult(null);
-    setError(null);
-    try {
-      const input: CliUpdateAllRequest = reinstall || forceReinstall ? { reinstall: true } : {};
-      if (keys.length > 0) input.keys = keys as NonNullable<CliUpdateAllRequest["keys"]>;
-      const updateAllResult = await client.runCliUpdateAll(input);
-      if (mountedRef.current) {
-        setResult(updateAllResult);
-        setRunStartedAt(null);
-        void load();
-      }
-    } catch (reason) {
-      if (mountedRef.current) {
-        setRunStartedAt(null);
-        setError(errorMessage(reason, "The update-all procedure could not be started."));
-      }
-    } finally {
-      if (mountedRef.current) setRunning(false);
-    }
-  }
+  const busy = loading || running !== null;
+  const elapsedSeconds = running ? Math.max(0, Math.floor((now - running.startedAt) / 1000)) : 0;
+  const heroTone = !detection ? (error ? "fail" : "muted") : pendingUpdates.length > 0 ? "warn" : "ok";
+  const HeroIcon = !detection ? (error ? CircleAlert : Loader2) : pendingUpdates.length > 0 ? ArrowUp : CheckCircle2;
 
   return (
-    <div className="admin-operation-panel update-all-panel">
-      {/* One-click recommended update */}
-      <section className="cli-update-recommended" aria-label="Recommended update" aria-busy={running}>
-        {!detection ? (
-          <p role="status">{loading ? "Checking every CLI for updates…" : "Update status is unavailable."}</p>
-        ) : pendingUpdates.length > 0 ? (
-          <>
-            <div>
-              <strong>{pendingUpdates.length === 1 ? "1 update available" : `${pendingUpdates.length} updates available`}</strong>
-              <small>{pendingUpdates.map((entry) => `${entry.displayName} ${entry.installedVersion} → ${entry.availableVersion}`).join(" · ")}</small>
-            </div>
+    <div className="admin-operation-panel cli-upd">
+      <section className={`cli-upd-hero ${heroTone}`} aria-label="Recommended update" aria-busy={running !== null}>
+        <span className="cli-upd-hero-icon">
+          <HeroIcon className={!detection && !error ? "spin" : undefined} aria-hidden="true" />
+        </span>
+        <div className="cli-upd-hero-text">
+          <strong role={detection ? undefined : "status"}>
+            {!detection
+              ? loading ? "Checking every CLI for updates…" : "Update status is unavailable."
+              : pendingUpdates.length === 0
+                ? "All managed CLIs are up to date"
+                : `${plural(pendingUpdates.length, "update")} available`}
+          </strong>
+          {detection ? (
+            <small>
+              Checked {clock(detection.detectedAt)} · {plural(cliTypes.length, "CLI type")} ·{" "}
+              {plural(presentCustomCount, "custom procedure")} protected in {plural(customTypes.length, "CLI")}
+            </small>
+          ) : null}
+        </div>
+        <div className="cli-upd-hero-actions">
+          <button
+            type="button"
+            className="cli-upd-icon-button"
+            aria-label="Check for updates"
+            title="Check every CLI for updates again"
+            disabled={busy}
+            onClick={() => void load()}
+          >
+            <RefreshCw className={loading ? "spin" : undefined} aria-hidden="true" />
+          </button>
+          {pendingUpdates.length > 0 ? (
             <button
               type="button"
-              className="admin-operation-primary"
-              disabled={loading || running}
-              onClick={() => void runUpdateAll(pendingUpdates.map((entry) => entry.key), true)}
+              className="cli-upd-button primary"
+              disabled={busy}
+              onClick={() => runUpdateAll(
+                pendingUpdates.map((entry) => entry.key),
+                pendingUpdates.map((entry) => entry.displayName).join(", "),
+                true
+              )}
             >
               {running ? <Loader2 className="spin" aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}
-              {running ? "Updating…" : `Update ${pendingUpdates.length} CLI${pendingUpdates.length === 1 ? "" : "s"}`}
+              {running ? "Updating…" : `Update ${plural(pendingUpdates.length, "CLI")}`}
             </button>
-          </>
-        ) : (
-          <>
-            <div>
-              <strong>All managed CLIs are up to date</strong>
-              <small>Checked {new Date(detection.detectedAt).toLocaleTimeString()}</small>
-            </div>
-            <button type="button" disabled={loading || running} onClick={() => void load()}>
-              {loading ? <Loader2 className="spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
-              Check again
-            </button>
-          </>
-        )}
-        <p className="cli-update-recommended-note">
+          ) : null}
+        </div>
+        {pendingUpdates.length > 0 ? (
+          <ul className="cli-upd-pending" aria-label="Pending updates">
+            {pendingUpdates.map((entry) => (
+              <li key={entry.key}>
+                <strong>{entry.displayName}</strong>
+                <span>{entry.installedVersion} → {entry.availableVersion}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <p className="cli-upd-hero-note">
           <ShieldCheck aria-hidden="true" />
           <span>
-            Custom code stays: tracked patches, installers and Space config are fingerprinted before and after, Space
-            settings and MCP are re-applied, patched CLIs only receive their patched line, and a failed update rolls back
-            to the previous version.
+            Custom code stays: patches, installers and Space config are fingerprinted before and after, Space settings
+            and MCP are re-applied, patched CLIs only receive their patched line, and a failed update rolls back.
           </span>
         </p>
       </section>
 
-      {/* Summary KPI Stats Bar */}
-      <div className="cli-update-stats-bar" aria-label="CLI statistics">
-        <div className="cli-stat-pill">
-          <span className="cli-stat-num">{totalTypes || 13}</span>
-          <span className="cli-stat-label">CLI Types ({managedTypes.length} managed)</span>
-        </div>
-        <button
-          type="button"
-          className={`cli-stat-pill clickable ${updatesAvailableCount > 0 ? "has-updates" : "all-current"}`}
-          onClick={() => setFilterTab(updatesAvailableCount > 0 ? "updates" : "all")}
-          title="Filter by available updates"
-        >
-          <span className="cli-stat-num">{updatesAvailableCount}</span>
-          <span className="cli-stat-label">
-            {updatesAvailableCount === 1 ? "Update available" : updatesAvailableCount > 0 ? "Updates available" : "All up to date"}
-          </span>
-        </button>
-        <button
-          type="button"
-          className="cli-stat-pill clickable has-custom"
-          onClick={() => setFilterTab("custom")}
-          title="Filter by custom procedures"
-        >
-          <span className="cli-stat-num">{presentCustomCount}</span>
-          <span className="cli-stat-label">
-            <strong>Custom procedures detected</strong>
-            <span> ({customCount} CLIs)</span>
-          </span>
-        </button>
-      </div>
-
-      {/* Primary Actions Grid */}
-      <section className="admin-operation-actions-grid">
-        <section>
-          <Terminal aria-hidden="true" />
-          <div>
-            <strong>Update CLI types</strong>
-            <small>
-              {totalTypes
-                ? `${managedTypes.length} managed of ${totalTypes} CLI types · ${updatesAvailableCount} update(s) available`
-                : "Detecting CLI types…"}
-            </small>
-          </div>
-          <button
-            type="button"
-            className="admin-operation-primary"
-            disabled={loading || running || !detection}
-            onClick={() => void runUpdateAll([])}
-            aria-label="Update all"
-          >
-            {running ? <Loader2 className="spin" aria-hidden="true" /> : <Zap aria-hidden="true" />}
-            {running ? "Updating…" : "Update all"}
-          </button>
-        </section>
-        <section>
-          <Wrench aria-hidden="true" />
-          <div>
-            <strong>Update selected</strong>
-            <small>{selected.size ? `${selected.size} CLI type(s) selected` : "No CLI types selected"}</small>
-          </div>
-          <button
-            type="button"
-            className="admin-operation-primary"
-            disabled={loading || running || !detection || selected.size === 0}
-            onClick={() => void runUpdateAll(Array.from(selected))}
-            aria-label={`Update selected (${selected.size})`}
-          >
-            {running ? <Loader2 className="spin" aria-hidden="true" /> : <Wrench aria-hidden="true" />}
-            {running ? "Updating…" : `Update selected (${selected.size})`}
-          </button>
-        </section>
-      </section>
-
-      {/* Running Banner */}
       {running ? (
         <p className="admin-operation-running" role="status" aria-live="assertive">
           <Loader2 className="spin" aria-hidden="true" />
           <span>
-            <strong>CLI update started</strong>
-            <small>
-              Updating the selected runtimes and verifying custom procedures. This can take several minutes; keep
-              this window open. Started {runStartedAt ? new Date(runStartedAt).toLocaleTimeString() : "now"}.
-            </small>
+            <strong>
+              Updating {running.label} · {Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, "0")}
+            </strong>
+            <small>Each CLI is staged, verified and activated, then its custom procedures are checked. You can minimize this window: the update keeps running and you get a notification when it ends.</small>
           </span>
+          {onMinimize ? (
+            <button type="button" className="cli-upd-button" title="Keep updating in the background" onClick={onMinimize}>
+              <Minus aria-hidden="true" />
+              Minimize
+            </button>
+          ) : null}
         </p>
       ) : null}
 
-      {/* Reinstall Custom Procedures Toggle */}
-      <SpaceToggle
-        id="cli-update-all-reinstall"
-        className="admin-operation-check"
-        name="cli-update-all-reinstall"
-        ariaLabel="Reinstall custom procedures after update"
-        label={<strong>Verify and re-apply custom procedures after update</strong>}
-        detail="Verify each detected patch and safely restore tracked config/MCP overlays after the update."
-        checked={reinstall}
-        disabled={running}
-        onChange={setReinstall}
-      />
-
       {error ? <p className="admin-operation-alert error" role="alert">{error}</p> : null}
 
-      {/* Unified Single-Window CLI Management Section */}
-      <section className="admin-operation-history unified-cli-section" aria-label="All CLI types">
-        <header className="unified-cli-toolbar-header">
-          <div className="unified-cli-title-group">
-            <strong>All CLI types & Custom procedures</strong>
-            <small>
-              Full catalog with live version status, custom procedures, and individual update selection.
-            </small>
-          </div>
-          <div className="unified-cli-header-actions">
-            <button
-              type="button"
-              className="refresh-btn"
-              aria-label="Re-run custom procedure detection"
-              disabled={loading || running}
-              onClick={() => void load()}
-              title="Refresh CLI versions and detection"
-            >
-              {loading ? <Loader2 className="spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
-            </button>
-          </div>
-        </header>
+      {result ? <UpdateResult result={result} sectionRef={resultRef} /> : null}
 
-        {/* Filters and Search Bar */}
-        <div className="unified-cli-filter-bar">
-          <div className="filter-tabs" role="tablist" aria-label="CLI filter tabs">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={filterTab === "all"}
-              className={`filter-tab ${filterTab === "all" ? "active" : ""}`}
-              onClick={() => setFilterTab("all")}
-            >
-              All ({totalTypes})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={filterTab === "updates"}
-              className={`filter-tab ${filterTab === "updates" ? "active" : ""} ${updatesAvailableCount > 0 ? "highlight" : ""}`}
-              onClick={() => setFilterTab("updates")}
-            >
-              Updates available ({updatesAvailableCount})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={filterTab === "custom"}
-              className={`filter-tab ${filterTab === "custom" ? "active" : ""}`}
-              onClick={() => setFilterTab("custom")}
-            >
-              With custom procedures ({customCount})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={filterTab === "managed"}
-              className={`filter-tab ${filterTab === "managed" ? "active" : ""}`}
-              onClick={() => setFilterTab("managed")}
-            >
-              Managed ({managedTypes.length})
-            </button>
+      <section className="cli-upd-catalog" aria-label="All CLI types">
+        <div className="cli-upd-toolbar">
+          <div className="cli-upd-tabs" role="tablist" aria-label="CLI filter tabs">
+            {FILTERS.map((filter) => (
+              <button
+                key={filter.id}
+                type="button"
+                role="tab"
+                aria-selected={filterTab === filter.id}
+                className={filterTab === filter.id ? "active" : undefined}
+                onClick={() => setFilterTab(filter.id)}
+              >
+                {filter.label}
+                <span className={filter.id === "updates" && pendingUpdates.length > 0 ? "count warn" : "count"}>
+                  {cliTypes.filter(filter.match).length}
+                </span>
+              </button>
+            ))}
           </div>
-
-          <div className="search-box">
+          {/* A div, not a label: the global "label input" rule would draw a second box. */}
+          <div className="cli-upd-search">
             <Search aria-hidden="true" />
             <input
               type="search"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(event) => setSearchQuery(event.target.value)}
               placeholder="Filter CLIs…"
               aria-label="Filter CLIs"
             />
           </div>
         </div>
 
-        {/* Global Select All Row */}
-        <div className="unified-cli-select-all-row">
-          <SpaceToggle
-            id="cli-update-all-select-all"
-            className="admin-operation-check indented select-all-label"
-            name="cli-update-all-select-all"
-            ariaLabel="Select all managed CLI types"
-            label={<strong>{allSelected ? "Deselect all" : "Select all CLI types"}</strong>}
-            detail={`(${managedTypes.length} managed CLIs)`}
-            checked={!!allSelected}
-            disabled={running}
-            onChange={toggleSelectAll}
-          />
-          <span className="selected-counter">
-            {selected.size} of {managedTypes.length} selected
-          </span>
-        </div>
-
-        {/* Unified Single List of Cards */}
-        <div className="unified-cli-card-list">
-          {filteredCliTypes.length === 0 ? (
-            <div className="unified-cli-empty">
-              <p>No CLI types match the current filter.</p>
-            </div>
-          ) : (
-            filteredCliTypes.map((entry) => {
-              const isSelected = selected.has(entry.key);
-              const presentCustoms = entry.custom.filter((c) => c.present);
-
+        {filteredCliTypes.length === 0 ? (
+          <p className="cli-upd-empty">{detection ? "No CLI types match the current filter." : "Loading CLI types…"}</p>
+        ) : (
+          <ul className="cli-upd-list">
+            {filteredCliTypes.map((entry) => {
+              const customs = presentCustom(entry);
+              const state = versionState(entry);
               return (
-                <div
+                <li
                   key={entry.cliType}
-                  className={`unified-cli-card ${isSelected ? "is-selected" : ""} ${
-                    !entry.managed ? "not-managed" : ""
-                  } ${!entry.enabled ? "is-disabled" : ""}`}
+                  className={[
+                    "cli-upd-row",
+                    selected.has(entry.key) ? "is-selected" : "",
+                    entry.managed ? "" : "is-unmanaged"
+                  ].join(" ").trim()}
                 >
-                  {/* Card Top: Checkbox, Name, Badges */}
-                  <div className="unified-cli-card-header">
-                    <SpaceToggle
-                      id={`cli-update-all-${entry.key}`}
-                      className="unified-cli-toggle-wrapper"
-                      name={`cli-update-all-${entry.key}`}
-                      ariaLabel={entry.displayName}
-                      label={
-                        <span className="unified-cli-title">
-                          <strong>{entry.displayName}</strong>
-                          <span className="cli-type-key">{entry.key}</span>
-                        </span>
-                      }
-                      checked={isSelected}
-                      disabled={running || !entry.managed}
-                      onChange={() => toggleKey(entry.key)}
-                    />
-
-                    <div className="unified-cli-badge-group">
-                      <span className={`status-badge ${entry.enabled ? "enabled" : "disabled"}`}>
-                        {entry.enabled ? "enabled" : "disabled"}
+                  <SpaceToggle
+                    compact
+                    id={`cli-update-all-${entry.key}`}
+                    className="cli-upd-row-toggle"
+                    name={`cli-update-all-${entry.key}`}
+                    ariaLabel={entry.displayName}
+                    label={
+                      <span className="cli-upd-row-name">
+                        <strong>{entry.displayName}</strong>
+                        <code>{entry.key}</code>
+                        {entry.enabled ? null : <span className="cli-upd-tag muted">Disabled</span>}
                       </span>
-                      <span className={`status-badge ${entry.managed ? "managed" : "not-managed"}`}>
-                        {entry.managed ? "managed" : "not managed"}
-                      </span>
-                      {entry.hasCustom ? (
-                        <span className="status-badge has-custom" title={`${presentCustoms.length} custom procedure(s)`}>
-                          <ShieldCheck aria-hidden="true" />
-                          custom ({presentCustoms.length})
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  {/* Card Middle: Version Comparison Row */}
-                  <div className="unified-cli-version-row">
-                    <div className="version-col current">
-                      <span className="version-label">Current version:</span>
-                      <span className="version-text current" title={entry.installedVersion ?? "Not installed"}>
-                        {entry.installedVersion ? `v${entry.installedVersion}` : "Not installed"}
-                      </span>
-                    </div>
-
-                    <span className="version-flow-arrow" aria-hidden="true">→</span>
-
-                    <div className="version-col latest">
-                      <span className="version-label">Latest version:</span>
-                      <span className="version-text latest" title={entry.availableVersion ?? (entry.managed ? "Checking…" : "Upstream git")}>
-                        {entry.availableVersion
-                          ? `v${entry.availableVersion}`
-                          : entry.managed
-                            ? "Checking…"
-                            : "Upstream git"}
-                      </span>
-                    </div>
-
-                    <div className="version-verdict">
-                      {entry.updateAvailable ? (
-                        <span className="verdict-pill update-available" title="A newer version is available to install">
-                          <ArrowUp aria-hidden="true" />
-                          Update available: {entry.installedVersion} → {entry.availableVersion}
-                        </span>
-                      ) : entry.installedVersion && entry.availableVersion && entry.installedVersion === entry.availableVersion ? (
-                        <span className="verdict-pill up-to-date" title="Installed runtime matches the latest stable version">
-                          <Check aria-hidden="true" />
-                          Up to date
-                        </span>
-                      ) : !entry.managed ? (
-                        <span className="verdict-pill not-managed" title="Standalone runtime managed outside Space bulk updates">
-                          Standalone runtime
-                        </span>
-                      ) : (
-                        <span className="verdict-pill current" title="Installed runtime is active">
-                          {entry.installedVersion ? `v${entry.installedVersion} installed` : "No update path"}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Card Bottom: Custom Procedures Details */}
-                  {entry.hasCustom && presentCustoms.length > 0 ? (
-                    <div className="unified-cli-custom-box">
-                      <div className="custom-box-header">
-                        <ShieldCheck aria-hidden="true" />
-                        <span>Preserved custom procedures ({presentCustoms.length}):</span>
-                      </div>
-                      <div className="custom-chips-wrap">
-                        {presentCustoms.map((item, index) => (
-                          <span key={index} className="custom-chip" title={item.path}>
-                            <span className="custom-chip-kind">{item.kind}</span>
-                            <span className="custom-chip-label">{item.label}</span>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
+                    }
+                    title={entry.managed ? undefined : "Managed outside Space updates"}
+                    checked={selected.has(entry.key)}
+                    disabled={running !== null || !entry.managed}
+                    onChange={() => setSelected((previous) => toggled(previous, entry.key))}
+                  />
+                  <span className="cli-upd-row-version">
+                    <code>{entry.installedVersion ? `v${entry.installedVersion}` : "—"}</code>
+                    {entry.updateAvailable && entry.availableVersion ? (
+                      <>
+                        <ArrowRight aria-hidden="true" />
+                        <code className="next">{`v${entry.availableVersion}`}</code>
+                      </>
+                    ) : null}
+                  </span>
+                  <span className={`cli-upd-tag ${state.tone}`}>
+                    {state.tone === "ok" ? <Check aria-hidden="true" /> : state.tone === "warn" ? <ArrowUp aria-hidden="true" /> : null}
+                    {state.label}
+                  </span>
+                  {customs.length > 0 ? (
+                    <button
+                      type="button"
+                      className="cli-upd-custom"
+                      aria-expanded={expanded.has(entry.key)}
+                      aria-controls={`cli-update-all-custom-${entry.key}`}
+                      title="Show the custom procedures kept for this CLI"
+                      onClick={() => setExpanded((previous) => toggled(previous, entry.key))}
+                    >
+                      <ShieldCheck aria-hidden="true" />
+                      {customs.length} custom
+                      <ChevronDown className="chevron" aria-hidden="true" />
+                    </button>
                   ) : (
-                    <div className="unified-cli-standard-box">
-                      <small>Standard runtime · Preserved and verified during every update.</small>
-                    </div>
+                    <span className="cli-upd-custom none">Standard</span>
                   )}
-                </div>
+                  {customs.length > 0 && expanded.has(entry.key) ? (
+                    <ul id={`cli-update-all-custom-${entry.key}`} className="cli-upd-custom-list">
+                      {customs.map((item) => (
+                        <li key={item.path}>
+                          <span className="cli-upd-kind">{item.kind}</span>
+                          <span>{item.label}</span>
+                          <code title={item.path}>{item.path}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </li>
               );
-            })
-          )}
-        </div>
-
-        {/* Bottom Note */}
-        <p className="admin-operation-alert note" role="status">
-          These custom procedures are preserved during every update. Enabling the <strong>reinstall</strong>{" "}
-          toggle above re-applies each patch and config overlay on top after each update completes.
-          Only managed CLI types can be individually updated. DeepSeek Harness is listed for detection only.
-        </p>
+            })}
+          </ul>
+        )}
       </section>
 
-      {/* Results View */}
-      {result ? (
-        <section ref={resultRef} className="admin-operation-history" aria-label="Update-all result">
-          <header>
-            <span>
-              <strong>Update result · {result.overallStatus}</strong>
-              <small>
-                {result.runtimes.length} CLI types · finished {new Date(result.finishedAt).toLocaleTimeString()}
-              </small>
-            </span>
-            <CheckCircle2 aria-hidden="true" />
-          </header>
-          <div className="admin-operation-result-list">
-            {result.runtimes.map((runtime) => (
-              <div key={String(runtime.runtimeId ?? "runtime")}>
-                <strong>{String(runtime.displayName ?? runtime.runtimeId ?? "Runtime")}</strong>
-                <span className={`status-tag ${String(runtime.status).toLowerCase()}`}>
-                  {String(runtime.status)}
-                </span>
-                <small>
-                  {String(runtime.code)}
-                  {runtime.installedVersion ? ` · was v${runtime.installedVersion}` : ""}
-                  {runtime.availableVersion ? ` → now v${runtime.availableVersion}` : ""}
-                  {runtime.customPreserved ? " · custom preserved" : ""}
-                  {runtime.customReinstalled ? " · custom reinstalled" : ""}
-                  {"errorMessage" in runtime && runtime.errorMessage
-                    ? ` · ${String(runtime.errorMessage)}`
-                    : ""}
-                </small>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
+      <footer className="cli-upd-footer">
+        <SpaceToggle
+          compact
+          id="cli-update-all-select-all"
+          name="cli-update-all-select-all"
+          ariaLabel="Select all managed CLI types"
+          label={`${selected.size} of ${managedTypes.length} selected`}
+          checked={allSelected}
+          disabled={running !== null || managedTypes.length === 0}
+          onChange={toggleSelectAll}
+        />
+        <SpaceToggle
+          compact
+          id="cli-update-all-reinstall"
+          name="cli-update-all-reinstall"
+          ariaLabel="Reinstall custom procedures after update"
+          label="Re-apply custom procedures"
+          title="Verify each detected patch and safely restore tracked config/MCP overlays after the update."
+          checked={reinstall}
+          disabled={running !== null}
+          onChange={setReinstall}
+        />
+        <span className="cli-upd-footer-actions">
+          <button
+            type="button"
+            className="cli-upd-button"
+            aria-label="Update all"
+            title="Run the guarded update for every managed CLI type, including disabled ones"
+            disabled={busy || !detection}
+            onClick={() => runUpdateAll([], "every managed CLI type")}
+          >
+            <Zap aria-hidden="true" />
+            Update all
+          </button>
+          <button
+            type="button"
+            className="cli-upd-button primary"
+            aria-label={`Update selected (${selected.size})`}
+            disabled={busy || !detection || selected.size === 0}
+            onClick={() => runUpdateAll(
+              Array.from(selected),
+              cliTypes.filter((entry) => selected.has(entry.key)).map((entry) => entry.displayName).join(", ")
+            )}
+          >
+            <Wrench aria-hidden="true" />
+            Update selected ({selected.size})
+          </button>
+        </span>
+      </footer>
     </div>
+  );
+}
+
+function UpdateResult({
+  result,
+  sectionRef
+}: {
+  result: CliUpdateAllResult;
+  sectionRef: RefObject<HTMLElement | null>;
+}) {
+  const customCounts = new Map(
+    (result.customSummary ?? []).map((entry) => [`cli:${entry.key}`, presentCustom(entry).length])
+  );
+  let customTotal = 0;
+  let customKept = 0;
+  for (const runtime of result.runtimes) {
+    const count = customCounts.get(runtime.runtimeId) ?? 0;
+    customTotal += count;
+    if (runtime.customPreserved) customKept += count;
+  }
+  const updated = result.runtimes.filter((runtime) => runtime.code.startsWith("UPDATED")).length;
+  const failed = result.runtimes.filter((runtime) => runtime.status === "FAIL").length;
+  const headline = result.overallStatus === "FAIL"
+    ? "Update finished with failures"
+    : result.overallStatus === "WARN" ? "Update finished with warnings" : "Update finished";
+
+  return (
+    <section
+      ref={sectionRef}
+      className={`cli-upd-result ${statusTone[result.overallStatus]}`}
+      aria-label="Update-all result"
+    >
+      <header>
+        <StatusIcon status={result.overallStatus} />
+        <span>
+          <strong>{headline}</strong>
+          <small>
+            {updated} updated · {failed} failed · {result.runtimes.length} checked · finished {clock(result.finishedAt)}
+          </small>
+        </span>
+      </header>
+      {customTotal > 0 ? (
+        <p className={`cli-upd-result-custom ${customKept === customTotal ? "ok" : "fail"}`}>
+          {customKept === customTotal ? <ShieldCheck aria-hidden="true" /> : <CircleAlert aria-hidden="true" />}
+          {customKept} of {plural(customTotal, "custom procedure")} verified unchanged
+          {result.reinstall ? " · Space config and MCP re-applied" : ""}
+        </p>
+      ) : null}
+      <ul>
+        {result.runtimes.map((runtime) => {
+          const customCount = customCounts.get(runtime.runtimeId) ?? 0;
+          const from = runtime.installedVersion;
+          const to = runtime.availableVersion;
+          return (
+            <li key={runtime.runtimeId} className={statusTone[runtime.status]}>
+              <StatusIcon status={runtime.status} />
+              <strong>{runtime.displayName}</strong>
+              {/* Only an update moves the version; a kept or rolled-back CLI shows the version it stays on. */}
+              <code>{runtime.code.startsWith("UPDATED") && from && to && from !== to ? `${from} → ${to}` : (from ?? to ?? "")}</code>
+              <small>
+                {runtime.summary}
+                {runtime.errorMessage ? ` ${runtime.errorMessage}` : ""}
+              </small>
+              {customCount > 0 ? (
+                <span className={`cli-upd-tag ${runtime.customPreserved ? "ok" : "fail"}`}>
+                  {runtime.customPreserved ? <ShieldCheck aria-hidden="true" /> : <CircleAlert aria-hidden="true" />}
+                  {runtime.customPreserved ? `${customCount} custom kept` : "Custom changed"}
+                </span>
+              ) : null}
+              {runtime.reinstallResults?.length ? (
+                <details className="cli-upd-checks">
+                  <summary>
+                    {plural(runtime.reinstallResults.length, "custom check")}
+                    <ChevronDown className="chevron" aria-hidden="true" />
+                  </summary>
+                  <ul>
+                    {runtime.reinstallResults.map((check) => (
+                      <li key={`${check.kind}:${check.path}`}>
+                        <StatusIcon status={check.status} />
+                        <span>{check.message}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

@@ -261,6 +261,25 @@ describe("job copilot run supervisor", () => {
     }
   });
 
+  it("an answer closes the question in the pane that asked, even when the posting was queued from another pane", async () => {
+    const { app, store, room, pane, headers, agent } = await fixture();
+    try {
+      const oldPane = store.createPane({ roomId: room.id, title: "Old Job Copilot", mode: "JOB_APPLY", terminalRuntimeId: "cli:codex" });
+      const queued = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(oldPane.id)}/job-apply/queue`, headers, payload: { urls: ["https://jobs.lever.co/initech/10"] } });
+      const [posting] = queued.json().queued as Array<{ id: string }>;
+      const asked = await app.inject({ method: "POST", url: `/api/cli/job-apply/applications/${posting!.id}/question`, headers: agent, payload: { question: "Years of Flutter?" } });
+      const questionId = asked.json().questionId as string;
+      const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/job-apply`;
+      expect((await app.inject({ method: "GET", url: `${paneUrl}/run`, headers })).json().pending).toEqual([expect.objectContaining({ id: questionId })]);
+      expect((await app.inject({ method: "POST", url: `/api/job-apply/applications/${posting!.id}/answer`, headers, payload: { questionId, answer: "0" } })).statusCode).toBe(200);
+      expect((await app.inject({ method: "GET", url: `${paneUrl}/run`, headers })).json().pending).toEqual([]);
+      const events = (await app.inject({ method: "GET", url: `/api/job-apply/events?paneId=${encodeURIComponent(pane.id)}`, headers })).json().events as Array<{ type: string }>;
+      expect(events.map((event) => event.type)).toContain("ANSWERED");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("routes questions and reviews to the operator, answers become memory, and Telegram gets the needs-you moments when enabled", async () => {
     const { app, pane, headers, agent, sent, telegramPersistence, telegramSecrets } = await fixture();
     try {

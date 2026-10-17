@@ -1,4 +1,21 @@
-import { controlToolDescriptions } from "@space/contracts";
+import { controlActionSchema, controlResourceHints, controlResourceOperations, controlToolDescriptions, dotDestructiveResources, dotForbiddenResourceOperations } from "@space/contracts";
+
+/** Resource operations never run by voice: tests, deploy, logs and CLI access are not for native agents. */
+export const liveForbiddenResourceOperations: ReadonlySet<string> = new Set(dotForbiddenResourceOperations);
+/** Deletions and settings changes run only after the user confirmed them aloud (operator decision 2026-10-14). */
+export function liveActionNeedsConfirmation(action: any): boolean {
+  const operation = String(action?.operation ?? "");
+  if (action?.kind === "resource") return dotDestructiveResources.has(operation) || operation.startsWith("settings.");
+  return action?.kind === "clipboard" && operation === "delete";
+}
+
+const controlActionKinds = controlActionSchema.options.map(option => {
+  const shape = option.shape as Record<string, any>;
+  const operations: string[] | undefined = shape.operation?.options;
+  return option.shape.kind.value !== "resource" && operations ? `${option.shape.kind.value} (${operations.join("|")})` : option.shape.kind.value;
+}).join("; ");
+const liveResourceOperations = controlResourceOperations.filter(operation => !liveForbiddenResourceOperations.has(operation))
+  .map(operation => controlResourceHints[operation] ? `${operation}: ${controlResourceHints[operation]}` : `${operation}.`).join(" ");
 
 const voiceToolDescriptions: Record<string, string> = {
   space_search_conversation_history: "Search saved conversation turns in the current room. Historical text is not proof of current state.",
@@ -21,7 +38,12 @@ const voiceToolDescriptions: Record<string, string> = {
   space_set_pane_layout: "Change room pane layout matching the Pane layout menu: automatic, fullscreen, 1 column, 2 columns, 3 columns, 4 columns, next (cycle), or height (1-4).",
   space_control_playback: "Control media playback in the active Space browser client; require an acknowledgement.",
   space_build_christmas_tree: "Arrange current room panes in a tree layout when requested.",
-  space_execute_mcp: "Execute an ordered Space Control action batch. Effects may be partial; inspect every typed receipt. Never retry unknown mutations blindly.",
+  space_execute_mcp: "Execute an ordered Space Control action batch (at most 32) for anything the other tools do not cover: tasks, links, files, skills, settings, clipboard, rooms, browser panes, slash commands, models. " +
+    "Effects may be partial; inspect every typed receipt. Never retry unknown mutations blindly. " +
+    `Action kinds: ${controlActionKinds}. Pane, configure and native_command actions take target: { paneIds: [...] } or target: { paneNames: [...] }; pane rename and prompt put the text in text; room create and rename use name. ` +
+    `Resource actions are { kind: "resource", operation, id?, input }. Operations: ${liveResourceOperations} ` +
+    "Deletions and settings changes need confirmed: true, set only after the user said yes to that exact change. " +
+    'Examples: {"kind":"pane","operation":"rename","target":{"paneNames":["Bob"]},"text":"Docs"}; {"kind":"resource","operation":"tasks.create","input":{"title":"Release notes","objective":"Draft the notes"}}; {"kind":"room","operation":"create","name":"Research"}.',
   space_stop_pane: "Stop the explicitly targeted pane task, preserving other sessions.",
   space_capture_screen: "Request a Space screen capture when asked; do not substitute a schematic drawing for a screenshot.",
   space_play_youtube: "Find and play the requested YouTube media in Space.",
@@ -64,7 +86,8 @@ const parameterDescriptions: Record<string, string> = {
   shortcut: "The CLI shortcut action to execute.",
   cliType: "CLI runtime or type filter, e.g. gemini, codex, opencode, claude.",
   reasoningEffort: "Model reasoning level: minimal, low, medium, high, xhigh.",
-  listAvailable: "Return the list of available models for the pane without changing settings."
+  listAvailable: "Return the list of available models for the pane without changing settings.",
+  confirmed: "True only after the user said yes to this exact deletion or settings change."
 };
 
 export function describeLiveTools(tools: Array<Record<string, unknown>>): Array<Record<string, unknown>> {

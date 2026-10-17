@@ -4,6 +4,8 @@ import { z } from "zod";
 export const SPACE_CONTROL_VERSION = "space-control-v1";
 const paneCategoryColorSchema = z.enum(["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"]).nullable();
 const id = z.string().trim().min(1).max(200);
+/** Device sizes of the Media Studio capture engine (scripts/space-media-capture.mjs) that space_screenshot may use. */
+export const controlScreenshotViewports = ["desktop", "desktop-hd", "laptop", "tablet", "tablet-landscape", "mobile", "android"] as const;
 const text = z.string().trim().min(1).max(100_000);
 export const controlTargetSchema = z.object({
   paneIds: z.array(id).min(1).max(64).optional(),
@@ -69,7 +71,8 @@ export const controlActionSchema = z.discriminatedUnion("kind", [
     format:z.enum(["jpeg","png","webp"]).default("jpeg"),
     quality:z.number().min(1).max(100).default(80),
     maxWidth:z.number().int().min(320).max(3840).optional(),
-    maxHeight:z.number().int().min(240).max(2160).optional()}).strict()
+    maxHeight:z.number().int().min(240).max(2160).optional(),
+    viewport:z.enum(controlScreenshotViewports).optional()}).strict()
 ]);
 export const controlExecuteSchema = z.object({roomId:id, requestId:id,
   expectedRevision:z.string().regex(/^[a-f0-9]{64}$/).optional(),
@@ -200,6 +203,7 @@ export const controlToolSchemas = {
     quality: z.number().min(1).max(100).default(80),
     maxWidth: z.number().int().min(320).max(3840).optional(),
     maxHeight: z.number().int().min(240).max(2160).optional(),
+    viewport: z.enum(controlScreenshotViewports).optional(),
     query: z.string().max(2000).optional()
   }).strict(),
   space_test_mcp_tools: z.object({
@@ -224,7 +228,7 @@ export const controlToolDescriptions = {
   space_capabilities:"Discover actual Space room controls and runtime support before targeting panes.",
   space_inspect:"Read authoritative room state, positions, times, content and available model/runtime information.",
   space_execute:"Apply one validated batch of Space controls. Preserve task identity on reopen. Returns verified per-target outcomes; pending is not completion.",
-  space_screenshot:"Capture full-screen visual state of the Space App for vision analysis when the user asks to see or inspect the screen.",
+  space_screenshot:"Capture the room as the Space App shows it (read-only, the actor's own account) for vision analysis when the user asks to see or inspect the screen; viewport picks a device size (default desktop). The image is saved in the room's Media.",
   space_operations:"Inspect or cancel durable operations belonging to the authenticated operator.",
   space_schedules:"Create explicit one-shot schedules or inspect/cancel them. Automatic policies are not enabled.",
   space_watches:"Durable room/task completion watch jobs for realtime voice assistant re-engagement, independent verification, and bounded remediation.",

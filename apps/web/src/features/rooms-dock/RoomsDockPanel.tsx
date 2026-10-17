@@ -1,4 +1,4 @@
-import type { Dispatch, ReactNode, SetStateAction } from "react";
+import { useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { MAX_ROOMS, type AuthMe, type Pane, type Room } from "@space/contracts";
 import { api } from "../../api.js";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
@@ -7,10 +7,11 @@ import { classifyRoomWarmPresentation } from "../../warm-room-startup.js";
 import type { PaneCompletionLifecycleState } from "../../pane-completion-lifecycle.js";
 import { lazyWithPreload } from "../../lazy-with-preload.js";
 import { RoomPaneComposer } from "../room-pane-composer/RoomPaneComposer.js";
+import { SPACE_PANE_CONTEXT_MIME, readPaneContextDragPayload } from "../pane-drag/pane-drag.js";
 import { RecoverableSurface } from "../SurfaceErrorBoundary.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { DockButton, DockChips, DockSearch } from "../dock-kit/DockKit.js";
-import { ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, MoreHorizontal, Plus, Save, Terminal, Trash2, X } from "../ui-theme/app-icons.js";
+import { ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, MoreHorizontal, Plus, Rocket, Save, Terminal, Trash2, X } from "../ui-theme/app-icons.js";
 import { workspaceRoomActivity } from "../ui-theme/workspace-room-filter.js";
 import type { AdminUsers } from "./useAdminUsers.js";
 import { ensureProjectFolder } from "./room-catalog.js";
@@ -104,6 +105,8 @@ export interface RoomsDockPanelProps {
     reportError: (message: string) => void;
     /** The delete confirmation, rendered at the end of the dock. */
     roomDeleteConfirmDialog: ReactNode;
+    /** A pane (header or minimized chip) dropped on a room moves there; its running CLI keeps running. */
+    movePaneToRoom: (paneId: string, roomId: string) => Promise<void>;
   };
   composer: {
     preparingRoomId: string | null;
@@ -112,7 +115,6 @@ export interface RoomsDockPanelProps {
     presentationRoom: Room | null;
     addRoomPanes: Parameters<typeof RoomPaneComposer>[0]["onApply"];
     openSettingsSurface: () => void;
-    modernColorMode: string;
   };
 }
 
@@ -141,9 +143,10 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
   const { auth, isAdminMode, runtimeKind } = access;
   const {
     createRoom, roomCreationPending, selectRoom, requestRoomDelete, requestTestRoomsDelete, deletePendingRoomId, setSelectedPaneId, addFilesPane, addRootAdminPane,
-    isRoomWorktreeEnabled, setRoomWorktreeEnabled, projectPresets, reportError: setError, roomDeleteConfirmDialog
+    isRoomWorktreeEnabled, setRoomWorktreeEnabled, projectPresets, reportError: setError, roomDeleteConfirmDialog, movePaneToRoom
   } = actions;
-  const { preparingRoomId, presentationPanes, presentationRoom, addRoomPanes, openSettingsSurface, modernColorMode } = composer;
+  const [paneDropRoomId, setPaneDropRoomId] = useState<string | null>(null);
+  const { preparingRoomId, presentationPanes, presentationRoom, addRoomPanes, openSettingsSurface } = composer;
   const filteredRoomEntries = entries;
   const workspaceEntries = filteredRoomEntries.filter(({ room }) => !isTestRoom(room));
   const testEntries = filteredRoomEntries.filter(({ room }) => isTestRoom(room));
@@ -209,13 +212,30 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
           isExpanded ? "is-expanded" : "",
           activity.attention ? "has-attention" : "",
           draggedRoomId === room.id ? "is-dragging" : "",
-          dragOverRoomId === room.id && draggedRoomId !== room.id ? "is-drop-target" : ""
+          (dragOverRoomId === room.id && draggedRoomId !== room.id) || paneDropRoomId === room.id ? "is-drop-target" : ""
         ].filter(Boolean).join(" ")}
         data-room-id={room.id}
         data-warm-presentation={warmRoomEnabled ? warmPresentation : undefined}
         title={isRoomListFiltered ? room.name : `Hold the right mouse button to reorder ${room.name}`}
         onPointerDown={(event) => { if (!isRoomListFiltered) handleRoomRightPointerDown(event, room.id); }}
         onContextMenu={(event) => event.preventDefault()}
+        onDragOver={(event) => {
+          // Panes are dragged from the active room, so it is never a target.
+          if (isActive || !event.dataTransfer.types.includes(SPACE_PANE_CONTEXT_MIME)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setPaneDropRoomId(room.id);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPaneDropRoomId((current) => current === room.id ? null : current);
+        }}
+        onDrop={(event) => {
+          setPaneDropRoomId(null);
+          const payload = readPaneContextDragPayload(event.dataTransfer);
+          if (!payload || payload.roomId === room.id) return;
+          event.preventDefault();
+          void movePaneToRoom(payload.id, room.id).catch((err: unknown) => setError(err instanceof Error ? err.message : "Pane move failed"));
+        }}
         onAnimationEnd={(event) => {
           if (event.animationName.includes("room-card-press-pop") || event.animationName.includes("shockwave")) {
             event.currentTarget.classList.remove("is-clicked");
@@ -617,11 +637,11 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
           rel="noopener noreferrer"
           aria-label="Download SpaceApp from SpaceApp.dev"
         >
-          <img
-            src={modernColorMode === "light" ? "/brand/spaceapp-source-available-banner-light.svg" : "/brand/spaceapp-source-available-banner.svg"}
-            alt="SpaceApp is source-available and free to self-host."
-            decoding="async"
-          />
+          <span className="spaceapp-download-card">
+            <Rocket aria-hidden="true" />
+            <span className="spaceapp-download-title"><strong>SpaceApp</strong> is source-available</span>
+            <span>and <strong>free</strong> to self-host.</span>
+          </span>
         </a>
       </div>
       {projectPickerRoom ? (

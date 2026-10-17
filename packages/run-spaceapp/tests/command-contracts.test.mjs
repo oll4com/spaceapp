@@ -426,3 +426,25 @@ test("factory-reset command reinitializes installation on valid confirmation", a
   assert.match(stdout.value(), /SpaceApp factory reset complete/);
   assert.ok(calls.some((spec) => spec.args?.includes("down") || spec.args?.includes("-v")));
 });
+
+test("factory-reset asks a separate confirmation when the safety backup fails, and stops when the purge fails", async () => {
+  const backupFails = async (spec) => spec.args?.includes("scripts/portable-backup.mjs") ? 1 : 0;
+  const plain = await installation({ execute: backupFails });
+  assert.equal(await run(["factory-reset"], { ...plain.options, stdin: ttyStdin("FACTORY-RESET") }), 0);
+  assert.match(plain.stdout.value(), /safety backup FAILED/);
+  assert.match(plain.stdout.value(), /Factory reset cancelled/);
+
+  const explicit = await installation({ execute: backupFails });
+  assert.equal(await run(["factory-reset"], { ...explicit.options, stdin: ttyStdin("FACTORY-RESET-WITHOUT-BACKUP") }), 0);
+  assert.match(explicit.stdout.value(), /SpaceApp factory reset complete/);
+
+  const purgeFails = await installation({
+    execute: async (spec, io) => {
+      if (spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
+      return spec.args?.includes("down") ? 3 : 0;
+    }
+  });
+  assert.equal(await run(["factory-reset"], { ...purgeFails.options, stdin: ttyStdin("FACTORY-RESET") }), 3);
+  assert.doesNotMatch(purgeFails.stdout.value(), /factory reset complete/);
+  await stat(join(purgeFails.root, "config.json"));
+});

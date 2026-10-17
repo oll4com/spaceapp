@@ -281,6 +281,11 @@ describe("CLI maintenance API", () => {
     });
     expect(accepted.statusCode).toBe(200);
     expect(updateAll).toHaveBeenCalledWith({ keys: ["gemini"], reinstall: true });
+    // The end of the update reaches the operator even when its window was minimized or closed.
+    const notifications = await app.inject({ method: "GET", url: "/api/notifications?status=OPEN&source=SYSTEM", headers: authHeaders("ADMIN") });
+    expect(notifications.json().notifications).toEqual([expect.objectContaining({
+      kind: "CLI_UPDATE_FINISHED", severity: "INFO", title: "CLI update finished", body: "0 updated · 0 failed · 0 checked."
+    })]);
   });
 
   it("requires ADMIN, CSRF, and the exact update confirmation", async () => {

@@ -19,7 +19,8 @@ import {
   Search,
   Trash2,
   Upload,
-  X
+  X,
+  AgentFiles
 } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
 import { ARTIFACTS_UPDATED_EVENT, dispatchArtifactsUpdated, isArtifactsUpdatedDetail } from "../../artifact-events.js";
@@ -1616,7 +1617,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
         {uploading ? <DockNotice tone="info">Uploading files…</DockNotice> : null}
 
         {!activeRoom ? (
-          <DockState kind="empty" icon={FolderOpen} title="Select a room to view its Agent Files." />
+          <DockState kind="empty" icon={AgentFiles} title="Select a room to view its Agent Files." />
         ) : showList ? null : !entries.length && !hasLoaded ? (
           <DockState kind="loading" title="Loading Agent Files…" />
         ) : !entries.length && loadError ? (

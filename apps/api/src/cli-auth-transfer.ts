@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { createConnection } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";

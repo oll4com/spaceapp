@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, chmod, stat, readdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type { AuthUser } from "@space/contracts";
@@ -176,6 +176,15 @@ describe("Filesystem Service & Security", () => {
         workspaceRoot: tempWorkspace
       });
       expect(readRes.content).toBe("Updated Content in Space");
+    });
+
+    it("keeps the saved file's mode", async () => {
+      const script = path.join(tempWorkspace, "run.sh");
+      await writeFile(script, "echo old\n");
+      await chmod(script, 0o750);
+      await writeFileContent({ targetPath: script, content: "echo new\n", mode: "admin", user: testOperatorUser, workspaceRoot: tempWorkspace });
+      expect((await stat(script)).mode & 0o777).toBe(0o750);
+      expect((await readdir(tempWorkspace)).filter((name) => name.startsWith(".tmp_"))).toEqual([]);
     });
   });
 

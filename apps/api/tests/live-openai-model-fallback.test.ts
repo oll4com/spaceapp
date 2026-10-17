@@ -44,6 +44,25 @@ describe("OpenAI Live model fallback", () => {
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://api.openai.com/v1/live/sessions"]);
   });
 
+  it("waits at most two seconds for a cold check of the selected model and lets it decide the next session", async () => {
+    vi.useFakeTimers();
+    try {
+      let answer!: (response: Response) => void;
+      const fetchImpl = vi.fn((_url: string, init: RequestInit) => JSON.parse(init.body as string).model === "gpt-5.6-terra"
+        ? new Promise<Response>(resolve => { answer = resolve; }) : Promise.resolve(json({ status: "completed" })));
+      const input = { baseUrl: "https://api.openai.com/v1", apiKey: "test-key", model: "gpt-5.6-terra", webSearch: false, fetchImpl: fetchImpl as unknown as typeof fetch };
+      const first = resolveDelegatedModel(input);
+      await vi.advanceTimersByTimeAsync(1999);
+      let settled = false; void first.then(() => { settled = true; });
+      await Promise.resolve(); expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(first).resolves.toEqual({ model: "gpt-5.6-terra", effort: "none" });
+      answer(openAiError(404, "The model `gpt-5.6-terra` does not exist.", "model_not_found"));
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(resolveDelegatedModel(input)).resolves.toMatchObject({ model: "gpt-5.5", fallback: { requested: "gpt-5.6-terra", used: "gpt-5.5" } });
+      expect(fetchImpl.mock.calls.filter(([, init]) => JSON.parse(init.body as string).model === "gpt-5.6-terra")).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
+  });
   it("keeps the selected delegated model when the check cannot run", async () => {
     const fetchMock = vi.fn(async () => openAiError(503, "Service unavailable", "server_error"));
     expect(await resolveDelegatedModel({ baseUrl: "https://api.openai.com/v1", apiKey: "k", model: "gpt-5.6-terra", effort: "low", webSearch: true, fetchImpl: fetchMock as unknown as typeof fetch }))
@@ -73,7 +92,7 @@ describe("OpenAI Live model fallback", () => {
     expect(url).toBe("https://api.openai.com/v1/realtime/calls");
     const session = JSON.parse((init as RequestInit & { body: FormData }).body.get("session") as string);
     expect(session).toMatchObject({ type: "realtime", model: "gpt-realtime-2.1", tools,
-      audio: { input: { transcription: { model: "whisper-1" }, turn_detection: { type: "server_vad" } }, output: { voice: "marin" } } });
+      audio: { input: { transcription: { model: "whisper-1" }, turn_detection: { type: "semantic_vad" } }, output: { voice: "marin" } } });
     expect(session).not.toHaveProperty("voice");
     expect(session).not.toHaveProperty("input_audio_transcription");
     expect(session).not.toHaveProperty("delegation");

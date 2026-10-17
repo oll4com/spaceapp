@@ -1335,6 +1335,16 @@ export function handleGreekKeyInput(
   return false;
 }
 
+/** A phone or tablet without a mouse: its soft keyboard has no Shift+Enter. */
+export function isTouchOnlyDevice(): boolean {
+  return typeof window !== "undefined" && (window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches ?? false);
+}
+
+/** On a touch-only device a typed Enter adds a line and the Send button sends; the OSK's synthetic Enter is untrusted and still sends. */
+export function enterAddsLine(event: { isTrusted: boolean }): boolean {
+  return event.isTrusted && isTouchOnlyDevice();
+}
+
 /**
  * Inserts text at the current cursor position in a textarea,
  * preserving undo/redo history where supported.

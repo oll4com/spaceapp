@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { buildDotToolCatalog, type ChannelsStatus, type DotComputer as DotComputerState, type DotDeliverable, type DotProfile,
+import { buildDotToolCatalog, dotPersonalities, type ChannelsStatus, type DotComputer as DotComputerState, type DotDeliverable, type DotProfile,
   type DotToolInvocation } from "@space/contracts";
 import { api } from "../../api.js";
 import { ChevronRight, FileText, Monitor, Phone, Slack, X } from "../ui-theme/app-icons.js";
+import { DotAvatar } from "./DotAvatar.js";
 import { DotComputer } from "./DotComputer.js";
 import { DotOutputVersions } from "./DotDeliverables.js";
 import { dotArtwork } from "./DotHeader.js";
@@ -97,9 +98,11 @@ export function DotInfoCard({ dot, roomId, visible, working, lastActiveAt, sessi
     onKeyDown={(event) => { if (event.key === "Escape" && overlay) { event.stopPropagation(); onClose(); } }}>
     {overlay ? <button type="button" className="dots-icon-button dots-info-close" aria-label="Close details" onClick={onClose}><X aria-hidden="true" /></button> : null}
     <div className="dots-info-identity">
-      <img src={dotArtwork(dot)} alt="" width="48" height="48" />
+      <DotAvatar character={dot.appearance.character} mood={working ? "working" : "idle"} size={52} motion={visible ? "on" : "off"} />
       <div><strong>{dot.name}</strong><span>{dotActiveLabel(lastActiveAt, working, now)}</span></div>
     </div>
+    <p className="dots-info-personality"><strong>{dotPersonalities[dot.appearance.character].archetype}</strong>
+      {dotPersonalities[dot.appearance.character].summary}</p>
     <div className="dots-info-actions">
       <button type="button" onClick={onCall} disabled={Boolean(callDisabledReason)} title={callDisabledReason ?? `Call ${dot.name}`}><Phone aria-hidden="true" />Call</button>
       {slack?.configured ? <button type="button" title={slackLinked ? "Open Slack" : "Link Slack in Settings → Dots"} onClick={() => {

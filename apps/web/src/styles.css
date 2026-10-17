@@ -3541,7 +3541,7 @@ body[data-color-mode="light"] .icon-action-manager {
 
 .mobile-action-sheet {
   width: min(100%, 30rem);
-  max-height: min(78vh, 42rem);
+  max-height: min(78dvh, 42rem);
   border: 1px solid #334042;
   border-radius: 8px 8px 0 0;
   background: #141719;
@@ -3555,6 +3555,7 @@ body[data-color-mode="light"] .icon-action-manager {
 .mobile-action-sheet > header {
   min-width: 0;
   min-height: 3rem;
+  touch-action: none;
   border-bottom: 1px solid #2a3032;
   padding: 0.55rem 0.65rem;
   display: flex;
@@ -5559,6 +5560,17 @@ body[data-color-mode="light"] .icon-action-manager {
   :root[data-ui-background="aurora"] .room-runtime-stack::after {
     animation: none;
   }
+}
+/* Glass Planet background (rendered from logo/liquid-glass-planet.html). Static, so glass blur above it stays cheap. */
+:root[data-ui-background="liquid-glass"] .room-runtime-stack::before {
+  background: url("/brand/liquid-glass-planet-dark.webp") center / cover no-repeat;
+  opacity: 1;
+  filter: none;
+  transform: none;
+  will-change: auto;
+}
+:root[data-ui-background="liquid-glass"][data-color-mode="light"] .room-runtime-stack::before {
+  background-image: url("/brand/liquid-glass-planet-light.webp");
 }
 /* Aurora Neon icon pack (aurora-icons.tsx): soft glow, darker ink stops in light mode. */
 svg.space-aurora-icon {
@@ -7777,6 +7789,19 @@ svg.space-aurora-icon {
   width: 0.9rem;
   height: 0.9rem;
   flex: 0 0 auto;
+}
+
+.browser-tab > button:first-child .browser-tab-account {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: 0 0 auto;
+  font-size: 0.55rem;
+}
+
+.account-menu-scope {
+  margin-left: 0.4rem;
+  color: var(--text-muted, #a7a59e);
+  font-size: 0.68rem;
 }
 
 .browser-tab > button:first-child span {
@@ -12049,16 +12074,6 @@ svg.space-aurora-icon {
   overflow-wrap: anywhere;
 }
 
-.terminal-upload-strip {
-  min-width: 0;
-  display: flex;
-  gap: 0.45rem;
-  overflow-x: auto;
-  margin: 0.55rem 0.65rem 0;
-  padding-bottom: 0.1rem;
-  scrollbar-width: thin;
-}
-
 .terminal-stage {
   position: relative;
   flex-direction: column;
@@ -12070,6 +12085,22 @@ svg.space-aurora-icon {
   isolation: isolate;
 }
 
+/* CLI photos: trigger, gallery popover and viewer. Every color comes from the active theme
+   (Modern tokens first, then the classic room tokens), so theme, accent and color mode follow. */
+.terminal-upload-preview-picker,
+.terminal-upload-modal {
+  --photo-surface: var(--modern-surface, var(--room-surface, #151718));
+  --photo-raised: var(--modern-surface-raised, var(--room-bg, #101112));
+  --photo-border: var(--modern-border, var(--room-border, #2f3335));
+  --photo-border-strong: var(--modern-border-strong, var(--room-border, #3d4346));
+  --photo-text: var(--modern-text, var(--room-text, #ebe7dc));
+  --photo-muted: var(--modern-muted, var(--room-muted, #a7a59e));
+  --photo-accent: var(--modern-accent, var(--room-accent, #6db7aa));
+  --photo-on-accent: var(--modern-on-accent, #071b19);
+  --photo-danger: var(--modern-danger, #ff7a8c);
+  --photo-shadow: var(--modern-shadow, 0 14px 38px rgba(0, 0, 0, 0.32));
+}
+
 .terminal-upload-preview-picker {
   position: absolute;
   top: 0.45rem;
@@ -12077,40 +12108,37 @@ svg.space-aurora-icon {
   z-index: 14;
 }
 
-.terminal-upload-preview-trigger {
-  width: 1.75rem;
-  height: 1.75rem;
+/* .terminal-stage prefixes outrank the room theme's generic `.space-shell[data-room-theme] button` rules. */
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-preview-trigger {
+  position: relative;
+  width: 1.85rem;
+  height: 1.85rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  position: relative;
-  border: 1px solid rgba(126, 196, 181, 0.38);
-  border-radius: 7px;
-  background: rgba(12, 17, 17, 0.94);
-  color: #d9e6e2;
   padding: 0;
-  box-shadow: 0 0.35rem 1rem rgba(0, 0, 0, 0.3);
+  border: 1px solid color-mix(in srgb, var(--photo-accent) 34%, var(--photo-border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--photo-surface) 90%, transparent);
+  color: var(--photo-text);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(10px);
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 
-.terminal-upload-preview-trigger:is(:hover, :focus-visible, .is-open):not(:disabled) {
-  border-color: rgba(126, 196, 181, 0.7);
-  background: rgba(18, 25, 25, 0.96);
-  color: #ffffff !important;
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-preview-trigger:is(:hover, :focus-visible, .is-open):not(:disabled) {
+  border-color: var(--photo-accent);
+  background: color-mix(in srgb, var(--photo-accent) 18%, var(--photo-surface));
+  color: var(--photo-accent);
 }
 
-.terminal-upload-preview-trigger:focus-visible {
-  outline: 2px solid #78c8b8;
-  outline-offset: 1px;
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-preview-trigger:focus-visible {
+  outline: 2px solid var(--photo-accent);
+  outline-offset: 2px;
 }
 
-.terminal-upload-preview-trigger.is-open {
-  border-color: #78c8b8;
-  background: rgba(22, 32, 31, 0.98);
-}
-
-.terminal-upload-preview-trigger:disabled {
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-preview-trigger:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -12118,115 +12146,449 @@ svg.space-aurora-icon {
 .terminal-upload-preview-trigger svg {
   display: block;
   flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
   color: currentColor;
-}
-
-.terminal-upload-preview-trigger:is(:hover, :focus-visible, .is-open):not(:disabled) svg {
-  color: #ffffff !important;
-  stroke: #ffffff !important;
 }
 
 .terminal-upload-trigger-badge {
   position: absolute;
-  top: -0.25rem;
-  right: -0.25rem;
-  min-width: 0.85rem;
-  height: 0.85rem;
-  padding: 0 0.18rem;
-  border-radius: 9999px;
-  background: #23856d;
-  color: #f1ece2;
+  top: -0.4rem;
+  right: -0.4rem;
+  min-width: 1.05rem;
+  height: 1.05rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.25rem;
+  border: 2px solid var(--photo-surface);
+  border-radius: 999px;
+  background: var(--photo-accent);
+  color: var(--photo-on-accent);
   font-family: Inter, system-ui, sans-serif;
-  font-size: 0.56rem;
-  font-weight: 700;
-  line-height: 0.85rem;
-  text-align: center;
-  border: 1px solid rgba(12, 17, 17, 0.94);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  font-size: 0.58rem;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
 
-.terminal-upload-preview-popover {
+.terminal-stage .terminal-upload-preview-popover {
   position: absolute;
-  top: calc(100% + 0.35rem);
+  top: calc(100% + 0.45rem);
   left: 0;
   z-index: 15;
+  width: max-content;
+  max-width: calc(100cqw - 1.2rem);
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid var(--photo-border-strong);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--photo-surface) 94%, transparent);
+  color: var(--photo-text);
+  box-shadow: var(--photo-shadow), 0 0 0 1px color-mix(in srgb, var(--photo-accent) 8%, transparent);
+  backdrop-filter: blur(14px) saturate(1.15);
+  transform-origin: top left;
+  animation: terminal-upload-pop 140ms ease-out;
 }
 
 .terminal-upload-popover-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.3rem 0.5rem;
-  border-bottom: 1px solid rgba(126, 196, 181, 0.22);
-  gap: 0.5rem;
-  background: rgba(18, 25, 25, 0.98);
-  border-top-left-radius: 7px;
-  border-top-right-radius: 7px;
+  gap: 0.75rem;
+  padding-left: 0.2rem;
 }
 
 .terminal-upload-popover-title {
-  font-size: 0.72rem;
+  color: var(--photo-text);
+  font-size: 0.78rem;
   font-weight: 700;
-  color: #c4d7d3;
+  letter-spacing: 0.01em;
 }
 
-.terminal-upload-popover-clear {
-  border: none;
-  background: transparent;
-  color: #f87171;
-  cursor: pointer;
-  padding: 0.2rem 0.35rem;
-  border-radius: 4px;
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-popover-clear {
+  min-height: 1.75rem;
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  font-size: 0.68rem;
+  gap: 0.35rem;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--photo-danger);
+  font-size: 0.7rem;
   font-weight: 600;
-  transition: color 0.15s ease, background 0.15s ease;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-.terminal-upload-popover-clear:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.18);
-  color: #fca5a5;
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-popover-clear:is(:hover, :focus-visible):not(:disabled) {
+  border-color: color-mix(in srgb, var(--photo-danger) 45%, transparent);
+  background: color-mix(in srgb, var(--photo-danger) 14%, transparent);
+  color: var(--photo-danger);
 }
 
-.terminal-upload-popover-clear:disabled {
-  opacity: 0.35;
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-popover-clear:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
+}
+
+.terminal-upload-pages {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--photo-muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-pages button {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--photo-border);
+  border-radius: 9px;
+  background: var(--photo-raised);
+  color: var(--photo-text);
+  cursor: pointer;
+}
+
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-pages button:is(:hover, :focus-visible):not(:disabled) {
+  border-color: var(--photo-accent);
+  color: var(--photo-accent);
+}
+
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-pages button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* One row that scrolls sideways: wrapped rows would be clipped by the short terminal stage. */
+.terminal-upload-strip-floating {
+  --terminal-upload-preview-size: clamp(4.9rem, 13vw, 6.25rem);
+  --terminal-upload-badge-size: 1.45rem;
+  --terminal-upload-badge-offset: 0.35rem;
+  max-width: 100%;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: var(--terminal-upload-preview-size);
+  grid-template-columns: repeat(auto-fit, minmax(var(--terminal-upload-preview-size), var(--terminal-upload-preview-size)));
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0.15rem 0.15rem 0.3rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--photo-accent) 45%, transparent) transparent;
 }
 
 .terminal-upload-preview {
   position: relative;
+  width: var(--terminal-upload-preview-size);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--photo-border);
+  border-radius: 10px;
+  background: var(--photo-raised);
+  overflow: hidden;
+  scroll-snap-align: start;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.terminal-upload-preview-delete {
+.terminal-upload-preview:is(:hover, :focus-within) {
+  border-color: var(--photo-accent);
+  box-shadow: inset 0 0 0 1px var(--photo-accent);
+}
+
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-open {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: zoom-in;
+  overflow: hidden;
+}
+
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-open:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.terminal-upload-open img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  display: block;
+  object-fit: cover;
+  background: var(--photo-raised);
+  transition: transform 0.2s ease;
+}
+
+/* Shimmer until the photo has loaded (markUploadImageLoaded sets data-loaded). */
+.terminal-upload-open img:not([data-loaded]) {
+  background: linear-gradient(100deg, var(--photo-raised) 35%, color-mix(in srgb, var(--photo-accent) 16%, var(--photo-raised)) 50%, var(--photo-raised) 65%) 100% 0 / 300% 100%;
+  animation: terminal-upload-shimmer 1.2s linear infinite;
+}
+
+.terminal-upload-preview:hover .terminal-upload-open img {
+  transform: scale(1.05);
+}
+
+.terminal-stage .terminal-upload-index,
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-preview-delete {
   position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 1.15rem;
-  height: 1.15rem;
-  border-radius: 9999px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(0, 0, 0, 0.75);
-  color: #fca5a5;
-  display: none;
+  width: var(--terminal-upload-badge-size);
+  min-width: var(--terminal-upload-badge-size);
+  height: var(--terminal-upload-badge-size);
+  min-height: 0;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
-  cursor: pointer;
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+}
+
+.terminal-stage .terminal-upload-index {
+  bottom: var(--terminal-upload-badge-offset);
+  left: var(--terminal-upload-badge-offset);
+  z-index: 1;
+  border: 1px solid color-mix(in srgb, var(--photo-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--photo-surface) 84%, transparent);
+  color: var(--photo-text);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* Hidden until hover or keyboard focus; always shown on touch screens, which cannot hover. */
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-preview-delete {
+  top: var(--terminal-upload-badge-offset);
+  right: var(--terminal-upload-badge-offset);
   z-index: 2;
-  transition: background 0.15s ease, color 0.15s ease;
+  border: 1px solid color-mix(in srgb, var(--photo-danger) 50%, transparent);
+  background: color-mix(in srgb, var(--photo-surface) 84%, transparent);
+  color: var(--photo-danger);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 
-.terminal-upload-preview:hover .terminal-upload-preview-delete,
-.terminal-upload-preview-delete:focus-visible {
-  display: inline-flex;
+.terminal-stage .terminal-upload-preview:is(:hover, :focus-within) .terminal-upload-preview-delete {
+  opacity: 1;
+  transform: none;
 }
 
-.terminal-upload-preview-delete:hover {
-  background: rgba(220, 38, 38, 0.9);
+@media (hover: none) {
+  .terminal-stage .terminal-upload-preview-picker .terminal-upload-preview-delete {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.terminal-stage .terminal-upload-preview-picker .terminal-upload-preview-delete:is(:hover, :focus-visible):not(:disabled) {
+  border-color: var(--photo-danger);
+  background: var(--photo-danger);
   color: #ffffff;
+}
+
+.terminal-upload-preview-delete svg {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.attachment-modal.terminal-upload-modal {
+  z-index: 1100;
+  background: color-mix(in srgb, var(--modern-bg, var(--room-bg, #08090a)) 80%, transparent);
+  backdrop-filter: blur(12px) saturate(1.1);
+  animation: terminal-upload-fade 160ms ease-out;
+}
+
+.terminal-upload-modal .terminal-upload-modal-body {
+  /* Reserve an outside lane for each arrow, including on narrow screens. */
+  max-width: min(72rem, calc(100vw - 8rem));
+  min-width: min(18rem, calc(100vw - 8rem));
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.6rem;
+  border: 1px solid var(--photo-border-strong);
+  border-radius: 16px;
+  background: var(--photo-surface);
+  color: var(--photo-text);
+  box-shadow: var(--photo-shadow), 0 0 0 1px color-mix(in srgb, var(--photo-accent) 10%, transparent);
+  animation: terminal-upload-zoom 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.terminal-upload-modal-toolbar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.terminal-upload-modal .terminal-upload-modal-label {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.32rem 0.68rem;
+  border: 1px solid color-mix(in srgb, var(--photo-accent) 42%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--photo-accent) 14%, transparent);
+  color: var(--photo-text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.terminal-upload-modal-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--photo-muted);
+  font-size: 0.74rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-upload-modal :is(.terminal-upload-modal-delete, .terminal-upload-modal-close) {
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--photo-border);
+  border-radius: 10px;
+  background: var(--photo-raised);
+  color: var(--photo-text);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.terminal-upload-modal .terminal-upload-modal-close:is(:hover, :focus-visible) {
+  border-color: var(--photo-accent);
+  background: color-mix(in srgb, var(--photo-accent) 16%, var(--photo-raised));
+  color: var(--photo-accent);
+}
+
+.terminal-upload-modal .terminal-upload-modal-delete:is(:hover, :focus-visible) {
+  border-color: var(--photo-danger);
+  background: color-mix(in srgb, var(--photo-danger) 16%, var(--photo-raised));
+  color: var(--photo-danger);
+}
+
+.terminal-upload-modal-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 12rem;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--photo-raised);
+  overflow: hidden;
+}
+
+.terminal-upload-modal .terminal-upload-modal-stage img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(92vh - 4.4rem);
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+.terminal-upload-modal-spinner {
+  position: absolute;
+  inset: 0;
+  width: 1.6rem;
+  height: 1.6rem;
+  margin: auto;
+  color: var(--photo-accent);
+  animation: terminal-upload-spin 0.8s linear infinite;
+  pointer-events: none;
+}
+
+.terminal-upload-modal-stage img[data-loaded] + .terminal-upload-modal-spinner {
+  display: none;
+}
+
+/* Navigation stays outside the image frame, in reserved side lanes. */
+.terminal-upload-modal .terminal-upload-modal-body > .terminal-upload-modal-nav {
+  position: absolute;
+  top: 50%;
+  right: auto;
+  z-index: 1;
+  width: 2.75rem;
+  height: 2.75rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--photo-border-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--photo-surface) 90%, transparent);
+  color: var(--photo-text);
+  box-shadow: var(--photo-shadow);
+  backdrop-filter: blur(10px);
+  transform: translateY(-50%);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.terminal-upload-modal .terminal-upload-modal-nav.is-previous { left: -3.4rem; }
+.terminal-upload-modal .terminal-upload-modal-nav.is-next { right: -3.4rem; }
+
+.terminal-upload-modal .terminal-upload-modal-body > .terminal-upload-modal-nav:is(:hover, :focus-visible) {
+  border-color: var(--photo-accent);
+  background: color-mix(in srgb, var(--photo-accent) 18%, var(--photo-surface));
+  color: var(--photo-accent);
+}
+
+@keyframes terminal-upload-pop {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+}
+
+@keyframes terminal-upload-fade {
+  from { opacity: 0; }
+}
+
+@keyframes terminal-upload-zoom {
+  from { opacity: 0; transform: scale(0.96); }
+}
+
+@keyframes terminal-upload-shimmer {
+  to { background-position: 0 0; }
+}
+
+@keyframes terminal-upload-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-stage .terminal-upload-preview-popover,
+  .attachment-modal.terminal-upload-modal,
+  .terminal-upload-modal .terminal-upload-modal-body,
+  .terminal-upload-open img,
+  .terminal-upload-modal-spinner {
+    animation: none;
+    transition: none;
+  }
 }
 
 .terminal-floating-stack.has-upload-trigger {
@@ -14565,278 +14927,6 @@ svg.space-aurora-icon {
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
 }
 
-.terminal-upload-strip-floating {
-  --terminal-upload-preview-size: clamp(4.9rem, 13vw, 6.25rem);
-  --terminal-upload-badge-size: 1.45rem;
-  --terminal-upload-badge-offset: 0.35rem;
-  position: relative;
-  align-self: start;
-  width: fit-content;
-  max-width: 100%;
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: var(--terminal-upload-preview-size);
-  grid-template-columns: repeat(auto-fit, minmax(var(--terminal-upload-preview-size), var(--terminal-upload-preview-size)));
-  align-items: start;
-  margin: 0;
-  padding: 0.35rem;
-  gap: 0.35rem;
-  border: 1px solid #303437;
-  border-radius: 8px;
-  background: rgba(14, 17, 17, 0.96);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.34);
-  overflow-y: hidden;
-  isolation: isolate;
-}
-
-.terminal-upload-strip-close {
-  position: absolute;
-  top: var(--terminal-upload-badge-offset);
-  right: var(--terminal-upload-badge-offset);
-  width: var(--terminal-upload-badge-size);
-  min-width: var(--terminal-upload-badge-size);
-  height: var(--terminal-upload-badge-size);
-  min-height: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(255, 209, 216, 0.22);
-  border-radius: 999px;
-  background: rgba(132, 46, 60, 0.96);
-  color: #fff3f5;
-  cursor: pointer;
-  padding: 0;
-  z-index: 3;
-}
-
-.terminal-upload-strip-close:hover {
-  border-color: rgba(255, 209, 216, 0.42);
-  background: rgba(162, 55, 72, 0.98);
-}
-
-.terminal-upload-strip-close svg {
-  width: 0.78rem;
-  height: 0.78rem;
-}
-
-.terminal-upload-preview {
-  position: relative;
-  flex: 0 0 var(--terminal-upload-preview-size);
-  width: var(--terminal-upload-preview-size);
-  min-width: 0;
-  margin: 0;
-  border: 1px solid #303437;
-  border-radius: 6px;
-  background: #101112;
-  padding: 0.35rem;
-  overflow: hidden;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
-}
-
-.terminal-upload-open {
-  position: relative;
-  display: block;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  cursor: zoom-in;
-  overflow: hidden;
-}
-
-.terminal-upload-open:focus-visible {
-  outline: 2px solid #6db7aa;
-  outline-offset: 2px;
-}
-
-.terminal-upload-index,
-.terminal-upload-remove {
-  position: absolute;
-  width: var(--terminal-upload-badge-size);
-  min-width: var(--terminal-upload-badge-size);
-  height: var(--terminal-upload-badge-size);
-  min-height: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  padding: 0;
-}
-
-.terminal-upload-index {
-  bottom: var(--terminal-upload-badge-offset);
-  left: var(--terminal-upload-badge-offset);
-  border: 1px solid rgba(240, 220, 174, 0.24);
-  background: rgba(70, 56, 24, 0.96);
-  color: #fff0cc;
-  font-size: 0.72rem;
-  font-weight: 700;
-  line-height: 1;
-  z-index: 1;
-}
-
-.terminal-upload-preview .terminal-upload-remove {
-  top: var(--terminal-upload-badge-offset);
-  right: var(--terminal-upload-badge-offset);
-  border: 1px solid rgba(255, 209, 216, 0.22);
-  background: rgba(132, 46, 60, 0.96);
-  color: #fff3f5;
-  cursor: pointer;
-  z-index: 2;
-}
-
-.space-shell[data-room-theme] .terminal-upload-strip-close,
-.space-shell[data-room-theme] .terminal-upload-preview .terminal-upload-remove {
-  border-color: rgba(255, 209, 216, 0.22);
-  background: rgba(132, 46, 60, 0.96);
-  color: #fff3f5;
-}
-
-.terminal-upload-preview .terminal-upload-remove:hover {
-  background: rgba(162, 55, 72, 0.98);
-}
-
-.terminal-upload-strip-close:focus-visible,
-.terminal-upload-preview .terminal-upload-remove:focus-visible,
-.space-shell[data-room-theme] .terminal-upload-strip-close:hover:not(:disabled),
-.space-shell[data-room-theme] .terminal-upload-strip-close:focus-visible,
-.space-shell[data-room-theme] .terminal-upload-preview .terminal-upload-remove:hover:not(:disabled),
-.space-shell[data-room-theme] .terminal-upload-preview .terminal-upload-remove:focus-visible {
-  border-color: rgba(255, 209, 216, 0.42);
-  background: rgba(162, 55, 72, 0.98);
-}
-
-.terminal-upload-remove svg {
-  width: 0.78rem;
-  height: 0.78rem;
-}
-
-.terminal-upload-open img {
-  width: 100%;
-  aspect-ratio: 1 / 1;
-  display: block;
-  border-radius: 4px;
-  object-fit: cover;
-  background: #090b0c;
-  transition: transform 160ms ease;
-}
-
-.terminal-upload-open:hover img {
-  transform: scale(1.03);
-}
-
-.terminal-upload-modal {
-  z-index: 1100;
-}
-
-.terminal-upload-modal-body {
-  /* Reserve an outside lane for each arrow, including on narrow screens. */
-  max-width: min(72rem, calc(100vw - 8rem));
-  min-width: min(12rem, calc(100vw - 8rem));
-  padding-top: 2.8rem;
-}
-
-.terminal-upload-modal-close,
-.terminal-upload-modal-body > .terminal-upload-modal-close {
-  position: absolute;
-  top: 0.9rem;
-  right: 0.9rem;
-  width: 1.8rem;
-  height: 1.8rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(232, 227, 216, 0.18);
-  border-radius: 999px;
-  background: rgba(9, 11, 12, 0.86);
-  color: #efe9dc;
-  cursor: pointer;
-  z-index: 2;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.terminal-upload-modal-close:hover,
-.terminal-upload-modal-body > .terminal-upload-modal-close:hover {
-  background: rgba(33, 36, 38, 0.96);
-}
-
-.terminal-upload-modal-close svg,
-.terminal-upload-modal-body > .terminal-upload-modal-close svg {
-  width: 15px;
-  height: 15px;
-}
-
-.terminal-upload-modal-delete,
-.terminal-upload-modal-body > .terminal-upload-modal-delete {
-  position: absolute;
-  top: 0.9rem;
-  right: 3.1rem;
-  width: 1.8rem;
-  height: 1.8rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(232, 227, 216, 0.18);
-  border-radius: 999px;
-  background: rgba(9, 11, 12, 0.86);
-  color: #efe9dc;
-  cursor: pointer;
-  z-index: 2;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.terminal-upload-modal-delete:hover,
-.terminal-upload-modal-body > .terminal-upload-modal-delete:hover {
-  background: rgba(220, 38, 38, 0.85);
-  color: #ffffff;
-}
-
-.terminal-upload-modal-delete svg,
-.terminal-upload-modal-body > .terminal-upload-modal-delete svg {
-  width: 15px;
-  height: 15px;
-}
-
-/* Navigation stays outside the image frame, in reserved side lanes. */
-.terminal-upload-modal-body > .terminal-upload-modal-nav {
-  position: absolute;
-  top: 50%;
-  right: auto;
-  transform: translateY(-50%);
-  display: grid;
-  place-items: center;
-  width: 2.75rem;
-  height: 2.75rem;
-  border: 1px solid rgba(232, 227, 216, 0.35);
-  border-radius: 999px;
-  background: rgba(9, 11, 12, 0.86);
-  color: #efe9dc;
-  cursor: pointer;
-  z-index: 1;
-}
-.terminal-upload-modal-nav.is-previous { left: -3.25rem; }
-.terminal-upload-modal-nav.is-next { right: -3.25rem; }
-.terminal-upload-modal-nav:hover { background: #212426; }
-.terminal-upload-pages { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-.terminal-upload-pages button { min-width: 2.75rem; min-height: 2.75rem; }
-
-.terminal-upload-modal-label {
-  position: absolute;
-  top: 0.9rem;
-  left: 0.9rem;
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid rgba(232, 227, 216, 0.12);
-  border-radius: 999px;
-  background: rgba(9, 11, 12, 0.82);
-  color: #efe9dc;
-  padding: 0.28rem 0.62rem;
-  font-size: 0.72rem;
-  font-weight: 700;
-  line-height: 1;
-}
-
 .terminal-viewport {
   flex: 1 1 auto;
   min-width: 0;
@@ -15046,8 +15136,8 @@ svg.space-aurora-icon {
   background: var(--room-surface-soft);
 }
 
-/* The Rooms dock styles its own controls from the dock tokens. */
-.space-shell[data-room-theme] button:where(:not(.side-surface-room-panel *)),
+/* The Rooms dock and the copilot panes (all but their terminal) style their own controls from their own tokens. */
+.space-shell[data-room-theme] button:where(:not(.side-surface-room-panel *, .jc-pane :not(.jc-panel-terminal *), .jc-launch *)),
 .space-shell[data-room-theme] .pane-card {
   border-color: var(--room-border);
   background: var(--room-surface);
@@ -15076,8 +15166,9 @@ svg.space-aurora-icon {
   color: color-mix(in srgb, var(--agent-accent, var(--room-accent)) 88%, #fff5ea);
 }
 
-.space-shell[data-room-theme] button:hover:not(:disabled):where(:not(.side-surface-room-panel *)),
-.space-shell[data-room-theme] button:focus-visible:where(:not(.side-surface-room-panel *)),
+/* The Live orb is excluded: an accent border on it reads as a frame around the sphere. */
+.space-shell[data-room-theme] button:hover:not(:disabled):where(:not(.side-surface-room-panel *, .jc-pane :not(.jc-panel-terminal *), .jc-launch *, .room-live-rail-button)),
+.space-shell[data-room-theme] button:focus-visible:where(:not(.side-surface-room-panel *, .jc-pane :not(.jc-panel-terminal *), .jc-launch *, .room-live-rail-button)),
 .space-shell[data-room-theme] .pane-card.is-target {
   border-color: var(--room-accent);
 }
@@ -15728,13 +15819,6 @@ svg.space-aurora-icon {
   min-height: 2.15rem;
 }
 
-.space-shell[data-shell-mode="mobile"][data-mobile-pane-focus="true"] .board {
-  grid-template-rows: minmax(0, 1fr);
-  gap: 0;
-  overflow: hidden;
-  padding: 0;
-}
-
 .space-shell[data-shell-mode="mobile"] .toolbar-actions,
 .space-shell[data-shell-mode="mobile"] .pane-actions {
   flex-wrap: wrap;
@@ -15885,19 +15969,6 @@ svg.space-aurora-icon {
 .space-shell[data-shell-mode="mobile"] .room-live-rail-button,
 .space-shell[data-shell-mode="mobile"] .room-toolbar-collapsed > button {
   -webkit-touch-callout: none;
-}
-
-.space-shell[data-shell-mode="mobile"][data-mobile-pane-focus="true"] .pane-grid {
-  min-height: 0;
-  grid-auto-rows: minmax(0, 1fr);
-  gap: 0;
-  overflow: hidden;
-}
-
-.space-shell[data-shell-mode="mobile"][data-mobile-pane-focus="true"] .pane-card.is-target {
-  min-height: 0;
-  border-radius: 12px;
-  overflow: hidden;
 }
 
 .space-shell[data-shell-mode="mobile"] .pane-grid.maximized .pane-card.is-target {
@@ -17523,36 +17594,262 @@ svg.space-aurora-icon {
   cursor: grabbing;
 }
 
-/* Tasks dock: layout, toolbar, filters, cards and editor come from the dock kit. */
-.task-card-objective {
+/* Tasks dock (Google Tasks look): layout, toolbar and editor come from the dock kit; rows, groups and chips are here. */
+.task-dock .dock-kit-task-add {
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
   width: 100%;
-  max-height: 7.25rem;
+  border: 0;
+  border-radius: var(--dock-radius-sm);
+  background: transparent;
+  color: var(--dock-accent);
+  padding: 0.5rem 0.35rem;
+  font: inherit;
+  font-size: var(--dock-font);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-dock .dock-kit-task-add:hover,
+.task-dock .dock-kit-task-add:focus-visible {
+  background: var(--dock-accent-soft);
+}
+
+.task-dock .dock-kit-task-add svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.task-editor-when {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.task-editor-when > * {
+  flex: 1 1 7.5rem;
+  min-width: 0;
+}
+
+.task-editor-hint {
+  color: var(--dock-muted);
+  font-size: 0.72rem;
+}
+
+.task-group {
+  display: grid;
+  min-width: 0;
+}
+
+.task-group-title {
+  margin: 0.5rem 0 0.15rem;
+  padding: 0 0.35rem;
+  color: var(--dock-muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.task-group.is-overdue .task-group-title {
+  color: var(--dock-danger);
+}
+
+.task-dock .dock-kit-task-group-toggle {
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  border: 0;
+  background: transparent;
+  color: var(--dock-muted);
+  padding: 0.35rem;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.task-dock .dock-kit-task-group-toggle svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.task-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.6rem;
+  border-radius: var(--dock-radius-sm);
+  padding: 0.55rem 0.35rem;
+  color: var(--dock-text);
+}
+
+.task-row + .task-row {
+  border-top: 1px solid color-mix(in srgb, var(--dock-border) 60%, transparent);
+}
+
+.task-row:hover,
+.task-row:focus-within {
+  background: var(--dock-soft);
+}
+
+.task-dock .dock-kit-task-check {
+  min-height: 0;
+  position: relative;
+  flex: none;
+  padding: 0;
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0.1rem 0 0;
+  border: 2px solid var(--dock-muted);
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.task-dock .dock-kit-task-check:hover::after,
+.task-dock .dock-kit-task-check[aria-pressed="true"]::after {
+  content: "";
+  position: absolute;
+  left: 0.3rem;
+  top: 0.1rem;
+  width: 0.25rem;
+  height: 0.5rem;
+  border: solid var(--dock-muted);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.task-dock .dock-kit-task-check[aria-pressed="true"] {
+  border-color: var(--dock-accent);
+  background: var(--dock-accent);
+}
+
+.task-dock .dock-kit-task-check[aria-pressed="true"]::after {
+  border-color: var(--dock-on-accent);
+}
+
+.task-dock .dock-kit-task-check:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 2px;
+}
+
+.task-row-body {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.task-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.task-row.is-done .task-row-title {
+  color: var(--dock-muted);
+  text-decoration: line-through;
+}
+
+.task-dock .dock-kit-task-details {
+  min-height: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
   border: 0;
-  border-radius: 6px;
-  background: var(--room-terminal-bg, #101112);
-  color: var(--room-text, #f4efe5);
-  padding: 0.6rem;
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
-  font-size: 0.72rem;
-  line-height: 1.45;
+  background: transparent;
+  color: var(--dock-muted);
+  padding: 0;
+  font: inherit;
+  font-size: 0.76rem;
+  line-height: 1.4;
   text-align: left;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   cursor: copy;
 }
 
-.task-card-objective:hover,
-.task-card-objective:focus-visible {
-  background: color-mix(in srgb, var(--room-accent, #6db7aa) 9%, var(--room-terminal-bg, #101112));
+.task-dock .dock-kit-task-details.expanded {
+  display: block;
 }
 
-.task-card-objective.expanded {
-  max-height: none;
-}
-
-.task-expand {
+.task-dock .dock-kit-task-more {
+  min-height: 0;
   justify-self: start;
+  border: 0;
+  background: transparent;
+  color: var(--dock-accent);
+  padding: 0;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.task-row-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+}
+
+.task-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+  border: 1px solid var(--dock-border);
+  border-radius: 999px;
+  color: var(--dock-text);
+  padding: 0.1rem 0.5rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-chip svg {
+  flex: none;
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+.task-chip.is-plain {
+  border-color: transparent;
+  color: var(--dock-muted);
+  padding-inline: 0.15rem;
+}
+
+.task-chip.is-overdue {
+  border-color: var(--dock-danger);
+  color: var(--dock-danger);
+}
+
+.task-row-actions {
+  display: flex;
+  gap: 0.15rem;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.task-row:hover .task-row-actions,
+.task-row:focus-within .task-row-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .task-row-actions {
+    opacity: 1;
+  }
 }
 
 .task-copied {
@@ -21594,22 +21891,7 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
   color: #17232d;
 }
 
-/* 3. Terminal header photos and account triggers in Light Mode */
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .terminal-upload-preview-trigger {
-  border-color: #d2dce4;
-  background: #ffffff;
-  color: #17232d;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-}
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .terminal-upload-preview-trigger:is(:hover, :focus-visible, .is-open):not(:disabled) {
-  border-color: #b7c6d1;
-  background: #eef3f6;
-  color: #17232d !important;
-}
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .terminal-upload-preview-trigger:is(:hover, :focus-visible, .is-open):not(:disabled) svg {
-  color: #17232d !important;
-  stroke: #17232d !important;
-}
+/* 3. Terminal header account triggers in Light Mode */
 
 :is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .terminal-gemini-account-trigger {
   border-color: #d2dce4;
@@ -21942,156 +22224,6 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
 }
 
 /* 14. Agent Session History Load More Button Light Mode */
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .attachment-modal.terminal-upload-modal {
-  background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(6px);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-modal-body {
-  border-color: #d1d5db;
-  background: #ffffff;
-  color: #111827;
-  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.18);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-modal-close {
-  border: 1px solid #d1d5db;
-  background: #f3f4f6;
-  color: #111827;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-modal-close:hover {
-  background: #ffffff;
-  border-color: #0284c7;
-  color: #0284c7;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-modal-close svg {
-  stroke: currentColor;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-modal-delete {
-  border: 1px solid #d1d5db;
-  background: #f3f4f6;
-  color: #111827;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-modal-delete:hover {
-  background: #ffffff;
-  border-color: #ef4444;
-  color: #ef4444;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-modal-delete svg {
-  stroke: currentColor;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-modal-label {
-  border: 1px solid #e5e7eb;
-  background: rgba(255, 255, 255, 0.94);
-  color: #111827;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  backdrop-filter: blur(8px);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-modal-body > .terminal-upload-modal-nav {
-  border: 1px solid #d1d5db;
-  background: rgba(255, 255, 255, 0.95);
-  color: #111827;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-  backdrop-filter: blur(8px);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-modal-body > .terminal-upload-modal-nav:hover {
-  background: #ffffff;
-  border-color: #0284c7;
-  color: #0284c7;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-modal-body > .terminal-upload-modal-nav svg {
-  stroke: currentColor;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-preview-trigger {
-  border: 1px solid #d1d5db;
-  background: #ffffff;
-  color: #111827;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-preview-trigger:is(:hover, :focus-visible, .is-open):not(:disabled) {
-  border-color: #0284c7;
-  background: #f3f4f6;
-  color: #0284c7 !important;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-preview-trigger svg {
-  color: #111827;
-  stroke: currentColor;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-preview-trigger:is(:hover, :focus-visible, .is-open):not(:disabled) svg {
-  color: #0284c7 !important;
-  stroke: #0284c7 !important;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-trigger-badge {
-  border-color: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-strip-floating {
-  border: 1px solid #d1d5db;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
-  backdrop-filter: blur(12px);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-preview {
-  border: 1px solid #e5e7eb;
-  background: #f3f4f6;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-preview:hover {
-  border-color: #0284c7;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-index {
-  border: 1px solid #d1d5db;
-  background: rgba(255, 255, 255, 0.95);
-  color: #111827;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-strip-close {
-  border-color: rgba(239, 68, 68, 0.3);
-  background: #ef4444;
-  color: #ffffff;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-strip-close:hover {
-  background: #dc2626;
-  border-color: rgba(239, 68, 68, 0.5);
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-pages {
-  color: #4b5563;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-pages button {
-  border: 1px solid #e5e7eb;
-  background: #ffffff;
-  color: #111827;
-}
-
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .terminal-upload-pages button:hover:not(:disabled) {
-  background: #f3f4f6;
-  border-color: #d1d5db;
-}
 
 :is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .quick-links-popover {
   border-color: #d1d5db;

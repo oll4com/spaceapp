@@ -129,6 +129,10 @@ describe("useAppNotices", () => {
     expect(log).toHaveBeenCalledWith("[AI-Live-Debug][ERROR] Live failed");
     act(() => { vi.advanceTimersByTime(4_500); });
     expect(result.current.liveDebugToast).toBeNull();
+    act(() => { result.current.showLiveDebug("AI Live button tapped...", "info"); });
+    expect(log).toHaveBeenCalledWith("[AI-Live-Debug][INFO] AI Live button tapped...");
+    expect(result.current.liveDebugToast).toBeNull();
+    expect(result.current.liveDebugToast).toBeNull();
     act(() => { vi.advanceTimersByTime(500); });
     expect(result.current.clipboardNotice).toBeNull();
     log.mockRestore();

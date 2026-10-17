@@ -161,12 +161,18 @@ describe("Dot gateway routes", () => {
     expect((await call(server, "space.execute", { actions: [{ kind: "resource", operation: "ops.test", input: {} }] })).json())
       .toMatchObject({ status: "BLOCKED", statusReason: expect.stringMatching(/never available/) });
     expect((await call(server, "space.unknown")).json()).toMatchObject({ status: "BLOCKED", statusReason: expect.stringMatching(/Unknown tool/) });
-    expect((await call(server, "space.screenshot")).json()).toMatchObject({ status: "BLOCKED" });
     expect((await call(server, "resource.tasks.delete", { id: "task:1" })).json()).toMatchObject({ status: "BLOCKED", statusReason: expect.stringMatching(/approval/) });
     expect((await call(server, "resource.rooms.reorder", { input: { roomIds: [] } })).json()).toMatchObject({ status: "BLOCKED" });
     expect((await call(server, "space.execute", { actions: [{ kind: "resource", operation: "rooms.reorder", input: {} }] })).json())
       .toMatchObject({ status: "BLOCKED", statusReason: expect.stringMatching(/administrator/) });
     expect(value.callControl).not.toHaveBeenCalled();
+  });
+
+  it("captures the Dot's own room read-only through space_screenshot", async () => {
+    const { value } = deps();
+    const server = await app(value);
+    await call(server, "space.screenshot", { format: "png", viewport: "mobile" });
+    expect(vi.mocked(value.callControl).mock.calls[0]!.slice(1)).toEqual(["space_screenshot", { format: "png", viewport: "mobile", roomId: "room:own" }]);
   });
 
   it("keeps a USER Dot inside the owner's rooms", async () => {
@@ -471,4 +477,8 @@ it("builds Dot developer context from preferences without granting authority", (
   expect(own).toContain("Reply in the language the user writes in.");
   expect(own).toContain("Your private workspace: /opt/spaceapp/var/dots/workspaces/abc.");
   expect(own).toContain("computer.browser");
+  expect(own).not.toContain("Your personality");
+  const nova = dotDeveloperContext({ name: "Nova", appearance: { character: "star", accent: "amber" }, preferences: {} }, null);
+  expect(nova).toContain("Your personality: Warm encourager.");
+  expect(nova).toContain("- Strict, impatient or annoyed: Never takes it personally");
 });

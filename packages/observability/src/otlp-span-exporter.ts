@@ -26,7 +26,7 @@ export interface ServerSpan {
   attributes: Readonly<Record<string, string | number>>;
   error: boolean;
   /** OTLP SpanKind; existing API callers retain SERVER (2) by default. */
-  kind?: 0 | 1 | 2 | 3 | 4 | 5;
+  kind?: number;
   links?: readonly SpanLink[];
 }
 
@@ -81,7 +81,7 @@ function attributeValue(value: string | number) {
   return typeof value === "number" && Number.isInteger(value) ? { intValue: String(value) } : { stringValue: String(value) };
 }
 
-export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: string, scopeName = "space-api") {
+export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: string, scopeName = serviceName) {
   return {
     resourceSpans: [{
       resource: { attributes: [{ key: "service.name", value: { stringValue: serviceName } }] },
@@ -189,7 +189,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
 }
 
 /** The exporter configured by SPACE_OTEL_EXPORTER_OTLP_ENDPOINT, or null when export is off. */
-export function otlpSpanExporterFromEnv(env: NodeJS.ProcessEnv, serviceName: string, scopeName = "space-api"): SpanExporter | null {
+export function otlpSpanExporterFromEnv(env: NodeJS.ProcessEnv, serviceName: string, scopeName = serviceName): SpanExporter | null {
   const endpoint = env.SPACE_OTEL_EXPORTER_OTLP_ENDPOINT;
   return otlpTracesUrl(endpoint) ? createOtlpSpanExporter({ endpoint: endpoint!, serviceName, scopeName }) : null;
 }

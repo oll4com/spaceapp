@@ -1,3 +1,4 @@
+import { rollbackKeepingError } from "./rollback.js";
 import { createSpacePgPool } from "./space-store.js";
 import type {
   AppDiagnosticsSegmentKind,
@@ -1158,16 +1159,17 @@ export class PostgresAppDiagnosticsRepository implements AppDiagnosticsRepositor
 
   private async withTransaction<T>(operation: (client: PgClientLike) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     await client.query("BEGIN");
     try {
       const result = await operation(client);
       await client.query("COMMIT");
       return result;
     } catch (error) {
-      await client.query("ROLLBACK");
+      rollbackFailed = await rollbackKeepingError(client);
       throw error;
     } finally {
-      client.release?.();
+      client.release?.(rollbackFailed || undefined);
     }
   }
 }

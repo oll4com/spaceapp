@@ -23,6 +23,8 @@ export interface RoomAgentAutopilotOptions {
   getPane(paneId: string): Promise<Pane>;
   inspect(pane: Pane): Promise<RoomPaneObservation>;
   answer(pane: Pane, input: { expectedSessionId: string; answer: string; submit: boolean; expectedPromptFingerprint: string }): Promise<unknown>;
+  /** Starts a Room Agent turn that coordinates an overlap's panes; false while the Room Agent is busy (the sweep retries). */
+  coordinate?(event: RoomAgentEvent): Promise<boolean>;
   /** The model's raw reply to a decision prompt, or null when no model answered. */
   complete(systemPrompt: string, content: string): Promise<string | null>;
   onEvent?(event: RoomAgentEvent): Promise<void> | void;
@@ -36,6 +38,9 @@ const AUTOPILOT_KINDS = new Set<RoomAgentEvent["kind"]>(["WAITING"]);
 const REPEAT_WINDOW_MS = 10 * 60 * 1000;
 const MAX_ANSWER_CHARS = 500;
 const SCREEN_LINES = 40;
+const CONTINUES_PER_HOUR = 3;
+/** Typed into a CLI whose turn broke on a server error (operator decision 2026-10-15: the Room Agent continues the task). */
+export const AUTOPILOT_CONTINUE_PROMPT = "Continue the task: your last response was cut off by an API error.";
 
 export const autopilotSystemPrompt = [
   "You are the Space Room Agent. A CLI coding agent in one pane of the operator's room stopped at a question or an approval prompt.",
@@ -49,8 +54,18 @@ export const autopilotSystemPrompt = [
 
 /** The question as the pane shows it: its last non-blank lines (screen text is already redacted). */
 export function promptExcerpt(screen: string): string {
-  const text = screen.split("\n").map((line) => line.trimEnd()).filter((line) => line.trim()).slice(-8).join("\n");
-  return text.length > 600 ? `…${text.slice(-599)}` : text;
+  // A menu with described options runs ~16 lines, so 8 lines cut the question off; 1900 stays under the 2000-char detail column.
+  const text = screen.split("\n").map((line) => line.trimEnd()).filter((line) => line.trim()).slice(-24).join("\n");
+  return text.length > 1900 ? `…${text.slice(-1899)}` : text;
+}
+
+/**
+ * The CLI is idle at an empty prompt, so typed text starts a new turn. Typing into a draft would send the
+ * operator's half-written text, so only an empty prompt is ever typed into.
+ */
+export function atEmptyPrompt(observed: RoomPaneObservation): observed is RoomPaneObservation & { sessionId: string; promptFingerprint: string } {
+  const tail = (observed.text ?? "").split("\n").filter((line) => line.trim()).slice(-6).join("\n");
+  return Boolean(observed.sessionId && observed.promptFingerprint && observed.state === "IDLE" && /^[ \t\u00a0]*[❯›>][ \t\u00a0]*$/m.test(tail));
 }
 
 export function parseAutopilotDecision(raw: string | null): AutopilotDecision | null {
@@ -76,6 +91,7 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
   const inFlight = new Set<string>();
   const answered = new Map<string, number>();
   const roomAnswers = new Map<string, number[]>();
+  const continues = new Map<string, number[]>();
 
   async function settle(event: RoomAgentEvent, status: "HANDLED" | "ESCALATED", decision: string, question?: string) {
     const updated = await options.repository.updateEvent(event.eventId, { status, decision, ...(question ? { detail: question } : {}) }, ["OPEN"]);
@@ -83,7 +99,36 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
     return updated;
   }
 
+  /** A pane that stopped on a server error gets "continue" at its empty prompt, a few times an hour at most. */
+  async function continueStuck(event: RoomAgentEvent): Promise<RoomAgentEvent | null> {
+    if (!event.paneId) return settle(event, "ESCALATED", "Needs you: the pane is gone.");
+    if (!await options.repository.autopilotEnabled(event.roomId)) return settle(event, "ESCALATED", "Needs you: tell the pane to continue, or turn on auto-answer so the Room Agent does it.");
+    const pane = await options.getPane(event.paneId);
+    const observed = pane.mode === "TERMINAL" ? await options.inspect(pane) : null;
+    if (observed?.state === "RUNNING") return settle(event, "HANDLED", "The pane continued on its own.");
+    if (!observed || !atEmptyPrompt(observed)) {
+      return settle(event, "ESCALATED", "Needs you: the Room Agent could not find the pane's empty prompt to continue the task.");
+    }
+    const recent = (continues.get(pane.id) ?? []).filter((at) => at > now() - 60 * 60 * 1000);
+    if (recent.length >= CONTINUES_PER_HOUR) return settle(event, "ESCALATED", `Needs you: the pane stopped on an API error ${CONTINUES_PER_HOUR} times this hour.`);
+    try {
+      await options.answer(pane, { expectedSessionId: observed.sessionId, answer: AUTOPILOT_CONTINUE_PROMPT, submit: true, expectedPromptFingerprint: observed.promptFingerprint });
+    } catch (error) {
+      return settle(event, "ESCALATED", `Needs you: the Room Agent could not tell the pane to continue (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"}).`);
+    }
+    continues.set(pane.id, [...recent, now()]);
+    return settle(event, "HANDLED", "Told the pane to continue the task after the API error.");
+  }
+
   async function decide(event: RoomAgentEvent): Promise<RoomAgentEvent | null> {
+    // Colliding panes are coordinated by a full Room Agent turn, with its tools (operator decision 2026-10-15: automatic).
+    if (event.kind === "OVERLAP") {
+      if (!options.coordinate || !await options.repository.autopilotEnabled(event.roomId)) {
+        return settle(event, "ESCALATED", "Needs you: coordinate these panes, or turn on auto-answer so the Room Agent does it.");
+      }
+      return await options.coordinate(event) ? settle(event, "HANDLED", "The Room Agent is coordinating these panes.") : null;
+    }
+    if (event.kind === "STUCK") return continueStuck(event);
     if (!AUTOPILOT_KINDS.has(event.kind)) {
       const need = event.kind === "SIGN_IN" ? "Sign in to this CLI." : event.kind === "USAGE_LIMIT" ? "Switch the model or account, or wait for the limit to reset."
         : event.kind === "ERROR" ? "Look at the pane and restart it if needed." : "Look at the pane.";

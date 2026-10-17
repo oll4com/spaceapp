@@ -243,6 +243,10 @@
   gap: 0.6rem;
 }
 
+.account-quota-cells > .account-quota-cell:only-child {
+  grid-column: 1 / -1;
+}
+
 .account-quota-cell {
   --cell-color: #5d6669;
   display: grid;

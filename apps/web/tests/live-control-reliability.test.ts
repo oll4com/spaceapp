@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { clearLiveRoomCaches, describeLiveControlReceipt, executeLiveFunction } from "../src/features/live-pane/live-session.js";
+import { liveAnswerDeclines, noteLiveUserText, noteLiveUserTurn } from "../src/features/live-pane/live-command-origin.js";
 import { registerRoomPlaybackTarget } from "../src/features/room-agent/room-playback-control.js";
 import { api } from "../src/api.js";
 
 vi.mock("../src/api.js", () => ({ api: {
-  inspectControlMcp: vi.fn(), executeControlMcp: vi.fn(), reportLiveVoiceLog: vi.fn(async () => ({})),
+  inspectControlMcp: vi.fn(), executeControlMcp: vi.fn(), callControlMcpTool: vi.fn(), reportLiveVoiceLog: vi.fn(async () => ({})),
   cliModelSettingsStatus: vi.fn(), updateCliModelSettings: vi.fn(async () => ({})),
   watchesControlMcp: vi.fn(), updateRoomPaneLayout: vi.fn(), getLiveRoomActivity: vi.fn(),
   dashboardAgents: vi.fn(async () => ({ data: [], activity: {} })),
@@ -55,6 +56,76 @@ describe("Live action receipts and identity", () => {
     expect(result).toContain("layout unavailable");
     expect(result).not.toContain("State verified");
     expect(api.updateRoomPaneLayout).not.toHaveBeenCalled();
+  });
+  it("reports a failed stop instead of claiming the pane stopped, and sends only schema fields", async () => {
+    vi.mocked(api.executeControlMcp).mockResolvedValueOnce({ result: { structuredContent: { id: "operation:stop", status: "FAILED", results: [{ status: "FAILED", detail: "Session not attached" }] } } });
+    const result = await executeLiveFunction("space_stop_pane", '{"paneId":"pane:one","reason":"user asked"}', { roomId: "room:one", callbacks: {} });
+    expect(result).toContain("Session not attached");
+    expect(result).not.toContain("State verified");
+    expect(vi.mocked(api.executeControlMcp).mock.calls[0]?.[1][0]).toEqual({ kind: "pane", operation: "stop", target: { paneIds: ["pane:one"] }, when: "NOW" });
+  });
+  it("never runs tests, deploy or CLI access by voice", async () => {
+    const result = await executeLiveFunction("space_execute_mcp", JSON.stringify({ confirmed: true, actions: [{ kind: "resource", operation: "ops.deploy", input: {} }] }), { roomId: "room:one", callbacks: {} });
+    expect(result).toContain("never available by voice");
+    expect(api.executeControlMcp).not.toHaveBeenCalled();
+  });
+  it("asks for confirmation before a deletion or settings change and runs it once confirmed", async () => {
+    const remove = { kind: "resource", operation: "tasks.delete", id: "task:one", input: {} };
+    for (const action of [remove, { kind: "resource", operation: "settings.update", input: {} }, { kind: "clipboard", operation: "delete", id: "clip:one" }]) {
+      const pending = JSON.parse(await executeLiveFunction("space_execute_mcp", JSON.stringify({ actions: [action] }), { roomId: "room:one", callbacks: {} }));
+      expect(pending).toMatchObject({ code: "CONFIRMATION_REQUIRED", executed: false, actions: [{ operation: action.operation }] });
+    }
+    expect(api.executeControlMcp).not.toHaveBeenCalled();
+    // The model cannot confirm on the user's behalf: the user must answer after Live asked.
+    const early = JSON.parse(await executeLiveFunction("space_execute_mcp", JSON.stringify({ confirmed: true, actions: [remove] }), { roomId: "room:one", callbacks: {} }));
+    expect(early).toMatchObject({ code: "CONFIRMATION_REQUIRED", message: expect.stringContaining("has not answered yet") });
+    expect(api.executeControlMcp).not.toHaveBeenCalled();
+    noteLiveUserTurn(); noteLiveUserText("Ναι, σβήσ' το");
+    const done = await executeLiveFunction("space_execute_mcp", JSON.stringify({ confirmed: true, actions: [remove] }), { roomId: "room:one", callbacks: {} });
+    expect(done).toContain("space_execute completed");
+    expect(vi.mocked(api.executeControlMcp).mock.calls[0]?.[1]).toEqual([remove]);
+    // A confirmation is used once; the same deletion later asks again.
+    const again = JSON.parse(await executeLiveFunction("space_execute_mcp", JSON.stringify({ confirmed: true, actions: [remove] }), { roomId: "room:one", callbacks: {} }));
+    expect(again).toMatchObject({ code: "CONFIRMATION_REQUIRED" });
+    expect(api.executeControlMcp).toHaveBeenCalledTimes(1);
+  });
+  it.each(["Όχι, άσ' το", "no, don't", "Wait, cancel that"])("does not run a confirmed deletion when the user answered %s", async answer => {
+    const remove = { kind: "resource", operation: "files.delete", id: "artifact:one", input: {} };
+    await executeLiveFunction("space_execute_mcp", JSON.stringify({ actions: [remove] }), { roomId: "room:one", callbacks: {} });
+    noteLiveUserTurn(); noteLiveUserText(answer);
+    const declined = JSON.parse(await executeLiveFunction("space_execute_mcp", JSON.stringify({ confirmed: true, actions: [remove] }), { roomId: "room:one", callbacks: {} }));
+    expect(declined).toMatchObject({ code: "DECLINED", executed: false });
+    expect(api.executeControlMcp).not.toHaveBeenCalled();
+  });
+  it("reads a refusal in Greek or English, ignoring accents and case, and lets a yes through", () => {
+    for (const no of ["ΟΧΙ", "όχι ακόμα", "μην το σβήσεις", "άκυρο", "Περίμενε", "nope", "Do not delete it", "hold on"]) expect(liveAnswerDeclines(no)).toBe(true);
+    for (const yes of ["Ναι", "ναι, σβήσ' το", "yes please", "go ahead", "Do it", "ok delete it", "now"]) expect(liveAnswerDeclines(yes)).toBe(false);
+  });
+  it("runs a change before a later read of the same Live session, and reads without waiting for each other", async () => {
+    const order: string[] = [];
+    let finishOpen!: () => void;
+    vi.mocked(api.executeControlMcp).mockImplementationOnce(() => new Promise(resolve => { finishOpen = () => { order.push("change"); resolve({ result: { structuredContent: { status: "COMPLETED", results: [{ status: "COMPLETED" }] } } }); }; }));
+    vi.mocked(api.getLiveRoomActivity).mockImplementation(async () => { order.push("read"); return { roomId: "room:one", checkedAt: "now", activitySummary: {}, panes: [] } as any; });
+    const change = executeLiveFunction("space_execute_mcp", JSON.stringify({ actions: [{ kind: "resource", operation: "tasks.create", input: { title: "A" } }] }), { roomId: "room:one", callbacks: {}, callId: "session-a:1" });
+    const read = executeLiveFunction("space_inspect_activity", "{}", { roomId: "room:one", callbacks: {}, callId: "session-a:2" });
+    const otherSession = executeLiveFunction("space_inspect_activity", "{}", { roomId: "room:one", callbacks: {}, callId: "session-b:1" });
+    await otherSession;
+    expect(order).toEqual(["read"]);
+    await vi.waitFor(() => expect(finishOpen).toBeTypeOf("function"));
+    finishOpen();
+    await Promise.all([change, read]);
+    expect(order).toEqual(["read", "change", "read"]);
+  });
+  it("runs other Space actions, such as creating a task, without asking", async () => {
+    await executeLiveFunction("space_execute_mcp", JSON.stringify({ actions: [{ kind: "resource", operation: "tasks.create", input: { title: "Notes" } }] }), { roomId: "room:one", callbacks: {} });
+    expect(api.executeControlMcp).toHaveBeenCalledTimes(1);
+  });
+  it("reads any Space area through space_inspect with the user's filter", async () => {
+    vi.mocked(api.callControlMcpTool).mockResolvedValueOnce({ result: { structuredContent: { items: [{ id: "task:one", title: "Release notes" }] } } });
+    const result = JSON.parse(await executeLiveFunction("space_inspect_room", '{"section":"tasks","query":"release"}', { roomId: "room:one", callbacks: {} }));
+    expect(api.callControlMcpTool).toHaveBeenCalledExactlyOnceWith("space_inspect", { roomId: "room:one", section: "TASKS", query: "release" });
+    expect(result).toMatchObject({ status: "SUCCESS", section: "TASKS", data: { items: [{ title: "Release notes" }] } });
+    expect(api.inspectControlMcp).not.toHaveBeenCalled();
   });
   it("rejects all workspace actions after an ambiguous room switch, including explicit model-supplied targets", async () => {
     const result = await executeLiveFunction("space_execute_mcp", JSON.stringify({ roomId: "room:other", actions: [] }), { roomId: "room:old", getCommandRoom: () => undefined, callbacks: {} });

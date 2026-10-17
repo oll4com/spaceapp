@@ -40,6 +40,7 @@ export function MobileActionSheet({
   const toolbarSections = actionSections ?? [{ id: "toolbar", label: plainActions ? "Pane actions" : "Toolbar buttons", actions }];
   const dialogRef = useRef<HTMLElement>(null);
   const closeIntentRef = useRef<PopupCloseIntent>("auto");
+  const swipeStartYRef = useRef<number | null>(null);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -101,7 +102,15 @@ export function MobileActionSheet({
         onClick={(event) => event.stopPropagation()}
         onKeyDown={handleDialogKeyDown}
       >
-        <header>
+        <header
+          onPointerDown={(event) => { swipeStartYRef.current = event.clientY; }}
+          onPointerUp={(event) => {
+            // Pulling the sheet's header down closes it, like a native bottom sheet.
+            if (swipeStartYRef.current !== null && event.clientY - swipeStartYRef.current > 60) dismiss();
+            swipeStartYRef.current = null;
+          }}
+          onPointerCancel={() => { swipeStartYRef.current = null; }}
+        >
           <strong>{label}</strong>
           <button type="button" className="mobile-action-sheet-close" aria-label={`Close ${label}`} onClick={dismiss}>
             <X aria-hidden="true" />

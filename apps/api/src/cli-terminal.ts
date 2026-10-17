@@ -1,3 +1,5 @@
+import { mayCreateCliSessionDirectory } from "./project-paths.js";
+import { WORKTREES_ROOT } from "./worktrees/worktree-service.js";
 import { findCodexWriterThreads } from "./codex-thread-writer.js";
 import { qoderNativeSessionId, qoderNativeSessionIdPattern } from "./qoder-native-session.js";
 import { loadGeminiNativeTurns, geminiTurnActivity } from "./gemini-native-turns.js";
@@ -13,7 +15,7 @@ import { CLAUDE_EFFORT_LEVELS, CLAUDE_PANE_MODEL_PREFIX } from "./cli-native-mod
 import { readRoomHostScreen, readRoomHostScreenSnapshot } from "./room-host-screen.js";
 import { randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -1000,10 +1002,11 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
     env.SPACE_BROWSER_ACTION_ENDPOINT = `${apiBaseUrl}/api/cli/browser/actions`;
     env.SPACE_BROWSER_COMMAND_ENDPOINT = `${apiBaseUrl}/api/cli/browser/commands`;
     env.SPACE_BROWSER_ACTION_TOKEN = cliBrowserBridgeToken;
-    // Job, Mail and Marketing Copilot tools share the pane bridge token; the API decides what the pane may do.
+    // Job, Mail, Marketing and Freelance Copilot tools share the pane bridge token; the API decides what the pane may do.
     env.SPACE_JOB_APPLY_ENDPOINT = `${apiBaseUrl}/api/cli/job-apply`;
     env.SPACE_MAIL_COPILOT_ENDPOINT = `${apiBaseUrl}/api/cli/mail-copilot`;
     env.SPACE_MARKETING_COPILOT_ENDPOINT = `${apiBaseUrl}/api/cli/marketing-copilot`;
+    env.SPACE_FREELANCE_COPILOT_ENDPOINT = `${apiBaseUrl}/api/cli/freelance-copilot`;
   } else {
     env.SPACE_BROWSER_BRIDGE_ENABLED = cliBrowserBridgeEnabled(config) ? "unavailable" : "false";
   }
@@ -1025,7 +1028,11 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
   return env;
 }
 
-export function buildCliSpawnArgs(runtime: AgentRuntime, session?: CliSpawnSession | null): string[] {
+export function buildCliSpawnArgs(
+  runtime: AgentRuntime,
+  session?: CliSpawnSession | null,
+  options: { codexChoosesDefaults?: boolean } = {}
+): string[] {
   const runtimeDescriptor = findCliRuntimeDescriptor(runtime.id);
   if (session?.purpose === "LOGIN") {
     if (runtimeDescriptor?.loginAction !== "login") {
@@ -1113,6 +1120,8 @@ export function buildCliSpawnArgs(runtime: AgentRuntime, session?: CliSpawnSessi
       args.push("--no-alt-screen", threadId);
       return args;
     }
+    // Public installs have no Codex app-server to ask: without a pane selection Codex starts on its own default.
+    if (options.codexChoosesDefaults && !session?.modelId) return ["--no-alt-screen"];
     if (
       !session?.modelId ||
       !codexModelIdPattern.test(session.modelId) ||
@@ -1888,7 +1897,7 @@ export class CliTerminalManager {
     traceId: string,
     selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null; launchMode?: "FRESH" | "RESUME" } = {}
   ): Promise<PaneCliSession> {
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
     const runtimeId = pane.terminalRuntimeId ?? "cli:codex";
     const registry = await this.options.discoverRuntimes();
     const runtime = registry.data.find((candidate) => candidate.id === runtimeId);
@@ -1937,9 +1946,16 @@ export class CliTerminalManager {
           if (room?.projectPath) targetPaneCwd = room.projectPath;
         } catch {}
       }
-      const cwd = isDirectOperatorParityRuntime(runtime.id)
+      let cwd = isDirectOperatorParityRuntime(runtime.id)
         ? resolveDirectOperatorParityCwd(targetPaneCwd, this.options.config.cliWorkspaceRoot)
         : targetPaneCwd ?? this.options.config.cliWorkspaceRoot;
+      // SEC-009: a missing folder is created only where a CLI session may create one; otherwise the session
+      // starts in the managed workspace root instead of creating an arbitrary path.
+      const { config } = this.options;
+      if (!existsSync(cwd) && !await mayCreateCliSessionDirectory({
+        cwd, role: null, projectsRoot: config.projectsRoot, installRoot: config.installRoot,
+        worktreesRoot: WORKTREES_ROOT, workspaceRoot: config.cliWorkspaceRoot
+      })) cwd = config.cliWorkspaceRoot;
       try {
         await mkdir(cwd, { recursive: true, mode: 0o750 });
       } catch {}
@@ -2117,7 +2133,10 @@ export class CliTerminalManager {
     if (data.length > 0 && terminalData.length === 0) {
       return { turnMarker: null, markerAtMs: Date.now() };
     }
-    if (terminalData.length > 0) await this.waitForInputReady(managed, waitForComposer);
+    // An interrupt key goes to whatever is on screen: a busy Codex shows no ready composer, so waiting for one
+    // timed out and the stop never reached it (stable live proof 2026-10-16).
+    const interruptKey = terminalData === "\u001b" || terminalData === "\u0003";
+    if (terminalData.length > 0 && !interruptKey) await this.waitForInputReady(managed, waitForComposer);
     await this.flushHostOutput(managed);
 
     const sendToHost = (candidate: ManagedCliSession) => {
@@ -2136,7 +2155,7 @@ export class CliTerminalManager {
       if (this.sessions.get(session.sessionId) === managed) this.sessions.delete(session.sessionId);
       managed = (await this.getOrSpawnSession(session, runtime, traceId)).managed;
       activateTransport(managed);
-      if (terminalData.length > 0) await this.waitForInputReady(managed, waitForComposer);
+      if (terminalData.length > 0 && !interruptKey) await this.waitForInputReady(managed, waitForComposer);
       await this.flushHostOutput(managed);
       inputResult = await sendToHost(managed);
     }
@@ -2807,7 +2826,7 @@ export class CliTerminalManager {
     const processLaunch = inspected ? undefined : buildCliProcessLaunch(
       this.options.config,
       runtime,
-      buildCliSpawnArgs(runtime, spawnSession)
+      buildCliSpawnArgs(runtime, spawnSession, { codexChoosesDefaults: this.options.config.publicDistribution === true })
     );
     const attachInput: CliHostAttachInput = {
       identity,
@@ -4422,8 +4441,16 @@ export class CliTerminalManager {
     }
     if (waitForComposer && !managed.inputReady && cliComposerReady(managed.runtimeId, "") !== null) {
       const deadline = Date.now() + (this.options.startupReadyTimeoutMs ?? cliComposerReadyTimeoutMs);
+      let screenReadAt = 0;
+      const composerOpen = async () => {
+        if (cliComposerReady(managed.runtimeId, managed.startupOutput + managed.controlOutput)) return true;
+        if (Date.now() - screenReadAt < 1000) return false;
+        screenReadAt = Date.now();
+        // A CLI already idle when this attachment began never redraws its composer: read its saved screen.
+        return Boolean(cliComposerReady(managed.runtimeId, (await this.observeRoomScreen(managed.sessionId).catch(() => null))?.text ?? ""));
+      };
       while (!managed.closed && Date.now() < deadline) {
-        if (cliComposerReady(managed.runtimeId, managed.startupOutput + managed.controlOutput)) {
+        if (await composerOpen()) {
           // The first frame shows the composer while the CLI is still mounting its input: Claude Code then keeps
           // typed text as "early input" and drops its Enter. Wait until the output has been quiet for 750 ms.
           const settleUntil = Math.min(deadline, Date.now() + cliComposerSettleMaxMs);

@@ -77,23 +77,51 @@ describe("Space notifications (web)", () => {
     apiMock.notifications.mockResolvedValue({ notifications: [] });
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     render(<NotificationToastHost />);
-    act(() => { deliverNotifications([notification("a"), notification("b", { severity: "INFO", title: "Newsletter" })], null); });
-    expect(await screen.findByText("Mail Copilot: Anna Papadopoulou")).toBeTruthy();
-    expect(screen.getByText("Mail Copilot: Newsletter")).toBeTruthy();
+    act(() => { deliverNotifications([notification("a"), notification("b", { severity: "INFO", title: "Newsletter", paneId: "pane:news" })], null); });
+    expect(await screen.findByText("Anna Papadopoulou")).toBeTruthy();
+    expect(screen.getByText("Newsletter")).toBeTruthy();
+    expect(screen.getAllByText("Mail Copilot")).toHaveLength(2);
     expect(chimeMock.playChime).toHaveBeenCalledTimes(1);
     expect(chimeMock.playChime).toHaveBeenCalledWith("notification");
-    fireEvent.click(screen.getByText("Mail Copilot: Anna Papadopoulou"));
+    fireEvent.click(screen.getByText("Anna Papadopoulou"));
     expect(navigate).toHaveBeenCalledWith({ roomId: "room:1", paneId: "pane:mail", target: "thread:me@gmail.com:t1" }, expect.objectContaining({ id: "notification:a" }));
     await waitFor(() => expect(apiMock.markNotificationRead).toHaveBeenCalledWith("notification:a"));
-    await waitFor(() => expect(screen.queryByText("Mail Copilot: Anna Papadopoulou")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Anna Papadopoulou")).toBeNull());
     document.documentElement.setAttribute("data-suppress-notifications", "true");
     act(() => { deliverNotifications([notification("c")], null); });
-    expect(screen.queryByText(/Mail Copilot:.*Anna/)).toBeNull();
+    expect(screen.queryByText(/Anna/)).toBeNull();
     expect(chimeMock.playChime).toHaveBeenCalledTimes(1);
     // A source turned down in the settings delivers nothing either.
     document.documentElement.removeAttribute("data-suppress-notifications");
     act(() => { deliverNotifications([notification("d")], { channels: { inApp: true, toast: true, sound: true, desktop: true, telegram: true }, perSource: { MAIL_COPILOT: { inApp: false } } }); });
     expect(screen.queryByText(/Anna/)).toBeNull();
+  });
+
+  it("shows one toast per pane (the newest replaces the rest) and closes it on its own", async () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.useFakeTimers();
+    try {
+      render(<NotificationToastHost />);
+      // One Job Copilot moment: its question and the browser handoff arrive together with an older question, newest first.
+      const pane = { roomId: "room:1", paneId: "pane:job" };
+      act(() => { deliverNotifications([
+        notification("q2", { ...pane, source: "JOB_COPILOT", title: "Job Copilot 16 needs you", body: "Needs you: captcha" }),
+        notification("handoff", { ...pane, source: "BROWSER_HANDOFF", title: "The browser needs you" }),
+        notification("q1", { ...pane, source: "JOB_COPILOT", title: "Older question" }),
+        notification("mail")
+      ], null); });
+      expect(peekNotificationStore().toasts.map((toast) => toast.id)).toEqual(["notification:q2", "notification:mail"]);
+      expect(screen.getByText("Job Copilot 16 needs you")).toBeTruthy();
+      expect(screen.queryByText("The browser needs you")).toBeNull();
+      // A later notification of the same pane replaces its toast instead of stacking.
+      act(() => { deliverNotifications([notification("q3", { ...pane, source: "JOB_COPILOT", title: "Next question" })], null); });
+      expect(peekNotificationStore().toasts.map((toast) => toast.id)).toEqual(["notification:mail", "notification:q3"]);
+      act(() => { vi.advanceTimersByTime(8_100); });
+      expect(peekNotificationStore().toasts).toEqual([]);
+      expect(screen.queryByText("Next question")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("inside the Android app the shell shows the notification while Space is in the background and a tap comes back as the record's id", async () => {

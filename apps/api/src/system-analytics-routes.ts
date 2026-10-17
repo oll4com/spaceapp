@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   opencodeBenchResponseSchema, systemAnalyticsCliSessionsResponseSchema, systemAnalyticsModelsResponseSchema,
+  systemAnalyticsTokenRouteSchema,
   systemAnalyticsOverviewResponseSchema, systemAnalyticsProcessesResponseSchema, systemAnalyticsRangeSchema,
   systemAnalyticsResourcesResponseSchema
 } from "@space/contracts";
@@ -37,8 +38,11 @@ export function registerSystemAnalyticsRoutes(app: FastifyInstance, options: {
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "System analytics require the ADMIN role.");
       }
-      const { range } = z.object({ range: systemAnalyticsRangeSchema.default("10m") }).strict().parse(request.query);
-      return systemAnalyticsModelsResponseSchema.parse(await systemAnalyticsService.models(range));
+      const { range, route } = z.object({
+        range: systemAnalyticsRangeSchema.default("10m"),
+        route: systemAnalyticsTokenRouteSchema.default("all")
+      }).strict().parse(request.query);
+      return systemAnalyticsModelsResponseSchema.parse(await systemAnalyticsService.models(range, route));
     }
   );
   app.get(

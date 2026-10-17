@@ -26,6 +26,7 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import type { JobApplyService } from "./service.js";
+import { settleEndedOperatorLease } from "../browser-control-activity.js";
 
 // Agent-facing routes of the Job Applications pane. They are reached with the
 // pane-scoped CLI browser bridge token; the owner is the room owner. The agent
@@ -34,7 +35,8 @@ export const cliJobApplyPathPrefix = "/api/cli/job-apply/";
 
 export interface CliBridgeClaims { roomId: string; paneId: string; cliSessionId: string }
 export interface JobApplyAgentRouteDependencies {
-  store: Pick<SpaceStore, "getRoom" | "getPane" | "getActivePaneBrowserSession" | "getActiveBrowserControlLease" | "getActiveBrowserHandoffRequest">;
+  store: Pick<SpaceStore, "getRoom" | "getPane" | "getActivePaneBrowserSession" | "getActiveBrowserControlLease" | "getActiveBrowserHandoffRequest"
+    | "getBrowserControlLease" | "updateBrowserControlLease" | "updateBrowserHandoffRequest">;
   routeOptions: Record<string, unknown>;
   requireBridge(request: FastifyRequest, reply: FastifyReply): Promise<{ claims: CliBridgeClaims } | null>;
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
@@ -464,6 +466,7 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
     if (pane.roomId !== bridge.claims.roomId) throw new SpaceConflictError("Browser pane is not in this room.");
     const session = await deps.store.getActivePaneBrowserSession(pane.id);
     if (!session) return { paneId, browserRunning: false, held: false, lease: null, handoff: null };
+    await settleEndedOperatorLease(deps.store, session.sessionId);
     const [lease, handoff] = await Promise.all([
       deps.store.getActiveBrowserControlLease(session.sessionId),
       deps.store.getActiveBrowserHandoffRequest(session.sessionId)

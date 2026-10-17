@@ -1,3 +1,4 @@
+import { rollbackKeepingError } from "./rollback.js";
 import { randomUUID } from "node:crypto";
 import {
   taskTitleSettingsSchema,
@@ -212,6 +213,7 @@ export class PostgresTaskTitleRepository implements TaskTitleRepository {
     batchId = randomUUID(),
   ) {
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     try {
       await client.query("BEGIN");
       // One transaction-wide lock makes global/accounting limits race-safe across API processes.
@@ -253,10 +255,10 @@ export class PostgresTaskTitleRepository implements TaskTitleRepository {
       await client.query("COMMIT");
       return allowed;
     } catch (error) {
-      await client.query("ROLLBACK");
+      rollbackFailed = await rollbackKeepingError(client);
       throw error;
     } finally {
-      client.release?.();
+      client.release?.(rollbackFailed || undefined);
     }
   }
   async getSettings() {

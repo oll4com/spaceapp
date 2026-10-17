@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile } from "../safe-child-process.js";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";

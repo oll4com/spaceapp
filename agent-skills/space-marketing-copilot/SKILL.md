@@ -16,9 +16,13 @@ publication gate live behind the Space API.
 
 | Server | Tools |
 |---|---|
-| `space_marketingcopilot` | `space_marketing_state`, `space_marketing_facts`; loop `space_marketing_next`, `space_marketing_report`; posts `space_marketing_posts_list`, `space_marketing_post_read`, `space_marketing_post_create`, `space_marketing_post_update`; operator `space_marketing_review_request`, `space_marketing_review_wait`, `space_marketing_question_ask`, `space_marketing_question_wait`; publishing `space_marketing_publish_begin`, `space_marketing_publish_done`, `space_marketing_publish_failed`; `space_marketing_memory_recall`, `space_marketing_memory_remember`; `space_marketing_metrics_record`; `space_marketing_campaigns_list`, `space_marketing_campaign_propose`; `space_marketing_rules_list`, `space_marketing_rule_propose`; `space_marketing_note`. |
+| `space_marketingcopilot` | `space_marketing_state`, `space_marketing_facts`; bookmarks `space_marketing_bookmarks_list`, `space_marketing_bookmark_open`; loop `space_marketing_next`, `space_marketing_report`; posts `space_marketing_posts_list`, `space_marketing_post_read`, `space_marketing_post_create`, `space_marketing_post_update`; operator `space_marketing_review_request`, `space_marketing_review_wait`, `space_marketing_question_ask`, `space_marketing_question_wait`; publishing `space_marketing_publish_begin`, `space_marketing_publish_done`, `space_marketing_publish_failed`; `space_marketing_memory_recall`, `space_marketing_memory_remember`; `space_marketing_metrics_record`; `space_marketing_campaigns_list`, `space_marketing_campaign_propose`; `space_marketing_rules_list`, `space_marketing_rule_propose`; `space_marketing_note`. |
 | `space_browser` | `space_browser_start` (this pane), `space_browser_navigate`, `space_browser_tabs`, `space_browser_screenshot` (evidence), `space_browser_request_handoff` (kind `LOGIN`, `MFA`, `CAPTCHA`), `space_browser_handoff_status`. |
 | `space_playwright_pane` | Element-level work on the same pane browser: `browser_snapshot`, `browser_click`, `browser_type`, `browser_fill_form`, `browser_file_upload`, `browser_press_key`, `browser_wait_for`. It refuses while the operator holds control. |
+
+Sessions without these MCP tools (Claude panes run native tools only) call them on demand:
+`echo '{"serverId":"space_marketingcopilot","toolName":"space_marketing_next","arguments":{"waitMs":60000}}' | space-capability call`
+(the same for `space_browser`).
 
 Channel playbooks (format, norms, publish recipe, the URL to report): `references/channels.md`. Read the
 channel's section before the first post on it in a session. Campaign playbooks (release, Product Hunt launch,
@@ -68,7 +72,10 @@ Show HN, weekly tip, demo video): `references/campaigns.md`.
 ## Publishing (the pane browser, the operator's own accounts)
 
 1. `space_marketing_publish_begin {postId}`. Only when it succeeds do you touch the site.
-2. `space_browser_start` on this pane, navigate to the channel (recipe in `references/channels.md`),
+2. `space_browser_start` on this pane. When the operator saved a bookmark for the channel's site
+   (`bookmarks` in `space_marketing_state`, or `space_marketing_bookmarks_list`), open it with
+   `space_marketing_bookmark_open {bookmarkId}`: the new tab is signed in with that bookmark's Google account.
+   Otherwise navigate to the channel (recipe in `references/channels.md`),
    `browser_snapshot`, fill the composer from the post (title, body, target), attach assets with
    `browser_file_upload`, submit once.
 3. Not logged in, a two-step code, a CAPTCHA or any anti-bot check: `space_browser_request_handoff {kind, reason}`

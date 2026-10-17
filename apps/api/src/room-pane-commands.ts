@@ -15,9 +15,9 @@ export interface SkippedPaneType { typeId: string; label: string; reason: string
  * profiles) is its default agent when ready. Otherwise the first ready CLI in catalog order.
  */
 export const JOB_APPLY_PREFERRED_RUNTIME_ID = "cli:claude";
-/** Copilot panes (Job, Mail, Marketing) run their agent in a CLI session of the pane. */
-export function isCopilotPaneMode(mode: string): mode is "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" {
-  return mode === "JOB_APPLY" || mode === "MAIL_COPILOT" || mode === "MARKETING_COPILOT";
+/** Copilot panes (Job, Mail, Marketing, Freelance) run their agent in a CLI session of the pane. */
+export function isCopilotPaneMode(mode: string): mode is "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT" {
+  return mode === "JOB_APPLY" || mode === "MAIL_COPILOT" || mode === "MARKETING_COPILOT" || mode === "FREELANCE_COPILOT";
 }
 export function defaultJobApplyRuntimeId(readyCliRuntimeIds: readonly string[]): string | undefined {
   return readyCliRuntimeIds.includes(JOB_APPLY_PREFERRED_RUNTIME_ID) ? JOB_APPLY_PREFERRED_RUNTIME_ID : readyCliRuntimeIds[0];
@@ -69,7 +69,7 @@ export function createRoomPaneCommands(options: {
   }
 
   async function resolve(roomId: string, items: RoomPaneBatchItem[]): Promise<CreatePaneInput[]> {
-    const needGemini = items.some((item) => (item.mode === "TERMINAL" || item.mode === "JOB_APPLY" || item.mode === "MAIL_COPILOT" || item.mode === "MARKETING_COPILOT") && item.terminalRuntimeId === "cli:gemini");
+    const needGemini = items.some((item) => (item.mode === "TERMINAL" || item.mode === "JOB_APPLY" || item.mode === "MAIL_COPILOT" || item.mode === "MARKETING_COPILOT" || item.mode === "FREELANCE_COPILOT") && item.terminalRuntimeId === "cli:gemini");
     const needHarness = items.some((item) => item.mode === "HARNESS");
     const entries = await catalog({ needGemini, needHarness });
     const readyCliRuntimeIds: string[] = entries.flatMap(({ definition, available }) =>
@@ -89,7 +89,7 @@ export function createRoomPaneCommands(options: {
         (item.mode !== "TERMINAL" || definition.runtimeId === item.terminalRuntimeId));
       if (!entry) throw new SpaceConflictError("Pane type is not in the room command catalog.");
       if (!entry.available) throw new SpaceConflictError(`${entry.definition.label}: ${entry.reason}`);
-      if ((item.mode === "JOB_APPLY" || item.mode === "MAIL_COPILOT" || item.mode === "MARKETING_COPILOT") && item.terminalRuntimeId && !readyCliRuntimeIds.includes(item.terminalRuntimeId)) {
+      if ((item.mode === "JOB_APPLY" || item.mode === "MAIL_COPILOT" || item.mode === "MARKETING_COPILOT" || item.mode === "FREELANCE_COPILOT") && item.terminalRuntimeId && !readyCliRuntimeIds.includes(item.terminalRuntimeId)) {
         throw new SpaceConflictError(`${entry.definition.label}: ${item.terminalRuntimeId} is not available.`);
       }
 
@@ -100,7 +100,7 @@ export function createRoomPaneCommands(options: {
         mode: item.mode,
         ...(item.mode === "TERMINAL" ? { terminalRuntimeId: item.terminalRuntimeId, cwd: roomCwd } : {}),
         // No cwd: the agent gets a managed per-session workspace with the Space bootstrap.
-        ...(item.mode === "JOB_APPLY" || item.mode === "MAIL_COPILOT" || item.mode === "MARKETING_COPILOT" ? { terminalRuntimeId: item.terminalRuntimeId ?? defaultJobApplyRuntimeId(readyCliRuntimeIds) } : {}),
+        ...(item.mode === "JOB_APPLY" || item.mode === "MAIL_COPILOT" || item.mode === "MARKETING_COPILOT" || item.mode === "FREELANCE_COPILOT" ? { terminalRuntimeId: item.terminalRuntimeId ?? defaultJobApplyRuntimeId(readyCliRuntimeIds) } : {}),
         ...(item.mode === "FILES" || item.mode === "DATABASES" ? { cwd: roomCwd !== "/etc" ? roomCwd : undefined } : {}),
         ...(item.mode === "VNC" && item.vncTarget ? { vncTarget: item.vncTarget } : {})
       };

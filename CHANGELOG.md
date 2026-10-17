@@ -5,6 +5,66 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-10-16
+
+Source: sanitized Space app @ eebf761963 (4362 files). Adds install telemetry
+for owners who opt in and the remaining fixes from the independent reviews of
+1.1.5; open items are listed in `docs/quality/KNOWN_LIMITATIONS.md`.
+
+### Telemetry (only after the owner answers Yes)
+
+- The install wizard lists what telemetry sends before it asks; the default is
+  still No.
+- A Yes gives a new installation a random install ID (in `config.json`, passed
+  to SpaceApp as `SPACE_INSTALL_ID`) that links its events: `install_started`
+  (OS and version, CPU count, RAM, profile, access mode), then
+  `install_completed` or `install_failed` with the step and the duration.
+- SpaceApp then reports `setup_completed`, `first_cli` (which CLI started
+  first), `first_answer` and at most one `active` event a day with the screen
+  size, pixel ratio, browser, UI language and version. The collector derives
+  the country from the request and does not store the IP address.
+- Installations created by earlier launchers have no install ID and keep
+  sending only the events they agreed to.
+
+### Security
+
+- WebSocket handshakes (VNC stream, shared chat) check the Origin.
+- The app is sent with `frame-ancestors 'self'`, `object-src 'none'` and
+  `X-Frame-Options: SAMEORIGIN`.
+- Every API child process, including the Space screenshot engine, starts
+  through one wrapper that removes the session secret and the database URL
+  from its environment.
+- CLI sessions create a missing folder only under the managed workspace root
+  or where pane creation may (SEC-009).
+- Admin Mode saves through a random temporary file and keeps the file mode.
+- `/api/worktrees` requires the ADMIN or OPERATOR role, and its errors no
+  longer echo raw messages.
+- VNC presets come from configuration (`SPACE_VNC_PRESETS`, empty by default).
+
+### Fixes
+
+- `factory-reset` checks the safety backup and the purge: without a backup it
+  erases only after `FACTORY-RESET-WITHOUT-BACKUP`, and a failed purge keeps
+  the configuration.
+- Provider installs and the first OpenCode launch recover from a lock left by
+  a killed process instead of failing or waiting 120 s on every start.
+- Two workspace folders with the same name get separate container paths.
+- Database transactions roll back at every failure site, and `/readyz` keeps
+  one pending check per stalled dependency.
+- Stopping a busy Codex pane sends the interrupt without waiting for its
+  composer.
+
+### Also in this release
+
+- Freelance Copilot pane, Liquid Glass theme, web app manifest and touch icon
+  (add SpaceApp to a phone's home screen).
+- Phones: a bottom bar to switch panes, panes that end above the keyboard, a
+  sticky Ctrl key and key repeat on the on-screen keyboard.
+- Browser panes: a tab can use another Google account, Ctrl+V works on
+  non-Latin keyboard layouts, and idle operator control returns to the agent.
+- Drag a pane onto a room in the Rooms dock to move it there.
+
+
 ## [1.1.5] - 2026-10-15
 
 Source: sanitized Space app @ 2a53fd9793 (4255 files). Addresses the

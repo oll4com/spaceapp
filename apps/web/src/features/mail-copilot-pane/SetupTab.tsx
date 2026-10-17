@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { MAIL_COPILOT_AUTONOMY_LEVELS, mailCopilotConsentUrl, type ConnectorAccountSummary, type CopilotLaunchSettings, type MailCopilotAutonomy, type MailCopilotPaneMetadata, type Pane } from "@space/contracts";
 import { api } from "../../api.js";
 import { AgentAccountField, useCopilotAccounts } from "../copilot-kit/AgentAccountField.js";
 import { copilotAgentLabel, loadPaneAccountProfileId, type CopilotRuntimeOption } from "../copilot-kit/copilot-runtimes.js";
+import { Bell, BellOff } from "../ui-theme/app-icons.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { GmailConsentActions, gmailAccessLabel } from "./AccountsView.js";
+import { senderHue, senderInitial } from "./MailClient.js";
 
 const AUTONOMY_TEXT: Record<MailCopilotAutonomy, { label: string; detail: string }> = {
   ASSIST: { label: "Assist", detail: "Drafts and asks; you send. The copilot learns from every reply and action of yours." },
@@ -14,7 +16,7 @@ const AUTONOMY_TEXT: Record<MailCopilotAutonomy, { label: string; detail: string
 
 export type SetupStep = "accounts" | "autonomy" | "agent";
 
-/** Setup: which accounts the pane works with, how far the agent acts alone, notifications, and the pane's agent. */
+/** Setup: which accounts the pane works with and which of them notify, how far the agent acts alone, notifications, and the pane's agent. */
 export function SetupTab({ pane, settings, accounts, runtimeOptions, switching, accountRevision = 0, onSettingsChange, onSwitchAgent, onSetDefault }: {
   pane: Pane;
   settings: MailCopilotPaneMetadata;
@@ -64,6 +66,11 @@ export function SetupTab({ pane, settings, accounts, runtimeOptions, switching, 
   }
 
   const patch = (label: string, update: Partial<MailCopilotPaneMetadata["settings"]>) => void save(label, { ...settings, settings: { ...settings.settings, ...update } });
+  const notifications = settings.settings.notifications;
+  const muted = (email: string) => notifications.mutedAccounts.some((entry) => entry.toLowerCase() === email.toLowerCase());
+  const isShown = (email: string) => settings.settings.accounts.length === 0 || settings.settings.accounts.includes(email);
+  const shown = accounts.filter((account) => isShown(account.email));
+  const notifying = shown.filter((account) => !muted(account.email)).length;
 
   return (
     <div className="jc-setup" role="tabpanel" id="jc-panel-setup" aria-labelledby="jc-tab-setup">
@@ -77,26 +84,47 @@ export function SetupTab({ pane, settings, accounts, runtimeOptions, switching, 
 
       {step === "accounts" ? (
         <div className="jc-form">
+          <section className="mc-notify-card" data-on={notifications.newMail ? "true" : "false"} aria-label="New mail notifications">
+            <span className="mc-notify-card-icon" aria-hidden="true">{notifications.newMail ? <Bell /> : <BellOff />}</span>
+            <SpaceToggle compact label="New mail notifications" checked={notifications.newMail} disabled={busy}
+              detail={!notifications.newMail ? "Off for every account." : `On for ${notifying} of ${shown.length} account${shown.length === 1 ? "" : "s"}. The bell on an account mutes it.`}
+              onChange={(checked) => patch("Notifications", { notifications: { ...notifications, newMail: checked } })} />
+          </section>
           <p className="jc-muted">The accounts this pane shows and the copilot works with. With none chosen it uses every Google account allowed for Space.</p>
-          {accounts.length === 0 ? <p className="jc-muted">No Google account is allowed for Space yet.</p> : null}
-          {accounts.map((account) => {
-            const access = gmailAccessLabel(account);
-            const chosen = settings.settings.accounts;
-            const on = chosen.length === 0 || chosen.includes(account.email);
-            return (
-              <div key={account.accountId} className="mc-setup-account">
-                <SpaceToggle label={account.email} detail={access === "full" ? "Full Gmail access" : access === "read" ? "Read-only: allow full access for replies, labels and archive" : "No Gmail access yet"}
-                  checked={on} disabled={busy}
-                  onChange={(checked) => {
-                    const all = accounts.map((entry) => entry.email);
-                    const current = chosen.length === 0 ? all : chosen;
-                    const next = checked ? [...new Set([...current, account.email])] : current.filter((email) => email !== account.email);
-                    patch("Accounts", { accounts: next.length === all.length ? [] : next });
-                  }} />
-                {access !== "full" ? <GmailConsentActions email={account.email} /> : null}
-              </div>
-            );
-          })}
+          {accounts.length === 0 ? <p className="jc-muted">No Google account is allowed for Space yet.</p> : (
+            <ul className="mc-setup-accounts" aria-label="Accounts">
+              {accounts.map((account) => {
+                const access = gmailAccessLabel(account);
+                const on = isShown(account.email);
+                const notify = on && notifications.newMail && !muted(account.email);
+                return (
+                  <li key={account.accountId} className="mc-setup-account" data-shown={on ? "true" : "false"}>
+                    <span className="mc-avatar sm" style={{ "--avatar-hue": senderHue({ name: "", address: account.email }) } as CSSProperties} aria-hidden="true">{senderInitial({ name: "", address: account.email })}</span>
+                    <span className="mc-setup-account-copy">
+                      <strong>{account.email}</strong>
+                      <small data-access={access}>{access === "full" ? "Full Gmail access" : access === "read" ? "Read-only: allow full access for replies, labels and archive" : "No Gmail access yet"}</small>
+                    </span>
+                    <SpaceToggle compact label="Show" ariaLabel={`Show ${account.email} in this pane`} checked={on} disabled={busy}
+                      onChange={(checked) => {
+                        const all = accounts.map((entry) => entry.email);
+                        const chosen = settings.settings.accounts;
+                        const current = chosen.length === 0 ? all : chosen;
+                        const next = checked ? [...new Set([...current, account.email])] : current.filter((email) => email !== account.email);
+                        patch("Accounts", { accounts: next.length === all.length ? [] : next });
+                      }} />
+                    <button type="button" className="mc-notify-button" aria-pressed={notify} disabled={busy || !on || !notifications.newMail}
+                      aria-label={`New mail notifications from ${account.email}`}
+                      title={!notifications.newMail ? "New mail notifications are off for every account" : !on ? "Not shown in this pane" : notify ? "Notifies on new mail" : "No notifications for this account"}
+                      onClick={() => patch("Notifications", { notifications: { ...notifications,
+                        mutedAccounts: notify ? [...notifications.mutedAccounts, account.email] : notifications.mutedAccounts.filter((email) => email.toLowerCase() !== account.email.toLowerCase()) } })}>
+                      {notify ? <Bell /> : <BellOff />}
+                    </button>
+                    {access !== "full" ? <div className="mc-setup-account-consent"><GmailConsentActions email={account.email} /></div> : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
           <div className="jc-actions"><a className="jc-button" href={mailCopilotConsentUrl()}>Allow another Google account</a></div>
         </div>
       ) : null}
@@ -124,8 +152,6 @@ export function SetupTab({ pane, settings, accounts, runtimeOptions, switching, 
               if ((value || null) !== settings.settings.signature) patch("Signature", { signature: value || null });
             }} /></label>
           <SpaceToggle label="Paused" detail="The copilot opens no new work item while paused; the mailbox keeps working." checked={settings.settings.paused} disabled={busy} onChange={(checked) => patch("Paused", { paused: checked })} />
-          <SpaceToggle label="New mail notifications" detail="A notification for every new message in the pane's inboxes." checked={settings.settings.notifications.newMail} disabled={busy}
-            onChange={(checked) => patch("Notifications", { notifications: { ...settings.settings.notifications, newMail: checked } })} />
           <SpaceToggle label="Needs-you notifications" detail="Reviews, questions and rule proposals the copilot waits on." checked={settings.settings.notifications.needsYou} disabled={busy}
             onChange={(checked) => patch("Notifications", { notifications: { ...settings.settings.notifications, needsYou: checked } })} />
           <SpaceToggle label="Telegram" detail="Needs-you moments also go to the paired Telegram bot (Settings → Telegram)." checked={settings.settings.notifications.telegram} disabled={busy}

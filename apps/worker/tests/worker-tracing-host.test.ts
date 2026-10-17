@@ -42,6 +42,23 @@ function setup(options: WorkerTracingOptions = {}) {
 }
 
 describe("worker tracing host edge cases", () => {
+  it("exports exactly one span for each retry attempt when both input and workflow header carry context", async () => {
+    const test = setup();
+    const parent = { traceId, spanId: workflowSpanId(execution.runId), flags: "01" };
+    for (const attempt of [1, 2]) {
+      const context = { info: { ...info(), attempt }, cancellationSignal: new AbortController().signal } as Context;
+      await test.tracing.workerOptions.interceptors!.activity![0]!(context).inbound!.execute!(
+        { args: [{ turn: { traceparent } }], headers: withTraceHeader({}, { context: parent }) }, async () => "done");
+    }
+    await test.tracing.flush();
+    const spans = test.spans();
+    expect(spans).toHaveLength(2);
+    expect(new Set(spans.map(span => span.spanId)).size).toBe(2);
+    expect(spans.map(span => span.parentSpanId)).toEqual([parent.spanId, parent.spanId]);
+    expect(spans.map(span => span.attributes.find((attribute: any) => attribute.key === "temporal.activity.attempt")?.value.intValue)).toEqual(["1", "2"]);
+    expect(test.tracing.stats()).toEqual({ exported: 2, failed: 0, dropped: 0 });
+  });
+
   it.each([undefined, "", "not a URL", "http://user:secret@collector.invalid"])("keeps invalid endpoint %s fully disabled while preserving activity logs", async (endpoint) => {
     const test = setup({ env: { SPACE_OTEL_EXPORTER_OTLP_ENDPOINT: endpoint } });
     const value = { status: "COMPLETED" };
@@ -143,6 +160,24 @@ describe("worker tracing host edge cases", () => {
     }, { onFinished: () => { calls++; throw new Error(privateValue); } });
     if (failure) await expect(observed).rejects.toBe(error);
     else expect(await observed).toBe(result);
+    expect(calls).toBe(1);
+    expect(test.logs.at(-1)?.outcome).toBe(failure ? "FAILED" : "COMPLETED");
+    expect(JSON.stringify(test.logs)).not.toContain(privateValue);
+  });
+
+  it.each([false, true])("preserves the business outcome when the legacy span hook throws (failure=%s)", async (failure) => {
+    const test = setup();
+    const originalError = new Error("original business error");
+    let calls = 0;
+    const observed = observeActivityExecution(info(), [{ traceparent }], async () => {
+      if (failure) throw originalError;
+      return "done";
+    }, { spans: {
+      record: () => { calls++; throw new Error(privateValue); }, flush: async () => {}, close: async () => {},
+      stats: () => ({ exported: 0, failed: 0, dropped: 0 })
+    } });
+    if (failure) await expect(observed).rejects.toBe(originalError);
+    else await expect(observed).resolves.toBe("done");
     expect(calls).toBe(1);
     expect(test.logs.at(-1)?.outcome).toBe(failure ? "FAILED" : "COMPLETED");
     expect(JSON.stringify(test.logs)).not.toContain(privateValue);

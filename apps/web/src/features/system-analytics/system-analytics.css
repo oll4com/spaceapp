@@ -1075,3 +1075,67 @@
 :is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"]) .opencode-bench-highlight-scores span {
   color: #5f707e;
 }
+
+/* --- Token usage charts (2026-10-15). Categorical slots validated for both surfaces (dataviz palette, dark steps on
+   #141617, light steps on #ffffff; slots 3-4 are below 3:1 on light, so every part also shows its value as text). --- */
+.system-analytics-workspace {
+  --token-series-1: #3987e5;
+  --token-series-2: #d95926;
+  --token-series-3: #199e70;
+  --token-series-4: #c98500;
+  --token-chart-grid: #292e2f;
+  --token-chart-text: #a7a59e;
+  --token-chart-strong: #ece8df;
+  --token-chart-surface: #141617;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"]) .system-analytics-workspace {
+  --token-series-1: #2a78d6;
+  --token-series-2: #eb6834;
+  --token-series-3: #1baf7a;
+  --token-series-4: #eda100;
+  --token-chart-grid: #e1e7ec;
+  --token-chart-text: #5f707e;
+  --token-chart-strong: #17232d;
+  --token-chart-surface: #ffffff;
+}
+
+.token-chart, .token-composition { margin: 0; padding: 10px 12px 12px; display: grid; gap: 8px; min-width: 0; }
+.token-chart-legend, .token-composition-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; color: var(--token-chart-text); font-size: 12px; }
+.token-chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.token-chart-legend strong, .token-composition-legend strong { color: var(--token-chart-strong); font-variant-numeric: tabular-nums; }
+.token-chart-legend small { margin-left: auto; }
+.token-chart-legend i, .token-chart-tooltip i, .token-composition-legend i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.token-chart-plot { position: relative; min-width: 0; }
+.token-chart-plot svg { width: 100%; height: auto; display: block; overflow: visible; }
+.token-chart-grid line { stroke: var(--token-chart-grid); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.token-chart-grid text, .token-chart-axis { fill: var(--token-chart-text); font-size: 16px; font-variant-numeric: tabular-nums; }
+.token-chart path.series-gateway, .token-chart-legend i.series-gateway, .token-chart-tooltip i.series-gateway { fill: var(--token-series-1); background: var(--token-series-1); }
+.token-chart path.series-direct, .token-chart-legend i.series-direct, .token-chart-tooltip i.series-direct { fill: var(--token-series-2); background: var(--token-series-2); }
+.token-chart g.is-active path { filter: brightness(1.15); }
+.token-chart-hit { fill: transparent; cursor: default; outline: none; }
+.token-chart-hit:focus-visible { stroke: var(--token-chart-strong); stroke-width: 1; }
+.token-chart-tooltip {
+  position: absolute; top: 0; transform: translateX(-50%); pointer-events: none; z-index: 2;
+  display: grid; gap: 2px; min-width: 150px; padding: 6px 8px; border-radius: 6px; font-size: 11px;
+  background: var(--token-chart-surface); color: var(--token-chart-strong); border: 1px solid var(--token-chart-grid);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.25); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.token-chart-tooltip span { display: inline-flex; align-items: center; gap: 6px; color: var(--token-chart-text); }
+.token-chart-table summary { cursor: pointer; color: var(--token-chart-text); font-size: 12px; }
+.token-chart-table table { width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.token-composition-bar { display: flex; gap: 2px; height: 14px; border-radius: 4px; overflow: hidden; }
+.token-composition-bar span { min-width: 2px; }
+.token-composition-legend { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.token-composition-legend li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.token-composition-legend small { margin-left: auto; font-variant-numeric: tabular-nums; }
+.token-composition .series-1 { background: var(--token-series-1); }
+.token-composition .series-2 { background: var(--token-series-2); }
+.token-composition .series-3 { background: var(--token-series-3); }
+.token-composition .series-4 { background: var(--token-series-4); }
+
+.token-share { display: block; height: 4px; border-radius: 2px; background: var(--token-chart-grid); overflow: hidden; }
+.token-share i { display: block; height: 100%; border-radius: 2px; }
+.token-share i.is-model, .token-share i.is-gateway { background: var(--token-series-1); }
+.token-share i.is-direct { background: var(--token-series-2); }

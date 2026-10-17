@@ -2,8 +2,9 @@ import { usePanePolling } from "../../use-pane-polling.js";
 import { useGoogleAccountSignIn } from "./useGoogleAccountSignIn.js";
 import { useBrowserAudio } from "./useBrowserAudio.js";
 import { resolveBrowserAddress } from "./browser-address.js";
-import { effectiveAccountId, googleSignInTarget as accountSignInTarget, privatePaneProfileId, type YouTubeAccounts as GoogleAccounts } from "./youtube-accounts.js";
-import { GoogleAccountMenuItems, selectedAccountSummary } from "./GoogleAccountMenuItems.js";
+import { roomPaneLimit } from "../../pane-runtime-availability.js";
+import { accountEntryForProfile, accountNeedsSignIn, effectiveAccountId, googleSignInTarget as accountSignInTarget, privatePaneProfileId, type YouTubeAccounts as GoogleAccounts } from "./youtube-accounts.js";
+import { avatarHue, GoogleAccountMenuItems, selectedAccountSummary } from "./GoogleAccountMenuItems.js";
 import {
   Bookmark,
   BookmarkPlus,
@@ -11,6 +12,7 @@ import {
   Camera,
   ChevronLeft,
   ChevronRight,
+  Clipboard,
   CircleStop,
   Download,
   Globe2,
@@ -46,6 +48,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type CSSProperties,
   type FormEvent
 } from "react";
 import {
@@ -82,9 +85,12 @@ import {
 import { BrowserCanvas, type BrowserCanvasHandle, type BrowserCanvasInput } from "./BrowserCanvas.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import {
+  BROWSER_CONTROL_IDLE_RELEASE_MS,
   BROWSER_PANE_ACCOUNT_SELECTED_EVENT,
   BROWSER_PANE_ACTION_EVENT,
+  MARKETING_BOOKMARKS_CHANGED_EVENT,
   parseBrowserPaneActionDetail,
+  publishBrowserPaneControl,
   registerBrowserPaneEventTarget
 } from "./events.js";
 import { BrowserLiveStatus } from "./BrowserLiveStatus.js";
@@ -140,6 +146,8 @@ const streamModeOptions: Array<{ id: BrowserStreamMode; label: string }> = [
 ];
 
 const emptyDiagnostics: BrowserDiagnosticsPayload = { sessionId: "browser:pending", events: [] };
+/** A tab moved to a new pane in another Google account; that pane opens it there when it mounts. */
+const accountTabMoves = new Map<string, { profileId: string; url: string | null }>();
 
 function metadataText(metadata: Record<string, unknown>, key: string, fallback = "-"): string {
   const value = metadata[key];
@@ -199,16 +207,27 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const [handoff, setHandoff] = useState(false);
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAccounts | null>(null);
   const [googleAccountMenuOpen, setGoogleAccountMenuOpen] = useState(false);
-  const googleAccountSummary = googleAccounts ? selectedAccountSummary(googleAccounts) : null;
   const googleAccountPickerRef = useRef<HTMLDivElement | null>(null);
   const googleAccountButtonRef = useRef<HTMLButtonElement | null>(null);
   const [googleSignInTarget, setGoogleSignInTarget] = useState<string | null>(null);
+  const [tabMenu, setTabMenu] = useState<{ page: BrowserPageSummaryPayload; x: number; y: number } | null>(null);
+  const tabMenuRef = useRef<HTMLDivElement | null>(null);
   const [controlLease, setControlLease] = useState<BrowserControlLeasePayload | null>(null);
   const [streamMode, setStreamMode] = useState<BrowserStreamMode>("AUTO");
   const [blankTabRequested, setBlankTabRequested] = useState(false);
   const [pages, setPages] = useState<BrowserPageSummaryPayload[]>([]);
   const emptyBrowser = !blankTabRequested && pages.length === 1 && pages[0]?.url === "about:blank";
   const [activePageId, setActivePageId] = useState<string | null>(null);
+  const activeTab = pages.find((page) => activePageId ? page.pageId === activePageId : page.isActive);
+  // A Browser Host with per-tab accounts reports `account` on every tab (null: the pane's account).
+  const tabAccounts = pane.mode !== "FREELANCE_COPILOT" && pages.length > 0 && pages.every((page) => page.account !== undefined);
+  // The menu shows (and changes) the account of the tab in view once the pane has more than one tab or that tab has its own.
+  const tabScoped = tabAccounts && Boolean(activeTab) && (pages.length > 1 || Boolean(activeTab?.account));
+  const menuAccounts = googleAccounts && activeTab?.account
+    ? { ...googleAccounts, selectedProfileId: activeTab.account.profileId, effectiveProfileId: activeTab.account.profileId } : googleAccounts;
+  const googleAccountSummary = menuAccounts ? selectedAccountSummary(menuAccounts) : null;
+  const tabAccountLabel = (account: NonNullable<BrowserPageSummaryPayload["account"]>) =>
+    account.label ?? (googleAccounts ? accountEntryForProfile(googleAccounts, account.profileId)?.title : undefined) ?? "Other account";
   const pageListRef = useRef<BrowserPageListPayload | null>(null);
   const pageSessionIdRef = useRef<string | null>(null);
   const pageRequestRef = useRef(0);
@@ -270,6 +289,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const persistedRecordingVideoRef = useRef<HTMLVideoElement | null>(null);
   const controlLeaseRef = useRef<BrowserControlLeasePayload | null>(null);
   const latestControlLeaseRef = useRef<BrowserControlLeasePayload | null>(null);
+  const lastOperatorInputAtRef = useRef(Date.now());
+  const releaseControlRef = useRef<() => Promise<void>>(async () => undefined);
   const controlAcquirePromiseRef = useRef<Promise<BrowserControlLeasePayload | null> | null>(null);
   const legacyControlRef = useRef(false);
   const legacyPointerDownRef = useRef<{ x: number; y: number; button: string } | null>(null);
@@ -573,14 +594,65 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   // A selection made meanwhile wins over an older answer.
   const googleAccountsRequestRef = useRef(0);
   function loadGoogleAccounts() {
-    if (observerOnly || (pane.mode !== "BROWSER" && pane.mode !== "JOB_APPLY" && pane.mode !== "MARKETING_COPILOT") || typeof api.browserAccounts !== "function") return () => undefined;
+    if (observerOnly || (pane.mode !== "BROWSER" && pane.mode !== "JOB_APPLY" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT") || typeof api.browserAccounts !== "function") return () => undefined;
     const request = ++googleAccountsRequestRef.current;
     api.browserAccounts(pane.id).then((accounts) => { if (googleAccountsRequestRef.current === request) setGoogleAccounts(accounts); }).catch(() => undefined);
     return () => { if (googleAccountsRequestRef.current === request) googleAccountsRequestRef.current += 1; };
   }
   useEffect(() => loadGoogleAccounts(), [pane.id, pane.mode, observerOnly]);
 
-  async function selectGoogleAccount(profileId: string | null, reconnect = false) {
+  // Another account for the tab in view: it changes account in place and the other tabs keep the pane's
+  // (operator request 2026-10-15). A Browser Host from before per-tab accounts moves it to a new Browser pane
+  // next to this one instead. Freelance Copilot tabs stay: they must leave through the platform's egress route.
+  async function chooseGoogleAccount(profileId: string) {
+    if (tabScoped && googleAccounts && activeTab && session && session.status !== "CLOSED") {
+      const paneAccount = effectiveAccountId(googleAccounts);
+      if (profileId === (activeTab.account?.profileId ?? paneAccount)) return setGoogleAccountMenuOpen(false);
+      const status = googleAccounts.profiles.find((profile) => profile.profileId === profileId)?.browserStatus;
+      return switchTabAccount(activeTab.pageId, profileId === paneAccount ? null : profileId, accountNeedsSignIn(status));
+    }
+    const activePage = activeTab;
+    if (pane.mode === "FREELANCE_COPILOT" || !googleAccounts || profileId === effectiveAccountId(googleAccounts) || emptyBrowser || pages.length < 2
+      || !activePage || activePage.pageId.startsWith("legacy:") || !session || session.status === "CLOSED") return selectGoogleAccount(profileId);
+    if (pending || observerOnly || pageMutationRef.current) return;
+    setGoogleAccountMenuOpen(false);
+    pageMutationRef.current = true;
+    pageRequestRef.current += 1;
+    setPending(true);
+    setError(null);
+    try {
+      // shortcut: checks the 16-pane maximum, not a lower room paneCap; read the room when lower caps are used.
+      if ((await api.panes(pane.roomId)).data.length >= roomPaneLimit(null)) throw new Error(`This room already has the maximum of ${roomPaneLimit(null)} panes.`);
+      const title = `Browser · ${accountEntryForProfile(googleAccounts, profileId)?.title ?? "account"}`.slice(0, 120);
+      const created = await api.createPane(pane.roomId, title, "BROWSER", { split: { parentId: pane.id, direction: "horizontal", size: 50 } });
+      accountTabMoves.set(created.id, { profileId, url: activePage.url && activePage.url !== "about:blank" ? activePage.url : null });
+      applyPagePayload(await api.closeBrowserPage(pane.id, activePage.pageId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The tab could not move to a new pane.");
+    } finally {
+      pageMutationRef.current = false;
+      setPending(false);
+    }
+  }
+
+  async function switchTabAccount(pageId: string, profileId: string | null, signIn: boolean) {
+    if (pending || observerOnly || pageMutationRef.current) return;
+    setGoogleAccountMenuOpen(false);
+    pageMutationRef.current = true;
+    pageRequestRef.current += 1;
+    setPending(true);
+    setError(null);
+    try {
+      applyPagePayload(await api.setBrowserPageAccount(pane.id, pageId, profileId, signIn ? { signIn: true } : {}));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The tab could not change its Google account.");
+    } finally {
+      pageMutationRef.current = false;
+      setPending(false);
+    }
+  }
+
+  async function selectGoogleAccount(profileId: string | null, reconnect = false, openUrl: string | null = null) {
     if (pending || observerOnly) return;
     setGoogleAccountMenuOpen(false);
     googleAccountsRequestRef.current += 1;
@@ -600,7 +672,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       setPages([]);
       setActivePageId(null);
       urlDraftRef.current = null;
-      const targetUrl = reconnect ? accountSignInTarget(selected.targetUrl, `https://accounts.google.com/ServiceLogin?continue=${encodeURIComponent("https://www.google.com/")}`) : selected.targetUrl;
+      const targetUrl = reconnect ? accountSignInTarget(selected.targetUrl, `https://accounts.google.com/ServiceLogin?continue=${encodeURIComponent("https://www.google.com/")}`)
+        : openUrl ? accountSignInTarget(selected.targetUrl, openUrl) : selected.targetUrl;
       setUrl(targetUrl);
       setGoogleAccounts((current) => current ? { ...current, selectedProfileId: selected.selectedProfileId, effectiveProfileId: selected.selectedProfileId } : current);
       setGoogleSignInTarget(profileId ? targetUrl : null);
@@ -681,7 +754,10 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   }
 
   useEffect(() => {
-    void loadOrStart();
+    const move = accountTabMoves.get(pane.id);
+    accountTabMoves.delete(pane.id);
+    if (move) void selectGoogleAccount(move.profileId, false, move.url).then(() => { loadGoogleAccounts(); return loadOrStart(false); });
+    else void loadOrStart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id]);
 
@@ -695,10 +771,19 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mobile, observerOnly, isVisible, pane.id, session?.sessionId, session?.viewport, session?.status]);
 
+  // A hidden page (phone screen off, app in the background) needs no frames: the stream reconnects when it shows again.
+  const [pageHidden, setPageHidden] = useState(() => typeof document !== "undefined" && document.visibilityState === "hidden");
+  useEffect(() => {
+    const update = () => setPageHidden(document.visibilityState === "hidden");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+  const streamPausedWhileHidden = pageHidden && !observerOnly;
+
   useEffect(() => {
     const fallbackTicket = response?.websocket ?? null;
     const sessionId = session?.sessionId ?? null;
-    if (!fallbackTicket || !sessionId || session?.status === "CLOSED" || streamMode === "SILENT") {
+    if (!fallbackTicket || !sessionId || session?.status === "CLOSED" || streamMode === "SILENT" || streamPausedWhileHidden) {
       updateBrowserStreamTelemetry(streamMode === "SILENT" ? "silent" : "idle");
       return;
     }
@@ -852,12 +937,15 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     };
     // Browser input refs intentionally keep high-frequency ACKs outside React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id, response?.websocket?.token, session?.sessionId, session?.status, streamMode]);
+  }, [pane.id, response?.websocket?.token, session?.sessionId, session?.status, streamMode, streamPausedWhileHidden]);
 
   useEffect(() => {
     controlLeaseRef.current = controlLease?.status === "ACTIVE" ? controlLease : null;
     latestControlLeaseRef.current = controlLease;
-  }, [controlLease]);
+    publishBrowserPaneControl(pane.id, controlLease?.status === "ACTIVE");
+  }, [controlLease, pane.id]);
+
+  useEffect(() => () => publishBrowserPaneControl(pane.id, false), [pane.id]);
 
   useEffect(() => {
     if (!debugOpen || debugTab !== "timeline") return;
@@ -884,6 +972,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       if (Date.parse(lease.expiresAt) <= Date.now()) {
         setControlLease(null);
         setHandoff(false);
+        return;
+      }
+      // Holding the browser without using it (a handoff that ended unnoticed) would keep the agent locked out.
+      if (lease.status === "ACTIVE" && Date.now() - lastOperatorInputAtRef.current >= BROWSER_CONTROL_IDLE_RELEASE_MS) {
+        void releaseControlRef.current();
         return;
       }
       api.heartbeatBrowserControl(pane.id, { leaseId: lease.leaseId, ttlSeconds: 60 })
@@ -1435,11 +1528,16 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     bookmarkImportRef.current?.click();
   }
 
-  async function acquireControlForInput(): Promise<BrowserControlLeasePayload | null> {
+  /** `renew` asks the server even while a lease is held: an explicit join (the control icon, a copilot's
+   * "Take control") must reach it, so a handoff the agent requested meanwhile is accepted. */
+  async function acquireControlForInput(renew = false, interaction = true): Promise<BrowserControlLeasePayload | null> {
     if (!session || session.status === "CLOSED" || observerOnly) return null;
+    // A hover is forwarded but is not an interaction: it does not keep the browser from the agent.
+    if (interaction) lastOperatorInputAtRef.current = Date.now();
     const currentLease = controlLeaseRef.current;
-    if (currentLease?.status === "ACTIVE" && currentLease.sessionId === session.sessionId && Date.parse(currentLease.expiresAt) > Date.now() + 1000) return currentLease;
-    controlLeaseRef.current = null;
+    const held = currentLease?.status === "ACTIVE" && currentLease.sessionId === session.sessionId && Date.parse(currentLease.expiresAt) > Date.now() + 1000;
+    if (held && !renew) return currentLease;
+    if (!held) controlLeaseRef.current = null;
     if (controlAcquirePromiseRef.current) return controlAcquirePromiseRef.current;
     const acquisition = api.acquireBrowserControl(pane.id, {
       holderType: "OPERATOR",
@@ -1476,14 +1574,20 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     scrollPaneIntoView(paneRef.current);
     setPending(true);
     setError(null);
-    const lease = await acquireControlForInput();
+    const lease = await acquireControlForInput(true);
     if (!lease && !legacyControlRef.current) {
       setPending(false);
       return;
     }
     setHandoff(true);
-    setTextInputOpen(true);
     setPending(false);
+    // A copilot's operator works in the page itself (a login, a CAPTCHA): keys go to the focused live view and the
+    // toolbar's "Type into page" stays one click away. A plain Browser pane opens the text box as before.
+    if (pane.mode === "JOB_APPLY" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT") {
+      window.setTimeout(() => canvasRef.current?.focus(), 0);
+      return;
+    }
+    setTextInputOpen(true);
     window.setTimeout(() => handoffInputRef.current?.focus(), 0);
   }
 
@@ -1506,6 +1610,25 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     setControlLease(null);
     setHandoff(false);
     setTextInputOpen(false);
+  }
+  releaseControlRef.current = releaseControl;
+
+  /** Marketing Copilot: saves a tab's page with the Google account it is open in (its own, else the pane's) to the copilot's Bookmarks. */
+  async function saveTabToCopilotBookmarks(page: BrowserPageSummaryPayload) {
+    setTabMenu(null);
+    const paneAccount = googleAccounts ? effectiveAccountId(googleAccounts) : privatePaneProfileId;
+    // The private pane profile belongs to this pane only, so a bookmark keeps it as "the pane's account".
+    const profileId = page.account?.profileId ?? (paneAccount === privatePaneProfileId ? null : paneAccount);
+    const accountLabel = page.account ? tabAccountLabel(page.account) : profileId && googleAccounts ? accountEntryForProfile(googleAccounts, profileId)?.title ?? null : null;
+    // Without the site's unread counter ("(1) Home / X").
+    const title = page.title?.trim().replace(/^\(\d+\+?\)\s*/, "").slice(0, 200);
+    try {
+      await api.createMarketingBookmark({ url: page.url!, ...(title ? { title } : {}), profileId, accountLabel });
+      window.dispatchEvent(new CustomEvent(MARKETING_BOOKMARKS_CHANGED_EVENT, { detail: { paneId: pane.id } }));
+      setCaptureNotice(`Saved to Bookmarks${accountLabel ? ` with ${accountLabel}` : ""}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The bookmark could not be saved.");
+    }
   }
 
   async function saveBookmark() {
@@ -1591,11 +1714,12 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     if (!session) return;
     // A bare hover is not an interaction: it must not take the browser from an agent (Job Copilot) and keep it
     // through the lease heartbeat. Hover reaches the page only while a click, scroll or key already holds control.
-    if (input.type === "POINTER" && input.eventType === "mouseMoved" && input.button === "none") {
+    const hover = input.type === "POINTER" && input.eventType === "mouseMoved" && input.button === "none";
+    if (hover) {
       const held = controlLeaseRef.current;
       if (!held || held.status !== "ACTIVE" || held.sessionId !== session.sessionId || Date.parse(held.expiresAt) <= Date.now()) return;
     }
-    const lease = await acquireControlForInput();
+    const lease = await acquireControlForInput(false, !hover);
     if (lease) {
       const payload = { ...input, leaseId: lease.leaseId } as BrowserInputPayload;
       if (sendRealtimeBrowserInput(payload)) return;
@@ -1645,6 +1769,26 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     if (input.type === "KEY" && (input.eventType === "keyDown" || input.eventType === "char") && input.text) {
       appendFrame((await api.browserAction(pane.id, { type: "type", text: input.text, sessionId: session.sessionId })).frame);
     }
+  }
+
+  /** The toolbar's Paste: clipboard text into the page's focused field. When the app may not read the clipboard
+   * (or it holds no text), the text box opens, where Ctrl+V always works. */
+  async function pasteClipboard() {
+    const text = await getSpaceRuntime().platform.clipboard?.readText().catch(() => "");
+    if (text) {
+      await sendCanvasInput({ type: "KEY", eventType: "char", key: "Unidentified", text, modifiers: 0 });
+      canvasRef.current?.focus();
+      return;
+    }
+    if (!(await acquireControlForInput()) && !legacyControlRef.current) return;
+    setTextInputOpen(true);
+    window.setTimeout(() => handoffInputRef.current?.focus(), 0);
+  }
+
+  async function sendPageKey(key: "Enter" | "Backspace") {
+    const base = { type: "KEY" as const, key, code: key, modifiers: 0 };
+    await sendCanvasInput({ ...base, eventType: "keyDown", ...(key === "Enter" ? { text: "\r" } : {}) });
+    await sendCanvasInput({ ...base, eventType: "keyUp" });
   }
 
   async function sendText(event: FormEvent<HTMLFormElement>) {
@@ -1699,6 +1843,16 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       // Job Copilot "Return to agent": the operator gives the browser back without the toolbar.
       if (detail.action === "release") {
         void releaseControl();
+        return;
+      }
+      // A copilot opened a tab through the API (a Marketing bookmark): show it in the strip now, not at the next poll.
+      if (detail.action === "tabs") {
+        void loadPages();
+        return;
+      }
+      // Freelance Copilot Setup changed the pane's routes: Chrome restarts with them on the same page.
+      if (detail.action === "restart") {
+        void restartBrowser();
         return;
       }
       // Job Copilot Setup chooses the pane's Google account outside the toolbar.
@@ -1841,6 +1995,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     active: googleAccountMenuOpen,
     onDismiss: () => setGoogleAccountMenuOpen(false)
   });
+  useDismissibleToolbarLayer({ containerRef: tabMenuRef, active: Boolean(tabMenu), onDismiss: () => setTabMenu(null) });
   useDismissibleToolbarLayer({
     containerRef: browserToolbarRef,
     active: bookmarksOpen || recordingControlsOpen || textInputOpen || browserToolbar.isOverflowOpen || Boolean(browserToolbar.actionMenu),
@@ -1876,17 +2031,23 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           {(emptyBrowser ? [] : pages).map((page) => {
             const selected = activePageId ? page.pageId === activePageId : page.isActive;
             return (
-              <div key={page.pageId} data-browser-page-id={page.pageId} className={`browser-tab${selected ? " selected" : ""}`}>
+              <div key={page.pageId} data-browser-page-id={page.pageId} className={`browser-tab${selected ? " selected" : ""}`}
+                onContextMenu={pane.mode === "MARKETING_COPILOT" && !observerOnly && /^https?:\/\//i.test(page.url ?? "") ? (event) => {
+                  event.preventDefault();
+                  setTabMenu({ page, x: event.clientX, y: event.clientY });
+                } : undefined}>
                 <button
                   type="button"
                   role="tab"
                   aria-selected={selected}
-                  aria-label={page.title ?? page.url ?? "Browser tab"}
-                  title={page.url ?? page.title ?? "Browser tab"}
+                  aria-label={[page.title ?? page.url ?? "Browser tab", page.account ? tabAccountLabel(page.account) : null].filter(Boolean).join(" · ")}
+                  title={[page.url ?? page.title ?? "Browser tab", page.account ? `Google account: ${tabAccountLabel(page.account)}` : null].filter(Boolean).join("\n")}
                   disabled={observerOnly || pending || session?.status === "CLOSED" || page.pageId.startsWith("legacy:")}
                   onClick={() => void activatePage(page.pageId)}
                 >
-                  <Globe2 aria-hidden="true" />
+                  {page.account ? <span className="account-menu-avatar browser-tab-account" aria-hidden="true"
+                    style={{ "--account-hue": avatarHue(tabAccountLabel(page.account)) } as CSSProperties}>
+                    {tabAccountLabel(page.account).charAt(0).toUpperCase()}</span> : <Globe2 aria-hidden="true" />}
                   <span>{page.title ?? page.url ?? "New tab"}</span>
                 </button>
                 {!page.pageId.startsWith("legacy:") ? (
@@ -1908,12 +2069,18 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         <button type="button" className="browser-new-tab" aria-label={`New browser tab ${pane.title}`} title="New tab" onClick={() => void createPage()} disabled={observerOnly || !status?.enabled || pending}>
           <Plus aria-hidden="true" />
         </button>
+        {tabMenu ? (
+          <div ref={tabMenuRef} className="icon-context-menu" role="menu" aria-label={`Tab menu ${tabMenu.page.title ?? tabMenu.page.url ?? "tab"}`}
+            style={{ left: `${tabMenu.x}px`, top: `${tabMenu.y}px` }}>
+            <button type="button" role="menuitem" onClick={() => void saveTabToCopilotBookmarks(tabMenu.page)}><BookmarkPlus aria-hidden="true" /> Save to bookmarks</button>
+          </div>
+        ) : null}
       </div>
       <div className={`browser-pane-toolbar${compactToolbar ? " browser-toolbar-compact" : ""}`} data-toolbar-width={toolbarWidth}>
       {googleAccounts?.profiles.length ? <div ref={googleAccountPickerRef} className="browser-account-picker"
         onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGoogleAccountMenuOpen(false); }}
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setGoogleAccountMenuOpen(false); googleAccountButtonRef.current?.focus(); } }}>
-        <button ref={googleAccountButtonRef} type="button" className={`browser-account-trigger${effectiveAccountId(googleAccounts) !== privatePaneProfileId ? " selected" : ""}`}
+        <button ref={googleAccountButtonRef} type="button" className={`browser-account-trigger${effectiveAccountId(menuAccounts ?? googleAccounts) !== privatePaneProfileId ? " selected" : ""}`}
           data-account-status={googleAccountSummary?.tone}
           aria-label={`Google account for ${pane.title}`} aria-haspopup="menu" aria-expanded={googleAccountMenuOpen}
           title={`Google account: ${[googleAccountSummary?.name, googleAccountSummary?.status].filter(Boolean).join(" · ")}`}
@@ -1923,8 +2090,9 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             setGoogleAccountMenuOpen(!googleAccountMenuOpen);
           }}><Users aria-hidden="true" /></button>
         {googleAccountMenuOpen ? <div className="browser-account-menu" role="menu" aria-label={`Google accounts for ${pane.title}`}>
-          <GoogleAccountMenuItems accounts={googleAccounts} onSelect={(profileId) => void selectGoogleAccount(profileId)}
-            onSignIn={(profileId) => void selectGoogleAccount(profileId, true)} />
+          <GoogleAccountMenuItems accounts={menuAccounts ?? googleAccounts} onSelect={(profileId) => void chooseGoogleAccount(profileId)}
+            onSignIn={(profileId) => void (tabScoped && activeTab?.account ? switchTabAccount(activeTab.pageId, profileId, true) : selectGoogleAccount(profileId, true))}
+            scope={tabScoped ? "This tab" : undefined} />
         </div> : null}
       </div> : null}
         <form onSubmit={navigate} className="browser-url-form">
@@ -2008,6 +2176,10 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           </button> : null}
           </> : null}
           <div ref={browserToolbarRef} className="browser-pane-actions" aria-label={`Browser toolbar actions ${pane.title}`}>
+            <button type="button" title="Paste clipboard text into the page" aria-label={`Paste into browser ${pane.title}`}
+              onClick={() => void pasteClipboard()} disabled={observerOnly || !session || session.status === "CLOSED" || pending}>
+              <Clipboard aria-hidden="true" />
+            </button>
             <div className="pane-actions-overflow browser-toolbar-overflow">
             <button
               type="button"
@@ -2179,6 +2351,12 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                 ref={handoffInputRef}
                 value={textInput}
                 onChange={(event) => setTextInput(event.target.value)}
+                onKeyDown={(event) => {
+                  // An empty box passes Enter and Backspace to the page: a phone can submit or correct a field without a canvas keyboard.
+                  if (textInput || event.nativeEvent.isComposing || (event.key !== "Enter" && event.key !== "Backspace")) return;
+                  event.preventDefault();
+                  void sendPageKey(event.key);
+                }}
                 aria-label={`Browser text input ${pane.title}`}
                 placeholder="Type into page"
                 disabled={!handoff || !session}

@@ -20,11 +20,12 @@ const FIXED_ORDER = [
   "plan", "build",
   "permissions", "model",
   "memory", "test",
-  "deploy", "clean_worktree",
-  "status", "usage",
-  "resume", "help",
-  "scroll_top", "scroll_bottom",
-  "clear", "transcript"
+  "deploy", "promote",
+  "clean_worktree", "status",
+  "usage", "resume",
+  "help", "scroll_top",
+  "scroll_bottom", "clear",
+  "transcript"
 ];
 
 beforeEach(() => installSpaceRuntime(liveRuntime));
@@ -106,7 +107,7 @@ describe("CLI shortcut targeting", () => {
   it("puts Continue first, keeps relative order for chat-mode subsets and normalizes stored ids", () => {
     const shuffled = [...OSK_CLI_COMMANDS].reverse();
     expect(orderVisibleCliShortcuts(shuffled, ["continue"])[0]?.id).toBe("continue");
-    const chatMode = OSK_CLI_COMMANDS.filter(command => Boolean(command.action) || ["plan_progress", "deploy", "clean_worktree"].includes(command.id));
+    const chatMode = OSK_CLI_COMMANDS.filter(command => Boolean(command.action) || ["plan_progress", "deploy", "promote", "clean_worktree"].includes(command.id));
     expect(orderVisibleCliShortcuts(chatMode).map(command => command.id))
       .toEqual(FIXED_ORDER.filter(id => chatMode.some(command => command.id === id)));
     expect(normalizeHiddenCliShortcuts(["clear", "continue", "clear", "transcript", 7, "nope", "plan"]))
@@ -212,6 +213,16 @@ describe("CLI shortcut targeting", () => {
     rerender(<CliShortcutsMenu active={false} disabled={false} onCommand={onCommand} />);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(onCommand).not.toHaveBeenCalled();
+  });
+
+  it("stays open when a click on the gaps between shortcuts drops focus, and closes when Tab leaves it", () => {
+    render(<><CliShortcutsMenu active disabled={false} onCommand={vi.fn()} /><button type="button">Elsewhere</button></>);
+    fireEvent.click(screen.getByRole("button", { name: "CLI shortcuts" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.blur(within(dialog).getByRole("button", { name: "continue" }), { relatedTarget: null });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.blur(within(dialog).getByRole("button", { name: "continue" }), { relatedTarget: screen.getByRole("button", { name: "Elsewhere" }) });
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("renders Esc and Enter buttons in the bottom right group and triggers their shortcut actions", () => {

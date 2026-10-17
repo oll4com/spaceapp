@@ -4,6 +4,7 @@ import type { Pane, Room } from "@space/contracts";
 import { api } from "../../api.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
+import { formatPaneFullTitle } from "../pane-float/pane-mode-labels.js";
 import type { PaneCompletionLifecycleState } from "../../pane-completion-lifecycle.js";
 import { Bot, Boxes, Check, ChevronDown, CircleAlert, Folder, LayoutDashboard, Maximize2, Minimize2, RefreshCw, Search, X } from "../ui-theme/app-icons.js";
 import {
@@ -422,7 +423,8 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
     const changed = entries.filter(entry => previous.has(entry.pane.id) && previous.get(entry.pane.id) !== entry.status && (entry.status === "waiting" || entry.status === "done"));
     if (!changed.length) return;
     const first = changed[0]!;
-    const message = first.status === "waiting" ? `${first.pane.title} is waiting for you.` : `${first.pane.title} finished.`;
+    const name = formatPaneFullTitle(first.pane);
+    const message = first.status === "waiting" ? `${name} is waiting for you.` : `${name} finished.`;
     setAnnouncement(changed.length > 1 ? `${message} ${changed.length - 1} more agent${changed.length > 2 ? "s" : ""} changed status.` : message);
   }, [entries, loaded, open]);
 
@@ -602,11 +604,12 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
               const isSelected = pane.id === selectedPaneId && pane.roomId === currentRoomId;
               const description = pane.taskMetadata?.description?.trim() ?? "";
               const preview = isRedundantPreview(pane.title, description) ? null : description;
-              return <button key={pane.id} type="button" className="agents-dashboard-card" data-status={status} data-selected={isSelected || undefined} disabled={opening !== null} onClick={() => void openPane(pane)} aria-label={`Open ${pane.title} in ${roomName}`}>
+              const heading = formatPaneFullTitle(pane);
+              return <button key={pane.id} type="button" className="agents-dashboard-card" data-status={status} data-selected={isSelected || undefined} disabled={opening !== null} onClick={() => void openPane(pane)} aria-label={`Open ${heading} in ${roomName}`}>
                 <span className="agents-dashboard-avatar">{runtime ? <img src={runtime.iconSrc} alt="" /> : <Bot aria-hidden="true" />}<i /></span>
                 <span className="agents-dashboard-card-content">
                   <span className="agents-dashboard-card-head">
-                    <strong title={pane.title}>{pane.title}</strong>
+                    <strong title={heading}>{heading}</strong>
                     <span className="agents-dashboard-badge" title={badgeTitle(entry)}><i />{badgeLabel(entry)}</span>
                   </span>
                   <small className="agents-dashboard-meta" title={modelId ? `${provider} · ${modelId}` : provider}>{providerLabel}{modelId ? <> · <span className="agents-dashboard-model">{modelId}</span></> : null}</small>

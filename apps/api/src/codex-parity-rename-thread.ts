@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { promisify } from "node:util";
 import { normalizeCodexThreadTitle } from "./codex-parity.js";
 

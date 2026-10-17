@@ -373,7 +373,16 @@ export const streamingBotStatusSchema = z.object({
   platforms: z.object({
     YOUTUBE: streamingBotPlatformStatusSchema,
     TWITCH: streamingBotPlatformStatusSchema
-  }).strict()
+  }).strict(),
+  /** What the bot still needs on this instance, in order; hints are short operator steps. */
+  moderationEnabled: z.boolean().default(false),
+  memoryPending: z.number().int().nonnegative().default(0),
+  setup: z.array(z.object({
+    id: z.string().min(1).max(40),
+    label: z.string().min(1).max(80),
+    ok: z.boolean(),
+    hint: z.string().max(300).nullable()
+  }).strict()).max(10).default([])
 }).strict();
 
 export const streamingBotActivityStatusSchema = z.enum(["REPLIED", "SKIPPED", "ERROR", "TEST"]);
@@ -427,7 +436,11 @@ export const streamingModerationActionSchema = z.object({
   platformActionId: z.string().nullable(),
   safeErrorCode: z.string().nullable(),
   createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime()
+  updatedAt: z.string().datetime(),
+  /** From the matching chat activity while it is retained, so the dock can name the viewer and act on the message. */
+  author: z.string().max(200).nullable().optional(),
+  message: z.string().max(2000).nullable().optional(),
+  activityId: z.string().max(200).nullable().optional()
 }).strict();
 
 export const createStreamingBotMemoryInputSchema = z.object({

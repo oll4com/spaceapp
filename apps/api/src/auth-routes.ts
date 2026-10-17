@@ -3,11 +3,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
-import { type AuthUser, loginInputSchema } from "@space/contracts";
+import { acceptUserInviteInputSchema, type AuthUser, loginInputSchema } from "@space/contracts";
 import { type GoogleAccount, nowIso, SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import {
   type AuthConfig, authenticateLogin, buildGoogleAuthUrl, cookieName, defaultSessionRevocationStore,
-  exchangeGoogleCode, generatePkcePair, operatorSessionTtlSeconds, signOAuthState, signSession, signSessionWithTtl,
+  exchangeGoogleCode, generatePkcePair, hashPassword, operatorSessionTtlSeconds, signOAuthState, signSession, signSessionWithTtl,
   verifyGoogleIdToken, verifyOAuthState, verifyPassword, verifySession
 } from "./auth.js";
 import { operatorBrowserActor } from "./browser-actors.js";
@@ -55,6 +55,13 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       await verifyPassword(input.password, ownerCredentials.passwordHash)
         ? ownerCredentials.user
         : null;
+    if (!user && config.multiUserEnabled && store.getPasswordUser) {
+      // Invited users sign in with their own password; a disabled user has none here.
+      const account = await store.getPasswordUser(input.email);
+      if (account && account.user.id !== ownerCredentials?.user.id && await verifyPassword(input.password, account.passwordHash)) {
+        user = account.user;
+      }
+    }
     if (!user && (auth.devLogin || !ownerCredentials)) {
       user = await authenticateLogin(input, auth);
     }
@@ -85,6 +92,40 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     });
     reply.clearCookie("space_logged_out", { path: "/" });
     return { user: persistedUser, isAuthenticated: true, isSetupRequired: false, optionalModules: [...config.optionalModules] };
+  });
+  // Accepting an invite creates the invited account with its own password and signs it in (SPACE_MULTI_USER_ENABLED).
+  app.post("/api/auth/invites/accept", {
+    config: {
+      rateLimit: {
+        max: 5,
+        timeWindow: "15 minutes"
+      }
+    }
+  }, async (request, reply) => {
+    if (!config.multiUserEnabled || !store.acceptUserInvite) {
+      return sendApiError(reply, 404, "MULTI_USER_DISABLED", "Multi-user accounts are not enabled on this installation.");
+    }
+    const input = parseBody(acceptUserInviteInputSchema, request.body);
+    const user = await store.acceptUserInvite({
+      tokenSha256: createHash("sha256").update(input.token).digest("hex"),
+      passwordHash: await hashPassword(input.password),
+      now: nowIso()
+    });
+    if (!user) {
+      await recordAudit(store, request, { action: "user.invite.accept_failed", targetType: "user_invite", metadata: { result: "failed" } });
+      return sendApiError(reply, 400, "INVITE_INVALID", "This invite is not valid, was already used or has expired.");
+    }
+    await recordAudit(store, request, {
+      actorUserId: user.id, action: "user.invite.accepted", targetType: "user", targetId: user.id, metadata: { role: user.role }
+    });
+    reply.setCookie(cookieName, signSession(user, auth.sessionSecret), {
+      httpOnly: true,
+      secure: auth.secureCookies,
+      sameSite: "lax",
+      path: "/",
+      maxAge: operatorSessionTtlSeconds
+    });
+    return { user, isAuthenticated: true, isSetupRequired: false, optionalModules: [...config.optionalModules] };
   });
   app.post("/api/auth/logout", defaultRouteRateLimitOptions, async (request, reply) => {
     const currentToken = request.cookies[cookieName];

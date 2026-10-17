@@ -23,6 +23,8 @@ import {
   convertTextRange,
   createGreekInputState,
   detectKeyboardLayoutMismatch,
+  enterAddsLine,
+  isTouchOnlyDevice,
   handleEnglishKeyInput,
   handleGreekKeyInput,
   insertTextAtCursor,
@@ -35,7 +37,7 @@ import {
   useKeyboardAutocorrectSettings
 } from "../keyboard-autocorrect/keyboard-autocorrect-settings.js";
 
-const OSK_CHAT_MODE_COMMANDS = OSK_CLI_COMMANDS.filter(command => Boolean(command.action) || command.id === "plan_progress" || command.id === "deploy" || command.id === "clean_worktree");
+const OSK_CHAT_MODE_COMMANDS = OSK_CLI_COMMANDS.filter(command => Boolean(command.action) || command.id === "plan_progress" || command.id === "deploy" || command.id === "promote" || command.id === "clean_worktree");
 
 type CodexModelCatalog = PaneCliModelSettings["models"];
 
@@ -535,7 +537,7 @@ export function CodexComposer({
       }
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !isComposingRef.current) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !isComposingRef.current && !enterAddsLine(event.nativeEvent)) {
       event.preventDefault();
       submit();
       return;
@@ -761,7 +763,7 @@ export function CodexComposer({
         autoCorrect="off"
         autoCapitalize="none"
         spellCheck={false}
-        enterKeyHint="send"
+        enterKeyHint={isTouchOnlyDevice() ? "enter" : "send"}
         data-gramm="false"
         data-enable-grammarly="false"
         disabled={pending || isDisabled}

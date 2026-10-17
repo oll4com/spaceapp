@@ -431,7 +431,7 @@
       "status": "confirmed",
       "reproduction": "failure-matrix.md",
       "evidence": "docs/quality/restore-and-migrations.md; scripts/restore-drill.mjs (+ scripts/tests/restore-drill.test.mjs); scripts/space-db-backup.mjs (+ tests); reports /var/lib/spaceapp-user/agent-workspace/reports/20261011-restore-drill/",
-      "disposition": "Resolved 2026-10-11. Restore drill of live PostgreSQL into a separate container: 148/148 tables with matching counts and checksums, 217 foreign keys with 0 orphans, identical migration history, store opens with 0 pending migrations; temporal and temporal_visibility match. RTO measured 28.1/13.5/18.4 s (median 18.4 s, declared conditions in the doc). RPO was up to 7 days (weekly VM snapshot; 21 days observed after two failed runs). A daily validated logical backup (pg_dump custom format, TOC + full-decompress validation, SHA-256 manifest, 7 daily + 4 weekly) now runs from a user systemd timer, giving RPO <= 1 day for the database; a fresh backup restored into a disposable container matched live (158/158 tables, 155/155 migrations). Limits: both copies live on public-host; the 132-142 GB VM backup restore was never drilled.",
+      "disposition": "Resolved 2026-10-11. Restore drill of live PostgreSQL into a separate container: 148/148 tables with matching counts and checksums, 217 foreign keys with 0 orphans, identical migration history, store opens with 0 pending migrations; temporal and temporal_visibility match. RTO measured 28.1/13.5/18.4 s (median 18.4 s, declared conditions in the doc). RPO was up to 7 days (weekly VM snapshot; 21 days observed after two failed runs). A daily validated logical backup (pg_dump custom format, TOC + full-decompress validation, SHA-256 manifest, 7 daily + 4 weekly) now runs from a user systemd timer, giving RPO <= 1 day for the database; a fresh backup restored into a disposable container matched live (158/158 tables, 155/155 migrations). Limits: both copies live on public-host; the 132-142 GB VM backup restore was never drilled. 2026-10-16: daily dumps copied off public-host to the StorageBox and read back (b4bf5c90ae). A full qmrestore boot needs storage no production guest uses (local-zfs 74% used); it stays an operator step. Also internal review 1.1.5 Codex #8.",
       "resolution": "partial"
     },
     {
@@ -2071,7 +2071,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": "packages/run-spaceapp/templates/compose.yml; launcher suite 164/164",
-      "disposition": "Public 813b76b: pgvector, Temporal and codex-lb are pinned by multi-arch index digest (headroom already was); the README and security model now say that SpaceApp images are pulled by exact version tag, which the release workflow publishes once (it fails closed when a tag exists) with SBOM and provenance attestations it verifies. Open: verifying the first-party digest or attestation at install time.",
+      "disposition": "Public 813b76b: pgvector, Temporal and codex-lb are pinned by multi-arch index digest (headroom already was); the README and security model now say that SpaceApp images are pulled by exact version tag, which the release workflow publishes once (it fails closed when a tag exists) with SBOM and provenance attestations it verifies. Open: verifying the first-party digest or attestation at install time. Internal review 1.1.5 Codex #9: still open for SpaceApp's own images; planned for 1.1.7.",
       "resolution": "partial"
     },
     {
@@ -2131,8 +2131,8 @@
       "status": "confirmed",
       "reproduction": "apps/api/tests/child-process-env.test.ts",
       "evidence": "apps/api/tests/child-process-env.test.ts",
-      "disposition": "e851e2f128: childProcessEnv() removes Space credentials from every spawn in apps/api; a test keeps process.env spreads out.",
-      "resolution": "fixed"
+      "disposition": "e851e2f128: childProcessEnv() removes Space credentials from every spawn in apps/api; a test keeps process.env spreads out. Internal review 1.1.5 found the claim overstated; see INT5-C-F5.",
+      "resolution": "partial"
     },
     {
       "id": "EXT-C-F9",
@@ -2411,7 +2411,7 @@
       "status": "confirmed",
       "reproduction": "apps/api/src/__tests__/files.test.ts",
       "evidence": "apps/api/src/__tests__/files.test.ts",
-      "disposition": "e851e2f128: system roots, their direct children and the workspace with its parents are refused; every Admin Mode change is audited. Host mode itself stays an operator feature (FS-004).",
+      "disposition": "e851e2f128: system roots, their direct children and the workspace with its parents are refused; every Admin Mode change is audited. Host mode itself stays an operator feature (FS-004). Internal review 1.1.5 Codex #11.",
       "resolution": "partial"
     },
     {
@@ -2431,7 +2431,7 @@
       "status": "confirmed",
       "reproduction": "apps/api/tests/files-upload-http.test.ts",
       "evidence": "apps/api/tests/files-upload-http.test.ts",
-      "disposition": "e851e2f128: UPLOAD_PARTIALLY_SAVED names the saved files; semantics documented in upload-reconciliation.md.",
+      "disposition": "e851e2f128: UPLOAD_PARTIALLY_SAVED names the saved files; semantics documented in upload-reconciliation.md. Internal review 1.1.5 Codex #5.",
       "resolution": "fixed"
     },
     {
@@ -2451,7 +2451,7 @@
       "status": "confirmed",
       "reproduction": "scripts/tests/composition-root-size.test.mjs",
       "evidence": "scripts/tests/composition-root-size.test.mjs",
-      "disposition": "b87ab3f03d: size ratchet (composition-root-budget.json); getting back under the 60% target remains open (ARCH-001).",
+      "disposition": "b87ab3f03d: size ratchet (composition-root-budget.json); getting back under the 60% target remains open (ARCH-001). Internal review 1.1.5 Codex #2.",
       "resolution": "open"
     },
     {
@@ -2471,8 +2471,8 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": null,
-      "disposition": "See OBS-001, OBS-006, OBS-007 and observability.md 'Not covered'.",
-      "resolution": "open"
+      "disposition": "See OBS-001, OBS-006, OBS-007 and observability.md 'Not covered'. Internal review 1.1.5 Codex #6. 2026-10-16: missions and task runs carry trace_id and error_code (migration 0206, f5007ed3e4); the trace lookup returns them and follows background continuations; worker and memory-worker activities export OTLP spans under the caller's traceparent and the memory workers record activities (38e446c065). Still open per observability.md 'Not covered': supervisor failure codes, CLI task ids, host spans, Temporal-only workflow faults, no collector.",
+      "resolution": "partial"
     },
     {
       "id": "EXT-G-6",
@@ -2491,8 +2491,8 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": null,
-      "disposition": "See ADAPTER-001 and ADAPTER-006; the canary timer needs the operator's install.",
-      "resolution": "open"
+      "disposition": "See ADAPTER-001 and ADAPTER-006; the canary timer needs the operator's install. 2026-10-16: canary timer installed and run (Codex 0.163.0 PASS, Gemini 1.4.0 PASS, Qwen 0.25.2 BLOCKED); live proofs on stable for Codex and Claude (start, send, reattach), Codex resume picker and OpenCode (start, send, interrupt); a failed Codex interrupt was fixed (4e26ebc452). Gemini, the disabled runtimes and host-loss resume remain unproven (runtime-compatibility.md). Also internal review 1.1.5 Codex #3.",
+      "resolution": "partial"
     },
     {
       "id": "EXT-G-7",
@@ -2513,6 +2513,526 @@
       "evidence": "scripts/tests/quality-known-limitations.test.mjs",
       "disposition": "KNOWN_LIMITATIONS.md is generated from this register (scripts/quality-known-limitations.mjs) and checked by test:architecture.",
       "resolution": "fixed"
+    },
+    {
+      "id": "INT5-C-F1",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Same-site WebSocket routes had no Origin check; the VNC proxy is a generic TCP tunnel",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P2",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": "apps/api/tests/cors-origin-guard.test.ts",
+      "evidence": "apps/api/tests/cors-origin-guard.test.ts",
+      "disposition": "dbb253756e: every /api WebSocket upgrade gets the same-site Origin check. The VNC proxy stays a tunnel by design, limited to private IPv4 targets (assertSafeVncTarget).",
+      "resolution": "fixed"
+    },
+    {
+      "id": "INT5-C-F2",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Docker distribution: every agent can drive other panes through the pane-host socket and read all provider credentials",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P2",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "A public install has one owner and every pane is that owner's; the boundary is the CLI container, not the pane. Per-pane isolation changes the CLI host, which ships only with a guarded host restart; tracked for a later release.",
+      "resolution": "accepted-tradeoff"
+    },
+    {
+      "id": "INT5-C-F3",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Chromium runs with --no-sandbox in a container that holds database credentials and the data volume",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P2",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "Needs the browser image to run Chromium's sandbox (user namespaces or a separate browser container without the data volume). Browser-host change; not in 1.1.6.",
+      "resolution": "open"
+    },
+    {
+      "id": "INT5-C-F4",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "factory-reset ignores the safety backup's and purge's exit codes",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P2",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "1.1.6 overlay commit ff78d138 (reported by the 1.1.6 release captain; ships with that release): backup and purge codes checked, FACTORY-RESET-WITHOUT-BACKUP to proceed without one.",
+      "resolution": "partial"
+    },
+    {
+      "id": "INT5-C-F5",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Child-process credential scrubbing was overstated: about 50 API spawns inherited the session secret",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P2",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": "apps/api/tests/safe-child-process.test.ts",
+      "evidence": "apps/api/tests/safe-child-process.test.ts",
+      "disposition": "a0c1db6276: every API spawn goes through safe-child-process (no env given = childProcessEnv()); a test keeps every API module on it. Still open in the container: core-entrypoint exports the secrets and core-supervisor passes them to the web proxy.",
+      "resolution": "partial"
+    },
+    {
+      "id": "INT5-C-F6",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "The SEC-009 mkdir guard could be bypassed through the CLI-session start path",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": "apps/api/tests/project-ensure-security.test.ts",
+      "evidence": "apps/api/tests/project-ensure-security.test.ts",
+      "disposition": "95f85394bd: CLI session start and the terminal manager create a missing folder only where a pane may (mayCreateCliSessionDirectory).",
+      "resolution": "fixed"
+    },
+    {
+      "id": "INT5-C-F7",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Stale lock directories on a persistent volume block provider install and stall OpenCode",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "1.1.6 overlay commit ff78d138 (reported by the 1.1.6 release captain; ships with that release): a lock records its owner and a stale one is broken; only EEXIST means busy.",
+      "resolution": "partial"
+    },
+    {
+      "id": "INT5-C-F8",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Two workspaces with the same folder name map to the same container path",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "1.1.6 overlay commit ff78d138 (reported by the 1.1.6 release captain; ships with that release): a name collision gets a unique container path; dot-only names are refused.",
+      "resolution": "partial"
+    },
+    {
+      "id": "INT5-C-F9",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "The provenance verifier ignores the public-owned files (installer, Dockerfile, workflows)",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "Planned for 1.1.7: report every tree file missing from the manifest and list the public-owned ones in it.",
+      "resolution": "open"
+    },
+    {
+      "id": "INT5-C-F10",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "The public 0057 migration broke the identity rule and its guard test is withheld",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": "packages/db/tests/migration-identities.test.ts",
+      "evidence": "packages/db/tests/migration-identities.test.ts",
+      "disposition": "b007a2594e records both 0057 names as a historical collision with a test; the public exclusion of migration-identities.test.ts is dropped once the export contains it (1.1.6).",
+      "resolution": "partial"
+    },
+    {
+      "id": "INT5-C-F11",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "The CORE-011 ROLLBACK masking remained at about ten transaction sites",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": "packages/db/tests/rollback-keeping-error.test.ts",
+      "evidence": "packages/db/tests/rollback-keeping-error.test.ts",
+      "disposition": "5642500c64: rollbackKeepingError at every site; a failed ROLLBACK keeps the step's error and discards the client.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "INT5-C-F12",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "The main SPA has no CSP and no frame protection",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": "apps/web/tests/static-compression.test.ts",
+      "evidence": "apps/web/tests/static-compression.test.ts",
+      "disposition": "88ccf8a747: the operator app sends frame-ancestors 'self', object-src 'none', base-uri 'self' and X-Frame-Options SAMEORIGIN (checked on dev). A script-src policy needs a browser proof of every pane first.",
+      "resolution": "partial"
+    },
+    {
+      "id": "INT5-C-F13",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Admin Mode save used a predictable temp name, followed symlinks and dropped the mode",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": "apps/api/src/__tests__/files.test.ts",
+      "evidence": "apps/api/src/__tests__/files.test.ts",
+      "disposition": "88ccf8a747: random temp name opened with wx, the target's mode is kept.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "INT5-C-F14",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Lazily installed providers and the Docker install are not integrity-pinned",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "Planned for 1.1.7 with first-party digest pinning (EXT-C-F5): Cursor checksum, provider lockfiles without install scripts, Docker apt key fingerprint.",
+      "resolution": "open"
+    },
+    {
+      "id": "INT5-C-F15",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Credential encryption is correct but fragmented; the database-password key has no AAD",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "Reviewer classed it a trade-off. HKDF-derived keys per purpose (fd98d0c7f5); a shared envelope with AAD is a later refactor.",
+      "resolution": "accepted-tradeoff"
+    },
+    {
+      "id": "INT5-C-F16",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "The .trivyignore rationale calls trustProxy a boolean",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "Overlay wording fix, planned for 1.1.7.",
+      "resolution": "open"
+    },
+    {
+      "id": "INT5-C-F17",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "docs/architecture.md describes the private deployment to public readers",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "fddfbe8d27: the map opens with what a public reader finds (compose template, security model). The platform (0.2.x) and installer (1.1.x) versions are separate by design.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "INT5-C-F18",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "The public API served the operator's VNC presets",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": "apps/api/src/__tests__/vnc-proxy.test.ts",
+      "evidence": "apps/api/src/__tests__/vnc-proxy.test.ts",
+      "disposition": "88ccf8a747: presets come from SPACE_VNC_PRESETS, empty by default; the operator's four are in deploy/space-api.service.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "INT5-C-F19",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Public installs cannot scrape /metrics",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "Reviewer classed it a trade-off: /metrics is loopback or ADMIN only (EXT-C-F12); logs, /readyz and the healthcheck serve public installs.",
+      "resolution": "accepted-tradeoff"
+    },
+    {
+      "id": "INT5-C-F20",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Worktree list/create had no role or path restriction; 500s echoed raw errors",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": "apps/api/tests/worktree-removal-guard.test.ts",
+      "evidence": "apps/api/tests/worktree-removal-guard.test.ts",
+      "disposition": "88ccf8a747: list and create need ADMIN or OPERATOR like merge, removal and cleanup; fddfbe8d27: 500s no longer echo the cause.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "INT5-C-F21",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Host-side secret files are mode 0644 behind a 0700 directory",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "Containers read them as other uids (PostgreSQL as 999); the launcher creates the 0700 parent. Checking a pre-existing parent's mode is a 1.1.7 candidate.",
+      "resolution": "accepted-tradeoff"
+    },
+    {
+      "id": "INT5-C-F22",
+      "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
+      "observation": "Shared writable memory is injected into agent instructions",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "One owner's agents share one memory by design; memory text is labelled untrusted in the instructions.",
+      "resolution": "accepted-tradeoff"
+    },
+    {
+      "id": "INT5-X-1",
+      "reviewerSection": "Codex gpt-6.1-sol",
+      "observation": "Evidence not pinned to the reviewed commit",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P2",
+      "owner": "maintainer",
+      "reviewer": "Codex gpt-6.1-sol",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": "scripts/build-review-snapshot.mjs",
+      "evidence": "scripts/build-review-snapshot.mjs",
+      "disposition": "5328c433ea: the review pack carries QUALITY_SNAPSHOT.json measured for the reviewed public commit; baseline.json is labelled as the plan's starting point.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "INT5-X-7",
+      "reviewerSection": "Codex gpt-6.1-sol",
+      "observation": "Readiness timeouts did not cancel the underlying checks",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Codex gpt-6.1-sol",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": "apps/api/tests/readyz-single-flight.test.ts",
+      "evidence": "apps/api/tests/readyz-single-flight.test.ts",
+      "disposition": "aacadfade2: /readyz keeps one pending check per stalled dependency.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "INT5-X-10",
+      "reviewerSection": "Codex gpt-6.1-sol",
+      "observation": "domain-boundaries.md misstated the root test gate",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Codex gpt-6.1-sol",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "bfaea3f9a8: the wording matches package.json (check runs test:architecture).",
+      "resolution": "fixed"
+    },
+    {
+      "id": "INT5-X-4",
+      "reviewerSection": "Codex gpt-6.1-sol",
+      "observation": "Recovery semantics are at-least-once",
+      "observationSource": "Internal review of public v1.1.5 (8a3e1f0), 2026-10-16",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "severity": "P3",
+      "owner": "maintainer",
+      "reviewer": "Codex gpt-6.1-sol",
+      "dependency": null,
+      "status": "confirmed",
+      "reproduction": null,
+      "evidence": null,
+      "disposition": "Non-idempotent provider calls are not replayed blindly; ambiguity is surfaced to the operator (recovery docs).",
+      "resolution": "accepted-tradeoff"
     }
   ]
 }

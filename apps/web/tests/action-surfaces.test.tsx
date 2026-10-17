@@ -155,3 +155,18 @@ describe("Mobile pane sheet", () => {
     expect(command.textContent).not.toContain("Start a clean thread");
   });
 });
+
+describe("MobileActionSheet swipe", () => {
+  it("closes when its header is pulled down, not on a tap", () => {
+    render(<Fixture plain />);
+    fireEvent.click(screen.getByRole("button", { name: "Open fixture" }));
+    const sheet = screen.getByRole("dialog", { name: "Fixture actions" });
+    const header = sheet.querySelector("header")!;
+    fireEvent.pointerDown(header, { clientY: 100 });
+    fireEvent.pointerUp(header, { clientY: 120 });
+    expect(sheet.isConnected).toBe(true);
+    fireEvent.pointerDown(header, { clientY: 100 });
+    fireEvent.pointerUp(header, { clientY: 200 });
+    expect(sheet.isConnected).toBe(false);
+  });
+});

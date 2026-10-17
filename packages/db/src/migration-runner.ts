@@ -1,3 +1,4 @@
+import { rollbackKeepingError } from "./rollback.js";
 import type pg from "pg";
 
 type Migration = {
@@ -72,7 +73,8 @@ export async function applyMigration(
       await client.query("COMMIT");
       return;
     } catch (error) {
-      await client.query("ROLLBACK");
+      // A lost connection fails ROLLBACK too: keep the migration's error and do not retry on that client.
+      if (await rollbackKeepingError(client)) throw error;
       const code = errorCode(error);
       if (!code || !retryableTransactionCodes.has(code) || attempt === maxAttempts) throw error;
 

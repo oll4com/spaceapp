@@ -14,7 +14,7 @@ function statusTone(status: BrowserAccountStatus | undefined): StatusTone | unde
 
 // Clear, distinct hues that stay readable on the dark menu (no muddy yellows).
 const avatarHues = [205, 225, 255, 280, 310, 335, 165, 185, 145, 10];
-function avatarHue(value: string): number {
+export function avatarHue(value: string): number {
   let hash = 0;
   for (const char of value) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   return avatarHues[hash % avatarHues.length]!;
@@ -30,10 +30,12 @@ export function selectedAccountSummary(accounts: YouTubeAccounts): { name: strin
 }
 
 /** Content of the Google account menu shared by Browser and YouTube panes. */
-export function GoogleAccountMenuItems({ accounts, onSelect, onSignIn }: {
+export function GoogleAccountMenuItems({ accounts, onSelect, onSignIn, scope }: {
   accounts: YouTubeAccounts;
   onSelect(profileId: string): void;
   onSignIn(profileId: string): void;
+  /** What a choice changes when it is not the whole pane ("This tab"). */
+  scope?: string;
 }) {
   const effectiveId = effectiveAccountId(accounts);
   const entries = accountMenuEntries(accounts);
@@ -67,6 +69,7 @@ export function GoogleAccountMenuItems({ accounts, onSelect, onSignIn }: {
   return <>
     <div className="account-menu-head">
       <strong>Google account</strong>
+      {scope ? <small className="account-menu-scope">{scope}</small> : null}
       {needSignIn ? <span className="account-menu-alert">{needSignIn === 1 ? "1 needs sign-in" : `${needSignIn} need sign-in`}</span> : null}
     </div>
     {shared.length ? <small className="account-menu-group">Shared by all panes</small> : null}

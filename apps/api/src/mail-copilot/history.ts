@@ -50,6 +50,8 @@ export function netThreadChanges(entries: readonly GmailHistoryEntry[]): ThreadC
       for (const label of change ? labelIds ?? [] : []) if (!change!.added.delete(label)) change!.removed.add(label);
     }
     for (const { message } of entry.messagesDeleted ?? []) {
+      // Gmail replaces a draft's message on every edit; a deleted draft is no deleted mail.
+      if (message?.labelIds?.includes("DRAFT")) continue;
       const change = thread(message);
       if (change) change.deleted = true;
     }

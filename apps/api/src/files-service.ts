@@ -1,8 +1,9 @@
 import { lstat, readdir, open, writeFile, mkdir, rename, chmod, rm } from "node:fs/promises";
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { promisify } from "node:util";
 import path from "node:path";
 import { constants } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { FilesystemError, filesystemError } from "./filesystem-error.js";
 import { openWorkspacePath, descriptorPath, readBoundedText } from "./workspace-filesystem.js";
 export { FilesystemError } from "./filesystem-error.js";
@@ -369,10 +370,13 @@ export async function writeFileContent(options: {
 
   // Atomic write via temporary file
   const dir = path.dirname(resolvedPath);
-  const tmpPath = path.join(dir, `.tmp_${path.basename(resolvedPath)}_${Date.now()}`);
+  // Random name and "wx": a planted symlink at a guessable temp name cannot redirect the save (1.1.5 review F13).
+  const tmpPath = path.join(dir, `.tmp_${path.basename(resolvedPath)}_${randomBytes(8).toString("hex")}`);
 
   try {
-    await writeFile(tmpPath, options.content, "utf-8");
+    const previousMode = await lstat(resolvedPath).then((stats) => stats.mode & 0o7777, () => null);
+    await writeFile(tmpPath, options.content, { encoding: "utf-8", flag: "wx" });
+    if (previousMode !== null) await chmod(tmpPath, previousMode);
     await rename(tmpPath, resolvedPath);
   } catch (error) {
     try {

@@ -10,8 +10,35 @@
 .mc-account[data-in-pane="false"] { opacity: 0.7; }
 .mc-account-email { font-weight: 650; word-break: break-all; }
 .mc-account .mc-consent { margin-left: auto; }
-.mc-setup-account { display: grid; gap: 6px; }
-.mc-setup-account .jc-button { justify-self: start; }
+/* Setup → Accounts: a notifications card (the pane-wide switch), then one row per account with its Show switch and notification bell. */
+.mc-notify-card { display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--jc-border); border-radius: 12px;
+  background: var(--jc-raised); }
+.mc-notify-card[data-on="true"] { border-color: color-mix(in srgb, var(--jc-accent) 45%, var(--jc-border)); background: color-mix(in srgb, var(--jc-accent) 8%, var(--jc-raised)); }
+.mc-notify-card-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: color-mix(in srgb, var(--jc-text) 8%, transparent); color: var(--jc-muted); }
+.mc-notify-card[data-on="true"] .mc-notify-card-icon { background: color-mix(in srgb, var(--jc-accent) 20%, transparent); color: var(--jc-accent); }
+.mc-notify-card-icon svg { width: 18px; height: 18px; }
+.mc-notify-card .space-toggle { font-size: 13px; }
+.mc-notify-card .space-toggle small { display: block; margin-top: 2px; color: var(--jc-muted); font-size: 12px; font-weight: 400; }
+.mc-setup-accounts { display: grid; margin: 0; padding: 0; list-style: none; border: 1px solid var(--jc-border); border-radius: 12px; overflow: hidden; }
+.mc-setup-account { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto 34px; align-items: center; gap: 4px 12px; padding: 10px 12px; }
+.mc-setup-account + .mc-setup-account { border-top: 1px solid var(--jc-border); }
+.mc-setup-account[data-shown="false"] :is(.mc-avatar, .mc-setup-account-copy) { opacity: 0.5; }
+.mc-setup-account-copy { display: grid; gap: 1px; min-width: 0; }
+.mc-setup-account-copy strong { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.mc-setup-account-copy small { color: var(--jc-muted); font-size: 12px; }
+.mc-setup-account-copy small:not([data-access="full"]) { color: var(--jc-warn); }
+.mc-setup-account .space-toggle { color: var(--jc-muted); font-size: 12px; }
+/* (0,3,0) beats the room theme's ".space-shell[data-room-theme] button" (0,2,1). */
+.mc-pane .jc-setup .mc-notify-button { display: grid; place-items: center; width: 34px; height: 34px; min-height: 0; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: var(--jc-muted); cursor: pointer; transition: background-color 120ms ease-out, color 120ms ease-out; }
+.mc-pane .jc-setup .mc-notify-button[aria-pressed="true"] { background: color-mix(in srgb, var(--jc-accent) 18%, transparent); color: var(--jc-accent); }
+.mc-pane .jc-setup .mc-notify-button:hover:not(:disabled) { background: color-mix(in srgb, var(--jc-text) 8%, transparent); color: var(--jc-text); }
+.mc-pane .jc-setup .mc-notify-button[aria-pressed="true"]:hover:not(:disabled) { background: color-mix(in srgb, var(--jc-accent) 28%, transparent); color: var(--jc-accent); }
+.mc-pane .jc-setup .mc-notify-button:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 1px; }
+.mc-pane .jc-setup .mc-notify-button:disabled { opacity: 0.4; cursor: not-allowed; }
+.mc-notify-button svg { width: 17px; height: 17px; }
+.mc-setup-account-consent { grid-column: 2 / -1; }
+.mc-setup-account-consent .jc-button { justify-self: start; }
 .mc-pane .jc-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 /* ---- mailbox ------------------------------------------------------------ */
@@ -56,8 +83,9 @@
 .mc-move select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; }
 .mc-account-switch select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; }
 
-/* Label chips: one scrolling row that fades at the edge. */
-.mc-labels { flex: none; display: flex; gap: 6px; padding: 6px 10px 8px; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain;
+/* Label chips: one scrolling row that fades at the edge, then the user-label picker pinned beside it. */
+.mc-label-bar { flex: none; display: flex; align-items: center; min-width: 0; }
+.mc-labels { flex: 1 1 auto; min-width: 0; display: flex; gap: 6px; padding: 6px 10px 8px; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain;
   mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
 .mc-labels::-webkit-scrollbar { display: none; }
 .mc-pane .mc-client .mc-label { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 32px; min-height: 0; padding: 0 12px; border: 1px solid var(--jc-border);
@@ -66,6 +94,9 @@
 .mc-pane .mc-client .mc-label.selected { border-color: transparent; background: color-mix(in srgb, var(--jc-accent) 22%, transparent); color: var(--jc-text); font-weight: 600; }
 .mc-label svg { width: 15px; height: 15px; color: var(--jc-muted); }
 .mc-label.selected svg { color: var(--jc-accent); }
+.mc-pane .mc-client .mc-label-picker { position: relative; margin: 0 10px 2px 0; max-width: 45%; overflow: hidden; }
+.mc-label-picker:focus-within { box-shadow: 0 0 0 2px var(--jc-accent); }
+.mc-label-picker select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; }
 .mc-label-count { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--jc-accent); color: var(--jc-bg); font-size: 10.5px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 .mc-banner { flex: none; margin: 0 10px 6px; }
 
@@ -86,6 +117,17 @@
 .mc-avatar-all { background: color-mix(in srgb, var(--jc-accent) 24%, var(--jc-bg)); color: var(--jc-accent); }
 .mc-avatar-all svg { width: 16px; height: 16px; }
 .mc-avatar-account { position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border-radius: 50%; box-shadow: 0 0 0 2px var(--jc-bg); }
+/* Selection: the avatar is the toggle (a transparent button over it) and turns into a check. */
+.mc-avatar.checked { background: var(--jc-accent); color: var(--jc-bg); }
+.mc-avatar.checked svg { width: 20px; height: 20px; }
+.mc-pane .mc-client .mc-select { position: absolute; left: 12px; top: 10px; width: 40px; height: 40px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.mc-pane .mc-client .mc-select:hover, .mc-pane .mc-client .mc-select:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--jc-accent); }
+.space-shell .mc-pane .mc-client .mc-select[aria-pressed="true"] { border-color: transparent; background: transparent; }
+.mc-thread.checked .mc-thread-body { background: color-mix(in srgb, var(--jc-accent) 10%, var(--jc-bg)); }
+.mc-bulkbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 44px; padding: 2px 6px; border-radius: 22px; background: color-mix(in srgb, var(--jc-accent) 16%, var(--jc-bg)); }
+.mc-bulkbar strong { font-size: 14px; white-space: nowrap; }
+.mc-pane .mc-client .mc-bulkbar .jc-icon-button { width: 36px; height: 36px; min-height: 0; padding: 0; justify-content: center; border: 0; border-radius: 50%; background: transparent; }
+.mc-pane .mc-client .mc-bulkbar .jc-icon-button svg { width: 18px; height: 18px; }
 .mc-thread-copy { display: grid; gap: 1px; min-width: 0; }
 .mc-thread-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
 .mc-thread-from { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; color: color-mix(in srgb, var(--jc-text) 82%, var(--jc-muted)); }
@@ -209,11 +251,20 @@
 .mc-pane[data-layout="stacked"] .jc-run-controls .jc-button { width: 36px; height: 36px; min-height: 0; padding: 0; justify-content: center; border-radius: 50%; }
 .mc-pane[data-layout="stacked"] .jc-run-controls .jc-button > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .mc-review-subject { margin: 0; }
-.mc-review-text { width: 100%; min-height: 140px; resize: vertical; font: inherit; }
-.jc-rules-hint { display: flex; gap: 6px; align-items: flex-start; margin: 0 0 8px; }
-.jc-rules-hint svg { flex: none; width: 16px; height: 16px; margin-top: 2px; }
+.mc-review-text { box-sizing: border-box; width: 100%; min-height: 140px; resize: vertical; font: inherit; }
+/* Activity: the view switch on the left, the mail check on the right, its result under them. */
+.mc-activity-toolbar { justify-content: space-between; }
+.mc-activity-status { flex-basis: 100%; text-align: right; font-size: 12px; }
+.jc-rules-hint { display: flex; gap: 10px; align-items: flex-start; margin: 0; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--jc-accent) 9%, transparent);
+  color: color-mix(in srgb, var(--jc-text) 78%, var(--jc-muted)); font-size: 12.5px; line-height: 1.5; }
+.jc-rules-hint svg { flex: none; width: 16px; height: 16px; margin-top: 2px; color: var(--jc-accent); }
 .jc-rule-name { font-weight: 600; }
 .jc-rule-evidence { margin: 4px 0 0; padding-left: 16px; font-size: 12px; }
 .mc-habits { display: grid; gap: 8px; }
-.mc-habits h3 { margin: 4px 0 0; font-size: 0.95rem; }
+.mc-habits h3 { margin: 6px 0 0; color: var(--jc-muted); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
 .mc-habits-account { display: grid; gap: 6px; }
+.mc-fix-sheet { position: absolute; left: 50%; bottom: 16px; z-index: 5; transform: translateX(-50%); width: min(440px, calc(100% - 24px)); display: grid; gap: 8px; padding: 12px;
+  border: 1px solid var(--jc-border); border-radius: 12px; background: var(--jc-raised); box-shadow: 0 12px 32px rgb(0 0 0 / 0.35); }
+.mc-fix-sheet strong { display: flex; align-items: center; gap: 8px; }
+.mc-fix-sheet textarea { width: 100%; resize: vertical; }
+.mc-fix-request .mc-fix-line { margin: 4px 0 0; overflow-wrap: anywhere; }

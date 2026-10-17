@@ -5,7 +5,8 @@ import os from "node:os";
 import {
   checkCodexSolAvailability,
   checkGeminiAvailability,
-  resolveAdvancedMissionModel
+  resolveAdvancedMissionModel,
+  runOpenCodeText
 } from "../src/room-agent-model-resolver.js";
 
 describe("room-agent-model-resolver", () => {
@@ -93,5 +94,21 @@ describe("room-agent-model-resolver", () => {
 
     await fs.rm(emptyGeminiDir, { recursive: true, force: true });
     await fs.rm(stateDir, { recursive: true, force: true });
+  });
+
+  it("answers only with OpenCode's text events, never with its raw error event", async () => {
+    const bin = await fs.mkdtemp(path.join(os.tmpdir(), "space-fake-opencode-"));
+    const savedPath = process.env.PATH;
+    const fake = (lines: string[]) => fs.writeFile(path.join(bin, "opencode"), `#!/bin/sh\nprintf '%s\\n' ${lines.map((line) => `'${line}'`).join(" ")}\n`, { mode: 0o755 });
+    try {
+      process.env.PATH = `${bin}${path.delimiter}${savedPath ?? ""}`;
+      await fake(['{"type":"error","sessionID":"ses_x","error":{"name":"UnknownError","data":{"message":"Unexpected server error."}}}']);
+      expect(await runOpenCodeText("opencode/big-pickle", "hi", 5_000)).toBeNull();
+      await fake(['{"type":"text","part":{"text":"Hugo is closed."}}']);
+      expect(await runOpenCodeText("opencode/big-pickle", "hi", 5_000)).toBe("Hugo is closed.");
+    } finally {
+      process.env.PATH = savedPath;
+      await fs.rm(bin, { recursive: true, force: true });
+    }
   });
 });
