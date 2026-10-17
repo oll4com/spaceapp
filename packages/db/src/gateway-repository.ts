@@ -79,8 +79,17 @@ export interface GatewayApiKeyInsert {
 
 /** Fields a log row may omit; older writers leave them null. */
 type GatewayRequestLogOptional = "planType" | "requestedServiceTier" | "upstreamTransport" | "errorMessage" | "stickyKeySource" | "cacheCreationTokens"
-  | "clientName" | "project" | "compressionTokensBefore" | "compressionTokensAfter" | "source" | "cacheBust" | "compressionDetail";
+  | "clientName" | "project" | "compressionTokensBefore" | "compressionTokensAfter" | "source" | "cacheBust" | "compressionDetail" | "upstreamRequestId";
 export type GatewayRequestLogInsert = Omit<GatewayRequestLog, "id" | GatewayRequestLogOptional> & Partial<Pick<GatewayRequestLog, GatewayRequestLogOptional>>;
+
+export interface GatewayClaudeLogKey {
+  upstreamRequestId: string | null;
+  requestedAt: string;
+  model: string;
+  /** Input including cache reads and writes: what a Claude Code transcript message adds up to exactly. */
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
 
 
 export interface GatewayApiKeyPatch {
@@ -302,6 +311,10 @@ export interface GatewayRepository {
   usageSince(since: string): Promise<GatewayUsageSummary>;
   /** Lifetime totals from the daily rollups (they outlive request-log retention), for one account or one key. */
   usageTotals(scope: { accountId?: string; apiKeyId?: string }): Promise<GatewayUsageTotals>;
+  /** Request logs after a log id, oldest first, warm-ups left out: the token usage page imports them. */
+  requestLogsAfter(afterId: string | null, limit: number): Promise<GatewayRequestLog[]>;
+  /** Claude requests started between two times, to tell which Claude Code transcript messages went through the gateway. */
+  claudeLogKeys(from: string, to: string): Promise<GatewayClaudeLogKey[]>;
   /** Recorded usage-window samples of one account since a time, oldest first. */
   usageHistory(accountId: string, since: string): Promise<GatewayUsageHistoryPoint[]>;
   /** The latest limit warm-up attempt of each account. */
@@ -896,7 +909,7 @@ export class PostgresGatewayRepository implements GatewayRepository {
       "requested_service_tier", "service_tier", "transport", "upstream_transport", "status", "error_code", "error_message", "latency_ms",
       "first_token_ms", "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "cost_usd", "compression_tokens_saved",
       "sticky_key_source", "sticky_kind", "sticky_key_hash", "cache_creation_tokens", "client_name", "project", "compression_tokens_before",
-      "compression_tokens_after", "source", "cache_bust", "compression_detail"];
+      "compression_tokens_after", "source", "cache_bust", "compression_detail", "upstream_request_id"];
     const values: unknown[] = [];
     const tuples = rows.map((row) => {
       const tuple = [row.requestId, row.requestedAt, row.provider, row.accountId, row.apiKeyId, row.model, row.planType ?? null,
@@ -905,7 +918,7 @@ export class PostgresGatewayRepository implements GatewayRepository {
         row.outputTokens, row.reasoningTokens, row.costUsd, row.compressionTokensSaved, row.stickyKeySource ?? null, row.stickyKind,
         row.stickyKeyHash, row.cacheCreationTokens ?? null, row.clientName?.slice(0, 80) ?? null, row.project?.slice(0, 200) ?? null,
         row.compressionTokensBefore ?? null, row.compressionTokensAfter ?? null, row.source ?? null, row.cacheBust ?? null,
-        row.compressionDetail ? JSON.stringify(row.compressionDetail) : null];
+        row.compressionDetail ? JSON.stringify(row.compressionDetail) : null, row.upstreamRequestId ?? null];
       const placeholders = tuple.map((value) => { values.push(value); return `$${values.length}`; });
       return `(${placeholders.join(",")})`;
     });
@@ -962,6 +975,20 @@ export class PostgresGatewayRepository implements GatewayRepository {
     const rows = (await this.pool.query<Record<string, unknown>>(`SELECT l.* FROM space_gateway_request_logs l
       ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""} ORDER BY l.id DESC LIMIT $${values.length}`, values)).rows;
     return rows.map(requestLogRecord);
+  }
+
+  async requestLogsAfter(afterId: string | null, limit: number) {
+    const rows = (await this.pool.query<Record<string, unknown>>(`SELECT * FROM space_gateway_request_logs
+      WHERE id > $1 AND source IS DISTINCT FROM 'limit_warmup' ORDER BY id LIMIT $2`,
+    [afterId && /^\d{1,19}$/.test(afterId) ? afterId : "0", Math.max(1, Math.min(limit, 5000))])).rows;
+    return rows.map(requestLogRecord);
+  }
+
+  async claudeLogKeys(from: string, to: string) {
+    const rows = (await this.pool.query<Record<string, unknown>>(`SELECT upstream_request_id, requested_at, model, input_tokens, output_tokens
+      FROM space_gateway_request_logs WHERE provider = 'CLAUDE' AND requested_at BETWEEN $1 AND $2`, [from, to])).rows;
+    return rows.map((row) => ({ upstreamRequestId: (row.upstream_request_id as string | null) ?? null, requestedAt: iso(row.requested_at)!,
+      model: String(row.model), inputTokens: num(row.input_tokens), outputTokens: num(row.output_tokens) }));
   }
 
   async getRequestLog(id: string) {
@@ -1204,6 +1231,7 @@ export class InMemoryGatewayRepository implements GatewayRepository {
   keys: GatewayApiKeyRecord[] = [];
   logs: GatewayRequestLog[] = [];
   private nextLogId = 1;
+  private readonly upstreamRequestIds = new Map<string, string>();
 
   async getSettings() {
     return { ...this.settings, planPriority: [...this.settings.planPriority], lanAllowedSources: [...this.settings.lanAllowedSources],
@@ -1400,6 +1428,7 @@ export class InMemoryGatewayRepository implements GatewayRepository {
       for (const [field, value] of Object.entries(delta) as [keyof typeof delta, number][]) existing[field] += value;
     }
     for (const row of rows) {
+      if (row.upstreamRequestId) this.upstreamRequestIds.set(String(this.nextLogId), row.upstreamRequestId);
       this.logs.unshift({
         id: String(this.nextLogId++), requestId: row.requestId, requestedAt: row.requestedAt, provider: row.provider, accountId: row.accountId,
         apiKeyId: row.apiKeyId, model: row.model, reasoningEffort: row.reasoningEffort, serviceTier: row.serviceTier, transport: row.transport,
@@ -1462,6 +1491,16 @@ export class InMemoryGatewayRepository implements GatewayRepository {
     const sum = (pick: (log: GatewayRequestLog) => number | null) => rows.reduce((total, log) => total + (pick(log) ?? 0), 0);
     return { requests: rows.length, inputTokens: sum((log) => log.inputTokens), cachedInputTokens: sum((log) => log.cachedInputTokens),
       outputTokens: sum((log) => log.outputTokens), costUsd: Math.round(sum((log) => log.costUsd) * 1e9) / 1e9 };
+  }
+  async requestLogsAfter(afterId: string | null, limit: number) {
+    const after = Number(afterId ?? 0);
+    return this.logs.filter((log) => Number(log.id) > after && log.source !== "limit_warmup")
+      .sort((left, right) => Number(left.id) - Number(right.id)).slice(0, Math.max(1, Math.min(limit, 5000))).map((log) => ({ ...log }));
+  }
+  async claudeLogKeys(from: string, to: string) {
+    return this.logs.filter((log) => log.provider === "CLAUDE" && log.requestedAt >= from && log.requestedAt <= to)
+      .map((log) => ({ upstreamRequestId: this.upstreamRequestIds.get(log.id) ?? null, requestedAt: log.requestedAt, model: log.model,
+        inputTokens: log.inputTokens, outputTokens: log.outputTokens }));
   }
   history: (GatewayUsageHistoryPoint & { accountId: string })[] = [];
   async usageHistory(accountId: string, since: string) {

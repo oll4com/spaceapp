@@ -421,7 +421,8 @@
   transform: translateY(-50%);
   z-index: 72;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 50%;
+  /* !important: the Liquid Glass theme rounds every button to 12px with equal specificity. */
+  border-radius: 50% !important;
   background: #07090c;
   color: #e6edf3;
   box-shadow: 0 6px 16px -4px rgba(0, 0, 0, 0.6), 0 8px 24px -8px var(--orb-glow, transparent);
@@ -469,7 +470,6 @@
   --live-rail-top-edge: calc(32px + max(8px, env(safe-area-inset-top)) + var(--resource-rail-height, 252px));
 }
 .space-shell .room-toolbar-collapsed .room-live-rail-button:hover {
-  border-color: rgba(255, 255, 255, 0.3);
   filter: brightness(1.12);
 }
 .space-shell .room-toolbar-collapsed .room-live-rail-button:focus-visible {
@@ -2156,17 +2156,19 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  touch-action: manipulation;
+  touch-action: pan-y;
   -webkit-touch-callout: none;
 }
-.space-shell[data-shell-mode="mobile"] .board-toolbar :is(.desktop-rooms-toggle, .space-brand-control, .desktop-navigation > button, .desktop-mode-switch, .toolbar-actions-fixed > button) {
-  width: 32px;
-  min-width: 32px;
-  height: 36px;
-  min-height: 36px;
-  padding: 5px;
-  flex: 0 0 32px;
+.space-shell[data-shell-mode="mobile"] .board-toolbar :is(.desktop-rooms-toggle, .desktop-navigation > button, .toolbar-actions-fixed > button) {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 10px;
+  flex: 0 0 44px;
 }
+/* Phones: minimize-all (the brand) and the Admin switch (also under Tools) leave the row, so its touch targets fit at 44 px. */
+.space-shell[data-shell-mode="mobile"] .board-toolbar :is(.space-brand-control, .desktop-mode-switch) { display: none; }
 .space-shell[data-shell-mode="mobile"] .board-toolbar .desktop-navigation > button {
   font-size: 0;
   gap: 0;
@@ -2202,12 +2204,14 @@
 }
 body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility: hidden; }
 
-.mobile-pane-navigation { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.mobile-pane-navigation > button { flex: none; display: grid; place-items: center; width: 44px; height: 44px; }
-.mobile-pane-navigation > button > svg { width: 18px; height: 18px; }
-.mobile-pane-navigation > label { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
-.mobile-pane-navigation > label > span { flex: none; font-size: .7rem; color: var(--room-muted, #a2a7ad); }
-.mobile-pane-navigation select { flex: 1; width: 100%; min-width: 0; min-height: 44px; padding: 8px 4px; border: 1px solid var(--room-border, #343638); border-radius: 7px; color: var(--room-text, #f4efe5); background: var(--room-surface, #141617); font-size: 16px; text-overflow: ellipsis; }
+.mobile-pane-bar { display: flex; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.mobile-pane-bar::-webkit-scrollbar { display: none; }
+.mobile-pane-bar > button { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; max-width: 10rem; min-height: 44px; padding: 0 12px; border: 1px solid var(--room-border, #343638); border-radius: 8px; color: var(--room-muted, #a2a7ad); background: var(--room-surface, #141617); font-size: .8rem; }
+.mobile-pane-bar > button[aria-current="true"] { border-color: var(--room-accent, #6db7aa); color: var(--room-text, #f4efe5); }
+.mobile-pane-bar > button > svg { flex: none; width: 16px; height: 16px; }
+.mobile-pane-bar > button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* While typing, the keyboard needs the room: the pane keeps the full height. */
+.board:has(:is(textarea, input, [contenteditable="true"]):focus) > .mobile-pane-bar { display: none; }
 
 .surface-load-error { margin: 16px; padding: 20px; border: 1px solid var(--modern-border, #454545); border-radius: 12px; background: var(--modern-surface, #171717); color: var(--modern-text, #f5f5f5); font: 14px/1.5 system-ui, sans-serif; }
 .surface-load-error button { min-height: 44px; margin: 4px 8px 0 0; padding: 8px 16px; border: 1px solid #555; border-radius: 8px; background: #292929; color: #fff; cursor: pointer; }
@@ -2433,6 +2437,7 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
 
 /* Mobile shares the same outer inset while retaining its touch controls. */
 .space-shell[data-shell-mode="mobile"] .workspace .board { padding-block: 6px; }
+html.space-osk-open .space-shell[data-shell-mode="mobile"] .workspace .board { padding-bottom: max(6px, var(--osk-sheet-inset, 0px)); }
 .space-shell[data-shell-mode="mobile"] .pane-card[data-pane-mode="TERMINAL"] .pane-body { padding: 2px; }
 .space-shell[data-shell-mode="mobile"] .terminal-xterm .xterm,
 .space-shell[data-shell-mode="mobile"] .terminal-viewport:not(.live) { padding: 3px; }

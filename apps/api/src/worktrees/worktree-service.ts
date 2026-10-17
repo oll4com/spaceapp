@@ -98,6 +98,9 @@ export interface WorktreeRecord {
   branch: string;
   baseBranch: string;
   baseCommit?: string;
+  /** The room and pane that created the worktree, so the Room Agent knows where each pane works. */
+  roomId?: string;
+  paneId?: string;
   status: WorktreeStatus;
   mergeCommitSha?: string;
   createdAt: string;
@@ -172,6 +175,8 @@ export class WorktreeService {
         branch: record.branch || existing?.branch || `space/${wtId}`,
         baseBranch: record.baseBranch || existing?.baseBranch || "main",
         baseCommit: record.baseCommit || existing?.baseCommit || "",
+        roomId: record.roomId || existing?.roomId,
+        paneId: record.paneId || existing?.paneId,
         status: record.status || existing?.status || "ACTIVE",
         mergeCommitSha: record.mergeCommitSha || existing?.mergeCommitSha,
         createdAt: existing?.createdAt || record.createdAt || now,
@@ -303,6 +308,8 @@ export class WorktreeService {
       branch: branchName,
       baseBranch,
       baseCommit,
+      roomId: input.roomId,
+      ...(input.paneId ? { paneId: input.paneId } : {}),
       status: "ACTIVE",
       createdAt: now
     });

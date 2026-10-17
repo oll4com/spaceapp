@@ -56,7 +56,7 @@ export function RoomToolbarActions({
     workspaceNavigationActions, renderWorkspaceAction, setWorkspaceNavigationDetail, workspaceDetailActionIds, isAdminMode, canAdmin,
     availablePanes, onModeChange, runDesktopAction, renderDesktopCreateTools, emptySlots
   } = navigation;
-  const { minimizedPanes, minimizedPaneRunningCount, showMinimizedBar, showMinimizedBarToggle, setMinimizedBarExpanded } = minimizedBar;
+  const { minimizedCount, minimizedPaneRunningCount, showMinimizedBar, showMinimizedBarToggle, setMinimizedBarExpanded } = minimizedBar;
   const { roomTheme, setRoomTheme, terminalFontSize, setTerminalFontSize, maskSensitiveData, toggleMaskSensitiveData } = preferences;
   return (
     <div className="toolbar-actions" ref={roomToolbarActionsRef} {...touchContext}>
@@ -116,7 +116,7 @@ export function RoomToolbarActions({
       <div className="toolbar-actions-fixed" role="group" aria-label="Room utility controls">
         {showMinimizedBarToggle ? (
           <MinimizedPaneBarToggle
-            count={minimizedPanes.length}
+            count={minimizedCount}
             runningCount={minimizedPaneRunningCount}
             expanded={showMinimizedBar}
             onToggle={() => setMinimizedBarExpanded((value) => !value)}

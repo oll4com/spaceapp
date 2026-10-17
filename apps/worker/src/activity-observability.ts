@@ -10,6 +10,7 @@ import {
   traceIdFromTraceparent,
   type FailureCategory
 } from "@space/contracts";
+import type { SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
 
@@ -134,6 +135,14 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
+  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
+  spans?: SpanExporter | null;
+}
+
+function activityTraceparent(args: readonly unknown[]) {
+  const found: Partial<Record<CorrelationKey, string>> = {};
+  for (const arg of args) readCorrelation(arg, found, 2);
+  return parseTraceparent(found.traceparent);
 }
 
 export async function observeActivityExecution<T>(
@@ -185,6 +194,20 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
+    const parent = dependencies.spans ? activityTraceparent(args) : null;
+    if (parent) {
+      dependencies.spans!.record({
+        traceId: parent.traceId,
+        spanId: randomBytes(8).toString("hex"),
+        parentSpanId: parent.parentId,
+        name: `activity ${activityType}`,
+        startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
+        endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
+        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        error: outcome === "FAILED" || outcome === "FAILED_RESULT",
+        kind: 1
+      });
+    }
   };
 
   try {

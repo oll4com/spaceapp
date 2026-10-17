@@ -74,7 +74,7 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
     const completedAt = new Date().toISOString();
     // executionState keeps a structured record of which budget ended the mission.
     await store.updateRoomAgentMission(input.missionId, {
-      status: "FAILED", completedAt, currentPaneId: null,
+      status: "FAILED", completedAt, currentPaneId: null, errorCode: ROOM_AGENT_CONTINUATION_LIMIT,
       executionState: { ...mission.executionState, limit: { code: ROOM_AGENT_CONTINUATION_LIMIT, limit: maxContinuations,
         continuationsUsed: generation - 1, reachedAt: completedAt } },
       statusReason: `Room Agent reached its limit of ${maxContinuations} automatic continuations without verified completion.`
@@ -92,7 +92,7 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   if (maxMissionTokens !== null && usedTokens >= maxMissionTokens) {
     const completedAt = new Date().toISOString();
     await store.updateRoomAgentMission(input.missionId, {
-      status: "FAILED", completedAt, currentPaneId: null,
+      status: "FAILED", completedAt, currentPaneId: null, errorCode: ROOM_AGENT_TOKEN_LIMIT,
       executionState: { ...mission.executionState, tokenUsage: { usedTokens, countedThroughRunId: source.run.runId },
         limit: { code: ROOM_AGENT_TOKEN_LIMIT, limit: maxMissionTokens, usedTokens, reachedAt: completedAt } },
       statusReason: `Room Agent used ${usedTokens.toLocaleString("en-US")} measured tokens, reaching its budget of ${maxMissionTokens.toLocaleString("en-US")}, without verified completion.`

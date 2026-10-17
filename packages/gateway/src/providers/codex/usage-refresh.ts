@@ -18,12 +18,20 @@ export async function storeCodexUsage(repository: GatewayRepository, account: Ga
   }
 }
 
+/** Whether the usage shows no used-up Codex limit, the per-model ones included. */
+export function codexUsageClear(usage: CodexUsage): boolean {
+  const used = [usage.primary, usage.secondary, ...usage.additional.flatMap((limit) => [limit.primary, limit.secondary])]
+    .map((window) => window?.usedPercent ?? null).filter((value): value is number => value !== null);
+  return used.length > 0 && used.every((value) => value < 100);
+}
+
 export async function refreshCodexAccountUsage(input: {
   repository: GatewayRepository; pool: AccountPool; account: GatewayAccountRecord; fetchImpl?: typeof fetch;
 }): Promise<CodexUsage> {
   const credentials = await input.pool.credentials(input.account);
   const usage = await fetchCodexUsage({ accessToken: credentials.accessToken, accountId: credentials.upstreamAccountId, fetchImpl: input.fetchImpl, maxRetries: 1 });
   await storeCodexUsage(input.repository, input.account, usage);
+  await input.pool.liftExpiredBlock(input.account, codexUsageClear(usage));
   input.pool.invalidate();
   return usage;
 }

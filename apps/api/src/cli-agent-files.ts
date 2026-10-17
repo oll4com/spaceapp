@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { openWorkspacePath, descriptorPath } from "./workspace-filesystem.js";

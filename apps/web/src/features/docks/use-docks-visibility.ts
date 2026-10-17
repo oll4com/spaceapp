@@ -10,12 +10,13 @@ import {
   Images,
   Link,
   ListTodo,
-  MessageSquare,
+  MessagesSquare,
   PanelLeft,
   Radio,
   Settings,
   Terminal,
-  type LucideIcon
+  type LucideIcon,
+  AgentFiles
 } from "../ui-theme/app-icons.js";
 import type { SideSurface } from "./dock-types.js";
 import { saveUserSettingDebounced } from "../user-settings/user-settings-save-queue.js";
@@ -60,7 +61,7 @@ export const DOCK_DEFINITIONS: DockItemConfig[] = [
     id: "shared-chat",
     label: "Council",
     description: "Several models answer one question, review each other and agree on a Top 3.",
-    icon: MessageSquare
+    icon: MessagesSquare
   },
   {
     id: "media",
@@ -72,7 +73,7 @@ export const DOCK_DEFINITIONS: DockItemConfig[] = [
     id: "agent-files",
     label: "Agent Files",
     description: "Preview and download files created by agents.",
-    icon: FolderOpen
+    icon: AgentFiles
   },
   {
     id: "clipboard",

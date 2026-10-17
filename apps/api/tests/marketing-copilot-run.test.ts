@@ -111,6 +111,21 @@ describe("marketing copilot run loop", () => {
     }
   });
 
+  it("shows the agent the operator's bookmarks with their Google accounts", async () => {
+    const { app, headers, agent, outsider } = await fixture();
+    try {
+      const saved = await app.inject({ method: "POST", url: "/api/marketing-copilot/bookmarks", headers, payload: { url: "https://x.com/home", profileId: "google_account:dev", accountLabel: "spaceappdv@gmail.com" } });
+      expect(saved.statusCode, saved.body).toBe(200);
+      const bookmark = { id: saved.json().bookmark.id, title: "x.com", url: "https://x.com/home", profileId: "google_account:dev", accountLabel: "spaceappdv@gmail.com" };
+      expect((await app.inject({ method: "GET", url: `${cli}/bookmarks`, headers: agent })).json().bookmarks).toEqual([expect.objectContaining(bookmark)]);
+      expect((await app.inject({ method: "GET", url: `${cli}/state`, headers: agent })).json().bookmarks).toEqual([expect.objectContaining(bookmark)]);
+      expect((await app.inject({ method: "GET", url: `${cli}/bookmarks`, headers: outsider })).statusCode).toBe(409);
+      expect((await app.inject({ method: "POST", url: `${cli}/bookmarks/mktbm:missing000/open`, headers: agent, payload: {} })).statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("skips session authentication only for the bridge routes, which check the pane token themselves", () => {
     expect(isCliBridgeRoutePath("/api/cli/marketing-copilot/publish/begin")).toBe(true);
     expect(isCliBridgeRoutePath("/api/cli/mail-copilot/state")).toBe(true);

@@ -245,6 +245,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
 
     let lastFailure: UpstreamFailure | null = null;
     let retryWith = null as { account: GatewayAccountRecord; fallback: boolean } | null;
+    let upstreamRequestId: string | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const { account, result, pooled, fallback }: Awaited<ReturnType<typeof pickAccount>> = retryWith ? { ...retryWith, result: null, pooled: 0 }
         : await pickAccount(settings, scope, tried, stickyHash);
@@ -306,7 +307,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
         continue;
       }
 
-      const upstreamRequestId = upstream.headers.get("request-id");
+      upstreamRequestId = upstream.headers.get("request-id");
       if (!(upstream.headers.get("content-type") ?? "").includes("text/event-stream")) {
         const text = await upstream.text();
         let parsed: unknown = null;
@@ -424,7 +425,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
         errorCode, errorMessage: errorCode ? errorMessage : null, latencyMs: now() - startedAt,
         firstTokenMs: firstTokenAt === null ? null : firstTokenAt - startedAt, inputTokens, cachedInputTokens: usage.cacheReadInputTokens,
         cacheCreationTokens: usage.cacheCreationInputTokens, outputTokens: usage.outputTokens, costUsd: cost, compressionTokensSaved: compressionSaved,
-        cacheBust: cacheBust(usage)
+        cacheBust: cacheBust(usage), upstreamRequestId: upstreamRequestId && /^[\w-]{1,120}$/.test(upstreamRequestId) ? upstreamRequestId : null
       });
       void options.pool.touch(account.id, new Date(startedAt).toISOString()).catch(() => undefined);
     }

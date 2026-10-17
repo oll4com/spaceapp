@@ -1,3 +1,4 @@
+import { rollbackKeepingError } from "./rollback.js";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 export interface LiveHistoryTurn {
   id: string; sessionId: string; roomId: string; roomName?: string;
@@ -53,6 +54,7 @@ export class PostgresLiveHistoryRepository implements LiveHistoryRepository {
   }
   async write(owner: string, turn: LiveHistoryTurn, epoch: number) {
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     try {
       await client.query("BEGIN");
       await client.query("INSERT INTO live_conversation_rooms(owner_user_id,room_id) VALUES($1,$2) ON CONFLICT DO NOTHING", [owner, turn.roomId]);
@@ -67,16 +69,17 @@ export class PostgresLiveHistoryRepository implements LiveHistoryRepository {
       // An equal/stale retry is acknowledged without overwriting newer text.
       const existing = result.rows.length ? true : (await client.query<{ room_id: string }>("SELECT room_id FROM live_conversation_turns WHERE owner_user_id=$1 AND session_id=$2 AND turn_id=$3", [owner, turn.sessionId, turn.id])).rows[0]?.room_id === turn.roomId;
       await client.query("COMMIT"); return existing;
-    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release?.(); }
+    } catch (error) { rollbackFailed = await rollbackKeepingError(client); throw error; } finally { client.release?.(rollbackFailed || undefined); }
   }
   async clear(owner: string, room: string) {
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     try {
       await client.query("BEGIN");
       const result = await client.query<{ epoch: number }>("INSERT INTO live_conversation_rooms(owner_user_id,room_id,epoch,legacy_imported) VALUES($1,$2,1,true) ON CONFLICT(owner_user_id,room_id) DO UPDATE SET epoch=live_conversation_rooms.epoch+1,legacy_imported=true RETURNING epoch", [owner, room]);
       await client.query("DELETE FROM live_conversation_turns WHERE owner_user_id=$1 AND room_id=$2", [owner, room]);
       await client.query("COMMIT"); return result.rows[0]!.epoch;
-    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release?.(); }
+    } catch (error) { rollbackFailed = await rollbackKeepingError(client); throw error; } finally { client.release?.(rollbackFailed || undefined); }
   }
   async importLegacy(owner: string, room: string, turns: LiveHistoryTurn[]) {
     // Stable IDs make crash retries idempotent; the room epoch prevents resurrection after clear.

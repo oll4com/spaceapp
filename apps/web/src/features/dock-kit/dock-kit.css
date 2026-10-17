@@ -664,6 +664,21 @@
   line-height: 1.45;
 }
 
+/* styles.css paints every `label input:not(...)` (specificity 0,3,2) near-black, which turned dock fields inside a
+   label black in light mode; this selector outranks it for dock fields only. */
+label input.dock-kit-field:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-surface);
+  color: var(--dock-text);
+  padding: 0.5rem 0.6rem;
+}
+
+label input.dock-kit-field:not([type="checkbox"]):not([type="radio"]):not([role="switch"]):focus-visible {
+  border-color: var(--dock-accent);
+  outline: none;
+}
+
 textarea.dock-kit-field {
   min-height: 5rem;
   resize: vertical;

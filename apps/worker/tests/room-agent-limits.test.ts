@@ -11,6 +11,9 @@ import { prepareBackgroundContinuation } from "../src/room-background-continuati
 import { roomAgentMissionCompletion } from "../src/room-supervisor-state.js";
 import { continuationFixture } from "./room-continuation-fixture.js";
 
+const storedErrorCode = (store: unknown, missionId: string) =>
+  (store as { roomAgentTraces: Map<string, { errorCode: string | null }> }).roomAgentTraces.get(missionId)?.errorCode ?? null;
+
 /**
  * Runaway-loop budgets for the Room Agent. The model runtime is a
  * deterministic fake executor: no Codex process, provider or model is called.
@@ -124,6 +127,8 @@ describe("Room Agent background continuation budget", () => {
       statusReason: "Room Agent reached its limit of 3 automatic continuations without verified completion.",
       executionState: { limit: { code: ROOM_AGENT_CONTINUATION_LIMIT, limit: 3, continuationsUsed: 3 } } });
     expect(mission.completedAt).not.toBeNull();
+    // The mission's error code reaches the trace lookup.
+    expect(storedErrorCode(c.store, mission.id)).toBe(ROOM_AGENT_CONTINUATION_LIMIT);
     for (const prompt of prompts) {
       expect(prompt).toContain("Operator request:\nOpen CLI and Chat, then send a story to both.");
       const evidence = JSON.parse(prompt.split("Settled action results (bounded; inspect for details):\n")[1]!);
@@ -171,6 +176,7 @@ describe("Room Agent measured-token budget", () => {
       statusReason: "Room Agent used 110,000 measured tokens, reaching its budget of 100,000, without verified completion.",
       executionState: { limit: { code: ROOM_AGENT_TOKEN_LIMIT, limit: 100_000, usedTokens: 110_000 } } });
     expect(mission.completedAt).not.toBeNull();
+    expect(storedErrorCode(c.store, mission.id)).toBe(ROOM_AGENT_TOKEN_LIMIT);
   });
 
   it("starts a new budget for an operator request and never stops when the budget is off", async () => {

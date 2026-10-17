@@ -58,3 +58,18 @@ it("requires the CSRF token to configure Google OAuth", async () => {
   expect(response.statusCode).toBe(403);
   expect(response.json().error.code).toBe("CSRF_INVALID");
 }, APP_LIFECYCLE_TIMEOUT_MS);
+
+it("rejects WebSocket handshakes from another site and keeps same-origin handshakes", async () => {
+  // A WebSocket handshake is a GET; the VNC stream and the shared-chat socket used to accept another local port.
+  const { server, cookie } = await fixture();
+  const upgrade = { connection: "Upgrade", upgrade: "websocket", "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" };
+  for (const url of ["/api/shared-chat/live", "/api/panes/pane:fixture/vnc/stream?host=127.0.0.1&port=5900"]) {
+    for (const headers of [{ "sec-fetch-site": "same-site" }, { "sec-fetch-site": "cross-site" }, { origin: otherLocalOrigin }]) {
+      const response = await server.inject({ method: "GET", url, headers: { cookie, ...upgrade, ...headers } });
+      expect(response.statusCode, `${url} ${JSON.stringify(headers)}`).toBe(403);
+      expect(response.json().error.code).toBe("ORIGIN_REJECTED");
+    }
+    const sameOrigin = await server.inject({ method: "GET", url, headers: { cookie, ...upgrade, "sec-fetch-site": "same-origin" } });
+    expect(sameOrigin.statusCode).not.toBe(403);
+  }
+}, APP_LIFECYCLE_TIMEOUT_MS);

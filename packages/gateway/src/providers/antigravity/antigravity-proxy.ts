@@ -10,6 +10,7 @@ import { outputPolicyText, requestOutputPolicy, withGeminiOutputPolicy } from ".
 import { effectiveCompression, requestCompressionMode, type EffectiveCompression } from "../../compression/provider-settings.js";
 import { compressionDetail, compressionRows, compressionSignalRows } from "../../compression/recorder.js";
 import type { TokenizerKind } from "../../compression/tokenizer.js";
+import { geminiCostUsd } from "../../pricing/pricing.js";
 import { hashKey, header, readBounded } from "../../proxy-util.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
 import { selectAccount } from "../../router/balancer.js";
@@ -110,7 +111,8 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     return allowed;
   }
 
-  async function passthrough(request: FastifyRequest, reply: FastifyReply, upstreamPath: string, body: Buffer | undefined) {
+  async function passthrough(request: FastifyRequest, reply: FastifyReply, upstreamPath: string, body: Buffer | undefined, logCall = false) {
+    const startedAt = now();
     let upstream: Response;
     try {
       upstream = await fetchImpl(`${baseUrl}${upstreamPath}`, { method: request.method, headers: forwardHeaders(request.headers, null),
@@ -122,15 +124,33 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     const headers: Record<string, string> = {};
     upstream.headers.forEach((value, name) => { if (!hopByHop.has(name) && name !== "content-encoding") headers[name] = value; });
     reply.raw.writeHead(upstream.status, headers);
+    const inspector = logCall ? new CodeAssistStreamInspector() : null;
+    let firstTokenAt: number | null = null;
     if (upstream.body) {
       const reader = upstream.body.getReader();
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (inspector?.push(value) && firstTokenAt === null) firstTokenAt = now();
         reply.raw.write(value);
       }
     }
     reply.raw.end();
+    if (inspector) {
+      let requested: string | null = null;
+      try { const model = (JSON.parse(body!.toString("utf8")) as Json).model; requested = typeof model === "string" ? model : null; } catch { /* not JSON */ }
+      const model = inspector.model ?? requested ?? "unknown";
+      const usage = inspector.usage;
+      const failed = !upstream.ok || (inspector.errorStatus !== null && !inspector.outputStarted);
+      options.logs.add({
+        requestId: `req_${randomUUID().replace(/-/g, "")}`, requestedAt: new Date(startedAt).toISOString(), provider: "ANTIGRAVITY", accountId: null,
+        apiKeyId: null, model, reasoningEffort: null, serviceTier: null, transport: "http", status: failed ? "error" : "success",
+        errorCode: failed ? `http_${inspector.errorStatus ?? upstream.status}` : null, latencyMs: now() - startedAt,
+        firstTokenMs: firstTokenAt === null ? null : firstTokenAt - startedAt, inputTokens: usage?.promptTokens ?? null,
+        cachedInputTokens: usage?.cachedTokens ?? null, outputTokens: usage?.outputTokens ?? null, reasoningTokens: usage?.thoughtsTokens ?? null,
+        costUsd: geminiCostUsd(usage, model), compressionTokensSaved: null, stickyKind: null, stickyKeyHash: null, ...requestOrigin(request)
+      });
+    }
     return reply;
   }
 
@@ -201,7 +221,9 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     const upstreamPath = request.url.replace(/^\/antigravity/, "") || "/";
     const raw = Buffer.isBuffer(request.body) ? request.body : undefined;
     const method = /^\/v1internal:([A-Za-z]+)/.exec(upstreamPath)?.[1] ?? "";
-    if (request.method !== "POST" || !MODEL_METHODS.has(method) || !raw || !(await pooled(token))) return passthrough(request, reply, upstreamPath, raw);
+    if (request.method !== "POST" || !MODEL_METHODS.has(method) || !raw) return passthrough(request, reply, upstreamPath, raw);
+    // A model call on an account outside the pool goes through as it is, but is logged so its tokens still count.
+    if (!(await pooled(token))) return passthrough(request, reply, upstreamPath, raw, true);
 
     let body: Json;
     try { body = JSON.parse(raw.toString("utf8")) as Json; } catch { return passthrough(request, reply, upstreamPath, raw); }
@@ -222,7 +244,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
         model: extra.model ?? model ?? "unknown", reasoningEffort: null, serviceTier: null, transport: "http", upstreamTransport: "http", status, errorCode,
         errorMessage: extra.errorMessage ?? null, latencyMs: now() - startedAt, firstTokenMs: extra.firstTokenMs ?? null,
         inputTokens: usage?.promptTokens ?? null, cachedInputTokens: usage?.cachedTokens ?? null, outputTokens: usage?.outputTokens ?? null,
-        reasoningTokens: usage?.thoughtsTokens ?? null, costUsd: null, compressionTokensSaved: account ? compressed.saved : null, planType: account?.planType ?? null,
+        reasoningTokens: usage?.thoughtsTokens ?? null, costUsd: geminiCostUsd(usage, extra.model ?? model), compressionTokensSaved: account ? compressed.saved : null, planType: account?.planType ?? null,
         stickyKeySource: sessionId ? "request.sessionId" : null, stickyKind: stickyHash ? "PROMPT_CACHE" : null, stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null,
         ...origin, compressionTokensBefore: compressed.measured?.before ?? null, compressionTokensAfter: compressed.measured?.after ?? null,
         compressionDetail: compressed.detail

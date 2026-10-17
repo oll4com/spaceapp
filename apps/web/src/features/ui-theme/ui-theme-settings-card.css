@@ -6,3 +6,148 @@
   cursor: not-allowed;
   opacity: 0.5;
 }
+
+.ui-theme-icon-preview {
+  display: grid;
+  gap: 2px;
+  padding: 2px 0 10px;
+}
+
+.ui-theme-icon-preview > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: 8px;
+}
+
+.ui-theme-icon-preview > div.is-current {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.ui-theme-icon-preview span {
+  flex: 0 0 10rem;
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+
+.ui-theme-icon-preview svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+/* Theme and background previews: a miniature room (rooms dock, toolbar, two panes, the target one ringed)
+   in each theme's own palette, or the background itself. */
+.ui-theme-previews {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7.25rem, 1fr));
+  gap: 8px;
+  padding: 2px 0 12px;
+}
+
+.ui-theme-preview {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ui-theme-preview:hover {
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+.ui-theme-preview[aria-pressed="true"] {
+  border-color: var(--modern-accent, #4ac6b2);
+  background: color-mix(in srgb, var(--modern-accent, #4ac6b2) 10%, transparent);
+}
+
+.ui-theme-preview-art {
+  display: grid;
+  grid-template: "side bar bar" 18% "side a b" 1fr / 26% 1fr 1fr;
+  gap: 5%;
+  aspect-ratio: 16 / 10;
+  padding: 6%;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--preview-bg, #0b1015);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.ui-theme-preview-art > i {
+  border-radius: 3px;
+  background: var(--preview-surface, #17212b);
+}
+
+.ui-theme-preview-art > i:nth-child(1) { grid-area: side; background: var(--preview-chrome, var(--preview-surface, #17212b)); }
+.ui-theme-preview-art > i:nth-child(2) { grid-area: bar; background: var(--preview-chrome, var(--preview-surface, #17212b)); }
+.ui-theme-preview-art > i:nth-child(3) { grid-area: a; box-shadow: inset 0 0 0 1.5px var(--preview-accent, #61d2c3); }
+.ui-theme-preview-art > i:nth-child(4) { grid-area: b; }
+
+[data-theme-preview="classic"] { --preview-bg: #101112; --preview-surface: #1b1c1d; --preview-accent: #4ac6b2; }
+[data-theme-preview="modern"] { --preview-bg: #0b1015; --preview-surface: #17212b; --preview-accent: #61d2c3; }
+[data-theme-preview="codex"] { --preview-bg: #090909; --preview-surface: #1c1c1c; --preview-accent: #82aaff; }
+[data-theme-preview="motion"] { --preview-bg: #08090a; --preview-surface: #141718; --preview-accent: #ffe600; }
+
+[data-theme-preview="aurora"],
+[data-background-preview="aurora"] {
+  --preview-surface: rgba(10, 13, 31, 0.84);
+  --preview-accent: #5eead4;
+  background:
+    radial-gradient(ellipse 60% 45% at 18% 0%, rgba(45, 212, 191, 0.55), transparent 70%),
+    radial-gradient(ellipse 55% 45% at 88% 0%, rgba(139, 92, 246, 0.6), transparent 70%),
+    radial-gradient(ellipse 70% 45% at 70% 110%, rgba(236, 72, 153, 0.3), transparent 70%),
+    #04050e;
+}
+
+[data-theme-preview="liquid-glass"],
+[data-background-preview="liquid-glass"] {
+  background: #05060f url("/brand/liquid-glass-planet-dark.webp") center / cover no-repeat;
+}
+
+/* Liquid Glass: glass chrome over the planet, solid iOS cards for panes. */
+[data-theme-preview="liquid-glass"] {
+  --preview-surface: #1c1c1e;
+  --preview-chrome: rgba(255, 255, 255, 0.16);
+  --preview-accent: #409cff;
+}
+
+[data-theme-preview="liquid-glass"] > i:nth-child(-n + 2) {
+  border-radius: 5px;
+  -webkit-backdrop-filter: blur(6px) saturate(170%);
+  backdrop-filter: blur(6px) saturate(170%);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.6), 0 0 0 0.5px rgba(0, 0, 0, 0.5);
+}
+
+[data-background-preview="spaceapp"] {
+  background: #0b0d10 url("/brand/spaceapp-bg-ascii-orbital-optimized.gif") center / 72% no-repeat;
+}
+
+[data-background-preview="none"] {
+  background: #0b1015;
+}
+
+.ui-theme-glass-tint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: min(16rem, 100%);
+  font-size: 0.75rem;
+}
+
+.ui-theme-glass-tint > span {
+  opacity: 0.75;
+}
+
+.ui-theme-glass-tint input {
+  flex: 1;
+  min-width: 6rem;
+  accent-color: var(--modern-accent, #4ac6b2);
+}

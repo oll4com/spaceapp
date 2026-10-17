@@ -194,6 +194,45 @@ export function claudeCostUsd(usage: ClaudeCostUsage | null, model: string | nul
 }
 
 /**
+ * Gemini API Standard list prices per 1M tokens (ai.google.dev/gemini-api/docs/pricing, 2026-10-15; several double on
+ * 2027-01-01). `long` is the card for prompts above 200k tokens.
+ */
+const geminiPrices: { model: string; input: number; cached: number; output: number; long?: { input: number; cached: number; output: number } }[] = [
+  { model: "gemini-4-argon", input: 2, cached: 0.1, output: 10 },
+  { model: "gemini-3.8-flash", input: 0.75, cached: 0.075, output: 3.75 },
+  { model: "gemini-3.6-flash", input: 0.75, cached: 0.075, output: 3.75 },
+  { model: "gemini-3.5-flash-lite", input: 0.3, cached: 0.03, output: 2.5 },
+  { model: "gemini-3.1-flash-lite", input: 0.25, cached: 0.025, output: 1.5 },
+  { model: "gemini-3.1-pro-preview", input: 2, cached: 0.2, output: 12, long: { input: 4, cached: 0.4, output: 18 } },
+  { model: "gemini-3-flash-preview", input: 0.5, cached: 0.05, output: 3 },
+  { model: "gemini-2.5-pro", input: 1.25, cached: 0.125, output: 10, long: { input: 2.5, cached: 0.25, output: 15 } },
+  { model: "gemini-2.5-flash", input: 0.3, cached: 0.03, output: 2.5 },
+  { model: "gemini-2.5-flash-lite", input: 0.1, cached: 0.01, output: 0.4 }
+];
+
+export interface GeminiCostUsage {
+  /** `promptTokenCount`: cached tokens included. */
+  promptTokens: number | null;
+  cachedTokens: number | null;
+  /** `candidatesTokenCount`; thinking (`thoughtsTokenCount`) is billed as output too. */
+  outputTokens: number | null;
+  thoughtsTokens: number | null;
+}
+
+/** API-equivalent cost of a Gemini request, or null for an unknown model or incomplete usage. */
+export function geminiCostUsd(usage: GeminiCostUsage | null, model: string | null): number | null {
+  if (!usage || usage.promptTokens === null || usage.outputTokens === null || !model) return null;
+  // Exact ids, `-latest`, and Antigravity's names for the same model (gemini-3.8-flash-n, -high, -low), so a newer model is
+  // never priced as an older one.
+  const normalized = model.toLowerCase().replace(/^models\//, "").replace(/-(?:latest|n|minimal|low|medium|high)$/, "");
+  const price = geminiPrices.find((entry) => entry.model === normalized);
+  if (!price) return null;
+  const card = price.long && usage.promptTokens > 200_000 ? price.long : price;
+  const cached = Math.min(usage.cachedTokens ?? 0, usage.promptTokens);
+  return ((usage.promptTokens - cached) * card.input + cached * card.cached + (usage.outputTokens + (usage.thoughtsTokens ?? 0)) * card.output) / 1e6;
+}
+
+/**
  * Per-million input prices of a model, for savings in dollars (Headroom prices saved tokens at the input price and
  * cache reads at the input price minus the cached price). Null when the model has no known price.
  */

@@ -1,12 +1,15 @@
+import type {} from "../request-context.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
-  marketingBriefSchema, marketingCampaignCreateSchema, marketingCampaignDecisionSchema, marketingCampaignIdSchema, marketingChannelSchema, marketingCopilotPaneMetadataSchema, marketingEventListQuerySchema,
+  marketingBookmarkCreateSchema, marketingBookmarkIdSchema, marketingBriefSchema, marketingCampaignCreateSchema, marketingCampaignDecisionSchema, marketingCampaignIdSchema, marketingChannelSchema, marketingCopilotPaneMetadataSchema, marketingEventListQuerySchema,
   marketingMemoryCreateSchema, marketingMemoryIdSchema, marketingMemoryKindSchema, marketingMemoryQuerySchema, marketingMemoryUpdateSchema, marketingPostIdSchema, marketingPostReviewDecisionSchema,
   marketingPostStatusSchema, marketingQuestionAnswerSchema, marketingRuleDecisionSchema, marketingRuleIdSchema, marketingRuleProposalSchema, MARKETING_RULE_STATUSES, resolveMarketingCopilotPaneMetadata,
   type MarketingRun, type Pane
 } from "@space/contracts";
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
+import { operatorBrowserActor } from "../browser-actors.js";
+import { sendApiError } from "../http-errors.js";
 import type { MarketingCopilotService } from "./service.js";
 
 export interface MarketingCopilotRouteDependencies {
@@ -165,6 +168,30 @@ export function registerMarketingCopilotRoutes(app: FastifyInstance, service: Ma
   });
 
   app.get("/api/marketing-copilot/analytics", routeOptions, async (request) => service.analytics(await deps.authenticatedOwner(request)));
+
+  // ---- bookmarks: pages the pane browser opens with a chosen Google account ------------------------------
+  app.get("/api/marketing-copilot/bookmarks", routeOptions, async (request) => ({ bookmarks: await service.listBookmarks(await deps.authenticatedOwner(request)) }));
+  app.post("/api/marketing-copilot/bookmarks", routeOptions, async (request, reply) => {
+    const owner = await deps.authenticatedOwner(request);
+    const input = parseBody(marketingBookmarkCreateSchema, request.body ?? {});
+    // Like the browser's Google account menu: only an ADMIN chooses an account.
+    if (input.profileId !== null && request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
+    const bookmark = await service.createBookmark(owner, input);
+    await deps.audit(request, "marketing_copilot.bookmark.create", bookmark.id, { url: bookmark.url, profileId: bookmark.profileId });
+    return { bookmark };
+  });
+  app.delete("/api/marketing-copilot/bookmarks/:id", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    const params = parseQuery(z.object({ id: marketingBookmarkIdSchema }).strict(), request.params);
+    return { deleted: await service.deleteBookmark(owner, params.id) };
+  });
+  app.post("/api/panes/:id/marketing-copilot/bookmarks/:bookmarkId/open", routeOptions, async (request) => {
+    const params = parseQuery(z.object({ id: paneParamsSchema.shape.id, bookmarkId: marketingBookmarkIdSchema }).strict(), request.params);
+    const pane = await paneOf(request);
+    const opened = await service.openBookmark(await deps.authenticatedOwner(request), pane, params.bookmarkId, request.requestIdForSpace, operatorBrowserActor(request));
+    await deps.audit(request, "marketing_copilot.bookmark.open", params.bookmarkId, { paneId: pane.id, profileId: opened.bookmark.profileId });
+    return opened;
+  });
 
   // ---- memory ----------------------------------------------------------------------------------------
   app.get("/api/marketing-copilot/memory", routeOptions, async (request) => {

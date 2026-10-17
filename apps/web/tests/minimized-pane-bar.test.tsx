@@ -7,6 +7,7 @@ import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 import { createPaneCompletionLifecycleState, type PaneCompletionLifecycleState } from "../src/pane-completion-lifecycle.js";
 import { useMinimizedPaneBar } from "../src/features/pane-float/useMinimizedPaneBar.js";
 import { MinimizedPaneBar } from "../src/features/pane-float/MinimizedPaneBar.js";
+import { resetCliUpdateRun, startCliUpdateRun } from "../src/features/admin-operations/cli-update-run.js";
 import {
   formatPaneFullTitle,
   minimizedPaneSubtitle,
@@ -168,6 +169,26 @@ describe("MinimizedPaneBar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand pane preview" }));
     expect(bar?.classList.contains("is-preview-mode")).toBe(true);
     expect(screen.getByRole("button", { name: "Collapse pane preview" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("lists a minimized CLI update and reopens it in Manage", async () => {
+    let finish!: () => void;
+    const run = startCliUpdateRun(() => new Promise((resolve, reject) => { finish = () => reject(new Error("boom")); }), {}, "Hermes Agent CLI");
+    const { result } = renderHook(() =>
+      useMinimizedPaneBar({ panes: [], shellMode: "desktop", paneCompletionLifecycle: createPaneCompletionLifecycleState() })
+    );
+    expect(result.current).toMatchObject({ minimizedCount: 1, minimizedPaneRunningCount: 1, showMinimizedBarToggle: true });
+    const opened = vi.fn();
+    window.addEventListener("space:manage", opened);
+    renderBar(1);
+    fireEvent.click(screen.getByRole("button", { name: "Restore Updating Hermes Agent CLI" }));
+    expect((opened.mock.calls[0]![0] as CustomEvent).detail).toEqual({ action: "cli-update-all" });
+    await act(async () => { finish(); await run; });
+    expect(result.current).toMatchObject({ minimizedCount: 1, minimizedPaneRunningCount: 0 });
+    expect(screen.getByRole("button", { name: "Restore CLI update failed" })).toBeTruthy();
+    window.removeEventListener("space:manage", opened);
+    act(() => resetCliUpdateRun());
+    expect(result.current.minimizedCount).toBe(0);
   });
 
   it("announces when every pane is minimized and disables Minimize all", () => {

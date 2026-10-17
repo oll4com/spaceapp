@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { z } from "zod";
-import { councilModelIdSchema, jobApplyCandidateSchema, listMemoryQuerySchema, type AuthUser, type CouncilModel } from "@space/contracts";
+import { councilModelIdSchema, jobApplyCandidateSchema, listMemoryQuerySchema, planStepSchema, type AuthUser, type ClipboardItem, type UpsertClipboardItemInput, type CouncilModel, type CouncilRun } from "@space/contracts";
 import { InMemoryCouncilRepository, PostgresCouncilRepository, PostgresSpaceStore, type CouncilRepository, type JobApplyRepository } from "@space/db";
 import type { CanonicalMemoryBridge } from "@space/runtime";
 import { JEV_MODEL_ID, ProviderFailure, providerForModel, providerNoticeKind, requestModelText, runWithProviderSlot } from "../asteroids-arena/providers.js";
@@ -9,6 +9,7 @@ import { loadArenaModelCatalog } from "../benchmark-routes.js";
 import { createWorkerCliMoveRunner, type CliMoveRunner } from "../chess/chess-cli.js";
 import { pickClaudeProfile } from "../chess/chess-players.js";
 import type { JobApplyService } from "../job-apply/service.js";
+import type { NotificationService } from "../notifications/service.js";
 import { buildCouncilPersonalData, type CouncilPersonalSources } from "./personal-data.js";
 import { clip } from "./ranking.js";
 import { registerCouncilRoutes } from "./routes.js";
@@ -27,7 +28,7 @@ const CALL_TIMEOUT_MS = 180_000;
 export interface CouncilWiringOptions {
   config: { databaseUrl?: string | null; instance: string };
   auth: { sessionSecret: string };
-  store: { upsertUser(user: AuthUser): Promise<AuthUser> | AuthUser };
+  store: { upsertUser(user: AuthUser): Promise<AuthUser> | AuthUser; upsertClipboardItem(input: UpsertClipboardItemInput): Promise<ClipboardItem> | ClipboardItem };
   routeOptions: Record<string, unknown>;
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
   parseQuery<TSchema extends z.ZodTypeAny>(schema: TSchema, query: unknown): z.infer<TSchema>;
@@ -36,6 +37,7 @@ export interface CouncilWiringOptions {
   jobApplyService: Pick<JobApplyService, "listMemory">;
   livePersonalMemory: { read(owner: string): Promise<{ items: Array<{ key: string; value: string; category?: string }> }> };
   canonicalMemory: CanonicalMemoryBridge;
+  notifications?: Pick<NotificationService, "raise" | "resolve">;
   repository?: CouncilRepository;
   runCliMove?: CliMoveRunner;
 }
@@ -74,6 +76,26 @@ function answerText(text: string): string {
   const notice = trimmed.length < 300 ? providerNoticeKind(trimmed) : null;
   if (notice) throw new ProviderFailure(notice, clip(trimmed, 160));
   return trimmed;
+}
+
+const NEEDS_YOU: Partial<Record<CouncilRun["status"], string>> = {
+  NEEDS_INPUT: "The council needs your answers", AWAITING_APPROVAL: "The council's plan waits for your approval", FAILED: "The council run failed"
+};
+
+/** What needs the operator stays open until the run moves on; a finished run is news with its Top 3. */
+export async function notifyCouncilStatus(notifications: Pick<NotificationService, "raise" | "resolve">, owner: string, id: string, run: CouncilRun | null): Promise<void> {
+  const dedupeKey = `council:${id}`;
+  // Raising an open key only refreshes it, so the previous state is resolved first and the next one pops up again.
+  await notifications.resolve(owner, dedupeKey);
+  if (!run) return;
+  const base = { ownerUserId: owner, roomId: null, paneId: null, source: "COUNCIL" as const, kind: run.status, link: { surface: "shared-chat" }, payload: { runId: id }, telegram: null };
+  const title = NEEDS_YOU[run.status];
+  if (title) {
+    await notifications.raise({ ...base, severity: "ATTENTION", title, body: clip(run.status === "FAILED" && run.error ? `${run.question}\n${run.error}` : run.question, 2_000), dedupeKey });
+  } else if (run.status === "COMPLETED") {
+    const top = (run.final?.top ?? []).map((entry, index) => `${index + 1}. ${entry.title}`);
+    await notifications.raise({ ...base, severity: "INFO", title: "The council finished", body: clip([run.question, ...top].join("\n"), 2_000), dedupeKey: null });
+  }
 }
 
 /** Builds the Research Council and registers its routes; work runs in this process and stops with it. */
@@ -122,6 +144,16 @@ export function registerCouncil(app: FastifyInstance, options: CouncilWiringOpti
     },
     searchWeb: searchWebThroughGateway,
     personalData: (owner, question, memoryQueries) => buildCouncilPersonalData(sources, owner, question, memoryQueries),
+    async savePlan(owner, plan) {
+      const item = await options.store.upsertClipboardItem({
+        ownerUserId: owner, source: "PLAN", text: plan.text, title: plan.title, minimumModel: plan.minimumModel, paneTitle: "Council",
+        ...(plan.minimumReasoning ? { minimumReasoning: plan.minimumReasoning } : {}),
+        steps: plan.steps.map((step, index) => planStepSchema.parse({ id: `step-${index + 1}`, order: index + 1, title: step.title,
+          ...(step.instructions ? { instructions: step.instructions } : {}), ...(step.completionCriteria.length ? { completionCriteria: step.completionCriteria } : {}) }))
+      });
+      return { id: item.id };
+    },
+    onStatus: options.notifications ? (owner, id, run) => notifyCouncilStatus(options.notifications!, owner, id, run) : undefined,
     log: { warn: (meta, message) => app.log.warn(meta, message) }
   });
 

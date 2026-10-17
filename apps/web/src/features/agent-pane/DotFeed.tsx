@@ -1,9 +1,10 @@
 import { useState } from "react";
-import type { AgentPaneTaskRun, DotFeedItem, DotProfile } from "@space/contracts";
+import { dotPersonalities, type AgentPaneTaskRun, type DotCharacter, type DotFeedItem, type DotMood } from "@space/contracts";
 import { Bell, Check, CircleAlert, ExternalLink, Loader2, Mic, Paperclip, Slack, Sparkles, Users, X } from "../ui-theme/app-icons.js";
 import { readDateTimeSettings, type DateTimeSettings } from "../date-time-settings/date-time-settings.js";
 import { ChatCopyButton, ChatMarkdown } from "./ChatMarkdown.js";
 import { TaskDetails } from "./TaskDetails.js";
+import { DotAvatar } from "./DotAvatar.js";
 
 const HOUR = 3_600_000;
 function zone(settings: DateTimeSettings): string | undefined {
@@ -56,8 +57,10 @@ function elapsed(seconds: number): string {
 }
 
 /** One Dot's conversation as the user sees it: bubbles, one-line events, date separators and the running task. */
-export function DotFeed({ dot, items, status, hasOlder, loadingOlder, onLoadOlder, onRetry, running, latestRun }: {
-  dot: Pick<DotProfile, "name"> & { artwork: string };
+export function DotFeed({ dot, mood = "idle", motion = true, items, status, hasOlder, loadingOlder, onLoadOlder, onRetry, running, latestRun }: {
+  dot: { name: string; character: DotCharacter };
+  mood?: DotMood;
+  motion?: boolean;
   items: DotFeedItem[];
   status: "loading" | "ready" | "unavailable";
   hasOlder: boolean;
@@ -77,8 +80,10 @@ export function DotFeed({ dot, items, status, hasOlder, loadingOlder, onLoadOlde
     {status === "unavailable" ? <p className="dots-feed-state" role="status">Earlier messages are unavailable.
       <button type="button" onClick={onRetry}>Retry</button></p> : null}
     {status === "ready" && !items.length && !running ? <section className="dots-feed-welcome" aria-label={`Start talking with ${dot.name}`}>
-      <img src={dot.artwork} alt="" width="72" height="72" />
+      <DotAvatar character={dot.character} mood={mood} size={104} motion={motion ? "on" : "off"} />
       <h2>Hi, I'm {dot.name}</h2>
+      <span className="dots-feed-archetype">{dotPersonalities[dot.character].archetype}</span>
+      <p className="dots-feed-greeting">{dotPersonalities[dot.character].greeting}</p>
       <p>Send me a message. I keep one conversation with you across all your rooms.</p>
     </section> : null}
     {items.map((item, index) => {
@@ -116,6 +121,7 @@ export function DotFeed({ dot, items, status, hasOlder, loadingOlder, onLoadOlde
       </div>;
     })}
     {running ? <article className="dots-bubble dot working" role="status" aria-label={`${dot.name} is working`}>
+      <DotAvatar character={dot.character} mood="working" size={26} motion={motion ? "on" : "off"} className="dots-working-avatar" />
       <span className="dots-typing" aria-hidden="true"><span /><span /><span /></span>
       <span className="dots-working-label">{running.status === "QUEUED" ? `${dot.name} is about to start` : running.status === "INTERRUPTING"
         ? `${dot.name} is stopping` : `${dot.name} is working`} · <time>{elapsed(running.elapsedSeconds)}</time></span>

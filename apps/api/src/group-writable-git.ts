@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn } from "./safe-child-process.js";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
 /** Exit status the umask wrapper reports when the git binary is missing. */
 export const GIT_NOT_FOUND_EXIT_CODE = 127;

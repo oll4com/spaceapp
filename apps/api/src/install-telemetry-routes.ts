@@ -13,6 +13,9 @@ const installActivitySchema = z.object({
   lang: z.string().regex(INSTALL_TELEMETRY_FIELDS.lang).optional()
 }).strict();
 
+/** Where a host job copies the collector's log; only the operator's own instance has it. */
+export const INSTALL_PINGS_PATH = "/opt/spaceapp/var/inventory/install-pings.log";
+
 type Ping = Record<string, unknown> & { t: string; uid: string; event?: string };
 
 const text = (value: unknown) => typeof value === "string" && value !== "" ? value.slice(0, 64) : null;
@@ -108,7 +111,7 @@ export function registerInstallTelemetryRoutes(app: FastifyInstance, options: {
   onActive: (fields: InstallTelemetryFields) => void;
   installPingsPath?: string;
 }) {
-  const installPingsPath = options.installPingsPath ?? "/opt/spaceapp/var/inventory/install-pings.log";
+  const installPingsPath = options.installPingsPath ?? INSTALL_PINGS_PATH;
   app.post("/api/telemetry/active", { bodyLimit: 1024, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
     const body = installActivitySchema.parse(request.body ?? {});
     options.onActive({ ...body, browser: browserFromUserAgent(request.headers["user-agent"]) });

@@ -168,6 +168,36 @@ export const traceLookupResponseSchema = z.object({
     startedAt: z.string().min(1).max(64),
     closedAt: z.string().max(64).nullable()
   })).max(500),
+  // Space-native agent runs of the trace's workflows (status and error code; never messages).
+  agentRuns: z.array(z.object({
+    runId: z.string().min(1).max(240),
+    workflowId: z.string().min(1).max(240),
+    status: z.string().min(1).max(40),
+    errorCode: z.string().max(96).nullable(),
+    category: failureCategorySchema.nullable(),
+    createdAt: z.string().min(1).max(64),
+    completedAt: z.string().max(64).nullable(),
+    // A background continuation keeps its own trace; it is found through the run it continues.
+    continuationOf: traceIdentifierSchema.default(null)
+  })).max(500).default([]),
+  // Room Agent missions and task runs created under this trace (ids, status and error code; never instructions).
+  roomAgentMissions: z.array(z.object({
+    missionId: z.string().min(1).max(240),
+    roomId: z.string().min(1).max(240),
+    status: z.string().min(1).max(40),
+    errorCode: z.string().max(96).nullable(),
+    queuedAt: z.string().min(1).max(64),
+    completedAt: z.string().max(64).nullable()
+  })).max(500).default([]),
+  roomAgentTaskRuns: z.array(z.object({
+    runId: z.string().min(1).max(240),
+    missionId: z.string().min(1).max(240),
+    roomId: z.string().min(1).max(240),
+    status: z.string().min(1).max(40),
+    errorCode: z.string().max(96).nullable(),
+    queuedAt: z.string().min(1).max(64),
+    completedAt: z.string().max(64).nullable()
+  })).max(500).default([]),
   logQueries: z.object({ api: z.string(), worker: z.string() })
 });
 export type TraceLookupResponse = z.infer<typeof traceLookupResponseSchema>;

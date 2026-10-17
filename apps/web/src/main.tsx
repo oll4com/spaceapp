@@ -42,6 +42,7 @@ async function mount() {
     await import("./features/ui-theme/codex-theme.css");
     await import("./features/ui-theme/motion-theme.css");
     await import("./features/ui-theme/aurora-theme.css");
+    await import("./features/ui-theme/liquid-glass-theme.css");
     const { DemoSpaceApp } = await import("./demo/DemoSpaceApp.js");
     root.render(<StrictMode><SurfaceErrorBoundary><DemoSpaceApp /></SurfaceErrorBoundary></StrictMode>);
     return route;
@@ -53,12 +54,13 @@ async function mount() {
     import("./features/instance-badge/InstanceBadge.js")
   ]);
   await stylesReady;
-  const [{ LiveSpaceApp }, { readUiTheme, readUiBackground, readModernIconPack }, { loadAppIconPack }, { InstanceBadge }] = await appModules;
+  const [{ LiveSpaceApp }, { readUiTheme, readUiBackground, readModernIconPack, readLiquidGlassTint, applyLiquidGlassTint }, { loadAppIconPack }, { InstanceBadge }] = await appModules;
   if (await diagnosticsAuth) {
     const diagnosticsStartup = startAppDiagnosticsBootstrap();
     await diagnosticsStartup.beforeMount;
   }
   document.documentElement.dataset.uiBackground = readUiBackground(window.localStorage);
+  applyLiquidGlassTint(readLiquidGlassTint(window.localStorage));
   // Non-default icon packs load on demand; await the stored one like the theme CSS.
   const iconPackReady = loadAppIconPack(readModernIconPack(window.localStorage)).catch(() => undefined);
   if (readUiTheme(window.localStorage) !== "classic") {
@@ -66,6 +68,7 @@ async function mount() {
     await import("./features/ui-theme/codex-theme.css");
     await import("./features/ui-theme/motion-theme.css");
     await import("./features/ui-theme/aurora-theme.css");
+    await import("./features/ui-theme/liquid-glass-theme.css");
   }
   await iconPackReady;
   if (route === "app") {

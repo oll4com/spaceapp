@@ -77,6 +77,15 @@ describe("global core API availability alert", () => {
     expect(screen.getByRole("alert").textContent).toContain("Room creation failed");
   });
 
+  it("hides a transient upstream action error until the outage banner threshold", () => {
+    render(<GlobalApiErrorAlert actionError="UPSTREAM_UNAVAILABLE: Space API is not reachable from the web server." />);
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    act(() => reportCoreApiFailure());
+    act(() => vi.advanceTimersByTime(10_000));
+    expect(screen.getByRole("alert").textContent).toContain("more than 10 seconds");
+  });
+
   it("ignores a stale failed response that started before the latest success", () => {
     render(<GlobalApiErrorAlert actionError={null} />);
 

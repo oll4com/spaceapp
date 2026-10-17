@@ -249,4 +249,42 @@ describe("browser realtime stream API", () => {
       await app.close();
     }
   });
+
+  it("does not send silent audio blocks", async () => {
+    const { store, pane, session } = browserFixture();
+    let emit: ((chunk: { data: Buffer }) => void) | undefined;
+    const manager = Object.assign(realtimeManager(session, async () => undefined), {
+      acceptAudioTicket: () => true,
+      startAudioStream: async (_sessionId: string, onChunk: (chunk: { data: Buffer }) => void) => {
+        emit = onChunk;
+        return { id: "browser_audio_stream:test", sampleRate: 48000, channels: 2, format: "s16le", stop: async () => undefined };
+      }
+    }) as BrowserSessionManager;
+    const { app, cookie } = await authedApp(store, manager);
+    const messages: BrowserStreamWebSocketServerMessage[] = [];
+    const binary: Buffer[] = [];
+    try {
+      const socket = await app.injectWS(
+        `/api/panes/${encodeURIComponent(pane.id)}/browser/audio?sessionId=${encodeURIComponent(session.sessionId)}&token=browser-audio-ticket-test-value`,
+        { headers: { cookie } },
+        {
+          onInit(ws) {
+            ws.on("message", (raw, isBinary) => {
+              if (isBinary) binary.push(raw as Buffer);
+              else messages.push(browserStreamWebSocketServerMessageSchema.parse(JSON.parse(String(raw))));
+            });
+          }
+        }
+      );
+      await waitForMessage(messages, (message) => message.type === "audioReady");
+      emit?.({ data: Buffer.alloc(7680) });
+      emit?.({ data: Buffer.from([0, 0, 1, 0]) });
+      const deadline = Date.now() + 5_000;
+      while (binary.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(binary.map((chunk) => chunk.byteLength)).toEqual([4]);
+      socket.terminate();
+    } finally {
+      await app.close();
+    }
+  });
 });

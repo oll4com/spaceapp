@@ -32,15 +32,72 @@ describe("SystemAnalyticsWorkspace", () => {
   it("loads daily, weekly and monthly token totals in the Health usage view", async () => {
     render(<SystemAnalyticsWorkspace shellMode="desktop" initialTab="models" modelsOnly onClose={() => undefined} />);
     expect(await screen.findAllByText("gpt-5.6-sol")).toBeTruthy();
-    expect(mocks.models).toHaveBeenCalledWith("24h");
+    expect(mocks.models).toHaveBeenCalledWith("24h", "all");
     expect(screen.queryByRole("tablist")).toBeNull();
     expect(screen.getByText("Tokens in / out / reasoning")).toBeTruthy();
     for (const [label, range] of [["7 days", "7d"], ["30 days", "30d"], ["1 day", "24h"]]) {
       fireEvent.click(screen.getByRole("button", { name: label }));
-      await waitFor(() => expect(mocks.models).toHaveBeenLastCalledWith(range));
+      await waitFor(() => expect(mocks.models).toHaveBeenLastCalledWith(range, "all"));
       expect(await screen.findAllByText("gpt-5.6-sol")).toBeTruthy();
     }
     expect(mocks.resources).not.toHaveBeenCalled();
+  });
+
+  it("splits Space Gateway and direct usage, shows the API value and each account's models", async () => {
+    const base = createDemoFixture().systemAnalyticsModels;
+    const row = base.models[0];
+    const totals = (tokensIn: number, tokensOut: number, costUsd: number) => ({ tokensIn, tokensOut, tokensReasoning: 0, costUsd, unpricedTurns: 0 });
+    mocks.models.mockImplementation(async (range, route = "all") => ({
+      ...base, range, route,
+      models: [
+        { ...row, modelId: "claude-opus-5-5", providerId: "anthropic", tokensIn: route === "direct" ? 100 : 1100, tokensOut: 10, tokensReasoning: 0, costUsd: 1.5, unpricedTurns: 0 },
+        { ...row, modelId: "big-pickle", providerId: "opencode", tokensIn: 50, tokensOut: 5, tokensReasoning: 0, costUsd: null, unpricedTurns: 3 }
+      ],
+      providers: [{ providerId: "anthropic", modelCount: 1, activeSessions: 0, completedTurns: 4, tokensIn: 1100, tokensOut: 10, lastActivityAt: null, costUsd: 1.5 }],
+      routes: { gateway: totals(1000, 5, 1.25), direct: totals(150, 10, 0.25) },
+      timeline: { bucketSeconds: 3600, points: [
+        { at: "2027-01-15T06:00:00.000Z", gatewayTokens: 0, directTokens: 0, costUsd: 0 },
+        { at: "2027-01-15T07:00:00.000Z", gatewayTokens: 1005, directTokens: 160, costUsd: 1.5 }
+      ] },
+      composition: { cacheRead: 900, cacheWrite: 50, freshInput: 200, output: 15 },
+      accounts: [{
+        accountKey: "gw_account:lab", label: "lab", route: "GATEWAY", ...totals(1000, 5, 1.25),
+        models: [{ providerId: "anthropic", modelId: "claude-opus-5-5", tokensIn: 1000, tokensOut: 5, costUsd: 1.25 }]
+      }, {
+        accountKey: "cli:opencode/opencode", label: "opencode · OpenCode CLI (direct)", route: "DIRECT", ...totals(50, 5, 0), unpricedTurns: 3,
+        models: [{ providerId: "opencode", modelId: "big-pickle", tokensIn: 50, tokensOut: 5, costUsd: 0 }]
+      }]
+    }));
+    render(<SystemAnalyticsWorkspace shellMode="desktop" initialTab="models" modelsOnly onClose={() => undefined} />);
+    const summary = await screen.findByRole("region", { name: "Period token totals" });
+    expect(within(summary).getByText("$1.50")).toBeTruthy();
+    expect(within(summary).getByText("3 turns have no price")).toBeTruthy();
+    expect(within(summary).getByText("1,005 · 160")).toBeTruthy();
+    expect(screen.getByText("API value $1.50", { selector: ".system-analytics-provider-card small" })).toBeTruthy();
+
+    // Tokens over time: one bar per hour, a tooltip per bar, and the same figures as a table.
+    const timeline = screen.getByRole("article", { name: "Tokens over time" });
+    expect(within(timeline).getByText("One bar per 1 h")).toBeTruthy();
+    expect(timeline.querySelectorAll("path.series-gateway")).toHaveLength(1);
+    expect(timeline.querySelectorAll("path.series-direct")).toHaveLength(1);
+    fireEvent.mouseEnter(timeline.querySelectorAll(".token-chart-hit")[1]!);
+    expect(within(timeline).getByRole("status").textContent).toContain("Space Gateway 1,005");
+    expect(within(timeline).getByRole("status").textContent).toContain("API value $1.50");
+    expect(timeline.querySelectorAll(".token-chart-table tbody tr")).toHaveLength(2);
+    // What the tokens are: every part named with its value and share.
+    const composition = screen.getByRole("article", { name: "What the tokens are" });
+    expect(within(composition).getByText("Cache reads").closest("li")!.textContent).toContain("77.3%");
+    expect(within(composition).getByText("Output").closest("li")!.textContent).toContain("15");
+
+    const accounts = screen.getByRole("region", { name: "Tokens by account" });
+    // An account whose models have no price says so instead of showing $0.00.
+    expect(within(accounts).getByText("Direct · No API price")).toBeTruthy();
+    fireEvent.click(within(accounts).getByRole("button", { name: "View token usage for lab" }));
+    expect(within(accounts).getByRole("table", { name: "Models of lab" }).textContent).toContain("$1.25");
+
+    fireEvent.click(screen.getByRole("button", { name: "Direct" }));
+    await waitFor(() => expect(mocks.models).toHaveBeenLastCalledWith("24h", "direct"));
+    expect((await screen.findAllByText("100 in / 10 out", { exact: false })).length).toBeGreaterThan(0);
   });
 
   it("sums models across providers, excludes duplicate reasoning, and updates the selected model across periods", async () => {

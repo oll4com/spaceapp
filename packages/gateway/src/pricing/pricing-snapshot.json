@@ -665,6 +665,15 @@
    "priority_long_context_output_per_1m": 30.0,
    "priority_output_per_1m": 20.0
   },
+  "gpt-6.1-sol": {
+   "cached_input_per_1m": 0.1,
+   "input_per_1m": 2.0,
+   "long_context_cached_input_per_1m": 0.2,
+   "long_context_input_per_1m": 4.0,
+   "long_context_output_per_1m": 15.0,
+   "long_context_threshold_tokens": 272000.0,
+   "output_per_1m": 10.0
+  },
   "gpt-daybreak-blue-latest": {
    "cached_input_per_1m": 0.4,
    "input_per_1m": 4.0,

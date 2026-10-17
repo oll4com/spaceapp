@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn } from "./safe-child-process.js";
 import { createInterface } from "node:readline";
 import { artifactContextClosings, artifactContextOpening } from "./attachment-context.js";
 import { copyFileSync, createReadStream, mkdtempSync, rmSync } from "node:fs";
@@ -240,8 +240,8 @@ function codexLbActiveAccountsRemainingPercent(payload: Record<string, unknown>)
 }
 
 function codexLbErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "Codex LB request failed.";
-  return safeText(message, 500) || "Codex LB request failed.";
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "Space Gateway request failed.";
+  return safeText(message, 500) || "Space Gateway request failed.";
 }
 
 function pushCodexLbTarget(targets: CodexLbTarget[], name: string, baseUrl: unknown): void {
@@ -1057,11 +1057,11 @@ async function fetchJsonRecord(url: string, headers: Record<string, string>): Pr
       signal: controller.signal
     });
     if (!response.ok) {
-      throw new Error(`Codex LB HTTP ${response.status} from ${url}`);
+      throw new Error(`Space Gateway HTTP ${response.status} from ${url}`);
     }
     const payload = (await response.json()) as unknown;
     if (!isRecord(payload)) {
-      throw new Error(`Codex LB returned a non-object payload from ${url}`);
+      throw new Error(`Space Gateway returned a non-object payload from ${url}`);
     }
     return payload;
   } finally {
@@ -1087,7 +1087,7 @@ async function readCodexLbUsage(input: {
       routeTargetMode: null,
       upstream: null,
       source: null,
-      error: "Codex LB key file is not configured.",
+      error: "Space Gateway key file is not configured.",
       checkedAt
     };
   }
@@ -1115,7 +1115,7 @@ async function readCodexLbUsage(input: {
       routeTargetMode: null,
       upstream: null,
       source: null,
-      error: "Codex LB key file is empty.",
+      error: "Space Gateway key file is empty.",
       checkedAt
     };
   }
@@ -1131,12 +1131,12 @@ async function readCodexLbUsage(input: {
       routeTargetMode: null,
       upstream: null,
       source: null,
-      error: "Codex LB weekly remaining targets are not configured.",
+      error: "Space Gateway weekly remaining targets are not configured.",
       checkedAt
     };
   }
 
-  let lastError = "Codex LB weekly remaining request failed.";
+  let lastError = "Space Gateway weekly remaining request failed.";
   const headers = { Authorization: `Bearer ${credential}` };
   for (const target of targets) {
     try {

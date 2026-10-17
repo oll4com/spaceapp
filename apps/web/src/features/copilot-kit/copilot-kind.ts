@@ -7,8 +7,8 @@ import type { CopilotLaunchSettings, Pane, UserSettings } from "@space/contracts
  * the contracts it loaded at start).
  */
 export interface CopilotKind {
-  id: "job" | "mail" | "marketing";
-  mode: "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT";
+  id: "job" | "mail" | "marketing" | "freelance";
+  mode: "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT";
   /** "Job Copilot", "Mail Copilot": the Create menu entry, dialog titles and notices. */
   label: string;
   /** The CLI recommended for this copilot (Claude Code: long, tool-heavy loops with native MCP and account profiles). */
@@ -23,11 +23,11 @@ export interface CopilotKind {
   /** Where the default agent is changed, named in notices ("Settings → Job Copilot"). */
   settingsPlace: string;
   /** The user-settings key holding the remembered agent. */
-  settingsKey: "jobCopilot" | "mailCopilot" | "marketingCopilot";
+  settingsKey: "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot";
   /** Prefix of the settings card's form control names ("job-copilot"). */
   controlPrefix: string;
   /** The remembered launch of this kind in the user's settings. */
-  remembered(settings: Pick<UserSettings, "jobCopilot" | "mailCopilot" | "marketingCopilot">): CopilotLaunchSettings | null;
+  remembered(settings: Pick<UserSettings, "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot">): CopilotLaunchSettings | null;
 }
 
 export const JOB_COPILOT_KIND: CopilotKind = {
@@ -75,7 +75,22 @@ export const MARKETING_COPILOT_KIND: CopilotKind = {
   remembered: (settings) => settings.marketingCopilot ?? null
 };
 
-export const COPILOT_KINDS: readonly CopilotKind[] = [JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND];
+export const FREELANCE_COPILOT_KIND: CopilotKind = {
+  id: "freelance",
+  mode: "FREELANCE_COPILOT",
+  label: "Freelance Copilot",
+  preferredRuntimeId: "cli:claude",
+  recommendedReason: "Recommended: native MCP, skills, account profiles",
+  agentDescription: "The AI coding CLI that finds clients for oll4.com, sends proposals and answers them until they are ready for you. Claude Code is recommended for long, tool-heavy loops.",
+  launchHeading: "Choose the agent that finds your clients",
+  launchDescription: "The copilot registers on the freelance platforms, qualifies leads, sends proposals and talks to clients through this pane's browser, and hands you every client who wants to go ahead. Claude Code is recommended; any ready CLI works.",
+  settingsPlace: "Settings → Freelance Copilot",
+  settingsKey: "freelanceCopilot",
+  controlPrefix: "freelance-copilot",
+  remembered: (settings) => settings.freelanceCopilot ?? null
+};
+
+export const COPILOT_KINDS: readonly CopilotKind[] = [JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, FREELANCE_COPILOT_KIND];
 
 export function copilotKindForMode(mode: Pane["mode"]): CopilotKind | null {
   return COPILOT_KINDS.find((kind) => kind.mode === mode) ?? null;

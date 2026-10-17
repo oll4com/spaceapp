@@ -13,6 +13,7 @@ type AgentPaneActionEventDetail =
   | "build"
   | "plan_progress"
   | "deploy"
+  | "promote"
   | "clean_worktree"
   | "scroll_top"
   | "scroll_bottom"

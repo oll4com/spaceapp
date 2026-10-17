@@ -1,12 +1,15 @@
+import { rollbackKeepingError } from "./rollback.js";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 import type { SystemAnalyticsBackfill, SystemAnalyticsCoverage } from "@space/contracts";
 
 export type SystemAnalyticsModelEventStatus = "RUNNING" | "COMPLETED" | "ABORTED" | "SESSION";
 export type SystemAnalyticsResourceEntityType = "HOST" | "CLI_SESSION" | "SHARED_RUNTIME";
 
+export type SystemAnalyticsRoute = "GATEWAY" | "DIRECT";
+
 export interface SystemAnalyticsModelEventRecord {
   eventKey: string;
-  source: "codex" | "opencode" | "session";
+  source: "codex" | "opencode" | "session" | "claude" | "gateway";
   runtimeId: string;
   providerId: string;
   modelId: string;
@@ -25,7 +28,18 @@ export interface SystemAnalyticsModelEventRecord {
   ttftMs: number | null;
   durationMs: number | null;
   updatedAt: string;
+  /** Through Space Gateway or direct; null for events stored before routes existed (they count as before). */
+  route?: SystemAnalyticsRoute | null;
+  /** A Space Gateway account id, or `cli:<runtime>/<profile>` for a direct account the gateway does not hold. */
+  accountKey?: string | null;
+  /** What the tokens would cost on the provider's API; null when the model has no price. */
+  costUsd?: number | null;
+  tokensCacheRead?: number | null;
+  tokensCacheWrite?: number | null;
 }
+
+/** Fields a later read may not know (a re-read without the route keeps the stored one). */
+const keptModelEventFields = ["route", "accountKey", "costUsd", "tokensCacheRead", "tokensCacheWrite"] as const;
 
 export interface SystemAnalyticsResourceSample {
   sampledAt: string;
@@ -71,6 +85,9 @@ export interface SystemAnalyticsRepository {
   rollupAndSweep(at: string): Promise<void>;
   getBackfill(): Promise<SystemAnalyticsBackfill>;
   setBackfill(input: SystemAnalyticsBackfill): Promise<void>;
+  /** A named import position (the last gateway log id, the last Claude message time, a finished one-time re-read). */
+  getCursor(key: string): Promise<string | null>;
+  setCursor(key: string, value: string): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -162,7 +179,12 @@ export class InMemorySystemAnalyticsRepository implements SystemAnalyticsReposit
   };
 
   async upsertModelEvents(events: SystemAnalyticsModelEventRecord[]): Promise<void> {
-    for (const event of events) this.modelEvents.set(event.eventKey, clone(event));
+    for (const event of events) {
+      const existing = this.modelEvents.get(event.eventKey);
+      const next = clone(event);
+      for (const field of keptModelEventFields) (next as unknown as Record<string, unknown>)[field] = event[field] ?? existing?.[field] ?? null;
+      this.modelEvents.set(event.eventKey, next);
+    }
   }
 
   async listModelEvents(since: string): Promise<SystemAnalyticsModelEventRecord[]> {
@@ -232,6 +254,15 @@ export class InMemorySystemAnalyticsRepository implements SystemAnalyticsReposit
 
   async setBackfill(input: SystemAnalyticsBackfill): Promise<void> {
     this.backfill = clone(input);
+  }
+
+  private readonly cursors = new Map<string, string>();
+  async getCursor(key: string): Promise<string | null> {
+    return this.cursors.get(key) ?? null;
+  }
+
+  async setCursor(key: string, value: string): Promise<void> {
+    this.cursors.set(key, value);
   }
 
   async dispose(): Promise<void> {}
@@ -323,16 +354,28 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
   }
 
   async upsertModelEvents(events: SystemAnalyticsModelEventRecord[]): Promise<void> {
-    for (const event of events) {
+    // One statement per 500 events (an import brings tens of thousands); a key may appear once per statement.
+    const unique = [...new Map(events.map((event) => [event.eventKey, event])).values()];
+    for (let offset = 0; offset < unique.length; offset += 500) {
+      const values: unknown[] = [];
+      const tuples = unique.slice(offset, offset + 500).map((event) => {
+        const row = [
+          event.eventKey, event.source, event.runtimeId, event.providerId, event.modelId,
+          event.roomId, event.paneId, event.sessionId, event.turnId, event.status, event.coverage,
+          event.turnCount, event.startedAt, event.endedAt, event.tokensIn, event.tokensOut, event.tokensReasoning,
+          event.ttftMs, event.durationMs, event.updatedAt, event.route ?? null, event.accountKey ?? null, event.costUsd ?? null,
+          event.tokensCacheRead ?? null, event.tokensCacheWrite ?? null
+        ];
+        return `(${row.map((value) => { values.push(value); return `$${values.length}`; }).join(", ")})`;
+      });
       await this.pool.query(
         `
           INSERT INTO system_analytics_model_events (
             event_key, source, runtime_id, provider_id, model_id, room_id, pane_id, session_id,
             turn_id, status, coverage, turn_count, started_at, ended_at, tokens_in, tokens_out,
-            tokens_reasoning, ttft_ms, duration_ms, updated_at
-          ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
-          )
+            tokens_reasoning, ttft_ms, duration_ms, updated_at, route, account_key, cost_usd,
+            tokens_cache_read, tokens_cache_write
+          ) VALUES ${tuples.join(", ")}
           ON CONFLICT (event_key) DO UPDATE SET
             provider_id = EXCLUDED.provider_id,
             model_id = EXCLUDED.model_id,
@@ -345,14 +388,14 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
             tokens_reasoning = EXCLUDED.tokens_reasoning,
             ttft_ms = EXCLUDED.ttft_ms,
             duration_ms = EXCLUDED.duration_ms,
-            updated_at = EXCLUDED.updated_at
+            updated_at = EXCLUDED.updated_at,
+            route = COALESCE(EXCLUDED.route, system_analytics_model_events.route),
+            account_key = COALESCE(EXCLUDED.account_key, system_analytics_model_events.account_key),
+            cost_usd = COALESCE(EXCLUDED.cost_usd, system_analytics_model_events.cost_usd),
+            tokens_cache_read = COALESCE(EXCLUDED.tokens_cache_read, system_analytics_model_events.tokens_cache_read),
+            tokens_cache_write = COALESCE(EXCLUDED.tokens_cache_write, system_analytics_model_events.tokens_cache_write)
         `,
-        [
-          event.eventKey, event.source, event.runtimeId, event.providerId, event.modelId,
-          event.roomId, event.paneId, event.sessionId, event.turnId, event.status, event.coverage,
-          event.turnCount, event.startedAt, event.endedAt, event.tokensIn, event.tokensOut, event.tokensReasoning,
-          event.ttftMs, event.durationMs, event.updatedAt
-        ]
+        values
       );
     }
   }
@@ -365,7 +408,8 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
           model_id AS "modelId", room_id AS "roomId", pane_id AS "paneId", session_id AS "sessionId",
           turn_id AS "turnId", status, coverage, turn_count AS "turnCount", started_at AS "startedAt", ended_at AS "endedAt",
           tokens_in AS "tokensIn", tokens_out AS "tokensOut", tokens_reasoning AS "tokensReasoning",
-          ttft_ms AS "ttftMs", duration_ms AS "durationMs", updated_at AS "updatedAt"
+          ttft_ms AS "ttftMs", duration_ms AS "durationMs", updated_at AS "updatedAt", route, account_key AS "accountKey",
+          cost_usd AS "costUsd", tokens_cache_read AS "tokensCacheRead", tokens_cache_write AS "tokensCacheWrite"
         FROM system_analytics_model_events
         WHERE COALESCE(ended_at, started_at) >= $1 OR status = 'RUNNING'
         ORDER BY started_at ASC, event_key ASC
@@ -392,7 +436,12 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
       tokensReasoning: numeric(row.tokensReasoning as number | string | null),
       ttftMs: numeric(row.ttftMs as number | string | null),
       durationMs: numeric(row.durationMs as number | string | null),
-      updatedAt: iso(row.updatedAt as Date | string)
+      updatedAt: iso(row.updatedAt as Date | string),
+      route: (row.route as SystemAnalyticsRoute | null) ?? null,
+      accountKey: row.accountKey === null ? null : String(row.accountKey),
+      costUsd: numeric(row.costUsd as number | string | null),
+      tokensCacheRead: numeric(row.tokensCacheRead as number | string | null),
+      tokensCacheWrite: numeric(row.tokensCacheWrite as number | string | null)
     }));
   }
 
@@ -499,6 +548,7 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
   async rollupAndSweep(at: string): Promise<void> {
     const windows = systemAnalyticsRollupWindows(at, this.lastRollupAt);
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     try {
       await client.query("BEGIN");
       await this.rollup(client, 10, 60, windows.since60);
@@ -517,10 +567,10 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
       // the previous watermark by the next one.
       if (this.lastRollupAt === null || Date.parse(at) > Date.parse(this.lastRollupAt)) this.lastRollupAt = at;
     } catch (error) {
-      await client.query("ROLLBACK");
+      rollbackFailed = await rollbackKeepingError(client);
       throw error;
     } finally {
-      client.release?.();
+      client.release?.(rollbackFailed || undefined);
     }
   }
 
@@ -631,6 +681,18 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
       `,
       [input.status, input.earliestAt, input.latestAt, JSON.stringify(input.errors.slice(0, 20))]
     );
+  }
+
+  async getCursor(key: string): Promise<string | null> {
+    const result = await this.pool.query<{ value: string | null }>(
+      `SELECT cursor_value AS value FROM system_analytics_ingest_cursors WHERE source_key = $1`, [key]);
+    return result.rows[0]?.value ?? null;
+  }
+
+  async setCursor(key: string, value: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO system_analytics_ingest_cursors (source_key, cursor_value, status, updated_at) VALUES ($1, $2, 'COMPLETE', now())
+        ON CONFLICT (source_key) DO UPDATE SET cursor_value = EXCLUDED.cursor_value, updated_at = now()`, [key, value]);
   }
 
   async dispose(): Promise<void> {

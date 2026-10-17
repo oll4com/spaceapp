@@ -21,6 +21,7 @@ import {
   PanelsTopLeft,
   Plug,
   Rocket,
+  Handshake,
   Search,
   ServerCog,
   Sparkles,
@@ -49,6 +50,7 @@ import type { DotSettingsRequest, DotsSettingsCard } from "../agent-pane/DotsSet
 import type { JobCopilotSettingsCard } from "../job-apply-pane/JobCopilotSettingsCard.js";
 import type { MailCopilotSettingsCard } from "../mail-copilot-pane/MailCopilotSettingsCard.js";
 import type { MarketingCopilotSettingsCard } from "../marketing-copilot-pane/MarketingCopilotSettingsCard.js";
+import type { FreelanceCopilotSettingsCard } from "../freelance-copilot-pane/FreelanceCopilotSettingsCard.js";
 import { NotificationSettingsCard } from "../notifications/NotificationSettingsCard.js";
 
 // The Settings dock (and the Workspace "Advanced settings" page): a search field, then
@@ -76,6 +78,7 @@ export interface AgentSettingsCards {
   JobCopilot: typeof JobCopilotSettingsCard;
   MailCopilot: typeof MailCopilotSettingsCard;
   MarketingCopilot: typeof MarketingCopilotSettingsCard;
+  FreelanceCopilot: typeof FreelanceCopilotSettingsCard;
 }
 
 export const settingsCardLoadingFallback = <div className="empty-mini" role="status">Loading settings…</div>;
@@ -112,6 +115,8 @@ export function AgentSettingsDock({
   currentBackground = "spaceapp",
   currentIconPack,
   currentUiTheme,
+  currentGlassTint,
+  onGlassTintChange,
   isCodexEnabled,
   isHarnessEnabled = true,
   suppressNotifications,
@@ -139,6 +144,8 @@ export function AgentSettingsDock({
   currentBackground?: UiBackground;
   currentIconPack: ModernIconPack;
   currentUiTheme: UiTheme;
+  currentGlassTint?: number;
+  onGlassTintChange?: (tint: number) => void;
   isCodexEnabled: boolean;
   isHarnessEnabled?: boolean;
   suppressNotifications: boolean;
@@ -175,7 +182,8 @@ export function AgentSettingsDock({
     Dots: LazyDotsSettingsCard,
     JobCopilot: LazyJobCopilotSettingsCard,
     MailCopilot: LazyMailCopilotSettingsCard,
-    MarketingCopilot: LazyMarketingCopilotSettingsCard
+    MarketingCopilot: LazyMarketingCopilotSettingsCard,
+    FreelanceCopilot: LazyFreelanceCopilotSettingsCard
   } = cards;
   const [providerPending, setProviderPending] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
@@ -282,6 +290,8 @@ export function AgentSettingsDock({
               currentBackground={currentBackground}
               currentIconPack={currentIconPack}
               currentTheme={currentUiTheme}
+              currentGlassTint={currentGlassTint}
+              onGlassTintChange={onGlassTintChange}
               onChange={onUiThemeApply}
             />
           </RecoverableSurface>
@@ -344,6 +354,11 @@ Choose that agent and its account once and every new Mail Copilot pane, on every
           help="Marketing Copilot promotes SpaceApp with an AI coding agent and the pane's browser. Choose that agent and its account once and every new Marketing Copilot pane, on every device, opens with it; turn on asking to pick each time."
           keywords="marketing copilot promote social posts launch campaign agent claude codex account default ask launch">
           <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyMarketingCopilotSettingsCard /></RecoverableSurface>
+        </SettingsDisclosure>
+        <SettingsDisclosure sectionKey="freelance-copilot" title="Freelance Copilot" description="The agent and account new Freelance Copilot panes open with." scope="Your account" icon={Handshake}
+          help="Freelance Copilot finds clients on freelance platforms with an AI coding agent and the pane's browser. Choose that agent and its account once and every new Freelance Copilot pane, on every device, opens with it; turn on asking to pick each time."
+          keywords="freelance copilot upwork contra fiverr toptal clients proposals agent claude codex account default ask launch">
+          <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyFreelanceCopilotSettingsCard /></RecoverableSurface>
         </SettingsDisclosure>
 
         {canManageCliRuntimes ? <SettingsDisclosure hidden={!adminMode} title="Default provider" description="The AI service new chats start with." scope="New sessions" icon={ServerCog}

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexEnvironment, SystemAnalyticsModelsResponse, ToolbarModelStats } from "@space/contracts";
 import { SpaceApiError } from "../src/api.js";
+import { AccountQuotaCard } from "../src/features/toolbar-metrics/AccountQuotaCards.js";
 import {
   formatAccountReset,
   getToolbarMetricsSnapshot,
@@ -830,6 +831,19 @@ describe("model stats MDL badge", () => {
 
     fireEvent.click(within(panel).getByRole("button", { name: "Available (1)" }));
     expect(titles()).toEqual(["lab"]);
+  });
+
+  it("leaves out the 5h cell of an account that has only a weekly limit", () => {
+    const entry = (fiveHourRemainingPercent: number | null) => ({
+      id: "a", title: "prolite@example.test", details: [], capacity: 100, availability: { state: "available" as const, backAt: null },
+      rows: [{ key: "codex", label: null, threshold: 1, quota: { fiveHourRemainingPercent, weeklyRemainingPercent: 100, weeklyResetAt: null } }],
+    });
+    const { container, rerender } = render(<ul><AccountQuotaCard entry={entry(null)} clock={0} /></ul>);
+    expect(screen.queryByRole("meter", { name: "5h remaining" })).toBeNull();
+    expect(screen.getByRole("meter", { name: "Week remaining" })).toBeTruthy();
+    expect(container.querySelector(".account-quota-cells")?.children).toHaveLength(1);
+    rerender(<ul><AccountQuotaCard entry={entry(40)} clock={0} /></ul>);
+    expect(screen.getByRole("meter", { name: "5h remaining" }).getAttribute("aria-valuenow")).toBe("40");
   });
 
   it("formats account reset countdown in minutes when reactivating in less than 3 hours", () => {

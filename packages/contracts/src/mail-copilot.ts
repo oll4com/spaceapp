@@ -32,8 +32,10 @@ export const mailCopilotPaneSettingsSchema = z.object({
   notifications: z.object({
     newMail: z.boolean().default(true),
     needsYou: z.boolean().default(true),
-    telegram: z.boolean().default(false)
-  }).strict().default({ newMail: true, needsYou: true, telegram: false })
+    telegram: z.boolean().default(false),
+    /** Accounts whose new mail raises no notification (the copilot still sees it). */
+    mutedAccounts: z.array(emailSchema).max(20).default([])
+  }).strict().default({ newMail: true, needsYou: true, telegram: false, mutedAccounts: [] })
 }).strict();
 export type MailCopilotPaneSettings = z.infer<typeof mailCopilotPaneSettingsSchema>;
 
@@ -78,7 +80,9 @@ export const MAIL_COPILOT_EVENT_TYPES = [
   /** A work item the run loop made from an untriaged inbox conversation (the backlog scan). */
   "TRIAGE",
   /** A rule the server learned from consistent operator actions, and one it retired when the operator acted otherwise. */
-  "RULE_LEARNED", "RULE_RETIRED"
+  "RULE_LEARNED", "RULE_RETIRED",
+  /** The operator (or a learned FIX rule) handed a mail to the copilot to check and fix what it needs; and its outcome. */
+  "FIX_REQUESTED", "FIXED"
 ] as const;
 export const mailCopilotEventTypeSchema = z.enum(MAIL_COPILOT_EVENT_TYPES);
 export type MailCopilotEventType = z.infer<typeof mailCopilotEventTypeSchema>;
@@ -103,7 +107,7 @@ export const mailRuleConditionSchema = z.object({
 }).strict().refine((condition) => Object.keys(condition).length > 0, "A rule needs at least one condition.");
 export type MailRuleCondition = z.infer<typeof mailRuleConditionSchema>;
 
-export const MAIL_RULE_ACTION_TYPES = ["REPLY", "ARCHIVE", "LABEL", "MOVE", "STAR", "TRASH", "MARK_READ"] as const;
+export const MAIL_RULE_ACTION_TYPES = ["REPLY", "ARCHIVE", "LABEL", "MOVE", "STAR", "TRASH", "MARK_READ", "FIX"] as const;
 export const mailRuleActionSchema = z.object({
   type: z.enum(MAIL_RULE_ACTION_TYPES),
   /** REPLY: the TEMPLATE memory the reply follows. */
@@ -367,7 +371,8 @@ export const MAIL_SYSTEM_LABELS: ReadonlyArray<{ id: string; name: string }> = [
 // ---- What the operator does to mail, per account: the copilot learns its habits from this log -------------
 
 /** One thing done to a conversation: archive, trash, a move to a label (folder), a star, spam, a reply… */
-export const MAIL_OPERATOR_ACTIONS = ["ARCHIVE", "UNARCHIVE", "TRASH", "UNTRASH", "DELETE", "MOVE", "LABEL", "UNLABEL", "STAR", "UNSTAR", "SPAM", "NOT_SPAM", "REPLY", "FORWARD"] as const;
+/** FIX: handed to the copilot to check and fix what the mail needs ("Send to AI"). */
+export const MAIL_OPERATOR_ACTIONS = ["ARCHIVE", "UNARCHIVE", "TRASH", "UNTRASH", "DELETE", "MOVE", "LABEL", "UNLABEL", "STAR", "UNSTAR", "SPAM", "NOT_SPAM", "REPLY", "FORWARD", "FIX"] as const;
 export const mailOperatorActionSchema = z.enum(MAIL_OPERATOR_ACTIONS);
 export type MailOperatorAction = z.infer<typeof mailOperatorActionSchema>;
 export const mailActionRecordSchema = z.object({
@@ -392,6 +397,27 @@ export const mailActionRecordSchema = z.object({
 }).strict();
 export type MailActionRecord = z.infer<typeof mailActionRecordSchema>;
 
+/** A mail sent to the copilot to check and fix, as the pane follows it: the request, the copilot's questions with the operator's answers, and the result. */
+export interface MailFixRequestView {
+  id: string;
+  account: string | null;
+  threadId: string | null;
+  subject: string;
+  from: string | null;
+  /** What the operator asked (the note of "Send to AI"), if anything. */
+  note: string | null;
+  /** operator: the operator's click; rule: a FIX rule sent it on its own. */
+  by: "operator" | "rule";
+  status: "PENDING" | "TAKEN" | "DONE";
+  requestedAt: string;
+  exchanges: Array<{ question: string; askedAt: string; answer: string | null; answeredAt: string | null }>;
+  /** The copilot's report: FIXED, NEEDS_USER, SKIPPED…, with its summary. */
+  outcome: { type: MailCopilotEventType; summary: string; at: string } | null;
+  /** The memory the fix taught the copilot (how this kind of mail is fixed), when it was fixed. */
+  memoryId: string | null;
+}
+/** One row of the action log as the pane shows it, with the account's label names. */
+export type MailActionLogEntry = MailActionRecord & { labelNames: string[] };
 /** How the operator handled one kind of mail on one account: per action (and labels) how often, and when last. */
 export interface MailHabitLevel {
   level: "sender" | "subject" | "domain";
@@ -538,6 +564,23 @@ export const mailCopilotEventInputSchema = z.object({
 }).strict();
 export type MailCopilotEventInput = z.infer<typeof mailCopilotEventInputSchema>;
 
+/** "Send to AI": the operator hands one conversation to the copilot to check and fix what it needs. */
+export const mailCopilotFixRequestSchema = z.object({
+  account: emailSchema,
+  threadId: z.string().min(1).max(200),
+  /** What the copilot should look at or fix (optional). */
+  note: z.string().trim().max(2000).optional()
+}).strict();
+export type MailCopilotFixRequest = z.infer<typeof mailCopilotFixRequestSchema>;
+
+/** The action log as the operator reads it back (Activity → Your actions). */
+export const mailActionListQuerySchema = z.object({
+  paneId: paneIdSchema.optional(),
+  account: emailSchema.optional(),
+  source: z.enum(["PANE", "GMAIL", "BACKFILL", "SPACE"]).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+}).strict();
+
 export const mailCopilotEventListQuerySchema = z.object({
   paneId: paneIdSchema.optional(),
   threadId: z.string().min(1).max(200).optional(),
@@ -552,7 +595,8 @@ export const mailCopilotRunCountersSchema = z.object({
   archived: z.number().int().min(0).default(0),
   labeled: z.number().int().min(0).default(0),
   skipped: z.number().int().min(0).default(0),
-  needsUser: z.number().int().min(0).default(0)
+  needsUser: z.number().int().min(0).default(0),
+  fixed: z.number().int().min(0).default(0)
 }).strict();
 export type MailCopilotRunCounters = z.infer<typeof mailCopilotRunCountersSchema>;
 
@@ -595,7 +639,7 @@ export const mailCopilotRunViewSchema = z.object({
 }).strict();
 export type MailCopilotRunView = z.infer<typeof mailCopilotRunViewSchema>;
 
-export const MAIL_COPILOT_REPORT_OUTCOMES = ["replied", "drafted", "archived", "labeled", "skipped", "needs_user", "learned"] as const;
+export const MAIL_COPILOT_REPORT_OUTCOMES = ["replied", "drafted", "archived", "labeled", "skipped", "needs_user", "learned", "fixed"] as const;
 export const mailCopilotReportOutcomeSchema = z.enum(MAIL_COPILOT_REPORT_OUTCOMES);
 export const mailCopilotNextRequestSchema = z.object({ waitMs: z.number().int().min(0).max(120_000).default(60_000) }).strict();
 export const mailCopilotReportRequestSchema = z.object({

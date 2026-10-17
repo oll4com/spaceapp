@@ -174,6 +174,10 @@ export function responseToChatCompletion(response: Json, fallbackModel: string, 
 }
 
 /** Turns a Responses SSE stream into `chat.completion.chunk` events, chunk by chunk. */
+function outputKey(event: Json): string | undefined {
+  return typeof event.output_index === "number" ? `output:${event.output_index}` : undefined;
+}
+
 export class ChatStreamTranslator {
   private buffer = "";
   private decoder = new TextDecoder();
@@ -182,6 +186,9 @@ export class ChatStreamTranslator {
   private model: string;
   private sentRole = false;
   private toolIndexes = new Map<string, number>();
+  private toolCount = 0;
+  /** Tool calls whose arguments arrived as deltas; the others get theirs from the done events. */
+  private streamedArguments = new Set<number>();
   private finished = false;
 
   constructor(model: string, private readonly createdSeconds: number, private readonly includeUsage: boolean) {
@@ -230,18 +237,29 @@ export class ChatStreamTranslator {
     if (type === "response.output_item.added") {
       const item = obj(event.item);
       if (item?.type !== "function_call") return "";
-      const index = this.toolIndexes.size;
-      this.toolIndexes.set(str(item.id) ?? str(item.call_id) ?? String(index), index);
+      const index = this.toolCount++;
+      // Parallel calls: argument events name their call by item id or output index, whichever the upstream sends.
+      for (const key of [str(item.id), str(item.call_id), outputKey(event)]) if (key) this.toolIndexes.set(key, index);
       return this.role() + this.chunk({ tool_calls: [{ index, id: str(item.call_id) ?? "", type: "function", function: { name: item.name, arguments: "" } }] });
     }
     if (type === "response.function_call_arguments.delta" && typeof event.delta === "string") {
-      const index = this.toolIndexes.get(str(event.item_id) ?? "") ?? Math.max(0, this.toolIndexes.size - 1);
+      const index = this.toolIndex(event);
+      this.streamedArguments.add(index);
       return this.chunk({ tool_calls: [{ index, function: { arguments: event.delta } }] });
+    }
+    if (type === "response.function_call_arguments.done" || type === "response.output_item.done") {
+      const item = obj(event.item);
+      if (type === "response.output_item.done" && item?.type !== "function_call") return "";
+      const index = this.toolIndex(event, item);
+      const args = str(event.arguments) ?? str(item?.arguments);
+      if (this.streamedArguments.has(index) || !args) return "";
+      this.streamedArguments.add(index);
+      return this.chunk({ tool_calls: [{ index, function: { arguments: args } }] });
     }
     if (type === "response.completed" || type === "response.incomplete") {
       const response = obj(event.response);
       this.finished = true;
-      let out = this.role() + this.chunk({}, finishReason(response, this.toolIndexes.size > 0));
+      let out = this.role() + this.chunk({}, finishReason(response, this.toolCount > 0));
       if (this.includeUsage) out += `data: ${JSON.stringify({ id: this.id, object: "chat.completion.chunk", created: this.createdSeconds, model: this.model, choices: [], usage: usageOf(response) ?? null })}\n\n`;
       return `${out}data: [DONE]\n\n`;
     }
@@ -251,6 +269,14 @@ export class ChatStreamTranslator {
       return `data: ${JSON.stringify({ error: { message: str(error.message) ?? "The upstream response failed.", type: "server_error", code: str(error.code) ?? "upstream_error" } })}\n\ndata: [DONE]\n\n`;
     }
     return "";
+  }
+
+  private toolIndex(event: Json, item?: Json | null): number {
+    for (const key of [str(event.item_id), str(item?.id), str(item?.call_id), outputKey(event)]) {
+      const index = key ? this.toolIndexes.get(key) : undefined;
+      if (index !== undefined) return index;
+    }
+    return Math.max(0, this.toolCount - 1);
   }
 
   /** Closes a stream that ended without a terminal event. */

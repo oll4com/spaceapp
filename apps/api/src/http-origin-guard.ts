@@ -13,6 +13,9 @@ export function isOtherSiteBrowserRequest(request: FastifyRequest, publicOrigins
 
 export function requiresSameSiteBrowser(request: FastifyRequest, routePath: string): boolean {
   const method = request.method.toUpperCase();
+  // A WebSocket handshake is a GET: without this, another local port could open the VNC stream or the
+  // shared-chat socket with the owner's cookie (1.1.5 internal review, 2026-10-16).
+  const websocket = String(request.headers.upgrade ?? "").toLowerCase() === "websocket";
   return routePath === "/api/auth/csrf" ||
-    (routePath.startsWith("/api/") && method !== "GET" && method !== "HEAD" && method !== "OPTIONS");
+    (routePath.startsWith("/api/") && (websocket || (method !== "GET" && method !== "HEAD" && method !== "OPTIONS")));
 }

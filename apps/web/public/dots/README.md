@@ -8,6 +8,6 @@ Every asset has a `320 × 320` viewBox and transparent background. The illustrat
 
 The shared palette uses deep navy `#263447`, warm ivory `#FFFCED`, cream `#FFF0CF`, blue-grey `#6E8A99`, amber `#EFC585`, muted cyan `#93C8CB`, coral-peach `#EEA38B`, silver-blue `#BACCD7`, and lavender-blue `#A2AED6`. Related lighter and darker tones provide volume rather than hard outlines. Shadows remain translucent so assets work on varied surfaces.
 
-Assets are static: no CSS, JavaScript, or built-in animation. UI controls and motion belong to the application layer.
+Assets are static: no CSS, JavaScript, or built-in animation. UI controls and motion belong to the application layer. The app draws the animated Dots from these bodies in `apps/web/src/features/agent-pane/dot-avatar-art.tsx` (faces and moods in `DotAvatar.tsx`); these files stay the static artwork for notifications and thumbnails. Redraw a body in both places.
 
 License: inherited from the project's [Business Source License 1.1](../../../../../LICENSE), including its Additional Use Grant and change to Apache License 2.0 on 2030-10-01. No separate asset license is granted.

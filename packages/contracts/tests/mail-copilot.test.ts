@@ -8,7 +8,7 @@ describe("Mail Copilot contracts", () => {
   it("reads unconfigured panes as Assist defaults and keeps the view (the CLI account lives in the session, never the row)", () => {
     const metadata = defaultMailCopilotPaneMetadata();
     expect(metadata).toEqual({ version: 1, settings: {
-      autonomy: "ASSIST", paused: false, accounts: [], backlogHours: 24, sendsPerHour: 20, signature: null, notifications: { newMail: true, needsYou: true, telegram: false }
+      autonomy: "ASSIST", paused: false, accounts: [], backlogHours: 24, sendsPerHour: 20, signature: null, notifications: { newMail: true, needsYou: true, telegram: false, mutedAccounts: [] }
     } });
     expect(resolveMailCopilotPaneMetadata(null)).toEqual(metadata);
     const parsed = mailCopilotPaneMetadataSchema.parse({ version: 1, settings: { autonomy: "RULES", accounts: ["me@gmail.com"] },

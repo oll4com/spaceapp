@@ -17,7 +17,10 @@ import {
   writeModernAppearance,
   writeModernIconPack,
   writeUiBackground,
-  writeUiTheme
+  writeUiTheme,
+  LIQUID_GLASS_TINT_STORAGE_KEY,
+  readLiquidGlassTint,
+  writeLiquidGlassTint
 } from "../src/ui-theme.js";
 
 class MemoryStorage implements Storage {
@@ -65,6 +68,8 @@ describe("Space UI theme preferences", () => {
     expect(readUiTheme(storage)).toBe("motion");
     expect(writeUiTheme(storage, "aurora")).toBe("aurora");
     expect(readUiTheme(storage)).toBe("aurora");
+    expect(writeUiTheme(storage, "liquid-glass")).toBe("liquid-glass");
+    expect(readUiTheme(storage)).toBe("liquid-glass");
   });
 
   it("stores the opt-in Modern selection without touching Classic theme keys", () => {
@@ -100,12 +105,14 @@ describe("Space UI theme preferences", () => {
     expect(storage.getItem("space.room.theme")).toBe("copper");
   });
 
-  it("stores a Modern-only icon pack with Lucide as the safe default", () => {
+  it("stores an icon pack with Space Duotone as the default and keeps a chosen Lucide", () => {
     const storage = new MemoryStorage();
     storage.setItem("space.room.theme", "forest");
 
-    expect(readModernIconPack(storage)).toBe("lucide");
+    expect(readModernIconPack(storage)).toBe("space");
     storage.setItem(MODERN_ICON_PACK_STORAGE_KEY, "unsupported");
+    expect(readModernIconPack(storage)).toBe("space");
+    expect(writeModernIconPack(storage, "lucide")).toBe("lucide");
     expect(readModernIconPack(storage)).toBe("lucide");
     expect(writeModernIconPack(storage, "material-rounded")).toBe("material-rounded");
     expect(storage.getItem(MODERN_ICON_PACK_STORAGE_KEY)).toBe("material-rounded");
@@ -179,8 +186,24 @@ describe("Space UI theme preferences", () => {
 
     expect(writeUiBackground(storage, "aurora")).toBe("aurora");
     expect(readUiBackground(storage)).toBe("aurora");
+    expect(writeUiBackground(storage, "liquid-glass")).toBe("liquid-glass");
+    expect(readUiBackground(storage)).toBe("liquid-glass");
     expect(writeUiBackground(storage, "spaceapp")).toBe("spaceapp");
     expect(storage.getItem(UI_BACKGROUND_STORAGE_KEY)).toBe("spaceapp");
     expect(readUiBackground(storage)).toBe("spaceapp");
+  });
+
+  it("stores the Liquid Glass tint and applies it live through --lg-tint", () => {
+    const storage = new MemoryStorage();
+    expect(readLiquidGlassTint(storage)).toBe(50);
+    for (const invalid of ["abc", "-5", "101", "7.5"]) {
+      storage.setItem(LIQUID_GLASS_TINT_STORAGE_KEY, invalid);
+      expect(readLiquidGlassTint(storage)).toBe(50);
+    }
+    expect(writeLiquidGlassTint(storage, 0)).toBe(0);
+    expect(readLiquidGlassTint(storage)).toBe(0);
+    expect(document.documentElement.style.getPropertyValue("--lg-tint")).toBe("0");
+    writeLiquidGlassTint(storage, 100);
+    expect(document.documentElement.style.getPropertyValue("--lg-tint")).toBe("100");
   });
 });

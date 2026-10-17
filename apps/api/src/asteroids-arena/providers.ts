@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "../safe-child-process.js";
 import { mkdir, readFile } from "node:fs/promises";
 import { createDecisionsService } from "../decisions-service.js";
 import { requestOpenRouterDoctrine } from "../openrouter-benchmark-models.js";

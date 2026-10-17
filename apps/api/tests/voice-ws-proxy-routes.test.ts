@@ -84,7 +84,11 @@ describe("voice proxy authenticated routes", () => {
       const [code] = await once(socket, "close") as [number]; expect(code).toBe(4404);
     };
     await reject(headers("user:owner:b"));
-    await reject({ ...headers(), origin: "https://foreign.test" });
+    // Another site's handshake is refused before the upgrade by the same-site Origin check (2026-10-16).
+    const foreign = connect({ ...headers(), origin: "https://foreign.test" });
+    foreign.on("error", () => {});
+    const [, refused] = await once(foreign, "unexpected-response") as [unknown, { statusCode: number }];
+    expect(refused.statusCode).toBe(403);
     expect(connected).not.toHaveBeenCalled();
     const connection = once(server, "connection");
     const socket = connect(headers()); await once(socket, "open");

@@ -271,11 +271,11 @@ export async function createVoiceDelegateResponse(
     }));
 
   const systemPrompt =
-    "You are the SpaceApp voice assistant action router. The user is speaking in Greek.\n" +
+    "You are the SpaceApp voice assistant action router. The user speaks English or Greek.\n" +
     "Select and invoke the appropriate tool if the user's intent requires performing an action, inspecting room state, controlling playback, testing tools, capturing the screen/vision, opening or closing panes, or querying data.\n" +
     "DIRECTIVES:\n" +
     "- If the user asks to perform an action or asks whether you can perform an action, ALWAYS call the corresponding tool immediately in the same turn.\n" +
-    "- If and only if the user is having a casual conversation, greeting, or asking a general question that requires no tool, reply naturally and concisely in Greek without a tool call.\n" +
+    "- If and only if the user is having a casual conversation, greeting, or asking a general question that requires no tool, reply naturally and concisely, in the language of the user's latest message, without a tool call.\n" +
     "- Strictly adhere to the declared tools and their parameter schemas.";
 
   const candidates: Array<{ url: string; key: string; model: string; provider: "google" | "vercel" | "openai" }> = [];
@@ -717,12 +717,12 @@ export async function createVoiceRealtimeCall(
     for (const upstreamModel of candidates) {
       const isLive = isGptLiveModel(upstreamModel);
       const chosenVoice = voiceForModel(upstreamModel, requestedVoice);
+      // Semantic VAD waits while a sentence is unfinished (a pause to think or to switch language) instead of cutting in after 300 ms of silence.
       const turnDetectionConfig = isTranscription ? null : {
-        type: "server_vad",
-        threshold: 0.5,
-        prefix_padding_ms: 300,
-        silence_duration_ms: 300,
-        create_response: true
+        type: "semantic_vad",
+        eagerness: "high",
+        create_response: true,
+        interrupt_response: true
       };
 
       let sessionPayload: Record<string, unknown> = {
@@ -743,8 +743,10 @@ export async function createVoiceRealtimeCall(
       }
       const instructionParts: string[] = [];
       if (input.opening?.trim()) {
-        instructionParts.push(
-          `On the first assistant response, say exactly: "${input.opening.trim()}". This is a one-time opening. Never repeat this greeting, or any greeting, on later turns; answer the user's next message directly.`
+        // Operator decision 2026-10-14: Live always opens in English unless the language is Greek only.
+        instructionParts.push(input.language === "el"
+          ? `On the first assistant response, say exactly: "${input.opening.trim()}". This is a one-time opening. Never repeat this greeting, or any greeting, on later turns; answer the user's next message directly.`
+          : `On the first assistant response, open in English with: "${input.opening.trim()}" (say its English version if it is written in another language). This is a one-time opening. Never repeat this greeting, or any greeting, on later turns; answer the user's next message directly.`
         );
       }
 
@@ -754,9 +756,7 @@ export async function createVoiceRealtimeCall(
         const languageInstruction =
           input.language === "el"
             ? "You are a helpful, fluent AI assistant speaking Greek (Ελληνικά). You understand spoken Greek perfectly and always reply directly and naturally in fluent Greek."
-            : input.language === "en"
-              ? "You are a helpful AI assistant speaking English. Always converse in English."
-              : "You are a helpful bilingual AI assistant fluent in Greek (Ελληνικά) and English. You understand spoken Greek and English. When the user speaks Greek, always converse and reply in natural, fluent Greek. When the user speaks English, reply in English.";
+            : "You are a helpful bilingual AI assistant fluent in English and Greek (Ελληνικά). Start the conversation in English. Then always reply in the language of the user's latest turn: Greek when they speak Greek, English when they speak English.";
         instructionParts.push(languageInstruction);
       }
 

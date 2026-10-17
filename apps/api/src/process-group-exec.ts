@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "./safe-child-process.js";
 
 /**
  * execFile-compatible runner that owns the whole process tree of its child.

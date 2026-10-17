@@ -164,6 +164,7 @@ export const apiConfigRegistry = {
   roomPaneCommandsEnabled: field(["SPACE_ROOM_PANE_COMMANDS_ENABLED"], "public", "boolean"),
   harnessEnabled: field(["SPACE_HARNESS_ENABLED"], "public", "boolean"),
   harnessOrigin: field(["SPACE_HARNESS_ORIGIN"], "sensitive", "parser"),
+  vncPresets: field(["SPACE_VNC_PRESETS"], "sensitive", "parser"),
   trustedProxies: field(["SPACE_TRUSTED_PROXIES"], "sensitive", "parser"),
   optionalModules: field(["SPACE_OPTIONAL_MODULES", "SPACE_PUBLIC_DISTRIBUTION"], "public", "derived"),
   harnessHealthTimeoutMs: field(["SPACE_HARNESS_HEALTH_TIMEOUT_MS"], "public", "positive-integer"),
@@ -181,6 +182,8 @@ export const apiConfigRegistry = {
   // Off only for the public distribution when SPACEAPP_WORKFLOWS_ENABLED=false (no workflow worker).
   workflowsEnabled: field(["SPACE_PUBLIC_DISTRIBUTION", "SPACEAPP_WORKFLOWS_ENABLED"], "public", "derived"),
   publicDistribution: field(["SPACE_PUBLIC_DISTRIBUTION"], "public", "derived"),
+  // Invites and per-user sign-in (plan clipboard:VrMJ14wJPmVs); off until each user has an isolated CLI container.
+  multiUserEnabled: field(["SPACE_MULTI_USER_ENABLED"], "public", "boolean"),
 } satisfies Partial<Record<ApiConfigKey, ConfigField>>;
 
 // Completeness is enforced by config-registry.test.ts, not by the type

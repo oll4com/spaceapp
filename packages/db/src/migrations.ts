@@ -17,6 +17,10 @@ export const migrationDirectory = join(packageRoot, "migrations");
 export const historicalPrefixCollisions: ReadonlySet<string> = new Set([
   "0034_browser_recording_handoff.sql",
   "0034_room_agent_supervisor.sql",
+  // The public installer's own 0057_single_owner_setup.sql (shipped in public installs) shares its number with
+  // this repository's 0057; both are applied, so neither may be renamed (1.1.5 internal review, 2026-10-16).
+  "0057_pane_cli_terminal_control_leases.sql",
+  "0057_single_owner_setup.sql",
   "0088_shared_chat.sql",
   "0088_copilot_account_profiles.sql",
   "0089_audit_chain.sql",

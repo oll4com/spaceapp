@@ -181,3 +181,25 @@ describe("worker metrics endpoint", () => {
     }
   });
 });
+
+it("registers the activity interceptor on every Temporal worker, including both memory workers", async () => {
+  const { readFile } = await import("node:fs/promises");
+  for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
+    const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
+    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+  }
+});
+
+it("exports one INTERNAL span per activity under the caller's traceparent", async () => {
+  const recorded: Array<Record<string, unknown>> = [];
+  const spans = { record: (span: Record<string, unknown>) => recorded.push(span), flush: async () => undefined, close: async () => undefined, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
+  const metrics = createWorkerMetrics(new MetricsRegistry());
+  let clock = 1_000;
+  const info = { activityType: "runTurn", activityId: "1", attempt: 1, currentAttemptScheduledTimestampMs: 1_000, workflowExecution: { workflowId: "w", runId: "r" } } as never;
+  const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+  await observeActivityExecution(info, [{ turn: { traceparent } }], async () => { clock += 250; return "ok"; }, { metrics, now: () => clock, spans: spans as never });
+  await observeActivityExecution(info, [{ traceId: "req:no-w3c-parent" }], async () => "ok", { metrics, now: () => clock, spans: spans as never });
+  expect(recorded).toHaveLength(1);
+  expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
+    kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
+});

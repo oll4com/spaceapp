@@ -16,6 +16,9 @@ const SUCCESS_TTL_MS = 6 * 60 * 60_000;
 const REFRESH_AFTER_MS = 60 * 60_000;
 const FAILURE_TTL_MS = 10 * 60_000;
 const VERIFY_TIMEOUT_MS = 8_000;
+// A session waits at most this long for the first check of its selected model (operator decision 2026-10-14);
+// the check finishes in the background and decides the next session.
+export const COLD_CHECK_WAIT_MS = 2_000;
 
 export type DelegatedEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export interface LiveModelFallback { kind: "voice" | "delegated"; requested: string; used: string; reason: string }
@@ -87,7 +90,7 @@ async function verify(baseUrl: string, apiKey: string, model: string, effort: De
   }
 }
 
-async function works(baseUrl: string, apiKey: string, model: string, effort: DelegatedEffort, webSearch: boolean, fetchImpl: typeof fetch) {
+async function works(baseUrl: string, apiKey: string, model: string, effort: DelegatedEffort, webSearch: boolean, fetchImpl: typeof fetch, waitMs?: number) {
   const key = `${createHash("sha256").update(apiKey).digest("hex").slice(0, 16)}|${model}|${effort}|${webSearch}`;
   const known = verdicts.get(key);
   const age = known ? Date.now() - known.at : Infinity;
@@ -106,7 +109,11 @@ async function works(baseUrl: string, apiKey: string, model: string, effort: Del
     return known;
   }
   if (known && !known.works && age < FAILURE_TTL_MS) return known;
-  return check();
+  if (waitMs === undefined) return check();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // null is "unverifiable", so the selection is used as selected.
+  return Promise.race([check(), new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), waitMs); })])
+    .finally(() => clearTimeout(timer));
 }
 
 /**
@@ -119,7 +126,7 @@ export async function resolveDelegatedModel(input: {
 }): Promise<{ model: string; effort: DelegatedEffort; fallback?: LiveModelFallback }> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const effort = delegatedReasoningEffort(input.model, input.effort, input.webSearch);
-  const selected = await works(input.baseUrl, input.apiKey, input.model, effort, input.webSearch, fetchImpl);
+  const selected = await works(input.baseUrl, input.apiKey, input.model, effort, input.webSearch, fetchImpl, COLD_CHECK_WAIT_MS);
   if (!selected || selected.works) return { model: input.model, effort };
   for (const model of DELEGATED_FALLBACK_MODELS.filter(candidate => candidate !== input.model)) {
     const candidateEffort = delegatedReasoningEffort(model, input.effort, input.webSearch);

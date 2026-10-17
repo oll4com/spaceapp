@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "planId": "clipboard:wxc6q7AaaMt6",
   "current": {
-    "recordedAt": "2026-10-12T16:30:00+00:00",
+    "recordedAt": "2026-10-16T05:10:00+00:00",
     "liveSha": "39d6023113",
     "liveShaSource": "Stable: git -C /opt/spaceapp rev-parse refs/space-queue/live-verified. Dev: git -C /opt/spaceapp rev-parse refs/heads/dev and npm run live:verify:dev. Per-commit facts: node scripts/quality-snapshot.mjs <sha>",
     "estimatedOverallCompletionPercent": 93,
@@ -11,52 +11,19 @@
     "deployed": true,
     "deployPath": "Merge queue only. Since 2026-10-12 every batch deploys to the dev instance (http://127.0.0.1:4911:4940) after an isolated build and npm run test:deploy; stable changes only when the operator runs space-queue promote (docs/runbooks/stable-dev-instances.md)",
     "independentReview": {
-      "status": "Final reviews on dev bc484aa8c6 (2026-10-12), each given a Git clone of that commit and QUALITY_SNAPSHOT.json",
+      "status": "Internal reviews of the public run-spaceapp 1.1.5 tree (oll4com/spaceapp 8a3e1f0, the release commit; npm next 1.1.5), each given the byte-for-byte source archive and the snapshot README with the neutral prompt of review-pack.md. Neither reviewer had network access for npm ci.",
       "reviews": [
-        {
-          "reviewer": "Claude CLI (claude-opus-4-8)",
-          "rating": "4/5",
-          "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-bc484aa8c6/claude.md",
-          "note": "F1 (revocation in memory only) is a misreading: persistence is attached at startup (app.ts:4951, migration 0154); F6 found the unexempted 0157 collision, fixed in 81185073ba"
-        },
         {
           "reviewer": "Codex CLI (gpt-6.1-sol)",
           "rating": "3/5",
-          "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-bc484aa8c6/codex.md",
-          "note": "stale README status fixed; VM archive restore drill run; full suites measured since"
+          "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-1.1.5-8a3e1f0/codex.md",
+          "note": "Main findings: docs/quality/baseline.json names an older source commit; no live provider proofs; first-party images pulled by tag (third-party pinned); observability and off-host backup gaps; readiness timeouts not cancelled; domain-boundaries.md says npm test runs test:architecture (only check does)."
         },
         {
-          "reviewer": "OpenCode (opencode/big-pickle)",
-          "rating": "4/5",
-          "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-bc484aa8c6/opencode-big-pickle.md"
-        }
-      ],
-      "preliminary": {
-        "sha": "521f81acee",
-        "ratings": {
-          "claude": "4/5",
-          "codex": "3/5",
-          "opencode": "2/5"
-        }
-      },
-      "unavailable": "DeepSeek: provider account 402 Insufficient Balance; Gemini and Qwen: no quota",
-      "snapshotReviews": [
-        {
-          "snapshot": "spaceapp.dev/review/1.1.4 (public 837e0b034b, tag v1.1.4; quality/ from dev 99e713ac4d)",
-          "date": "2026-10-14",
-          "reviews": [
-            {
-              "reviewer": "ChatGPT (gpt-6.1-sol)",
-              "rating": "3/5",
-              "note": "could not run checks without node_modules; provenance, observability, runtime proofs, host mode, composition roots"
-            },
-            {
-              "reviewer": "Claude (claude-opus-5-5)",
-              "rating": "2/5 (provisional; 3 if F17 were not exploitable)",
-              "note": "F17 credentialed CORS for local origins; export leaked operator markers (F1) and changed code (F18)"
-            }
-          ],
-          "findings": "EXT-C-F1..F20 and EXT-G-1..7 in review-findings.json; status in KNOWN_LIMITATIONS.md"
+          "reviewer": "Claude (claude-opus-5-5, subagent)",
+          "rating": "3/5",
+          "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-1.1.5-8a3e1f0/claude.md",
+          "note": "Confirmed defect: WebSocket handshakes (VNC stream, shared chat) skipped the same-site Origin check; fixed on dev dbb253756e for 1.1.6. Also reported: child-process env scrubbing incomplete, SEC-009 mkdir from request path, CORE-011 rollback pattern at other sites, a 0057 migration collision in the public tree, provenance check skips files outside the manifest, factory-reset ignores backup failure, stale install locks, no isolation between agents in the CLI container. These still need verification and go to the 1.1.6 plan."
         }
       ]
     },
@@ -114,6 +81,119 @@
     }
   },
   "history": [
+    {
+      "checkpoint": "pre-1.1.5-internal-review",
+      "recordedAt": "2026-10-12T16:30:00+00:00",
+      "liveSha": "39d6023113",
+      "liveShaSource": "Stable: git -C /opt/spaceapp rev-parse refs/space-queue/live-verified. Dev: git -C /opt/spaceapp rev-parse refs/heads/dev and npm run live:verify:dev. Per-commit facts: node scripts/quality-snapshot.mjs <sha>",
+      "estimatedOverallCompletionPercent": 93,
+      "estimationMethod": "Mean of the ten plan steps' progress recorded in PLAN clipboard:wxc6q7AaaMt6. Engineering judgement, not a test pass rate.",
+      "estimateIsTestPassRate": false,
+      "deployed": true,
+      "deployPath": "Merge queue only. Since 2026-10-12 every batch deploys to the dev instance (http://127.0.0.1:4911:4940) after an isolated build and npm run test:deploy; stable changes only when the operator runs space-queue promote (docs/runbooks/stable-dev-instances.md)",
+      "independentReview": {
+        "status": "Final reviews on dev bc484aa8c6 (2026-10-12), each given a Git clone of that commit and QUALITY_SNAPSHOT.json",
+        "reviews": [
+          {
+            "reviewer": "Claude CLI (claude-opus-4-8)",
+            "rating": "4/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-bc484aa8c6/claude.md",
+            "note": "F1 (revocation in memory only) is a misreading: persistence is attached at startup (app.ts:4951, migration 0154); F6 found the unexempted 0157 collision, fixed in 81185073ba"
+          },
+          {
+            "reviewer": "Codex CLI (gpt-6.1-sol)",
+            "rating": "3/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-bc484aa8c6/codex.md",
+            "note": "stale README status fixed; VM archive restore drill run; full suites measured since"
+          },
+          {
+            "reviewer": "OpenCode (opencode/big-pickle)",
+            "rating": "4/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-bc484aa8c6/opencode-big-pickle.md"
+          }
+        ],
+        "preliminary": {
+          "sha": "521f81acee",
+          "ratings": {
+            "claude": "4/5",
+            "codex": "3/5",
+            "opencode": "2/5"
+          }
+        },
+        "unavailable": "DeepSeek: provider account 402 Insufficient Balance; Gemini and Qwen: no quota",
+        "snapshotReviews": [
+          {
+            "snapshot": "spaceapp.dev/review/1.1.4 (public 837e0b034b, tag v1.1.4; quality/ from dev 99e713ac4d)",
+            "date": "2026-10-14",
+            "reviews": [
+              {
+                "reviewer": "ChatGPT (gpt-6.1-sol)",
+                "rating": "3/5",
+                "note": "could not run checks without node_modules; provenance, observability, runtime proofs, host mode, composition roots"
+              },
+              {
+                "reviewer": "Claude (claude-opus-5-5)",
+                "rating": "2/5 (provisional; 3 if F17 were not exploitable)",
+                "note": "F17 credentialed CORS for local origins; export leaked operator markers (F1) and changed code (F18)"
+              }
+            ],
+            "findings": "EXT-C-F1..F20 and EXT-G-1..7 in review-findings.json; status in KNOWN_LIMITATIONS.md"
+          }
+        ]
+      },
+      "orchestrationReduction": {
+        "apps/api/src/app.ts": {
+          "baselineLines": 19487,
+          "devLines": 7593,
+          "devSha": "860ae01ced",
+          "reductionPercent": 61,
+          "targetPercent": 60,
+          "targetMet": true
+        },
+        "apps/web/src/App.tsx": {
+          "baselineLines": 18192,
+          "devLines": 7238,
+          "devSha": "860ae01ced",
+          "reductionPercent": 60.2,
+          "targetPercent": 60,
+          "targetMet": true
+        }
+      },
+      "fullCiGreen": false,
+      "fullCiNote": "Full npm test on dev 9db908d25e (2026-10-12, loaded VM): every package, architecture, test:deploy and contributor suite green; worker 232/232; api 3,701/3,724 (3 fail, 20 skip); web 3,478/3,485 (7 fail). The 10 failures are load-dependent and pass at maxWorkers=1. No public CI URL yet; public CI is checked on the published 1.1.3 SHA.",
+      "openGates": [
+        "operator: next promote (ADD_*_CLI proof fixes, memory-worker metrics, browser abandoned-navigation fix, docs) and the guarded Browser Host restart that activates the browser fix",
+        "operator-postponed: warm proofs (stable PERF-001 gate; A/B for the blank 16th-terminal fix d5f0ad6784, not deployed)",
+        "1.1.3: small on all three platforms and Linux medium passed; Windows/macOS medium and large wait for host memory under the 20 GiB floor; then publish and npm approval",
+        "operator-only: off-VM backups, WAL/PITR, DeepSeek account balance"
+      ],
+      "executionStatus": "IN_PROGRESS",
+      "devSha": "51618cf8fb",
+      "devVerified": "npm run live:verify:dev ok at 2026-10-12T16:22Z (devHead 51618cf8fb)",
+      "perf001": {
+        "fixSha": "8bb433157d",
+        "devSha": "860ae01ced",
+        "stagingAB": {
+          "fixWarmP95Ms": 238.5,
+          "baseWarmP95Ms": 713.8,
+          "fixColdOpenS": "1.8-2.6",
+          "baseColdOpenS": "2.4-5.0",
+          "results": "/var/lib/spaceapp-user/agent-workspace/reports/20261011-perf001-bisect/results.jsonl (cv-q1, cv-base-q1)"
+        },
+        "layoutInvariant": "fails in fix and base: the 16th terminal of a revealed room shows 6-9 blank frames during a glyph-width geometry repair (pre-existing, open)",
+        "stableProof": "pending the operator-run promote"
+      },
+      "vmArchiveRestoreDrill": {
+        "archive": "vzdump-qemu-207-2026_10_07-09_03_36.vma.lzo",
+        "ranAt": "2026-10-12T13:11Z-16:26Z",
+        "archiveIntact": true,
+        "filesystems": "whole (e2fsck -fn: snapshot orphan/bitmap differences only)",
+        "postgres": "WAL recovery 0.37 s; 3 databases verified; 29 migrations applied; store ok",
+        "rtoSeconds": 10.3,
+        "cleanup": "images, container and local copy removed",
+        "report": "/var/lib/spaceapp-user/agent-workspace/reports/20261012-vm-restore-drill/"
+      }
+    },
     {
       "checkpoint": "2026-10-03 pause",
       "recordedAt": "2026-10-03T17:54:17.631315+00:00",

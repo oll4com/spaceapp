@@ -3,6 +3,7 @@ import {
   PANE_TYPES, paneTypeIdSchema, roomAgentControlTools,
   type ControlOperation, type Pane, type RoomAgentEvent, type RoomAgentEventStatus
 } from "@space/contracts";
+import { releaseTrainInputSchema, type ReleaseTrainActor, type ReleaseTrainInput } from "./release-trains.js";
 import { classifyPaneApproval } from "./room-agent-guardrails.js";
 import type { RoomPaneObservation } from "./room-pane-control.js";
 
@@ -51,6 +52,8 @@ export interface RoomAgentToolDeps {
   /** Opens the panes and returns their names (Andy, Bob, ...). */
   openPanes(input: { roomId: string; actorId: string; requestId: string; traceId: string; counts: Record<string, number> }): Promise<string[]>;
   search(input: { roomId: string; actorId: string; requestId: string; traceId: string; query: string; engine: "GOOGLE" | "YOUTUBE"; paneId?: string }): Promise<string>;
+  /** Reads (op status) or changes a product's release train; returns the trains as text. */
+  releaseTrain?(input: ReleaseTrainInput, by: ReleaseTrainActor): Promise<string>;
   monitor?: {
     listEvents(roomId: string, options: { limit?: number; statuses?: RoomAgentEventStatus[]; paneId?: string }): Promise<RoomAgentEvent[]>;
     updateEvent(eventId: string, patch: { status?: RoomAgentEventStatus; decision?: string | null }, from?: RoomAgentEventStatus[]): Promise<RoomAgentEvent | null>;
@@ -105,7 +108,10 @@ const schemas = {
     query: z.string().trim().min(1).max(1_000),
     engine: z.enum(["GOOGLE", "YOUTUBE"]).optional()
   }),
-  confirm_action: z.object({ token: z.string().trim().min(1).max(80) })
+  confirm_action: z.object({ token: z.string().trim().min(1).max(80) }),
+  space_room_release: releaseTrainInputSchema.extend({
+    pane: paneRef.optional().describe("The captain for open; the pane that joins or leaves for join and leave.")
+  })
 } as const;
 
 export type RoomAgentToolName = keyof typeof schemas;
@@ -124,7 +130,10 @@ const descriptions: Record<RoomAgentToolName, string> = {
   set_pane_model: "Change a pane's model and reasoning effort.",
   space_control: "Full Space Control as the operator, for anything the other tools do not cover (inspect sections, schedules, watches, operations, diagnostics). space_execute runs one batch of actions.",
   search_web_in_browser: "Search Google or YouTube in the room's browser pane.",
-  confirm_action: "Run an action the operator has just confirmed, with the token its tool returned. Only after the operator's explicit yes."
+  confirm_action: "Run an action the operator has just confirmed, with the token its tool returned. Only after the operator's explicit yes.",
+  space_room_release: "The joint release of a product (default run-spaceapp): one live release every pane joins instead of cutting its own version. "
+    + "status lists the trains and where each joined commit already is (dev, main, candidate); open (version, pane = captain); join or leave (pane, commit, note); "
+    + "candidate (sourceSha the captain builds from); publishing (no more joins); published; cancel. You never publish, push, promote or bump versions yourself."
 };
 
 export const roomAgentToolNames = Object.keys(schemas) as RoomAgentToolName[];
@@ -178,6 +187,7 @@ export function roomAgentToolLabel(name: string, args: Record<string, unknown>):
     case "space_control": return `Using Space Control (${list(args.tool) || "tool"})`;
     case "search_web_in_browser": return `Searching ${args.engine === "YOUTUBE" ? "YouTube" : "Google"}`;
     case "confirm_action": return "Running the confirmed action";
+    case "space_room_release": return args.op === "status" ? "Checking the release train" : `Release train: ${String(args.op ?? "")}`;
     default: return `Using ${name}`;
   }
 }
@@ -404,6 +414,14 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
     },
     async confirm_action() {
       return fail("Nothing to confirm", "confirm_action is handled by the conversation.");
+    },
+    async space_room_release(args, ctx) {
+      if (!deps.releaseTrain) return fail("Release trains are unavailable");
+      const { pane: ref, ...input } = args;
+      const { panes: [pane], problem } = ref ? await resolvePanes(ctx, [ref]) : { panes: [], problem: null };
+      if (ref && !pane) return fail(`Could not find ${ref}`, problem!);
+      const result = await deps.releaseTrain(input, { roomId: ctx.roomId, pane: pane ? { paneId: pane.id, name: paneName(pane) } : null, paneSelf: false });
+      return { ok: true, display: input.op === "status" ? "Read the release trains" : `Release train: ${input.op} done`, result: clip(result) };
     }
   };
 

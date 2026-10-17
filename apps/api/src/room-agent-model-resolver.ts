@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "./safe-child-process.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { readActiveFreeOpenCodeModel } from "./opencode-free-model.js";
@@ -156,8 +156,8 @@ export function runOpenCodeText(modelId: string, prompt: string, timeoutMs: numb
           if (parsed.type === "text" && typeof parsed.part?.text === "string") extracted += parsed.part.text;
         } catch {}
       }
-      const text = (extracted.trim() ? extracted : stdout).trim();
-      finish(text || null);
+      // Only text events are an answer: an error event ({"type":"error",...}) must never reach the operator raw.
+      finish(extracted.trim() || null);
     });
   });
 }

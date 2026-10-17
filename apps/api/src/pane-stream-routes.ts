@@ -1,3 +1,4 @@
+import { countsAsOperatorInput, createBrowserControlActivity } from "./browser-control-activity.js";
 import type {} from "./request-context.js";
 import type {} from "@fastify/websocket";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
@@ -16,7 +17,7 @@ import type { SpaceApiConfig } from "./config.js";
 import { assertBrowserPaneCompatible, getPaneById } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
 import { idParamSchema, parseQuery } from "./route-parsing.js";
-import { assertSafeVncTarget, pipeVncStream, vncPresets } from "./vnc-proxy.js";
+import { assertSafeVncTarget, pipeVncStream } from "./vnc-proxy.js";
 
 const browserFrameQuerySchema = z.object({
   sessionId: idSchema,
@@ -119,6 +120,8 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
 }) {
   const { config, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions,
     websocketRouteOptions: defaultWebsocketRateLimitOptions } = options;
+  // Operator input per control lease; returned so the browser routes and the CLI bridge share it (idle release, agent reclaim).
+  const controlActivity = createBrowserControlActivity();
   app.get("/api/panes/:id/browser/frames", defaultWebsocketRateLimitOptions, (socket, request) => {
     void (async () => {
       const params = parseQuery(idParamSchema, request.params);
@@ -251,6 +254,7 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
         inputQueue = inputQueue.then(async () => {
           const startedAt = Date.now();
           try {
+            if ("leaseId" in message.input && typeof message.input.leaseId === "string" && countsAsOperatorInput(message.input)) controlActivity.noteInput(message.input.leaseId);
             await dispatchInput(
               pane,
               message.input,
@@ -331,6 +335,8 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
       }
       const stream = await startAudioStream(session.sessionId, (chunk) => {
         if (socket.readyState !== 1 || socket.bufferedAmount > 8 * 1024 * 1024) return;
+        // Raw PCM silence still costs 1.5 Mbit/s on far links; the player restarts its clock after a gap.
+        if (!chunk.data.some((byte) => byte !== 0)) return;
         socket.send(chunk.data, { binary: true, compress: false });
       });
       if (socket.readyState !== 1) {
@@ -359,7 +365,7 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
     });
   });
   app.get("/api/vnc-presets", defaultRouteRateLimitOptions, async () => {
-    return vncPresetListResponseSchema.parse({ presets: [...vncPresets] });
+    return vncPresetListResponseSchema.parse({ presets: config.vncPresets });
   });
   app.get("/api/panes/:id/vnc/stream", defaultWebsocketRateLimitOptions, (socket, request) => {
     void (async () => {
@@ -376,6 +382,7 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
       if (socket.readyState === 1) socket.close(1011, message.slice(0, 120));
     });
   });
+  return controlActivity;
 }
 
 /** Browser pane single frame and session stop; the parent retains authentication, CSRF, errors and rate limits. */

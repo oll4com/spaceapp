@@ -10,6 +10,9 @@ export const ROOM_MONITOR_EMPTY_MS = 30_000;
 const EVENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const PRUNE_EVERY_MS = 60 * 60 * 1000;
 const SWEEP_EVERY_MS = 30_000;
+/** Overlaps need git and the merge queue, so a room's are read at most once a minute. */
+export const ROOM_MONITOR_OVERLAP_MS = 60_000;
+const OVERLAP_STATUSES: RoomAgentEvent["status"][] = ["OPEN", "ESCALATED", "HANDLED", "ACKED"];
 
 export interface RoomMonitorObservation { activity: RoomAgentPaneActivity; reason: string | null }
 
@@ -19,6 +22,7 @@ function attentionKind(reason: string | null): RoomAgentEventKind {
   if (reason === "Usage limit") return "USAGE_LIMIT";
   if (reason === "Sign-in required") return "SIGN_IN";
   if (reason === "CLI error" || reason === "Run failed") return "ERROR";
+  if (reason === "API error") return "STUCK";
   return "WAITING";
 }
 
@@ -44,7 +48,7 @@ export function roomMonitorEventText(kind: RoomAgentEventKind, name: string, rea
     : kind === "USAGE_LIMIT" ? `${name} hit a usage limit`
       : kind === "SIGN_IN" ? `${name} needs sign-in`
         : kind === "ERROR" ? (reason === "Not running" ? `${name} stopped` : `${name} stopped with an error`)
-          : kind === "STUCK" ? `${name} seems stuck`
+          : kind === "STUCK" ? (reason === "API error" ? `${name} stopped on an API error` : `${name} seems stuck`)
             : `${name} is waiting: ${reason ?? "Needs input"}`;
   const detail = [task.title, task.summary].filter(Boolean).join(" — ") || null;
   return { title, detail };
@@ -61,6 +65,8 @@ export interface RoomAgentMonitorOptions {
   onActivity?(roomId: string): Promise<void> | void;
   /** A new attention event for the Room Agent to handle; never awaited, so a slow decision cannot hold the scan. */
   onAttention?(event: RoomAgentEvent): void;
+  /** Where the panes' work collides; a title names one overlap for as long as it lasts. */
+  readOverlaps?(roomId: string): Promise<Array<{ title: string; detail: string }>>;
   /** Every 30 s: open attention events of the monitored rooms (left by a restart or a failed handler). */
   onAttentionSweep?(roomIds: string[]): Promise<void>;
   now?: () => number;
@@ -71,6 +77,9 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
   const now = options.now ?? Date.now;
   const known = new Map<string, Map<string, RoomPaneActivityRecord>>();
   const nextDue = new Map<string, number>();
+  const overlapDue = new Map<string, number>();
+  /** Per room: overlap title → its event, seeded from the stored events once. */
+  const overlapEvents = new Map<string, Map<string, string>>();
   let running = false;
   let timer: ReturnType<typeof setInterval> | null = null;
   let lastPrune = 0;
@@ -95,6 +104,34 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
     }
   }
 
+  /** One event per overlap while it lasts: new overlaps go to the Room Agent, gone ones resolve. */
+  async function syncOverlaps(roomId: string) {
+    if (!options.readOverlaps || (overlapDue.get(roomId) ?? 0) > now()) return;
+    overlapDue.set(roomId, now() + ROOM_MONITOR_OVERLAP_MS);
+    const overlaps = await options.readOverlaps(roomId);
+    let recorded = overlapEvents.get(roomId);
+    if (!recorded) {
+      const stored = await options.repository.listEvents(roomId, { statuses: OVERLAP_STATUSES, limit: 200 });
+      recorded = new Map(stored.filter((event) => event.kind === "OVERLAP").map((event) => [event.title, event.eventId]));
+      overlapEvents.set(roomId, recorded);
+    }
+    const current = new Set(overlaps.map((overlap) => overlap.title));
+    for (const [title, eventId] of recorded) {
+      if (current.has(title)) continue;
+      recorded.delete(title);
+      const resolved = await options.repository.updateEvent(eventId, { status: "RESOLVED", decision: "The overlap is gone." }, OVERLAP_STATUSES);
+      if (resolved) await options.onEvent?.(resolved);
+    }
+    for (const overlap of overlaps) {
+      if (recorded.has(overlap.title)) continue;
+      const event = await options.repository.addEvent({ roomId, paneId: null, paneName: null, kind: "OVERLAP", severity: "ATTENTION",
+        title: overlap.title.slice(0, 200), detail: overlap.detail.slice(0, 2000) });
+      recorded.set(overlap.title, event.eventId);
+      await options.onEvent?.(event);
+      options.onAttention?.(event);
+    }
+  }
+
   /** Reads one room, stores changed activity and records the events its changes mean. Returns the next delay. */
   async function scanRoom(roomId: string): Promise<number> {
     const sample = await options.readActivity(roomId);
@@ -115,7 +152,8 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
       if (before && before.activity === record.activity && before.reason === record.reason) continue;
       changed.push(record);
       previous.set(pane.id, record);
-      if (before?.activity === "WAITING" && record.activity !== "WAITING") await resolveWaiting(roomId, pane.id);
+      // A pane that moved on from a question or a stop (answered, restarted) leaves no open problem to announce again.
+      if ((before?.activity === "WAITING" || before?.reason === "Not running") && record.activity !== "WAITING") await resolveWaiting(roomId, pane.id);
       const transition = roomMonitorTransition(before, record);
       if (!transition) continue;
       if (transition.severity === "ATTENTION") {
@@ -134,6 +172,7 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
       await options.repository.savePaneActivity(changed);
       await options.onActivity?.(roomId);
     }
+    await syncOverlaps(roomId).catch((error) => options.log?.warn({ err: error, roomId }, "Room Agent monitor could not read the room's overlaps."));
     return busy ? ROOM_MONITOR_ACTIVE_MS : agents ? ROOM_MONITOR_QUIET_MS : ROOM_MONITOR_EMPTY_MS;
   }
 
@@ -177,7 +216,7 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
     },
     stop() { if (timer) clearInterval(timer); timer = null; },
     /** A room switched off forgets its state, so switching it on does not replay old changes. */
-    forget(roomId: string) { known.delete(roomId); nextDue.delete(roomId); }
+    forget(roomId: string) { known.delete(roomId); nextDue.delete(roomId); overlapDue.delete(roomId); overlapEvents.delete(roomId); }
   };
 }
 export type RoomAgentMonitor = ReturnType<typeof createRoomAgentMonitor>;

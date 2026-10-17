@@ -1,8 +1,12 @@
 import type {} from "./request-context.js";
-import type { FastifyInstance, RouteShorthandOptions } from "fastify";
+import { createHash, randomBytes } from "node:crypto";
+import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
-import { adminUserListResponseSchema, updateUserRoleInputSchema } from "@space/contracts";
-import type { SpaceStore } from "@space/runtime";
+import {
+  adminUserListResponseSchema, createUserInviteInputSchema, createUserInviteResponseSchema, setUserDisabledInputSchema,
+  updateUserRoleInputSchema, userInviteListResponseSchema
+} from "@space/contracts";
+import { nowIso, type SpaceStore } from "@space/runtime";
 import type { AuditRecorder } from "./request-audit.js";
 import { sendApiError } from "./http-errors.js";
 
@@ -11,12 +15,74 @@ export type UserRoleCache = Pick<Map<string, { role: "ADMIN" | "USER" | "OPERATO
 /** Administrator user management; the parent retains authentication, CSRF, errors and rate limits. */
 export function registerAdminUserRoutes(app: FastifyInstance, options: {
   store: Pick<SpaceStore, "listUsersWithRoomCounts" | "updateUserRole" | "getControlActor" | "listUserLinks" |
-    "createUserLink" | "listClipboardItems" | "upsertClipboardItem">;
+    "createUserLink" | "listClipboardItems" | "upsertClipboardItem" | "createUserInvite" | "listUserInvites" |
+    "revokeUserInvite" | "setUserDisabled">;
   userRoleCache: UserRoleCache;
   recordAudit: AuditRecorder;
   routeOptions: Pick<RouteShorthandOptions, "config">;
+  /** Invites and disabling users answer only with SPACE_MULTI_USER_ENABLED=true. */
+  multiUserEnabled?: boolean;
+  /** Ends every session of a disabled user and drops its cached access. */
+  revokeUserSessions?: (userId: string) => Promise<void>;
 }) {
-  const { store, userRoleCache, recordAudit, routeOptions: defaultRouteRateLimitOptions } = options;
+  const { store, userRoleCache, recordAudit, routeOptions: defaultRouteRateLimitOptions, multiUserEnabled = false, revokeUserSessions } = options;
+  const inviteTtlMs = 7 * 24 * 60 * 60 * 1000;
+  // Only the ADMIN manages accounts; null means the request may continue.
+  const refuseUnlessAdmin = (request: FastifyRequest, reply: FastifyReply) => {
+    if (!multiUserEnabled) return sendApiError(reply, 404, "MULTI_USER_DISABLED", "Multi-user accounts are not enabled on this installation.");
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Only an administrator manages user accounts.");
+    return null;
+  };
+
+  app.get("/api/admin/users/invites", defaultRouteRateLimitOptions, async (request, reply) => {
+    const refused = refuseUnlessAdmin(request, reply);
+    if (refused) return refused;
+    return userInviteListResponseSchema.parse({ invites: store.listUserInvites ? await store.listUserInvites() : [] });
+  });
+
+  app.post("/api/admin/users/invites", defaultRouteRateLimitOptions, async (request, reply) => {
+    const refused = refuseUnlessAdmin(request, reply);
+    if (refused) return refused;
+    if (!store.createUserInvite) return sendApiError(reply, 501, "NOT_SUPPORTED", "This store cannot create invites.");
+    const input = createUserInviteInputSchema.parse(request.body);
+    // The token is returned once for the invite link; only its SHA-256 is stored.
+    const token = randomBytes(32).toString("base64url");
+    const createdAt = nowIso();
+    const invite = await store.createUserInvite({
+      tokenSha256: createHash("sha256").update(token).digest("hex"), email: input.email, role: input.role,
+      createdBy: request.user!.id, createdAt, expiresAt: new Date(Date.parse(createdAt) + inviteTtlMs).toISOString()
+    });
+    await recordAudit(request, { action: "user.invite.created", targetType: "user_invite", targetId: invite.id, metadata: { role: invite.role } });
+    return reply.code(201).send(createUserInviteResponseSchema.parse({ invite, token }));
+  });
+
+  app.delete("/api/admin/users/invites/:id", defaultRouteRateLimitOptions, async (request, reply) => {
+    const refused = refuseUnlessAdmin(request, reply);
+    if (refused) return refused;
+    const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
+    if (!store.revokeUserInvite || !await store.revokeUserInvite(id, nowIso())) {
+      return sendApiError(reply, 404, "INVITE_NOT_FOUND", "No open invite has this id.");
+    }
+    await recordAudit(request, { action: "user.invite.revoked", targetType: "user_invite", targetId: id, metadata: {} });
+    return { id, revoked: true };
+  });
+
+  app.patch("/api/admin/users/:id/disabled", defaultRouteRateLimitOptions, async (request, reply) => {
+    const refused = refuseUnlessAdmin(request, reply);
+    if (refused) return refused;
+    const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
+    const { disabled } = setUserDisabledInputSchema.parse(request.body);
+    if (id === request.user!.id || id === "user:owner") {
+      return sendApiError(reply, 409, "USER_PROTECTED", "The owner and your own account cannot be disabled.");
+    }
+    if (!store.setUserDisabled || !await store.setUserDisabled(id, disabled, nowIso())) {
+      return sendApiError(reply, 404, "USER_NOT_FOUND", "Target user was not found.");
+    }
+    if (disabled) await revokeUserSessions?.(id);
+    await recordAudit(request, { action: disabled ? "user.disabled" : "user.enabled", targetType: "user", targetId: id, metadata: {} });
+    return { id, disabled };
+  });
+
   app.get("/api/admin/users", defaultRouteRateLimitOptions, async (request, reply) => {
     if (!request.user || (request.user.role !== "ADMIN" && request.user.role !== "OPERATOR")) {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Administrator permissions are required.");

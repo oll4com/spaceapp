@@ -1,6 +1,8 @@
+import { mayCreateCliSessionDirectory } from "./project-paths.js";
+import { WORKTREES_ROOT } from "./worktrees/worktree-service.js";
 import type { CliPaneReopener } from "./cli-pane-reopen.js";
 import type {} from "./request-context.js";
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -21,7 +23,7 @@ import {
   makeSpaceId, nowIso, pathIsMissing, redactMemoryText, SpaceConflictError, type SpaceEventBus, SpaceFeatureDisabledError,
   SpaceNotFoundError, type SpaceStore
 } from "@space/runtime";
-import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown } from "./agent-bootstrap.js";
+import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown, buildFreelanceCopilotPersonaMarkdown } from "./agent-bootstrap.js";
 import { pathInside, safeCliFilename, safeOriginalFilename, safeStorageSegment } from "./artifact-storage.js";
 import { safeBrowserObservationUrl } from "./browser-observation.js";
 import { claudeNativeSessionIdPattern, loadClaudeNativeTurns } from "./claude-native-turns.js";
@@ -220,6 +222,12 @@ async function writeCliWorkspaceBootstrap(
     await writeFile(
       join(sessionCwd, "CLAUDE.md"),
       buildMarketingCopilotPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
+      { encoding: "utf8", mode: 0o640 }
+    );
+  } else if (input.paneMode === "FREELANCE_COPILOT") {
+    await writeFile(
+      join(sessionCwd, "CLAUDE.md"),
+      buildFreelanceCopilotPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
       { encoding: "utf8", mode: 0o640 }
     );
   }
@@ -487,7 +495,9 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     // must never reinterpret stale pane/model state as permission to terminate that process.
     const preserveActiveCodex = Boolean(reusableSession && directCodexParity);
     const rollingClientGenericReasoningEcho = input.modelId === undefined && input.reasoningEffort === "medium";
-    const codexBuildDefaults = directCodexParity && !preserveActiveCodex
+    // Public installs have no Codex app-server to ask for its defaults: Codex resolves them itself at launch.
+    const codexChoosesDefaults = config.publicDistribution === true;
+    const codexBuildDefaults = directCodexParity && !preserveActiveCodex && !codexChoosesDefaults
       ? await codexCliModeDefaultsService.build()
       : null;
     const resolvedCodexSettings = directCodexParity && !preserveActiveCodex
@@ -499,7 +509,7 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
           reasoningEffort: rollingClientGenericReasoningEcho ? undefined : input.reasoningEffort
         })
       : null;
-    if (directCodexParity && !preserveActiveCodex && !resolvedCodexSettings) {
+    if (directCodexParity && !preserveActiveCodex && !resolvedCodexSettings && !codexChoosesDefaults) {
       throw new SpaceFeatureDisabledError(
         "CLI_CODEX_DEFAULTS_UNRESOLVED",
         "Codex CLI launch defaults could not be resolved."
@@ -616,8 +626,11 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
         : requestedCwd;
     if (!reusableSession && sessionCwd) {
       try {
-        await mkdir(sessionCwd, { recursive: true, mode: 0o750 });
-        if (sessionCwd.startsWith("/opt/spaceapp/projects/") && !existsSync(join(sessionCwd, ".git"))) {
+        if (!existsSync(sessionCwd) && await mayCreateCliSessionDirectory({
+          cwd: sessionCwd, role: request.user?.role, projectsRoot: config.projectsRoot, installRoot: config.installRoot,
+          worktreesRoot: WORKTREES_ROOT, workspaceRoot: config.cliWorkspaceRoot
+        })) await mkdir(sessionCwd, { recursive: true, mode: 0o750 });
+        if (sessionCwd.startsWith("/opt/spaceapp/projects/") && existsSync(sessionCwd) && !existsSync(join(sessionCwd, ".git"))) {
           await execFileAsync("git", ["init", "-b", "main", sessionCwd]);
         }
       } catch {}

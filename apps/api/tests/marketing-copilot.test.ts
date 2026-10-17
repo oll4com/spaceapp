@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defaultMarketingCopilotPaneMetadata, marketingWordingIssues, type MarketingCopilotPaneMetadata, type Pane } from "@space/contracts";
 import { InMemoryMarketingCopilotRepository } from "@space/db";
 import { createMarketingCopilotService } from "../src/marketing-copilot/service.js";
@@ -148,5 +148,29 @@ describe("Marketing Copilot reviews, briefs and runs", () => {
     expect((await service.decideCampaign(owner, target, campaign.id, "approve")).status).toBe("ACTIVE");
     expect((await repository.listEvents(owner, { types: ["BRIEF"], limit: 5 }))[0]).toMatchObject({ campaignId: campaign.id, status: "PENDING" });
     expect((await service.recallMemory(owner, { query: "subreddit saturdays", limit: 5 }))[0]?.text).toBe("r/selfhosted");
+  });
+});
+
+describe("Marketing Copilot bookmarks", () => {
+  it("keeps the owner's bookmarks with their Google account and opens one through the pane browser", async () => {
+    const repository = new InMemoryMarketingCopilotRepository();
+    const openInBrowser = vi.fn(async () => ({ activePageId: "page:new" }));
+    const service = createMarketingCopilotService({ repository, openInBrowser });
+    const x = await service.createBookmark(owner, { url: "https://www.x.com/home", profileId: "google_account:dev", accountLabel: "spaceappdv@gmail.com" });
+    expect(x).toMatchObject({ title: "x.com", profileId: "google_account:dev", accountLabel: "spaceappdv@gmail.com" });
+    // A bookmark in the pane's own account names no account.
+    const hn = await service.createBookmark(owner, { url: "https://news.ycombinator.com/", title: "HN", profileId: null, accountLabel: "ignored" });
+    expect(hn.accountLabel).toBeNull();
+    expect((await service.listBookmarks(owner)).map((bookmark) => bookmark.id)).toEqual([x.id, hn.id]);
+    expect(await service.listBookmarks("user:other")).toEqual([]);
+
+    const target = pane();
+    const actor = { holderType: "AGENT" as const, holderId: "cli:session" };
+    expect(await service.openBookmark(owner, target, x.id, "trace", actor)).toEqual({ bookmark: x, pages: { activePageId: "page:new" } });
+    expect(openInBrowser).toHaveBeenCalledWith(owner, target, x, "trace", actor);
+    await expect(service.openBookmark("user:other", target, x.id, "trace", actor)).rejects.toThrow(/was not found/);
+    expect(await service.deleteBookmark("user:other", x.id)).toBe(false);
+    expect(await service.deleteBookmark(owner, x.id)).toBe(true);
+    expect((await service.listBookmarks(owner)).map((bookmark) => bookmark.id)).toEqual([hn.id]);
   });
 });

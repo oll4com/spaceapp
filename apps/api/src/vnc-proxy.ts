@@ -1,12 +1,4 @@
 import net, { isIP } from "node:net";
-import type { VncPreset } from "@space/contracts";
-
-export const vncPresets: ReadonlyArray<VncPreset> = [
-  { id: "vm207-desktop", name: "public-host Desktop (Xvfb :99)", host: "127.0.0.1", port: 5900 },
-  { id: "vm219-windows", name: "public-host Windows 11", host: "192.0.2.249", port: 5900 },
-  { id: "dc01-windows", name: "dc01 Thailand (192.0.2.20)", host: "192.0.2.20", port: 5900 },
-  { id: "databricks-form", name: "Databricks form (Xvfb :98)", host: "10.254.240.22", port: 5901 }
-];
 
 const PRIVATE_V4_NETWORKS: ReadonlyArray<{ base: number; bits: number }> = [
   { base: 0x0a000000, bits: 8 },

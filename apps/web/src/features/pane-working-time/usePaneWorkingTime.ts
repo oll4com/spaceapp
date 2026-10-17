@@ -23,6 +23,8 @@ interface StoredWorkingTime {
   lastSavedAt: number;
 }
 
+const NON_CRITICAL_INITIAL_DELAY_MS = 4_000;
+
 export function formatWorkingTime(ms: number): string {
   const totalMinutes = Math.max(0, Math.floor(ms / (60 * 1000)));
   const hours = Math.floor(totalMinutes / 60);
@@ -121,11 +123,27 @@ export function usePaneWorkingTime({
       } catch {}
     };
 
-    void syncWithServer();
-    const interval = window.setInterval(syncWithServer, 15_000);
+    let started = false;
+    let interval: number | null = null;
+    let timeoutHandle: number | null = null;
+    const start = () => {
+      if (cancelled || started) return;
+      started = true;
+      void syncWithServer();
+      interval = window.setInterval(syncWithServer, 15_000);
+    };
+    timeoutHandle = window.setTimeout(start, NON_CRITICAL_INITIAL_DELAY_MS);
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState !== "hidden") start();
+    };
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
+      if (interval !== null) window.clearInterval(interval);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
     };
   }, [paneId]);
 

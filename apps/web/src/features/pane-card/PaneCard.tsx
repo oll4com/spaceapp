@@ -1,4 +1,3 @@
-import { SpaceBrand } from "../../SpaceBrand.js";
 import { api } from "../../api.js";
 import { isRecord } from "../../app-shell-utils.js";
 import { dispatchArtifactsUpdated } from "../../artifact-events.js";
@@ -36,33 +35,14 @@ import {
   terminalActionDisabledReason,
   type TerminalActionAvailability
 } from "../terminal-pane/terminal-action-availability.js";
-import { ArrowRightLeft, Boxes, Camera, ChevronLeft, ChevronRight, CircleStop, Clipboard, ClipboardList, CodeXml, Columns2, Copy, Cpu, Crosshair, Database, Eye, EyeOff, FileInput, FolderOpen, FolderPlus, GitCompare, Grid2X2, GripVertical, History, Mail, Maximize2, MessageSquare, Mic, Minimize2, Minus, Monitor, MoreHorizontal, MoveHorizontal, Network, Paperclip, Pencil, PictureInPicture2, Plus, RefreshCw, Rocket, Save, Send, Shrink, Sparkles, Terminal, Undo2, X, Youtube } from "../ui-theme/app-icons.js";
+import { ArrowRightLeft, Camera, ChevronLeft, ChevronRight, CircleStop, Clipboard, ClipboardList, Columns2, Copy, Crosshair, Database, Eye, EyeOff, FileInput, FolderPlus, Grid2X2, GripVertical, History, Maximize2, Minimize2, Minus, Monitor, MoreHorizontal, MoveHorizontal, Paperclip, Pencil, PictureInPicture2, Plus, RefreshCw, Save, Send, Shrink, Sparkles, Terminal, Undo2, X, Youtube } from "../ui-theme/app-icons.js";
 import { modernPanePrimaryActionCapacity, modernPanePrimaryActionCount } from "../ui-theme/modern-toolbar.js";
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
 import { WorktreeBadge } from "../worktrees/WorktreeBadge.js";
+import { modeIcons } from "./pane-mode-icons.js";
 import { cliTurnInterruptKey, paneCategoryColors, type CliRuntimeSettingsResponse, type CliVpnRoutingStatus, type CodexEnvironment, type Event as SpaceEvent, type MemoryEntry, type Pane, type PaneCategoryColor, type PaneCliSessionResponse, type Turn } from "@space/contracts";
-import { lazy, memo, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, type ComponentProps, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-export const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
-  CHAT: MessageSquare,
-  CODE: CodeXml,
-  BROWSER: Eye,
-  REVIEW: GitCompare,
-  SWARM: Boxes,
-  DESIGN: Sparkles,
-  TERMINAL: Terminal,
-  YOUTUBE: Youtube,
-  VNC: Monitor,
-  HARNESS: Network,
-  LIVE: Mic,
-  FILES: FolderOpen,
-  DATABASES: Database,
-  DEMOS: Boxes,
-  T3CODE: Cpu,
-  JOB_APPLY: ClipboardList,
-  MAIL_COPILOT: Mail,
-  MARKETING_COPILOT: Rocket
-};
 
 export function PaneModeIcon({ pane }: { pane: Pick<Pane, "mode" | "terminalRuntimeId"> }) {
   const runtimeId = pane.terminalRuntimeId?.replace(/^cli:/, "") ?? "codex";
@@ -136,6 +116,13 @@ const LazyMailCopilotPane = lazy(() =>
 const LazyMarketingCopilotPane = lazy(() =>
   import("../marketing-copilot-pane/MarketingCopilotPane.js").then((module) => ({ default: module.MarketingCopilotPane }))
 );
+const LazyFreelanceCopilotPane = lazy(() =>
+  import("../freelance-copilot-pane/FreelanceCopilotPane.js").then((module) => ({ default: module.FreelanceCopilotPane }))
+);
+/** Marketing and Freelance Copilot share one pane layout (live browser, rail, agent terminal). */
+function BrowserCopilotPane(props: ComponentProps<typeof LazyMarketingCopilotPane>) {
+  return props.pane.mode === "FREELANCE_COPILOT" ? <LazyFreelanceCopilotPane {...props} /> : <LazyMarketingCopilotPane {...props} />;
+}
 
 export const agentPaneLoadingFallback = <div className="pane-copy" role="status">Loading chat pane…</div>;
 
@@ -332,7 +319,6 @@ export const PaneCard = memo(function PaneCard({
   isFloatingYouTube = false,
   onToggleYouTubeFloating,
   isTerminalOutputVisible,
-  isMobilePaneFocused,
   browserObserverOnly,
   terminalObserverOnly,
   uiTheme,
@@ -361,7 +347,6 @@ export const PaneCard = memo(function PaneCard({
   onClose,
   onMaximize,
   onMinimize,
-  onMobilePaneFocusChange,
   onGrowColumnSpan,
   onResetColumnSpan,
   onToggleColumnSpan,
@@ -409,7 +394,6 @@ export const PaneCard = memo(function PaneCard({
   isFloatingYouTube?: boolean;
   onToggleYouTubeFloating?: () => void;
   isTerminalOutputVisible: boolean;
-  isMobilePaneFocused: boolean;
   browserObserverOnly: boolean;
   terminalObserverOnly: boolean;
   uiTheme: UiTheme;
@@ -440,7 +424,6 @@ export const PaneCard = memo(function PaneCard({
   onClose: (paneId: string) => void;
   onMaximize: (pane: Pane) => void;
   onMinimize: (pane: Pane) => void;
-  onMobilePaneFocusChange: (focused: boolean) => void;
   onGrowColumnSpan: (pane: Pane) => Promise<void>;
   onResetColumnSpan: (pane: Pane) => Promise<void>;
   onToggleColumnSpan: (pane: Pane) => Promise<void>;
@@ -786,13 +769,11 @@ export const PaneCard = memo(function PaneCard({
   const maximizeLabel = isFullscreenLayout
     ? "Restore automatic layout"
     : shellMode === "mobile"
-      ? isMobilePaneFocused
-        ? "Restore room"
-        : "Maximize pane"
+      ? "Maximize pane"
       : pane.isMaximized
         ? "Restore pane"
         : "Maximize pane";
-  const showRestoreIcon = shellMode === "mobile" ? isMobilePaneFocused : pane.isMaximized;
+  const showRestoreIcon = shellMode !== "mobile" && pane.isMaximized;
   const agentTone = ((agentNumber - 1) % 8) + 1;
   const genericUploadInputRef = useRef<HTMLInputElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
@@ -1293,7 +1274,7 @@ export const PaneCard = memo(function PaneCard({
   const canSwipeNavigate =
     !titleEditOpen &&
     fullscreenCount > 1 &&
-    (shellMode === "mobile" || isFullscreenLayout || isMobilePaneFocused || pane.isMaximized);
+    (shellMode === "mobile" || isFullscreenLayout || pane.isMaximized);
   const showFullscreenNav = isFullscreenLayout && fullscreenCount > 1 && shellMode !== "mobile";
 
   const handleTitleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
@@ -1740,7 +1721,7 @@ export const PaneCard = memo(function PaneCard({
       }
     ];
   }
-  if (pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT") {
+  if (pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT") {
     rawPaneActions = [
       ...(!isTerminalLoginSession ? [{
         id: "add",
@@ -1865,7 +1846,7 @@ export const PaneCard = memo(function PaneCard({
     hiddenStorageKey: paneToolbarStorageKeys.hidden,
     orderStorageKey: paneToolbarStorageKeys.order,
     nonPersistentActionIds: pane.mode === "CHAT" ? ["chat-target"] : [],
-    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "YOUTUBE" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT",
+    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "YOUTUBE" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT",
     closeOverflowOnDragStart: shellMode === "mobile"
   });
   const modernPrimaryActionLimit = modernPanePrimaryActionCount(shellMode);
@@ -1873,7 +1854,7 @@ export const PaneCard = memo(function PaneCard({
   const paneToolbarPrimaryActionCount = uiTheme !== "classic" || pane.mode === "YOUTUBE"
     ? Math.min(modernPrimaryActionLimit, modernPrimaryActionCapacity ?? modernPrimaryActionLimit)
     : paneToolbarMenuActions.length;
-  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT"
+  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT"
     ? []
     : (uiTheme !== "classic" || pane.mode === "YOUTUBE"
         ? paneToolbarMenuActions.slice(0, paneToolbarPrimaryActionCount)
@@ -2261,7 +2242,7 @@ export const PaneCard = memo(function PaneCard({
         onDragEnd={onPaneDragEnd}
       >
         <div ref={paneBadgeRef} className="pane-header-identity" {...badgeTouchContext}>
-          {isMobilePaneFocused && isTarget ? <SpaceBrand /> : (
+          {(
             <div
               className={`pane-agent-badge${vpnRoutingPresentation ? ` has-vpn-routing is-${vpnRoutingPresentation.tone}` : ""}${draggedPaneId === pane.id ? " is-dragging" : ""}`}
               title={paneIdentityTitle}
@@ -2551,7 +2532,7 @@ export const PaneCard = memo(function PaneCard({
                     paneToolbar.setIsOverflowOpen(false);
                     action.onClick();
                   }}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT"}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT"}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}
                 />
@@ -2583,7 +2564,7 @@ export const PaneCard = memo(function PaneCard({
                   }}
                   onResetOrder={paneToolbar.resetOrder}
                   isOrderCustomized={paneToolbar.isOrderCustomized}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MARKETING_COPILOT"}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT"}
                   preferPaneInside={pane.mode === "CHAT"}
                   primaryActionIds={uiTheme !== "classic" ? paneToolbarRenderedActions.map((action) => action.id) : undefined}
                   popupId={paneActionsPopupId}
@@ -2787,9 +2768,9 @@ export const PaneCard = memo(function PaneCard({
               )}
             />
           </RecoverableSurface>
-        ) : pane.mode === "MARKETING_COPILOT" ? (
+        ) : pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" ? (
           <RecoverableSurface fallback={browserPaneLoadingFallback} resetKey={pane.id}>
-            <LazyMarketingCopilotPane
+            <BrowserCopilotPane
               pane={pane}
               isVisible={isVisibleInShell}
               terminal={(

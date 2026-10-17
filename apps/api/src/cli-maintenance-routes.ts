@@ -1,5 +1,5 @@
 import type {} from "./request-context.js";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   cliMaintenanceRequestSchema, cliUpdateAllRequestSchema, idSchema, maintenanceApplyRequestSchema,
@@ -8,6 +8,7 @@ import {
 import type { SpaceStore } from "@space/runtime";
 import type { CliMaintenanceManager, CliUpdateAllRunner } from "./cli-maintenance.js";
 import { sendApiError } from "./http-errors.js";
+import type { NotificationService } from "./notifications/service.js";
 import type { AuditRecorder } from "./request-audit.js";
 import { formatSseMessage, startSseHeartbeat } from "./sse.js";
 
@@ -23,12 +24,25 @@ const cliMaintenanceReplayQuerySchema = z.object({
  * retains authentication, CSRF and errors.
  */
 export function registerCliMaintenanceRoutes(app: FastifyInstance, options: {
-  store: Pick<SpaceStore, "listCliRuntimeSettings">;
+  store: Pick<SpaceStore, "listCliRuntimeSettings" | "upsertUser">;
   cliMaintenanceManager: CliMaintenanceManager;
   cliUpdateAllRunner: CliUpdateAllRunner;
   recordAudit: AuditRecorder;
+  notifications?: Pick<NotificationService, "raise">;
 }) {
-  const { store, cliMaintenanceManager, cliUpdateAllRunner, recordAudit } = options;
+  const { store, cliMaintenanceManager, cliUpdateAllRunner, recordAudit, notifications } = options;
+  // An update takes minutes and its window may be minimized or closed, so its end is a notification too.
+  async function notifyUpdateAll(request: FastifyRequest, failed: boolean, title: string, body: string) {
+    if (!notifications || !request.user) return;
+    try {
+      await notifications.raise({
+        ownerUserId: (await store.upsertUser(request.user)).id, roomId: null, paneId: null, source: "SYSTEM", kind: "CLI_UPDATE_FINISHED",
+        severity: failed ? "ATTENTION" : "INFO", title, body, link: {}, dedupeKey: null, payload: {}, telegram: null
+      });
+    } catch (error) {
+      request.log.warn({ err: error }, "CLI update-all notification failed");
+    }
+  }
   app.get(
     "/api/admin/cli-maintenance/runs",
     { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
@@ -248,9 +262,19 @@ export function registerCliMaintenanceRoutes(app: FastifyInstance, options: {
             reinstall: result.reinstall
           }
         });
+        const updated = result.runtimes.filter((runtime) => runtime.code.startsWith("UPDATED")).length;
+        const failed = result.runtimes.filter((runtime) => runtime.status === "FAIL").length;
+        await notifyUpdateAll(
+          request,
+          result.overallStatus === "FAIL" || result.overallStatus === "WARN",
+          result.overallStatus === "FAIL" ? "CLI update finished with failures"
+            : result.overallStatus === "WARN" ? "CLI update finished with warnings" : "CLI update finished",
+          `${updated} updated · ${failed} failed · ${result.runtimes.length} checked.`
+        );
         return reply.send(result);
       } catch (error) {
         request.log.error({ err: error }, "CLI update-all run failed");
+        await notifyUpdateAll(request, true, "CLI update failed", "The CLI update could not be completed. Open Manage → Update All for details.");
         return sendApiError(reply, 502, "UPDATE_ALL_FAILED", "CLI update-all could not be completed.");
       }
     }

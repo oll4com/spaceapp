@@ -199,7 +199,8 @@ describe("Space static asset compression", () => {
     const legacyAppAlias = await request(port, "/app", "identity");
 
     expect(operatorRoot.status).toBe(200);
-    expect(operatorRoot.headers["content-security-policy"]).toBeUndefined();
+    expect(operatorRoot.headers["content-security-policy"]).toBe("frame-ancestors 'self'; object-src 'none'; base-uri 'self'");
+    expect(operatorRoot.headers["x-frame-options"]).toBe("SAMEORIGIN");
     expect(homepageAlias.headers["content-security-policy"]).toContain("default-src 'self'");
     expect(homepageAlias.headers["content-security-policy"]).toContain("frame-src 'self'");
     expect(homepageAlias.headers["content-security-policy"]).toContain("frame-ancestors 'none'");

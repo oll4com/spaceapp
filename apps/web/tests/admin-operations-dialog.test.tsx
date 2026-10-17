@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import type {
   AdminOperationRun,
   CliUpdateAllDetection,
@@ -11,6 +11,7 @@ import {
   type AdminOperationsClient
 } from "../src/features/admin-operations/AdminOperationsDialog.js";
 import type { CliMaintenanceReplayPayload } from "../src/live-api.js";
+import { resetCliUpdateRun, useMinimizedCliUpdateRun } from "../src/features/admin-operations/cli-update-run.js";
 
 const timestamp = "2026-07-23T08:30:00.000Z";
 const sourceCommit = "42aac2eac274e2ab0512071615647073582d43a8";
@@ -121,7 +122,25 @@ function client(overrides: Partial<AdminOperationsClient> = {}): AdminOperations
         code: "CURRENT",
         summary: "Already current.",
         checks: [],
-        customPreserved: true
+        customPreserved: true,
+        customReinstalled: true,
+        reinstallResults: [{
+          path: "/opt/spaceapp/deploy/claude-space-settings.json",
+          kind: "verify",
+          status: "PASS",
+          code: "CUSTOM_PROCEDURE_PRESERVED",
+          message: "Claude Space settings overlay preserved."
+        }]
+      }],
+      customSummary: [{
+        key: "claude",
+        hasCustom: true,
+        custom: [{
+          kind: "config",
+          path: "/opt/spaceapp/deploy/claude-space-settings.json",
+          label: "Claude Space settings overlay",
+          present: true
+        }]
       }],
       startedAt: null,
       finishedAt: timestamp
@@ -143,6 +162,7 @@ function client(overrides: Partial<AdminOperationsClient> = {}): AdminOperations
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  resetCliUpdateRun();
 });
 
 describe("AdminOperationsDialog", () => {
@@ -380,14 +400,19 @@ describe("AdminOperationsDialog", () => {
 
     const dialog = screen.getByRole("dialog", { name: "Update all CLI types" });
     await waitFor(() => expect(operations.detectCliUpdateAll).toHaveBeenCalledTimes(1));
-    expect(await within(dialog).findByText("Custom procedures detected")).toBeTruthy();
+    expect(await within(dialog).findByText(/1 custom procedure protected in 1 CLI$/)).toBeTruthy();
     expect(within(dialog).getAllByText("Claude Code CLI").length).toBeGreaterThan(0);
     expect(within(dialog).getByText("Hermes Agent CLI")).toBeTruthy();
 
     // Update all (no selection required).
     fireEvent.click(within(dialog).getByRole("button", { name: "Update all" }));
     await waitFor(() => expect(operations.runCliUpdateAll).toHaveBeenCalledWith({ reinstall: true }));
-    expect(await within(dialog).findByText("Update result · PASS")).toBeTruthy();
+    const result = await within(dialog).findByRole("region", { name: "Update-all result" });
+    expect(within(result).getByText("Update finished")).toBeTruthy();
+    expect(within(result).getByText(/1 of 1 custom procedure verified unchanged/)).toBeTruthy();
+    expect(within(result).getByText("1 custom kept")).toBeTruthy();
+    expect(within(result).getByText("Claude Space settings overlay preserved.")).toBeTruthy();
+    expect(within(result).getByText("1.0.0")).toBeTruthy();
 
     // Select a single managed type (non-managed rows are not individually updatable).
     const claudeRow = within(dialog).getByLabelText("Claude Code CLI") as HTMLInputElement;
@@ -411,11 +436,38 @@ describe("AdminOperationsDialog", () => {
     const dialog = screen.getByRole("dialog", { name: "Update all CLI types" });
     const recommended = await within(dialog).findByRole("region", { name: "Recommended update" });
     expect(await within(recommended).findByText("1 update available")).toBeTruthy();
-    expect(within(recommended).getByText(/Claude Code CLI 2\.1\.296 → 2\.1\.300/)).toBeTruthy();
+    expect(within(recommended).getByText("2.1.296 → 2.1.300")).toBeTruthy();
     // Re-apply stays on for the one-click update even when the advanced toggle is off.
     fireEvent.click(within(dialog).getByLabelText("Reinstall custom procedures after update"));
     fireEvent.click(within(recommended).getByRole("button", { name: "Update 1 CLI" }));
     await waitFor(() => expect(operations.runCliUpdateAll).toHaveBeenCalledWith({ keys: ["claude"], reinstall: true }));
+  });
+
+  it("keeps a minimized update running and shows its result when the window opens again", async () => {
+    const finished = await client().runCliUpdateAll({});
+    let finish!: () => void;
+    const operations = client({ runCliUpdateAll: vi.fn(() => new Promise<CliUpdateAllResult>((resolve) => { finish = () => resolve(finished); })) });
+    const onClose = vi.fn();
+    const first = render(<AdminOperationsDialog initialTool="update-all" client={operations} onClose={onClose} />);
+    const dialog = screen.getByRole("dialog", { name: "Update all CLI types" });
+    await waitFor(() => expect(operations.detectCliUpdateAll).toHaveBeenCalled());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Update all" }));
+    // The close button stays locked while the update runs; Minimize hides the window anyway.
+    expect((within(dialog).getByRole("button", { name: "Close Update all CLI types" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Minimize" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    const minimized = renderHook(() => useMinimizedCliUpdateRun());
+    expect(minimized.result.current).toMatchObject({ label: "every managed CLI type", finished: false });
+    await act(async () => finish());
+    expect(minimized.result.current).toMatchObject({ finished: true, seen: false });
+
+    render(<AdminOperationsDialog initialTool="update-all" client={operations} onClose={onClose} />);
+    const result = await screen.findByRole("region", { name: "Update-all result" });
+    expect(within(result).getByText("Update finished")).toBeTruthy();
+    expect(minimized.result.current).toBeNull();
+    expect(operations.runCliUpdateAll).toHaveBeenCalledTimes(1);
   });
 
   it("custom verification is enabled by default and can be disabled", async () => {
@@ -481,18 +533,22 @@ describe("AdminOperationsDialog", () => {
     // Check version labels and verdict pills.
     expect(await within(dialog).findByText("v0.152.0")).toBeTruthy();
     expect(within(dialog).getByText("v0.152.1")).toBeTruthy();
-    expect(within(dialog).getByText("Update available: 0.152.0 → 0.152.1")).toBeTruthy();
+    expect(within(dialog).getByText("0.152.0 → 0.152.1")).toBeTruthy();
+    expect(within(dialog).getByText("Update available")).toBeTruthy();
 
     expect(within(dialog).getAllByText("v2.1.258").length).toBeGreaterThan(0);
     expect(within(dialog).getByText("Up to date")).toBeTruthy();
 
-    // Check custom procedure chip.
+    // Custom procedures open from the row.
+    expect(within(dialog).queryByText("Claude Space settings overlay")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: /1 custom/ }));
     expect(within(dialog).getByText("Claude Space settings overlay")).toBeTruthy();
+    expect(within(dialog).getByText("/opt/spaceapp/deploy/claude-space-settings.json")).toBeTruthy();
 
     // Check filter tab switching.
-    const updatesTab = within(dialog).getByRole("tab", { name: /Updates available/i });
-    fireEvent.click(updatesTab);
-    expect(within(dialog).getByText("Codex CLI")).toBeTruthy();
-    expect(within(dialog).queryByText("Claude Code CLI")).toBeNull();
+    const catalog = within(dialog).getByRole("region", { name: "All CLI types" });
+    fireEvent.click(within(catalog).getByRole("tab", { name: /^Updates/ }));
+    expect(within(catalog).getByText("Codex CLI")).toBeTruthy();
+    expect(within(catalog).queryByText("Claude Code CLI")).toBeNull();
   });
 });

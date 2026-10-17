@@ -24,7 +24,8 @@
 .desktop-menu-header { display: flex; align-items: center; gap: .35rem; border-bottom: 1px solid var(--room-border, #343638); padding-bottom: .2rem; }
 .desktop-menu-search { display: flex; align-items: center; gap: .5rem; padding: .4rem; flex: 1; min-width: 0; }
 .desktop-menu-search svg { width: 1rem; height: 1rem; color: var(--room-muted, #a2a7ad); flex: 0 0 auto; }
-.desktop-menu-search input { width: 100%; min-width: 0; padding: .45rem; border: 0; background: transparent; color: inherit; }
+/* Outranks the global `label input:not(...)` field style, which painted this borderless input dark (black in Light). */
+.desktop-menu-search input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) { width: 100%; min-width: 0; padding: .45rem; border: 0; background: transparent; color: inherit; }
 .desktop-menu-close { display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; padding: .35rem; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--room-muted, #a2a7ad); cursor: pointer; flex: 0 0 auto; }
 .desktop-menu-close:hover, .desktop-menu-close:focus-visible { background: var(--room-surface-soft, #202425); border-color: var(--room-border, #343638); color: var(--room-text, #f4efe5); }
 .desktop-menu-close svg { width: 1.1rem; height: 1.1rem; }
