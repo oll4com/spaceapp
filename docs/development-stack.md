@@ -116,11 +116,13 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners and checks the exact source. Both run all 50 launcher
+and `macos-15-intel` runners and checks the exact source. Both run all 51 launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
 Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
 private-instance API regressions in the four `instance-storage`/`dev-*-storage`
 and `dev-docx-isolation` test files, followed by the same complete real-stack proof.
+macOS also runs the CLI-host regressions, including its native `/bin/stty` selection;
+Linux keeps the existing `/usr/bin/stty` command.
 The broader native-macOS stock suites retain upstream limitations, including the
 Linux-only descriptor filesystem backend and `/proc` metadata helper; those suites
 are not claimed to pass on macOS. Their assertions and the Linux full-suite gate
@@ -133,6 +135,10 @@ the exact pinned OpenCode native optional-package binary with `--version` and a
 real, zero-provider `printf` PTY. It never executes the npm postinstall or its
 network fallback. The manifest versions, physical private path, executable and
 actual version must match; a missing/mismatched binary fails with a bounded receipt.
+The early check uses the CLI-host workspace's normal standalone build, then its
+actual compiled PTY spawn entry for another exact-output `printf` control. It
+records whether the selected native `stty` path is already executable. This does
+not substitute for the later actual OpenCode/browser interaction.
 On Darwin only, a real failed `posix_spawnp` probe plus the exact published
 node-pty1.1.0 helper hash, mode0644, checkout confinement, ownership and single
 link can authorize restoring that one helper's execute bits. The failure, modes,
@@ -148,6 +154,10 @@ full-size ownership/secret nonces remain unchanged. This avoids the Linux Chrome
 singleton socket's small Unix path budget while keeping HOME/TMPDIR/profile in
 that private state. Startup failures retain bounded redacted stderr, binary
 version, exit/signal and selected paths; a terminated child fails immediately.
+Failures after the CDP session opens retain the same selected browser snapshot,
+socket state and failed CDP method before closing Chrome. Request parameters,
+cookies, session URLs and environments are excluded. A missing `stty` message and
+a CDP cookie timeout are distinct observations, without an assumed shared cause.
 
 After those gates, `scripts/dev-stack/lifecycle-proof.mjs` starts a real stack with
 synthetic installed ports4910/4911 occupied by an independent process. It exercises

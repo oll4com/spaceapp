@@ -128,6 +128,10 @@ jobs:
           apps/api/tests/instance-storage.test.ts apps/api/tests/dev-oauth-storage.test.ts
           apps/api/tests/dev-docx-isolation.test.ts apps/api/tests/dev-incidents-storage.test.ts
 
+      - name: Native macOS CLI host regressions
+        if: runner.os == 'macOS'
+        run: npm test --workspace @space/cli-host
+
       - name: Full stock build
         run: npm run build
 

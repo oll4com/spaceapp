@@ -7,7 +7,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extractPins, initialize, loadOwner, locations, secrets, serviceEnvironment } from './state.mjs';
 import { verifyOpenCode } from './opencode-runtime.mjs';
-import { verifyPtyCapability } from './pty-capability.mjs';
+import { verifyCliHostPtyCapability, verifyPtyCapability } from './pty-capability.mjs';
 import { run } from './resources.mjs';
 import { browserKeyboardCapability } from './browser-proof.mjs';
 
@@ -23,6 +23,11 @@ const proof = { source: process.env.SPACE_DEV_CANDIDATE, platform: process.platf
 try {
   await browserKeyboardCapability({ state: config.state, artifacts, challenge: `spaceproof${randomBytes(8).toString('hex')}` });
   await verifyPtyCapability(root, config.state, { inherited: env, evidence: join(artifacts, 'early-pty-capability.json') });
+  // This workspace has only Node/node-pty runtime imports and its normal tsc build
+  // needs no other workspace dist. Exercise the real entry, not a copied shell.
+  proof.stage = 'build-and-probe-cli-host-entry';
+  await run('npm', ['run', 'build', '--workspace', '@space/cli-host'], { cwd: root, env, output: text => process.stdout.write(text) });
+  await verifyCliHostPtyCapability(root, config.state, { inherited: env, evidence: join(artifacts, 'early-cli-host-pty-capability.json') });
   const pins = extractPins(await readFile(join(root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(root, 'Dockerfile'), 'utf8'));
   proof.expectedVersion = pins.opencode; proof.stage = 'install-private-pinned-package';
   await run('npm', ['install', '--prefix', join(config.state, 'cli/vendor/opencode'), '--ignore-scripts', '--no-audit', '--no-fund', `opencode-ai@${pins.opencode}`], { cwd: root, env, output: text => process.stdout.write(text) });

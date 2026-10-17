@@ -15,6 +15,9 @@ export function assertBrowserRunning(child, startError) {
 export function safeBrowserStderr(text) {
   return String(text).replace(/wss?:\/\/[^\s"']+/gi, '[redacted websocket endpoint]').replace(/((?:token|password|secret|cookie)=)[^\s"']+/gi, '$1[redacted]').slice(-6000);
 }
+export function selectedBrowserDiagnostic({ profile, tmpdir, binaryVersion, versionError, child, startError, stderr, socket, failedCdpMethod }, phase) {
+  return { platform: process.platform, phase, profile, tmpdir, binaryVersion, versionError, exitCode: child.exitCode, signalCode: child.signalCode, startErrorCode: startError?.code ?? null, cdpSocketState: socket?.readyState ?? null, failedCdpMethod: failedCdpMethod ?? null, stderr: safeBrowserStderr(stderr) };
+}
 
 export async function typeTerminalFilter(call, text) {
   assert(typeof text === 'string' && /^[a-z0-9]{1,64}$/.test(text), 'Only the synthetic local palette filter is permitted.');
@@ -41,7 +44,8 @@ async function openProofBrowser(state) {
   child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-8192); });
   child.once('error', error => { startError = error; });
   const identity = new Promise(done => { child.once('spawn', () => { void processIdentity(child.pid).then(value => done({ pid: child.pid, identity: value }), () => done(null)); }); child.once('error', () => done(null)); });
-  let socket, next = 1; const pending = new Map();
+  let socket, next = 1, failedCdpMethod = null; const pending = new Map();
+  const diagnostic = phase => selectedBrowserDiagnostic({ profile, tmpdir: env.TMPDIR, binaryVersion, versionError, child, startError, stderr, socket, failedCdpMethod }, phase);
   async function close() {
     if (socket?.readyState === WebSocket.OPEN) socket.close();
     const original = await identity;
@@ -51,19 +55,19 @@ async function openProofBrowser(state) {
     const [port, path] = (await eventually(async () => { assertBrowserRunning(child, startError); return (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).trim(); }, 'Chrome CDP startup')).split('\n');
     socket = new WebSocket(`ws://127.0.0.1:${port}${path}`);
     await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
-    socket.on('message', data => { const response = JSON.parse(data.toString()); const item = pending.get(response.id); if (item) { pending.delete(response.id); clearTimeout(item.timer); if (response.error) item.reject(new Error(response.error.message)); else item.resolve(response.result); } });
+    socket.on('message', data => { const response = JSON.parse(data.toString()); const item = pending.get(response.id); if (item) { pending.delete(response.id); clearTimeout(item.timer); if (response.error) { failedCdpMethod = item.method; item.reject(new Error(response.error.message)); } else item.resolve(response.result); } });
     const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
-      const id = next++, timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP ${method} timed out.`)); }, 30000);
-      pending.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+      const id = next++, timer = setTimeout(() => { pending.delete(id); failedCdpMethod = method; reject(new Error(`CDP ${method} timed out.`)); }, 30000);
+      pending.set(id, { resolve, reject, timer, method }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
     const version = await send('Browser.getVersion');
     const target = await send('Target.createTarget', { url: 'about:blank' });
     const { sessionId } = await send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
     const call = (method, params) => send(method, params, sessionId);
     const evaluate = async expression => { const result = await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw new Error('Browser evaluation failed.'); return result.result.value; };
-    return { call, evaluate, close, version: { product: version.product, protocolVersion: version.protocolVersion, binaryVersion } };
+    return { call, evaluate, close, diagnostic, version: { product: version.product, protocolVersion: version.protocolVersion, binaryVersion } };
   } catch (error) {
-    error.browserStartup = { platform: process.platform, profile, tmpdir: env.TMPDIR, binaryVersion, versionError, exitCode: child.exitCode, signalCode: child.signalCode, startErrorCode: startError?.code ?? null, stderr: safeBrowserStderr(stderr) };
+    error.browserStartup = diagnostic('startup');
     await close(); throw error;
   }
 }
@@ -90,11 +94,11 @@ export async function browserKeyboardCapability({ state, artifacts, challenge })
     assert.equal(await evaluate(`document.getElementById('filter').value === ${JSON.stringify(challenge)}`), true, 'Actual Chrome must receive every serial character in exact order.');
     proof.perCharacter = { eventCount: challenge.length, maxUtf16UnitsPerEvent: 1, deliveredExactText: true, enterOrPasteSent: false };
     proof.ok = true; return proof;
-  } catch (error) { proof.error = { name: error.name, message: error.message.slice(0, 300) }; if (error.browserStartup) proof.startup = error.browserStartup; throw error;
+  } catch (error) { proof.error = { name: error.name, message: error.message.slice(0, 300) }; if (error.browserStartup) proof.startup = error.browserStartup; else if (browser) proof.runtime = browser.diagnostic('early-blank-page-keyboard'); throw error;
   } finally { await mkdir(artifacts, { recursive: true }); await writeFile(join(artifacts, 'early-browser-keyboard-capability.json'), JSON.stringify(proof, null, 2) + '\n', { mode: 0o600 }); await browser?.close(); }
 }
 export async function browserProof({ state, origin, cookie, artifacts, paneId }) {
-  const { call, evaluate, close } = await openProofBrowser(state);
+  const { call, evaluate, close, diagnostic } = await openProofBrowser(state);
   try {
     await call('Page.enable'); await call('Network.enable');
     const index = cookie.indexOf('=');
@@ -116,6 +120,6 @@ export async function browserProof({ state, origin, cookie, artifacts, paneId })
         await call('Input.dispatchKeyEvent', { type: 'keyDown', ...params }); await call('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
       }
     };
-    return { evaluate, terminalState, key, async screenshot(name) { assertBrowserTerminal(await terminalState(), paneId); await writeFile(join(artifacts, name), Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64')); }, close };
-  } catch (error) { await close(); throw error; }
+    return { evaluate, terminalState, key, diagnostic, async screenshot(name) { assertBrowserTerminal(await terminalState(), paneId); await writeFile(join(artifacts, name), Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64')); }, close };
+  } catch (error) { error.browserRuntime = diagnostic('application-browser'); await close(); throw error; }
 }

@@ -12,9 +12,14 @@ import { confinedFile, nativePackage, opencodeEnvironment, resolveOpenCode, veri
 import { InteractiveTerminalProof, assertBrowserTerminal } from '../dev-stack/terminal-proof.mjs';
 import { knownHelperRepair } from '../dev-stack/pty-capability.mjs';
 import { isPublicExportPath } from '../public-export.mjs';
-import { assertBrowserRunning, eventually, safeBrowserStderr, typeTerminalFilter } from '../dev-stack/browser-proof.mjs';
+import { assertBrowserRunning, eventually, safeBrowserStderr, selectedBrowserDiagnostic, typeTerminalFilter } from '../dev-stack/browser-proof.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
+test('post-CDP diagnostics retain selected failure state and redact endpoints without exposing request parameters', () => {
+  const selected = selectedBrowserDiagnostic({ profile: '/private/profile', tmpdir: '/private/tmp', binaryVersion: 'Synthetic Chrome', versionError: null, child: { exitCode: null, signalCode: 'SIGTRAP', env: { secret: 'must-not-appear' } }, startError: null, stderr: 'cookie=private-cookie ws://127.0.0.1/private-session', socket: { readyState: 3, url: 'must-not-appear' }, failedCdpMethod: 'Network.setCookie', params: { value: 'must-not-appear' } }, 'application-browser');
+  assert.equal(selected.failedCdpMethod, 'Network.setCookie'); assert.equal(selected.phase, 'application-browser'); assert.equal(selected.cdpSocketState, 3); assert.equal(selected.signalCode, 'SIGTRAP');
+  assert(!JSON.stringify(selected).includes('must-not-appear')); assert(!selected.stderr.includes('private-cookie')); assert(!selected.stderr.includes('private-session'));
+});
 const pins = extractPins(await readFile(join(root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(root, 'Dockerfile'), 'utf8'));
 async function sandbox(t) {
   const parent = await realpath(tmpdir());

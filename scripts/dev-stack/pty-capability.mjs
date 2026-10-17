@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readFile, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { confinedFile, fileHash } from './opencode-runtime.mjs';
 import { run } from './resources.mjs';
 
@@ -68,19 +68,44 @@ export async function verifyPtyCapability(root, state, { inherited = {}, evidenc
   } finally { await mkdir(dirname(evidence), { recursive: true, mode: 0o700 }); await writeFile(evidence, JSON.stringify(proof, null, 2) + '\n', { mode: 0o600 }); }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === self && process.argv[2] === '--probe') {
-  const root = resolve(process.argv[3]), home = resolve(process.argv[4]);
+export async function verifyCliHostPtyCapability(root, state, { inherited = {}, evidence = join(state, 'logs', 'cli-host-pty-capability.json'), invoke = run } = {}) {
+  const selectedPath = process.platform === 'darwin' ? '/bin/stty' : '/usr/bin/stty';
+  const executable = async file => { try { await access(file, constants.X_OK); return true; } catch { return false; } };
+  const proof = { source: process.env.SPACE_DEV_CANDIDATE, capability: 'actual compiled CLI host zero-provider printf PTY', platform: process.platform, compiledEntry: 'packages/cli-host/dist/node-pty-spawn.js', stty: { selectedPath, selectedExecutable: await executable(selectedPath), historicalUsrBinExecutable: await executable('/usr/bin/stty') }, ok: false, modelInference: false };
+  const home = join(state, 'cli-host-pty-capability'); let output = '';
   try {
-    const require = createRequire(join(root, 'package.json')), pty = require('node-pty');
-    const term = pty.spawn('/bin/sh', ['-c', `printf '${marker}'`], { name: 'xterm-256color', cols: 80, rows: 24, cwd: home, env: { PATH: process.env.PATH, HOME: home, TMPDIR: home, TERM: 'xterm-256color' } });
+    assert.equal(proof.stty.selectedExecutable, true, 'The explicit native stty must already exist; no install or PATH fallback.');
+    await confinedFile(root, join(root, proof.compiledEntry));
+    await mkdir(home, { recursive: true, mode: 0o700 });
+    const text = await invoke(process.execPath, [self, '--probe-cli-host', root, home], { cwd: root, env: { PATH: inherited.PATH || '/usr/local/bin:/usr/bin:/bin', HOME: home, TMPDIR: home, LANG: 'en_US.UTF-8', TERM: 'xterm-256color' }, timeout: 15000, output: chunk => { output = (output + chunk).slice(-4096); } });
+    const result = JSON.parse(text.trim()); assert.equal(result.capability, 'actual-cli-host-printf'); assert.equal(result.ok, true); assert.equal(result.productionEntry, true);
+    proof.result = result; proof.ok = true; return proof;
+  } catch (error) { proof.error = { name: error.name, code: error.code ?? null, signal: error.signal ?? null }; proof.diagnostic = output.slice(-4096); throw error;
+  } finally { await mkdir(dirname(evidence), { recursive: true, mode: 0o700 }); await writeFile(evidence, JSON.stringify(proof, null, 2) + '\n', { mode: 0o600 }); }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === self && ['--probe', '--probe-cli-host'].includes(process.argv[2])) {
+  const root = resolve(process.argv[3]), home = resolve(process.argv[4]);
+  const cliHost = process.argv[2] === '--probe-cli-host', capability = cliHost ? 'actual-cli-host-printf' : 'node-pty-printf';
+  try {
+    const options = { name: 'xterm-256color', cols: 80, rows: 24, cwd: home, env: { PATH: process.env.PATH, HOME: home, TMPDIR: home, TERM: 'xterm-256color' } };
+    let term;
+    if (cliHost) {
+      const file = await confinedFile(root, join(root, 'packages/cli-host/dist/node-pty-spawn.js'));
+      const { spawnNodePty } = await import(pathToFileURL(file).href);
+      term = spawnNodePty({ command: '/bin/sh', args: ['-c', `printf '${marker}'`], ...options });
+    } else {
+      const require = createRequire(join(root, 'package.json')), pty = require('node-pty');
+      term = pty.spawn('/bin/sh', ['-c', `printf '${marker}'`], options);
+    }
     let output = '';
     await new Promise((done, reject) => {
       const timer = setTimeout(() => { term.kill(); reject(new Error('Synthetic PTY timed out.')); }, 10000);
       term.onData(data => { output += data; });
       term.onExit(({ exitCode }) => { clearTimeout(timer); if (exitCode === 0 && output === marker) done(); else reject(new Error('Synthetic PTY output/exit mismatch.')); });
     });
-    console.log(JSON.stringify({ capability: 'node-pty-printf', ok: true, exitCode: 0, exactOutput: true, modelInference: false }));
+    console.log(JSON.stringify({ capability, ok: true, exitCode: 0, exactOutput: true, productionEntry: cliHost, modelInference: false }));
   } catch (error) {
-    console.log(JSON.stringify({ capability: 'node-pty-printf', ok: false, error: { name: error.name, message: error.message.slice(0, 500) } })); process.exitCode = 1;
+    console.log(JSON.stringify({ capability, ok: false, error: { name: error.name, message: error.message.slice(0, 500) } })); process.exitCode = 1;
   }
 }
