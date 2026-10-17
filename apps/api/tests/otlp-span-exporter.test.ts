@@ -128,6 +128,36 @@ describe("OTLP span exporter", () => {
     await created.flush();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it("serializes OTLP span links and supports sequential flushes after an empty flush", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    await created.flush();
+    created.record(
+      span({
+        kind: 1,
+        links: [
+          {
+            traceId: "11111111111111111111111111111111",
+            spanId: "2222222222222222",
+            attributes: { "space.link_type": "continue_as_new" }
+          }
+        ]
+      })
+    );
+    await created.flush();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    const exported = body.resourceSpans[0].scopeSpans[0].spans[0];
+    expect(exported.kind).toBe(1);
+    expect(exported.links).toEqual([
+      {
+        traceId: "11111111111111111111111111111111",
+        spanId: "2222222222222222",
+        attributes: [{ key: "space.link_type", value: { stringValue: "continue_as_new" } }]
+      }
+    ]);
+  });
 });
 
 describe("HTTP observability with span export", () => {
