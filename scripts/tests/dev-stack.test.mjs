@@ -12,9 +12,19 @@ import { confinedFile, nativePackage, opencodeEnvironment, resolveOpenCode, veri
 import { InteractiveTerminalProof, assertBrowserTerminal } from '../dev-stack/terminal-proof.mjs';
 import { knownHelperRepair } from '../dev-stack/pty-capability.mjs';
 import { isPublicExportPath } from '../public-export.mjs';
-import { assertBrowserRunning, eventually, safeBrowserStderr, selectedBrowserDiagnostic, syntheticCookieCapability, typeTerminalFilter } from '../dev-stack/browser-proof.mjs';
+import { assertBrowserRunning, eventually, proofBrowserArguments, safeBrowserStderr, selectedBrowserDiagnostic, syntheticCookieCapability, typeTerminalFilter } from '../dev-stack/browser-proof.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
+test('only Darwin CI proof browsers request a mock keychain and every other browser argument stays unchanged', () => {
+  const profile = '/private/.dev-stack-proof/browser-proof';
+  const original = ['--headless=new', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'];
+  for (const platform of ['linux', 'win32', 'darwin']) for (const ci of ['false', '', 'TRUE', '1', true, null]) assert.deepEqual(proofBrowserArguments(profile, { platform, ci }), original);
+  for (const platform of ['linux', 'win32']) assert.deepEqual(proofBrowserArguments(profile, { platform, ci: 'true' }), original);
+  const permitted = proofBrowserArguments(profile, { platform: 'darwin', ci: 'true' });
+  assert.equal(permitted.filter(arg => arg === '--use-mock-keychain').length, 1);
+  assert.deepEqual(permitted.filter(arg => arg !== '--use-mock-keychain'), original);
+  assert.equal(permitted.some(arg => arg.includes('password-store')), false);
+});
 function syntheticCookieFixture({ mutate = cookie => cookie, retainAfterDelete = false } = {}) {
   let cookie; const calls = [];
   const call = async (method, params) => {

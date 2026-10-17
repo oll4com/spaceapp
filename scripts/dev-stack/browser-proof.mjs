@@ -15,8 +15,13 @@ export function assertBrowserRunning(child, startError) {
 export function safeBrowserStderr(text) {
   return String(text).replace(/wss?:\/\/[^\s"']+/gi, '[redacted websocket endpoint]').replace(/((?:token|password|secret|cookie)=)[^\s"']+/gi, '$1[redacted]').slice(-6000);
 }
-export function selectedBrowserDiagnostic({ profile, tmpdir, binaryVersion, versionError, child, startError, stderr, socket, failedCdpMethod }, phase) {
-  return { platform: process.platform, phase, profile, tmpdir, binaryVersion, versionError, exitCode: child.exitCode, signalCode: child.signalCode, startErrorCode: startError?.code ?? null, cdpSocketState: socket?.readyState ?? null, failedCdpMethod: failedCdpMethod ?? null, stderr: safeBrowserStderr(stderr) };
+export function proofBrowserArguments(profile, { platform = process.platform, ci = process.env.CI } = {}) {
+  // Only a fresh task-owned proof profile reaches this helper. Chromium documents
+  // this Mac test switch to avoid real-keychain dialogs; no owner browser changes.
+  return ['--headless=new', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', ...(platform === 'darwin' && ci === 'true' ? ['--use-mock-keychain'] : []), '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'];
+}
+export function selectedBrowserDiagnostic({ profile, tmpdir, binaryVersion, versionError, child, startError, stderr, socket, failedCdpMethod, ciMockKeychainConfigured = false }, phase) {
+  return { platform: process.platform, phase, profile, tmpdir, binaryVersion, versionError, ciMockKeychainConfigured, exitCode: child.exitCode, signalCode: child.signalCode, startErrorCode: startError?.code ?? null, cdpSocketState: socket?.readyState ?? null, failedCdpMethod: failedCdpMethod ?? null, stderr: safeBrowserStderr(stderr) };
 }
 export async function syntheticCookieCapability(call, value, diagnostic = () => null) {
   assert(typeof value === 'string' && /^[a-z0-9]{1,64}$/.test(value), 'Only the synthetic local challenge is permitted.');
@@ -61,13 +66,14 @@ async function openProofBrowser(state) {
   let binaryVersion = null, versionError = null;
   try { binaryVersion = (await execute(binary, ['--version'], { env, timeout: 10000, maxBuffer: 4096, killSignal: 'SIGKILL', encoding: 'utf8' })).stdout.trim().slice(0, 160); }
   catch (error) { versionError = { name: error.name, code: error.code ?? null, signal: error.signal ?? null }; }
-  const child = spawn(binary, ['--headless=new', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'], env });
+  const args = proofBrowserArguments(profile), ciMockKeychainConfigured = args.includes('--use-mock-keychain');
+  const child = spawn(binary, args, { stdio: ['ignore', 'ignore', 'pipe'], env });
   let startError, stderr = '';
   child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-8192); });
   child.once('error', error => { startError = error; });
   const identity = new Promise(done => { child.once('spawn', () => { void processIdentity(child.pid).then(value => done({ pid: child.pid, identity: value }), () => done(null)); }); child.once('error', () => done(null)); });
   let socket, next = 1, failedCdpMethod = null; const pending = new Map();
-  const diagnostic = phase => selectedBrowserDiagnostic({ profile, tmpdir: env.TMPDIR, binaryVersion, versionError, child, startError, stderr, socket, failedCdpMethod }, phase);
+  const diagnostic = phase => selectedBrowserDiagnostic({ profile, tmpdir: env.TMPDIR, binaryVersion, versionError, child, startError, stderr, socket, failedCdpMethod, ciMockKeychainConfigured }, phase);
   async function close() {
     if (socket?.readyState === WebSocket.OPEN) socket.close();
     const original = await identity;
@@ -87,7 +93,7 @@ async function openProofBrowser(state) {
     const { sessionId } = await send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
     const call = (method, params) => send(method, params, sessionId);
     const evaluate = async expression => { const result = await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw new Error('Browser evaluation failed.'); return result.result.value; };
-    return { call, evaluate, close, diagnostic, version: { product: version.product, protocolVersion: version.protocolVersion, binaryVersion } };
+    return { call, evaluate, close, diagnostic, version: { product: version.product, protocolVersion: version.protocolVersion, binaryVersion, ciMockKeychainConfigured } };
   } catch (error) {
     error.browserStartup = diagnostic('startup');
     await close(); throw error;

@@ -116,7 +116,7 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners and checks the exact source. Both run all 61 launcher
+and `macos-15-intel` runners and checks the exact source. Both run all 62 launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
 Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
 private-instance API regressions in the four `instance-storage`/`dev-*-storage`
@@ -153,6 +153,14 @@ loopback HttpOnly/SameSite=Lax cookie through CDP, checking its exact attributes
 and deletion readback. No URL is fetched or navigated. Failure retains its phase
 and selected pre-cleanup diagnostics; cleanup cannot replace the original error.
 This early capability does not replace normal application setup/authentication.
+Only on Darwin with CI exactly `true`, that fresh private proof-browser process
+requests Chromium's documented `--use-mock-keychain` test switch. It selects the
+in-process test keychain instead of the real macOS keychain, avoiding test dialogs.
+Linux and non-CI argument lists stay unchanged; no owner-browser setting, OS
+keychain, application authentication or other browser flag is changed. Receipts
+disclose this configuration. Earlier Mac cookie timeouts remain cause-unconfirmed;
+the exact cookie roundtrip and all actual application/TUI/lifecycle gates still
+must pass at the new source.
 The actual terminal proof uses that same bounded typing method while retaining
 every live/menu/filter check.
 Its capability state uses a short random name and refuses an existing directory;
