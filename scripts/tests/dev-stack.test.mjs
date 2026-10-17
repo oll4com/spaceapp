@@ -12,6 +12,7 @@ import { confinedFile, nativePackage, opencodeEnvironment, resolveOpenCode, veri
 import { InteractiveTerminalProof, assertBrowserTerminal } from '../dev-stack/terminal-proof.mjs';
 import { knownHelperRepair } from '../dev-stack/pty-capability.mjs';
 import { isPublicExportPath } from '../public-export.mjs';
+import { typeTerminalFilter } from '../dev-stack/browser-proof.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const pins = extractPins(await readFile(join(root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(root, 'Dockerfile'), 'utf8'));
@@ -425,4 +426,23 @@ test('known Darwin helper repair refuses any unpinned, linked, foreign, changed 
   assert.equal(knownHelperRepair(record, 123), true);
   for (const change of [{ platform: 'linux' }, { arch: 'other' }, { version: '1.1.1' }, { sha256: 'changed' }, { mode: 0o755 }, { uid: 124 }, { nlink: 2 }]) assert.equal(knownHelperRepair({ ...record, ...change }, 123), false);
   assert.equal(knownHelperRepair(record, null), false);
+});
+test('CDP typing preserves the exact long filter through serial bounded character events and propagates failure', async () => {
+  const challenge = 'spaceproof0123456789abcdef', events = [];
+  let active = false;
+  const call = async (method, params) => {
+    assert.equal(active, false, 'Input events must be awaited in order.'); active = true;
+    try {
+      assert.equal(method, 'Input.dispatchKeyEvent'); assert.equal(params.type, 'char');
+      if (params.text.length >= 4) throw new Error("Invalid 'text' parameter");
+      await new Promise(done => setTimeout(done, 1)); events.push(params.text);
+    } finally { active = false; }
+  };
+  await assert.rejects(call('Input.dispatchKeyEvent', { type: 'char', text: challenge }), /Invalid 'text'/);
+  await typeTerminalFilter(call, challenge);
+  assert.equal(events.join(''), challenge); assert.equal(events.length, challenge.length); assert(events.every(text => text.length === 1));
+  for (const text of ['bad\rinput', 'bad\ninput', '\u0010', 'UPPERCASE', '']) await assert.rejects(typeTerminalFilter(call, text), /synthetic local palette filter/);
+  let attempts = 0;
+  await assert.rejects(typeTerminalFilter(async () => { if (++attempts === 3) throw new Error('Typed transport failure'); }, challenge), /Typed transport failure/);
+  assert.equal(attempts, 3, 'A failed event must stop typing rather than mask/retry it.');
 });

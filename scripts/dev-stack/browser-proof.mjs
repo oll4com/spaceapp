@@ -7,12 +7,19 @@ import WebSocket from 'ws';
 import { delay, descendants, processIdentity, sameProcess, stopRecorded } from './processes.mjs';
 import { assertBrowserTerminal } from './terminal-proof.mjs';
 
+export async function typeTerminalFilter(call, text) {
+  assert(typeof text === 'string' && /^[a-z0-9]{1,64}$/.test(text), 'Only the synthetic local palette filter is permitted.');
+  // Chromium's keyboard event text has a tiny UTF-16 buffer. Await each actual
+  // character event: preserve the challenge/order without a paste or Enter.
+  for (const character of text) await call('Input.dispatchKeyEvent', { type: 'char', text: character });
+}
+
 export async function eventually(fn, label, timeout = 120000) {
   const until = Date.now() + timeout; let last;
   while (Date.now() < until) { try { const value = await fn(); if (value) return value; } catch (error) { if (error.fatal) throw error; last = error; } await delay(400); }
   throw new Error(`${label} did not succeed${last ? ` (${last.message})` : ''}.`);
 }
-export async function browserProof({ state, origin, cookie, artifacts, paneId }) {
+async function openProofBrowser(state) {
   const binary = process.env.SPACE_DEV_BROWSER || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : '/usr/bin/google-chrome');
   if (!existsSync(binary)) throw new Error('Hosted Chrome is missing. Set SPACE_DEV_BROWSER to an existing reviewed browser; no hidden download/fallback.');
   const profile = join(state, 'browser-proof'); await mkdir(profile, { mode: 0o700 });
@@ -35,10 +42,43 @@ export async function browserProof({ state, origin, cookie, artifacts, paneId })
       const id = next++, timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP ${method} timed out.`)); }, 30000);
       pending.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
+    const version = await send('Browser.getVersion');
     const target = await send('Target.createTarget', { url: 'about:blank' });
     const { sessionId } = await send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
     const call = (method, params) => send(method, params, sessionId);
     const evaluate = async expression => { const result = await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw new Error('Browser evaluation failed.'); return result.result.value; };
+    return { call, evaluate, close, version: { product: version.product, protocolVersion: version.protocolVersion } };
+  } catch (error) { await close(); throw error; }
+}
+export async function browserKeyboardCapability({ state, artifacts, challenge }) {
+  const proof = { source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, challengeLength: challenge.length, baseline: null, perCharacter: null, ok: false };
+  let browser;
+  try {
+    browser = await openProofBrowser(state);
+    const { call, evaluate } = browser; proof.browser = browser.version;
+    // Task-owned about:blank only; no account, external page, app session or model.
+    await call('Page.enable');
+    await eventually(() => evaluate('Boolean(document.body)'), 'Synthetic blank-page readiness', 10000);
+    await evaluate('document.body.innerHTML = "<textarea id=filter></textarea>"; document.getElementById("filter").focus()');
+    try {
+      await call('Input.dispatchKeyEvent', { type: 'char', text: challenge });
+      proof.baseline = { rejected: false, deliveredExactText: await evaluate(`document.getElementById('filter').value === ${JSON.stringify(challenge)}`) };
+    } catch (error) {
+      if (!/Invalid ['"]text['"] parameter/.test(error.message)) throw error;
+      proof.baseline = { rejected: true, error: 'Invalid text parameter', deliveredNoText: await evaluate('document.getElementById("filter").value === ""') };
+      assert.equal(proof.baseline.deliveredNoText, true);
+    }
+    await evaluate('document.getElementById("filter").value = ""; document.getElementById("filter").focus()');
+    await typeTerminalFilter(call, challenge);
+    assert.equal(await evaluate(`document.getElementById('filter').value === ${JSON.stringify(challenge)}`), true, 'Actual Chrome must receive every serial character in exact order.');
+    proof.perCharacter = { eventCount: challenge.length, maxUtf16UnitsPerEvent: 1, deliveredExactText: true, enterOrPasteSent: false };
+    proof.ok = true; return proof;
+  } catch (error) { proof.error = { name: error.name, message: error.message.slice(0, 300) }; throw error;
+  } finally { await mkdir(artifacts, { recursive: true }); await writeFile(join(artifacts, 'early-browser-keyboard-capability.json'), JSON.stringify(proof, null, 2) + '\n', { mode: 0o600 }); await browser?.close(); }
+}
+export async function browserProof({ state, origin, cookie, artifacts, paneId }) {
+  const { call, evaluate, close } = await openProofBrowser(state);
+  try {
     await call('Page.enable'); await call('Network.enable');
     const index = cookie.indexOf('=');
     assert(index > 0); await call('Network.setCookie', { url: origin, name: cookie.slice(0, index), value: cookie.slice(index + 1), httpOnly: true, sameSite: 'Lax' });
@@ -53,7 +93,7 @@ export async function browserProof({ state, origin, cookie, artifacts, paneId })
     const key = async (name, text) => {
       assertBrowserTerminal(await terminalState(), paneId);
       assert.equal(await evaluate(`(() => { const input = ${paneExpression}?.querySelector('.xterm-helper-textarea'); input?.focus(); return document.activeElement === input; })()`), true, 'Keyboard must target the tested terminal.');
-      if (text) await call('Input.dispatchKeyEvent', { type: 'char', text });
+      if (text) await typeTerminalFilter(call, text);
       else {
         const params = name === 'Ctrl+P' ? { key: 'p', code: 'KeyP', windowsVirtualKeyCode: 80, modifiers: 2 } : { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 };
         await call('Input.dispatchKeyEvent', { type: 'keyDown', ...params }); await call('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
