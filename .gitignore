@@ -29,6 +29,7 @@ apps/web/dist/downloads/*.apk
 agent-skills/**/__pycache__/
 
 # Live/deploy-adjacent runtime state. Do not delete with blanket git clean.
+.dev-stack/
 secrets/
 backups/
 bin/

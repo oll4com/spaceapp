@@ -60,3 +60,164 @@ jobs:
       - name: Pack launcher candidate
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm run pack:dry-run -w run-spaceapp
+
+  dev-stack:
+    name: Contributor dev stack from source
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+
+      - name: Run dev:stack, verify owner setup and OpenCode CLI pane, then reset
+        run: |
+          LOG_FILE="$RUNNER_TEMP/dev-stack.log"
+          npm run dev:stack < /dev/null > "$LOG_FILE" 2>&1 &
+          STACK_PID=$!
+
+          cleanup() {
+            npm run dev:stack -- reset >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for i in $(seq 1 180); do
+            if grep -q "SpaceApp contributor dev stack is READY" "$LOG_FILE" 2>/dev/null; then
+              break
+            fi
+            if ! kill -0 "$STACK_PID" 2>/dev/null; then
+              cat "$LOG_FILE" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if ! grep -q "SpaceApp contributor dev stack is READY" "$LOG_FILE"; then
+            cat "$LOG_FILE" >&2
+            exit 1
+          fi
+
+          node --input-type=module - "$LOG_FILE" << 'EOF'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          import WebSocket from "ws";
+
+          const logText = readFileSync(process.argv[2], "utf8");
+          const urlMatch = logText.match(/^URL:\s*(http:\/\/127\.0\.0\.1:\d+)\s*$/m);
+          const tokenMatch = logText.match(/^Owner setup token:\s*([0-9a-f]+)\s*$/m);
+          assert.ok(urlMatch?.[1], "Expected URL in dev:stack output");
+          assert.ok(tokenMatch?.[1], "Expected owner setup token in dev:stack output");
+          const baseUrl = urlMatch[1];
+          const setupToken = tokenMatch[1];
+
+          const readyRes = await fetch(`${baseUrl}/readyz`);
+          assert.equal(readyRes.status, 200);
+          const readyBody = await readyRes.json();
+          assert.equal(readyBody.ok, true);
+          assert.equal(readyBody.dependencies?.database, "RUNNING");
+          assert.equal(readyBody.dependencies?.worker, "RUNNING");
+          assert.equal(readyBody.dependencies?.cliHost, "RUNNING");
+          assert.equal(readyBody.dependencies?.temporal, "enabled");
+
+          const claimRes = await fetch(`${baseUrl}/api/setup/claim`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              token: setupToken,
+              email: "owner@example.com",
+              password: "correct-horse-battery-staple"
+            })
+          });
+          const claimBody = await claimRes.json();
+          assert.equal(claimRes.status, 200, `setup/claim failed: ${JSON.stringify(claimBody)}`);
+          const cookie = (claimRes.headers.getSetCookie?.()[0] ?? claimRes.headers.get("set-cookie") ?? "").split(";")[0];
+          assert.match(cookie, /^space_session=/);
+          const starterRoomId = claimBody.starterRoomId;
+          assert.ok(starterRoomId, "Expected starterRoomId from setup/claim");
+
+          const csrfRes = await fetch(`${baseUrl}/api/auth/csrf`, { headers: { cookie } });
+          assert.equal(csrfRes.status, 200);
+          const { csrfToken, headerName } = await csrfRes.json();
+          const authHeaders = {
+            cookie,
+            "content-type": "application/json",
+            [headerName]: csrfToken
+          };
+
+          const finishRes = await fetch(`${baseUrl}/api/setup/finish`, {
+            method: "POST",
+            headers: authHeaders,
+            body: JSON.stringify({})
+          });
+          const finishText = await finishRes.text();
+          assert.equal(finishRes.status, 200, `setup/finish failed: ${finishText}`);
+
+          const panesRes = await fetch(`${baseUrl}/api/panes?roomId=${encodeURIComponent(starterRoomId)}`, {
+            headers: { cookie }
+          });
+          assert.equal(panesRes.status, 200);
+          const { data: panes } = await panesRes.json();
+          const openCodePane = panes.find((p) => p.terminalRuntimeId === "cli:opencode") ?? panes[0];
+          assert.ok(openCodePane?.id, "Expected OpenCode pane in Getting Started room");
+
+          const sessionRes = await fetch(`${baseUrl}/api/panes/${encodeURIComponent(openCodePane.id)}/cli/session`, {
+            method: "POST",
+            headers: authHeaders,
+            body: JSON.stringify({ runtimeId: "cli:opencode" })
+          });
+          const sessionCreated = await sessionRes.json();
+          assert.equal(sessionRes.status, 200, `cli/session create failed: ${JSON.stringify(sessionCreated)}`);
+          const { sessionId, token: wsToken } = sessionCreated.websocket;
+
+          const wsUrl = `${baseUrl.replace(/^http/, "ws")}/api/panes/${encodeURIComponent(openCodePane.id)}/cli/terminal?sessionId=${encodeURIComponent(sessionId)}&token=${encodeURIComponent(wsToken)}`;
+          await new Promise((resolveWs, rejectWs) => {
+            const ws = new WebSocket(wsUrl, { headers: { cookie } });
+            const timer = setTimeout(() => {
+              ws.close();
+              rejectWs(new Error("Timed out waiting for CLI terminal WebSocket attach"));
+            }, 20_000);
+            ws.on("message", (raw) => {
+              const msg = JSON.parse(String(raw));
+              if (msg.type === "ready" || msg.type === "output" || (msg.type === "status" && msg.session?.status === "RUNNING")) {
+                clearTimeout(timer);
+                ws.close();
+                resolveWs();
+              }
+            });
+            ws.on("error", (err) => {
+              clearTimeout(timer);
+              rejectWs(err);
+            });
+          });
+
+          let paneRunning = false;
+          for (let attempt = 0; attempt < 25; attempt += 1) {
+            const pollRes = await fetch(`${baseUrl}/api/panes/${encodeURIComponent(openCodePane.id)}/cli/session`, {
+              headers: { cookie }
+            });
+            const pollBody = await pollRes.json();
+            if (pollBody?.session?.status === "RUNNING") {
+              paneRunning = true;
+              break;
+            }
+            await new Promise((r) => setTimeout(r, 400));
+          }
+          assert.equal(paneRunning, true, "Expected OpenCode CLI pane session to be RUNNING");
+          EOF
+
+          npm run dev:stack -- reset
+          trap - EXIT
+
+          test ! -d .dev-stack
+          test -z "$(docker ps -aq --filter label=com.docker.compose.project=spaceapp-dev-stack)"
+          test -z "$(docker volume ls -q --filter label=com.docker.compose.project=spaceapp-dev-stack)"
+          ! kill -0 "$STACK_PID" 2>/dev/null
+

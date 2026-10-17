@@ -18,6 +18,9 @@ test("CI creates and validates only the sanitized public candidate", async () =>
   assert.match(ci, /npm run check/);
   assert.match(ci, /npm run build/);
   assert.match(ci, /npm run pack:dry-run -w run-spaceapp/);
+  assert.match(ci, /dev-stack:/);
+  assert.match(ci, /npm run dev:stack < \/dev\/null/);
+  assert.match(ci, /npm run dev:stack -- reset/);
   assert.doesNotMatch(ci, /npm test -w @space\/(?:api|web)/);
   assert.doesNotMatch(ci, /name: Full repository suite/);
   assert.doesNotMatch(ci, /\n\s*run: npm test\s*$/m);
