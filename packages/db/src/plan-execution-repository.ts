@@ -1,3 +1,4 @@
+import { rollbackKeepingError } from "./rollback.js";
 import {
   managedPlanExecutionSchema,
   type ManagedPlanExecution,
@@ -40,20 +41,21 @@ export class PostgresPlanExecutionRepository implements PlanExecutionRepository 
     work: (client: PgClientLike) => Promise<T>,
   ): Promise<T> {
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     try {
       await client.query("BEGIN");
       const result = await work(client);
       await client.query("COMMIT");
       return result;
     } catch (error) {
-      await client.query("ROLLBACK");
+      rollbackFailed = await rollbackKeepingError(client);
       if ((error as { code?: string }).code === "23505")
         throw new PlanExecutionConflictError(
           "An active execution already owns this pane or plan.",
         );
       throw error;
     } finally {
-      client.release?.();
+      client.release?.(rollbackFailed || undefined);
     }
   }
   private async project(client: PgClientLike, record: ManagedPlanExecution): Promise<void> {

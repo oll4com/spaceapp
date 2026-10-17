@@ -2,6 +2,10 @@ export interface LiveSessionStats {
   sessionActive: boolean;
   sessionStartedAt?: number;
   sessionDurationSec: number;
+  /** From the start of a connection to the first ready (active or listening) status. */
+  connectMs?: number;
+  /** From the end of the user's last utterance to the first spoken reply. */
+  lastReplyMs?: number;
 
   // Actual payload dispatched to OpenAI API
   model: string;

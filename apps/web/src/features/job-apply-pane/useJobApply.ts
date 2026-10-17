@@ -50,6 +50,21 @@ export function todayCounts(applications: JobApplication[], paneQueue?: JobAppli
   return counts;
 }
 
+/**
+ * The posting a handoff is about: the one its reason names (company, then role). Several agents can work at once,
+ * so the run's current posting or any posting in progress is shown only when the reason names its company.
+ */
+export function handoffPostingFor(reason: string, applications: JobApplication[], current?: JobApplication | null): JobApplication | null {
+  const text = reason.toLowerCase();
+  const named = [...(current ? [current] : []), ...applications].filter((application) => {
+    const company = application.company.trim().toLowerCase();
+    return company.length >= 2 && text.includes(company);
+  });
+  return named.find((application) => text.includes(application.role.trim().toLowerCase()))
+    ?? named.find((application) => application.status === "FILLING" || application.status === "NEEDS_USER")
+    ?? named[0] ?? null;
+}
+
 /** Closed jobs of the run over everything it will touch; null while idle. */
 export function runProgress(view: JobApplyRunView | null): { done: number; total: number } | null {
   if (!view?.run || (view.status !== "RUNNING" && view.status !== "PAUSED")) return null;

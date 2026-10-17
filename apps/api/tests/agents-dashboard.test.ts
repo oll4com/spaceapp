@@ -82,6 +82,8 @@ describe("dashboard native activity", () => {
     expect(claudeDashboardActivity({ busy: false, status: "shell", tasks: [] }).status).toBe("working");
     expect(claudeDashboardActivity({ busy: false, status: "waiting", waitingFor: "plan approval", tasks: [] }).reason).toBe("Plan approval");
     expect(claudeDashboardActivity({ busy: false, status: "waiting", waitingFor: "anything else", tasks: [] }).reason).toBe("Needs input");
+    expect(claudeDashboardActivity({ busy: false, status: "idle", apiError: true, tasks: [] })).toMatchObject({ status: "waiting", reason: "API error" });
+    expect(claudeDashboardActivity({ busy: true, status: "busy", apiError: true, tasks: [] }).status).toBe("working");
   });
   it("keeps the rest of the room when one CLI cannot be read", async () => {
     const store = new InMemorySpaceStore();

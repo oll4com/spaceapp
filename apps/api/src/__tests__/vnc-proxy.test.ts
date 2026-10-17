@@ -1,15 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AddressInfo, Socket } from "node:net";
-import { assertSafeVncTarget, pipeVncStream, vncPresets } from "../vnc-proxy.js";
+import { assertSafeVncTarget, pipeVncStream } from "../vnc-proxy.js";
+import { getApiConfig } from "../config.js";
 
 describe("vnc-proxy", () => {
-  it("exposes the expected presets", () => {
-    expect(vncPresets.map((preset) => preset.id)).toEqual(["vm207-desktop", "vm219-windows", "dc01-windows", "databricks-form"]);
-    for (const preset of vncPresets) {
-      expect(preset.host).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
-      expect(preset.port).toBeGreaterThan(0);
-      expect(preset.port).toBeLessThanOrEqual(65535);
-    }
+  it("lists no presets unless SPACE_VNC_PRESETS names them", () => {
+    expect(getApiConfig({}).vncPresets).toEqual([]);
+    const preset = { id: "desk", name: "Desk", host: "10.20.0.5", port: 5900 };
+    expect(getApiConfig({ SPACE_VNC_PRESETS: JSON.stringify([preset]) }).vncPresets).toEqual([preset]);
+    expect(() => getApiConfig({ SPACE_VNC_PRESETS: '[{"id":"x"}]' })).toThrow();
   });
 
   it("accepts private IPv4 targets", () => {

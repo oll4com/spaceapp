@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { cpus } from "node:os";
@@ -26,15 +26,26 @@ import {
   type SystemAnalyticsRange,
   type SystemAnalyticsResourceEntity,
   type SystemAnalyticsResourcesResponse,
-  type SystemAnalyticsSeries
+  type SystemAnalyticsSeries,
+  type SystemAnalyticsTokenAccount,
+  type SystemAnalyticsTokenRoute,
+  type SystemAnalyticsTokenTotals
 } from "@space/contracts";
 import type {
   SystemAnalyticsModelEventRecord,
   SystemAnalyticsRepository,
   SystemAnalyticsResourceBucket,
-  SystemAnalyticsResourceSample
+  SystemAnalyticsResourceSample,
+  SystemAnalyticsRoute
 } from "@space/db";
+import { costUsd, geminiCostUsd } from "@space/gateway";
 import type { SpaceStore } from "@space/runtime";
+import {
+  GEMINI_GATEWAY_CURSOR, ingestClaudeTranscripts, ingestGatewayLogs, parseCodexHistory, readClaudeTokenUsage, readCodexHistory,
+  type ClaudeSessionOwner, type TokenUsageSourceOptions
+} from "./token-usage-sources.js";
+
+export { tokenUsageSourcesFor } from "./token-usage-sources.js";
 import { calculateCpuUsagePercent, parseMeminfo, parseProcStat, type ProcCpuSample } from "./host-stats.js";
 import { cliRuntimeDescriptors, findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
 import { readOpenCodeNativeSessionId } from "./opencode-native-session.js";
@@ -145,6 +156,7 @@ interface CodexNativeTurn {
   tokensIn: number;
   tokensOut: number;
   tokensReasoning: number;
+  tokensCacheRead: number;
   ttftMs: number | null;
   durationMs: number | null;
 }
@@ -184,7 +196,17 @@ export interface SystemAnalyticsServiceOptions {
   /** Hermes Agent home holding state.db and sessions/ (tests pass an owned root). */
   hermesHome?: string;
   coreCount?: number;
+  /** Space Gateway requests and Claude Code transcripts for the token usage page; absent in tests that do not need them. */
+  tokenUsage?: Pick<TokenUsageSourceOptions, "gateway" | "gatewayAccounts"> & Partial<Pick<TokenUsageSourceOptions, "readClaude" | "readCodexHistory">>;
 }
+
+/** Calls a CLI made through Space Gateway name this provider (Codex `model_provider`, OpenCode/Hermes/OMP configs). */
+const GATEWAY_PROVIDER_ID = "space-gateway";
+const claudeIngestIntervalMs = 60_000;
+// Each new version reads the month of CLI files once more (v2: GPT-6.1 Sol got a price; v3: large Codex rollouts keep
+// their session_meta, so their gateway route is known; v4: every Codex thread of the month, not the latest 200; v5: whole
+// rollouts, not their last 8 MB; v6: rollouts space-api cannot read, through the helper).
+const ROUTE_REREAD_CURSOR = "route-reread-v6";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -242,10 +264,11 @@ function eventTimestampMs(record: Record<string, unknown>, payload: Record<strin
 
 export function parseCodexNativeTurns(content: string, sinceMs: number, nowMs: number): CodexNativeTurn[] {
   const modelByTurn = new Map<string, { providerId: string; modelId: string }>();
-  const turns = new Map<string, Omit<CodexNativeTurn, "turnId" | "providerId" | "modelId">>();
-  const tokensByTurn = new Map<string, Pick<CodexNativeTurn, "tokensIn" | "tokensOut" | "tokensReasoning">>();
+  const turns = new Map<string, Omit<CodexNativeTurn, "turnId" | "providerId" | "modelId" | "tokensCacheRead">>();
+  const tokensByTurn = new Map<string, Pick<CodexNativeTurn, "tokensIn" | "tokensOut" | "tokensReasoning" | "tokensCacheRead">>();
   let currentTurn: string | null = null;
   let currentProviderId = "codex";
+  let previousTotal: number | null = null;
 
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -301,13 +324,18 @@ export function parseCodexNativeTurns(content: string, sinceMs: number, nowMs: n
       const usage = isRecord(payload.info.last_token_usage) ? payload.info.last_token_usage : null;
       const turnId = stringValue(payload.turn_id) || currentTurn;
       if (!usage || !turnId) continue;
-      const next = {
-        tokensIn: nonNegativeInt(usage.input_tokens),
-        tokensOut: nonNegativeInt(usage.output_tokens),
-        tokensReasoning: nonNegativeInt(usage.reasoning_output_tokens)
-      };
-      const prior = tokensByTurn.get(turnId);
-      if (!prior || prior.tokensIn + prior.tokensOut < next.tokensIn + next.tokensOut) tokensByTurn.set(turnId, next);
+      // last_token_usage is one model call and a turn makes many; Codex repeats a count (same running total) on a
+      // rate-limit refresh, which adds nothing.
+      const total = isRecord(payload.info.total_token_usage) ? numberValue(payload.info.total_token_usage.total_tokens) : null;
+      if (total !== null && total === previousTotal) continue;
+      previousTotal = total;
+      const prior = tokensByTurn.get(turnId) ?? { tokensIn: 0, tokensOut: 0, tokensReasoning: 0, tokensCacheRead: 0 };
+      tokensByTurn.set(turnId, {
+        tokensIn: prior.tokensIn + nonNegativeInt(usage.input_tokens),
+        tokensOut: prior.tokensOut + nonNegativeInt(usage.output_tokens),
+        tokensReasoning: prior.tokensReasoning + nonNegativeInt(usage.reasoning_output_tokens),
+        tokensCacheRead: prior.tokensCacheRead + nonNegativeInt(usage.cached_input_tokens)
+      });
       continue;
     }
     if (eventType !== "task_complete" && eventType !== "turn_aborted") continue;
@@ -336,7 +364,7 @@ export function parseCodexNativeTurns(content: string, sinceMs: number, nowMs: n
     const identity = modelByTurn.get(turnId);
     const endedAtMs = turn.endedAt ? Date.parse(turn.endedAt) : null;
     if (!identity || (turn.status !== "RUNNING" && (endedAtMs === null || endedAtMs < sinceMs))) return [];
-    const tokens = tokensByTurn.get(turnId) ?? { tokensIn: 0, tokensOut: 0, tokensReasoning: 0 };
+    const tokens = tokensByTurn.get(turnId) ?? { tokensIn: 0, tokensOut: 0, tokensReasoning: 0, tokensCacheRead: 0 };
     return [{ turnId, ...identity, ...turn, ...tokens }];
   });
 }
@@ -467,6 +495,93 @@ function defaultModelForProvider(providerId: string | null | undefined): string 
   }
 }
 
+/**
+ * A CLI turn read again after its pane closed is stored under the global key next to its old pane-keyed copy: count
+ * each turn once, preferring the copy that knows its route, then the fullest. Gateway requests and Claude messages have
+ * unique keys.
+ */
+function onePerTurn(events: SystemAnalyticsModelEventRecord[]): SystemAnalyticsModelEventRecord[] {
+  const kept: SystemAnalyticsModelEventRecord[] = [];
+  const byTurn = new Map<string, SystemAnalyticsModelEventRecord>();
+  for (const event of events) {
+    if (event.source === "gateway" || event.source === "claude" || event.source === "session" || !event.turnId) { kept.push(event); continue; }
+    const key = `${event.source}\u0000${event.runtimeId}\u0000${event.turnId}`;
+    const other = byTurn.get(key);
+    const total = (candidate: SystemAnalyticsModelEventRecord) => (candidate.tokensIn ?? 0) + (candidate.tokensOut ?? 0);
+    if (!other || (!other.route && event.route) || (Boolean(other.route) === Boolean(event.route) && total(event) > total(other))) byTurn.set(key, event);
+  }
+  return [...kept, ...byTurn.values()];
+}
+
+function tokenRouteOf(event: SystemAnalyticsModelEventRecord): "GATEWAY" | "DIRECT" {
+  return event.source === "gateway" ? "GATEWAY" : "DIRECT";
+}
+
+const roundUsd = (value: number) => Math.round(value * 1e6) / 1e6;
+
+function tokenTotals(events: SystemAnalyticsModelEventRecord[]): SystemAnalyticsTokenTotals {
+  const totals = { tokensIn: 0, tokensOut: 0, tokensReasoning: 0, costUsd: 0, unpricedTurns: 0 };
+  for (const event of events) {
+    totals.tokensIn += event.tokensIn ?? 0;
+    totals.tokensOut += event.tokensOut ?? 0;
+    totals.tokensReasoning += event.tokensReasoning ?? 0;
+    if (event.costUsd !== null && event.costUsd !== undefined) totals.costUsd += event.costUsd;
+    else if ((event.tokensIn ?? 0) + (event.tokensOut ?? 0) > 0) totals.unpricedTurns += Math.max(event.turnCount, 1);
+  }
+  return { ...totals, costUsd: roundUsd(totals.costUsd) };
+}
+
+const timelineBucketSeconds: Record<SystemAnalyticsRange, number> = { "10m": 60, "1h": 300, "24h": 3600, "7d": 21_600, "30d": 86_400 };
+
+/** Tokens per bucket (by the time each call ended), oldest first, empty buckets included so the bars stay evenly spaced. */
+function tokenTimeline(events: SystemAnalyticsModelEventRecord[], range: SystemAnalyticsRange, sinceMs: number, nowMs: number) {
+  const bucketSeconds = timelineBucketSeconds[range];
+  const bucketMs = bucketSeconds * 1000;
+  const firstMs = Math.floor(sinceMs / bucketMs) * bucketMs;
+  const count = Math.min(Math.max(Math.ceil((nowMs - firstMs) / bucketMs), 1), 60);
+  const startMs = Math.floor(nowMs / bucketMs) * bucketMs - (count - 1) * bucketMs;
+  const points = Array.from({ length: count }, (_, index) => ({
+    at: new Date(startMs + index * bucketMs).toISOString(), gatewayTokens: 0, directTokens: 0, costUsd: 0
+  }));
+  for (const event of events) {
+    const index = Math.floor((Date.parse(event.endedAt ?? event.startedAt) - startMs) / bucketMs);
+    const point = points[index];
+    if (!point) continue;
+    const tokens = (event.tokensIn ?? 0) + (event.tokensOut ?? 0);
+    if (tokenRouteOf(event) === "GATEWAY") point.gatewayTokens += tokens;
+    else point.directTokens += tokens;
+    point.costUsd += event.costUsd ?? 0;
+  }
+  return { bucketSeconds, points: points.map((point) => ({ ...point, costUsd: roundUsd(point.costUsd) })) };
+}
+
+/** Input counts include cache reads and writes (as the gateway stores it); what is left is fresh input. */
+function tokenComposition(events: SystemAnalyticsModelEventRecord[]) {
+  const totals = { cacheRead: 0, cacheWrite: 0, freshInput: 0, output: 0 };
+  for (const event of events) {
+    const read = event.tokensCacheRead ?? 0;
+    const write = event.tokensCacheWrite ?? 0;
+    totals.cacheRead += read;
+    totals.cacheWrite += write;
+    totals.freshInput += Math.max((event.tokensIn ?? 0) - read - write, 0);
+    totals.output += event.tokensOut ?? 0;
+  }
+  return totals;
+}
+
+/** A gateway account's label, or "<profile> · <CLI> (direct)" for `cli:<runtime>/<profile>` keys. */
+function tokenAccountLabel(accountKey: string, gatewayLabels: Map<string, string>): string {
+  const gateway = gatewayLabels.get(accountKey);
+  if (gateway) return gateway.slice(0, 200);
+  if (accountKey === "space-gateway") return "Space Gateway (no account)";
+  const separator = accountKey.indexOf("/");
+  if (!accountKey.startsWith("cli:") || separator < 0) return accountKey.startsWith("gw_account:") ? "Removed gateway account" : accountKey.slice(0, 200);
+  const runtimeId = accountKey.slice(0, separator);
+  const cli = findCliRuntimeDescriptor(runtimeId)?.agentName ?? runtimeId.slice(4);
+  const profile = accountKey.slice(separator + 1);
+  return (profile === "unattributed" ? `${cli} · account unknown (direct)` : `${profile} · ${cli} (direct)`).slice(0, 200);
+}
+
 function modelKey(providerId: string, modelId: string): string {
   return `${providerId}\u0000${modelId}`;
 }
@@ -496,6 +611,12 @@ export class SystemAnalyticsService {
   private previousCpu: ProcCpuSample | null = null;
   private lastModelIngestAt = 0;
   private disposed = false;
+  private readonly tokenSources: TokenUsageSourceOptions | null;
+  private tokenSourcesInFlight: Promise<void> | null = null;
+  private lastClaudeIngestAt = 0;
+  /** When Gemini started going through the gateway (its first Antigravity request); later Gemini sessions are counted there. */
+  private geminiGatewaySince: string | null = null;
+  private readonly claudeSessionOwners = new Map<string, ClaudeSessionOwner | null>();
 
   constructor(options: SystemAnalyticsServiceOptions) {
     this.repository = options.repository;
@@ -509,6 +630,15 @@ export class SystemAnalyticsService {
     this.codexHome = options.codexHome ?? "/var/lib/spaceapp-user/.codex";
     this.hermesHome = options.hermesHome ?? "/var/lib/spaceapp-user/.hermes";
     this.coreCount = Math.max(Math.trunc(options.coreCount ?? cpus().length), 1);
+    this.tokenSources = options.tokenUsage ? {
+      repository: this.repository,
+      gateway: options.tokenUsage.gateway,
+      gatewayAccounts: options.tokenUsage.gatewayAccounts,
+      readClaude: options.tokenUsage.readClaude ?? readClaudeTokenUsage,
+      readCodexHistory: options.tokenUsage.readCodexHistory ?? readCodexHistory,
+      claudeSessionOwner: (claudeSessionId, at) => this.claudeSessionOwner(claudeSessionId, at),
+      now: this.now
+    } : null;
   }
 
   async sample(): Promise<void> {
@@ -785,10 +915,15 @@ export class SystemAnalyticsService {
   async ingestModels(windowMinutes = 65): Promise<void> {
     if (this.disposed) return;
     if (this.modelIngestInFlight) return this.modelIngestInFlight;
+    if (this.tokenSources && this.geminiGatewaySince === null) {
+      this.geminiGatewaySince = await this.repository.getCursor(GEMINI_GATEWAY_CURSOR).catch(() => null);
+    }
     const request = this.collectModels(windowMinutes, false).then(async (events) => {
       if (this.disposed) return;
       if (events.length > 0) await this.repository.upsertModelEvents(events);
       this.lastModelIngestAt = this.now().getTime();
+      // Not awaited: the first Claude import reads a month of transcripts and must not hold the page.
+      void this.ingestTokenSources();
     });
     this.modelIngestInFlight = request;
     try {
@@ -845,11 +980,15 @@ export class SystemAnalyticsService {
     tokensIn: number;
     tokensOut: number;
     tokensReasoning: number;
+    tokensCacheRead?: number;
     ttftMs: number | null;
     durationMs: number | null;
+    /** Set when the reader knows; otherwise a `space-gateway` provider means the call went through the gateway. */
+    route?: SystemAnalyticsRoute;
   }): SystemAnalyticsModelEventRecord {
     const descriptor = findCliRuntimeDescriptor(input.runtimeId);
-    const rawProviderId = input.providerId && input.providerId !== "unknown" ? input.providerId : (descriptor?.providerId || "unknown");
+    const viaGateway = input.route === "GATEWAY" || input.providerId === GATEWAY_PROVIDER_ID;
+    const rawProviderId = !viaGateway && input.providerId && input.providerId !== "unknown" ? input.providerId : (descriptor?.providerId || "unknown");
     const providerId = normalizeProviderId(rawProviderId);
     const rawModelId = input.modelId;
     const modelId = (!rawModelId || rawModelId === "unknown" || rawModelId.trim() === "")
@@ -877,7 +1016,13 @@ export class SystemAnalyticsService {
       tokensReasoning: Math.max(input.tokensReasoning, 0),
       ttftMs: input.ttftMs,
       durationMs: input.durationMs,
-      updatedAt: this.now().toISOString()
+      updatedAt: this.now().toISOString(),
+      route: viaGateway ? "GATEWAY" : "DIRECT",
+      accountKey: viaGateway ? null : `${input.runtimeId}/${rawProviderId}`,
+      costUsd: viaGateway ? null : providerId === "google"
+        ? geminiCostUsd({ promptTokens: Math.max(input.tokensIn, 0), cachedTokens: 0, outputTokens: Math.max(input.tokensOut, 0), thoughtsTokens: 0 }, modelId)
+        : costUsd({ inputTokens: Math.max(input.tokensIn, 0), cachedInputTokens: input.tokensCacheRead ?? 0, outputTokens: Math.max(input.tokensOut, 0) }, modelId, null),
+      tokensCacheRead: input.tokensCacheRead ?? null
     };
   }
 
@@ -901,7 +1046,7 @@ export class SystemAnalyticsService {
       [...sessionByThreadId.keys()],
       this.codexHome
     );
-    const recentRollouts = await resolveRecentCodexRollouts(sinceMs, this.codexHome).catch(() => []);
+    const recentRollouts = await resolveRecentCodexRollouts(sinceMs, this.codexHome, includeHistory ? 5000 : 200).catch(() => []);
     for (const { threadId, rolloutPath } of recentRollouts) {
       if (!threadPaths.has(threadId)) threadPaths.set(threadId, rolloutPath);
     }
@@ -910,7 +1055,8 @@ export class SystemAnalyticsService {
       if (this.disposed) return events;
       const session = sessionByThreadId.get(threadId);
       try {
-        const turns = parseCodexNativeTurns(await readCodexRolloutTail(path), sinceMs, this.now().getTime());
+        // A month's re-read takes the whole rollout: long sessions hold most of their turns before the last 8 MB.
+        const turns = parseCodexNativeTurns(includeHistory ? await readFile(path, "utf8") : await readCodexRolloutTail(path), sinceMs, this.now().getTime());
         for (const turn of turns) {
           const startedAt = turn.startedAt;
           const endedAt = turn.endedAt && turn.endedAt >= startedAt ? turn.endedAt : startedAt;
@@ -921,7 +1067,6 @@ export class SystemAnalyticsService {
             paneId: session?.paneId ?? null,
             sessionId: session?.sessionId ?? null,
             ...turn,
-            providerId: "codex",
             startedAt,
             endedAt
           }));
@@ -1046,6 +1191,7 @@ export class SystemAnalyticsService {
               const durationMs = firstUserTime && lastModelTime && lastModelTime >= firstUserTime ? lastModelTime - firstUserTime : null;
 
               events.push(this.nativeEvent({
+                route: this.geminiGatewaySince !== null && startedAt >= this.geminiGatewaySince ? "GATEWAY" : undefined,
                 source: "codex",
                 runtimeId: "cli:gemini",
                 providerId: "google",
@@ -1305,16 +1451,82 @@ export class SystemAnalyticsService {
     });
   }
 
+  /** Space Gateway requests every ingest, Claude Code messages at most once a minute; one import at a time. */
+  async ingestTokenSources(): Promise<void> {
+    const sources = this.tokenSources;
+    if (!sources || this.disposed) return;
+    if (this.tokenSourcesInFlight) return this.tokenSourcesInFlight;
+    const request = (async () => {
+      await ingestGatewayLogs(sources).catch(() => 0);
+      if (this.now().getTime() - this.lastClaudeIngestAt < claudeIngestIntervalMs) return;
+      this.lastClaudeIngestAt = this.now().getTime();
+      await ingestClaudeTranscripts(sources).catch(() => 0);
+    })();
+    this.tokenSourcesInFlight = request;
+    try {
+      await request;
+    } finally {
+      if (this.tokenSourcesInFlight === request) this.tokenSourcesInFlight = null;
+    }
+  }
+
+  /** The Space pane session a Claude Code session ran in (through its CLI task revision), cached per session. */
+  private async claudeSessionOwner(claudeSessionId: string, at: string): Promise<ClaudeSessionOwner | null> {
+    if (this.claudeSessionOwners.has(claudeSessionId)) return this.claudeSessionOwners.get(claudeSessionId) ?? null;
+    const revision = await Promise.resolve(this.store.getCliTaskRevisionByNativeRef("cli:claude", claudeSessionId)).catch(() => null);
+    let owner: ClaudeSessionOwner | null = null;
+    if (revision) {
+      const candidates = (await this.loadSessionHistory()).sessions
+        .filter((session) => session.cliTaskRevisionId === revision.revisionId)
+        .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+      const session = candidates.find((candidate) => candidate.startedAt <= at) ?? candidates.at(-1)
+        ?? (revision.latestSpaceSessionId
+          ? await Promise.resolve(this.store.getPaneCliSession(revision.latestSpaceSessionId)).catch(() => null) ?? undefined
+          : undefined);
+      // A pane without a chosen profile runs on the wrapper's default profile, `main`.
+      if (session) owner = { profileId: session.accountProfileId ?? "main", paneSessionId: session.sessionId, roomId: session.roomId, paneId: session.paneId };
+    }
+    if (this.claudeSessionOwners.size > 10_000) this.claudeSessionOwners.clear();
+    this.claudeSessionOwners.set(claudeSessionId, owner);
+    return owner;
+  }
+
   async backfill(): Promise<void> {
     if (this.disposed) return;
     if (this.backfillInFlight) return this.backfillInFlight;
-    const request = this.runBackfill();
+    const request = this.runBackfill().then(() => this.rereadRoutes()).catch(() => undefined);
     this.backfillInFlight = request;
     try {
       await request;
     } finally {
       if (this.backfillInFlight === request) this.backfillInFlight = null;
     }
+  }
+
+  /**
+   * Once: reads the last 31 days of CLI files again so stored events get their route, account and API value (and
+   * Codex its full per-turn counts). Upserts by event key; an event whose file is gone keeps its values.
+   */
+  private async rereadRoutes(): Promise<void> {
+    if (!this.tokenSources || this.disposed || await this.repository.getCursor(ROUTE_REREAD_CURSOR)) return;
+    await this.ingestTokenSources();
+    this.geminiGatewaySince = await this.repository.getCursor(GEMINI_GATEWAY_CURSOR).catch(() => null);
+    const events = await this.collectModels(31 * 24 * 60, true);
+    // Rollouts space-api cannot read (owner-only since 2026-10-12) come through the helper, counts only.
+    const history = await this.tokenSources.readCodexHistory().catch(() => null);
+    if (history !== null) {
+      for (const turn of parseCodexHistory(history)) {
+        events.push(this.nativeEvent({
+          source: "codex", runtimeId: "cli:codex", providerId: turn.provider, modelId: turn.model, roomId: null, paneId: null,
+          sessionId: null, turnId: turn.turnId, status: turn.status, startedAt: turn.startedAt, endedAt: turn.endedAt,
+          tokensIn: turn.tokensIn, tokensOut: turn.tokensOut, tokensReasoning: turn.tokensReasoning, tokensCacheRead: turn.tokensCacheRead,
+          ttftMs: null, durationMs: Math.max(Date.parse(turn.endedAt) - Date.parse(turn.startedAt), 0)
+        }));
+      }
+    }
+    if (this.disposed) return;
+    for (let index = 0; index < events.length; index += 500) await this.repository.upsertModelEvents(events.slice(index, index + 500));
+    await this.repository.setCursor(ROUTE_REREAD_CURSOR, this.now().toISOString());
   }
 
   private async runBackfill(): Promise<void> {
@@ -1363,7 +1575,7 @@ export class SystemAnalyticsService {
     return this.repository.getBackfill();
   }
 
-  async models(range: SystemAnalyticsRange): Promise<SystemAnalyticsModelsResponse> {
+  async models(range: SystemAnalyticsRange, route: SystemAnalyticsTokenRoute = "all"): Promise<SystemAnalyticsModelsResponse> {
     const current = await this.ensureFresh();
     if (this.now().getTime() - this.lastModelIngestAt >= modelIngestIntervalMs) await this.ingestModels();
     const [events, backfill] = await Promise.all([
@@ -1371,9 +1583,9 @@ export class SystemAnalyticsService {
       this.backfillStatus()
     ]);
     const currentSessionIds = new Set(current.sessions.map((identity) => identity.live.cliSessionId));
-    const visibleEvents = events.filter(
+    const visibleEvents = onePerTurn(events.filter(
       (event) => event.providerId !== "root" && event.runtimeId !== "cli:root" && (event.status !== "RUNNING" || Boolean(event.sessionId && currentSessionIds.has(event.sessionId)))
-    );
+    ));
     const nativeIdentityBySession = new Map<string, { providerId: string; modelId: string }>();
     for (const event of visibleEvents) {
       if (!event.sessionId || !currentSessionIds.has(event.sessionId) || event.coverage !== "NATIVE") continue;
@@ -1381,8 +1593,13 @@ export class SystemAnalyticsService {
         nativeIdentityBySession.set(event.sessionId, { providerId: event.providerId, modelId: event.modelId });
       }
     }
+    // Each token once: the gateway's copy of a gateway call, the transcript's copy of a direct one (events stored
+    // before routes existed have none and count as before).
+    const countedEvents = visibleEvents.filter((event) => event.source === "gateway" || event.route !== "GATEWAY");
+    const routedEvents = route === "all" ? countedEvents
+      : countedEvents.filter((event) => tokenRouteOf(event) === (route === "gateway" ? "GATEWAY" : "DIRECT"));
     const activeSessionsByModel = new Map<string, Set<string>>();
-    for (const identity of current.sessions) {
+    for (const identity of route === "gateway" ? [] : current.sessions) {
       if (identity.live.runtimeId === "cli:root") continue;
       const native = nativeIdentityBySession.get(identity.live.cliSessionId);
       const descriptor = findCliRuntimeDescriptor(identity.live.runtimeId);
@@ -1418,8 +1635,11 @@ export class SystemAnalyticsService {
       durationCount: number;
       firstActivityAt: string | null;
       lastActivityAt: string | null;
+      costUsd: number;
+      hasCost: boolean;
+      unpricedTurns: number;
     }>();
-    for (const event of visibleEvents) {
+    for (const event of routedEvents) {
       const descriptor = findCliRuntimeDescriptor(event.runtimeId);
       const rawProviderId = event.providerId && event.providerId !== "unknown" ? event.providerId : (descriptor?.providerId || "unknown");
       const providerId = normalizeProviderId(rawProviderId);
@@ -1447,9 +1667,18 @@ export class SystemAnalyticsService {
         durationSum: 0,
         durationCount: 0,
         firstActivityAt: null,
-        lastActivityAt: null
+        lastActivityAt: null,
+        costUsd: 0,
+        hasCost: false,
+        unpricedTurns: 0
       };
       entry.runtimeIds.add(event.runtimeId);
+      if (event.costUsd !== null && event.costUsd !== undefined) {
+        entry.costUsd += event.costUsd;
+        entry.hasCost = true;
+      } else if ((event.tokensIn ?? 0) + (event.tokensOut ?? 0) > 0) {
+        entry.unpricedTurns += Math.max(event.turnCount, 1);
+      }
       if (coverageRank(event.coverage) > coverageRank(entry.coverage)) entry.coverage = event.coverage;
       const count = Math.max(event.turnCount, 0);
       if (event.status === "RUNNING" && (!event.sessionId || currentSessionIds.has(event.sessionId))) entry.activeTurns += count;
@@ -1509,7 +1738,10 @@ export class SystemAnalyticsService {
         durationSum: 0,
         durationCount: 0,
         firstActivityAt: identity?.live.startedAt ?? null,
-        lastActivityAt: current.sampledAt
+        lastActivityAt: current.sampledAt,
+        costUsd: 0,
+        hasCost: false,
+        unpricedTurns: 0
       });
     }
 
@@ -1534,7 +1766,9 @@ export class SystemAnalyticsService {
           ? Math.round((entry.tokensOut / (entry.durationSum / 1000)) * 10) / 10
           : null,
         firstActivityAt: entry.firstActivityAt,
-        lastActivityAt: entry.lastActivityAt
+        lastActivityAt: entry.lastActivityAt,
+        costUsd: entry.hasCost ? roundUsd(entry.costUsd) : null,
+        unpricedTurns: entry.unpricedTurns
       };
     }).sort((left, right) =>
       right.activeSessions - left.activeSessions ||
@@ -1552,9 +1786,11 @@ export class SystemAnalyticsService {
         completedTurns: 0,
         tokensIn: 0,
         tokensOut: 0,
-        lastActivityAt: null
+        lastActivityAt: null,
+        costUsd: null
       };
       provider.modelCount += 1;
+      if (model.costUsd !== null && model.costUsd !== undefined) provider.costUsd = roundUsd((provider.costUsd ?? 0) + model.costUsd);
       provider.activeSessions += model.activeSessions;
       provider.completedTurns += model.completedTurns;
       if (model.tokensIn !== null) provider.tokensIn = (provider.tokensIn ?? 0) + model.tokensIn;
@@ -1569,8 +1805,49 @@ export class SystemAnalyticsService {
       sampledAt: current.sampledAt,
       providers: [...providerMap.values()].sort((left, right) => right.activeSessions - left.activeSessions || right.completedTurns - left.completedTurns),
       models,
-      backfill
+      backfill,
+      route,
+      routes: {
+        gateway: tokenTotals(countedEvents.filter((event) => tokenRouteOf(event) === "GATEWAY")),
+        direct: tokenTotals(countedEvents.filter((event) => tokenRouteOf(event) === "DIRECT"))
+      },
+      accounts: await this.tokenAccounts(routedEvents),
+      timeline: tokenTimeline(routedEvents, range, Date.parse(this.since(range)), this.now().getTime()),
+      composition: tokenComposition(routedEvents)
     });
+  }
+
+  /** Tokens per account (gateway account or direct CLI profile), largest first, with each account's models. */
+  private async tokenAccounts(events: SystemAnalyticsModelEventRecord[]): Promise<SystemAnalyticsTokenAccount[]> {
+    const providerNames: Record<string, string> = { CLAUDE: "Claude", ANTHROPIC_API: "Claude API", CODEX: "Codex", ANTIGRAVITY: "Google",
+      GOOGLE_AI: "Google AI", OPENAI_API: "OpenAI API", COPILOT: "Copilot", DEEPSEEK: "DeepSeek", OPENROUTER: "OpenRouter", KIMI: "Kimi", QWEN: "Qwen" };
+    const labels = new Map((await this.tokenSources?.gatewayAccounts().catch(() => []) ?? [])
+      .map((account) => [account.id, `${account.label} · ${providerNames[account.provider] ?? account.provider}`]));
+    const accounts = new Map<string, { route: "GATEWAY" | "DIRECT"; events: SystemAnalyticsModelEventRecord[] }>();
+    for (const event of events) {
+      if ((event.tokensIn ?? 0) + (event.tokensOut ?? 0) === 0) continue;
+      const route = tokenRouteOf(event);
+      const key = event.accountKey ?? (route === "GATEWAY" ? "space-gateway" : `${event.runtimeId}/${event.providerId}`);
+      const entry = accounts.get(`${route}\u0000${key}`) ?? { route, events: [] };
+      entry.events.push(event);
+      accounts.set(`${route}\u0000${key}`, entry);
+    }
+    return [...accounts.entries()].map(([id, entry]) => {
+      const accountKey = id.slice(id.indexOf("\u0000") + 1);
+      const models = new Map<string, { providerId: string; modelId: string; tokensIn: number; tokensOut: number; costUsd: number }>();
+      for (const event of entry.events) {
+        const model = models.get(modelKey(event.providerId, event.modelId))
+          ?? { providerId: event.providerId, modelId: event.modelId, tokensIn: 0, tokensOut: 0, costUsd: 0 };
+        model.tokensIn += event.tokensIn ?? 0;
+        model.tokensOut += event.tokensOut ?? 0;
+        model.costUsd = roundUsd(model.costUsd + (event.costUsd ?? 0));
+        models.set(modelKey(event.providerId, event.modelId), model);
+      }
+      return {
+        accountKey, label: tokenAccountLabel(accountKey, labels), route: entry.route, ...tokenTotals(entry.events),
+        models: [...models.values()].sort((left, right) => right.tokensIn + right.tokensOut - left.tokensIn - left.tokensOut).slice(0, 50)
+      };
+    }).sort((left, right) => right.tokensIn + right.tokensOut - left.tokensIn - left.tokensOut).slice(0, 200);
   }
 
   private downsampleSeries(series: SystemAnalyticsSeries): SystemAnalyticsSeries {

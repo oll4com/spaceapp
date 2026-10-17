@@ -91,6 +91,92 @@ function forwardableCloseCode(code: number): number {
   return 1011;
 }
 
+/** Ids at or above this value are the proxy's own commands; their replies never reach the client. */
+export const cliBrowserCdpProxyIdBase = 1_000_000_000;
+const pageTargetCommands = new Set(["Target.attachToTarget", "Target.activateTarget", "Target.closeTarget"]);
+const targetInfoEvents = new Set(["Target.targetCreated", "Target.targetInfoChanged"]);
+const targetIdEvents = new Set(["Target.targetDestroyed", "Target.targetCrashed"]);
+
+function rawText(data: RawData): string {
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
+  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
+  return Buffer.from(data).toString("utf8");
+}
+
+/**
+ * Panes on one browser account share one Chrome, and a raw CDP connection sees every tab of it. This filter
+ * hides the pages that the store lists for the other panes of that Chrome: their targets leave Target.getTargets
+ * and the browser-level Target events, commands aimed at them are answered with an error, and when the client
+ * auto-attaches to one the proxy resumes it (it may wait for the debugger) and detaches, so a hidden page is never
+ * left paused. Pages no pane owns yet are passed through as before.
+ */
+export function createCliBrowserCdpTargetFilter(sendToChrome: (message: Record<string, unknown>) => void) {
+  let foreign = new Set<string>();
+  let nextId = cliBrowserCdpProxyIdBase;
+  const getTargetsIds = new Set<number>();
+  const hiddenSessions = new Set<string>();
+  const isForeignPage = (info: unknown): boolean => {
+    const target = info as { type?: unknown; targetId?: unknown } | null;
+    return target?.type === "page" && typeof target.targetId === "string" && foreign.has(target.targetId);
+  };
+  const proxyCommand = (method: string, params: Record<string, unknown>, sessionId?: string) =>
+    sendToChrome({ id: ++nextId, method, params, ...(sessionId ? { sessionId } : {}) });
+  return {
+    setForeignPages(pageIds: Iterable<string>) { foreign = new Set(pageIds); },
+    /** A client command: forward (returns the frame) or answer it locally (returns a reply for the client). */
+    fromClient(text: string): { forward: true } | { forward: false; reply: string } {
+      let message: { id?: unknown; method?: unknown; params?: { targetId?: unknown }; sessionId?: unknown };
+      try { message = JSON.parse(text); } catch { return { forward: true }; }
+      if (message.sessionId !== undefined || typeof message.method !== "string") return { forward: true };
+      if (message.method === "Target.getTargets" && typeof message.id === "number") getTargetsIds.add(message.id);
+      if (pageTargetCommands.has(message.method) && typeof message.params?.targetId === "string" && foreign.has(message.params.targetId)) {
+        return { forward: false, reply: JSON.stringify({ id: message.id, error: { code: -32000, message: "This page belongs to another pane of this browser; open tabs through Space (space_browser_tab_create)." } }) };
+      }
+      return { forward: true };
+    },
+    /** A Chrome frame: the text to send to the client, or null to drop it. */
+    fromChrome(text: string): string | null {
+      const head = text.slice(0, 32);
+      const reply = /^\{"id":(\d+)/.exec(head);
+      if (reply) {
+        const id = Number(reply[1]);
+        if (id > cliBrowserCdpProxyIdBase) return null;
+        if (!getTargetsIds.delete(id)) return text;
+        try {
+          const message = JSON.parse(text) as { result?: { targetInfos?: unknown[] } };
+          if (!Array.isArray(message.result?.targetInfos)) return text;
+          return JSON.stringify({ ...message, result: { ...message.result, targetInfos: message.result.targetInfos.filter((info) => !isForeignPage(info)) } });
+        } catch { return text; }
+      }
+      if (!head.startsWith('{"method":"Target.')) return text;
+      let event: { method: string; params?: Record<string, unknown>; sessionId?: unknown };
+      try { event = JSON.parse(text); } catch { return text; }
+      if (event.sessionId !== undefined) return text;
+      const params = event.params ?? {};
+      if (event.method === "Target.attachedToTarget" && isForeignPage(params.targetInfo) && typeof params.sessionId === "string") {
+        hiddenSessions.add(params.sessionId);
+        if (params.waitingForDebugger === true) proxyCommand("Runtime.runIfWaitingForDebugger", {}, params.sessionId);
+        proxyCommand("Target.detachFromTarget", { sessionId: params.sessionId });
+        return null;
+      }
+      if (event.method === "Target.detachedFromTarget" && typeof params.sessionId === "string" && hiddenSessions.delete(params.sessionId)) return null;
+      if (targetInfoEvents.has(event.method) && isForeignPage(params.targetInfo)) return null;
+      if (targetIdEvents.has(event.method) && typeof params.targetId === "string" && foreign.has(params.targetId)) return null;
+      return text;
+    }
+  };
+}
+
+/** Page ids the store lists for the other panes whose browser session uses the same Chrome profile. */
+async function foreignPageIds(store: SpaceStore, resolution: CliBrowserCdpResolution): Promise<string[]> {
+  const sessions = await store.listActivePaneBrowserSessions();
+  // A pane's tab in another Google account lives in that account's Chrome, which may be this pane's own.
+  return sessions
+    .filter((session) => session.paneId !== resolution.pane.id)
+    .flatMap((session) => (session.pages ?? []).filter((page) => session.profilePath === resolution.session.profilePath || page.account))
+    .map((page) => page.pageId);
+}
+
 export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): CliBrowserCdpProxy {
   const readEndpoint = options.readEndpoint ?? ((session: PaneBrowserSession) => readChromeAutomationEndpoint(session.profilePath));
   const connections = new Map<string, Set<WsSocket>>();
@@ -100,7 +186,7 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
       return { refused: "BRIDGE_DISABLED", reason: "Space CLI browser bridge is disabled." };
     }
     const token = headerString(request.headers[cliBrowserBridgeTokenHeader]) ?? queryString(request.query, "token");
-    const claims = verifyCliBrowserBridgeToken(options.config, token);
+    let claims = verifyCliBrowserBridgeToken(options.config, token);
     if (!claims) return { refused: "TOKEN_INVALID", reason: "CLI browser bridge token is missing, invalid, or expired." };
     if (isT3AgentSessionId(claims.cliSessionId)) {
       // A T3 Code agent acts for its open T3 pane (t3code/agent-tokens.ts).
@@ -109,9 +195,11 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
       }
     } else {
       const cliSession = await options.store.getPaneCliSession(claims.cliSessionId);
-      if (!cliSession || cliSession.roomId !== claims.roomId || cliSession.paneId !== claims.paneId) {
+      // A moved pane keeps its running CLI session; the token then acts in the pane's current room.
+      if (!cliSession || cliSession.paneId !== claims.paneId) {
         return { refused: "TOKEN_INVALID", reason: "CLI session for browser bridge token was not found." };
       }
+      claims = { ...claims, roomId: cliSession.roomId };
       if (!cliSession.isActive || cliSession.status === "EXITED" || cliSession.status === "ERROR" || cliSession.purpose !== "NORMAL") {
         return { refused: "BROWSER_NOT_RUNNING", reason: "CLI session for browser bridge token is not active." };
       }
@@ -162,8 +250,22 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
     const pending: Array<{ data: RawData; isBinary: boolean }> = [];
     let upstream: WsClient | null = null;
     let clientClosed = false;
+    const filter = createCliBrowserCdpTargetFilter((message) => {
+      if (upstream && upstream.readyState === upstream.OPEN) upstream.send(JSON.stringify(message));
+    });
+    const forward = (data: RawData, isBinary: boolean) => {
+      if (!upstream) return;
+      if (!isBinary) {
+        const decision = filter.fromClient(rawText(data));
+        if (!decision.forward) {
+          if (socket.readyState === socket.OPEN) socket.send(decision.reply);
+          return;
+        }
+      }
+      upstream.send(data, { binary: isBinary });
+    };
     socket.on("message", (data, isBinary) => {
-      if (upstream && upstream.readyState === upstream.OPEN) upstream.send(data, { binary: isBinary });
+      if (upstream && upstream.readyState === upstream.OPEN) forward(data, isBinary);
       else pending.push({ data, isBinary });
     });
     socket.once("close", () => { clientClosed = true; });
@@ -184,6 +286,11 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
       else if (!endpoint) socket.close(cliBrowserCdpCloseCodes.ENDPOINT_UNAVAILABLE, "Browser automation endpoint is unavailable.");
       return;
     }
+    const refreshForeign = () => foreignPageIds(options.store, resolution).then((ids) => filter.setForeignPages(ids), () => undefined);
+    await refreshForeign();
+    // Panes open and close tabs while the automation runs; the hidden set follows the store.
+    const refresher = setInterval(() => { void refreshForeign(); }, 3_000);
+    refresher.unref();
     // CDP responses (snapshots, screenshots) are large; the client side keeps the server limit.
     const chrome = new WsClient(endpoint, { perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
     upstream = chrome;
@@ -191,16 +298,20 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
     const finish = (code: number, reason: string) => {
       if (settled) return;
       settled = true;
+      clearInterval(refresher);
       untrack();
       if (socket.readyState === socket.OPEN || socket.readyState === socket.CONNECTING) socket.close(forwardableCloseCode(code), reason.slice(0, 120));
       if (chrome.readyState === chrome.OPEN) chrome.close(1000, "space proxy closed");
       else if (chrome.readyState === chrome.CONNECTING) chrome.terminate();
     };
     chrome.once("open", () => {
-      for (const message of pending.splice(0)) chrome.send(message.data, { binary: message.isBinary });
+      for (const message of pending.splice(0)) forward(message.data, message.isBinary);
     });
     chrome.on("message", (data, isBinary) => {
-      if (socket.readyState === socket.OPEN) socket.send(data, { binary: isBinary });
+      if (socket.readyState !== socket.OPEN) return;
+      if (isBinary) { socket.send(data, { binary: true }); return; }
+      const text = filter.fromChrome(rawText(data));
+      if (text !== null) socket.send(text);
     });
     chrome.on("close", (code, reason) => finish(code, reason.toString("utf8") || "browser closed the automation connection"));
     chrome.on("error", (error) => {

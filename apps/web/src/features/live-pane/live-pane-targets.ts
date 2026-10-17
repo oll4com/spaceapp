@@ -20,11 +20,13 @@ export function resolveLivePaneTargets(
 ): string[] {
   const explicitNames = args.paneNames !== undefined || args.paneName !== undefined;
   const explicit = args.paneIds !== undefined || args.paneId !== undefined || explicitNames;
+  const ofType = (p: any) => !args.cliType || String(p.terminalRuntimeId || p.runtimeId || p.mode).toLowerCase().replace(/^cli:/, "") === String(args.cliType).toLowerCase().replace(/^cli:/, "");
   if (args.targetGroup !== undefined && args.targetGroup !== "lastOpened") throw Error("Unknown targetGroup.");
-  if (args.targetGroup && (explicit || args.all || args.cliType || args.filter || args.unusedOnly))
-    throw Error("targetGroup cannot be combined with another selection.");
+  if (args.targetGroup && (args.all || args.filter || args.unusedOnly))
+    throw Error("targetGroup cannot be combined with all, filter or unusedOnly. Nothing was submitted.");
   let ids: unknown[];
-  if (args.targetGroup) {
+  // Pane names or IDs the user said win over a group the model added alongside them.
+  if (args.targetGroup && !explicit) {
     const key = keyFor(roomId, scope);
     if (!key) throw Error("The authenticated Live session identity is unavailable.");
     let remembered = groups.get(key);
@@ -32,7 +34,10 @@ export function resolveLivePaneTargets(
       try { const stored: unknown = JSON.parse(sessionStorage.getItem(key) ?? "null"); if (Array.isArray(stored)) remembered = stored; } catch {}
     }
     if (!remembered?.length) throw Error("No last-opened pane group exists for this room and Live session.");
-    ids = remembered;
+    // Panes of the group closed since it was opened drop out and cliType only narrows; the group never widens.
+    ids = remembered.filter(id => panes.some(p => p.id === id && !p.isClosed && ofType(p)));
+    if (!ids.length) throw Error(args.cliType ? "No open pane of the last-opened group has that CLI type. Nothing was submitted."
+      : "Every pane of the last-opened group is closed. Nothing was submitted.");
   } else if (explicit) {
     if (args.paneIds !== undefined && !Array.isArray(args.paneIds)) throw Error("paneIds must be an array.");
     if (args.paneNames !== undefined && !Array.isArray(args.paneNames)) throw Error("paneNames must be an array.");
@@ -64,8 +69,7 @@ export function resolveLivePaneTargets(
   } else {
     if (!args.all && !args.cliType) throw Error("Select paneIds, targetGroup, cliType, or all:true.");
     ids = panes.filter(p => !p.isClosed && p.id !== livePaneId && p.mode !== "LIVE" &&
-      (!promptOnly || p.mode === "TERMINAL" || p.mode === "CHAT") &&
-      (!args.cliType || String(p.terminalRuntimeId || p.runtimeId || p.mode).toLowerCase().replace(/^cli:/, "") === String(args.cliType).toLowerCase().replace(/^cli:/, "")))
+      (!promptOnly || p.mode === "TERMINAL" || p.mode === "CHAT") && ofType(p))
       .map(p => p.id);
   }
   const invalid = ids.filter(id => typeof id !== "string" || !id.trim() || !panes.some(p =>

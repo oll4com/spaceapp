@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
-  mailComposeInputSchema, mailCopilotEventListQuerySchema, mailCopilotMemoryCreateSchema, mailCopilotMemoryQuerySchema, mailCopilotMemoryUpdateSchema, mailCopilotPaneMetadataSchema,
+  mailActionListQuerySchema, mailComposeInputSchema, mailCopilotEventListQuerySchema, mailCopilotFixRequestSchema, mailCopilotMemoryCreateSchema, mailCopilotMemoryQuerySchema, mailCopilotMemoryUpdateSchema, mailCopilotPaneMetadataSchema,
   mailCopilotQuestionAnswerSchema, mailCopilotReviewDecideSchema, mailCopilotViewInputSchema, mailRuleDecisionSchema, mailRuleProposalSchema, mailRuleStatusSchema, mailThreadActionSchema, mailThreadsQuerySchema, resolveMailCopilotPaneMetadata,
   type MailCopilotRun, type Pane
 } from "@space/contracts";
@@ -150,6 +150,26 @@ export function registerMailCopilotRoutes(app: FastifyInstance, service: MailCop
     const decided = await service.decideReview(owner, pane, input);
     await deps.audit(request, "mail_copilot.review.decide", input.reviewId, { decision: input.decision, sent: Boolean(decided.sent) });
     return decided;
+  });
+  // "Send to AI": the operator hands one conversation to the copilot to check and fix what it needs.
+  app.post("/api/panes/:id/mail-copilot/fix", routeOptions, async (request) => {
+    const pane = await paneOf(request);
+    const owner = await deps.authenticatedOwner(request);
+    const input = parseBody(mailCopilotFixRequestSchema, request.body ?? {});
+    const result = await service.requestFix(owner, pane, input);
+    await deps.audit(request, "mail_copilot.fix.request", input.threadId, { account: input.account, paneId: pane.id, runStarted: result.runStarted });
+    return result;
+  });
+  // Every mail sent to the copilot to fix, with the copilot's questions, the operator's answers and the result (Activity → Sent to AI).
+  app.get("/api/panes/:id/mail-copilot/fix-requests", routeOptions, async (request) => {
+    const pane = await paneOf(request);
+    return { requests: await service.fixRequests(await deps.authenticatedOwner(request), pane) };
+  });
+  // The action log itself, newest first (Activity → Your actions): what Space recorded of the operator's and the copilot's actions.
+  app.get("/api/mail-copilot/actions", routeOptions, async (request) => {
+    const query = parseQuery(mailActionListQuerySchema, request.query ?? {});
+    const { owner, pane } = await ownerAndPane(request, query.paneId);
+    return { actions: await service.actionLog(owner, pane, { account: query.account, source: query.source, limit: query.limit }) };
   });
   // What the copilot learned from the operator's own actions, per account; Forget drops a sender's rows and learned rules.
   app.get("/api/mail-copilot/habits", routeOptions, async (request) => {

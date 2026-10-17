@@ -170,6 +170,19 @@ test("workspace registration accepts only existing absolute directories and avoi
   await assert.rejects(() => addWorkspace(config, "relative/project"), /absolute/i);
 });
 
+test("workspaces with the same folder name get distinct container paths, and dot names are not used", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-workspace-"));
+  await mkdir(join(root, "a", "project"), { recursive: true });
+  await mkdir(join(root, "b", "project"), { recursive: true });
+  await mkdir(join(root, "-..-"));
+  const config = await addWorkspace(await addWorkspace(createDefaultConfig({ version: "0.1.0" }), join(root, "a", "project")), join(root, "b", "project"));
+  const [first, second] = config.workspaces;
+  assert.equal(first.containerPath, "/workspaces/project");
+  assert.equal(second.containerPath, `/workspaces/${second.id}`);
+  const dots = await addWorkspace(createDefaultConfig({ version: "0.1.0" }), join(root, "-..-"));
+  assert.equal(dots.workspaces[0].containerPath, "/workspaces/workspace");
+});
+
 test("saved config rejects secret-shaped fields", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-secret-config-"));
   const config = {

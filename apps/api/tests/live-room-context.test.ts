@@ -22,6 +22,14 @@ describe("authenticated Live room context projection", () => {
       expect(result.activitySummary).toMatchObject({ running: 0, unknown: 16 });
     } finally { vi.useRealTimers(); }
   });
+  it("reports a pane as working when the Agents Dashboard does, though its last task completed (sub-agents)", async () => {
+    // Live told the operator that Dana was idle while she ran six sub-agents (2026-10-15).
+    const inspect = async () => ({ state: "RUNNING", tasks: [{ taskId: "main", title: "Plan", status: "COMPLETED", timing: { source: "NATIVE" } }] });
+    const panes = [pane, { ...pane, id: "pane:two" }, { ...pane, id: "pane:three" }];
+    const context = await buildLiveRoomContext({ room, panes, inspect, dashboard: { "pane:one": "working", "pane:two": "waiting" } });
+    expect(context.panes.map(p => p.activity)).toEqual(["RUNNING", "WAITING_FOR_INPUT", "IDLE"]);
+    expect(context.activitySummary).toMatchObject({ running: 1, waitingForInput: 1, idle: 1 });
+  });
   it("counts native running work separately from live sessions, idle agents and browser panes", async () => {
     const fixtures = [
       { state: "RUNNING", tasks: [{ taskId: "active", title: "Work", status: "RUNNING", timing: { source: "NATIVE" } }] },

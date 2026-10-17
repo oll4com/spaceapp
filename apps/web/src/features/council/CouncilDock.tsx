@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import type { CouncilModel, CouncilModelsResponse, CouncilRun, CouncilRunSummary } from "@space/contracts";
-import { COUNCIL_MAX_MEMBERS, COUNCIL_MAX_REVIEW_ROUNDS, COUNCIL_MAX_TOTAL_ROUNDS } from "@space/contracts";
+import type { CouncilModel, CouncilModelsResponse, CouncilRun, CouncilRunSummary, NotificationSettings } from "@space/contracts";
+import { COUNCIL_MAX_MEMBERS, COUNCIL_MAX_REVIEW_ROUNDS, COUNCIL_MAX_TOTAL_ROUNDS, notificationChannelEnabled, resolveNotificationSettings } from "@space/contracts";
 import { api } from "../../api.js";
 import { ChatCopyButton, ChatMarkdown, safeChatUrl } from "../agent-pane/ChatMarkdown.js";
+import { notifyClipboardUpdated } from "../clipboard-dock/clipboard-events.js";
 import { DockButton, DockIconButton, DockNotice, DockState, DockToolbar, useDockConfirm } from "../dock-kit/DockKit.js";
 import { useIsDockActive } from "../docks/dock-active-context.js";
-import { ArrowLeft, CircleStop, MessageSquare, Play, RotateCcw, Send, Trash2 } from "../ui-theme/app-icons.js";
+import { desktopNotificationsEnabled, desktopNotificationsSupported, setDesktopNotifications } from "../notifications/desktop-notifications.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { ArrowLeft, CircleStop, ClipboardList, MessagesSquare, Play, RotateCcw, Send, SlidersHorizontal, Trash2 } from "../ui-theme/app-icons.js";
 import "./council.css";
 
 const POLL_MS = 2_000;
 const WORKING: readonly CouncilRun["status"][] = ["PLANNING", "RUNNING"];
+/** Working runs, and finished ones whose coordinator is writing a plan into the clipboard, are polled. */
+const isWorking = (run: CouncilRun) => WORKING.includes(run.status) || run.clipboardPlan?.status === "WRITING";
 const STEPS: Array<{ stage: CouncilRun["stage"]; label: string }> = [
   { stage: "PLAN", label: "Plan" }, { stage: "RESEARCH", label: "Research" }, { stage: "ANSWERS", label: "Answers" },
   { stage: "MERGE", label: "Merge" }, { stage: "REVIEW", label: "Review" }, { stage: "FINAL", label: "Final" }
@@ -30,6 +35,7 @@ export function CouncilDock({ canRun = false }: { canRun?: boolean }) {
   const [run, setRun] = useState<CouncilRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refreshList = useCallback(async () => {
     const [models, list] = await Promise.all([api.councilModels(), api.councilRuns()]);
@@ -49,7 +55,7 @@ export function CouncilDock({ canRun = false }: { canRun?: boolean }) {
 
   // shortcut: polling, upgrade to an SSE stream like room-agent if runs get many viewers.
   const runId = run?.id ?? null;
-  const working = run ? WORKING.includes(run.status) : false;
+  const working = run ? isWorking(run) : false;
   useEffect(() => {
     if (!isActive || !runId || !working) return;
     let cancelled = false;
@@ -59,7 +65,7 @@ export function CouncilDock({ canRun = false }: { canRun?: boolean }) {
         const next = (await api.councilRun(runId)).run;
         if (cancelled) return;
         setRun(next);
-        if (!WORKING.includes(next.status)) { void refreshList().catch(() => undefined); return; }
+        if (!isWorking(next)) { void refreshList().catch(() => undefined); return; }
       } catch (err) {
         if (!cancelled) setError(messageOf(err, "The run could not be refreshed."));
       }
@@ -68,6 +74,10 @@ export function CouncilDock({ canRun = false }: { canRun?: boolean }) {
     timer = window.setTimeout(() => void tick(), POLL_MS);
     return () => { cancelled = true; if (timer !== null) window.clearTimeout(timer); };
   }, [isActive, runId, working, refreshList]);
+
+  // An open Clipboard dock reloads once the coordinator saved a plan into it.
+  const planItemId = run?.clipboardPlan?.itemId ?? null;
+  useEffect(() => { if (planItemId) notifyClipboardUpdated(); }, [planItemId]);
 
   const act = useCallback(async (work: () => Promise<{ run: CouncilRun } | void>, fallback: string) => {
     setBusy(true);
@@ -85,7 +95,7 @@ export function CouncilDock({ canRun = false }: { canRun?: boolean }) {
   if (!canRun) {
     return (
       <section className="dock-panel council-dock" aria-label="Council">
-        <DockState kind="empty" icon={MessageSquare} title="The Council is available to administrators and operators" />
+        <DockState kind="empty" icon={MessagesSquare} title="The Council is available to administrators and operators" />
       </section>
     );
   }
@@ -98,7 +108,10 @@ export function CouncilDock({ canRun = false }: { canRun?: boolean }) {
         summary={run ? <>Coordinated by <strong>{nameOf(models, run.coordinatorModelId)}</strong> · {STATUS_LABELS[run.status]}</> : "Several models answer, review each other and agree on a Top 3."}
       >
         {run ? <DockIconButton label="New question" icon={ArrowLeft} onClick={() => { setRun(null); setError(null); void refreshList().catch(() => undefined); }} /> : null}
+        <DockIconButton label="Council settings" icon={SlidersHorizontal} aria-expanded={settingsOpen} aria-controls="council-settings"
+          className={settingsOpen ? "is-active" : undefined} onClick={() => setSettingsOpen((open) => !open)} />
       </DockToolbar>
+      {settingsOpen ? <CouncilSettings /> : null}
       {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
       {run ? (
         <RunView run={run} models={models} busy={busy} act={act} confirm={confirm} />
@@ -113,6 +126,38 @@ export function CouncilDock({ canRun = false }: { canRun?: boolean }) {
       )}
       {confirmDialog}
     </section>
+  );
+}
+
+/** Like the Room Agent's settings: the Council's notifications (Settings → Notifications → Per source) and this device's desktop alerts. */
+function CouncilSettings() {
+  const [settings, setSettings] = useState<NotificationSettings | null>(null);
+  const [desktop, setDesktop] = useState(desktopNotificationsEnabled);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api.userSettings().then((user) => { if (!cancelled) setSettings(resolveNotificationSettings(user.notifications)); })
+      .catch((err: unknown) => { if (!cancelled) setError(messageOf(err, "Notification settings could not be loaded.")); });
+    return () => { cancelled = true; };
+  }, []);
+  const notify = (on: boolean) => {
+    if (!settings) return;
+    // On follows your channels (desktop, Telegram); off silences the Council everywhere.
+    const next = { ...settings, perSource: { ...settings.perSource, COUNCIL: on ? { inApp: true } : { inApp: false, desktop: false, telegram: false } } };
+    setSettings(next);
+    setError(null);
+    void api.updateUserSettings({ notifications: next }).catch((err: unknown) => { setSettings(settings); setError(messageOf(err, "Notification settings could not be saved.")); });
+  };
+  return (
+    <div className="council-section council-settings" id="council-settings" role="group" aria-label="Council settings">
+      <SpaceToggle compact className="council-setting" label="Notifications" detail="Tell me when the council needs my answers or approval, and when a run finishes or fails."
+        ariaLabel="Council notifications" checked={settings ? notificationChannelEnabled(settings, "COUNCIL", "inApp") : false} disabled={!settings} onChange={notify} />
+      {desktopNotificationsSupported() ? (
+        <SpaceToggle compact className="council-setting" label="Desktop alerts" detail="Show them while Space is in the background."
+          ariaLabel="Desktop notifications" checked={desktop} onChange={(enabled) => void setDesktopNotifications(enabled).then(setDesktop)} />
+      ) : null}
+      {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
+    </div>
   );
 }
 
@@ -163,7 +208,7 @@ function HomeView({ catalog, runs, busy, onAsk, onOpen, onDelete }: {
           <ul>
             {runs.map((item) => (
               <li key={item.id}>
-                <button type="button" className="council-history-item" onClick={() => onOpen(item.id)}>
+                <button type="button" className="council-history-item" title={item.question} onClick={() => onOpen(item.id)}>
                   <span>{item.question}</span>
                   <small className={`council-status is-${item.status.toLowerCase()}`}>{STATUS_LABELS[item.status]}</small>
                 </button>
@@ -222,6 +267,7 @@ function RunView({ run, models, busy, act, confirm }: { run: CouncilRun; models:
         </div>
       ) : null}
       {run.status === "CANCELLED" ? <DockNotice tone="info">This run was cancelled.</DockNotice> : null}
+      {run.status !== "RUNNING" && run.answers.length ? <div className="council-field"><span>Models</span><MemberChips run={run} models={models} /></div> : null}
       {run.status === "COMPLETED" && run.final ? <FinalView run={run} busy={busy} act={act} /> : null}
       {run.status !== "PLANNING" && run.status !== "NEEDS_INPUT" && run.status !== "AWAITING_APPROVAL" ? <Details run={run} models={models} /> : null}
       <details className="council-section">
@@ -336,16 +382,17 @@ function PlanReview({ run, models, busy, act, onCancel }: { run: CouncilRun; mod
 
 function MemberChips({ run, models }: { run: CouncilRun; models: CouncilModel[] }) {
   const round = run.rounds.at(-1);
-  const reviewing = run.stage === "REVIEW" && round;
+  const running = run.status === "RUNNING";
+  const reviewing = running && run.stage === "REVIEW" && round;
   const items = reviewing
     ? round.reviews.map((review) => ({ id: review.modelId, status: review.status, error: review.error }))
     : run.answers.map((answer) => ({ id: answer.modelId, status: answer.status, error: answer.error }));
   if (!items.length) return null;
   return (
-    <ul className="council-members" aria-label={reviewing ? "Reviews" : "Answers"}>
+    <ul className="council-members" aria-label={reviewing ? "Reviews" : running ? "Answers" : "Models"}>
       {items.map((item) => (
         <li key={item.id} className={`is-${item.status.toLowerCase()}`} title={item.error ?? undefined}>
-          {nameOf(models, item.id)} <small>{item.status === "PENDING" ? (reviewing ? "reviewing" : "answering") : item.status === "DONE" ? "done" : "failed"}</small>
+          {nameOf(models, item.id)} {running || item.status !== "DONE" ? <small>{item.status === "PENDING" ? (reviewing ? "reviewing" : "answering") : item.status === "DONE" ? "done" : "failed"}</small> : null}
         </li>
       ))}
     </ul>
@@ -354,6 +401,8 @@ function MemberChips({ run, models }: { run: CouncilRun; models: CouncilModel[] 
 
 function FinalView({ run, busy, act }: { run: CouncilRun; busy: boolean; act: Act }) {
   const final = run.final!;
+  const plan = run.clipboardPlan ?? null;
+  const writing = plan?.status === "WRITING";
   return (
     <div className="council-section council-final">
       <ol className="council-top" aria-label="Top 3">
@@ -374,9 +423,13 @@ function FinalView({ run, busy, act }: { run: CouncilRun; busy: boolean; act: Ac
       <div className="council-actions">
         <ChatCopyButton text={final.text} label="Copy" />
         {run.rounds.length < COUNCIL_MAX_TOTAL_ROUNDS ? (
-          <DockButton icon={RotateCcw} busy={busy} disabled={busy} onClick={() => void act(() => api.councilRunAction(run.id, "another-round"), "Another round could not start.")}>Another review round</DockButton>
+          <DockButton icon={RotateCcw} busy={busy} disabled={busy || writing} onClick={() => void act(() => api.councilRunAction(run.id, "another-round"), "Another round could not start.")}>Another review round</DockButton>
         ) : null}
+        <DockButton icon={ClipboardList} busy={writing} disabled={busy || writing} title="The coordinator turns this answer into a step-by-step plan in your clipboard"
+          onClick={() => void act(() => api.councilRunAction(run.id, "clipboard-plan"), "The plan could not be started.")}>{writing ? "Writing the plan…" : "Create plan"}</DockButton>
       </div>
+      {plan?.status === "DONE" ? <DockNotice tone="success">Saved to your clipboard as a plan: <strong>{plan.title}</strong></DockNotice> : null}
+      {plan?.status === "FAILED" ? <DockNotice tone="error">The plan could not be written: {plan.error}</DockNotice> : null}
     </div>
   );
 }

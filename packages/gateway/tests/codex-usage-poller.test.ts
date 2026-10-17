@@ -68,4 +68,31 @@ describe("Codex usage poller", () => {
       poller.stop();
     }
   });
+
+  it("lifts a long limit early when the provider's usage shows no used-up limit, per-model limits included", async () => {
+    const nowMs = Date.parse("2030-01-10T00:00:00Z");
+    const repository = new InMemoryGatewayRepository();
+    const id = (index: number) => `gw_account:${String(index).repeat(32)}`;
+    for (const index of [1, 2]) {
+      const credentials: StoredCredentials = { accessToken: `at-${index}`, refreshToken: null, idToken: null, upstreamAccountId: `acct-${index}`, accessExpiresAtMs: null };
+      await repository.upsertAccount({ accountId: id(index), provider: "CODEX", label: `A${index}`, email: null, externalAccountId: `acct-${index}`, planType: "plus",
+        credentialsEncrypted: cipher.encrypt(JSON.stringify(credentials), id(index)), credentialsExpiresAt: null, source: "OAUTH", sourceRef: null, lastRefreshAt: null });
+      // Blocked for five days by "usage limit reached", then the provider reset the limits.
+      await repository.recordAccountState(id(index), { status: "RATE_LIMITED", statusReason: "The usage limit has been reached", blockedUntil: new Date(nowMs + 5 * 86_400_000).toISOString() });
+    }
+    const pool = new AccountPool({ provider: "CODEX", repository, cipher: () => cipher, refresher: { needsRefresh: () => false, refresh: vi.fn() }, now: () => nowMs });
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => new Response(JSON.stringify({ plan_type: "plus",
+      rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 18000 }, secondary_window: { used_percent: 0, limit_window_seconds: 604800 } },
+      additional_rate_limits: (init.headers as Record<string, string>)["chatgpt-account-id"] === "acct-2"
+        ? [{ limit_name: "GPT-5.6-Sol", metered_feature: "codex_sol", rate_limit: { secondary_window: { used_percent: 100 } } }] : [] })));
+    const poller = startCodexUsagePoller({ repository, pool, intervalMs: 60_000, fetchImpl: fetchImpl as unknown as typeof fetch });
+    try {
+      await poller.runOnce();
+    } finally {
+      poller.stop();
+    }
+    const accounts = await repository.listAccounts();
+    expect(accounts.find((account) => account.id === id(1))).toMatchObject({ status: "ACTIVE", blockedUntil: null });
+    expect(accounts.find((account) => account.id === id(2))).toMatchObject({ status: "RATE_LIMITED" });
+  });
 });

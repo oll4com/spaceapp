@@ -138,7 +138,7 @@ describe("StreamingDock", () => {
 
     // Providers start collapsed by default
     expect(screen.queryByRole("switch", { name: "Subscribers" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Toggle YouTube" }));
+    fireEvent.click(screen.getByRole("button", { name: "Expand YouTube" }));
 
     expect(screen.queryByRole("switch", { name: "Subscribers" })).toBeTruthy();
     expect((screen.getByRole("switch", { name: "Subscribers" }) as HTMLInputElement).checked).toBe(false);
@@ -153,7 +153,7 @@ describe("StreamingDock", () => {
   it("supports native drag ordering, accessible move buttons, per-tile periods, preview, and explicit save", async () => {
     const { api } = renderDock();
     await screen.findByLabelText("Streaming controls");
-    fireEvent.click(screen.getByRole("button", { name: "Toggle YouTube" }));
+    fireEvent.click(screen.getByRole("button", { name: "Expand YouTube" }));
     fireEvent.click(screen.getByRole("switch", { name: "Period views" }));
     fireEvent.click(screen.getByRole("tab", { name: "Display" }));
     const order = screen.getByRole("list", { name: "Streaming overlay tile order" });
@@ -212,7 +212,7 @@ describe("StreamingDock", () => {
     await screen.findByLabelText("Streaming controls");
     expect(screen.getByText("3/64")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Toggle YouTube" }));
+    fireEvent.click(screen.getByRole("button", { name: "Expand YouTube" }));
 
     const channelOneGroup = screen.getByRole("group", { name: "Metrics for Channel One" });
     const channelOneSelectAll = within(channelOneGroup).getByRole("button", { name: "All metrics" });
@@ -241,9 +241,9 @@ describe("StreamingDock", () => {
     renderDock();
     await screen.findByLabelText("Streaming controls");
 
-    // All provider cards start collapsed
-    const youtubeToggle = screen.getByRole("button", { name: "Toggle YouTube" });
-    const twitchToggle = screen.getByRole("button", { name: "Toggle Twitch" });
+    // All provider cards start collapsed; the chevron is the one accessible toggle per card.
+    const youtubeToggle = screen.getByRole("button", { name: "Expand YouTube" });
+    const twitchToggle = screen.getByRole("button", { name: "Expand Twitch" });
     expect(youtubeToggle.getAttribute("aria-expanded")).toBe("false");
     expect(twitchToggle.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("group", { name: "Metrics for Channel One" })).toBeNull();
@@ -251,27 +251,20 @@ describe("StreamingDock", () => {
     // Open YouTube
     fireEvent.click(youtubeToggle);
     expect(youtubeToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(youtubeToggle.getAttribute("aria-label")).toBe("Collapse YouTube");
     expect(twitchToggle.getAttribute("aria-expanded")).toBe("false");
     expect(screen.getByRole("group", { name: "Metrics for Channel One" })).toBeTruthy();
     expect(screen.getByLabelText("Capabilities for Channel One")).toBeTruthy();
-
-    // Close YouTube
-    fireEvent.click(youtubeToggle);
-    expect(youtubeToggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByRole("group", { name: "Metrics for Channel One" })).toBeNull();
-
-    // Open YouTube via the chevron button
-    const youtubeChevron = screen.getByRole("button", { name: "Expand YouTube" });
-    fireEvent.click(youtubeChevron);
-    expect(youtubeToggle.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("group", { name: "Metrics for Channel One" })).toBeTruthy();
     expect(screen.getAllByText("ON").length).toBeGreaterThanOrEqual(1);
 
-    // Close YouTube via the collapse chevron button
-    const youtubeCollapseChevron = screen.getByRole("button", { name: "Collapse YouTube" });
-    fireEvent.click(youtubeCollapseChevron);
+    // Close YouTube with the same button
+    fireEvent.click(screen.getByRole("button", { name: "Collapse YouTube" }));
     expect(youtubeToggle.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("group", { name: "Metrics for Channel One" })).toBeNull();
+
+    // A click on the card header opens it too
+    fireEvent.click(screen.getByRole("heading", { name: "YouTube" }));
+    expect(screen.getByRole("group", { name: "Metrics for Channel One" })).toBeTruthy();
   });
 
   it("copies provider login link to clipboard and disables copy when provider is unconfigured", async () => {
@@ -365,7 +358,7 @@ describe("StreamingDock on the dock kit", () => {
     vi.stubGlobal("confirm", nativeConfirm);
     const { api } = renderDock();
     await screen.findByLabelText("Streaming controls");
-    fireEvent.click(screen.getByRole("button", { name: "Toggle YouTube" }));
+    fireEvent.click(screen.getByRole("button", { name: "Expand YouTube" }));
     expect(screen.getByText("@channel-one · Active")).toBeTruthy();
     expect(screen.getByText("1 account · Active")).toBeTruthy();
 
@@ -549,5 +542,166 @@ describe("StreamingDock on the dock kit", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove fact 1" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(screen.getByText("Unsaved bot settings")).toBeTruthy();
+  });
+});
+
+const upgradeBotSettings = {
+  version: 4,
+  enabled: true,
+  persona: { name: "Live Assistant", tone: "Friendly" },
+  platforms: { YOUTUBE: { enabled: true, accountId: "streaming_account:youtube" }, TWITCH: { enabled: false, accountId: null } },
+  facts: [],
+  faq: [],
+  instructions: "",
+  guardrails: { cooldownSeconds: 15, maxRepliesPerMinute: 5, replyToQuestionsOnly: true },
+  modelSelection: null,
+  fallbackModelSelection: null,
+  memoryEnabled: true,
+  moderationEnabled: true,
+  jevEnabled: false,
+  overlayTickerEnabled: false,
+  updatedAt: "2026-08-11T12:00:00.000Z",
+  updatedBy: null
+};
+
+function upgradeBotStatus(enabled: boolean) {
+  return {
+    enabled,
+    paused: !enabled,
+    llmConfigured: true,
+    model: "gpt-6-mini",
+    youtubeQuota: { day: "2026-08-11", unitsConsumed: 0, budget: 8000 },
+    platforms: {
+      YOUTUBE: { connected: true, live: false, chatId: null, lastPollAt: null, lastReplyAt: null, pendingCount: 0 },
+      TWITCH: { connected: false, live: false, chatId: null, lastPollAt: null, lastReplyAt: null, pendingCount: 0 }
+    },
+    moderationEnabled: true,
+    memoryPending: 2,
+    setup: [
+      { id: "llm-key", label: "Language model key", ok: true, hint: null },
+      { id: "llm-models", label: "Space Gateway models verified", ok: false, hint: "Verify the Space Gateway provider." },
+      { id: "worker", label: "Bot worker on this instance", ok: true, hint: null }
+    ]
+  };
+}
+
+function botApi(overrides: Partial<SpaceApiClient> = {}): Partial<SpaceApiClient> {
+  return {
+    streamingBotSettings: vi.fn(async () => ({ settings: structuredClone(upgradeBotSettings), memoryCount: 1 })) as unknown as SpaceApiClient["streamingBotSettings"],
+    streamingBotStatus: vi.fn(async () => upgradeBotStatus(true)) as unknown as SpaceApiClient["streamingBotStatus"],
+    streamingBotModels: vi.fn(async () => ({ models: [] })) as unknown as SpaceApiClient["streamingBotModels"],
+    ...overrides
+  };
+}
+
+describe("StreamingDock upgrades", () => {
+  beforeEach(() => {
+    window.sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows bot, moderation and memory at a glance and opens their tabs", async () => {
+    renderDock(botApi({ streamingBotMemory: vi.fn(async () => ({ entries: [] })) as unknown as SpaceApiClient["streamingBotMemory"] }));
+    const strip = await screen.findByRole("navigation", { name: "Chat companion status" });
+    expect(within(strip).getByText("Setup 2/3")).toBeTruthy();
+    expect(within(strip).getByText("On")).toBeTruthy();
+    fireEvent.click(within(strip).getByText("2 pending"));
+    expect(screen.getByRole("tab", { name: "Memory" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("keeps an unsaved bot draft across tab switches and Pause, and lists the setup steps", async () => {
+    let active = true;
+    const pause = vi.fn(async () => { active = false; return { ...upgradeBotSettings, enabled: false, version: 5 }; });
+    renderDock(botApi({
+      pauseStreamingBot: pause as unknown as SpaceApiClient["pauseStreamingBot"],
+      streamingBotStatus: vi.fn(async () => upgradeBotStatus(active)) as unknown as SpaceApiClient["streamingBotStatus"]
+    }));
+    await screen.findByLabelText("Streaming controls");
+    fireEvent.click(screen.getByRole("tab", { name: "Bot" }));
+    expect(await screen.findByText("Space Gateway models verified")).toBeTruthy();
+    expect(screen.getByText("Verify the Space Gateway provider.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add fact" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Fact key 1" }), { target: { value: "Schedule" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Bot" }));
+    expect((screen.getByRole("textbox", { name: "Fact key 1" }) as HTMLInputElement).value).toBe("Schedule");
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    expect(await screen.findByText("Bot paused.")).toBeTruthy();
+    expect(pause).toHaveBeenCalled();
+    expect((screen.getByRole("textbox", { name: "Fact key 1" }) as HTMLInputElement).value).toBe("Schedule");
+    expect(screen.getByText("Unsaved bot settings")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+  });
+
+  it("explains a client file problem with its fix", async () => {
+    const insecure = structuredClone(catalog);
+    insecure.providers[1] = { ...insecure.providers[1]!, status: "ERROR", clientFilePresent: true, code: "CLIENT_FILE_PERMISSIONS",
+      message: "/opt/spaceapp/var/streaming-secrets/twitch-client.json (mode 0644) belongs to another user; run: sudo chown space:space x && sudo chmod 600 x" };
+    renderDock({ streamingCatalog: vi.fn(async () => structuredClone(insecure)) as SpaceApiClient["streamingCatalog"] });
+    await screen.findByLabelText("Streaming controls");
+    expect(screen.getByText("Client credentials file needs owner-only permissions")).toBeTruthy();
+    const connect = screen.getAllByRole("button", { name: "Connect" }).find((button) => button.getAttribute("title")?.includes("owner-only"));
+    expect(connect?.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Expand Twitch" }));
+    expect(screen.getByText(/sudo chown space:space/)).toBeTruthy();
+  });
+
+  it("keeps provider buttons usable while the overlay autosaves", async () => {
+    let finishSave: (() => void) | null = null;
+    const update = vi.fn((input: { tiles: unknown }) => new Promise((resolve) => {
+      finishSave = () => resolve({ ...settings, version: 4, tiles: input.tiles });
+    }));
+    renderDock({ updateStreamingOverlaySettings: update as unknown as SpaceApiClient["updateStreamingOverlaySettings"] });
+    await screen.findByLabelText("Streaming controls");
+    fireEvent.click(screen.getByRole("switch", { name: "Rooms" }));
+    await waitFor(() => expect(update).toHaveBeenCalled(), { timeout: 2000 });
+    expect(screen.getByText("Saving overlay changes…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy YouTube login link" }).hasAttribute("disabled")).toBe(false);
+    await act(async () => { finishSave?.(); });
+  });
+
+  it("names moderated viewers and times out an item waiting for review", async () => {
+    const review = {
+      id: "moderation:review", platform: "TWITCH" as const, accountId: "account-1", channelId: "chat-1", userId: "viewer-1",
+      messageId: "message-1", decision: "REVIEW" as const, reason: "AMBIGUOUS", durationSeconds: null, result: "REVIEW" as const,
+      platformActionId: null, safeErrorCode: null, createdAt: "2026-08-11T12:00:00.000Z", updatedAt: "2026-08-11T12:00:00.000Z",
+      author: "rude_viewer", message: "maybe rude", activityId: "activity:1"
+    };
+    const timeout = vi.fn(async () => ({ ...review, result: "SUCCEEDED", decision: "TIMEOUT_5M", durationSeconds: 300 }));
+    renderDock({
+      streamingModerationActions: vi.fn(async () => ({ actions: [review] })) as unknown as SpaceApiClient["streamingModerationActions"],
+      timeoutStreamingModerationReview: timeout as unknown as SpaceApiClient["timeoutStreamingModerationReview"]
+    });
+    await screen.findByLabelText("Streaming controls");
+    fireEvent.click(screen.getByRole("tab", { name: "Moderation" }));
+    expect(await screen.findByText("maybe rude")).toBeTruthy();
+    expect(screen.getByText(/rude_viewer/)).toBeTruthy();
+    expect(screen.queryByText(/viewer-1/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Timeout 5 min" }));
+    await waitFor(() => expect(timeout).toHaveBeenCalledWith("moderation:review", 300));
+    expect(await screen.findByText("Viewer timed out for 5 minutes.")).toBeTruthy();
+  });
+
+  it("shows who wrote each chat message and times out a recent viewer", async () => {
+    const message = {
+      id: "activity:1", platform: "YOUTUBE" as const, accountId: "account-1", channelId: "chat-1", authorId: "viewer-1", messageId: "message-1",
+      protectedAccount: false, direction: "IN" as const, author: "curious_viewer", message: "hello everyone", reply: null, status: "SKIPPED" as const,
+      createdAt: new Date().toISOString()
+    };
+    const liveAction = vi.fn(async () => ({ ok: true, result: {} }));
+    renderDock({
+      streamingBotActivity: vi.fn(async () => ({ data: [message], pagination: { page: 1, pageSize: 1, totalItems: 1, totalPages: 1 } })) as unknown as SpaceApiClient["streamingBotActivity"],
+      streamingLiveAction: liveAction as unknown as SpaceApiClient["streamingLiveAction"]
+    });
+    await screen.findByLabelText("Streaming controls");
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    expect(await screen.findByText(/curious_viewer/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Timeout 5 min" }));
+    await waitFor(() => expect(liveAction).toHaveBeenCalledWith({ action: "TIMEOUT", activityId: "activity:1", durationSeconds: 300 }));
   });
 });

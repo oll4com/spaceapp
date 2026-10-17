@@ -113,6 +113,8 @@ export function LiveRailButton({ liveRail, onActivate, disabled }: { liveRail: L
         aria-pressed={liveRailStatus !== "idle" && liveRailStatus !== "error"}
         aria-busy={liveRailStatus === "connecting"}
         onClick={onActivate}
+        // A mouse click must not focus the orb: a later key press would light the theme's focus ring around it.
+        onMouseDown={(event) => event.preventDefault()}
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();

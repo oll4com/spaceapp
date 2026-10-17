@@ -16,22 +16,49 @@ export interface GmailTriageMessage {
   labelIds: string[];
 }
 
-function client(accessToken: string, fetchImpl: typeof fetch = fetch) {
+// Gmail answers per-user rate limits with 403 as well as 429; only these reasons mean a missing grant.
+const scopeReasons = new Set(["insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT", "forbidden"]);
+const rateLimitReasons = new Set(["userRateLimitExceeded", "rateLimitExceeded", "RATE_LIMIT_EXCEEDED", "dailyLimitExceeded"]);
+
+/** Gmail's own reason and message from an error body (bounded; Gmail error bodies carry no tokens). */
+export function gmailErrorDetail(body: Record<string, unknown>): { reason: string | null; message: string | null } {
+  const error = body.error as { message?: unknown; status?: unknown; errors?: Array<{ reason?: unknown }> } | undefined;
+  const reason = [error?.errors?.[0]?.reason, error?.status].find((value) => typeof value === "string" && value) as string | undefined;
+  return { reason: reason ?? null, message: typeof error?.message === "string" ? error.message.slice(0, 200) : null };
+}
+
+export function gmailErrorMessage(status: number, body: Record<string, unknown>): string {
+  const { reason, message } = gmailErrorDetail(body);
+  const detail = [reason, message].filter(Boolean).join(": ");
+  if (status === 401) return "Google access to Gmail expired.";
+  if (status === 429 || (status === 403 && reason && rateLimitReasons.has(reason))) return `Gmail rate limit reached (${detail}); try again in a minute.`;
+  if (status === 403 && (!reason || scopeReasons.has(reason))) {
+    return `Gmail refused the request: organizing mail needs the gmail.modify permission (Allow Gmail & Calendar again)${detail ? ` [${detail}]` : ""}.`;
+  }
+  return `Gmail request failed (${status})${detail ? `: ${detail}` : ""}.`;
+}
+
+function client(accessToken: string, fetchImpl: typeof fetch = fetch, retryDelayMs = 1500) {
   return async function call(path: string, init: { method?: string; body?: unknown } = {}): Promise<Record<string, unknown>> {
-    const response = await fetchImpl(`${gmailApi}${path}`, {
-      method: init.method ?? "GET",
-      headers: { authorization: `Bearer ${accessToken}`, accept: "application/json", ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-      signal: AbortSignal.timeout(20_000)
-    });
-    const text = await response.text();
-    const body = (text ? JSON.parse(text) : {}) as Record<string, unknown>;
-    if (!response.ok) {
-      throw new GmailMailboxError(response.status, response.status === 401 ? "Google access to Gmail expired."
-        : response.status === 403 ? "Gmail refused the request: organizing mail needs the gmail.modify permission (Allow Gmail & Calendar again)."
-          : `Gmail request failed (${response.status}).`);
+    for (let attempt = 0; ; attempt++) {
+      const response = await fetchImpl(`${gmailApi}${path}`, {
+        method: init.method ?? "GET",
+        headers: { authorization: `Bearer ${accessToken}`, accept: "application/json", ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+        signal: AbortSignal.timeout(20_000)
+      });
+      const text = await response.text();
+      let body: Record<string, unknown> = {};
+      try { body = (text ? JSON.parse(text) : {}) as Record<string, unknown>; } catch { body = {}; }
+      if (response.ok) return body;
+      const { reason } = gmailErrorDetail(body);
+      // One retry for a per-user rate limit: these clear within seconds (a triage pass just before can trip them).
+      if (attempt === 0 && (response.status === 429 || (response.status === 403 && reason && rateLimitReasons.has(reason)))) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        continue;
+      }
+      throw new GmailMailboxError(response.status, gmailErrorMessage(response.status, body));
     }
-    return body;
   };
 }
 
@@ -67,6 +94,14 @@ export async function labelGmailMessages(input: { accessToken: string; fetchImpl
   const removeLabelIds = [...(input.archive ? ["INBOX"] : []), ...(input.replaceLabelIds ?? []).filter((label) => label !== input.labelId)];
   await client(input.accessToken, input.fetchImpl)("/messages/batchModify", { method: "POST",
     body: { ids: input.messageIds, addLabelIds: [input.labelId], removeLabelIds } });
+}
+
+/** Takes the given labels off messages; the inbox and every other label stay as they are. Never deletes. */
+export async function unlabelGmailMessages(input: { accessToken: string; fetchImpl?: typeof fetch; messageIds: string[]; labelIds: string[]; retryDelayMs?: number }): Promise<void> {
+  if (!input.messageIds.length || !input.labelIds.length) return;
+  // No empty addLabelIds: the body carries only what changes.
+  await client(input.accessToken, input.fetchImpl, input.retryDelayMs)("/messages/batchModify", { method: "POST",
+    body: { ids: input.messageIds, removeLabelIds: input.labelIds } });
 }
 
 /** Inbox messages matching a Gmail search, newest first, with their labels (at most `max`). */

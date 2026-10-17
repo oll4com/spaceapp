@@ -29,10 +29,10 @@ export { formatStreamingBotLiveMetrics } from "./live-metrics.js";
 export { PUBLIC_SPACEAPP_KNOWLEDGE, publicSpaceappContext, searchPublicSpaceappKnowledge } from "./public-knowledge.js";
 export type { PublicSpaceappFact } from "./public-knowledge.js";
 export { asksForOperatorPrivateData, containsSensitiveDisclosure, PRIVATE_DATA_REFUSAL } from "./privacy.js";
-export { decideStreamingModeration } from "./moderation.js";
+export { decideStreamingModeration, isModerationCandidate, normalizeChatText } from "./moderation.js";
 export type { ModerationDecision, ModerationInput, ModerationResult } from "./moderation.js";
-export { resolveStreamingBotModel, streamingBotModelOptions } from "./model-selection.js";
-export type { StreamingBotModelOption } from "./model-selection.js";
+export { dedicatedCredentialReady, resolveStreamingBotModel, streamingBotModelOptions } from "./model-selection.js";
+export type { StreamingBotModelOption, StreamingBotRoute } from "./model-selection.js";
 export {
   BOT_MEMORY_PROVENANCE,
   BOT_MEMORY_ROOM_ID,

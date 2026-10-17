@@ -193,11 +193,13 @@ export function useSideSurfaces({
  */
 export function useSideSurfaceEffects(
   sideSurfaces: SideSurfaces,
-  { runtimeKind, isAuthenticated, role, userId }: {
+  { runtimeKind, isAuthenticated, role, userId, startupReady = true }: {
     runtimeKind: SpaceRuntime["kind"] | null;
     isAuthenticated: boolean | undefined;
     role: string | undefined;
     userId: string | undefined;
+    /** Delay the source-control probe until the first room is interactive. */
+    startupReady?: boolean;
   }
 ): void {
   const {
@@ -265,7 +267,7 @@ export function useSideSurfaceEffects(
   }, [role, activeSideSurface, isSideSurfaceOpen]);
 
   useEffect(() => {
-    if (runtimeKind !== "live" || !isAuthenticated) { setSourceControlEnabled(false); return; }
+    if (!startupReady || runtimeKind !== "live" || !isAuthenticated) { setSourceControlEnabled(false); return; }
     const controller = new AbortController();
     const refreshConnections = async (event?: Event) => {
       try {
@@ -281,5 +283,5 @@ export function useSideSurfaceEffects(
     };
     void refreshConnections(); window.addEventListener(SOURCE_CONTROL_CONNECTION_EVENT, refreshConnections);
     return () => { controller.abort(); window.removeEventListener(SOURCE_CONTROL_CONNECTION_EVENT, refreshConnections); };
-  }, [runtimeKind, isAuthenticated, userId, isCompactShell]);
+  }, [runtimeKind, isAuthenticated, userId, isCompactShell, startupReady]);
 }

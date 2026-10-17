@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { z } from "zod";

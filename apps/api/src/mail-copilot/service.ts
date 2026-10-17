@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import {
   MAIL_SYSTEM_LABELS, mailRuleMatches, mailSubjectKey, mailSubjectKeyPattern, mailThreadActionLabels, resolveMailCopilotPaneMetadata, type ConnectorCapability, type MailActionRecord, type MailOperatorAction, type MailRule, type MailRuleDecision, type MailRuleProposal, type MailRuleSubject, type MailAccountSummary, type MailComposeInput, type MailCopilotEvent,
   type MailCopilotEventInput, type MailCopilotEventType, type MailCopilotMemory, type MailCopilotMemoryCreate, type MailCopilotMemoryQuery, type MailCopilotMemoryUpdate,
-  type MailCopilotPaneMetadata, type MailCopilotPendingItem, type MailHabitLevel, type MailHabits, type MailHabitSender, type MailCopilotReviewDecision, type MailCopilotRun, type MailCopilotRunView, type MailLabel,
+  type MailActionLogEntry, type MailCopilotFixRequest, type MailFixRequestView, type MailCopilotPaneMetadata, type MailCopilotPendingItem, type MailHabitLevel, type MailHabits, type MailHabitSender, type MailCopilotReviewDecision, type MailCopilotRun, type MailCopilotRunView, type MailLabel,
   type MailMessage, type MailThread, type MailThreadAction, type MailThreadSummary, type MailThreadsPage, type MailThreadsQuery, type Pane
 } from "@space/contracts";
 import type { MailCopilotRepository } from "@space/db";
@@ -10,6 +10,7 @@ import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
 import { GmailMailboxError } from "../job-apply/gmail-mailbox.js";
 import { createGmailClient, mapLimited, type GmailClient, type GmailJson } from "./gmail-client.js";
 import { classifyThreadChange, netThreadChanges, type GmailHistoryEntry } from "./history.js";
+import type { MailCopilotKickoff } from "./kickoff.js";
 import { buildMime, header, parseParticipants, parsePayload } from "./gmail-mime.js";
 import { sanitizeMailHtml } from "./html-sanitizer.js";
 import { decodeEntities } from "../job-apply/gmail-mailbox.js";
@@ -28,6 +29,8 @@ export interface MailCopilotServiceOptions {
   repository: MailCopilotRepository;
   /** Every activity event, for the room stream and notifications. */
   onEvent?(event: MailCopilotEvent): void;
+  /** Starts a run for new work nobody pressed Start for (a mail sent to the copilot to fix). */
+  kickoff?: MailCopilotKickoff;
   now?(): string;
 }
 
@@ -71,7 +74,7 @@ const HABIT_WINDOW_MS = 180 * 24 * 3_600_000;
 const DISPOSITIONS: ReadonlySet<MailOperatorAction> = new Set(["ARCHIVE", "TRASH", "MOVE", "LABEL", "SPAM"]);
 const HABIT_VERB: Record<MailOperatorAction, string> = {
   ARCHIVE: "archived", UNARCHIVE: "moved back to the inbox", TRASH: "trashed", UNTRASH: "restored from trash", DELETE: "deleted for good", MOVE: "moved to", LABEL: "labeled", UNLABEL: "removed the label",
-  STAR: "starred", UNSTAR: "unstarred", SPAM: "reported as spam", NOT_SPAM: "marked not spam", REPLY: "replied to", FORWARD: "forwarded"
+  STAR: "starred", UNSTAR: "unstarred", SPAM: "reported as spam", NOT_SPAM: "marked not spam", REPLY: "replied to", FORWARD: "forwarded", FIX: "sent to the copilot to fix"
 };
 /** A rule is learned from at least this many observed operator actions of one kind on one sender, this consistent, in this window. */
 const LEARN_MIN_ACTIONS = 3;
@@ -80,9 +83,11 @@ const LEARN_WINDOW_MS = 90 * 24 * 3_600_000;
 /** shortcut: at most this many learned rules per account and day (a bulk clean-up would otherwise make dozens); raise it if the operator wants faster learning. */
 const LEARN_MAX_PER_DAY = 10;
 /** What the server may learn a rule for: where mail goes, reversibly; never a reply, a send or a permanent deletion (a star needs no rule). */
-const LEARNABLE: Partial<Record<MailOperatorAction, "ARCHIVE" | "MOVE" | "LABEL" | "TRASH">> = { ARCHIVE: "ARCHIVE", MOVE: "MOVE", LABEL: "LABEL", TRASH: "TRASH" };
+const LEARNABLE: Partial<Record<MailOperatorAction, "ARCHIVE" | "MOVE" | "LABEL" | "TRASH" | "FIX">> = { ARCHIVE: "ARCHIVE", MOVE: "MOVE", LABEL: "LABEL", TRASH: "TRASH", FIX: "FIX" };
 /** The operator's action that takes a rule's action back: it counts against the rule. */
 const REVERSES: Partial<Record<MailOperatorAction, MailOperatorAction[]>> = { UNARCHIVE: ["ARCHIVE", "MOVE"], UNTRASH: ["TRASH"], UNLABEL: ["LABEL", "MOVE"] };
+/** The operator's actions that settle a conversation: its waiting triage items close. */
+const HANDLES_MAIL: ReadonlySet<MailOperatorAction> = new Set(["ARCHIVE", "TRASH", "DELETE", "MOVE", "SPAM", "REPLY", "FORWARD", "FIX"]);
 /** The action log keeps a year. */
 const ACTION_RETENTION_MS = 365 * 24 * 3_600_000;
 
@@ -127,6 +132,8 @@ export function habitWords(level: MailHabitLevel, limit = 4): string {
     return `${HABIT_VERB[entry.action]}${target} ${counted}${inferred}`.replace(/\s+/g, " ").trim();
   }).join("; ");
 }
+/** How many of a sender's actions the operator was seen doing (in the pane or in Gmail), as opposed to inferred. */
+const observedOf = (habit: MailHabitSender) => habit.level.actions.reduce((sum, entry) => sum + entry.observed, 0);
 /** Groups action rows into one habit level: per action and labels, observed and inferred counts, share of the decisions, last time. */
 function habitLevel(kind: MailHabitLevel["level"], key: string, rows: readonly MailActionRecord[], names: ReadonlyMap<string, string>): MailHabitLevel | null {
   if (!rows.length) return null;
@@ -148,6 +155,7 @@ function habitLevel(kind: MailHabitLevel["level"], key: string, rows: readonly M
 export function createMailCopilotService(options: MailCopilotServiceOptions) {
   const now = options.now ?? (() => new Date().toISOString());
   const { repository } = options;
+  const starting = new Map<string, Promise<boolean>>();
 
   async function record(owner: string, input: MailCopilotEventInput & MailEventContext & { type: MailCopilotEventType; status?: "PENDING" | "TAKEN" | "DONE" | null }): Promise<MailCopilotEvent> {
     const event = await repository.createEvent({
@@ -290,6 +298,8 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         const received = known ? null : (await repository.listEvents(owner, { accountEmail: email, threadId: change.threadId, types: ["MAIL_RECEIVED"], limit: 1 }))[0];
         const from = known?.fromAddress ?? String((received?.payload.from as { address?: string } | undefined)?.address ?? "");
         facts = from || known?.subject || received ? { from, subject: known?.subject ?? String(received?.payload.subject ?? ""), labelIds: [], hasAttachment: false } : null;
+        // A deleted message Space never saw (a draft, mail older than the log) says nothing about the operator's habits.
+        if (!facts) return 0;
       } else {
         messages = await client.thread(change.threadId, "metadata").then((thread) => (thread.messages as GmailJson[] | undefined) ?? [], () => []);
         const message = correspondent(messages, email);
@@ -312,6 +322,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         if (!row) continue;
         count += 1;
         await learnRules(owner, row, paneId).catch(() => undefined);
+        if (HANDLES_MAIL.has(row.action)) await closeHandledItems(owner, email, change.threadId).catch(() => undefined);
       }
       return count;
     });
@@ -395,6 +406,12 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     const sameLabels = (left: readonly string[], right: readonly string[]) => left.length === right.length && left.every((label) => right.includes(label));
     /** How consistently the rows in scope do `type` (with these labels): matches over the decisions of that kind, reversals counting against. */
     const consistency = (scope: MailActionRecord[], type: string, labels: readonly string[]) => {
+      // A hand-off to the copilot comes on top of where the mail went: counted over the conversations the operator handled.
+      if (type === "FIX") {
+        const threads = new Set(scope.map((entry) => entry.threadId));
+        const fixed = new Set(scope.filter((entry) => entry.action === "FIX").map((entry) => entry.threadId));
+        return { matches: fixed.size, decisions: threads.size, share: threads.size ? fixed.size / threads.size : 0 };
+      }
       const matches = scope.filter((entry) => LEARNABLE[entry.action] === type && sameLabels(entry.labelIds, labels)).length;
       const against = scope.filter((entry) => (REVERSES[entry.action] ?? []).includes(type as MailOperatorAction)).length;
       const decisions = scope.filter((entry) => DISPOSITIONS.has(entry.action)).length + against;
@@ -403,7 +420,8 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     const facts = (entry: MailActionRecord): MailRuleSubject => ({ from: entry.fromAddress ?? "", subject: entry.subject ?? "", labelIds: [], hasAttachment: false });
     // Contradictions: a reversal of what a learned rule just did, or a habit that is no longer consistent.
     const lastAgent = REVERSES[row.action] ? (await repository.listActions(owner, { accountEmail: row.accountEmail, threadId: row.threadId, actors: ["AGENT"], limit: 1 }))[0] : undefined;
-    for (const rule of rules.filter((entry) => entry.status === "APPROVED" && entry.proposedBy === "LEARNED" && entry.condition.fromAddress === row.fromAddress)) {
+    // A FIX rule's mail is handled by the copilot afterwards, so the operator's later actions on it are no contradiction; the Rules tab retires it.
+    for (const rule of rules.filter((entry) => entry.status === "APPROVED" && entry.proposedBy === "LEARNED" && entry.action.type !== "FIX" && entry.condition.fromAddress === row.fromAddress)) {
       const scope = rows.filter((entry) => mailRuleMatches(rule.condition, facts(entry)));
       const taken = Boolean(lastAgent?.ruleId === rule.id && (REVERSES[row.action] ?? []).includes(lastAgent.action));
       const { share } = consistency(scope, rule.action.type, rule.action.labels ?? []);
@@ -431,12 +449,42 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     if (today.length >= LEARN_MAX_PER_DAY) return;
     const stats = consistency(chosen.scope, type, row.labelIds);
     const labelNames = action.labels?.length ? await clientFor(owner, row.accountEmail).then((client) => client.labels()).then((labels) => action.labels!.map((id) => labels.find((label) => label.id === id)?.name ?? id), () => action.labels!) : [];
-    const what = type === "MOVE" ? `Move to ${labelNames.join(", ")}` : type === "LABEL" ? `Label ${labelNames.join(", ")}` : type === "ARCHIVE" ? "Archive" : "Trash";
+    const what = type === "MOVE" ? `Move to ${labelNames.join(", ")}` : type === "LABEL" ? `Label ${labelNames.join(", ")}` : type === "ARCHIVE" ? "Archive" : type === "FIX" ? "Send to the copilot to fix" : "Trash";
     const about = chosen.condition.subjectPattern ? ` about "${row.subject?.slice(0, 80) ?? row.subjectKey}"` : "";
     const rule = await repository.createRule({ ownerUserId: owner, accountEmail: row.accountEmail, name: `${what} mail from ${row.fromAddress}${about}`.slice(0, 200), condition: chosen.condition, action, status: "APPROVED",
       confidence: Math.round(stats.share * 100) / 100, proposedBy: "LEARNED",
       evidence: [`You did this ${stats.matches} of ${stats.decisions} times on ${row.accountEmail} in the last 90 days`, ...chosen.scope.filter((entry) => LEARNABLE[entry.action] === type).slice(0, 3).map((entry) => `${entry.occurredAt.slice(0, 10)}: ${entry.subject ?? "(no subject)"} (${entry.source === "GMAIL" ? "in Gmail" : "in the pane"})`.slice(0, 300))] });
     await record(owner, { paneId, type: "RULE_LEARNED", accountEmail: rule.accountEmail, threadId: row.threadId, message: `Rule learned from your actions: ${rule.name}`, payload: { ruleId: rule.id, name: rule.name, condition: rule.condition, action: rule.action } });
+  }
+  /**
+   * A conversation the operator already handled (or handed to the copilot to fix) needs no triage: its waiting
+   * MAIL_RECEIVED and TRIAGE items close, so the copilot does not spend a turn on mail that is already done.
+   */
+  async function closeHandledItems(owner: string, account: string, threadId: string): Promise<void> {
+    const waiting = await repository.listEvents(owner, { accountEmail: account, threadId, types: ["MAIL_RECEIVED", "TRIAGE"], status: ["PENDING"], limit: 20 });
+    for (const item of waiting) await repository.setItemStatus(owner, item.id, "DONE");
+  }
+  /** The copilot's questions about a hand-off (same conversation, or asked while it was being worked on) with the operator's answers. */
+  function exchangesFor(request: MailCopilotEvent, until: string | null, questions: MailCopilotEvent[], answers: MailCopilotEvent[]): MailFixRequestView["exchanges"] {
+    return questions.filter((question) => question.createdAt >= request.createdAt && (!until || question.createdAt <= until)
+      && (question.threadId ? question.threadId === request.threadId : question.paneId === request.paneId))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map((question) => {
+        const answer = answers.find((entry) => entry.payload.questionId === question.payload.questionId);
+        return { question: String(question.payload.question ?? question.message), askedAt: question.createdAt, answer: answer ? String(answer.payload.answer ?? "") : null, answeredAt: answer?.createdAt ?? null };
+      });
+  }
+  /** A LESSON memory per sender and kind of mail (the latest fix wins): what the operator asked, what they decided, what fixed it. */
+  async function rememberFix(owner: string, item: MailCopilotEvent, summary: string): Promise<MailCopilotMemory> {
+    const from = item.payload.from as { address?: string; name?: string } | null | undefined;
+    const address = from?.address?.toLowerCase() || null;
+    const subject = String(item.payload.subject ?? "");
+    const [questions, answers] = await Promise.all([repository.listEvents(owner, { types: ["QUESTION"], since: item.createdAt, limit: 100 }), repository.listEvents(owner, { types: ["ANSWERED"], since: item.createdAt, limit: 100 })]);
+    const decided = exchangesFor(item, null, questions, answers).filter((entry) => entry.answer).map((entry) => `asked "${entry.question.slice(0, 300)}", the operator answered "${entry.answer!.slice(0, 300)}"`);
+    const text = [`"${subject}"${address ? ` from ${address}` : ""} was sent to the copilot to fix${item.payload.note ? ` with the request "${String(item.payload.note).slice(0, 400)}"` : ""}.`,
+      decided.length ? `The copilot ${decided.join("; ")}.` : "", `What fixed it: ${summary}`].filter(Boolean).join(" ").slice(0, 4000);
+    return repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: `fix: ${mailSubjectKey(subject) || subject.slice(0, 200)}`.slice(0, 300), text, contactEmail: address, domain: address ? senderDomain(address) || null : null,
+      accountEmail: item.accountEmail, tags: ["fix"], source: "LEARNED", confidence: 0.8, pinned: false });
   }
   /** Label names (the unified view's ids) become this account's label ids. */
   async function resolveLabelIds(client: GmailClient, ids: string[]): Promise<string[]> {
@@ -565,6 +613,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       }
       const row = await logAction(owner, { accountEmail: input.account, threadId, action: logged, labelIds: input.labelIds, facts: await subject().catch(() => null), actor: by === "agent" ? "AGENT" : "OPERATOR", source: "PANE", ruleId });
       if (row) await learnRules(owner, row, pane?.id ?? null).catch(() => undefined);
+      if (by === "operator" && HANDLES_MAIL.has(logged)) await closeHandledItems(owner, input.account, threadId).catch(() => undefined);
     },
     /** Sends a new message, a reply or a forward from one of the pane's accounts; replies carry the threading headers. The agent is held to the pane's autonomy and the hourly cap. */
     async send(owner: string, pane: Pane | null, input: MailComposeInput, by: "operator" | "agent" | "review" = "operator", ruleId?: string): Promise<{ messageId: string; threadId: string }> {
@@ -594,6 +643,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const kind: MailOperatorAction | null = /^\s*fwd?\s*:/i.test(input.subject) ? "FORWARD" : original ? "REPLY" : null;
       if (kind) await logAction(owner, { accountEmail: input.account, threadId: sent.threadId, messageId: sent.id, action: kind, facts: original ? ruleSubject(original) : { from: "", subject: input.subject },
         actor: by === "agent" ? "AGENT" : "OPERATOR", source: "PANE", ruleId });
+      if (kind === "REPLY" && by !== "agent") await closeHandledItems(owner, input.account, sent.threadId).catch(() => undefined);
       // A reply the operator wrote themselves teaches the copilot how they answer: a learn item for the next run.
       if (by === "operator" && pane && original) {
         await record(owner, { paneId: pane.id, type: "USER_ACTION", status: "PENDING", accountEmail: input.account, threadId: sent.threadId, messageId: input.inReplyToMessageId ?? null,
@@ -744,20 +794,26 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const habits = newest ? await habitsFor(owner, item.accountEmail, { from: newest.from.address, subject: newest.subject }).catch(() => null) : null;
       return { thread: thread ? { ...thread, messages: thread.messages.map((message) => ({ ...message, html: null })) } : null, memories, habits };
     },
-    async reportItem(owner: string, pane: Pane, input: { eventId: string; outcome: "replied" | "drafted" | "archived" | "labeled" | "skipped" | "needs_user" | "learned"; summary: string; memoryIds: string[] }) {
+    async reportItem(owner: string, pane: Pane, input: { eventId: string; outcome: "replied" | "drafted" | "archived" | "labeled" | "skipped" | "needs_user" | "learned" | "fixed"; summary: string; memoryIds: string[] }) {
       const item = await repository.getEvent(owner, input.eventId);
       if (!item || item.status === null) throw new SpaceNotFoundError(`Work item ${input.eventId} was not found.`);
       if (item.status === "DONE") throw new SpaceConflictError("That item was already reported.");
       await repository.setItemStatus(owner, item.id, "DONE");
       const run = await repository.getActiveRun(pane.id);
-      const counterKey = { replied: "replied", drafted: "drafted", archived: "archived", labeled: "labeled", skipped: "skipped", needs_user: "needsUser", learned: "skipped" }[input.outcome] as keyof MailCopilotRun["counters"];
+      const counterKey = { replied: "replied", drafted: "drafted", archived: "archived", labeled: "labeled", skipped: "skipped", needs_user: "needsUser", learned: "skipped", fixed: "fixed" }[input.outcome] as keyof MailCopilotRun["counters"];
       if (run && run.ownerUserId === owner) await repository.updateRun(owner, run.id, { counters: { ...run.counters, [counterKey]: run.counters[counterKey] + 1 }, currentEventId: null, lastActivityAt: now() });
-      const type: MailCopilotEventType = { replied: "REPLIED", drafted: "DRAFTED", archived: "ARCHIVED", labeled: "LABELED", skipped: "SKIPPED", needs_user: "NEEDS_USER", learned: "TRIAGED" }[input.outcome] as MailCopilotEventType;
+      const type: MailCopilotEventType = { replied: "REPLIED", drafted: "DRAFTED", archived: "ARCHIVED", labeled: "LABELED", skipped: "SKIPPED", needs_user: "NEEDS_USER", learned: "TRIAGED", fixed: "FIXED" }[input.outcome] as MailCopilotEventType;
       await repository.touchMemories(owner, input.memoryIds);
-      return record(owner, { paneId: pane.id, runId: run?.id ?? null, type, accountEmail: item.accountEmail, threadId: item.threadId, messageId: item.messageId, message: input.summary, payload: { itemId: item.id, outcome: input.outcome, memoryIds: input.memoryIds } });
+      // A fixed hand-off teaches the copilot how this kind of mail is fixed, with what the operator asked and decided.
+      const lesson = item.type === "FIX_REQUESTED" && input.outcome === "fixed" ? await rememberFix(owner, item, input.summary).catch(() => null) : null;
+      return record(owner, { paneId: pane.id, runId: run?.id ?? null, type, accountEmail: item.accountEmail, threadId: item.threadId, messageId: item.messageId, message: input.summary,
+        payload: { itemId: item.id, outcome: input.outcome, memoryIds: input.memoryIds, ...(lesson ? { lessonMemoryId: lesson.id } : {}) } });
     },
     // ---- questions and reviews ---------------------------------------------------------------
     async askQuestion(owner: string, pane: Pane, input: { question: string; options?: string[]; accountEmail?: string; threadId?: string }) {
+      // The same question still open in this pane (an agent's retry) is the same card, never a second one.
+      const open = (await this.pendingItems(owner, pane.id)).find((item) => item.kind === "QUESTION" && item.payload.question === input.question && item.threadId === (input.threadId ?? null));
+      if (open) return { questionId: open.id, answered: false as const };
       const questionId = `mailq:${randomBytes(9).toString("base64url")}`;
       await record(owner, { paneId: pane.id, type: "QUESTION", accountEmail: input.accountEmail ?? null, threadId: input.threadId ?? null, message: `Needs you: ${input.question}`,
         payload: { questionId, question: input.question, options: input.options ?? [] } });
@@ -872,6 +928,8 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
           }
         } while (pageToken);
         let created = 0;
+        // New mail like the mail the operator keeps sending to the copilot to fix goes to the copilot on its own (a learned or written FIX rule).
+        const fixRules = added.size ? (await repository.listRules(owner, { status: ["APPROVED"], accountEmail: email })).filter((rule) => rule.action.type === "FIX" && (rule.accountEmail === null || rule.accountEmail === email)) : [];
         for (const { id, threadId } of added.values()) {
           const seen = await repository.listEvents(owner, { accountEmail: email, threadId, types: ["MAIL_RECEIVED"], limit: 50 });
           if (seen.some((event) => event.messageId === id)) continue;
@@ -879,9 +937,15 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
           const facts = ruleSubject(message);
           const from = parseParticipants(facts.from)[0] ?? { name: "", address: "" };
           const automated = AUTOMATED_SENDER.test(from.address);
-          await record(owner, { paneId: pane.id, type: "MAIL_RECEIVED", status: automated ? null : "PENDING", accountEmail: email, threadId, messageId: id,
+          const fixRule = fixRules.find((rule) => mailRuleMatches(rule.condition, facts));
+          await record(owner, { paneId: pane.id, type: "MAIL_RECEIVED", status: automated || fixRule ? null : "PENDING", accountEmail: email, threadId, messageId: id,
             message: `New mail: ${facts.subject || "(no subject)"} from ${from.name || from.address}`,
             payload: { from, subject: facts.subject, snippet: decodeEntities(String(message.snippet ?? "")).slice(0, 500), labelIds: facts.labelIds, receivedAt: iso(message.internalDate), automated } });
+          if (fixRule) {
+            await this.requestFix(owner, pane, { account: email, threadId, messageId: id, by: "rule", ruleId: fixRule.id, ruleName: fixRule.name, facts });
+            fixRule.appliedCount += 1;
+            await repository.updateRule(owner, fixRule.id, { appliedCount: fixRule.appliedCount, lastAppliedAt: now() });
+          }
           created += 1;
         }
         const learned = await learnFromHistory(owner, email, client, entries, pane.id) + await backfill();
@@ -897,8 +961,83 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         throw gmailError(email, error);
       }
     },
+    /**
+     * "Send to AI": one conversation goes to the copilot to check and fix what it needs. The hand-off is an action of
+     * the log (the operator's, so the copilot learns it; a learned FIX rule's own hand-offs are the copilot's) and a
+     * FIX_REQUESTED work item; the run starts on its own when the pane can take it.
+     */
+    async requestFix(owner: string, pane: Pane, input: MailCopilotFixRequest & { by?: "operator" | "rule"; ruleId?: string; ruleName?: string; facts?: MailRuleSubject | null; messageId?: string }): Promise<{ event: MailCopilotEvent; runStarted: boolean }> {
+      await mailAccounts(owner, pane, input.account);
+      const by = input.by ?? "operator";
+      const facts = input.facts !== undefined ? input.facts : await clientFor(owner, input.account).then((client) => client.thread(input.threadId, "metadata")).then((thread) => {
+        const message = correspondent((thread.messages as GmailJson[] | undefined) ?? [], input.account);
+        return message ? ruleSubject(message) : null;
+      }, (error: unknown) => { throw gmailError(input.account, error); });
+      const row = await logAction(owner, { accountEmail: input.account, threadId: input.threadId, messageId: input.messageId ?? null, action: "FIX", facts,
+        actor: by === "operator" ? "OPERATOR" : "AGENT", source: by === "operator" ? "PANE" : "SPACE", ruleId: input.ruleId ?? null });
+      if (row && by === "operator") await learnRules(owner, row, pane.id).catch(() => undefined);
+      await closeHandledItems(owner, input.account, input.threadId).catch(() => undefined);
+      const from = facts ? parseParticipants(facts.from)[0] ?? null : null;
+      const subject = facts?.subject || "(no subject)";
+      const event = await record(owner, { paneId: pane.id, type: "FIX_REQUESTED", status: "PENDING", accountEmail: input.account, threadId: input.threadId, messageId: input.messageId ?? null,
+        message: by === "operator" ? `You sent to the copilot to check and fix: ${subject}` : `Sent to the copilot to check and fix (rule "${input.ruleName ?? input.ruleId}"): ${subject}`,
+        payload: { by, ruleId: input.ruleId ?? null, note: input.note ?? null, from, subject } });
+      return { event, runStarted: await this.autostart(owner, pane).catch(() => false) };
+    },
+    /** Starts the pane's run for work nobody pressed Start for, when the pane is not paused, no run is paused and its CLI can take the kickoff. */
+    async autostart(owner: string, pane: Pane): Promise<boolean> {
+      // Hand-offs sent back to back share one start: a second kickoff would type the run's prompt into the CLI twice.
+      const pending = starting.get(pane.id);
+      if (pending) return pending;
+      const start = this.startOnce(owner, pane).finally(() => starting.delete(pane.id));
+      starting.set(pane.id, start);
+      return start;
+    },
+    async startOnce(owner: string, pane: Pane): Promise<boolean> {
+      if (!options.kickoff || paneSettings(pane).paused) return false;
+      const active = await repository.getActiveRun(pane.id);
+      if (active?.status === "PAUSED" || (active && active.ownerUserId !== owner) || !(await options.kickoff.ready(pane))) return false;
+      const started = await this.startRun(owner, pane.id);
+      if (started.kickoff) {
+        await options.kickoff.send(pane, started.run);
+        await this.markKickoff(owner, started.run.id);
+      }
+      return true;
+    },
     syncState: (owner: string, email: string) => repository.getSyncState(owner, email),
-    /** The Memory tab's "Learned habits": per account of the pane, the senders the operator handled most, newest first among equals. */
+    /** Every mail sent to the copilot to fix (Activity → Sent to AI), newest first: the request, the questions and answers, and the result. */
+    async fixRequests(owner: string, pane: Pane | null, limit = 50): Promise<MailFixRequestView[]> {
+      const accounts = await mailAccounts(owner, pane, "all");
+      const requests = (await repository.listEvents(owner, { types: ["FIX_REQUESTED"], limit: 200 })).filter((event) => !event.accountEmail || accounts.includes(event.accountEmail)).slice(0, limit);
+      if (!requests.length) return [];
+      const since = requests.at(-1)!.createdAt;
+      const [reports, questions, answers] = await Promise.all([
+        repository.listEvents(owner, { types: ["FIXED", "NEEDS_USER", "SKIPPED", "REPLIED", "DRAFTED", "ARCHIVED", "LABELED", "TRIAGED"], since, limit: 500 }),
+        repository.listEvents(owner, { types: ["QUESTION"], since, limit: 500 }),
+        repository.listEvents(owner, { types: ["ANSWERED"], since, limit: 500 })
+      ]);
+      return requests.map((request) => {
+        const report = reports.find((event) => event.payload.itemId === request.id) ?? null;
+        const from = request.payload.from as { address?: string } | null | undefined;
+        return {
+          id: request.id, account: request.accountEmail, threadId: request.threadId, subject: String(request.payload.subject ?? "(no subject)"), from: from?.address ?? null,
+          note: typeof request.payload.note === "string" ? request.payload.note : null, by: request.payload.by === "rule" ? "rule" as const : "operator" as const,
+          status: (request.status ?? "DONE") as MailFixRequestView["status"], requestedAt: request.createdAt,
+          exchanges: exchangesFor(request, report?.createdAt ?? null, questions, answers),
+          outcome: report ? { type: report.type, summary: report.message, at: report.createdAt } : null,
+          memoryId: typeof report?.payload.lessonMemoryId === "string" ? report.payload.lessonMemoryId : null
+        };
+      });
+    },
+    /** The action log as the operator reads it back (Activity → Your actions), newest first, for the pane's accounts. */
+    async actionLog(owner: string, pane: Pane | null, input: { account?: string; source?: MailActionRecord["source"]; limit: number }): Promise<MailActionLogEntry[]> {
+      const accounts = await mailAccounts(owner, pane, input.account ?? "all");
+      const rows = (await repository.listActions(owner, { accountEmail: input.account, sources: input.source ? [input.source] : undefined, limit: input.account ? input.limit : 500 }))
+        .filter((row) => accounts.includes(row.accountEmail)).slice(0, input.limit);
+      const names = new Map(await Promise.all([...new Set(rows.map((row) => row.accountEmail))].map(async (account) => [account, await labelNames(owner, account, rows.filter((row) => row.accountEmail === account))] as const)));
+      return rows.map((row) => ({ ...row, labelNames: row.labelIds.map((label) => names.get(row.accountEmail)?.get(label) ?? label) }));
+    },
+    /** The Memory tab's "Learned habits": per account of the pane, the senders whose mail the operator handled themselves first (most, then newest), then the inferred ones. */
     async habitList(owner: string, pane: Pane | null): Promise<MailHabitSender[]> {
       const accounts = await mailAccounts(owner, pane, "all");
       const since = new Date(Date.parse(now()) - HABIT_WINDOW_MS).toISOString();
@@ -910,7 +1049,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         return [...bySender].map(([sender, senderRows]): MailHabitSender => {
           const level = habitLevel("sender", sender, senderRows, names)!;
           return { account, sender, summary: habitWords(level, 3), level, lastAt: senderRows[0]!.occurredAt };
-        }).sort((left, right) => (right.level.decisions || right.level.actions.length) - (left.level.decisions || left.level.actions.length) || right.lastAt.localeCompare(left.lastAt)).slice(0, 50);
+        }).sort((left, right) => observedOf(right) - observedOf(left) || right.lastAt.localeCompare(left.lastAt)).slice(0, 50);
       });
       return perAccount.flat();
     },
@@ -947,7 +1086,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     now
   };
   function summarize(counters: MailCopilotRun["counters"]): string {
-    return `${counters.taken} taken, ${counters.replied} replied, ${counters.drafted} drafted, ${counters.archived} archived, ${counters.skipped} skipped, ${counters.needsUser} need you`;
+    return `${counters.taken} taken, ${counters.replied} replied, ${counters.drafted} drafted, ${counters.archived} archived, ${counters.fixed} fixed, ${counters.skipped} skipped, ${counters.needsUser} need you`;
   }
 }
 export type MailCopilotService = ReturnType<typeof createMailCopilotService>;

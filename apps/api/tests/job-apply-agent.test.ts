@@ -201,6 +201,40 @@ describe("job apply agent routes", () => {
     expect(matchAnswerMemory(bank, "Favourite colour?")).toBeNull();
   });
 
+  it("never answers a question with the saved answer to a different topic", () => {
+    const memory = (key: string, text: string) => ({ id: `jobmem:${key.length}abcdef`, ownerUserId: "user:1", kind: "ANSWER" as const, key, text, site: null, company: null, tags: [],
+      source: "USER" as const, confidence: 0.9, uses: 0, pinned: false, lastUsedAt: null, createdAt: "2026-10-12T00:00:00.000Z", updatedAt: "2026-10-12T00:00:00.000Z" });
+    const bank = [memory("what are your pronouns", "Prefer not to say"), memory("legally authorized to work in australia", "No"),
+      memory("years with kubernetes", "2"), memory("notice period", "None, available immediately"), memory("location", "Bangkok, Thailand"),
+      memory("will you now or in the future need visa sponsorship", "Yes")];
+    // 2026-10-15: "German proficiency" came back answered with the pronouns answer.
+    expect(matchAnswerMemory(bank, "What is your language proficiency in German?")).toBeNull();
+    expect(matchAnswerMemory(bank, "Are you legally authorized to work in the United States?")).toBeNull();
+    expect(matchAnswerMemory(bank, "How many years of experience do you have with Python?")).toBeNull();
+    expect(matchAnswerMemory(bank, "Which location do you prefer to work from, remote or office?")).toBeNull();
+    // The same question in other words still finds its answer.
+    expect(matchAnswerMemory(bank, "What are your pronouns?")?.text).toBe("Prefer not to say");
+    expect(matchAnswerMemory(bank, "How many years of experience do you have with Kubernetes?")?.text).toBe("2");
+    expect(matchAnswerMemory(bank, "What is your notice period?")?.text).toBe("None, available immediately");
+    expect(matchAnswerMemory(bank, "Location")?.text).toBe("Bangkok, Thailand");
+    expect(matchAnswerMemory(bank, "Will you now or in the future require visa sponsorship?")).toBeNull();
+    expect(matchAnswerMemory(bank, "Will you, now or in the future, need visa sponsorship?")?.text).toBe("Yes");
+  });
+
+  it("gives the pane agent the postal address the operator saved in Setup, and nothing once it is cleared", async () => {
+    const { app, headers, agent } = await fixture();
+    try {
+      const address = { line1: "99 Sukhumvit Road", line2: null, city: "Bangkok", region: null, postalCode: "10110", country: "Thailand" };
+      expect((await app.inject({ method: "PATCH", url: "/api/job-apply/profile", headers, payload: { candidate: { fullName: "Nikolaos Theodoropoulos", address } } })).statusCode).toBe(200);
+      expect((await app.inject({ method: "GET", url: "/api/cli/job-apply/profile", headers: agent })).json().candidate.address).toEqual(address);
+      expect((await app.inject({ method: "PATCH", url: "/api/job-apply/profile", headers, payload: { candidate: { fullName: "Nikolaos Theodoropoulos", address: { ...address, unit: "4B" } } } })).statusCode).toBe(422);
+      expect((await app.inject({ method: "PATCH", url: "/api/job-apply/profile", headers, payload: { candidate: { fullName: "Nikolaos Theodoropoulos", address: null } } })).statusCode).toBe(200);
+      expect((await app.inject({ method: "GET", url: "/api/cli/job-apply/profile", headers: agent })).json().candidate.address).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("serves the owner's profile, answers, tracker, pacing, mail and handoff state to the pane agent only", async () => {
     const { app, store, pane, headers, agent } = await fixture();
     try {

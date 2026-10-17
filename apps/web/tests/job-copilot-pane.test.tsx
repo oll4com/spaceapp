@@ -8,7 +8,7 @@ import { defaultJobCopilotRuntimeId, jobCopilotLaunchDecision, jobCopilotRuntime
 import { applicationWhen, postingsFromText, QueueTab } from "../src/features/job-apply-pane/QueueTab.js";
 import { profileCompleteness } from "../src/features/job-apply-pane/SetupWizard.js";
 import { StartOver } from "../src/features/job-apply-pane/StartOver.js";
-import { todayCounts } from "../src/features/job-apply-pane/useJobApply.js";
+import { handoffPostingFor, todayCounts } from "../src/features/job-apply-pane/useJobApply.js";
 import { SpaceToggle } from "../src/features/ui-controls/SpaceToggle.js";
 
 const apiMock = vi.hoisted(() => ({
@@ -58,7 +58,8 @@ const apiMock = vi.hoisted(() => ({
   agentFileDownloadUrl: (id: string) => `/api/artifacts/${id}/download`
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
-const eventsMock = vi.hoisted(() => ({ dispatchBrowserPaneActionEvent: vi.fn(), BROWSER_PANE_ACCOUNT_SELECTED_EVENT: "space:browser-pane-account-selected" }));
+const eventsMock = vi.hoisted(() => ({ dispatchBrowserPaneActionEvent: vi.fn(), BROWSER_PANE_ACCOUNT_SELECTED_EVENT: "space:browser-pane-account-selected",
+  BROWSER_PANE_CONTROL_EVENT: "space:browser-pane-control", browserPaneControlHeld: vi.fn(() => false) }));
 vi.mock("../src/features/browser-pane/events.js", () => eventsMock);
 vi.mock("../src/runtime/SpaceRuntime.js", () => ({ getSpaceRuntime: () => ({ platform: { localStorage: window.localStorage } }) }));
 
@@ -81,7 +82,7 @@ const pane: Pane = {
 
 const now = new Date().toISOString();
 const profile: JobApplyProfile = {
-  ownerUserId: "user:1", campaignStartedAt: null, candidate: { fullName: "Nikolaos Theodoropoulos", email: null, phone: null, location: null, country: null, linkedinUrl: null, githubUrl: null,
+  ownerUserId: "user:1", campaignStartedAt: null, candidate: { fullName: "Nikolaos Theodoropoulos", email: null, phone: null, address: null, location: null, country: null, linkedinUrl: null, githubUrl: null,
     websiteUrl: null, headline: null, summary: null, workAuthorization: null, needsSponsorship: true, willingToRelocate: null, salaryExpectation: null, noticePeriod: null,
     yearsOfExperience: null, skills: [], languages: [], experience: [], education: [], extra: {} },
   qaBank: [], cvArtifactId: "artifact:cv000001", coverLetterArtifactId: null, cvTextChars: 4200, mailbox: null, mailboxVerifiedAt: null, google: null, googleAccounts: [], googleAvailable: true, updatedAt: now
@@ -107,7 +108,7 @@ const events = [
   { id: "jobevt:e00001", ownerUserId: "user:1", paneId: pane.id, applicationId: null, runId: "jobrun:r00001", type: "RUN_STARTED" as const, message: "Run started: 2 queued", payload: {}, artifactId: null, createdAt: now }
 ];
 const handoffRequest = { handoffRequestId: "handoff:1", sessionId: "browser_session:1", paneId: pane.id, roomId: pane.roomId, requestedByType: "AGENT", requestedById: "cli",
-  reason: "CAPTCHA on the Ashby form", status: "REQUESTED", operatorUserId: null, operatorEmail: null, operatorRole: null, controlLeaseId: null,
+  reason: "CAPTCHA on the Globex Ashby form", status: "REQUESTED", operatorUserId: null, operatorEmail: null, operatorRole: null, controlLeaseId: null,
   requestedAt: now, expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(), acceptedAt: null, completedAt: null, expiredAt: null, cancelledAt: null, updatedAt: now };
 
 function renderPane() {
@@ -268,11 +269,11 @@ describe("JobCopilotPane", () => {
     expect(apiMock.updatePane).not.toHaveBeenCalled();
   });
 
-  it("overlays the browser when the agent asks for a handoff and hands control back", async () => {
+  it("shows a strip above the browser when the agent asks for a handoff and hands control back", async () => {
     apiMock.browserHandoff.mockResolvedValue({ handoff: handoffRequest });
     renderPane();
-    await waitFor(() => expect(screen.getByRole("alertdialog", { name: "The copilot needs you" }).textContent).toContain("CAPTCHA on the Ashby form"));
-    expect(screen.getByRole("alertdialog").textContent).toContain("Globex · Platform Engineer");
+    await waitFor(() => expect(screen.getByRole("status", { name: "The copilot needs you" }).textContent).toContain("CAPTCHA on the Globex Ashby form"));
+    expect(screen.getByRole("status", { name: "The copilot needs you" }).textContent).toContain("Globex · Platform Engineer");
     fireEvent.click(screen.getByRole("button", { name: "Take control" }));
     expect(eventsMock.dispatchBrowserPaneActionEvent).toHaveBeenCalledWith({ paneId: pane.id, action: "handoff", roomId: pane.roomId });
     apiMock.browserHandoff.mockResolvedValue({ handoff: { ...handoffRequest, status: "ACCEPTED", acceptedAt: now } });
@@ -283,12 +284,73 @@ describe("JobCopilotPane", () => {
     expect(eventsMock.dispatchBrowserPaneActionEvent).toHaveBeenCalledWith({ paneId: pane.id, action: "release", roomId: pane.roomId });
   });
 
+  it("offers Return to agent while the operator still holds the browser after the handoff ended", async () => {
+    renderPane();
+    expect(screen.queryByRole("button", { name: "Return to agent" })).toBeNull();
+    act(() => { window.dispatchEvent(new CustomEvent("space:browser-pane-control", { detail: { paneId: pane.id, held: true } })); });
+    const giveBack = await screen.findByRole("button", { name: "Return to agent" });
+    expect(giveBack.closest(".jc-handoff-strip")?.textContent).toContain("You hold the browser.");
+    fireEvent.click(screen.getByRole("button", { name: "Return to agent" }));
+    expect(eventsMock.dispatchBrowserPaneActionEvent).toHaveBeenCalledWith({ paneId: pane.id, action: "release", roomId: pane.roomId });
+    act(() => { window.dispatchEvent(new CustomEvent("space:browser-pane-control", { detail: { paneId: pane.id, held: false } })); });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Return to agent" })).toBeNull());
+  });
+
+  it("keeps a postal address in Setup → Profile and saves it with the profile", async () => {
+    apiMock.updateJobApplyProfile.mockImplementation(async (input: { candidate: JobApplyProfile["candidate"] }) => ({ profile: { ...profile, candidate: input.candidate } }));
+    renderPane();
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Setup" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
+    fireEvent.click(await screen.findByRole("button", { name: /CV & profile/ }));
+    const street = await screen.findByRole("textbox", { name: "Street address" });
+    fireEvent.change(street, { target: { value: "99 Sukhumvit Road" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "City" }), { target: { value: "Bangkok" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Postal code" }), { target: { value: "10110" } });
+    expect(screen.getByRole("textbox", { name: "State / province" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Address line 2" })).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save profile" })); });
+    await waitFor(() => expect(apiMock.updateJobApplyProfile).toHaveBeenCalled());
+    const saved = apiMock.updateJobApplyProfile.mock.calls.at(-1)![0] as { candidate: JobApplyProfile["candidate"] };
+    expect(saved.candidate.address).toEqual({ line1: "99 Sukhumvit Road", line2: null, city: "Bangkok", region: null, postalCode: "10110", country: null });
+    // Clearing every field stores no address at all.
+    for (const name of ["Street address", "City", "Postal code"]) fireEvent.change(screen.getByRole("textbox", { name }), { target: { value: "" } });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save profile" })); });
+    const cleared = apiMock.updateJobApplyProfile.mock.calls.at(-1)![0] as { candidate: JobApplyProfile["candidate"] };
+    expect(cleared.candidate.address).toBeNull();
+  });
+
+  it("names the posting the handoff is about, not another posting a parallel agent is filling", () => {
+    const base = applications[0]!;
+    const grafana = { ...base, id: "jobapp:g1", company: "Grafanalabs", role: "Staff Backend Software Engineer - Loki", status: "FILLING" as const };
+    const lalamoveOps = { ...base, id: "jobapp:l1", company: "Lalamove", role: "Lead, Platform Growth and Operations", status: "NEEDS_USER" as const };
+    const lalamoveBackend = { ...base, id: "jobapp:l2", company: "Lalamove", role: "Software Engineer, Backend", status: "QUEUED" as const };
+    const reason = "CAPTCHA: Lalamove (Lever), Software Engineer, Backend: the form is filled but NOT submitted yet.";
+    expect(handoffPostingFor(reason, [grafana, lalamoveOps, lalamoveBackend], grafana)?.id).toBe("jobapp:l2");
+    expect(handoffPostingFor("CAPTCHA: Lalamove (Lever): press Submit", [grafana, lalamoveBackend, lalamoveOps], null)?.id).toBe("jobapp:l1");
+    expect(handoffPostingFor("LOGIN: the job board asks to sign in", [grafana], grafana)).toBeNull();
+  });
+
   it("hides an expired handoff request instead of covering the browser", async () => {
     apiMock.browserHandoff.mockResolvedValue({ handoff: { ...handoffRequest, expiresAt: new Date(Date.now() - 60_000).toISOString() } });
     renderPane();
     await waitFor(() => expect(apiMock.browserHandoff).toHaveBeenCalled());
     await act(async () => { await Promise.resolve(); });
-    expect(screen.queryByRole("alertdialog", { name: "The copilot needs you" })).toBeNull();
+    expect(screen.queryByRole("status", { name: "The copilot needs you" })).toBeNull();
+  });
+
+  it("drops a request the moment it expires, even while the server still reports it as REQUESTED", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      apiMock.browserHandoff.mockResolvedValue({ handoff: { ...handoffRequest, expiresAt: new Date(Date.now() + 3_000).toISOString() } });
+      const { container } = renderPane();
+      await waitFor(() => expect(screen.getByRole("status", { name: "The copilot needs you" })).toBeTruthy());
+      expect(container.querySelector("[data-handoff]")?.getAttribute("data-handoff")).toBe("requested");
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+      expect(screen.queryByRole("status", { name: "The copilot needs you" })).toBeNull();
+      expect(container.querySelector("[data-handoff]")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps refreshing after a request hangs, so a finished handoff card goes away", async () => {
@@ -296,13 +358,13 @@ describe("JobCopilotPane", () => {
     try {
       apiMock.browserHandoff.mockResolvedValue({ handoff: handoffRequest });
       renderPane();
-      await waitFor(() => expect(screen.getByRole("alertdialog", { name: "The copilot needs you" })).toBeTruthy());
+      await waitFor(() => expect(screen.getByRole("status", { name: "The copilot needs you" })).toBeTruthy());
       // One request never answers; later the handoff is gone.
       apiMock.jobApplyRun.mockReturnValueOnce(new Promise(() => undefined));
       apiMock.browserHandoff.mockRejectedValue(new Error("not found"));
       await act(async () => { await vi.advanceTimersByTimeAsync(9_000); });
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-      await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "The copilot needs you" })).toBeNull());
+      await waitFor(() => expect(screen.queryByRole("status", { name: "The copilot needs you" })).toBeNull());
     } finally {
       vi.useRealTimers();
     }

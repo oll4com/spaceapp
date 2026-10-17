@@ -28,6 +28,16 @@ describe("Codex quotas and reset credits from Space Gateway", () => {
     expect(JSON.stringify(list)).not.toContain("v1.secret");
   });
 
+  it("shows a weekly-only window as the week, not as the 5h window", async () => {
+    const repository = new InMemoryGatewayRepository();
+    const id = `gw_account:${"8".repeat(32)}`;
+    await repository.upsertAccount({ accountId: id, provider: "CODEX", label: "Prolite", email: null, externalAccountId: "8", planType: "prolite",
+      credentialsEncrypted: "v1.secret", credentialsExpiresAt: null, source: "OAUTH", sourceRef: null, lastRefreshAt: null });
+    await repository.saveUsageWindows(id, [{ window: "PRIMARY", usedPercent: 100, resetAt: "2030-01-14T00:00:00.000Z", windowMinutes: 10080 }]);
+    const [account] = (await createGatewayCodexUsageProvider({ repository, now })()).data;
+    expect(account).toMatchObject({ fiveHourRemainingPercent: null, fiveHourResetAt: null, weeklyRemainingPercent: 0, weeklyResetAt: "2030-01-14T00:00:00.000Z" });
+  });
+
   it("leaves out accounts Space Gateway does not use: paused, deactivated and signed out", async () => {
     const repository = await repositoryWithAccounts();
     const add = async (digit: string, planType: string, credentialsExpiresAt: string | null) => {

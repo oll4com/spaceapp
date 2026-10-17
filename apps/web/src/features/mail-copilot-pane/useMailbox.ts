@@ -21,7 +21,9 @@ export interface MailboxState {
   setSelection(update: Partial<MailboxSelection>): void;
   refresh(): Promise<void>;
   loadMore(): Promise<void>;
-  openThread(thread: Pick<MailThreadSummary, "account" | "threadId"> | null, images?: boolean): Promise<void>;
+  openThread(thread: Pick<MailThreadSummary, "account" | "threadId"> | null, images?: boolean): Promise<MailThread | null>;
+  /** Opens one conversation and narrows the list to it, as a search for its Message-ID. */
+  showOnlyThread(thread: Pick<MailThreadSummary, "account" | "threadId">): Promise<void>;
   /** Replaces one thread row after an action (read, star, …) without a reload. */
   patchThread(threadId: string, update: Partial<MailThreadSummary>): void;
   removeThread(threadId: string): void;
@@ -91,19 +93,29 @@ export function useMailbox(paneId: string, enabled: boolean, initial: Partial<Ma
   }, [loadingMore, nextPageToken, paneId]);
 
   const openThread = useCallback(async (target: Pick<MailThreadSummary, "account" | "threadId"> | null, images = false) => {
-    if (!target) { setThread(null); setSelectedThreadId(null); return; }
+    if (!target) { setThread(null); setSelectedThreadId(null); return null; }
     setSelectedThreadId(target.threadId);
     setLoadingThread(true);
     try {
       const response = await api.mailThread(paneId, target.account, target.threadId, images);
       setThread(response.thread);
       setError(null);
+      return response.thread;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The conversation could not be loaded.");
+      return null;
     } finally {
       setLoadingThread(false);
     }
   }, [paneId]);
+
+  // A Gmail search, so the search box shows the filter and clearing it lifts it; the open conversation stays.
+  const showOnlyThread = useCallback(async (target: Pick<MailThreadSummary, "account" | "threadId">) => {
+    const loaded = await openThread(target);
+    if (!loaded) return;
+    const messageId = loaded.messages.find((message) => message.rfcMessageId)?.rfcMessageId?.replace(/^<|>$/g, "");
+    setSelectionState({ account: target.account, labelId: "ALL", query: messageId ? `rfc822msgid:${messageId}` : "" });
+  }, [openThread]);
 
   const setSelection = useCallback((update: Partial<MailboxSelection>) => {
     setSelectionState((current) => ({ ...current, ...update }));
@@ -141,6 +153,6 @@ export function useMailbox(paneId: string, enabled: boolean, initial: Partial<Ma
   }, []);
 
   return useMemo(() => ({ accounts, labels, threads, nextPageToken, errors, thread, selectedThreadId, loading, loadingMore, loadingThread, error, selection,
-    setSelection, refresh, loadMore, openThread, patchThread, removeThread }),
-    [accounts, labels, threads, nextPageToken, errors, thread, selectedThreadId, loading, loadingMore, loadingThread, error, selection, setSelection, refresh, loadMore, openThread, patchThread, removeThread]);
+    setSelection, refresh, loadMore, openThread, showOnlyThread, patchThread, removeThread }),
+    [accounts, labels, threads, nextPageToken, errors, thread, selectedThreadId, loading, loadingMore, loadingThread, error, selection, setSelection, refresh, loadMore, openThread, showOnlyThread, patchThread, removeThread]);
 }

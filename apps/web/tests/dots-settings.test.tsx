@@ -76,6 +76,11 @@ describe("Settings → Dots", () => {
     expect(orbitTabs.getByRole("tab", { name: "Evaluation" })).toBeTruthy();
     expect(screen.getByRole("form", { name: "Orbit profile" })).toBeTruthy();
     fireEvent.keyDown(orbitTabs.getByRole("tab", { name: "Profile" }), { key: "ArrowRight" });
+    expect(orbitTabs.getByRole("tab", { name: "Personality" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("heading", { name: "How Orbit answers your tone" })).toBeTruthy();
+    expect(screen.getByText("Steady mission commander")).toBeTruthy();
+    expect(within(screen.getByRole("list", { name: "Orbit's expressions" })).getAllByRole("button")).toHaveLength(16);
+    fireEvent.keyDown(orbitTabs.getByRole("tab", { name: "Personality" }), { key: "ArrowRight" });
     expect(orbitTabs.getByRole("tab", { name: "Reminders and goals" }).getAttribute("aria-selected")).toBe("true");
   });
   it("applies a request once, so reopening Settings does not jump back to it", async () => {

@@ -100,6 +100,10 @@ export function MailCopilotPane({ pane, isVisible, terminal }: MailCopilotPanePr
     void mailbox.openThread({ account, threadId });
     if (layout === "stacked") setRail((current) => ({ ...current, tab: "mail" }));
   }, [layout, mailbox]);
+  const showOnlyThread = useCallback((account: string, threadId: string) => {
+    void mailbox.showOnlyThread({ account, threadId });
+    if (layout === "stacked") setRail((current) => ({ ...current, tab: "mail" }));
+  }, [layout, mailbox]);
   useEffect(() => {
     const onOpen = (event: Event) => {
       const detail = (event as CustomEvent<{ paneId?: string; target?: string }>).detail;
@@ -164,7 +168,7 @@ export function MailCopilotPane({ pane, isVisible, terminal }: MailCopilotPanePr
         <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label="Resize the copilot rail" aria-hidden={rail.collapsed ? "true" : undefined}
           onPointerDown={onResizeStart} onPointerMove={onResizeMove} onPointerUp={onResizeEnd} onPointerCancel={onResizeEnd} onDoubleClick={() => setRail((current) => ({ ...current, width: RAIL_DEFAULT_WIDTH }))} />
         <CopilotRail tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
-          {railOpen && activeTab === "activity" ? <ActivityTab paneId={pane.id} events={data.events} pending={pending} onChanged={() => void data.refresh()} onOpenThread={openThread} /> : null}
+          {railOpen && activeTab === "activity" ? <ActivityTab paneId={pane.id} events={data.events} pending={pending} onChanged={() => void data.refresh()} onOpenThread={openThread} onShowThread={showOnlyThread} /> : null}
           {railOpen && activeTab === "memory" ? <MemoryTab paneId={pane.id} /> : null}
           {railOpen && activeTab === "rules" ? <RulesTab paneId={pane.id} /> : null}
           {railOpen && activeTab === "setup" && data.settings ? (

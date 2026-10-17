@@ -108,7 +108,6 @@
   "packages/db/tests/job-apply-repository-postgres.test.ts": "needs a PostgreSQL test database",
   "packages/db/tests/marketing-copilot-repository-postgres.test.ts": "needs a PostgreSQL test database",
   "packages/db/tests/memory-concurrency-postgres.test.ts": "needs a PostgreSQL test database",
-  "packages/db/tests/migration-identities.test.ts": "fails on the exported tree (review F15 measurement 2026-10-14)",
   "packages/db/tests/migration-install-upgrade-postgres.test.ts": "needs a PostgreSQL test database",
   "packages/db/tests/room-agent-monitor-postgres.test.ts": "needs a PostgreSQL test database",
   "packages/db/tests/room-deletion-postgres.test.ts": "needs a PostgreSQL test database",

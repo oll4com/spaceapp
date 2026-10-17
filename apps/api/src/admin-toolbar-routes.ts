@@ -198,7 +198,7 @@ export function registerAdminToolbarRoutes(app: FastifyInstance, options: {
     { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
     async (request, reply) => {
       if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Codex-LB speed telemetry requires the ADMIN role.");
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Codex speed telemetry requires the ADMIN role.");
       }
       await cliRuntimeVisibility.assertEnabled("cli:codex");
       return codexLbSpeedDefaultsResponseSchema.parse(await codexLbSpeedDefaultsProvider());
@@ -209,7 +209,7 @@ export function registerAdminToolbarRoutes(app: FastifyInstance, options: {
     { config: { rateLimit: { max: 6, timeWindow: "5 minutes" } } },
     async (request, reply) => {
       if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Codex-LB speed updates require the ADMIN role.");
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Codex speed updates require the ADMIN role.");
       }
       await cliRuntimeVisibility.assertEnabled("cli:codex");
       const { modelId } = codexLbSpeedModelParamsSchema.parse(request.params);
@@ -223,7 +223,7 @@ export function registerAdminToolbarRoutes(app: FastifyInstance, options: {
         const previousTier = beforeModel.tier;
         const result = codexLbSpeedDefaultsResponseSchema.parse(await codexLbSpeedDefaultUpdater(modelId, tier));
         if (result.models.find((model) => model.modelId === modelId)?.tier !== tier) {
-          throw new SpaceConflictError("Codex-LB speed update could not be confirmed.");
+          throw new SpaceConflictError("Codex speed update could not be confirmed.");
         }
         try {
           await recordAudit(store, request, {
@@ -238,16 +238,16 @@ export function registerAdminToolbarRoutes(app: FastifyInstance, options: {
               await codexLbSpeedDefaultUpdater(modelId, previousTier)
             );
             if (restored.models.find((model) => model.modelId === modelId)?.tier !== previousTier) {
-              throw new Error("Codex-LB speed rollback was not confirmed.");
+              throw new Error("Codex speed rollback was not confirmed.");
             }
           } catch (rollbackError) {
             request.log.error(
               { auditError, rollbackError, requestId: request.requestIdForSpace },
-              "Codex-LB speed update audit and rollback failed"
+              "Codex speed update audit and rollback failed"
             );
-            throw new SpaceConflictError("Codex-LB speed update audit failed and recovery is required.");
+            throw new SpaceConflictError("Codex speed update audit failed and recovery is required.");
           }
-          throw new SpaceConflictError("Codex-LB speed update audit failed; the previous default was restored.");
+          throw new SpaceConflictError("Codex speed update audit failed; the previous default was restored.");
         }
         return result;
       });

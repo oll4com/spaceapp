@@ -19,7 +19,9 @@ export function normalizeWorkspaceName(value) {
   let end = normalized.length;
   while (start < end && normalized[start] === "-") start += 1;
   while (end > start && normalized[end - 1] === "-") end -= 1;
-  return normalized.slice(start, end) || DEFAULT_WORKSPACE_NAME;
+  const name = normalized.slice(start, end);
+  // "." and ".." would point the mount at /workspaces itself or its parent.
+  return name && !/^\.+$/.test(name) ? name : DEFAULT_WORKSPACE_NAME;
 }
 
 export function stripTrailingLineEndings(value) {

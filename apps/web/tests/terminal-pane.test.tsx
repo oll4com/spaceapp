@@ -551,6 +551,13 @@ describe("Space terminal panes", () => {
     expect(shouldRefocusTerminalAfterInput("draft text")).toBe(true);
   });
 
+  it("does not refocus the terminal after mouse reports, so a pointer move does not close an open pane menu", () => {
+    expect(shouldRefocusTerminalAfterInput("\u001b[<35;12;4M")).toBe(false);
+    expect(shouldRefocusTerminalAfterInput("\u001b[<35;12;4M\u001b[<35;13;4M")).toBe(false);
+    expect(shouldRefocusTerminalAfterInput("\u001b[<0;12;4m")).toBe(false);
+    expect(shouldRefocusTerminalAfterInput("\u001b[<35;12;4Mx")).toBe(true);
+  });
+
   it("classifies only complete xterm protocol replies as non-mutating input", () => {
     expect(isNonMutatingTerminalProtocolResponse("\u001b[2;15R")).toBe(true);
     expect(isNonMutatingTerminalProtocolResponse("\u001b[?1;2c")).toBe(true);

@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { Room } from "@space/contracts";
 import type { SideSurfaces } from "../docks/useSideSurfaces.js";
 import { SpaceBrand } from "../../SpaceBrand.js";
@@ -34,6 +35,7 @@ export function RoomTitleBar({
     cancelRoomRename, submitRoomRename, roomNamePreview, setRoomNamePreview, roomNameHoldTimerRef
   } = rename;
   const { sideSurfaceToggleLabel, isSideSurfaceOpen, activeSideSurface, toggleSideSurface } = docks;
+  const titleSwipeRef = useRef<{ x: number; y: number; at: number } | null>(null);
   return (
     <div className="board-toolbar-main">
       <div className="board-title-row">
@@ -85,11 +87,22 @@ export function RoomTitleBar({
                 if (shellMode !== "mobile") return;
                 event.preventDefault();
                 setRoomNamePreview(presentationRoom?.name ?? "No room");
-              }} onTouchStart={shellMode === "mobile" ? () => {
+              }} onTouchStart={shellMode === "mobile" ? (event) => {
                 const name = presentationRoom?.name ?? "No room";
+                const touch = event.touches[0];
+                titleSwipeRef.current = touch ? { x: touch.clientX, y: touch.clientY, at: Date.now() } : null;
                 roomNameHoldTimerRef.current = window.setTimeout(() => setRoomNamePreview(name), 500);
-              } : undefined} onTouchEnd={() => {
+              } : undefined} onTouchEnd={(event) => {
                 if (roomNameHoldTimerRef.current !== null) window.clearTimeout(roomNameHoldTimerRef.current);
+                // A horizontal swipe on the room title moves between rooms, like the pane title swipe moves between panes.
+                const start = titleSwipeRef.current;
+                const touch = event.changedTouches[0];
+                titleSwipeRef.current = null;
+                if (!start || !touch || !canNavigateRooms || Date.now() - start.at > 800) return;
+                const dx = touch.clientX - start.x;
+                if (Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(touch.clientY - start.y) * 1.5) return;
+                const target = dx < 0 ? nextRoom : previousRoom;
+                if (target) void selectRoom(target.id);
               }} onTouchMove={() => {
                 if (roomNameHoldTimerRef.current !== null) window.clearTimeout(roomNameHoldTimerRef.current);
               }}>{presentationRoom?.name ?? "No room"}</h2>

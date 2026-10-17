@@ -50,7 +50,7 @@ describe("Gateway normalized Realtime protocol", () => {
     const other = harness(); ready(other); other.receive(call("c1")); other.close(); await flush();
     expect(other.execute).not.toHaveBeenCalled();
   });
-  it("pins queued tool guards before a newer input or room change", async () => {
+  it("keeps queued tool guards across a newer input in the same room and drops them on a room change", async () => {
     const guards: Array<() => string | undefined> = [];
     let finish!: () => void;
     const first = new Promise<void>(resolve => { finish = resolve; });
@@ -68,10 +68,11 @@ describe("Gateway normalized Realtime protocol", () => {
     h.receive({ type: "response-created", responseId: "r2" });
     finish(); await flush();
     expect(guards).toHaveLength(2);
-    expect(guards.every(guard => guard() === undefined)).toBe(true);
+    // Talking again in the same room keeps earlier commands (operator review 2026-10-15).
+    expect(guards.every(guard => guard() === "room:one")).toBe(true);
     h.receive({ ...call("new"), responseId: "r2" }); await flush();
     expect(guards[2]!()).toBe("room:one");
-    h.invalidateCommands(); expect(guards[2]!()).toBeUndefined();
+    h.invalidateCommands(); expect(guards.every(guard => guard() === undefined)).toBe(true);
   });
   it("rejects disabled tools and malformed arguments before execution", async () => {
     for (const invalid of [{ ...call("c1"), name: "not_enabled" }, { ...call("c1"), arguments: "[]" }, { ...call("c1"), arguments: "broken" }]) {

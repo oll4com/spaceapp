@@ -2,21 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import { MARKETING_CHANNEL_LABELS, MARKETING_CHANNELS, type Pane } from "@space/contracts";
 import { api } from "../../api.js";
 import { dispatchBrowserPaneActionEvent } from "../browser-pane/events.js";
-import { HandoffOverlay } from "../copilot-kit/HandoffOverlay.js";
+import { HandoffOverlay, HeldBrowserStrip } from "../copilot-kit/HandoffOverlay.js";
 import { CopilotRail, type CopilotRailTabDefinition } from "../copilot-kit/CopilotRail.js";
 import { MARKETING_COPILOT_KIND } from "../copilot-kit/copilot-kind.js";
 import { useCopilotLayout } from "../copilot-kit/copilot-layout.js";
 import { copilotRuntimeOptions } from "../copilot-kit/copilot-runtimes.js";
 import { RAIL_DEFAULT_WIDTH, RAIL_MAX_WIDTH, RAIL_MIN_WIDTH, readRailPreference, writeRailPreference, type RailPreference } from "../copilot-kit/rail-preference.js";
 import { useCopilotAgent } from "../copilot-kit/useCopilotAgent.js";
-import { Activity, Brain, FileText, Globe, Settings, Terminal, TrendingUp } from "../ui-theme/app-icons.js";
+import { Activity, Bookmark, Brain, FileText, Globe, Settings, Terminal, TrendingUp } from "../ui-theme/app-icons.js";
 import { ActivityTab } from "./ActivityTab.js";
 import { AnalyticsTab } from "./AnalyticsTab.js";
+import { BookmarksTab } from "./BookmarksTab.js";
 import { MarketingCommandBar } from "./CommandBar.js";
 import { MemoryTab } from "./MemoryTab.js";
 import { PostsTab } from "./PostsTab.js";
 import { SetupTab } from "./SetupTab.js";
 import { useMarketingCopilotData } from "./useMarketingCopilot.js";
+import { useBrowserControlHeld, useLiveHandoff } from "../copilot-kit/live-handoff.js";
 import "../copilot-kit/copilot-pane.css";
 import "./marketing-copilot-pane.css";
 
@@ -29,10 +31,10 @@ export interface MarketingCopilotPaneProps {
   browser: ReactNode;
 }
 
-export type MarketingRailTab = "browser" | "posts" | "activity" | "analytics" | "memory" | "setup" | "terminal";
-const RAIL_TABS: readonly MarketingRailTab[] = ["posts", "activity", "analytics", "memory", "setup", "terminal"];
-const TAB_LABELS: Record<MarketingRailTab, string> = { browser: "Browser", posts: "Posts", activity: "Activity", analytics: "Analytics", memory: "Memory", setup: "Setup", terminal: "Terminal" };
-const TAB_ICONS = { browser: Globe, posts: FileText, activity: Activity, analytics: TrendingUp, memory: Brain, setup: Settings, terminal: Terminal } as const;
+export type MarketingRailTab = "browser" | "posts" | "activity" | "analytics" | "memory" | "bookmarks" | "setup" | "terminal";
+const RAIL_TABS: readonly MarketingRailTab[] = ["posts", "activity", "analytics", "memory", "bookmarks", "setup", "terminal"];
+const TAB_LABELS: Record<MarketingRailTab, string> = { browser: "Browser", posts: "Posts", activity: "Activity", analytics: "Analytics", memory: "Memory", bookmarks: "Bookmarks", setup: "Setup", terminal: "Terminal" };
+const TAB_ICONS = { browser: Globe, posts: FileText, activity: Activity, analytics: TrendingUp, memory: Brain, bookmarks: Bookmark, setup: Settings, terminal: Terminal } as const;
 
 function railStorageKey(paneId: string): string {
   return `space:marketing-copilot:rail:${paneId}`;
@@ -68,7 +70,8 @@ export function MarketingCopilotPane({ pane, isVisible, terminal, browser }: Mar
   const onSwitched = useCallback(() => { setRail((current) => ({ ...current, collapsed: false, tab: "terminal" })); void data.refresh(); }, [data]);
   const agent = useCopilotAgent({ kind: MARKETING_COPILOT_KIND, pane, runtimeOptions, onSwitched, onNotice: setNotice });
   const pending = useMemo(() => data.run?.pending ?? [], [data.run]);
-  const handoff = data.handoff && (data.handoff.status === "REQUESTED" || data.handoff.status === "ACCEPTED") ? data.handoff : null;
+  const handoff = useLiveHandoff(data.handoff);
+  const controlHeld = useBrowserControlHeld(pane.id);
   const publishing = useMemo(() => data.posts.find((post) => post.status === "PUBLISHING") ?? null, [data.posts]);
   // A new handoff request brings the browser forward on phones (it is always visible in the split layout).
   const lastHandoffRef = useRef<string | null>(null);
@@ -167,7 +170,8 @@ export function MarketingCopilotPane({ pane, isVisible, terminal, browser }: Mar
         <section className="jc-browser" aria-label="Live browser" data-active={browserShown ? "true" : "false"} aria-hidden={browserShown ? undefined : "true"}>
           {browser}
           {handoff ? <HandoffOverlay handoff={handoff} detail={publishing ? `Publishing on ${MARKETING_CHANNEL_LABELS[publishing.channel]}${publishing.title ? `: ${publishing.title}` : ""}` : null}
-            onTakeControl={takeControl} onReturnToAgent={returnToAgent} /> : null}
+            onTakeControl={takeControl} onReturnToAgent={returnToAgent} />
+            : controlHeld ? <HeldBrowserStrip onReturnToAgent={returnToAgent} /> : null}
         </section>
         <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label="Resize the copilot rail" aria-hidden={rail.collapsed ? "true" : undefined}
           onPointerDown={onResizeStart} onPointerMove={onResizeMove} onPointerUp={onResizeEnd} onPointerCancel={onResizeEnd} onDoubleClick={() => setRail((current) => ({ ...current, width: RAIL_DEFAULT_WIDTH }))} />
@@ -176,6 +180,7 @@ export function MarketingCopilotPane({ pane, isVisible, terminal, browser }: Mar
           {railOpen && activeTab === "activity" ? <ActivityTab paneId={pane.id} events={data.events} pending={pending} onChanged={() => void data.refresh()} onOpenPosts={() => selectTab("posts")} /> : null}
           {railOpen && activeTab === "analytics" ? <AnalyticsTab /> : null}
           {railOpen && activeTab === "memory" ? <MemoryTab paneId={pane.id} /> : null}
+          {railOpen && activeTab === "bookmarks" ? <BookmarksTab paneId={pane.id} onOpened={() => { if (layout === "stacked") selectTab("browser"); }} /> : null}
           {railOpen && activeTab === "setup" && data.settings ? (
             <SetupTab pane={pane} settings={data.settings} onOpenBrowser={() => { if (layout === "stacked") selectTab("browser"); }} runtimeOptions={runtimeOptions} switching={agent.switching} accountRevision={agent.accountRevision}
               onSettingsChange={data.setSettings} onSwitchAgent={(runtimeId, accountProfileId) => void agent.switchAgent(runtimeId, accountProfileId)} onSetDefault={() => void agent.setAsDefault()} />

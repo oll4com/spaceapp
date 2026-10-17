@@ -21,7 +21,7 @@ const newMailRuleId = () => `mailrule:${randomBytes(9).toString("base64url")}`;
 const newMailActionId = () => `mailact:${randomBytes(9).toString("base64url")}`;
 export type MailActionCreate = Omit<MailActionRecord, "id" | "occurredAt"> & { occurredAt?: string };
 /** Newest first; every filter narrows. */
-export interface MailActionFilter { accountEmail?: string; threadId?: string; fromAddress?: string; fromDomain?: string; actions?: string[]; actors?: string[]; since?: string; limit: number }
+export interface MailActionFilter { accountEmail?: string; threadId?: string; fromAddress?: string; fromDomain?: string; actions?: string[]; actors?: string[]; sources?: string[]; since?: string; limit: number }
 
 export interface MailCopilotRepository {
   listMemory(owner: string, query: MailCopilotMemoryQuery): Promise<MailCopilotMemory[]>;
@@ -34,7 +34,7 @@ export interface MailCopilotRepository {
   createEvent(input: MailEventCreate): Promise<MailCopilotEvent>;
   listEvents(owner: string, filter: MailEventFilter): Promise<MailCopilotEvent[]>;
   getEvent(owner: string, id: string): Promise<MailCopilotEvent | null>;
-  /** Atomically takes the oldest PENDING work item (or one TAKEN longer than `staleMs` ago) for the pane. */
+  /** Atomically takes the next work item for the pane: the operator's hand-offs (FIX_REQUESTED) first, then the oldest PENDING one (or one TAKEN longer than `staleMs` ago). */
   takeNextItem(owner: string, paneId: string, staleMs: number): Promise<MailCopilotEvent | null>;
   countPendingItems(owner: string): Promise<number>;
   setItemStatus(owner: string, id: string, status: "PENDING" | "TAKEN" | "DONE"): Promise<MailCopilotEvent | null>;
@@ -56,7 +56,7 @@ export interface MailCopilotRepository {
   dispose(): Promise<void>;
 }
 
-const emptyCounters = { taken: 0, replied: 0, drafted: 0, archived: 0, labeled: 0, skipped: 0, needsUser: 0 };
+const emptyCounters = { taken: 0, replied: 0, drafted: 0, archived: 0, labeled: 0, skipped: 0, needsUser: 0, fixed: 0 };
 function tokens(text: string): string[] { return text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 1); }
 function scope(memory: Pick<MailCopilotMemory, "contactEmail" | "domain" | "accountEmail">): string { return `${memory.contactEmail ?? ""}|${memory.domain ?? ""}|${memory.accountEmail ?? ""}`; }
 
@@ -126,7 +126,9 @@ export class InMemoryMailCopilotRepository implements MailCopilotRepository {
   async takeNextItem(owner: string, paneId: string, staleMs: number) {
     const at = this.now();
     const stale = new Date(Date.parse(at) - staleMs).toISOString();
-    const index = this.events.findIndex((event) => event.ownerUserId === owner && (event.status === "PENDING" || (event.status === "TAKEN" && String(event.payload.takenAt ?? "") < stale)));
+    const ready = (event: MailCopilotEvent) => event.ownerUserId === owner && (event.status === "PENDING" || (event.status === "TAKEN" && String(event.payload.takenAt ?? "") < stale));
+    const fix = this.events.findIndex((event) => ready(event) && event.type === "FIX_REQUESTED");
+    const index = fix >= 0 ? fix : this.events.findIndex(ready);
     if (index < 0) return null;
     const taken = { ...this.events[index]!, status: "TAKEN" as const, payload: { ...this.events[index]!.payload, takenAt: at, takenByPaneId: paneId } };
     this.events[index] = taken;
@@ -191,7 +193,8 @@ export class InMemoryMailCopilotRepository implements MailCopilotRepository {
   async listActions(owner: string, filter: MailActionFilter) {
     return this.actions.filter((action) => action.ownerUserId === owner && (!filter.accountEmail || action.accountEmail === filter.accountEmail) && (!filter.threadId || action.threadId === filter.threadId)
       && (!filter.fromAddress || action.fromAddress === filter.fromAddress) && (!filter.fromDomain || action.fromDomain === filter.fromDomain)
-      && (!filter.actions?.length || filter.actions.includes(action.action)) && (!filter.actors?.length || filter.actors.includes(action.actor)) && (!filter.since || action.occurredAt > filter.since))
+      && (!filter.actions?.length || filter.actions.includes(action.action)) && (!filter.actors?.length || filter.actors.includes(action.actor)) && (!filter.sources?.length || filter.sources.includes(action.source))
+      && (!filter.since || action.occurredAt > filter.since))
       .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt) || right.id.localeCompare(left.id)).slice(0, filter.limit).map((action) => ({ ...action, labelIds: [...action.labelIds] }));
   }
   async deleteActions(owner: string, ids: string[]) {
@@ -291,7 +294,7 @@ export class PostgresMailCopilotRepository implements MailCopilotRepository {
     const row = (await this.pool.query<Record<string, unknown>>(`UPDATE mail_copilot_events SET status='TAKEN', taken_by_pane_id=$2, taken_at=now(),
         payload = payload || jsonb_build_object('takenAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), 'takenByPaneId', $2::text)
       WHERE id = (SELECT id FROM mail_copilot_events WHERE owner_user_id=$1 AND (status='PENDING' OR (status='TAKEN' AND taken_at < now() - ($3::int * interval '1 millisecond')))
-        ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING ${eventColumns}`, [owner, paneId, staleMs])).rows[0];
+        ORDER BY (type = 'FIX_REQUESTED') DESC, created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING ${eventColumns}`, [owner, paneId, staleMs])).rows[0];
     return row ? eventRow(row) : null;
   }
   async countPendingItems(owner: string) {
@@ -371,9 +374,10 @@ export class PostgresMailCopilotRepository implements MailCopilotRepository {
     const rows = await this.pool.query<Record<string, unknown>>(`SELECT ${actionColumns} FROM mail_copilot_actions WHERE owner_user_id=$1
         AND ($2::text IS NULL OR account_email=$2) AND ($3::text IS NULL OR thread_id=$3) AND ($4::text IS NULL OR from_address=$4) AND ($5::text IS NULL OR from_domain=$5)
         AND ($6::text[] IS NULL OR action = ANY($6::text[])) AND ($7::text[] IS NULL OR actor = ANY($7::text[])) AND ($8::timestamptz IS NULL OR occurred_at > $8)
+        AND ($10::text[] IS NULL OR source = ANY($10::text[]))
       ORDER BY occurred_at DESC, id DESC LIMIT $9`,
       [owner, filter.accountEmail ?? null, filter.threadId ?? null, filter.fromAddress ?? null, filter.fromDomain ?? null, filter.actions?.length ? filter.actions : null,
-        filter.actors?.length ? filter.actors : null, filter.since ?? null, filter.limit]);
+        filter.actors?.length ? filter.actors : null, filter.since ?? null, filter.limit, filter.sources?.length ? filter.sources : null]);
     return rows.rows.map(actionRow);
   }
   async deleteActions(owner: string, ids: string[]) {

@@ -5,6 +5,7 @@ import type { AutoRouteShadowRepository } from "@space/db";
 import { createApp } from "../src/app.js";
 import { getApiConfig } from "../src/config.js";
 import { createSpaceAgentAdapter as createCachedSpaceAgentAdapter, type AutoRouteFacts } from "../src/space-agent.js";
+import { cliRuntimeModelsChatProviderAdapter } from "../src/chat-providers.js";
 import { cookieName } from "../src/auth.js";
 import { createDecisionsService } from "../src/decisions-service.js";
 import type { TurnStarter } from "../src/turns.js";
@@ -212,6 +213,24 @@ describe("Stage 5 Dot turns: attachment coverage and proactive work", () => {
     await failing.adapter.sendMessage({ pane: failing.pane, content: "Hello", operatorUserId: "user:owner", clientRequestId: "request:auto-2", traceId: "trace:auto-2" });
     expect((await failing.store.getLatestSpaceAgentRun(other.binding.sessionId!))?.execution?.autoRoute).toBeUndefined();
     expect(failing.starter.started).toHaveLength(1);
+  });
+  it("gives a Dot on a CLI runtime its identity and personality in the prompt", async () => {
+    const store = new InMemorySpaceStore(); useVerifiedDefaultProvider(store);
+    const room = store.createRoom({ name: "Dot on Claude", initialPaneCount: 1 });
+    const pane = store.listPanes(room.id)[0]!;
+    const starter = new FakeCodexTurnStarter();
+    const dotTurnContext = vi.fn(async () => ({ toolGateway: true, developerContext: "Codex only" }));
+    const dotIdentity = vi.fn(async () => "You are Nova.\nYour personality: Warm encourager.");
+    const adapter = createSpaceAgentAdapter({ store, config: enabledConfig(), codexTurnStarter: starter, codexAgentControl: new FakeCodexAgentControl(),
+      validateDot: async () => undefined, dotTurnContext, dotIdentity,
+      cliChatProviderAdapters: [cliRuntimeModelsChatProviderAdapter({ runtimeId: "cli:claude",
+        executeModels: async () => "claude-opus-5-5\tClaude Opus 5.5\thigh\thigh", resolveState: async () => ({ enabled: true, reason: null }) })] });
+    await adapter.createOrRestoreSession({ pane, dotId: orbit, selectedModelConfigId: "cli:claude-v1|claude-opus-5-5|high" });
+    await adapter.sendMessage({ pane, content: "Fix it now!!", operatorUserId: "user:owner", clientRequestId: "request:cli-dot-1", traceId: "trace:cli-dot-1" });
+    expect(starter.started[0]).toMatchObject({ providerId: "cli:claude" });
+    expect(starter.started[0]!.prompt).toMatch(/^You are Nova\.\nYour personality: Warm encourager\.\n\n[\s\S]*User prompt:\nFix it now!!$/);
+    expect(starter.started[0]!.developerContext).toBeUndefined();
+    expect(dotTurnContext).not.toHaveBeenCalled();
   });
   it("reads attachments before a gateway turn and records what was read", async () => {
     const f = fixture(true);

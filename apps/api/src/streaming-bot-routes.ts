@@ -22,7 +22,7 @@ function parseBody<TSchema extends z.ZodType>(schema: TSchema, body: unknown): z
 export function registerStreamingBotRoutes(app: FastifyInstance, options: {
   streamingService: Pick<StreamingService, "overlaySnapshot">;
   recordAudit: AuditRecorder;
-  streamingBotService: Pick<StreamingBotService, "getSettings" | "modelOptions" | "updateSettings" | "setPaused" | "getStatus" | "listActivity" | "test" | "clearMemory" | "searchMemory" | "listReviewedMemory" | "listModerationActions" | "sendOperatorReply" | "timeoutFromActivity" | "undoModerationAction" | "createReviewedMemory" | "updateReviewedMemory" | "deleteReviewedMemory">;
+  streamingBotService: Pick<StreamingBotService, "getSettings" | "modelOptions" | "updateSettings" | "setPaused" | "getStatus" | "listActivity" | "test" | "clearMemory" | "searchMemory" | "listReviewedMemory" | "listModerationActions" | "sendOperatorReply" | "timeoutFromActivity" | "timeoutReviewedAction" | "undoModerationAction" | "createReviewedMemory" | "updateReviewedMemory" | "deleteReviewedMemory">;
   decisionsService: Pick<DecisionsService, "decide">;
   store: Pick<SpaceStore, "listSkills">;
   executeMcpToolWithPolicy: ReturnType<typeof createMcpToolExecutor>;
@@ -228,6 +228,14 @@ export function registerStreamingBotRoutes(app: FastifyInstance, options: {
       if (error instanceof StreamingBotServiceError) return sendApiError(reply, error.statusCode, error.code, error.message);
       throw error;
     }
+  });
+  app.post("/api/admin/streaming/bot/moderation/:id/timeout", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming moderation requires the ADMIN role.");
+    const { id } = z.object({ id: z.string().min(1).max(200) }).strict().parse(request.params);
+    const { durationSeconds } = parseBody(z.object({ durationSeconds: z.union([z.literal(300), z.literal(1800)]) }).strict(), request.body);
+    const action = await streamingBotService.timeoutReviewedAction(id, durationSeconds);
+    await recordAudit(request, { action: "admin.streaming.moderation_review_timeout", targetType: "streaming_moderation_action", targetId: id, metadata: { platform: action.platform, durationSeconds } });
+    return action;
   });
   app.post("/api/admin/streaming/bot/moderation/:id/undo", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming moderation requires the ADMIN role.");

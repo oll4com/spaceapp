@@ -286,6 +286,25 @@ describe("Snip Tool capture", () => {
     await waitFor(() => expect(navigator.clipboard.write).toHaveBeenCalledTimes(2));
   });
 
+  it("captures the full screen 3 seconds after the timer is pressed, and a second press cancels", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<SnipToolOverlay isOpen onClose={vi.fn()} onCapture={vi.fn().mockResolvedValue(undefined)} />);
+      fireEvent.click(screen.getByRole("button", { name: "Capture in 3 seconds" }));
+      act(() => { vi.advanceTimersByTime(1000); });
+      fireEvent.click(screen.getByRole("button", { name: "Cancel delayed capture (2)" }));
+      act(() => { vi.advanceTimersByTime(5000); });
+      expect(captureDomFrame).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Capture in 3 seconds" }));
+      act(() => { vi.advanceTimersByTime(2000); });
+      expect(captureDomFrame).not.toHaveBeenCalled();
+      await act(async () => { vi.advanceTimersByTime(1000); });
+      expect(vi.mocked(captureDomFrame).mock.calls[0]![0].region).toEqual({ x: 0, y: 0, width: 800, height: 600 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("auto-closes after a capture only when autoCloseOnCapture is set", async () => {
     const onClose = vi.fn(), onCapture = vi.fn().mockResolvedValue(undefined);
     render(<SnipToolOverlay isOpen autoCloseOnCapture onClose={onClose} activePaneId="pane:1" onCapture={onCapture} />);

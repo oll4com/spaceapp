@@ -38,6 +38,7 @@
   transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 .snip-ui .snip-icon-btn svg { width: 16px; height: 16px; }
+.snip-ui .snip-countdown { font-size: 14px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
 .snip-ui .snip-icon-btn:hover:not(:disabled) { background: var(--snip-raise-hover); border-color: var(--snip-border); color: var(--snip-text); }
 .snip-ui .snip-icon-btn:is(.is-active, [aria-pressed="true"]) {
   border-color: var(--snip-accent); background: var(--snip-accent-tint); color: #ffffff;

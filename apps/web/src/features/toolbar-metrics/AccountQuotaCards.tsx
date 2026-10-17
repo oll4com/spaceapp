@@ -153,14 +153,17 @@ export function AccountQuotaCard({ entry, clock, settings }: {
         <div key={row.key} className="account-quota-row">
           {row.label ? <span className="account-quota-row-label">{row.label}</span> : null}
           <div className="account-quota-cells">
-            <QuotaCell
-              label="5h"
-              remaining={row.quota.fiveHourRemainingPercent}
-              resetAt={row.quota.fiveHourResetAt}
-              threshold={row.threshold}
-              clock={clock}
-              settings={settings}
-            />
+            {/* A known week without a 5h figure: the account has no 5h limit (Codex Prolite). */}
+            {row.quota.fiveHourRemainingPercent == null && row.quota.weeklyRemainingPercent != null ? null : (
+              <QuotaCell
+                label="5h"
+                remaining={row.quota.fiveHourRemainingPercent}
+                resetAt={row.quota.fiveHourResetAt}
+                threshold={row.threshold}
+                clock={clock}
+                settings={settings}
+              />
+            )}
             <QuotaCell
               label={row.weeklyScope ? `Week · ${row.weeklyScope}` : "Week"}
               remaining={row.quota.weeklyRemainingPercent}

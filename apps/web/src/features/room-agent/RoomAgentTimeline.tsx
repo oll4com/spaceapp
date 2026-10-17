@@ -1,7 +1,7 @@
 import { Fragment, useState, type FormEvent, type ReactNode } from "react";
 import type { RoomAgentTimelineMessage } from "@space/contracts";
 import {
-  ArrowDown, Check, CircleAlert, CircleHelp, Clock, ExternalLink, Loader2, ShieldAlert, AlertTriangle, Wrench, X
+  ArrowDown, Blend, Check, CircleAlert, CircleHelp, Clock, ExternalLink, Loader2, ShieldAlert, AlertTriangle, Wrench, X
 } from "../ui-theme/app-icons.js";
 import { DockIconButton } from "../dock-kit/DockKit.js";
 import { ChatMarkdown } from "../agent-pane/ChatMarkdown.js";
@@ -50,7 +50,7 @@ function ToolRow({ label, status }: { label: string; status: string }) {
 }
 
 const eventIcons: Record<string, typeof Check> = {
-  FINISHED: Check, WAITING: AlertTriangle, ERROR: CircleAlert, USAGE_LIMIT: Clock, SIGN_IN: ShieldAlert, STUCK: Clock
+  FINISHED: Check, WAITING: AlertTriangle, ERROR: CircleAlert, USAGE_LIMIT: Clock, SIGN_IN: ShieldAlert, STUCK: Clock, OVERLAP: Blend
 };
 const eventStatusLabels: Record<string, string> = {
   OPEN: "New", HANDLED: "Handled", ESCALATED: "Needs you", RESOLVED: "Resolved", ACKED: "Seen"

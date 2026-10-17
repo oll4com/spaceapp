@@ -3,7 +3,7 @@ import type { Pane, Room } from "@space/contracts";
 import { InMemoryRoomAgentMonitorRepository } from "@space/db";
 import type { DashboardActivityDetail } from "../src/agents-dashboard.js";
 import {
-  createRoomAgentMonitor, ROOM_MONITOR_ACTIVE_MS, ROOM_MONITOR_EMPTY_MS, ROOM_MONITOR_QUIET_MS, roomMonitorTransition
+  createRoomAgentMonitor, ROOM_MONITOR_ACTIVE_MS, ROOM_MONITOR_EMPTY_MS, ROOM_MONITOR_OVERLAP_MS, ROOM_MONITOR_QUIET_MS, roomMonitorEventText, roomMonitorTransition
 } from "../src/room-agent-monitor.js";
 
 const at = "2026-10-13T05:00:00.000Z";
@@ -43,6 +43,8 @@ describe("room agent monitor", () => {
     expect(roomMonitorTransition({ activity: "WORKING", reason: null }, { activity: "IDLE", reason: "Not running" })).toEqual({ kind: "ERROR", severity: "ATTENTION" });
     expect(roomMonitorTransition({ activity: "WORKING", reason: null }, { activity: "WAITING", reason: "Usage limit" })).toEqual({ kind: "USAGE_LIMIT", severity: "ATTENTION" });
     expect(roomMonitorTransition({ activity: "IDLE", reason: null }, { activity: "WAITING", reason: "Sign-in required" })).toEqual({ kind: "SIGN_IN", severity: "ATTENTION" });
+    expect(roomMonitorTransition({ activity: "WORKING", reason: null }, { activity: "WAITING", reason: "API error" })).toEqual({ kind: "STUCK", severity: "ATTENTION" });
+    expect(roomMonitorEventText("STUCK", "Cody", "API error", { title: null, summary: null }).title).toBe("Cody stopped on an API error");
     expect(roomMonitorTransition({ activity: "WAITING", reason: "Permission prompt" }, { activity: "WAITING", reason: "Permission prompt" })).toBeNull();
     expect(roomMonitorTransition({ activity: "IDLE", reason: null }, { activity: "WORKING", reason: null })).toBeNull();
   });
@@ -80,6 +82,21 @@ describe("room agent monitor", () => {
     expect((await c.repository.paneActivity("room:monitor1")).map((record) => [record.paneId, record.activity]).sort()).toEqual([
       ["pane:bob-term", "DONE"], ["pane:dana-term", "WORKING"]
     ]);
+  });
+
+  it("resolves a stopped pane once it runs again, so Live does not announce it again", async () => {
+    const c = setup();
+    c.set({ "pane:bob-term": { status: "working", source: "native" } });
+    await c.monitor.tick();
+    c.advance(ROOM_MONITOR_ACTIVE_MS);
+    c.set({ "pane:bob-term": { status: "idle", reason: "Not running", source: "session" } });
+    await c.monitor.tick();
+    expect(await c.repository.latestPending(["room:monitor1"], 10)).toEqual([expect.objectContaining({ kind: "ERROR", title: "Bob stopped" })]);
+    c.advance(ROOM_MONITOR_QUIET_MS);
+    c.set({ "pane:bob-term": { status: "working", source: "native" } });
+    await c.monitor.tick();
+    expect(await c.repository.latestPending(["room:monitor1"], 10)).toEqual([]);
+    expect((await c.repository.listEvents("room:monitor1")).find((event) => event.kind === "ERROR")?.status).toBe("RESOLVED");
   });
 
   it("does not repeat events after a restart and keeps the last state of an unreadable pane", async () => {
@@ -121,5 +138,33 @@ describe("room agent monitor", () => {
     c.advance(ROOM_MONITOR_EMPTY_MS);
     await c.monitor.tick();
     expect(c.readActivity).toHaveBeenCalledTimes(3);
+  });
+
+  it("records one event per overlap, reads overlaps at most once a minute and resolves an overlap that is gone", async () => {
+    let now = 1_000_000;
+    const repository = new InMemoryRoomAgentMonitorRepository();
+    let overlaps = [{ title: "Bob and Dana change the same files", detail: "Shared files: a.ts." }];
+    const readOverlaps = vi.fn(async () => overlaps);
+    const onAttention = vi.fn();
+    const monitor = createRoomAgentMonitor({ repository, listRooms: async () => [room("room:monitor1")], readOverlaps, onAttention, now: () => now,
+      readActivity: async () => ({ data: [pane("pane:bob-term", "Bob"), pane("pane:dana-term", "Dana")], details: { "pane:bob-term": { status: "working", source: "native" } } }) });
+    await monitor.tick();
+    now += ROOM_MONITOR_ACTIVE_MS;
+    await monitor.tick();
+    expect(readOverlaps).toHaveBeenCalledTimes(1);
+    const [event] = await repository.listEvents("room:monitor1");
+    expect(event).toMatchObject({ kind: "OVERLAP", severity: "ATTENTION", paneId: null, status: "OPEN", title: "Bob and Dana change the same files" });
+    expect(onAttention).toHaveBeenCalledOnce();
+
+    await repository.updateEvent(event!.eventId, { status: "HANDLED" });
+    now += ROOM_MONITOR_OVERLAP_MS;
+    await monitor.tick();
+    expect(readOverlaps).toHaveBeenCalledTimes(2);
+    expect(await repository.listEvents("room:monitor1")).toHaveLength(1);
+
+    overlaps = [];
+    now += ROOM_MONITOR_OVERLAP_MS;
+    await monitor.tick();
+    expect(await repository.getEvent(event!.eventId)).toMatchObject({ status: "RESOLVED", decision: "The overlap is gone." });
   });
 });

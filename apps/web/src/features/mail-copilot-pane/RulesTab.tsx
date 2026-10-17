@@ -6,7 +6,7 @@ import { mailTime } from "./MailClient.js";
 import { subscribeMailCopilotLiveEvents } from "./live-events.js";
 
 const STATUS_LABEL: Record<MailRule["status"], string> = { PROPOSED: "Proposed", APPROVED: "Approved", REJECTED: "Rejected", RETIRED: "Retired" };
-const ACTION_LABEL: Record<MailRule["action"]["type"], string> = { REPLY: "reply", ARCHIVE: "archive", LABEL: "label", MOVE: "move", STAR: "star", TRASH: "trash", MARK_READ: "mark read" };
+const ACTION_LABEL: Record<MailRule["action"]["type"], string> = { REPLY: "reply", ARCHIVE: "archive", LABEL: "label", MOVE: "move", FIX: "send to the copilot to fix", STAR: "star", TRASH: "trash", MARK_READ: "mark read" };
 
 /** "From acme.com, subject matches /invoice/" — the condition in words. */
 export function ruleConditionText(condition: MailRule["condition"]): string {

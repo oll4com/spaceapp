@@ -21,7 +21,8 @@ const paneModeLabels: Record<Pane["mode"], string> = {
   T3CODE: "T3 Code",
   JOB_APPLY: "Job Copilot",
   MAIL_COPILOT: "Mail Copilot",
-  MARKETING_COPILOT: "Marketing Copilot"
+  MARKETING_COPILOT: "Marketing Copilot",
+  FREELANCE_COPILOT: "Freelance Copilot"
 };
 
 export function paneModeLabel(mode: Pane["mode"]): string {

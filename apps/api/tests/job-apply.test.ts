@@ -479,6 +479,34 @@ describe("job copilot data", () => {
     expect(await service.stats("user:b", "UTC")).toMatchObject({ firstDay: null, totals: { applied: 0 }, days: [] });
   });
 
+  it("asks the operator instead of answering from an unrelated memory, and leaves a trace when memory answers", async () => {
+    const { service } = await serviceFixture();
+    await service.rememberMemory("user:a", { kind: "ANSWER", key: "what are your pronouns", text: "Prefer not to say", source: "USER" });
+    const { application } = await service.createApplication("user:a", { url: "https://boards.greenhouse.io/acme/jobs/41", company: "Acme", role: "Dev", ats: "greenhouse", status: "QUEUED" });
+    await service.updateApplication("user:a", application.id, { status: "FILLING" });
+    // The full-text search finds the pronouns answer for this question; it must not be used.
+    expect(await service.answerFor("user:a", "What is your language proficiency in German?")).toBeNull();
+    const german = await service.askQuestion("user:a", application.id, { question: "What is your language proficiency in German?" });
+    expect(german).toMatchObject({ answered: false });
+    expect(german.questionId).toMatch(/^jobq:/);
+    await service.updateApplication("user:a", application.id, { status: "FILLING" });
+    const pronouns = await service.askQuestion("user:a", application.id, { question: "What are your pronouns?" });
+    expect(pronouns).toMatchObject({ answered: true, answer: "Prefer not to say", questionId: null });
+    const trace = (await service.listEvents("user:a", { applicationId: application.id, limit: 10 })).find((event) => event.type === "NOTE");
+    expect(trace).toMatchObject({ message: "Answered from memory: What are your pronouns?", payload: { autoAnswered: true, memoryKey: "what are your pronouns", answer: "Prefer not to say" } });
+  });
+
+  it("keeps an open question pending however many other events the pane logs after it", async () => {
+    const { service } = await serviceFixture();
+    const { application } = await service.createApplication("user:a", { url: "https://boards.greenhouse.io/acme/jobs/51", company: "Acme", role: "Dev", ats: "greenhouse", status: "QUEUED" });
+    await service.updateApplication("user:a", application.id, { status: "FILLING" }, { paneId: "pane:jobs0001" });
+    const { questionId } = await service.askQuestion("user:a", application.id, { question: "Years of Spring Boot?" }, { paneId: "pane:jobs0001" });
+    for (let index = 0; index < 400; index++) await service.logEvent("user:a", { applicationId: application.id, type: "NOTE", message: `step ${index}`, paneId: "pane:jobs0001" });
+    expect((await service.pendingItems("user:a", "pane:jobs0001")).map((item) => item.id)).toEqual([questionId]);
+    await service.answerQuestion("user:a", application.id, { questionId: questionId!, answer: "5" }, { paneId: "pane:jobs0001" });
+    expect(await service.pendingItems("user:a", "pane:jobs0001")).toEqual([]);
+  });
+
   it("starts over without deleting anything: stops runs, closes open postings, archives the rest, refuses a second click", async () => {
     let clock = "2026-10-14T05:00:00.000Z";
     const repository = new InMemoryJobApplyRepository(() => clock);

@@ -177,6 +177,7 @@ export interface JobApplyEventFilter {
   applicationId?: string;
   runId?: string;
   paneId?: string;
+  types?: string[];
   since?: string;
   limit: number;
 }
@@ -567,8 +568,8 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
   async listEvents(owner: string, filter: JobApplyEventFilter) {
     const rows = (await this.pool.query<Record<string, unknown>>(`SELECT ${eventColumns} FROM job_apply_events
       WHERE owner_user_id=$1 AND ($2::text IS NULL OR application_id=$2) AND ($3::text IS NULL OR run_id=$3) AND ($4::text IS NULL OR pane_id=$4)
-        AND ($5::timestamptz IS NULL OR date_trunc('milliseconds', created_at) > $5)
-      ORDER BY created_at DESC, id DESC LIMIT $6`, [owner, filter.applicationId ?? null, filter.runId ?? null, filter.paneId ?? null, filter.since ?? null, filter.limit])).rows;
+        AND ($5::timestamptz IS NULL OR date_trunc('milliseconds', created_at) > $5) AND ($7::text[] IS NULL OR type = ANY($7))
+      ORDER BY created_at DESC, id DESC LIMIT $6`, [owner, filter.applicationId ?? null, filter.runId ?? null, filter.paneId ?? null, filter.since ?? null, filter.limit, filter.types?.length ? filter.types : null])).rows;
     return rows.map(eventRecord);
   }
 

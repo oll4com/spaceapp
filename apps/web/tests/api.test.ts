@@ -13,6 +13,21 @@ describe("Space web API request handling", () => {
     window.sessionStorage?.clear();
   });
 
+  it("answers from the stored CLI runtime registry on load but refreshes it on the first read", async () => {
+    const stored = { data: [{ id: "cli:claude", capabilities: ["CLI"], authState: "LOGIN_REQUIRED" }], checkedAt: "2026-10-16T06:16:59.743Z" };
+    const fresh = { data: [{ id: "cli:claude", capabilities: ["CLI"], authState: "READY" }], checkedAt: "2026-10-16T06:53:04.152Z" };
+    window.localStorage.setItem("space.cliRuntimeRegistry.cache.v1", JSON.stringify(stored));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(fresh), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { api } = await import("../src/live-api.js");
+
+    await expect(api.cliRuntimes({ allowStale: true })).resolves.toEqual(stored);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(api.cliRuntimes()).resolves.toEqual(fresh);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(window.localStorage.getItem("space.cliRuntimeRegistry.cache.v1") ?? "null")).toEqual(fresh);
+  });
+
   it("does not request a CLI session for a client-only optimistic pane", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

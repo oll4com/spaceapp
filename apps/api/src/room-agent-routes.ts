@@ -28,7 +28,7 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
   routeOptions: Pick<RouteShorthandOptions, "config">;
   /** Room monitor switch and feed acknowledgements. */
   monitor?: {
-    repository: Pick<RoomAgentMonitorRepository, "setMonitorEnabled" | "setAutopilotEnabled" | "monitorEnabled" | "getEvent" | "updateEvent" | "pendingCounts" | "latestPending">;
+    repository: Pick<RoomAgentMonitorRepository, "listEvents" | "setMonitorEnabled" | "setAutopilotEnabled" | "monitorEnabled" | "getEvent" | "updateEvent" | "pendingCounts" | "latestPending">;
     forget(roomId: string): void;
     changed(event: RoomAgentEvent): Promise<void>;
     /** Sends the operator's answer (or Escape to decline) to the question an event is about. */
@@ -168,6 +168,13 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
     await recordAudit(store, request, { action: "room.agent.monitor", targetType: "room", targetId: params.id, metadata: input });
     return forViewer(await roomAgentService.load(params.id), request.user);
   });
+  // The monitor's feed alone, never the conversation: what the Room Agent saw and decided (read only, for agents too).
+  app.get("/api/rooms/:id/room-agent/events", defaultRouteRateLimitOptions, async (request) => {
+    if (!options.monitor) return { events: [] };
+    const params = parseQuery(idParamSchema, request.params);
+    const query = parseQuery(z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }), request.query);
+    return { events: await options.monitor.repository.listEvents(params.id, { limit: query.limit }) };
+  });
   app.post("/api/rooms/:id/room-agent/events/:eventId/ack", defaultRouteRateLimitOptions, async (request) => {
     if (!options.monitor) throw new SpaceConflictError("The room monitor is unavailable.");
     const params = parseQuery(z.object({ id: z.string().min(1), eventId: z.string().min(1).max(200) }), request.params);
@@ -200,9 +207,12 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
   });
   app.get("/api/room-agent/pending", defaultRouteRateLimitOptions, async (request) => {
     if (!options.monitor) return { rooms: {}, latest: [] };
-    const rooms = (await store.listRooms(request.user?.role === "USER" ? request.user.id : undefined)).map((room) => room.id);
+    const listed = await store.listRooms(request.user?.role === "USER" ? request.user.id : undefined);
+    const rooms = listed.map((room) => room.id);
     const [counts, latest] = await Promise.all([options.monitor.repository.pendingCounts(rooms), options.monitor.repository.latestPending(rooms, 10)]);
-    return { rooms: counts, latest };
+    // Live says which room an announcement comes from; the operator may be in another one.
+    const roomNames = Object.fromEntries(listed.filter((room) => latest.some((event) => event.roomId === room.id)).map((room) => [room.id, room.name]));
+    return { rooms: counts, latest, roomNames };
   });
   app.delete("/api/rooms/:id/room-agent/transcript", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);

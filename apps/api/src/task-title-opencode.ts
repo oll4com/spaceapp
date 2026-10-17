@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "./safe-child-process.js";
 import { access, copyFile, mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";

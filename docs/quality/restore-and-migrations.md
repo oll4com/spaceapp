@@ -446,9 +446,15 @@ still unmeasured.
     `space-vm-backup-watch.timer`) reads the Proxmox backup list and vzdump tasks
     through read-only `pvesh` and adds a Space clipboard note when the newest public-host
     backup is older than 8 days or the last vzdump task failed.
-  - Still open, and outside what this VM can do: shipping the daily dumps off
-    public-host (the StorageBox is mounted only on the Proxmox host) and WAL archiving
-    with PITR. As of 2026-10-12 the
+  - Off public-host since 2026-10-16: `space-db-backup-offsite.timer` (root, daily
+    04:20 local, `deploy/space-db-backup-offsite.{sh,service,timer}`, script installed
+    as `/etc/space-db-backup-offsite.sh`) copies every complete run to the
+    StorageBox (`/mnt/hetzner-backup/space-vm207/db`, 35 days) and checks each dump
+    against its manifest SHA-256 before the run counts. First run: 6 runs copied;
+    second run: 0 copied. Read back from the StorageBox, `space.dump` of
+    `20261016T001856Z` lists 1,281 archive entries with `pg_restore --list` in a
+    `--network none` container, as its manifest records
+    (`reports/20261016-offsite-restore-PiAl`). Still open: WAL archiving with PITR. As of 2026-10-12 the
     host task log shows the weekly job failed for public-host on 2026-09-23
     (`pve_backup_safety_hook.sh job-init`) and 2026-09-30, and succeeded on
     2026-10-07 (with one warning).
@@ -491,7 +497,7 @@ The recovery point no longer depends on the weekly VM snapshot alone.
 - **Where:** `/opt/spaceapp/backups/db/<UTC run>/{<database>.dump, manifest.json}`, with directory mode 0700 and file mode 0600. The manifest records bytes, SHA-256 and the archive entry count per database.
 - **When:** the user-level timer `space-db-backup.timer` runs daily at 03:15 local time (randomized by up to 10 minutes, `Persistent=true`). Installation steps are in `deploy/user-systemd/README.md`.
 - **Retention:** the newest run of each of the last 7 days and of each of the last 4 ISO weeks. Only complete runs (all three databases) prune.
-- **RPO:** at most 1 day for the database while the timer runs. The weekly VM snapshot still covers files outside PostgreSQL. Both copies live on public-host, so neither protects against losing public-host's storage.
+- **RPO:** at most 1 day for the database while the timer runs. The weekly VM snapshot still covers files outside PostgreSQL. Since 2026-10-16 the daily dumps are also copied to the StorageBox (see Open limits), so losing public-host's storage no longer loses them.
 - **Measured on 2026-10-11:**
   - The three dumps took 9.2 s: space 36.8 MB with 1,017 entries, temporal 2.2 MB, temporal_visibility 47 KB.
   - Restoring them into a disposable PostgreSQL 17/pgvector container (`--network none`) took 10 s.

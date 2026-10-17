@@ -95,6 +95,8 @@ describe("Antigravity proxy", () => {
     const [, first] = await repository.listRequestLogs({ limit: 5 });
     expect(first).toMatchObject({ provider: "ANTIGRAVITY", accountId: accountA, model: "gemini-3.8-flash-high", inputTokens: 1200, cachedInputTokens: 800, outputTokens: 7,
       reasoningTokens: 3, status: "success" });
+    // Gemini 3.8 Flash list prices: thinking is billed as output.
+    expect(first!.costUsd).toBeCloseTo((400 * 0.75 + 800 * 0.075 + 10 * 3.75) / 1e6, 12);
   });
 
   it("moves to another account when one runs out of quota, and remembers the reset for that quota group only", async () => {
@@ -120,7 +122,7 @@ describe("Antigravity proxy", () => {
   });
 
   it("passes account calls, and clients outside the pool, through with the client's own sign-in", async () => {
-    const { post, calls, app } = await setup((_token, path) => (path.includes("loadCodeAssist") ? json({ cloudaicompanionProject: "project-a" }) : reply("own account")));
+    const { post, calls, app, logs, repository } = await setup((_token, path) => (path.includes("loadCodeAssist") ? json({ cloudaicompanionProject: "project-a" }) : reply("own account")));
     const response = await post("/v1internal:loadCodeAssist", { metadata: {} });
     expect(response.json()).toEqual({ cloudaicompanionProject: "project-a" });
     expect(calls[0]).toMatchObject({ token: "client-a-token", path: "/v1internal:loadCodeAssist", body: { metadata: {} } });
@@ -130,6 +132,10 @@ describe("Antigravity proxy", () => {
     expect(calls[1]).toMatchObject({ token: "stranger", body: { project: "project-x" } });
     expect((await app.inject({ method: "POST", url: "/antigravity/v1internal:loadCodeAssist", payload: {} })).statusCode).toBe(401);
     expect(calls).toHaveLength(2);
+    // Only the model call is logged (no pool account), so the token usage page still counts its tokens.
+    await logs.flush();
+    expect(await repository.listRequestLogs({ limit: 5 })).toEqual([expect.objectContaining({ provider: "ANTIGRAVITY", accountId: null,
+      model: "gemini-3.8-flash-high", inputTokens: 1200, outputTokens: 7, reasoningTokens: 3, status: "success", clientName: expect.any(String) })]);
   });
 });
 

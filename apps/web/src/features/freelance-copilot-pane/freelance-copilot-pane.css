@@ -1,0 +1,10 @@
+/* Freelance Copilot: reuses the Marketing Copilot rail styles (mk-*) inside the copilot kit's pane; four Setup steps. */
+.fl-pane .jc-steps { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.fl-account-row { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.fl-funnel { display: flex; flex-wrap: wrap; gap: 12px; margin: 0; font-size: 12px; color: var(--jc-muted); }
+.fl-funnel strong { color: var(--jc-text); font-variant-numeric: tabular-nums; }
+.fl-ready { border-color: color-mix(in srgb, var(--jc-ok) 55%, transparent); }
+.fl-thread { display: grid; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.fl-message { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--jc-border); }
+.fl-message[data-direction="in"] { background: color-mix(in srgb, var(--jc-accent) 8%, transparent); }
+.mk-post details > summary { cursor: pointer; list-style: none; }

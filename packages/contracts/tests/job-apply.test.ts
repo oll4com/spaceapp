@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canTransitionJobApplication, createPaneInputSchema, createRoomPanesRequestSchema, defaultJobApplyPaneMetadata,
-  jobApplicationSchema, jobApplyPaneMetadataSchema, jobPostingFromUrl, paneSchema, resolveJobApplyPaneMetadata
+  jobApplicationSchema, jobApplyCandidateSchema, jobApplyPaneMetadataSchema, jobPostingFromUrl, paneSchema, resolveJobApplyPaneMetadata
 } from "../src/index.js";
 
 const basePane = {
@@ -45,6 +45,14 @@ describe("job applications pane contracts", () => {
     // The launch's account travels in the room batch request, never in the pane row.
     expect(createRoomPanesRequestSchema.parse({ panes: [{ mode: "JOB_APPLY", terminalRuntimeId: "cli:claude", accountProfileId: "space-gateway" }] }).panes[0])
       .toMatchObject({ accountProfileId: "space-gateway" });
+  });
+
+  it("keeps an optional postal address on the candidate profile", () => {
+    expect(jobApplyCandidateSchema.parse({ fullName: "Nikolaos Theodoropoulos" }).address).toBeNull();
+    const address = { line1: "99 Sukhumvit Road", city: "Bangkok", postalCode: "10110", country: "Thailand" };
+    expect(jobApplyCandidateSchema.parse({ address }).address).toEqual({ ...address, line2: null, region: null });
+    expect(jobApplyCandidateSchema.safeParse({ address: { ...address, apartment: "4B" } }).success).toBe(false);
+    expect(jobApplyCandidateSchema.safeParse({ address: { ...address, postalCode: "x".repeat(41) } }).success).toBe(false);
   });
 
   it("counts an application only through allowed tracker transitions", () => {

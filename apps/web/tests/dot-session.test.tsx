@@ -95,7 +95,7 @@ describe("truthful status and selector accessibility", () => {
     const trigger = screen.getByRole("button", { name: "Choose Dot (Orbit)" });
     fireEvent.click(trigger);
     const option = screen.getAllByRole("menuitemradio")[1]!;
-    fireEvent.pointerDown(option.querySelector("img")!);
+    fireEvent.pointerDown(option.querySelector("svg")!);
     expect(screen.queryByRole("menu")).not.toBeNull();
     fireEvent.pointerDown(trigger.querySelector("span")!);
     expect(screen.queryByRole("menu")).not.toBeNull();

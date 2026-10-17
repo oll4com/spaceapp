@@ -47,10 +47,20 @@ it("keeps active content as a sandboxed attachment and rejects symlink reads", a
   expect(response.headers["content-disposition"]).toMatch(/^attachment;/);
   expect(response.headers["content-security-policy"]).toContain("sandbox");
   expect(response.headers["x-content-type-options"]).toBe("nosniff");
+  expect(response.headers["cache-control"]).toBe("private, no-store");
   await rm(join(root, "browser-evidence", "fixture", "active.html"));
   await writeFile(join(root, "sentinel.txt"), "sentinel");
   await symlink(join(root, "sentinel.txt"), join(root, "browser-evidence", "fixture", "active.html"));
   expect((await app.inject(url)).statusCode).toBe(403);
+});
+
+it("lets the browser cache image files, whose bytes never change", async () => {
+  const file = artifact("photo.png", "image/png");
+  await writeFile(join(root, "browser-evidence", "fixture", "photo.png"), "png");
+  const response = await app.inject(`/api/artifacts/${encodeURIComponent(file.id)}/file`);
+  expect(response.statusCode).toBe(200);
+  expect(response.headers["cache-control"]).toBe("private, max-age=86400, stale-while-revalidate=604800");
+  expect(response.headers["content-security-policy"]).toContain("sandbox");
 });
 
 it("preserves plain text preview and forced Agent File download", async () => {

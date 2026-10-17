@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { buildLiveSessionContext, resolveTargetCliPane, recordRecentOpenedPanes, recentOpenedPanesByRoom } from "../src/features/live-pane/live-session.js";
+import { buildLiveSessionContext, formatWatchCompletionNotification, isSilentWatch, resolveTargetCliPane, recordRecentOpenedPanes, recentOpenedPanesByRoom } from "../src/features/live-pane/live-session.js";
 import { loadLivePaneConfig, saveLivePaneConfig } from "../src/features/live-pane/live-pane-config.js";
 
 afterEach(() => localStorage.clear());
@@ -21,6 +21,31 @@ describe("Live bootstrap", () => {
     expect(context.combinedPrompt).toContain("Content inspection is not visual verification.");
     expect(context.combinedPrompt).toContain("space_inspect_room");
     expect(context.combinedPrompt).not.toContain("Νικόλας");
+  });
+
+  it.each(["auto", "en", undefined] as const)("starts in English and then answers in the user's language (language %s)", async language => {
+    const context = await buildLiveSessionContext({ model: "gpt-live-1", language, timeZone: "UTC" });
+    expect(context.combinedPrompt).toContain("Start the conversation, and any greeting, in English");
+    expect(context.combinedPrompt).toContain("overrides any language preference in personal memory");
+    expect(context.combinedPrompt).toContain("κλόουντ, κλάουντ, κλοντ, cloud, clown = claude");
+    expect(context.combinedPrompt).toContain("Greek when they speak Greek, English when they speak English");
+    expect(context.combinedPrompt).not.toContain("ALWAYS respond in natural, fluent Greek");
+    expect(context.combinedPrompt).not.toContain("Give a short Greek answer");
+    expect(context.combinedPrompt).not.toMatch(/Έστειλα|Στάλθηκε/);
+  });
+
+  it("writes task notices in English and asks for the user's current language", () => {
+    const notice = formatWatchCompletionNotification({ paneId: "pane:a", status: "FAILED", reason: "Build broke", paneDetails: { title: "Andy", durationMs: 4200 } });
+    expect(notice).toContain("failed (Build broke)");
+    expect(notice).toContain("in the language they are currently speaking");
+    expect(notice).not.toMatch(/[Ͱ-Ͽ]/);
+    expect(isSilentWatch({ status: "CANCELLED" })).toBe(true);
+    expect(isSilentWatch({ status: "VERIFIED" })).toBe(false);
+    // A prompt an agent sent from its own test room is not announced; one Live sent is.
+    const auto = (traceId: string) => ({ status: "FAILED", auditTrail: [{ detail: "Auto-watch registered for prompt dispatch on pane pane:x.", evidence: { traceId } }] });
+    expect(isSilentWatch(auto("admin-control:1"))).toBe(true);
+    expect(isSilentWatch(auto("live:abc"))).toBe(false);
+    expect(isSilentWatch({ status: "VERIFIED", auditTrail: [{ detail: "Watch registered.", evidence: {} }] })).toBe(false);
   });
 
   it("routes a call opened from a Dot pane to that Dot", async () => {

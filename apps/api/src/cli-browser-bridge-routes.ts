@@ -1,3 +1,4 @@
+import { BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS, createBrowserControlActivity, releaseBrowserControlLease, settleEndedOperatorLease, type BrowserControlActivity } from "./browser-control-activity.js";
 import type {} from "./request-context.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import {
@@ -37,6 +38,9 @@ import { registerMailCopilotAgentRoutes } from "./mail-copilot/agent-routes.js";
 import type { MailCopilotService } from "./mail-copilot/service.js";
 import { registerMarketingCopilotAgentRoutes } from "./marketing-copilot/agent-routes.js";
 import type { MarketingCopilotService } from "./marketing-copilot/service.js";
+import { registerFreelanceCopilotAgentRoutes } from "./freelance-copilot/agent-routes.js";
+import { registerTaskAgentRoutes } from "./task-agent-routes.js";
+import type { FreelanceCopilotService } from "./freelance-copilot/service.js";
 import type { JobApplyService } from "./job-apply/service.js";
 import { isT3AgentSessionId, t3AgentPrincipal, T3_AGENT_RUNTIME_ID } from "./t3code/agent-tokens.js";
 
@@ -56,10 +60,13 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   jobApplyService?: JobApplyService;
   mailCopilotService?: MailCopilotService;
   marketingCopilotService?: MarketingCopilotService;
+  freelanceCopilotService?: FreelanceCopilotService;
   /** Set once the pane browser routes are registered; agents choose saved Google sign-ins through it. */
   paneBrowserAccounts: { current: PaneBrowserAccountControl | null };
+  /** Operator input per control lease (shared with the browser routes); RECLAIM_CONTROL reads it. */
+  controlActivity?: BrowserControlActivity;
 }) {
-  const { options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility,
+  const { options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility, controlActivity,
     routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts } = deps;
   async function requireCliBrowserBridgeContext(request: FastifyRequest, reply: FastifyReply) {
     if (!cliBrowserBridgeEnabled(config)) {
@@ -84,7 +91,8 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       return { claims, runtimeId: T3_AGENT_RUNTIME_ID };
     }
     const cliSession = await store.getPaneCliSession(claims.cliSessionId);
-    if (!cliSession || cliSession.roomId !== claims.roomId || cliSession.paneId !== claims.paneId) {
+    // A moved pane keeps its running CLI session; the token then acts in the pane's current room.
+    if (!cliSession || cliSession.paneId !== claims.paneId) {
       await sendApiError(reply, 404, "CLI_SESSION_NOT_FOUND", "CLI session for browser bridge token was not found.");
       return null;
     }
@@ -97,7 +105,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       return null;
     }
     await cliRuntimeVisibility.assertEnabled(cliSession.runtimeId);
-    return { claims, runtimeId: cliSession.runtimeId };
+    return { claims: { ...claims, roomId: cliSession.roomId }, runtimeId: cliSession.runtimeId };
   }
 
   if (deps.jobApplyService) {
@@ -130,6 +138,25 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "marketing_copilot", targetId, metadata })
     });
   }
+  if (deps.freelanceCopilotService) {
+    registerFreelanceCopilotAgentRoutes(app, deps.freelanceCopilotService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "freelance_copilot", targetId, metadata }),
+      candidate: deps.jobApplyService ? async (owner) => (await deps.jobApplyService!.getProfile(owner)).candidate : undefined
+    });
+  }
+  registerTaskAgentRoutes(app, {
+    store,
+    routeOptions: defaultRouteRateLimitOptions,
+    requireBridge: requireCliBrowserBridgeContext,
+    parseBody,
+    parseQuery,
+    audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "task_item", targetId, metadata })
+  });
   async function requireCliAgentFilesContext(request: FastifyRequest, reply: FastifyReply) {
     if (!cliAgentFilesEnabled(config)) {
       await sendApiError(
@@ -165,7 +192,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       return { claims, runtimeId: T3_AGENT_RUNTIME_ID };
     }
     const cliSession = await store.getPaneCliSession(claims.cliSessionId);
-    if (!cliSession || cliSession.roomId !== claims.roomId || cliSession.paneId !== claims.paneId) {
+    if (!cliSession || cliSession.paneId !== claims.paneId) {
       await sendApiError(reply, 404, "CLI_SESSION_NOT_FOUND", "CLI session for the Agent Files token was not found.");
       return null;
     }
@@ -178,7 +205,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       return null;
     }
     await cliRuntimeVisibility.assertEnabled(cliSession.runtimeId);
-    return { claims, runtimeId: cliSession.runtimeId };
+    return { claims: { ...claims, roomId: cliSession.roomId }, runtimeId: cliSession.runtimeId };
   }
   function summarizeCliBrowserSession(session: PaneBrowserSession) {
     return {
@@ -584,9 +611,41 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         break;
       }
       case "HANDOFF_STATUS": {
+        // A handoff whose operator lease already ended reads COMPLETED, not ACCEPTED until its own expiry.
+        await settleEndedOperatorLease(store, session.sessionId);
         const active = await store.getActiveBrowserHandoffRequest(session.sessionId);
         const latest = active ?? (await store.listBrowserHandoffRequests(pane.roomId)).find((handoff) => handoff.sessionId === session.sessionId) ?? null;
         result = { handoff: latest };
+        break;
+      }
+      case "CANCEL_HANDOFF": {
+        const active = await store.getActiveBrowserHandoffRequest(session.sessionId);
+        // Only this agent's own request that the operator has not taken; an accepted handoff is the operator's.
+        const cancellable = active?.status === "REQUESTED" && active.requestedByType === "AGENT" && active.requestedById === actorId;
+        result = cancellable
+          ? { cancelled: true, handoff: await store.updateBrowserHandoffRequest(active.handoffRequestId, { status: "CANCELLED" }) }
+          : { cancelled: false, handoff: active ?? null };
+        break;
+      }
+      case "RECLAIM_CONTROL": {
+        const lease = await store.getActiveBrowserControlLease(session.sessionId);
+        if (!lease || lease.holderType !== "OPERATOR") {
+          // The operator's lease may have ended without a release (tab closed): its accepted handoff ends with it.
+          await settleEndedOperatorLease(store, session.sessionId);
+          result = { reclaimed: false, reason: "NO_OPERATOR_CONTROL", idleSeconds: null, retryAfterSeconds: 0 };
+          break;
+        }
+        const activity = controlActivity ?? createBrowserControlActivity();
+        const idleMs = activity.idleMs(lease);
+        // The operator is still using the page: never take it mid-use.
+        if (idleMs < BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS) {
+          result = { reclaimed: false, reason: "OPERATOR_ACTIVE", idleSeconds: Math.floor(idleMs / 1000),
+            retryAfterSeconds: Math.ceil((BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS - idleMs) / 1000) };
+          break;
+        }
+        const released = await releaseBrowserControlLease({ store, browserSessionManager, activity },
+          { pane, lease, request, auditAction: "pane.browser.control.agent_reclaim", auditMetadata: { agent: actorId, idleSeconds: Math.floor(idleMs / 1000) } });
+        result = { reclaimed: true, reason: "RECLAIMED", idleSeconds: Math.floor(idleMs / 1000), retryAfterSeconds: 0, lease: released };
         break;
       }
     }

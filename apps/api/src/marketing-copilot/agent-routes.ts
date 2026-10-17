@@ -1,7 +1,8 @@
+import type {} from "../request-context.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
-  effectiveMarketingAutonomy, MARKETING_CHANNELS, marketingCampaignCreateSchema, marketingCampaignIdSchema, marketingChannelSchema, marketingEventIdSchema, marketingMemoryCreateSchema,
+  effectiveMarketingAutonomy, MARKETING_CHANNELS, marketingBookmarkIdSchema, marketingCampaignCreateSchema, marketingCampaignIdSchema, marketingChannelSchema, marketingEventIdSchema, marketingMemoryCreateSchema,
   marketingMemoryIdSchema, marketingMemoryQuerySchema, marketingPostCreateSchema, marketingPostIdSchema, marketingPostStatusSchema, marketingPostUpdateSchema, marketingPublishBeginSchema,
   marketingPostMetricsRecordSchema, marketingPublishDoneSchema, marketingPublishFailedSchema, marketingQuestionAskSchema, marketingQuestionIdSchema, marketingRuleProposalSchema, type Pane
 } from "@space/contracts";
@@ -30,17 +31,17 @@ export function registerMarketingCopilotAgentRoutes(app: FastifyInstance, servic
   const { routeOptions, parseBody, parseQuery } = deps;
   const route = (path: string) => `${cliMarketingCopilotPathPrefix}${path}`;
 
-  async function context(request: FastifyRequest, reply: FastifyReply): Promise<{ owner: string; pane: Pane } | null> {
+  async function context(request: FastifyRequest, reply: FastifyReply): Promise<{ owner: string; pane: Pane; cliSessionId: string } | null> {
     const bridge = await deps.requireBridge(request, reply);
     if (!bridge) return null;
     const room = await deps.store.getRoom(bridge.claims.roomId);
     if (!room.ownerUserId) throw new SpaceConflictError("This room has no owner; open the Marketing Copilot pane from a signed-in operator account.");
     const pane = await deps.store.getPane(bridge.claims.paneId);
     if (pane.mode !== "MARKETING_COPILOT") throw new SpaceConflictError("Marketing Copilot tools belong to the CLI session of a Marketing Copilot pane.");
-    return { owner: room.ownerUserId, pane };
+    return { owner: room.ownerUserId, pane, cliSessionId: bridge.claims.cliSessionId };
   }
   /** Registers an agent route: resolves the bridge, then hands the owner, the pane and the request to the handler. */
-  function handle(method: "get" | "post" | "patch", path: string, handler: (bridge: { owner: string; pane: Pane }, request: FastifyRequest) => Promise<unknown>) {
+  function handle(method: "get" | "post" | "patch", path: string, handler: (bridge: { owner: string; pane: Pane; cliSessionId: string }, request: FastifyRequest) => Promise<unknown>) {
     app[method](route(path), routeOptions, async (request, reply) => {
       const bridge = await context(request, reply);
       if (!bridge) return reply;
@@ -53,8 +54,16 @@ export function registerMarketingCopilotAgentRoutes(app: FastifyInstance, servic
     return {
       paneId: pane.id, settings,
       channels: Object.fromEntries(MARKETING_CHANNELS.map((id) => [id, { ...settings.channels[id], effectiveAutonomy: effectiveMarketingAutonomy(settings, id) }])),
-      run: await service.runView(owner, pane), campaigns: await service.listCampaigns(owner, ["ACTIVE", "PROPOSED"])
+      run: await service.runView(owner, pane), campaigns: await service.listCampaigns(owner, ["ACTIVE", "PROPOSED"]), bookmarks: await service.listBookmarks(owner)
     };
+  });
+  // The operator's bookmarks: each opens in a new tab of the pane browser with its Google account.
+  handle("get", "bookmarks", async ({ owner }) => ({ bookmarks: await service.listBookmarks(owner) }));
+  handle("post", "bookmarks/:id/open", async ({ owner, pane, cliSessionId }, request) => {
+    const { id } = parseQuery(z.object({ id: marketingBookmarkIdSchema }).strict(), request.params);
+    const opened = await service.openBookmark(owner, pane, id, request.requestIdForSpace, { holderType: "AGENT", holderId: `cli:${cliSessionId}` });
+    await deps.audit(request, "marketing_copilot.bookmark.open", id, { paneId: pane.id, profileId: opened.bookmark.profileId });
+    return opened;
   });
   // Public SpaceApp facts (README and docs, versioned): the only source of product claims besides the operator's FACT memories.
   handle("get", "facts", async (_bridge, request) => {

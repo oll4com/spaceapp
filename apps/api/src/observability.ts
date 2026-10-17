@@ -10,8 +10,7 @@ import {
   type ObservabilitySnapshot,
   type WorkerReadiness
 } from "@space/contracts";
-import { MetricsRegistry, createProcessMetricsCollector, renderDroppedSeries } from "@space/runtime";
-import { otlpSpanExporterFromEnv, type SpanExporter } from "./otlp-span-exporter.js";
+import { MetricsRegistry, createProcessMetricsCollector, otlpSpanExporterFromEnv, renderDroppedSeries, type SpanExporter } from "@space/runtime";
 import { traceContextForRawRequest } from "./trace-context.js";
 
 const bucketsSeconds = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10] as const;

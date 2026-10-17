@@ -1,0 +1,391 @@
+/* Liquid Glass (iOS 27): glass only on the floating navigation layer (bars, docks, menus, controls), solid iOS
+   cards for content, light and dark. Shares the Modern layout. The Glass Planet wallpaper lives in styles.css. */
+:root[data-interface-theme="liquid-glass"] {
+  --lg-blue-fill: #0a6fe6;
+  /* --lg-tint (0 ultra clear to 100 fully tinted, Settings slider, default 50) sets how much the glass tints. */
+  --lg-fill: rgb(30 32 46 / calc(0.14 + var(--lg-tint, 50) * 0.0072));
+  --lg-fill-strong: rgb(30 30 38 / calc(0.5 + var(--lg-tint, 50) * 0.0048));
+  --lg-blur: blur(26px) saturate(185%);
+  --lg-rim: linear-gradient(140deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.1) 32%, rgba(255, 255, 255, 0.04) 62%, rgba(255, 255, 255, 0.26));
+  /* iOS 27: brighter specular edge, darkened outline. */
+  --lg-specular: inset 0 1px 0.5px rgba(255, 255, 255, 0.26), inset 0 -0.5px 0.5px rgba(255, 255, 255, 0.08);
+  --lg-edge: 0 0 0 0.5px rgba(0, 0, 0, 0.6);
+  --lg-lift: 0 12px 32px rgba(0, 0, 0, 0.34);
+  --lg-control: rgba(118, 118, 128, 0.24);
+  --lg-control-hover: rgba(118, 118, 128, 0.36);
+  --lg-radius: 22px;
+  --lg-spring: cubic-bezier(0.3, 1.22, 0.5, 1);
+  /* Edge refraction (LiquidGlassLens.tsx) for controls that float directly on the wallpaper. */
+  --lg-lens: url(#space-liquid-glass-lens);
+  --active-icon-border: #409cff;
+  --active-icon-background: rgba(64, 156, 255, 0.18);
+  scrollbar-color: rgba(235, 235, 245, 0.28) transparent;
+}
+
+:root[data-interface-theme="liquid-glass"][data-color-mode="light"] {
+  --lg-blue-fill: #0a64d8;
+  --lg-fill: rgb(255 255 255 / calc(0.2 + var(--lg-tint, 50) * 0.0072));
+  --lg-fill-strong: rgb(250 250 253 / calc(0.62 + var(--lg-tint, 50) * 0.004));
+  --lg-rim: linear-gradient(140deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.45) 35%, rgba(255, 255, 255, 0.3) 65%, rgba(255, 255, 255, 0.85));
+  --lg-specular: inset 0 1px 0.5px rgba(255, 255, 255, 0.95), inset 0 -0.5px 0.5px rgba(255, 255, 255, 0.5);
+  --lg-edge: 0 0 0 0.5px rgba(20, 24, 60, 0.16);
+  --lg-lift: 0 12px 32px rgba(30, 40, 90, 0.14);
+  --lg-control: rgba(118, 118, 128, 0.12);
+  --lg-control-hover: rgba(118, 118, 128, 0.2);
+  --active-icon-border: #0a64d8;
+  --active-icon-background: rgba(10, 100, 216, 0.12);
+  scrollbar-color: rgba(60, 60, 67, 0.3) transparent;
+}
+
+/* iOS system palette. Dark text accent is Apple's accessible blue; filled buttons use --lg-blue-fill. */
+:root[data-interface-theme="liquid-glass"] [data-ui-theme="modern"] {
+  --modern-bg: #000000;
+  --modern-surface: #1c1c1e;
+  --modern-surface-raised: #2c2c2e;
+  --modern-surface-soft: #242427;
+  --modern-border: #38383a;
+  --modern-border-strong: #48484a;
+  --modern-text: #ffffff;
+  --modern-muted: #aeaeb2;
+  --modern-faint: #98989d;
+  --modern-accent: #409cff;
+  --modern-accent-strong: #70b5ff;
+  --modern-accent-soft: rgba(64, 156, 255, 0.16);
+  --modern-on-accent: #00142e;
+  --modern-danger: #ff453a;
+  --modern-danger-soft: rgba(255, 69, 58, 0.16);
+  --modern-warning: #ff9f0a;
+  --modern-warning-soft: rgba(255, 159, 10, 0.16);
+  --modern-success: #30d158;
+  --modern-success-soft: rgba(48, 209, 88, 0.16);
+  --modern-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  --modern-card-shadow: 0 8px 28px rgba(0, 0, 0, 0.38);
+  --modern-terminal: #141416;
+  --modern-terminal-text: #f2f2f7;
+  --modern-terminal-muted: #aeaeb2;
+  --room-accent: var(--modern-accent);
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Inter, system-ui, sans-serif;
+}
+
+:root[data-interface-theme="liquid-glass"][data-color-mode="light"] [data-ui-theme="modern"] {
+  --modern-bg: #f2f2f7;
+  --modern-surface: #ffffff;
+  --modern-surface-raised: #f5f5f7;
+  --modern-surface-soft: #ececf1;
+  --modern-border: #d1d1d6;
+  --modern-border-strong: #c7c7cc;
+  --modern-text: #111114;
+  --modern-muted: #5e5e63;
+  --modern-faint: #6c6c70;
+  --modern-accent: #0a64d8;
+  --modern-accent-strong: #0050b3;
+  --modern-accent-soft: rgba(10, 100, 216, 0.1);
+  --modern-on-accent: #ffffff;
+  --modern-danger: #d70015;
+  --modern-danger-soft: rgba(215, 0, 21, 0.09);
+  --modern-warning: #9a5b00;
+  --modern-warning-soft: rgba(255, 149, 0, 0.14);
+  --modern-success: #1a7f37;
+  --modern-success-soft: rgba(52, 199, 89, 0.13);
+  --modern-shadow: 0 18px 44px rgba(25, 32, 72, 0.16);
+  --modern-card-shadow: 0 6px 22px rgba(25, 32, 72, 0.1);
+  color-scheme: light;
+}
+
+:root[data-interface-theme="liquid-glass"] ::selection {
+  background: rgba(64, 156, 255, 0.36);
+}
+
+/* The wallpaper sits behind the whole shell, so every glass surface blurs one continuous image. */
+:root[data-interface-theme="liquid-glass"] .space-shell[data-ui-theme="modern"],
+.modern-theme-page.liquid-glass-theme-page {
+  background-color: #05060f;
+  background-image:
+    radial-gradient(ellipse 60% 45% at 14% 8%, rgba(59, 45, 155, 0.75), transparent 70%),
+    radial-gradient(ellipse 55% 50% at 92% 26%, rgba(123, 63, 228, 0.5), transparent 70%),
+    radial-gradient(ellipse 60% 40% at 10% 96%, rgba(14, 106, 122, 0.6), transparent 70%),
+    radial-gradient(ellipse 40% 30% at 50% 50%, rgba(147, 233, 250, 0.12), transparent 70%);
+}
+
+:root[data-interface-theme="liquid-glass"][data-color-mode="light"] .space-shell[data-ui-theme="modern"],
+:root[data-color-mode="light"] .modern-theme-page.liquid-glass-theme-page {
+  background-color: #f2f2f7;
+  background-image:
+    radial-gradient(ellipse 60% 45% at 14% 8%, rgba(142, 197, 255, 0.7), transparent 70%),
+    radial-gradient(ellipse 55% 50% at 92% 26%, rgba(191, 168, 255, 0.6), transparent 70%),
+    radial-gradient(ellipse 50% 40% at 88% 96%, rgba(255, 198, 168, 0.55), transparent 70%),
+    radial-gradient(ellipse 60% 40% at 10% 96%, rgba(141, 235, 255, 0.55), transparent 70%);
+}
+
+:root[data-interface-theme="liquid-glass"][data-ui-background="liquid-glass"] .space-shell[data-ui-theme="modern"],
+:root[data-ui-background="liquid-glass"] .modern-theme-page.liquid-glass-theme-page {
+  background: #05060f url("/brand/liquid-glass-planet-dark.webp") center / cover no-repeat;
+}
+
+:root[data-interface-theme="liquid-glass"][data-ui-background="liquid-glass"][data-color-mode="light"] .space-shell[data-ui-theme="modern"],
+:root[data-ui-background="liquid-glass"][data-color-mode="light"] .modern-theme-page.liquid-glass-theme-page {
+  background: #f2f2f7 url("/brand/liquid-glass-planet-light.webp") center / cover no-repeat;
+}
+
+/* The shell already paints the planet; the room layer would only repeat it. */
+:root[data-interface-theme="liquid-glass"][data-ui-background="liquid-glass"] .room-runtime-stack::before {
+  display: none;
+}
+
+:root[data-interface-theme="liquid-glass"] .space-shell .board {
+  background: transparent;
+}
+
+.liquid-glass-lens {
+  position: absolute;
+  pointer-events: none;
+}
+
+/* Liquid Glass: one material for every floating surface. The rim is a gradient border, not a pseudo-element,
+   because many of these surfaces already use ::before. */
+:root[data-interface-theme="liquid-glass"] :is(
+  .space-shell .topbar,
+  .space-shell .board-toolbar,
+  .space-shell .side-surface,
+  .space-shell .health-indicator-rail
+) {
+  border: 1px solid transparent;
+  border-radius: var(--lg-radius);
+  background: linear-gradient(var(--lg-fill), var(--lg-fill)) padding-box, var(--lg-rim) border-box;
+  -webkit-backdrop-filter: var(--lg-blur);
+  backdrop-filter: var(--lg-blur);
+  box-shadow: var(--lg-specular), var(--lg-edge), var(--lg-lift);
+}
+
+:root[data-interface-theme="liquid-glass"] :is(
+  [role="menu"],
+  [role="listbox"],
+  .desktop-navigation-menu,
+  .terminal-context-menu,
+  .terminal-shortcuts-popover,
+  .terminal-model-popover,
+  .terminal-plans-popover,
+  .quick-links-popover,
+  .mobile-action-sheet
+) {
+  border: 1px solid transparent;
+  border-radius: 18px;
+  background: linear-gradient(var(--lg-fill-strong), var(--lg-fill-strong)) padding-box, var(--lg-rim) border-box;
+  -webkit-backdrop-filter: var(--lg-blur);
+  backdrop-filter: var(--lg-blur);
+  box-shadow: var(--lg-specular), var(--lg-edge), var(--modern-shadow);
+  animation: lg-pop 0.32s var(--lg-spring);
+}
+
+/* Inside glass, surfaces become iOS fills so the material shows through lists and controls. */
+:root[data-interface-theme="liquid-glass"] :is(.space-shell .topbar, .space-shell .board-toolbar, .space-shell .side-surface, .space-shell .health-indicator-rail, [role="menu"], [role="listbox"], .desktop-navigation-menu, .terminal-context-menu, .terminal-shortcuts-popover, .terminal-model-popover, .terminal-plans-popover, .quick-links-popover, .mobile-action-sheet) {
+  --modern-surface: transparent;
+  --modern-surface-raised: var(--lg-control);
+  --modern-surface-soft: rgba(118, 118, 128, 0.14);
+  --modern-border: rgba(255, 255, 255, 0.1);
+  --room-surface: var(--lg-control);
+  --room-surface-soft: transparent;
+  --room-border: var(--modern-border);
+}
+
+:root[data-interface-theme="liquid-glass"][data-color-mode="light"] :is(.space-shell .topbar, .space-shell .board-toolbar, .space-shell .side-surface, .space-shell .health-indicator-rail, [role="menu"], [role="listbox"], .desktop-navigation-menu, .terminal-context-menu, .terminal-shortcuts-popover, .terminal-model-popover, .terminal-plans-popover, .quick-links-popover, .mobile-action-sheet) {
+  --modern-surface-soft: rgba(118, 118, 128, 0.08);
+  --modern-border: rgba(60, 60, 67, 0.12);
+  --room-border: var(--modern-border);
+}
+
+/* Sticky headers inside glass would show the scrolling content through the transparent surface; like iOS
+   navigation bars they frost what passes under them instead. */
+:root[data-interface-theme="liquid-glass"] :is(.settings-dock-toolbar, .space-shell .settings-dock-title, .streaming-bot-actions) {
+  background: var(--lg-fill-strong);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+}
+
+@keyframes lg-pop {
+  from {
+    opacity: 0;
+    scale: 0.94;
+  }
+}
+
+/* Controls: iOS capsules with a spring press. Action sheets keep their list rows. */
+:root[data-interface-theme="liquid-glass"] [data-ui-theme="modern"] :where(button) {
+  border-radius: 12px;
+  transition: scale 0.45s var(--lg-spring), background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+:root[data-interface-theme="liquid-glass"] [data-ui-theme="modern"] :where(input, select, textarea) {
+  border-radius: 12px;
+}
+
+/* Native option lists paint the select's translucent glass fill over white, which hid the light text: solid iOS cards. */
+:root[data-interface-theme="liquid-glass"] select option {
+  background-color: #2c2c2e;
+  color: #ffffff;
+}
+
+:root[data-interface-theme="liquid-glass"][data-color-mode="light"] select option {
+  background-color: #f5f5f7;
+  color: #111114;
+}
+
+:root[data-interface-theme="liquid-glass"] [data-ui-theme="modern"] :where(button:active:not(:disabled)) {
+  scale: 0.96;
+}
+
+:root[data-interface-theme="liquid-glass"] :is(.space-shell .board-toolbar, .space-shell .pane-card > header) button:not(.mobile-action-sheet *) {
+  border-color: transparent;
+  border-radius: 999px;
+  background: var(--lg-control);
+}
+
+:root[data-interface-theme="liquid-glass"] :is(.space-shell .board-toolbar, .space-shell .pane-card > header) button:not(.mobile-action-sheet *):hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--lg-control-hover);
+}
+
+:root[data-interface-theme="liquid-glass"] .space-shell :is(button.primary, .primary-action, .codex-send):not(:disabled) {
+  border-color: transparent;
+  border-radius: 999px;
+  background: var(--lg-blue-fill);
+  color: #ffffff;
+  box-shadow: inset 0 1px 0.5px rgba(255, 255, 255, 0.35), 0 4px 14px rgba(10, 100, 216, 0.3);
+}
+
+:root[data-interface-theme="liquid-glass"] .space-shell :is(button.primary, .primary-action, .codex-send):hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+:root[data-interface-theme="liquid-glass"] [data-ui-theme="modern"] :is(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--modern-accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--modern-accent-soft);
+}
+
+/* An empty room shows the wallpaper: its copy and actions float on it like iOS home-screen controls. */
+:root[data-interface-theme="liquid-glass"] .space-shell :is(.room-runtime-layer > .empty-state, .room-empty-state) :is(h3, p) {
+  color: var(--modern-text);
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-interface-theme="liquid-glass"][data-color-mode="light"] .space-shell :is(.room-runtime-layer > .empty-state, .room-empty-state) :is(h3, p) {
+  text-shadow: 0 1px 14px rgba(255, 255, 255, 0.8);
+}
+
+:root[data-interface-theme="liquid-glass"] .space-shell .empty-state-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.6rem 1.05rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(var(--lg-fill), var(--lg-fill)) padding-box, var(--lg-rim) border-box;
+  -webkit-backdrop-filter: var(--lg-blur);
+  backdrop-filter: var(--lg-lens);
+  box-shadow: var(--lg-specular), var(--lg-edge), var(--lg-lift);
+  color: var(--modern-text);
+}
+
+:root[data-interface-theme="liquid-glass"] .space-shell .empty-state-actions button:hover:not(:disabled) {
+  background: linear-gradient(var(--lg-control-hover), var(--lg-control-hover)) padding-box, var(--lg-rim) border-box;
+}
+
+/* Content: solid iOS cards with one corner radius, hairline edge and soft depth. */
+:root[data-interface-theme="liquid-glass"] .space-shell .pane-card {
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  background: var(--modern-surface);
+  box-shadow: var(--modern-card-shadow);
+}
+
+:root[data-interface-theme="liquid-glass"][data-color-mode="light"] .space-shell .pane-card {
+  border-color: rgba(0, 0, 0, 0.06);
+}
+
+:root[data-interface-theme="liquid-glass"] .space-shell .pane-card > header {
+  border-bottom: 0.5px solid var(--modern-border);
+  background: var(--modern-surface);
+}
+
+:root[data-interface-theme="liquid-glass"] .space-shell .pane-card.is-target {
+  --lg-pane-ring: var(--modern-accent);
+  border-color: var(--lg-pane-ring);
+  box-shadow: var(--modern-card-shadow);
+}
+
+:root[data-interface-theme="liquid-glass"] .space-shell .pane-card.is-completion-pending {
+  --lg-pane-ring: var(--modern-danger);
+  border-color: var(--lg-pane-ring);
+  box-shadow: var(--modern-card-shadow);
+}
+
+/* The ring is painted inside the card: the scrolling pane grid clips anything outside its edge panes. */
+:root[data-interface-theme="liquid-glass"] .space-shell .pane-card:is(.is-target, .is-completion-pending):not(.is-drop-target)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 2px var(--lg-pane-ring);
+  pointer-events: none;
+}
+
+:root[data-interface-theme="liquid-glass"] .help-page :is(.help-section, .help-navigation, .help-entry) {
+  border-color: var(--modern-border);
+  border-radius: 18px;
+  background: var(--modern-surface);
+}
+
+:root[data-interface-theme="liquid-glass"] .help-page .help-header {
+  border: 1px solid transparent;
+  background: linear-gradient(var(--lg-fill), var(--lg-fill)) padding-box, var(--lg-rim) border-box;
+  -webkit-backdrop-filter: var(--lg-blur);
+  backdrop-filter: var(--lg-blur);
+}
+
+/* Reduce Transparency and Increase Contrast, as iOS 27 adapts Liquid Glass to them. */
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-interface-theme="liquid-glass"] {
+    --lg-fill: #1c1c1e;
+    --lg-fill-strong: #2c2c2e;
+    --lg-blur: none;
+    --lg-lens: none;
+  }
+
+  :root[data-interface-theme="liquid-glass"][data-color-mode="light"] {
+    --lg-fill: #f9f9fb;
+    --lg-fill-strong: #ffffff;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root[data-interface-theme="liquid-glass"] {
+    --lg-fill: #1c1c1e;
+    --lg-fill-strong: #1c1c1e;
+    --lg-blur: none;
+    --lg-lens: none;
+    --lg-rim: linear-gradient(#8e8e93, #8e8e93);
+  }
+
+  :root[data-interface-theme="liquid-glass"][data-color-mode="light"] {
+    --lg-fill: #ffffff;
+    --lg-fill-strong: #ffffff;
+    --lg-rim: linear-gradient(#3c3c43, #3c3c43);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-interface-theme="liquid-glass"] :is([role="menu"], [role="listbox"], .desktop-navigation-menu, .terminal-context-menu, .terminal-shortcuts-popover, .terminal-model-popover, .terminal-plans-popover, .quick-links-popover, .mobile-action-sheet) {
+    animation: none;
+  }
+
+  :root[data-interface-theme="liquid-glass"] [data-ui-theme="modern"] :where(button) {
+    transition: none;
+  }
+
+  :root[data-interface-theme="liquid-glass"] [data-ui-theme="modern"] :where(button:active:not(:disabled)) {
+    scale: none;
+  }
+}

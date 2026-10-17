@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,17 +18,29 @@ async function root(): Promise<string> {
 }
 
 describe("StreamingCredentialStore", () => {
-  it("fails closed when provider client files are absent or too permissive", async () => {
+  it("reports a missing client file and tightens widened modes on files it owns, never through a symlink", async () => {
     const directory = await root();
     const store = new StreamingCredentialStore(directory);
     await store.initialize();
     expect(await store.readiness("YOUTUBE")).toMatchObject({ status: "UNCONFIGURED", clientFilePresent: false });
-    await writeFile(store.clientPath("YOUTUBE"), JSON.stringify({
-      clientId: "client",
-      clientSecret: "secret",
-      redirectUri: "https://space.example/callback"
-    }), { mode: 0o644 });
-    expect(await store.readiness("YOUTUBE")).toMatchObject({ status: "ERROR", code: "CLIENT_FILE_PERMISSIONS" });
+    const client = JSON.stringify({ clientId: "client", clientSecret: "secret", redirectUri: "https://space.example/callback" });
+    await writeFile(store.clientPath("TWITCH"), client, { mode: 0o400 });
+    expect(await store.readiness("TWITCH")).toMatchObject({ status: "READY" });
+    expect((await stat(store.clientPath("TWITCH"))).mode & 0o777).toBe(0o400);
+    // public-host drifted these files to 0620 (2026-10-09); the store heals them instead of failing every platform call.
+    await writeFile(store.clientPath("YOUTUBE"), client);
+    await chmod(store.clientPath("YOUTUBE"), 0o620);
+    expect(await store.readiness("YOUTUBE")).toMatchObject({ status: "READY" });
+    expect((await stat(store.clientPath("YOUTUBE"))).mode & 0o777).toBe(0o600);
+    await store.writeCredential("streaming-credential:drift", { accessToken: "token" });
+    const credentials = await readdir(join(directory, "credentials"));
+    await chmod(join(directory, "credentials", credentials[0]!), 0o620);
+    expect(await store.readCredential("streaming-credential:drift")).toEqual({ accessToken: "token" });
+    // A symlink is followed for reading but never chmod-ed through.
+    await writeFile(join(directory, "elsewhere.json"), client, { mode: 0o644 });
+    await symlink(join(directory, "elsewhere.json"), store.clientPath("X"));
+    expect(await store.readiness("X")).toMatchObject({ status: "ERROR", code: "CLIENT_FILE_PERMISSIONS" });
+    expect((await stat(join(directory, "elsewhere.json"))).mode & 0o777).toBe(0o644);
   });
 
   it("atomically rotates opaque credential files with 0700/0600 permissions", async () => {
