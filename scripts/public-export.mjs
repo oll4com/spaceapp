@@ -61,6 +61,7 @@ const publicDocs = new Set([
   // Linked from CONTRIBUTING; the policy file drives npm run test:architecture.
   "docs/configuration-reference.md",
   "docs/quality/domain-boundaries.json",
+  "docs/quality/memory-graph-performance.md",
   "docs/decisions/ADR-010-public-distribution.md",
   "docs/getting-started.md",
   "docs/legal/cli-distribution-policy.json",

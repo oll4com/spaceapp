@@ -53,6 +53,7 @@ import { DEMO_LOCAL_REPLY, SpaceApiError } from "../runtime/SpaceRuntime.js";
 import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-presentation.js";
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
 import { MockServices } from "./mock-services.js";
+import { createSyntheticMemoryGraph } from "./synthetic-memory-graph.js";
 import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
 
 export const DEMO_WARNING = "DEMO MODE — Everything is simulated locally. No production service is connected.";
@@ -138,6 +139,7 @@ function initialStreamingBotStatus(): StreamingBotStatus {
 }
 
 type DemoMemoryGraphQuery = {
+  limit?: number;
   q?: string;
   nodeType?: MemoryGraphNode["type"];
   scope?: "SYSTEM" | "PROJECT" | "ROOM";
@@ -203,6 +205,7 @@ function initialSetupConnectionResults(): Map<string, DemoSetupConnectionResult>
 }
 
 export class DemoStore {
+  private syntheticGraph: Promise<MemoryGraphPayload> | null = null;
   private fixture = cloneFixture();
   private sequence = 0;
   private cliRuntimeEnabled = new Map<CliToggleRuntimeId, boolean>(
@@ -1490,6 +1493,23 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
+        const size = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("memoryNodes");
+        if (size && /^\d+$/.test(size)) {
+          this.syntheticGraph ??= createSyntheticMemoryGraph(Number(size));
+          return this.syntheticGraph.then(graph => {
+            const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
+            const limit = Math.min(50000, Math.max(1, query.limit ?? 2000));
+            if (!query.q && limit >= graph.nodes.length) {
+              return { data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } };
+            }
+            const matching = query.q ? graph.nodes.filter(node => node.label.toLowerCase().includes(query.q!.toLowerCase())) : graph.nodes;
+            const nodes = matching.slice(0, limit), ids = new Set(nodes.map(node => node.id));
+            const matchingEdges = graph.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target));
+            const edges = matchingEdges.slice(0, limit * 3);
+            return { data: { ...graph, nodes, edges, totalMatchingNodes: matching.length, totalMatchingEdges: graph.edges.length,
+              truncated: nodes.length < matching.length || edges.length < graph.edges.length } };
+          });
+        }
         const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
@@ -1568,6 +1588,15 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
+        if (this.syntheticGraph && roomId?.startsWith("synthetic:memory:")) {
+          return this.syntheticGraph.then(graph => {
+            const node = graph.nodes.find(candidate => candidate.id === roomId);
+            if (!node) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
+            const relatedEdges = graph.edges.filter(edge => edge.source === roomId || edge.target === roomId).slice(0, 500);
+            const relatedIds = new Set(relatedEdges.flatMap(edge => [edge.source, edge.target]));
+            return { node, record: null, relatedNodes: graph.nodes.filter(candidate => candidate.id !== roomId && relatedIds.has(candidate.id)).slice(0, 500), relatedEdges, issues: [] };
+          });
+        }
         const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));

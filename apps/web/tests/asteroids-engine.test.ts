@@ -67,10 +67,14 @@ describe("Asteroids simulation", () => {
     expect(Number.isFinite(game.ship.x)).toBe(true); expect(game.ship.x).toBeGreaterThanOrEqual(0); expect(game.ship.x).toBeLessThan(game.width);
   });
   it("spawns a firing Sentinel every fifth sector and wraps collisions across edges", () => {
-    const game = new AsteroidsEngine(800, 600); game.start(); game.sector = 5; game.beginSector();
+    let seed = 424;
+    const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+    const game = new AsteroidsEngine(800, 600, random); game.start(); game.sector = 5; game.beginSector();
     expect(game.rocks.filter(r => r.boss)).toHaveLength(1);
-    for (let i = 0; i < 140; i++) game.step(1 / 60, emptyControls());
-    expect(game.shots.some(s => s.enemy)).toBe(true);
+    // A shot can hit the ship before the last frame; verify that the boss fired.
+    let fired = false;
+    for (let i = 0; i < 140; i++) { game.step(1 / 60, emptyControls()); fired ||= game.shots.some(s => s.enemy); }
+    expect(fired).toBe(true);
     expect(game.distance({ x: 2, y: 40 }, { x: 798, y: 40 })).toBe(4);
     game.resize(400, 300); expect(game.ship.x).toBeLessThan(400); expect(game.ship.y).toBeLessThan(300);
   });

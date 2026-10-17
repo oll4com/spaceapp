@@ -182,3 +182,7 @@
   .memory-3d-hint { font-size: 8px; }
   #memory-atlas .memory-atlas-topics { max-height: 80px; }
 }
+.memory-3d-surface .memory-3d-labels { position: absolute; inset: 0; pointer-events: none; }
+.memory-3d-fallback-notice { position: absolute; bottom: 35px; left: 24%; color: #95aec2; font-size: 11px; }
+.memory-3d-benchmark { position: absolute; bottom: 4px; left: 23%; max-width: 72%; z-index: 10; background: #09111be8; color: #c6dfed; padding: 6px; }
+.memory-3d-benchmark pre { max-height: 165px; overflow: auto; font-size: 10px; margin: 0; }

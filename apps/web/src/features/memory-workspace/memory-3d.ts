@@ -15,14 +15,22 @@ const unit = (seed: string) => {
 
 /** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
 export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+  let result = new Map<string, MemoryPoint3D>();
+  for (const frame of streamMemoryNetwork3D(nodes, edges)) result = frame.positions;
+  return result;
+}
+
+/** Snapshots are independent, deterministic and usable before convergence. */
+export function* streamMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], interval = 12) {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const root = ordered.findIndex(node => node.type === "SOURCE" && isMemoryCoreLabel(node.label));
   const count = ordered.length;
+  const spread = Math.max(1, Math.cbrt(count / 2000));
   const points = ordered.map(node => ({
-    x: (unit(`${node.id}:x`) - 0.5) * 260,
-    y: (unit(`${node.id}:y`) - 0.5) * 260,
-    z: (unit(`${node.id}:z`) - 0.5) * 260
+    x: (unit(`${node.id}:x`) - 0.5) * 260 * spread,
+    y: (unit(`${node.id}:y`) - 0.5) * 260 * spread,
+    z: (unit(`${node.id}:z`) - 0.5) * 260 * spread
   }));
   if (root >= 0) points[root] = { x: 0, y: 0, z: 0 };
   const links = [...edges].sort((a, b) => a.id.localeCompare(b.id)).flatMap(edge => {
@@ -33,7 +41,7 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       strength: fileLink ? 0.035 : edge.type === "CONTAINS" ? 0.028 : 0.004 }];
   });
   // Initialize records around their actual file, in a volume rather than a plane.
-  for (const edge of edges) {
+  for (const edge of [...edges].sort((a, b) => a.id.localeCompare(b.id))) {
     const a = index.get(edge.source), b = index.get(edge.target);
     if (edge.type !== "CONTAINS" || a === undefined || b === undefined || ordered[a]!.type !== "SOURCE" || ordered[b]!.type !== "MEMORY") continue;
     const parent = points[a]!, id = ordered[b]!.id;
@@ -41,19 +49,40 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       y: parent.y + (unit(`${id}:dy`) - 0.5) * 70, z: parent.z + (unit(`${id}:dz`) - 0.5) * 70 };
   }
   const fx = new Float64Array(count), fy = new Float64Array(count), fz = new Float64Array(count);
+  const snapshot = (iteration: number) => ({ iteration, done: iteration === 180,
+    positions: new Map(ordered.map((node, i) => [node.id, { ...points[i]! }] as const)) });
+  yield snapshot(0);
   // Bounded spatial-grid repulsion and link springs act equally on all three axes.
   for (let step = 0; step < 180; step++) {
     fx.fill(0); fy.fill(0); fz.fill(0);
-    const grid = new Map<string, number[]>();
+    const grid = new Map<number, { members: number[]; x: number; y: number; z: number }>();
+    // The 50k-node initial volume plus 180 capped steps stays inside +/-16k.
+    // A 30-bit key avoids allocating a boxed double for every neighbor lookup.
+    const cellKey = (x: number, y: number, z: number) => (x + 512) * 1048576 + (y + 512) * 1024 + z + 512;
     for (let i = 0; i < count; i++) {
-      const p = points[i]!, key = `${Math.floor(p.x / 32)},${Math.floor(p.y / 32)},${Math.floor(p.z / 32)}`;
-      if (!grid.has(key)) grid.set(key, []);
-      grid.get(key)!.push(i);
+      const p = points[i]!, key = cellKey(Math.floor(p.x / 32), Math.floor(p.y / 32), Math.floor(p.z / 32));
+      let cell = grid.get(key);
+      if (!cell) { cell = { members: [], x: 0, y: 0, z: 0 }; grid.set(key, cell); }
+      cell.members.push(i); cell.x += p.x; cell.y += p.y; cell.z += p.z;
     }
     for (let i = 0; i < count; i++) {
       const p = points[i]!, gx = Math.floor(p.x / 32), gy = Math.floor(p.y / 32), gz = Math.floor(p.z / 32);
       for (let x = gx - 1; x <= gx + 1; x++) for (let y = gy - 1; y <= gy + 1; y++) for (let z = gz - 1; z <= gz + 1; z++) {
-        for (const j of grid.get(`${x},${y},${z}`) ?? []) {
+        const cell = grid.get(cellKey(x, y, z));
+        if (!cell) continue;
+        if (count > 2000) {
+          // Deterministic cell aggregates bound large layouts to 27 forces per node.
+          // Exclude the node itself from its cell's center of mass.
+          const own = x === gx && y === gy && z === gz, population = cell.members.length - Number(own);
+          if (!population) continue;
+          const dx = p.x - (cell.x - (own ? p.x : 0)) / population;
+          const dy = p.y - (cell.y - (own ? p.y : 0)) / population;
+          const dz = p.z - (cell.z - (own ? p.z : 0)) / population;
+          const strength = Math.min(16, population) * (ordered[i]!.type === "SOURCE" ? 28 : 12) / Math.max(1, dx * dx + dy * dy + dz * dz);
+          fx[i]! += dx * strength; fy[i]! += dy * strength; fz[i]! += dz * strength;
+          continue;
+        }
+        for (const j of cell.members) {
           if (j <= i) continue;
           const q = points[j]!, dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
           const distanceSquared = Math.max(1, dx * dx + dy * dy + dz * dz);
@@ -78,8 +107,8 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       const stepScale = Math.min(1, 4 / Math.max(0.01, Math.hypot(dx, dy, dz))) * cooling;
       p.x += dx * stepScale; p.y += dy * stepScale; p.z += dz * stepScale;
     }
+    if ((step + 1) % Math.max(1, interval) === 0 || step === 179) yield snapshot(step + 1);
   }
-  return new Map(ordered.map((node, i) => [node.id, points[i]!]));
 }
 
 export function projectMemoryPoint(point: MemoryPoint3D, camera: MemoryCamera3D, scale: number, width: number, height: number) {

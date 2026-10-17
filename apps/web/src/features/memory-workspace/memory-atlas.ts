@@ -6,7 +6,8 @@ export const ATLAS_COLORS = ["#57ccff", "#ff79bc", "#ab95ff", "#53e2ba", "#ffc56
 export type MemoryAtlasPosition = { x: number; y: number; color: string; hub: boolean; groupId: string; monthLabel?: string };
 export type MemoryAtlasGroup = { id: string; label: string; color: string; count: number; kind: "tag" | "topic" | "month" | "archive" };
 export const memorySourceMonth = (node: MemoryGraphNode) => node.sourcePath?.match(/(?:^|[_/-])(20\d{2}-(?:0[1-9]|1[0-2]))(?:[_. /-]|$)/)?.[1] ?? null;
-export const memoryMonthLabel = (month: string) => new Date(`${month}-01T00:00:00Z`).toLocaleDateString("en", { month: "short", year: "numeric", timeZone: "UTC" });
+const monthFormatter = new Intl.DateTimeFormat("en", { month: "short", year: "numeric", timeZone: "UTC" });
+export const memoryMonthLabel = (month: string) => monthFormatter.format(new Date(`${month}-01T00:00:00Z`));
 
 export const MIN_ATLAS_TAG_COUNT = 10;
 
