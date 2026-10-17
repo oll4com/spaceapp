@@ -79,11 +79,13 @@ jobs:
           docker run -d --name smoke-pg-${{ matrix.arch }} --network spaceapp-smoke-${{ matrix.arch }} \
             -e POSTGRES_PASSWORD=smokepassword -e POSTGRES_USER=spaceapp -e POSTGRES_DB=spaceapp \
             pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
-          
-          for i in $(seq 1 30); do
-            if docker exec smoke-pg-${{ matrix.arch }} pg_isready -U spaceapp; then break; fi
+
+          ready=0
+          for _ in $(seq 1 30); do
+            if docker exec smoke-pg-${{ matrix.arch }} pg_isready -U spaceapp; then ready=1; break; fi
             sleep 1
           done
+          [ "$ready" = 1 ] || { echo "PostgreSQL not ready"; exit 1; }
 
           mkdir -p /tmp/smoke-secrets-${{ matrix.arch }}
           echo "postgres://spaceapp:smokepassword@smoke-pg-${{ matrix.arch }}:5432/spaceapp" > /tmp/smoke-secrets-${{ matrix.arch }}/database-url
@@ -96,18 +98,24 @@ jobs:
             -p 4911:4911 \
             spaceapp-ci:core-${{ matrix.arch }}
 
-          for i in $(seq 1 45); do
+          core_ready=0
+          for _ in $(seq 1 45); do
             if curl -sf http://127.0.0.1:4911/readyz | grep -q '"ok":true'; then
               echo "Core readyz smoke check passed"
+              core_ready=1
               break
             fi
             sleep 2
           done
+          [ "$core_ready" = 1 ] || { echo "Core /readyz not ready"; exit 1; }
 
-          curl -sf http://127.0.0.1:4911/readyz | grep -q '"ok":true'
-          docker stop smoke-core-${{ matrix.arch }} smoke-pg-${{ matrix.arch }} || true
-          docker rm -f smoke-core-${{ matrix.arch }} smoke-pg-${{ matrix.arch }} || true
-          docker network rm spaceapp-smoke-${{ matrix.arch }} || true
+      - name: Cleanup core smoke check resources
+        if: always() && matrix.target == 'core'
+        run: |
+          docker logs smoke-core-${{ matrix.arch }} 2>/dev/null || true
+          docker stop smoke-core-${{ matrix.arch }} smoke-pg-${{ matrix.arch }} 2>/dev/null || true
+          docker rm -f smoke-core-${{ matrix.arch }} smoke-pg-${{ matrix.arch }} 2>/dev/null || true
+          docker network rm spaceapp-smoke-${{ matrix.arch }} 2>/dev/null || true
           rm -rf /tmp/smoke-secrets-${{ matrix.arch }}
 
       - name: Smoke check browser container (Chromium launch)
@@ -121,11 +129,25 @@ jobs:
         run: |
           docker run --rm spaceapp-ci:cli-${{ matrix.arch }} \
             opencode-ai --version
-          
+
           docker run -d --name smoke-cli-${{ matrix.arch }} \
             -e SPACE_CLI_HOST_SOCKET=/run/spaceapp-cli/host.sock \
             spaceapp-ci:cli-${{ matrix.arch }}
-          sleep 5
+
+          socket_ready=0
+          for _ in $(seq 1 30); do
+            if ! docker inspect -f '{{.State.Running}}' smoke-cli-${{ matrix.arch }} 2>/dev/null | grep -q 'true'; then
+              echo "CLI container terminated unexpectedly"
+              exit 1
+            fi
+            if docker exec smoke-cli-${{ matrix.arch }} test -S /run/spaceapp-cli/host.sock 2>/dev/null; then
+              socket_ready=1
+              break
+            fi
+            sleep 1
+          done
+          [ "$socket_ready" = 1 ] || { echo "CLI socket not created"; exit 1; }
+
           docker exec smoke-cli-${{ matrix.arch }} node -e "
             const net = require('node:net');
             const client = net.createConnection('/run/spaceapp-cli/host.sock');
@@ -133,5 +155,10 @@ jobs:
             client.on('error', (err) => { console.error('Socket connect failed:', err); process.exit(1); });
             setTimeout(() => { console.error('Socket timeout'); process.exit(1); }, 5000);
           "
-          docker stop smoke-cli-${{ matrix.arch }} || true
-          docker rm -f smoke-cli-${{ matrix.arch }} || true
+
+      - name: Cleanup cli smoke check resources
+        if: always() && matrix.target == 'cli'
+        run: |
+          docker logs smoke-cli-${{ matrix.arch }} 2>/dev/null || true
+          docker stop smoke-cli-${{ matrix.arch }} 2>/dev/null || true
+          docker rm -f smoke-cli-${{ matrix.arch }} 2>/dev/null || true
