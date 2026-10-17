@@ -47,6 +47,9 @@ them from this checkout. Vite handles web HMR directly, including WebSocket prox
 to the chosen API port. A required child exiting unexpectedly produces a named
 error and stops the stack. Sustained readiness loss also fails instead of leaving
 an apparently healthy partial stack.
+Intentional reloads invalidate earlier readiness probes. The replacement receives
+the same bounded startup checks after compilation and launch, then the normal
+four-loss readiness policy once it is ready; old responses cannot change that state.
 On failure, bounded logs and health-probe output from owned containers are redacted
 before cleanup. This capture does not expose container environments and a failed
 diagnostic cannot skip the normal ownership checks or cleanup.
@@ -116,7 +119,7 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners and checks the exact source. Both run all 69 launcher
+and `macos-15-intel` runners and checks the exact source. Both run all 76 launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
 Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
 private-instance API regressions in the four `instance-storage`/`dev-*-storage`

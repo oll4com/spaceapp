@@ -84,6 +84,7 @@ const publicScripts = new Set([
   "scripts/dev-stack/processes.mjs",
   "scripts/dev-stack/resources.mjs",
   "scripts/dev-stack/supervisor.mjs",
+  "scripts/dev-stack/readiness.mjs",
   "scripts/dev-stack/opencode-wrapper.mjs",
   "scripts/dev-stack/opencode-runtime.mjs",
   "scripts/dev-stack/pty-capability.mjs",

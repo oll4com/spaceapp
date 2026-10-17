@@ -699,3 +699,92 @@ test('geometry failure evidence retains only bounded expected and observed field
   assert.deepEqual(evidence.initialGeometry, initialObserverGeometry); assert.deepEqual(evidence.browserGeometry.geometry, response.session.terminalGeometry);
   const clock = browserGridProof(), state = browserGrid(); assert.throws(() => clock.acknowledgeBrowserGeometry('tested-pane', state, screenSession(initialObserverGeometry), state, NaN), /clock must be finite/);
 });
+
+const { ReadinessEpoch } = await import('../dev-stack/readiness.mjs');
+function readinessObservation(policy, outcome, now) {
+  const probe = policy.beginProbe(); assert(probe, 'Only an active generation can be probed.');
+  try { return policy.settle(probe, outcome, now); } finally { policy.release(probe); }
+}
+
+test('initial readiness preserves the existing HTTP startup deadline and unreachable attempt bound', () => {
+  const waiting = new ReadinessEpoch(); waiting.start(1000);
+  assert.equal(readinessObservation(waiting, 'unavailable', 181000).fatal, false);
+  assert.equal(readinessObservation(waiting, 'unavailable', 181001).fatal, true);
+  const unreachable = new ReadinessEpoch(); unreachable.start(0);
+  for (let i = 1; i < 30; i++) assert.equal(readinessObservation(unreachable, 'unreachable', i * 4000).fatal, false);
+  assert.equal(readinessObservation(unreachable, 'unreachable', 120000).fatal, true);
+  const reset = new ReadinessEpoch(); reset.start(0);
+  readinessObservation(reset, 'unreachable', 4000); assert.equal(readinessObservation(reset, 'ready', 8000).failures, 0);
+});
+
+test('intentional API restart clears the prior ready state and failures before the replacement is observed', () => {
+  const policy = new ReadinessEpoch(); policy.start(0); readinessObservation(policy, 'ready', 1000);
+  for (let i = 1; i <= 3; i++) assert.equal(readinessObservation(policy, 'unreachable', 1000 + i * 4000).fatal, false);
+  policy.pause(); assert.equal(policy.beginProbe(), null); policy.start(600000);
+  assert.deepEqual({ lastReady: policy.diagnostic().lastReady, failures: policy.diagnostic().failures }, { lastReady: null, failures: 0 });
+  assert.equal(readinessObservation(policy, 'unreachable', 604000).fatal, false);
+  assert.equal(readinessObservation(policy, 'unreachable', 608000).fatal, false);
+  assert.equal(readinessObservation(policy, 'ready', 612000).failures, 0);
+});
+
+test('a long shared-package compilation consumes no replacement generation startup allowance', () => {
+  const policy = new ReadinessEpoch(); policy.start(0); readinessObservation(policy, 'ready', 1000);
+  policy.pause(); assert.equal(policy.beginProbe(), null); assert.equal(policy.diagnostic().paused, true);
+  policy.start(900000); assert.equal(policy.diagnostic().deadline, 1080000);
+  assert.equal(readinessObservation(policy, 'unavailable', 1079999).fatal, false);
+  assert.equal(readinessObservation(policy, 'unavailable', 1080001).fatal, true);
+  policy.pause(); policy.start(2000000);
+  for (let i = 1; i <= 30; i++) assert.equal(readinessObservation(policy, 'unreachable', 2000000 + i * 4000).fatal, i === 30);
+});
+
+test('a late prior-epoch failure and finally cannot poison or unlock the current generation probe', async () => {
+  const policy = new ReadinessEpoch(); policy.start(0);
+  const old = policy.beginProbe(); let rejectOld;
+  const pending = new Promise(resolvePromise => { rejectOld = resolvePromise; }).then(() => {
+    try { return policy.settle(old, 'unreachable', 700000); } finally { policy.release(old); }
+  });
+  policy.pause(); policy.start(600000); const current = policy.beginProbe(); rejectOld();
+  assert.equal(await pending, null); assert.equal(policy.diagnostic().failures, 0);
+  assert.equal(policy.diagnostic().checking, true); assert.equal(policy.beginProbe(), null);
+  assert.equal(policy.settle(current, 'ready', 700000).fatal, false); policy.release(current);
+  assert.equal(policy.diagnostic().lastReady, true);
+});
+
+test('a late prior-epoch success cannot certify a replacement or erase its startup failures', async () => {
+  const policy = new ReadinessEpoch(); policy.start(0); const old = policy.beginProbe(); let resolveOld;
+  const pending = new Promise(resolvePromise => { resolveOld = resolvePromise; }).then(() => {
+    try { return policy.settle(old, 'ready', 900000); } finally { policy.release(old); }
+  });
+  policy.pause(); policy.start(600000); readinessObservation(policy, 'unreachable', 604000);
+  const current = policy.beginProbe(); resolveOld(); assert.equal(await pending, null);
+  assert.equal(policy.diagnostic().lastReady, null); assert.equal(policy.diagnostic().failures, 1);
+  assert.equal(policy.diagnostic().checking, true);
+  assert.equal(policy.settle(current, 'unavailable', 780001).fatal, true); policy.release(current);
+});
+
+test('a ready replacement still fails after four sustained losses and a healthy response resets them', () => {
+  for (const outcome of ['unavailable', 'unreachable']) {
+    const policy = new ReadinessEpoch(); policy.start(0); readinessObservation(policy, 'ready', 1000);
+    for (let i = 1; i <= 3; i++) assert.equal(readinessObservation(policy, outcome, 1000000 + i * 4000).fatal, false);
+    assert.equal(readinessObservation(policy, 'ready', 1020000).failures, 0);
+    for (let i = 1; i <= 4; i++) assert.equal(readinessObservation(policy, outcome, 1020000 + i * 4000).fatal, i === 4);
+  }
+});
+
+test('only one matching readiness probe can settle and release each generation', () => {
+  const policy = new ReadinessEpoch(); assert.equal(policy.beginProbe(), null);
+  assert.throws(() => policy.start(NaN), /clock must be finite/); policy.start(0);
+  assert.equal(policy.settle(null, 'ready', 0), null);
+  const probe = policy.beginProbe(); assert.equal(policy.beginProbe(), null);
+  assert.equal(policy.settle({ epoch: probe.epoch }, 'ready', 0), null);
+  assert.throws(() => policy.settle(probe, 'unexpected', 0), /Invalid readiness/);
+  assert.throws(() => policy.settle(probe, 'ready', NaN), /Invalid readiness/);
+  assert.equal(policy.settle(probe, 'unreachable', 4000).failures, 1);
+  assert.equal(policy.settle(probe, 'unreachable', 8000), null);
+  assert.equal(policy.diagnostic().failures, 1); policy.release(probe);
+  const successor = policy.beginProbe(); assert(successor); policy.release(probe);
+  assert.equal(policy.beginProbe(), null, 'A late finally cannot release a newer probe in the same epoch.');
+  policy.pause(); assert.equal(policy.settle(successor, 'ready', 9000), null); policy.release(successor);
+  assert.equal(policy.diagnostic().paused, true);
+  assert(isPublicExportPath('scripts/dev-stack/readiness.mjs'));
+});

@@ -9,6 +9,7 @@ import { delay, descendants, LaunchBarrier, lineRedactor, processIdentity, sameP
 import { assertOwnedDocker, compose, dockerEnvironment, removeOwnedDocker, run } from './resources.mjs';
 import { verifyOpenCode } from './opencode-runtime.mjs';
 import { verifyPtyCapability } from './pty-capability.mjs';
+import { ReadinessEpoch } from './readiness.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const say = text => process.stdout.write(`[dev-stack] ${text}\n`);
@@ -55,6 +56,7 @@ export async function start(config, inherited = process.env) {
   const secret = await secrets(config), redactions = [secret.password, encodeURIComponent(secret.password), secret.session, secret.token];
   const env = serviceEnvironment(config, owner, secret, inherited), children = new Map(), watchers = [];
   const launches = new LaunchBarrier();
+  const readiness = new ReadinessEpoch();
   let stopping = false, restarting = false, queued = false, startupComplete = false, statusTimer, readyTimer, debounce;
   const cancellation = new AbortController();
   let activeCommand = Promise.resolve(), writeTail = Promise.resolve(), stopTail = Promise.resolve();
@@ -78,6 +80,7 @@ export async function start(config, inherited = process.env) {
   };
   async function shutdown(code = 0) {
     if (stopping) return; stopping = true;
+    readiness.pause();
     cancellation.abort();
     clearTimeout(debounce); clearInterval(statusTimer); clearInterval(readyTimer); for (const w of watchers) w.close();
     try { await activeCommand.catch(() => {}); await launches.stop(); await stopChildren(); await removeOwnedDocker(config, owner, { output: log, secrets: redactions, diagnose: code !== 0 }); await writeTail; await unlink(config.supervisor); }
@@ -108,12 +111,15 @@ export async function start(config, inherited = process.env) {
     if (stopping) return;
     if (restarting) { queued = true; return; }
     restarting = true;
+    readiness.pause();
     try {
       const names = kind === 'api' ? ['api'] : ['api', 'worker', 'cli-host'];
       await stopChildren(names);
       if (kind !== 'api') await command(['run', 'build']);
       if (stopping) return;
       if (kind === 'api') await launch('api', ['--import', 'tsx', 'apps/api/src/server.ts']); else await sourceServices();
+      if (stopping) return;
+      readiness.start();
       say(`${kind} source change rebuilt/restarted; waiting for readiness.`);
     } catch (error) { say(`Reload failed: ${error.message}`); await shutdown(1); }
     finally { restarting = false; if (queued && !stopping) { queued = false; void rebuild('packages'); } }
@@ -146,22 +152,21 @@ export async function start(config, inherited = process.env) {
     for (const [dir, kind] of [['apps/api/src', 'api'], ['apps/worker/src', 'packages'], ['packages', 'packages']]) {
       watchers.push(watch(join(config.root, dir), { recursive: true }, (_event, file) => { if (file && !/(?:^|[\\/])(?:node_modules|dist|\.git)(?:[\\/]|$)/.test(file) && /\.(?:ts|tsx|js|mjs|json)$/.test(file)) change(kind); }));
     }
-    let lastReady = null, readinessFailures = 0, checkingReady = false;
-    const readyDeadline = Date.now() + 180000;
+    readiness.start();
     readyTimer = setInterval(async () => {
-      if (restarting || stopping || checkingReady) return;
-      checkingReady = true;
+      if (restarting || stopping) return;
+      const probe = readiness.beginProbe(); if (!probe) return;
+      let result, failed = 'API readiness';
       try {
         const response = await fetch(`http://127.0.0.1:${owner.ports.api}/readyz`, { signal: AbortSignal.timeout(6000) });
         const body = await response.json(), ready = response.ok && body.ok === true;
-        const failed = Object.entries(body.dependencies || {}).filter(([key, value]) => ['database', 'worker', 'cliHost'].includes(key) && ['ERROR', 'UNAVAILABLE', 'STOPPED'].includes(value)).map(([key]) => key).join(', ') || 'API/workflows';
-        if (ready !== lastReady) say(ready ? 'readyz ok: workflows and source services are ready.' : `readyz failed: ${failed} unavailable; inspect its service log.`);
-        // Give normal cold startup time. Once ready, a sustained dependency loss is fatal.
-        if (ready) readinessFailures = 0;
-        else if ((lastReady !== null && ++readinessFailures >= 4) || Date.now() > readyDeadline) { say(`Required service failure: ${failed}; stopping the stack.`); await shutdown(1); }
-        if (ready || lastReady !== null) lastReady = ready;
-      } catch { if (lastReady !== false) say('readyz failed: API is not responding.'); if (++readinessFailures >= 30 || (lastReady !== null && readinessFailures >= 4)) { say('Required service failure: API readiness; stopping the stack.'); await shutdown(1); } }
-      finally { checkingReady = false; }
+        failed = Object.entries(body.dependencies || {}).filter(([key, value]) => ['database', 'worker', 'cliHost'].includes(key) && ['ERROR', 'UNAVAILABLE', 'STOPPED'].includes(value)).map(([key]) => key).join(', ') || 'API/workflows';
+        result = readiness.settle(probe, ready ? 'ready' : 'unavailable');
+      } catch { result = readiness.settle(probe, 'unreachable'); }
+      finally { readiness.release(probe); }
+      if (!result) return; // Completion/finally of a deliberately stopped epoch is inert.
+      if (result.changed) say(result.outcome === 'ready' ? 'readyz ok: workflows and source services are ready.' : result.outcome === 'unreachable' ? 'readyz failed: API is not responding.' : `readyz failed: ${failed} unavailable; inspect its service log.`);
+      if (result.fatal) { say(`Required service failure: ${failed}; readiness generation${result.epoch}, failures${result.failures}; stopping the stack.`); await shutdown(1); }
     }, 4000);
     statusTimer = setInterval(() => { if (startupComplete && !stopping) void recordChildren().catch(() => { void shutdown(1); }); }, 3000);
   } catch (error) { say(error.message); await shutdown(1); }
