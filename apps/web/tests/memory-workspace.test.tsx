@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
 import { layoutMemoryNetwork } from "../src/features/memory-workspace/memory-network-layout.js";
 import { createMemoryAtlas } from "../src/features/memory-workspace/memory-atlas.js";
+import { MemoryGraph3D } from "../src/features/memory-workspace/MemoryGraph3D.js";
+import { createMemoryNetwork3DSimulation } from "../src/features/memory-workspace/memory-3d.js";
 
 const node = (id: string, type: MemoryGraphNode["type"] = "MEMORY"): MemoryGraphNode => ({ id, type, label: id, recordId: type === "MEMORY" ? id : null, sourcePath: null });
 const edge = (id: string, source: string, target: string, type: MemoryGraphEdge["type"] = "TAGGED_WITH"): MemoryGraphEdge => ({ id, source, target, type, origin: "EXPLICIT_TAG" });
@@ -95,4 +98,50 @@ describe("Memory atlas data integrity", () => {
       expect.objectContaining({ id: "frequent-tag", kind: "tag", count: 10 })
     ]));
   });
+  it("renders MemoryGraph3D with accessible controls, keyboard navigation, and automatic Canvas 2D fallback when WebGL2 is unavailable", () => {
+    if (typeof globalThis.ResizeObserver === "undefined") {
+      globalThis.ResizeObserver = class ResizeObserver {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+    const nodes = Array.from({ length: 2500 }, (_, i) => node(`mem:${i}`));
+    const edges = Array.from({ length: 100 }, (_, i) => edge(`e:${i}`, `mem:${i}`, `mem:${i + 1}`, "CONTAINS"));
+    const atlas = createMemoryAtlas(nodes, edges);
+    const sim = createMemoryNetwork3DSimulation(nodes, edges);
+    sim.step(2);
+    const packedCoordinates = sim.packCoordinates();
+    const onSelectNode = vi.fn();
+
+    render(
+      <MemoryGraph3D
+        nodes={atlas.nodes}
+        edges={atlas.edges}
+        positions={atlas.positions}
+        coordinates={new Map()}
+        packedCoordinates={packedCoordinates}
+        showTitles={true}
+        selectedNodeId="mem:0"
+        onSelectNode={onSelectNode}
+        loading={false}
+        resetToken={0}
+      />
+    );
+
+    const canvas = screen.getByRole("application", { name: /3D memory graph/i });
+    expect(canvas.getAttribute("tabindex")).toBe("0");
+    expect(canvas.getAttribute("data-renderer")).toBe("canvas2d");
+    expect(canvas.getAttribute("data-fallback-node-cap")).toBe("2000");
+    expect(canvas.getAttribute("data-rendered-node-count")).toBe("2000");
+
+    const initialRotation = canvas.getAttribute("data-rotation");
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    fireEvent.keyDown(canvas, { key: "ArrowUp" });
+    expect(canvas.getAttribute("data-rotation")).not.toBe(initialRotation);
+
+    fireEvent.keyDown(canvas, { key: "Enter" });
+    expect(onSelectNode).toHaveBeenCalledWith("mem:0");
+  });
 });
+

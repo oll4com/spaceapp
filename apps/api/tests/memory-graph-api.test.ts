@@ -1545,4 +1545,80 @@ describe("Memory graph API", () => {
     ]));
     await app.close();
   });
+
+  it("supports configurable overview node limits up to 50,000 while redacting secrets and enforcing admin access", async () => {
+    const largeSnapshot = snapshot();
+    largeSnapshot.nodes = [];
+    largeSnapshot.edges = [];
+    largeSnapshot.records = [];
+    const totalNodes = 3_500;
+    largeSnapshot.nodes.push({
+      id: "source:large-0",
+      type: "SOURCE",
+      label: "gemini_history_2026-07.md",
+      sourcePath: "/opt/spaceapp/docs/gemini_history_2026-07.md",
+      recordId: null
+    });
+    for (let i = 1; i < totalNodes; i++) {
+      const id = `memory:large-${i}`;
+      largeSnapshot.nodes.push({
+        id,
+        type: "MEMORY",
+        label: i === 1 ? "Secret label token=super-secret-value" : `Memory ${i}`,
+        sourcePath: "/opt/spaceapp/docs/gemini_history_2026-07.md",
+        recordId: id
+      });
+      largeSnapshot.edges.push({
+        id: `edge:large-${i}`,
+        type: "CONTAINS",
+        source: "source:large-0",
+        target: id,
+        evidence: i === 1 ? "Edge secret password=super-secret-pass" : undefined
+      });
+    }
+    largeSnapshot.summary = {
+      sourceCount: 1,
+      recordCount: totalNodes - 1,
+      nodeCount: totalNodes,
+      edgeCount: totalNodes - 1,
+      issueCount: 0
+    };
+
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, {
+      cachedSnapshot: largeSnapshot,
+      graphSnapshot: largeSnapshot
+    });
+
+    const unauth = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=3500"
+    });
+    expect(unauth.statusCode).toBe(401);
+
+    const defaultOverview = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview",
+      headers: { cookie }
+    });
+    expect(defaultOverview.statusCode).toBe(200);
+    const defaultBody = defaultOverview.json();
+    expect(defaultBody.data.nodes).toHaveLength(2_000);
+    expect(defaultBody.data.totalMatchingNodes).toBe(3_500);
+    expect(defaultBody.data.truncated).toBe(true);
+
+    const fullOverview = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=50000",
+      headers: { cookie }
+    });
+    expect(fullOverview.statusCode).toBe(200);
+    const fullBody = fullOverview.json();
+    expect(fullBody.data.nodes).toHaveLength(3_500);
+    expect(fullBody.data.edges).toHaveLength(3_499);
+    expect(fullBody.data.truncated).toBe(false);
+    expect(JSON.stringify(fullBody)).not.toContain("super-secret-value");
+    expect(JSON.stringify(fullBody)).not.toContain("super-secret-pass");
+    await app.close();
+  });
 });
+
