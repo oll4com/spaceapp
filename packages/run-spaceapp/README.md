@@ -2,6 +2,70 @@
 
 Cross-platform Docker launcher for SpaceApp.
 
+### Rootless Podman (Linux and macOS)
+
+Docker remains the default. To use an existing Podman installation:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+Requirements: Podman >=5, rootless mode, cgroup v2 with CPU and memory
+controllers delegated, and **Docker Compose >=2.24** as the external
+`podman compose` provider. The Python `podman-compose` provider is not supported.
+Set `PODMAN_COMPOSE_PROVIDER` to the Docker Compose executable if necessary.
+The launcher does not install Podman or its Compose provider. On Linux it starts
+only the current user's `podman.socket`, never a root daemon or a privileged
+service. Run as your normal user with subordinate UID/GID mappings configured.
+
+On macOS, create and start a rootless Podman machine first. Allocate at least
+the CPU and RAM listed for the selected profile below, plus a virtual disk of
+20 GiB (`small`), 24 GiB (`medium`) or 32 GiB (`large`), including OS headroom.
+Virtual disk capacity is not a measurement of its remaining free space; `doctor` reports
+insufficient allocations and prints `podman machine set` resize instructions.
+Host bind paths must be shared with the machine. Windows Podman is not supported.
+
+The engine choice is saved and used by every lifecycle command, including
+checkpoints, backup/restore, diagnostics and provider installation. The same
+choice is available as `"engine":"podman"` in `--answers`. Without an explicit
+choice, a new isolated installation uses Docker if ready; otherwise it offers
+an available Podman engine (selects it in non-interactive mode).
+Existing installations retain their engine. Switching engines is refused:
+Docker and Podman volumes are separate, and no automatic migration is provided.
+Use a different `SPACEAPP_HOME` for an independent fresh installation.
+
+`--access host-root` is not supported with Podman. Registered workspaces use a
+shared SELinux `z` label and a keep-id mapping from container UID/GID 10001 to
+the invoking host user; they are not recursively chowned. Register only
+directories you own and intend to share: SELinux relabeling changes their
+labels, including on read-only mounts. `--read-only` is enforced by the mount.
+Secrets and backup binds are relabeled individually, not the whole home.
+The published images, Compose profiles, file-based secrets and resource limits
+are unchanged; no Podman-specific images are used.
+
+`doctor` and `support-bundle` report allowlisted engine/version, rootless,
+cgroup, CPU/memory delegation, provider and macOS machine resource facts.
+They do not include raw engine metadata or registry credentials.
+
+To test a source checkout with a running rootless engine, use
+`node scripts/podman-launcher-smoke.mjs small` (also `medium` or `large`).
+`--extended` additionally exercises workspace ownership/read-only access,
+restore, repair, provider verification and normal stop/remove operations.
+`--upgrade-from=1.1.4` installs the actual older published images, updates to
+the checkout's runtime version, verifies its checkpoint, rolls back and checks
+readiness. Each run uses an unpredictable temporary installation/project,
+purges only its own test volumes/network and removes the fixture on exit.
+Do not use an operator installation as a fixture; port 4911 must be free.
+These opt-in checks download images but do not need accounts or provider keys.
+
+The Ubuntu Podman CI job builds the unchanged release Dockerfile's `core` and
+`cli` targets locally, imports them into rootless Podman, and runs the smoke
+fixture with `--local-images`. This tests the candidate even before its release
+tags are published; nothing is pushed to a registry. Docker is only the CI
+image builder, not the runtime engine. The fixture reports the runtime version
+and whether local images were used. Normal installs still download the
+maintainer's published images and do not silently fall back to another release.
+
 Run the same command in Linux, macOS, or Windows 11 Command Prompt:
 
 ```bash

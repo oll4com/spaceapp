@@ -88,6 +88,11 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
   const dockerInfo = await captureProbe(execute, { command: "docker", args: ["info", "--format", "{{json .}}"] });
   let engine = null;
   try { engine = JSON.parse(dockerInfo); } catch { /* Conservative reserve when the engine is unavailable. */ }
+  if (engine?.host && config.engine === "podman") {
+    engine = { ...engine, Architecture: engine.host.arch, NCPU: engine.host.cpus,
+      MemTotal: engine.host.memTotal,
+      ...(process.platform === "linux" ? { DockerRootDir: engine.store?.graphRoot } : {}) };
+  }
   const cachedLayers = new Set();
   if (engine && existingConfig) {
     for (const type of ["core", "cli", "browser"]) {

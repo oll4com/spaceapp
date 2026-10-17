@@ -132,12 +132,15 @@ export async function ensureDockerAvailable({
   sleep = wait,
   osRelease,
   installArgs,
+  onDockerUnavailable,
   scheduleResume = scheduleWindowsInstallResume,
   confirmRestart = confirmWindowsRestart
 }) {
   if (await dockerIsReady(execute)) {
     return { code: 0, reexecuted: false };
   }
+  const alternative = await onDockerUnavailable?.();
+  if (alternative) return alternative;
   if (platform === "win32") {
     return ensureWindowsDocker({
       arch,

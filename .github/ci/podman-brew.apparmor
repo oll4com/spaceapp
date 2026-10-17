@@ -1,0 +1,8 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Ubuntu's distro profile covers /usr/bin/podman, not Homebrew's executable.
+# Grant the same user-namespace exception only to this ephemeral CI install.
+profile spaceapp-ci-podman /home/linuxbrew/.linuxbrew/**/podman flags=(unconfined) {
+  userns,
+}

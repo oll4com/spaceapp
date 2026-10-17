@@ -1,0 +1,10 @@
+[Unit]
+Description=Rootless Podman API for the isolated launcher CI test
+Requires=podman.socket
+After=podman.socket
+
+[Service]
+Type=exec
+Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/bin:/bin
+ExecStart=/home/linuxbrew/.linuxbrew/bin/podman system service --time=0
+KillMode=process

@@ -18,6 +18,7 @@ import {
   stripTrailingLineEndings
 } from "./string-utils.mjs";
 import { UNIVERSAL_COMMAND } from "./package-info.mjs";
+import { assertEngineUnchanged, containerEngine } from "./container-engine.mjs";
 
 const CONFIG_SCHEMA_VERSION = 4;
 const CONTAINER_SECRET_MODE = 0o644;
@@ -114,6 +115,7 @@ const CONFIG_KEYS = new Set([
   "workspaces",
   "companionsEnabled",
   "optionalModules",
+  "engine",
   "installId"
 ]);
 
@@ -288,13 +290,18 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
-  companionsEnabled = false
+  companionsEnabled = false,
+  engine
 }) {
   assertVersion(version);
   if (!INSTALL_PROFILES.includes(profile)) {
     throw new Error("Default config requires a resolved installation profile.");
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
+  const selectedEngine = containerEngine(engine);
+  if (selectedEngine === "podman" && resolvedAccessMode === "host-root") {
+    throw new Error("Host-root access is not supported with Podman. Use --access isolated.");
+  }
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
@@ -306,6 +313,7 @@ export function createDefaultConfig({
     accessMode: resolvedAccessMode,
     companionsEnabled,
     optionalModules: "none",
+    ...(engine === undefined ? {} : { engine: selectedEngine }),
     workspaces: []
   };
 }
@@ -324,6 +332,10 @@ export function validateConfig(config) {
   }
   if (config.schemaVersion !== CONFIG_SCHEMA_VERSION) {
     throw new Error(`Unsupported SpaceApp config schema ${config.schemaVersion}.`);
+  }
+  const selectedEngine = containerEngine(config.engine);
+  if (selectedEngine === "podman" && config.accessMode === "host-root") {
+    throw new Error("Host-root access is not supported with Podman. Use --access isolated.");
   }
   assertVersion(config.version);
   if (config.previousVersion !== null) {
@@ -581,7 +593,8 @@ export function renderWorkspaceCompose(config) {
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(config.engine === "podman" ? ["        bind:", "          create_host_path: true", "          selinux: z"] : [])
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
@@ -598,6 +611,31 @@ export function renderWorkspaceCompose(config) {
 
 export function renderHostAccessCompose(config) {
   validateConfig(config);
+  if (config.engine === "podman") {
+    const bind = (source, target, readOnly = true) => [
+      "      - type: bind", `        source: ${JSON.stringify(source)}`,
+      `        target: ${JSON.stringify(target)}`, `        read_only: ${readOnly}`,
+      "        bind:", "          create_host_path: true", "          selinux: z"
+    ];
+    const secret = (name) => bind(`./secrets/${name}`, `/run/secrets/${name}`);
+    // Compose secrets are read-only bind mounts. Explicit mounts at the same
+    // target supply shared SELinux relabeling; keep the secret declarations and
+    // permissions, and never relabel an operator's home directory wholesale.
+    const mounts = {
+      "spaceapp-core": [...bind("./backups", "/backups", false),
+        ...secret("setup-token"), ...secret("session-secret"), ...secret("database-url")],
+      "spaceapp-cli": bind("./secrets/providers", "/run/spaceapp-secrets/providers"),
+      "spaceapp-browser": secret("database-url"),
+      postgres: secret("postgres-password"),
+      temporal: secret("postgres-password")
+    };
+    return ["services:", ...Object.entries(mounts).flatMap(([service, volumes]) => [
+      `  ${service}:`,
+      ...(["spaceapp-core", "spaceapp-cli", "spaceapp-browser"].includes(service)
+        ? ['    user: "0:0"', '    userns_mode: "keep-id:uid=10001,gid=10001"'] : []),
+      "    volumes:", ...volumes
+    ]), ""].join("\n");
+  }
   if (config.accessMode === "isolated") {
     return "services: {}\n";
   }
@@ -695,6 +733,7 @@ export function composeCommand(action, root, options = {}) {
     storageFree: ["exec", "-T", "spaceapp-core", "node", "-e", "const fs=require('node:fs');const s=fs.statfsSync('/var/lib/spaceapp');console.log(Number(s.bavail)*Number(s.bsize))"],
     purge: ["down", "--volumes", "--remove-orphans"],
     repair: ["up", "-d", "--remove-orphans", "--force-recreate"],
+    verifyBundledOpencode: ["exec", "-T", "--user", "10001:10001", "spaceapp-cli", "opencode", "--version"],
     ensureCheckpointDatabase: ["up", "-d", "--no-deps", "--wait", "--wait-timeout", "120", "postgres"],
     checkpointDump: ["exec", "-T", "postgres", "pg_dump", "-c", "--if-exists", "-U", "spaceapp", "-d", "spaceapp"],
     checkpointRestore: ["exec", "-T", "postgres", "psql", "-v", "ON_ERROR_STOP=1", "-U", "spaceapp", "-d", "spaceapp"]
@@ -731,7 +770,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: containerEngine(options.engine), args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -758,6 +797,16 @@ export async function selectLatestBackupId(root) {
 export async function writeRuntimeFiles(root, config) {
   validateHome(root);
   validateConfig(config);
+  if (config.engine === "podman") {
+    // Compose's Mount API drops SELinux options; the Bind API preserves :z but
+    // requires create_host_path=true. Validate registered sources first so a
+    // missing workspace is never silently recreated by the engine.
+    for (const workspace of config.workspaces) {
+      if (!(await stat(workspace.hostPath)).isDirectory()) {
+        throw new Error(`Workspace must remain an existing directory: ${workspace.hostPath}`);
+      }
+    }
+  }
   await mkdir(root, { recursive: true, mode: 0o700 });
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config));
   await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config));
@@ -768,7 +817,8 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -782,6 +832,7 @@ export async function prepareInstallation(root, {
   let config;
   try {
     config = await loadConfig(root);
+    assertEngineUnchanged(config, engine);
   } catch (error) {
     if (error?.code !== "ENOENT") {
       throw error;
@@ -790,7 +841,8 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
-      companionsEnabled
+      companionsEnabled,
+      engine
     });
   }
   if (config.version !== version) {
@@ -800,6 +852,7 @@ export async function prepareInstallation(root, {
       previousVersion: config.version
     };
   }
+  if (engine !== undefined) config = { ...config, engine: containerEngine(engine) };
   if (resolvedProfile !== undefined) {
     config = { ...config, profile: resolvedProfile };
   }

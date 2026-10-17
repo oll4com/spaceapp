@@ -20,6 +20,12 @@ import {
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 
+test("Podman CI keeps its smoke script and narrowly scoped runner fixtures on export", () => {
+  for (const path of ["scripts/podman-launcher-smoke.mjs", ".github/ci/podman-brew.service", ".github/ci/podman-brew.apparmor"]) {
+    assert.equal(isPublicExportPath(path), true, path);
+  }
+});
+
 test("public text sanitization applies the private rules file and the generic rules", async () => {
   const rulesPath = join(await mkdtemp(join(tmpdir(), "spaceapp-private-rules-")), "rules.json");
   await writeFile(rulesPath, JSON.stringify({

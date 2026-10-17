@@ -54,6 +54,19 @@ test("launcher and container matrices cover the declared operating systems and a
   assert.match(containers, /push: false/);
 });
 
+test("Podman runtime CI builds the candidate without publishing or assuming a released image tag", async () => {
+  const platform = await workflow("platform-matrix.yml");
+  const podman = platform.slice(platform.indexOf("\n  podman:\n"));
+  assert.match(podman, /runs-on: ubuntu-latest/);
+  assert.match(podman, /import \{ RUNTIME_VERSION \}/);
+  for (const target of ["core", "cli"]) {
+    assert.match(podman, new RegExp(`docker build[^\\n]*--target ${target}`));
+  }
+  assert.match(podman, /docker save[^\n]*\| podman load/);
+  assert.match(podman, /podman-launcher-smoke\.mjs small --local-images/);
+  assert.doesNotMatch(podman, /docker push|--push|continue-on-error/);
+});
+
 test("launcher-only source and workflow changes cannot trigger the container matrix", async () => {
   const containers = await workflow("containers.yml");
   const trigger = containers.match(/\non:\n([\s\S]*?)\npermissions:/)?.[1] || "";

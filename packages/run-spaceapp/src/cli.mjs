@@ -45,6 +45,16 @@ import {
 } from "./index.mjs";
 import { inspectStoragePlan, storageChecks } from "./storage.mjs";
 import {
+  assertEngineUnchanged,
+  containerEngine,
+  engineExecutor,
+  engineInstallArgs,
+  inspectContainerEngine,
+  podmanChecks,
+  podmanIsPresent,
+  selectContainerEngine
+} from "./container-engine.mjs";
+import {
   ensureDockerAvailable,
   prepareDockerCliPath,
   windowsPowerShellArgs
@@ -72,6 +82,8 @@ const SETUP_STATUS_TIMEOUT_MS = 10_000;
 const trustedCommands = new Set([
   "codesign",
   "docker",
+  "podman",
+  "systemctl",
   "hdiutil",
   "open",
   "powershell.exe",
@@ -324,7 +336,7 @@ export async function run(argv, {
     stdin._spaceappPromptController = promptController;
   }
 
-  const [command = "help", ...args] = filteredArgv;
+  let [command = "help", ...args] = filteredArgv;
   const root = resolveSpaceAppHome({ env, platform });
 
   if (["help", "--help", "-h"].includes(command) || args.includes("--help") || args.includes("-h")) {
@@ -334,7 +346,7 @@ export async function run(argv, {
   if (globalFlags.localImages) {
     const originalExecute = execute;
     execute = async (spec, io) => {
-      if (spec.command === "docker" && spec.args?.includes("compose")) {
+      if (["docker", "podman"].includes(spec.command) && spec.args?.includes("compose")) {
         if (spec.args.at(-1) === "pull") {
           stdout.write("Local images only: skipping registry downloads; missing images will fail startup.\n");
           return 0;
@@ -345,8 +357,39 @@ export async function run(argv, {
       return originalExecute(spec, io);
     };
   }
+  // Read the saved engine before dispatching any lifecycle operation, including
+  // recovery and credential commands that construct their own Compose options.
+  const storedConfig = await readRawConfig(root);
+  let selectedEngine = containerEngine(storedConfig?.engine);
+  let requestedEngine;
+  if (command === "install") {
+    const parsedEngine = engineInstallArgs(args, promptController.answers);
+    args = parsedEngine.args;
+    requestedEngine = parsedEngine.requested;
+    assertEngineUnchanged(storedConfig, requestedEngine);
+    selectedEngine = containerEngine(requestedEngine ?? storedConfig?.engine);
+  }
+  const originalExecute = execute;
+  const originalEnsureDocker = ensureDocker;
+  const configureEngine = (engine) => {
+    if (engine === "docker") return { engine, execute: originalExecute, ensureDocker: originalEnsureDocker };
+    if (platform === "win32") throw new Error("Podman support is available on Linux and macOS only.");
+    const podmanExecute = engineExecutor(originalExecute, engine, { platform });
+    podmanExecute.containerEngine = "podman";
+    podmanExecute.inspectContainerEngine = () => inspectContainerEngine(originalExecute, "podman", { platform });
+    const ensurePodman = async (options) => {
+      const requested = options.installArgs?.requestedProfile ?? storedConfig?.profile ?? "small";
+      const profile = requested === "auto" ? resolveInstallProfile("auto", await inspectResources(root)) : requested;
+      const facts = await podmanExecute.inspectContainerEngine();
+      const checks = podmanChecks(facts, { platform, profile });
+      for (const check of checks) (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
+      return { code: checks.every((check) => check.ok) ? 0 : 1 };
+    };
+    return { engine, execute: podmanExecute, ensureDocker: ensurePodman };
+  };
+  ({ execute, ensureDocker } = configureEngine(selectedEngine));
   if (command !== "install") {
-    await prepareDockerPath({ platform, env });
+    if (selectedEngine === "docker") await prepareDockerPath({ platform, env });
   }
   if (command === "help" || command === "--help" || command === "-h") {
     stdout.write(helpText());
@@ -363,6 +406,13 @@ export async function run(argv, {
   if (command === "install") {
     return installCommand(args, {
       root,
+      engine: selectedEngine,
+      engineSpecified: requestedEngine !== undefined,
+      resolveEngine: requestedEngine === undefined && !storedConfig ? async () => configureEngine(
+        await selectContainerEngine({ platform, execute: originalExecute,
+          offer: promptController.nonInteractive ? null : () => promptYesNo(stdin, stdout,
+            "Docker is unavailable and Podman is present. Use rootless Podman?", { defaultYes: true }) })
+      ) : null,
       launcherVersion,
       runtimeVersion,
       hostRootRuntimeCompatible,
@@ -420,6 +470,8 @@ export async function run(argv, {
     io,
     { platform, stderr }
   );
+  runtimeExecute.containerEngine = execute.containerEngine;
+  runtimeExecute.inspectContainerEngine = execute.inspectContainerEngine;
 
   if (["up", "down", "status", "logs"].includes(command)) {
     assertNoArgs(args, command);
@@ -604,6 +656,9 @@ export async function run(argv, {
 
 async function installCommand(args, {
   root,
+  engine = "docker",
+  engineSpecified = false,
+  resolveEngine,
   launcherVersion,
   runtimeVersion,
   hostRootRuntimeCompatible,
@@ -624,6 +679,7 @@ async function installCommand(args, {
   const wizard = await planInteractiveSetup({
     args,
     root,
+    engine,
     runtimeVersion,
     platform,
     stdin,
@@ -648,6 +704,9 @@ async function installCommand(args, {
     requestedAccessMode,
     existingConfig?.accessMode ?? "isolated"
   );
+  if (engine === "podman" && accessMode === "host-root") {
+    throw new Error("Host-root access is not supported with Podman. Use --access isolated.");
+  }
   if (accessMode === "host-root" && platform !== "linux") {
     throw new Error("Host-root access is supported only on Linux.");
   }
@@ -656,7 +715,12 @@ async function installCommand(args, {
       "Host-root access is disabled for this launcher-only candidate because its runtime images were not rebuilt. Use --access isolated."
     );
   }
-  await prepareDockerPath({ platform, env });
+  // Negotiate only after confirmation and access-mode validation. Host-root is
+  // Docker-only, so it must never silently fall back to a different engine.
+  if (engine === "docker") await prepareDockerPath({ platform, env });
+  if (resolveEngine && accessMode !== "host-root") {
+    ({ engine, execute, ensureDocker } = await resolveEngine());
+  }
   const resources = await inspectResources(root);
   let profile = requestedProfile === "auto" && existingConfig
     ? existingConfig.profile : resolveInstallProfile(requestedProfile, resources);
@@ -667,6 +731,7 @@ async function installCommand(args, {
   }
   const result = await prepareInstallation(root, {
     version: runtimeVersion,
+    ...(engine === "podman" || engineSpecified ? { engine } : {}),
     profile,
     accessMode,
     ...(companionsEnabled ? { companionsEnabled } : {})
@@ -706,6 +771,7 @@ async function installCommand(args, {
     `Selected profile: ${profile} (${formatGibibytes(resources.totalMemoryBytes)} GiB system memory detected).\n`
   );
   stdout.write(`SpaceApp installation root: ${root}\n`);
+  if (engine === "podman") stdout.write("Container engine: rootless Podman (existing installation; no Docker installation).\n");
   const operation = existingConfig ? (existingConfig.version === runtimeVersion ? "repair" : "upgrade") : "fresh";
   if (installResourceChecks(resources, profile, { operation }).some((check) => !check.ok)) {
     const doctorCode = await doctor({
@@ -734,6 +800,12 @@ async function installCommand(args, {
     stdout,
     stderr,
     execute,
+    onDockerUnavailable: !engineSpecified && !existingConfig && accessMode === "host-root" ? async () => {
+      const facts = await inspectContainerEngine(execute, "podman", { platform });
+      if (!await podmanIsPresent(execute, facts)) return null;
+      stderr.write("Host-root access is not supported with Podman. Use --access isolated, or explicitly choose --engine docker to install Docker. No Docker installation was attempted.\n");
+      return { code: 1, reexecuted: false };
+    } : undefined,
     installArgs: { root, requestedProfile, requestedAccessMode, noOpen, autoConfirm: true }
   });
   if (prerequisiteResult.reexecuted) {
@@ -1023,6 +1095,7 @@ async function removeInactiveProfileServices({root, config, stateRoot = root, ex
 async function planInteractiveSetup({
   args,
   root,
+  engine = "docker",
   runtimeVersion,
   platform,
   stdin,
@@ -1108,7 +1181,8 @@ async function planInteractiveSetup({
       `Access mode: ${accessChoice}`,
       `Companions: ${companionsChoice ? "enabled" : "disabled"}`,
       `Telemetry: ${telemetryChoice ? "enabled" : "disabled"}`,
-      `Docker installation: ${dockerChoice ? "automatic if missing" : "not included"}`,
+      engine === "podman" ? "Container engine: rootless Podman (must already be installed)"
+        : `Docker installation: ${dockerChoice ? "automatic if missing" : "not included"}`,
       `Open browser afterwards: ${openBrowserChoice ? "yes" : "no"}`,
       "Future refreshes preserve data, workspaces, credentials, secrets, and persistent Docker volumes."
     ]);
@@ -1798,6 +1872,10 @@ async function providerCommand(args, { root, config, stdin, stdout, stderr, exec
     throw new Error(`Usage: ${UNIVERSAL_COMMAND} provider install <provider>`);
   }
   const provider=args[1];
+  if (provider === "opencode") {
+    stdout.write("OpenCode is bundled in the CLI image; verifying the installed executable.\n");
+    return execute(composeCommand("verifyBundledOpencode", root, config), { stdin, stdout, stderr });
+  }
   stdout.write(`Installing optional provider ${provider} into this installation's private provider volume.\n`);
   // Keep the existing Claude path compatible with older runtime images.
   const action=provider === "claude" ? "installClaude" : "installProvider";
@@ -1931,6 +2009,9 @@ async function supportBundleCommand({
     services: {},
     health: {}
   };
+  bundle.containerEngine = execute.containerEngine === "podman"
+    ? await execute.inspectContainerEngine()
+    : await inspectContainerEngine(execute, "docker", { platform });
 
   if (config) {
     const url = `http://${config.bindHost}:${config.port}`;
@@ -2013,7 +2094,10 @@ async function factoryResetCommand({
     await rm(join(root, "compose.yml"), { force: true });
   } catch {}
 
-  const result = await initializeInstallation(root, { version: runtimeVersion });
+  const result = await initializeInstallation(root, {
+    version: runtimeVersion,
+    ...(config.engine === undefined ? {} : { engine: config.engine })
+  });
   stdout.write(`SpaceApp factory reset complete. Clean installation initialized at ${root}\n`);
   if (result.setupToken) {
     stdout.write(`One-time setup token: ${result.setupToken}\n`);
@@ -2168,6 +2252,14 @@ async function doctor({
     ...(storagePlan ? storageChecks(storagePlan, detectedResources) : [])
   ];
   const dockerResults = [];
+  if (execute.containerEngine === "podman") {
+    const facts = await execute.inspectContainerEngine();
+    const engineChecks = podmanChecks(facts, { platform, profile: resolvedProfile });
+    for (const check of [...checks, ...engineChecks]) {
+      (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name.replaceAll("Docker", "Podman")}: ${check.detail}\n`);
+    }
+    return [...checks, ...engineChecks].every((check) => check.ok) ? 0 : 1;
+  }
   for (const probe of [
     { name: "Docker CLI", command: "docker", args: ["--version"] },
     { name: "Docker Compose", command: "docker", args: ["compose", "version"] },
@@ -2316,6 +2408,10 @@ async function requestSetupStatus({ url, request }) {
 
 async function executeWithDockerDiagnostics(execute, spec, io, { platform, stderr }) {
   const code = await execute(spec, io);
+  if (execute.containerEngine === "podman" && code === 127) {
+    stderr.write("SpaceApp could not find Podman or its Docker Compose v2 provider. Install Podman >=5 and configure PODMAN_COMPOSE_PROVIDER.\n");
+    return code;
+  }
   if (spec.command === "docker" && code === 127) {
     stderr.write(
       `SpaceApp could not find the Docker CLI. ${dockerInstallHelp(platform)}\n`
@@ -2389,6 +2485,8 @@ function spawnTrustedCommand(spec, options) {
   switch (spec.command) {
     case "codesign": return spawn("codesign", args, options);
     case "docker": return spawn("docker", args, options);
+    case "podman": return spawn("podman", args, options);
+    case "systemctl": return spawn("systemctl", args, options);
     case "hdiutil": return spawn("hdiutil", args, options);
     case "open": return spawn("open", args, options);
     case "powershell.exe":
@@ -2526,6 +2624,7 @@ Options:
   --local-images               Use preloaded images only (offline/lab; missing images fail)
   --non-interactive                 Run non-interactively, failing on missing input
   --answers <json|path>             Pre-seed answers; automation requires confirm:true
+  --engine docker|podman            Select an engine at install; saved for later commands
 
 Profiles (auto uses CPU, RAM and free disk, then checks Docker resources):
   small:  4 CPUs, 7 GiB usable RAM, 6.5 GiB fresh space; SpaceApp + OpenCode.

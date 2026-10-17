@@ -53,6 +53,38 @@ its code signature, installs it, starts it, and waits until it is ready. Docker
 Desktop uses its managed lightweight Linux environment. Apple Silicon uses the
 native `linux/arm64` images and Intel Macs use `linux/amd64`.
 
+## Rootless Podman alternative (Linux/macOS)
+
+Install Podman >=5 and Docker Compose >=2.24 separately. Docker Compose must
+be the external `podman compose` provider, not Python `podman-compose`;
+set `PODMAN_COMPOSE_PROVIDER` to its executable when needed. On Linux, run as
+a normal user with cgroup v2, subordinate UID/GID mappings, a user systemd
+session and delegated CPU/memory controllers. The launcher starts the user's
+Podman API socket, not a privileged Docker daemon.
+
+On macOS, initialize/start a rootless Podman machine and allocate the selected
+profile's resources. For `small`, for example, stop the machine, run
+`podman machine set --cpus 4 --memory 7168 --disk-size 20`, then start it.
+The disk setting is virtual disk capacity, not proof of free disk; leave
+additional room for images and data. Workspace paths must be shared into
+the machine. `doctor` explains insufficient machine resources.
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+npx --yes run-spaceapp@latest doctor
+npx --yes run-spaceapp@latest backup
+```
+
+Engine selection also accepts `"engine":"podman"` in `--answers`, persists
+across updates, and applies to backup/restore and all other lifecycle commands.
+Docker stays the default when available; new isolated installations offer
+existing Podman when Docker is unavailable (select it unattended).
+Switching an existing installation between engines is refused because their
+volumes are separate. Podman is not supported on Windows or with
+`--access host-root`. SELinux workspace binds use shared `z` labels and keep-id
+ownership mapping; share only directories you own, since even read-only binds
+are relabeled. See the [full limits](../packages/run-spaceapp/README.md#rootless-podman-linux-and-macos).
+
 ## Windows 11 — Command Prompt
 
 Enable hardware virtualization and install Node.js 20.11 or newer. Open

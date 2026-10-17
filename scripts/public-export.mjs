@@ -95,6 +95,7 @@ const publicScripts = new Set([
   "scripts/fix-build-permissions.mjs",
   "scripts/portable-backup.mjs",
   "scripts/portable-restore.mjs",
+  "scripts/podman-launcher-smoke.mjs",
   "scripts/public-export.mjs",
   "scripts/public-release-readiness.mjs",
   "scripts/release-version.mjs",
