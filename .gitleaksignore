@@ -1,0 +1,64 @@
+# Reviewed historical false positives from the full-history Security scan.
+# Each exception pins a commit, path, rule and line. Future changes and every
+# other match remain scanned; no test directory, rule or commit is excluded.
+# Checked against the original source of each finding on 2026-10-16.
+
+# RFC 6455 sample WebSocket nonce used in a CORS test.
+a43e799de92bcbfbfd653f580acab0a19c31aa5c:apps/api/tests/cors-origin-guard.test.ts:generic-api-key:65
+
+# Bundled public PostHog project ingestion identifier; not a personal or administrative API key.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:agent-skills/space-hyperframes/media-use/scripts/lib/telemetry.mjs:generic-api-key:12
+
+# Fixed UUID used to test idempotency.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:apps/api/tests/codex-reset-credits.test.ts:generic-api-key:14
+
+# Explicit test session signing string for an isolated in-memory fixture.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:apps/api/tests/google-autoclaim.test.ts:generic-api-key:6
+
+# Explicit test session signing string for an isolated in-memory fixture.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:apps/api/tests/request-correlation.test.ts:generic-api-key:11
+
+# Explicit test session signing string for an isolated in-memory fixture.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:apps/api/tests/google-oauth-security.test.ts:generic-api-key:9
+
+# Synthetic owner password for the in-memory demo test.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:apps/web/tests/demo-setup.test.ts:generic-api-key:11
+
+# Fixed UUID used to test idempotency.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:apps/web/tests/demo-store.test.ts:generic-api-key:229
+
+# Synthetic cache hash in a display fixture.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:apps/web/tests/space-gateway-dialog.test.tsx:generic-api-key:51
+
+# Test-run results and process IDs in a historical checkpoint; no credential assignment.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:docs/quality/pause-checkpoint-2026-10-03.md:generic-api-key:61
+
+# Synthetic auth handoff record ID in schema validation.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:packages/contracts/tests/admin-operations.test.ts:generic-api-key:99
+
+# Fixed UUID used to test idempotency.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:packages/contracts/tests/toolbar-system-actions.test.ts:generic-api-key:66
+
+# Synthetic cancelled/previous secret-version names in mocked database rows.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:packages/db/tests/telegram-persistence.test.ts:generic-api-key:123
+
+# Synthetic cancelled/previous secret-version names in mocked database rows.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:packages/db/tests/telegram-persistence.test.ts:generic-api-key:155
+
+# Deterministic content hash indexing a compression fixture, not authentication material.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:packages/gateway/tests/fixtures/headroom-parity/diff_compressor/0cf5e189bd42fab1.json:generic-api-key:15
+
+# Deterministic content hash indexing a compression fixture, not authentication material.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:packages/gateway/tests/fixtures/headroom-parity/diff_compressor/ea99ab1ea7449acf.json:generic-api-key:15
+
+# Deterministic content hash indexing a compression fixture, not authentication material.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:packages/gateway/tests/fixtures/headroom-parity/diff_compressor/d4ed44a6fc667358.json:generic-api-key:15
+
+# Deterministic content hash indexing a compression fixture, not authentication material.
+686788e5ef9540356afb4e9d7b203af1ac84d4fa:packages/gateway/tests/fixtures/headroom-parity/log_compressor/3bc015edc0a36387.json:generic-api-key:19
+
+# Public OAuth client ID, which is intentionally sent in authorization URLs.
+e5a2a1dc6e63af7d9eecc8b5809c6d566dcb3b9c:packages/gateway/src/providers/claude/oauth.ts:generic-api-key:7
+
+# Synthetic owner password for a mocked setup form test.
+2c7eb7e8ee5c374c4c891438b1cc2c63db359549:apps/web/tests/owner-setup.test.tsx:generic-api-key:224

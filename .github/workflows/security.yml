@@ -47,6 +47,7 @@ jobs:
             ':(exclude)packages/run-spaceapp/**' \
             deploy/docker \
             starter-memory \
+            scripts/container-runtime-closure.mjs \
             Dockerfile \
             package-lock.json; then
             echo "required=false" >> "$GITHUB_OUTPUT"
