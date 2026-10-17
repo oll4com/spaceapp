@@ -233,8 +233,9 @@ export async function smokeBrowser(image) {
   run("docker", [
     "run",
     "--rm",
-    image,
+    "--entrypoint",
     "node",
+    image,
     "-e",
     `
     const { createBrowserHostServer } = await import("@space/browser-host");
@@ -248,8 +249,9 @@ export async function smokeBrowser(image) {
   const chromiumOutput = run("docker", [
     "run",
     "--rm",
-    image,
+    "--entrypoint",
     "/usr/bin/chromium",
+    image,
     "--headless",
     "--no-sandbox",
     "--disable-gpu",

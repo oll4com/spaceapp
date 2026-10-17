@@ -279,26 +279,35 @@ export function buildCoreClosure(root, targetDir, targetArch) {
     }
   }
 
-  // Packages: all built packages
-  const packagesSrc = join(root, "packages");
+  // Packages: only packages core services actually run
+  const corePackages = [
+    "cli-host",
+    "codex-app-server",
+    "contracts",
+    "db",
+    "gateway",
+    "icons",
+    "memory-graph",
+    "opencode-control",
+    "runtime",
+    "streaming"
+  ];
   const packagesDst = join(targetDir, "packages");
   mkdirSync(packagesDst, { recursive: true });
 
-  if (existsSync(packagesSrc)) {
-    for (const pkg of readdirSync(packagesSrc)) {
-      const pkgSrc = join(packagesSrc, pkg);
-      if (!statSync(pkgSrc).isDirectory()) continue;
-      const pkgDst = join(packagesDst, pkg);
-      mkdirSync(pkgDst, { recursive: true });
-      if (existsSync(join(pkgSrc, "package.json"))) {
-        cpSync(join(pkgSrc, "package.json"), join(pkgDst, "package.json"));
-      }
-      if (existsSync(join(pkgSrc, "dist"))) {
-        cpSync(join(pkgSrc, "dist"), join(pkgDst, "dist"), { recursive: true });
-      }
-      if (pkg === "db" && existsSync(join(pkgSrc, "migrations"))) {
-        cpSync(join(pkgSrc, "migrations"), join(pkgDst, "migrations"), { recursive: true });
-      }
+  for (const pkg of corePackages) {
+    const pkgSrc = join(root, "packages", pkg);
+    if (!existsSync(pkgSrc)) continue;
+    const pkgDst = join(packagesDst, pkg);
+    mkdirSync(pkgDst, { recursive: true });
+    if (existsSync(join(pkgSrc, "package.json"))) {
+      cpSync(join(pkgSrc, "package.json"), join(pkgDst, "package.json"));
+    }
+    if (existsSync(join(pkgSrc, "dist"))) {
+      cpSync(join(pkgSrc, "dist"), join(pkgDst, "dist"), { recursive: true });
+    }
+    if (pkg === "db" && existsSync(join(pkgSrc, "migrations"))) {
+      cpSync(join(pkgSrc, "migrations"), join(pkgDst, "migrations"), { recursive: true });
     }
   }
 
@@ -319,8 +328,10 @@ export function buildCoreClosure(root, targetDir, targetArch) {
   mkdirSync(nmDst, { recursive: true });
   cpSync(nmSrc, nmDst, { recursive: true });
 
-  // 1. Remove node-pty from core (never runs in core)
+  // 1. Remove non-core packages and tools from node_modules
   rmSync(join(nmDst, "node-pty"), { recursive: true, force: true });
+  rmSync(join(nmDst, "@space", "browser-host"), { recursive: true, force: true });
+  rmSync(join(nmDst, "run-spaceapp"), { recursive: true, force: true });
 
   // 2. Remove unused typescript and types (peer dep / dev artifacts)
   rmSync(join(nmDst, "typescript"), { recursive: true, force: true });

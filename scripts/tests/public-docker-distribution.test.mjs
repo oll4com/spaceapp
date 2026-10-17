@@ -120,10 +120,10 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
 });
 
 test("public Compose runs without host Docker access or development credentials", async () => {
-  const compose = (await readFile(
+  const compose = await readFile(
     join(root, "packages", "run-spaceapp", "templates", "compose.yml"),
     "utf8"
-  )).replace(/\r\n/g, "\n");
+  );
 
   for (const service of ["spaceapp-core", "spaceapp-cli", "spaceapp-browser", "postgres", "temporal"]) {
     assert.match(compose, new RegExp(`^  ${service}:`, "m"));
@@ -226,15 +226,16 @@ test("an OpenCode pane still starts when the first-run free-model check fails; c
   assert.match(smoke, /^\s+node \/app\/deploy\/docker\/opencode-first-run\.mjs$/m);
   assert.match(wrapper, /^set -euo pipefail$/m);
 });
+
 test("public CLI wrapper isolates provider state and supports protected DeepSeek setup", async () => {
-  const wrapper = (await readFile(join(root, "deploy", "docker", "public-cli-wrapper.sh"), "utf8")).replace(/\r\n/g, "\n");
+  const wrapper = await readFile(join(root, "deploy", "docker", "public-cli-wrapper.sh"), "utf8");
   const credentialStatusBlock = wrapper.match(/credential-status\)[\s\S]*?;;/)?.[0] || "";
 
   assert.match(wrapper, /DISABLE_UPDATES=1/);
   assert.match(wrapper, /umask 077/);
   assert.match(wrapper, /deepseek\.key/);
   assert.match(wrapper, /export USER=spaceapp/);
-  assert.match(wrapper, /login\)\r?\n\s+ensure_optional_provider\r?\n\s+ensure_runtime_dirs/);
+  assert.match(wrapper, /login\)\n\s+ensure_optional_provider\n\s+ensure_runtime_dirs/);
   assert.doesNotMatch(credentialStatusBlock, /ensure_runtime_dirs/);
   assert.match(wrapper, /opencode\) exec "\$command_name" auth login/);
   assert.match(wrapper, /vendor\/claude\/node_modules\/\.bin\/claude/);

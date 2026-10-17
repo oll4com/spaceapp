@@ -6,7 +6,6 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { installLogin } from '../../deploy/docker/credential-install.mjs';
 import { startCredentialAgent } from '../../deploy/docker/credential-agent.mjs';
 
@@ -18,19 +17,15 @@ test('writes a login 0600 in a 0700 home and keeps a 0600 backup of the one it r
   assert.equal(await installLogin('gemini', root, payload({ 'oauth_creds.json': login }, 'backup-and-replace')), 'IMPORTED');
   const file = join(root, '.gemini', 'oauth_creds.json');
   assert.equal(await readFile(file, 'utf8'), login);
-  if (process.platform !== 'win32') {
-    assert.equal((await stat(file)).mode & 0o777, 0o600);
-    assert.equal((await stat(join(root, '.gemini'))).mode & 0o777, 0o700);
-  }
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  assert.equal((await stat(join(root, '.gemini'))).mode & 0o777, 0o700);
 
   assert.equal(await installLogin('gemini', root, payload({ 'oauth_creds.json': '{"old":true}' }, 'skip-if-logged-in')), 'SKIPPED already-logged-in');
   const answer = await installLogin('gemini', root, payload({ 'oauth_creds.json': '{"new":true}' }, 'backup-and-replace'));
   const backup = answer.match(/^IMPORTED backup=(\S+)$/)?.[1];
   assert.ok(backup);
   assert.equal(await readFile(backup, 'utf8'), login);
-  if (process.platform !== 'win32') {
-    assert.equal((await stat(backup)).mode & 0o777, 0o600);
-  }
+  assert.equal((await stat(backup)).mode & 0o777, 0o600);
   assert.equal(await readFile(file, 'utf8'), '{"new":true}');
 });
 
@@ -38,9 +33,7 @@ test('a Claude login also marks Claude Code onboarded, keeping its other setting
   const root = await mkdtemp(join(tmpdir(), 'spaceapp-login-'));
   assert.equal(await installLogin('claude', root, payload({ '.credentials.json': login })), 'IMPORTED');
   assert.deepEqual(JSON.parse(await readFile(join(root, '.claude.json'), 'utf8')), { hasCompletedOnboarding: true });
-  if (process.platform !== 'win32') {
-    assert.equal((await stat(join(root, '.claude.json'))).mode & 0o777, 0o600);
-  }
+  assert.equal((await stat(join(root, '.claude.json'))).mode & 0o777, 0o600);
   await writeFile(join(root, '.claude.json'), JSON.stringify({ userID: 'kept', hasCompletedOnboarding: false }), { mode: 0o600 });
   await installLogin('claude', root, payload({ '.credentials.json': login }));
   assert.deepEqual(JSON.parse(await readFile(join(root, '.claude.json'), 'utf8')), { userID: 'kept', hasCompletedOnboarding: true });
@@ -71,14 +64,14 @@ test('refuses to replace a login that is not a regular file', async () => {
 
 test('the command reads stdin and answers with one line', async () => {
   const root = await mkdtemp(join(tmpdir(), 'spaceapp-login-'));
-  const script = fileURLToPath(new URL('../../deploy/docker/credential-install.mjs', import.meta.url));
-  const out = execFileSync(process.execPath, [script, 'claude', root], { input: payload({ '.credentials.json': login }), encoding: 'utf8' });
+  const script = new URL('../../deploy/docker/credential-install.mjs', import.meta.url);
+  const out = execFileSync(process.execPath, [script.pathname, 'claude', root], { input: payload({ '.credentials.json': login }), encoding: 'utf8' });
   assert.equal(out, 'IMPORTED\n');
   assert.equal(await readFile(join(root, '.credentials.json'), 'utf8'), login);
 });
 
 test('the public wrapper routes credential-install to the installer with its own home', () => {
-  const wrapper = readFileSync(new URL('../../deploy/docker/public-cli-wrapper.sh', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const wrapper = readFileSync(new URL('../../deploy/docker/public-cli-wrapper.sh', import.meta.url), 'utf8');
   assert.match(wrapper, /credential-install\)\n[\s\S]*?exec node \/app\/deploy\/docker\/credential-install\.mjs "\$runtime_name" "\$state_root"/);
 });
 
@@ -88,11 +81,7 @@ const ask = (socketPath, body) => new Promise((resolve, reject) => {
   socket.setEncoding('utf8').on('data', (chunk) => { answer += chunk; }).on('error', reject).on('close', () => resolve(JSON.parse(answer)));
 });
 
-test('the credential agent runs only a wrapper\'s fixed credential actions, input on stdin', async (context) => {
-  if (process.platform === 'win32') {
-    context.skip('Unix domain sockets in /tmp require Linux or WSL');
-    return;
-  }
+test('the credential agent runs only a wrapper\'s fixed credential actions, input on stdin', async () => {
   // Short path: Unix socket paths are limited to about 100 bytes.
   const root = await mkdtemp('/tmp/spaceapp-agent-');
   await writeFile(join(root, 'codex-vscode-parity'), '#!/bin/sh\nprintf "%s %s\\n" "$1" "$(wc -c)"\n');
@@ -120,7 +109,7 @@ test('the credential agent runs only a wrapper\'s fixed credential actions, inpu
 });
 
 test('the CLI container starts the credential agent as the CLI user next to the pane host', () => {
-  const entrypoint = readFileSync(new URL('../../deploy/docker/cli-entrypoint.sh', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const entrypoint = readFileSync(new URL('../../deploy/docker/cli-entrypoint.sh', import.meta.url), 'utf8');
   assert.match(entrypoint, /credential_agent_user=spaceapp\nif \[ "\$\{SPACEAPP_CLI_HOST_ROOT_ACCESS:-false\}" = "true" \]; then\n  credential_agent_user=root:spaceapp\nfi\ngosu "\$credential_agent_user" node \/app\/deploy\/docker\/credential-agent\.mjs &\n/);
   assert.equal(entrypoint.match(/credential-agent\.mjs/g).length, 1);
 });
