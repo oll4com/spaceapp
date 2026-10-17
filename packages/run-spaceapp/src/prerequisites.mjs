@@ -4,11 +4,24 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
+import { PROFILE_REQUIREMENTS } from "./index.mjs";
+import {
+  assessCgroupDelegation,
+  normalizeEngineInfo,
+  parseCgroupControllers,
+  parseEngineVersion,
+  parsePodmanMachines,
+  podmanInstallInstructions,
+  podmanMachineChecks,
+  podmanMachineResizeGuidance,
+  podmanVersionAssessment,
+  selectPodmanMachine
+} from "./engines.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -182,6 +195,153 @@ export async function ensureDockerAvailable({
     osRelease,
     installArgs
   });
+}
+
+async function captureCommandOutput(execute, spec) {
+  let output = "";
+  const stdout = new Writable({ write(chunk, _encoding, done) {
+    if (output.length < 1024 * 1024) output += chunk.toString();
+    done();
+  } });
+  try {
+    const code = await execute({ ...spec, timeoutMs: 15000 }, { stdout, stderr: null });
+    return code === 0 ? output : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readTextFileOrNull(path) {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// Podman is never installed by the launcher (the issue scopes installation
+// out); this verifies a user-installed Podman and explains, with exact
+// commands, what is missing when it cannot run the stack.
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  env = process.env,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  execute,
+  osRelease,
+  installArgs,
+  readTextFile = readTextFileOrNull,
+  getuid = () => (typeof process.getuid === "function" ? process.getuid() : null)
+}) {
+  const fail = (lines) => {
+    for (const line of lines) stderr.write(`${line}\n`);
+    return { code: 1, reexecuted: false };
+  };
+
+  const versionOutput = await captureCommandOutput(execute, { command: "podman", args: ["--version"] });
+  const parsedVersion = parseEngineVersion("podman", versionOutput ?? "");
+  if (!parsedVersion) {
+    const release = platform === "linux" ? (osRelease ?? await readLinuxOsRelease().catch(() => null)) : null;
+    return fail(podmanInstallInstructions(platform, release?.ID ?? ""));
+  }
+  const assessment = podmanVersionAssessment(parsedVersion.tuple);
+  if (!assessment.ok) {
+    return fail([
+      assessment.detail,
+      "Upgrade Podman, then run the install command again."
+    ]);
+  }
+
+  if (await execute({ command: "podman", args: ["compose", "version"] }, { stdout: null, stderr: null }) !== 0) {
+    return fail([
+      "`podman compose` has no Compose provider available.",
+      "SpaceApp launches its stack through the Docker Compose v2 provider: install Docker Compose v2 so that `podman compose version` succeeds, then run the install command again.",
+      "podman-compose is not a supported provider: it cannot express every feature of the SpaceApp template (profiles, health-gated depends_on entries with required: false, and file-based secrets)."
+    ]);
+  }
+
+  const infoOutput = await captureCommandOutput(execute, { command: "podman", args: ["info", "--format", "{{json .}}"] });
+  let info = null;
+  try { info = normalizeEngineInfo("podman", JSON.parse(infoOutput ?? "")); } catch { info = null; }
+  if (!info) {
+    if (platform === "darwin") {
+      return fail([
+        "Podman is installed but no machine is reachable. Start one, then run the install command again:",
+        "  podman machine init",
+        "  podman machine start"
+      ]);
+    }
+    return fail([
+      "Podman is installed but its API does not answer. For rootless Podman, enable the user socket, then run the install command again:",
+      "  systemctl --user enable --now podman.socket"
+    ]);
+  }
+
+  if (platform === "darwin") {
+    const machinesOutput = await captureCommandOutput(execute, { command: "podman", args: ["machine", "list", "--format", "{{json .}}"] });
+    const machine = selectPodmanMachine(parsePodmanMachines(machinesOutput ?? ""));
+    // The machine check is a floor for the requested profile; "auto" is
+    // measured against the host by the generic resource checks, so the
+    // smallest profile is the honest floor here.
+    const requested = installArgs?.requestedProfile;
+    const profile = requested && requested !== "auto" && PROFILE_REQUIREMENTS[requested] ? requested : "small";
+    const requirements = PROFILE_REQUIREMENTS[profile];
+    const checks = podmanMachineChecks(machine, requirements);
+    const failed = checks.filter((check) => !check.ok);
+    if (failed.length > 0) {
+      return fail([
+        `The Podman machine is too small for the ${profile} profile:`,
+        ...failed.map((check) => `  - ${check.name}: ${check.detail}`),
+        ...podmanMachineResizeGuidance(machine, requirements)
+      ]);
+    }
+    stdout.write(`Podman machine "${machine.name}" meets the ${profile} profile requirements.\n`);
+  }
+
+  if (platform === "linux") {
+    if (info.cgroupVersion !== "2") {
+      return fail([
+        `Podman reports cgroup ${info.cgroupVersion ?? "unknown"}; SpaceApp's Podman support requires cgroup v2 so CPU and memory limits, health checks and container stats behave the same as on Docker.`,
+        "Move this host to a unified cgroup v2 hierarchy (the default on current Fedora, Ubuntu, Debian and Arch installs), then run the install command again."
+      ]);
+    }
+    const uid = getuid();
+    const rootControllers = parseCgroupControllers(await readTextFile("/sys/fs/cgroup/cgroup.controllers"));
+    const userControllers = uid === null ? null : parseCgroupControllers(
+      await readTextFile(`/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service/cgroup.controllers`));
+    const delegation = assessCgroupDelegation({ rootControllers, userControllers });
+    if (delegation.known && delegation.missing.length > 0) {
+      return fail([
+        `cgroup v2 is active, but the ${delegation.missing.join(" and ")} controller${delegation.missing.length > 1 ? "s are" : " is"} not delegated to your user slice, so rootless Podman cannot apply the stack's CPU and memory limits.`,
+        "Delegate the controllers (one-time, needs sudo), then log out and back in:",
+        "  sudo mkdir -p /etc/systemd/system/user@.service.d",
+        "  printf '[Service]\\nDelegate=cpu cpuset io memory pids\\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf",
+        "  sudo systemctl daemon-reload"
+      ]);
+    }
+    if (!delegation.known) {
+      stdout.write("Note: could not verify cgroup controller delegation; if containers ignore memory or CPU limits, delegate cpu and memory to your user slice (see docs/getting-started.md).\n");
+    }
+    if (info.rootless === false) {
+      stdout.write("Note: this Podman runs rootful. SpaceApp works, but rootless Podman (the default for a per-user install) keeps the stack inside your own account.\n");
+    }
+  }
+
+  stdout.write(`${assessment.detail} with the Docker Compose v2 provider is ready.\n`);
+  return { code: 0, reexecuted: false };
+}
+
+export async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] },
+    { command: "podman", args: ["info"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 async function ensureWindowsDocker({
