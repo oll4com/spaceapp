@@ -50,6 +50,97 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the full app from source
+
+Contributors can run the complete SpaceApp stack—including PostgreSQL with pgvector,
+Temporal, hot-reloading API and web dev servers, the Temporal worker, and the CLI host—with
+a single command.
+
+### Prerequisites
+
+- **Node.js**: `>=22.12 <23` and npm
+- **Docker**: Docker Engine or Docker Desktop with Compose v2
+- Locked dependencies installed via `ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci`
+
+### Quick start
+
+```sh
+# Start the full stack from source
+npm run dev:stack
+
+# Stop all processes and Docker containers
+npm run dev:stack -- down
+
+# Remove containers, volumes, and state directory
+npm run dev:stack -- reset
+```
+
+When started, the command:
+1. Boots PostgreSQL (pgvector) and Temporal in Docker using the exact digests pinned in `packages/run-spaceapp/templates/compose.yml`.
+2. Automatically generates isolated secrets (database password, session secret, setup token) in `.dev-stack/secrets/` with mode `0600`.
+3. Installs the pinned `opencode-ai` CLI from `Dockerfile` into the local state directory and sets up the parity wrapper.
+4. Applies all pending database migrations (`npm run db:migrate`).
+5. Spawns the CLI host, Temporal worker, API (watch mode with tsx), and Vite web dev server from source.
+6. Waits for `/readyz` health verification and prints the local Web URL and one-time owner setup token:
+
+```
+================================================================================
+ SpaceApp dev stack is running from source!
+
+ Web URL:               http://127.0.0.1:4921
+ API URL:               http://127.0.0.1:4920
+ Ready Check:           http://127.0.0.1:4920/readyz
+ One-Time Setup Token:  <generated-token>
+
+ Press Ctrl+C or run 'npm run dev:stack -- down' to stop.
+================================================================================
+```
+
+Open the printed Web URL in your browser, enter the setup token to complete initial owner registration, open the **Getting Started** room, and interact with the OpenCode pane. Hot reload is active: changes to `apps/api/src` restart the API, and changes to `apps/web/src` update live in the browser.
+
+### Isolated ports and environment overrides
+
+Every service binds to `127.0.0.1` only and avoids colliding with an installed operator instance on 4910/4911:
+
+| Service | Default Port | Environment Override |
+|---|---|---|
+| Web (Vite) | `4921` | `SPACE_WEB_PORT` |
+| API Server | `4920` | `SPACE_API_PORT` |
+| PostgreSQL | `5433` | `SPACE_DEV_POSTGRES_PORT` |
+| Temporal | `7234` | `SPACE_DEV_TEMPORAL_PORT` |
+| Compose Project | `spaceapp-dev` | `SPACE_DEV_COMPOSE_PROJECT` |
+| State Directory | `.dev-stack/` | `SPACE_DEV_STACK_DIR` |
+
+### Package building & incremental cache
+
+`npm run dev:stack` automatically inspects source modification times (`mtime`) across `packages/*/src` and `apps/*/src` against compiled `dist/` artifacts. Only modified packages are rebuilt on launch.
+
+- **Force rebuild all packages**:
+  ```sh
+  SPACE_DEV_FORCE_BUILD=true npm run dev:stack
+  ```
+- **Skip package builds** (e.g. if code was built in another session):
+  ```sh
+  SPACE_DEV_SKIP_BUILD=true npm run dev:stack
+  ```
+- **Rebuild an individual package**:
+  ```sh
+  npm run build -w @space/contracts
+  ```
+
+### Platform notes
+
+- **Linux**: Native Docker and Unix domain sockets are used directly.
+- **macOS**: Supported using Docker Desktop or Colima (`colima start`).
+- **Windows 11 (WSL2)**: Run commands inside a WSL2 Ubuntu terminal with Docker Desktop's WSL2 backend or native Docker installed in WSL2.
+
+### Troubleshooting
+
+- **Port in use**: If any default port (e.g. 5433 or 4920) is occupied on your host, specify an alternate port:
+  `SPACE_DEV_POSTGRES_PORT=5434 SPACE_API_PORT=4925 npm run dev:stack`
+- **Docker daemon connection**: Verify `docker compose version` works in your shell before launching the stack.
+- **Clean reset**: If containers or database states become corrupted, run `npm run dev:stack -- reset` to perform a clean slate reset.
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:

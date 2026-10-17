@@ -2890,6 +2890,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     return control;
   };
+  const openCodeChatStateRoot =
+    process.env.SPACE_OPENCODE_CHAT_STATE_ROOT ?? openCodeSpaceChatStateRoot;
   const openCodeChatControlPromises = new Map<string, Promise<OpenCodeServerControl>>();
   const resolveChatOpenCodeCatalogControl = async (): Promise<OpenCodeServerControl> => {
     const stateRoot = options.opencodeStateRoot ?? opencodeDirectParityRoot + "/state";
@@ -2924,7 +2926,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     } catch {
       // Best-effort lookup
     }
-    const existing = await readOpenCodeServerControl(spaceAgentSessionId, openCodeSpaceChatStateRoot);
+    const existing = await readOpenCodeServerControl(spaceAgentSessionId, openCodeChatStateRoot);
     if (
       existing &&
       (!existing.directory || existing.directory === targetDirectory) &&
@@ -2954,13 +2956,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         directory: targetDirectory,
         updatedAt: new Date().toISOString()
       };
-      const controlPath = opencodeServerControlPath(spaceAgentSessionId, openCodeSpaceChatStateRoot);
+      const controlPath = opencodeServerControlPath(spaceAgentSessionId, openCodeChatStateRoot);
       const temporaryPath = `${controlPath}.${process.pid}.${nanoid(8)}.tmp`;
       await mkdir(dirname(controlPath), { recursive: true, mode: 0o700 });
       await writeFile(temporaryPath, JSON.stringify(control, null, 2), { encoding: "utf8", mode: 0o600 });
       await chmod(temporaryPath, 0o600);
       await rename(temporaryPath, controlPath);
-      const stored = await readOpenCodeServerControl(spaceAgentSessionId, openCodeSpaceChatStateRoot);
+      const stored = await readOpenCodeServerControl(spaceAgentSessionId, openCodeChatStateRoot);
       if (!stored || stored.nativeSessionId !== nativeSessionId) {
         throw new SpaceFeatureDisabledError(
           "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
@@ -3721,7 +3723,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const session = await store.getActiveSpaceAgentSession(pane.id);
       if (!session) return [];
       if (session.selectedProviderId?.includes("opencode")) {
-        const control = await readOpenCodeServerControl(session.sessionId, openCodeSpaceChatStateRoot);
+        const control = await readOpenCodeServerControl(session.sessionId, openCodeChatStateRoot);
         return control ? roomOpenCodeTasks(control) : [];
       }
       return session.threadId ? findCodexTaskTimeline({ codexHome: config.codexAppServerHome ?? "/var/lib/spaceapp-user/.codex", threadId: session.threadId }) : [];

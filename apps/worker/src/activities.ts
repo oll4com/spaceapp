@@ -2137,7 +2137,9 @@ export interface RunOpenCodeAgentTurnOptions {
 }
 
 export function openCodeAgentTurnStateRoot(providerSessionId: string, configuredStateRoot: string): string {
-  return providerSessionId.startsWith("agent_session:") ? openCodeSpaceChatStateRoot : configuredStateRoot;
+  return providerSessionId.startsWith("agent_session:")
+    ? (process.env.SPACE_OPENCODE_CHAT_STATE_ROOT ?? openCodeSpaceChatStateRoot)
+    : configuredStateRoot;
 }
 
 export async function runOpenCodeAgentTurn(
