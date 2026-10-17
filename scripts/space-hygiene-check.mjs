@@ -32,6 +32,7 @@ function isRuntimeOrSecretPath(path) {
   const normalized = toPosix(path);
   if (trackedRuntimeSourceAllowlist.has(normalized)) return false;
   return (
+    /(^|\/)\.dev-stack(?:-[^/]+)?(\/|$)/.test(normalized) ||
     /(^|\/)\.env($|\/)/.test(normalized) ||
     /(^|\/)\.env\.local$/.test(normalized) ||
     /(^|\/)\.env\..*\.local$/.test(normalized) ||

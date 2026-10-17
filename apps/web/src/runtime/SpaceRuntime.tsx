@@ -82,6 +82,9 @@ const apiDispatchers = new Map<PropertyKey, (...args: unknown[]) => unknown>();
 
 export const api = new Proxy({} as SpaceApiClient, {
   get(_target, property) {
+    // React Fast Refresh inspects exported objects before the provider mounts.
+    // Branding must not dispatch to an as-yet uninstalled API client.
+    if (property === Symbol.toStringTag) return "SpaceApiClient";
     const client = getSpaceRuntime().api as unknown as Record<PropertyKey, unknown>;
     const value = client[property];
     if (typeof value !== "function") return value;
@@ -122,6 +125,12 @@ export const browserGateway: SpaceSocketGateway = {
   },
   connect: (url) => getSpaceRuntime().browser.connect(url)
 };
+
+// These exported service facades contain getters, not compound React
+// components. Fast Refresh must classify them without invoking those getters.
+for (const [gateway, name] of [[eventGateway, "SpaceEventGateway"], [terminalGateway, "SpaceTerminalGateway"], [browserGateway, "SpaceBrowserGateway"]] as const) {
+  Object.defineProperty(gateway, Symbol.toStringTag, { value: name });
+}
 
 export function SpaceRuntimeProvider({ runtime, children }: { runtime: SpaceRuntime; children: ReactNode }) {
   installSpaceRuntime(runtime);

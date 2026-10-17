@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+- Add an isolated `npm run dev:stack` source workflow with Docker dependencies,
+  owner setup, OpenCode terminal UI, hot reload, supervised lifecycle commands
+  and a disposable CI integration smoke check.
+
 ## [1.1.6] - 2026-10-16
 
 Source: sanitized Space app @ eebf761963 (4362 files). Adds install telemetry

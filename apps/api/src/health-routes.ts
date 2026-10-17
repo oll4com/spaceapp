@@ -139,7 +139,7 @@ export function registerHealthRoutes(app: FastifyInstance, options: {
         runtimeStore: config.runtimeStore,
         database,
         eventBus: "in-process",
-        temporal: config.workflowsEnabled === false ? "disabled" : config.enableDummyTurns ? "enabled" : "disabled",
+        temporal: config.workflowsEnabled === false ? "disabled" : "enabled",
         worker: config.workflowsEnabled === false ? "disabled" : worker?.status,
         cliHost,
         cliAdminHost,

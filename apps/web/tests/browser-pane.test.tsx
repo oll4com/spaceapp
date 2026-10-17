@@ -602,6 +602,7 @@ describe("BrowserPane", () => {
     await waitFor(() => expect(join.hasAttribute("disabled")).toBe(false));
     fireEvent.click(join);
     await screen.findByRole("button", { name: "Release browser control Research Browser" });
+    await waitFor(() => expect(intervals.mock.calls.some(([, delay]) => delay === 15_000)).toBe(true));
     const heartbeat = intervals.mock.calls.filter(([, delay]) => delay === 15_000).at(-1)?.[0] as (() => void) | undefined;
     expect(heartbeat).toBeTypeOf("function");
     const start = Date.now();
@@ -631,6 +632,7 @@ describe("BrowserPane", () => {
     await waitFor(() => expect(join.hasAttribute("disabled")).toBe(false));
     fireEvent.click(join);
     await screen.findByRole("button", { name: "Release browser control Research Browser" });
+    await waitFor(() => expect(intervals.mock.calls.some(([, delay]) => delay === 15_000)).toBe(true));
     const heartbeat = intervals.mock.calls.filter(([, delay]) => delay === 15_000).at(-1)?.[0] as (() => void) | undefined;
     const start = Date.now();
     const now = vi.spyOn(Date, "now");

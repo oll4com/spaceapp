@@ -1,5 +1,5 @@
 import { cliToggleRuntimeIds } from "@space/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore, makeSpaceId } from "@space/runtime";
 import {
   buildSharedChatDispatchPrompt,
@@ -21,30 +21,36 @@ function createIdleDeepseekPane(store: InMemorySpaceStore, title: string) {
 
 function createRunningSession(store: InMemorySpaceStore, roomId: string, paneId: string, runtimeId: string, updatedAt: string) {
   const sessionId = makeSpaceId("cli_session");
-  store.createPaneCliSession({
-    sessionId,
-    paneId,
-    roomId,
-    runtimeId,
-    providerId: runtimeId.slice("cli:".length),
-    agentId: runtimeId.slice("cli:".length),
-    modelId: null,
-    reasoningEffort: "none",
-    launchMode: "FRESH",
-    purpose: "NORMAL",
-    cwd: null,
-    codexThreadId: null,
-    cliTaskId: null,
-    cliTaskRevisionId: null,
-    accountProfileId: null,
-    status: "RUNNING",
-    statusReason: null,
-    exitCode: null,
-    isActive: true,
-    startedAt: "2026-08-15T08:00:00.000Z",
-    updatedAt,
-    endedAt: null
-  });
+  // The store stamps its own time; input.updatedAt is not a clock override.
+  // Two real-time creations can otherwise tie within the same millisecond.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(updatedAt));
+  try {
+    store.createPaneCliSession({
+      sessionId,
+      paneId,
+      roomId,
+      runtimeId,
+      providerId: runtimeId.slice("cli:".length),
+      agentId: runtimeId.slice("cli:".length),
+      modelId: null,
+      reasoningEffort: "none",
+      launchMode: "FRESH",
+      purpose: "NORMAL",
+      cwd: null,
+      codexThreadId: null,
+      cliTaskId: null,
+      cliTaskRevisionId: null,
+      accountProfileId: null,
+      status: "RUNNING",
+      statusReason: null,
+      exitCode: null,
+      isActive: true,
+      startedAt: "2026-08-15T08:00:00.000Z",
+      updatedAt,
+      endedAt: null
+    });
+  } finally { vi.useRealTimers(); }
   return sessionId;
 }
 

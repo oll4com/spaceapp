@@ -88,7 +88,10 @@ async function fixture() {
   });
   const store = new InMemorySpaceStore();
   const gmail = fakeGmail("token-me");
-  const repository = new InMemoryMailCopilotRepository();
+  // Preserve event chronology even when consecutive writes share a wall-clock
+  // millisecond; otherwise the repository's random-ID tie-break can reorder it.
+  let repositoryTime = Date.now();
+  const repository = new InMemoryMailCopilotRepository(() => new Date(repositoryTime++).toISOString());
   const kickoffs: string[] = [];
   const app = await createApp({ store, config, mailCopilotGoogle: google, mailCopilotGmailFetch: gmail.fetchImpl, jobApplyMailTriage: false, mailCopilotSync: false, mailCopilotRepository: repository,
     mailCopilotKickoff: async (_pane, run) => { await new Promise((resolve) => setTimeout(resolve, 50)); kickoffs.push(run.id); }, auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });

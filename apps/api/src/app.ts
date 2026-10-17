@@ -1284,16 +1284,16 @@ async function collectStorageMount(targetPath: string) {
   };
 }
 
-async function collectStorageReadiness(): Promise<StorageReadiness> {
-  const [root, app] = await Promise.all([collectStorageMount("/"), collectStorageMount("/opt/spaceapp")]);
+async function collectStorageReadiness(installRoot: string): Promise<StorageReadiness> {
+  const [root, app] = await Promise.all([collectStorageMount("/"), collectStorageMount(installRoot)]);
   const dedicatedAppVolume = root.deviceId !== app.deviceId;
   const freeSpaceBlocked = app.availableBytes < storageMinimumRecommendedFreeBytes;
   const rootWarn = root.usedPercent >= 80;
   const status = !dedicatedAppVolume || freeSpaceBlocked ? "BLOCKED" : rootWarn ? "WARN" : "VERIFIED";
   const statusReason = !dedicatedAppVolume
-    ? "Dedicated /opt/spaceapp volume is not detected; production/browser-heavy launch requires isolated dedicated app storage with at least 20GB free."
+    ? "Dedicated application volume is not detected; production/browser-heavy launch requires isolated dedicated app storage with at least 20GB free."
     : freeSpaceBlocked
-      ? "Dedicated /opt/spaceapp volume exists but available space is below the 20GB minimum recommendation."
+      ? "Dedicated application volume exists but available space is below the 20GB minimum recommendation."
       : rootWarn
         ? "Root filesystem is above the 80% warning threshold."
         : "Storage readiness meets the current Space launch thresholds.";
@@ -1826,7 +1826,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     try { observability.observeWorkerReadiness(readiness); } catch { /* metrics never fail readiness */ }
     return readiness;
   };
-  const storageReadinessChecker = options.storageReadinessChecker ?? collectStorageReadiness;
+  const storageReadinessChecker = options.storageReadinessChecker ?? (() => collectStorageReadiness(config.installRoot));
   const spaceCapabilityInventoryCollector = options.spaceCapabilityInventoryCollector ?? collectDefaultSpaceCapabilityInventory;
   const spaceMemorySearcher = options.spaceMemorySearcher ?? ((q) => searchDefaultSpaceMemory(q, decisionsService));
   const canonicalMemory =

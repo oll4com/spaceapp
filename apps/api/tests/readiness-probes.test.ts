@@ -28,10 +28,10 @@ afterEach(async () => {
   app = undefined;
 });
 
-async function build(store: InMemorySpaceStore) {
+async function build(store: InMemorySpaceStore, env: NodeJS.ProcessEnv = {}) {
   app = await createApp({
     store,
-    config: getApiConfig({ SPACE_LOG_LEVEL: "silent", SPACE_CLI_ENABLED: "false", SPACE_BROWSER_SESSIONS_ENABLED: "false" }),
+    config: getApiConfig({ SPACE_LOG_LEVEL: "silent", SPACE_CLI_ENABLED: "false", SPACE_BROWSER_SESSIONS_ENABLED: "false", ...env }),
     workerReadinessChecker: async () => runningWorker,
     auth: { sessionSecret: "readiness-probe-test-secret", devLogin: false, secureCookies: false }
   });
@@ -51,7 +51,19 @@ describe("liveness and readiness probes", () => {
     const server = await build(new InMemorySpaceStore());
     const ready = await server.inject({ method: "GET", url: "/readyz?strict=1" });
     expect(ready.statusCode).toBe(200);
-    expect(ready.json()).toMatchObject({ ok: true, dependencies: { database: "in-memory", worker: "RUNNING" } });
+    expect(ready.json()).toMatchObject({ ok: true, dependencies: { database: "in-memory", worker: "RUNNING", temporal: "enabled" } });
+  });
+
+  it("reports workflows enabled independently of the dummy-turn feature", async () => {
+    const server = await build(new InMemorySpaceStore(), { SPACE_PUBLIC_DISTRIBUTION: "true", SPACEAPP_WORKFLOWS_ENABLED: "true", SPACE_ENABLE_DUMMY_TURNS: "false" });
+    const ready = await server.inject({ method: "GET", url: "/readyz" });
+    expect(ready.json()).toMatchObject({ ok: true, dependencies: { worker: "RUNNING", temporal: "enabled" } });
+  });
+
+  it("reports workflows disabled when the public workflow flag disables them", async () => {
+    const server = await build(new InMemorySpaceStore(), { SPACE_PUBLIC_DISTRIBUTION: "true", SPACEAPP_WORKFLOWS_ENABLED: "false" });
+    const ready = await server.inject({ method: "GET", url: "/readyz" });
+    expect(ready.json()).toMatchObject({ ok: true, dependencies: { worker: "disabled", temporal: "disabled" } });
   });
 
   it("fails readiness when the database round trip fails, with 503 only in strict mode", async () => {
