@@ -434,6 +434,52 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  it("supports requesting larger overview graphs up to 50,000 nodes while redacting labels and rejecting oversized limits", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 2450 }, (_, index) => ({
+      id: `memory:${String(index).padStart(4, "0")}`,
+      type: "MEMORY" as const,
+      label: index === 2449 ? "Memory 2449 secret=raw-node-secret" : `Memory ${index}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    graphSnapshot.edges = Array.from({ length: 6500 }, (_, index) => ({
+      id: `edge:${String(index).padStart(5, "0")}`,
+      source: `memory:${String(index % 2450).padStart(4, "0")}`,
+      target: `memory:${String((index * 7 + 1) % 2450).padStart(4, "0")}`,
+      type: "SEMANTICALLY_RELATED" as const,
+      origin: "DETERMINISTIC_TFIDF" as const,
+      confidence: 0.75,
+      evidence: "Deterministic term overlap."
+    }));
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    const defaultOverview = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    expect(defaultOverview.statusCode).toBe(200);
+    expect(defaultOverview.json().data.nodes).toHaveLength(2000);
+    expect(defaultOverview.json().data.truncated).toBe(true);
+
+    const fullOverview = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=50000",
+      headers: { cookie, "if-none-match": String(defaultOverview.headers.etag ?? "") }
+    });
+    expect(fullOverview.statusCode).toBe(200);
+    expect(fullOverview.headers.etag).not.toBe(defaultOverview.headers.etag);
+    const fullData = fullOverview.json().data;
+    expect(fullData.nodes).toHaveLength(2450);
+    expect(fullData.edges).toHaveLength(6500);
+    expect(fullData.truncated).toBe(false);
+    expect(fullData.nodes.find((node: { id: string }) => node.id === "memory:2449")?.label).toBe("Memory 2449 secret:[REDACTED]");
+    expect(JSON.stringify(fullData)).not.toContain("raw-node-secret");
+
+    const overLimit = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50001", headers: { cookie } });
+    expect(overLimit.statusCode).toBeGreaterThanOrEqual(400);
+    expect(overLimit.statusCode).toBeLessThan(500);
+
+    await app.close();
+  });
+
   it("serves the all-months archive and single-month filtering through the month query param", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     const archiveSnapshot = snapshot() as MemoryGraphSnapshot;
