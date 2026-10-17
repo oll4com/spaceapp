@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import Fastify from "fastify";
 import { InMemorySpaceStore } from "@space/runtime";
 import { parseTraceparent, type RoomAgentSupervisorQueueItem } from "@space/contracts";
 import { createApp } from "../src/app.js";
@@ -6,12 +7,19 @@ import { getApiConfig } from "../src/config.js";
 import { apiDomainMetrics } from "../src/api-metrics.js";
 import { TemporalCodexAppServerTurnStarter } from "../src/turns.js";
 import { TemporalRoomAgentWorkflowCoordinator } from "../src/room-agent.js";
+import { TemporalDotGoalWorkflowCoordinator } from "../src/dot-goals.js";
+import { scheduleMemoryMutation } from "../src/memory-mutation-coordinator.js";
+import { scheduleMemoryConsolidation } from "../src/memory-consolidation-coordinator.js";
+import { createHttpObservability } from "../src/observability.js";
+import type { ServerSpan, SpanExporter } from "../src/otlp-span-exporter.js";
 import type { TemporalClientFactory } from "../src/temporal-client.js";
 import {
   TraceContextRegistry,
   childTraceparent,
   createRequestTraceContext,
   requestTraceContexts,
+  traceContextForRawRequest,
+  traceparentForTraceId,
   withTurnTraceparent,
   workflowCorrelationMemo
 } from "../src/trace-context.js";
@@ -47,9 +55,12 @@ describe("request trace context", () => {
     expect(registry.size).toBe(2);
     expect(registry.lookup("req:aaaaaaaaaaaa")).toBeNull();
 
-    registry.remember("req:dddddddddddd", createRequestTraceContext(inbound));
+    const context = createRequestTraceContext(inbound);
+    registry.remember("req:dddddddddddd", context);
     const filled = withTurnTraceparent({ traceId: "req:dddddddddddd" }, registry);
     expect(parseTraceparent(filled.traceparent)?.traceId).toBe(inboundTraceId);
+    expect(parseTraceparent(filled.traceparent)?.parentId).toBe(context.spanId);
+    expect(traceparentForTraceId("req:dddddddddddd", registry)).toBe(context.traceparent);
     const kept = withTurnTraceparent({ traceId: "req:dddddddddddd", traceparent: inbound }, registry);
     expect(kept.traceparent).toBe(inbound);
     expect(withTurnTraceparent({ traceId: "req:unknown00000" }, registry)).toEqual({ traceId: "req:unknown00000" });
@@ -174,7 +185,8 @@ describe("workflow starters", () => {
   };
 
   it("passes the request id and traceparent in workflow input and memo", async () => {
-    requestTraceContexts.remember(turn.traceId, createRequestTraceContext(inbound));
+    const context = createRequestTraceContext(inbound);
+    requestTraceContexts.remember(turn.traceId, context);
     const start = vi.fn(async (_type: string, options: { workflowId: string }) => ({ workflowId: options.workflowId, firstExecutionRunId: "run-1" }));
     const close = vi.fn(async () => undefined);
     const clientFactory = vi.fn(async () => ({ client: { workflow: { start } }, close })) as unknown as TemporalClientFactory;
@@ -189,10 +201,64 @@ describe("workflow starters", () => {
     expect(options.workflowId).toContain(turn.traceId);
     expect(options.args[0]?.traceId).toBe(turn.traceId);
     expect(parseTraceparent(options.args[0]?.traceparent)?.traceId).toBe(inboundTraceId);
+    expect(parseTraceparent(options.args[0]?.traceparent)?.parentId).toBe(context.spanId);
     expect(options.memo).toMatchObject({ spaceTraceId: turn.traceId, w3cTraceId: inboundTraceId });
+    expect(options.memo.traceparent).toBe(context.traceparent);
     expect(JSON.stringify(options.memo)).not.toContain("PRIVATE PROMPT");
     expect(close).toHaveBeenCalledOnce();
     expect(metricValue(/workflow_type="codexAppServerTurnWorkflow",outcome="STARTED",category="NONE"/)).toBe(before + 1);
+  });
+
+  it("parents started workflows to the HTTP SERVER span that was actually emitted", async () => {
+    const recorded: ServerSpan[] = [];
+    const spanExporter: SpanExporter = {
+      record: span => void recorded.push(span), flush: async () => undefined, close: async () => undefined,
+      stats: () => ({ exported: recorded.length, failed: 0, dropped: 0 })
+    };
+    const observability = createHttpObservability({ serviceName: "space-api", spanExporter });
+    const start = vi.fn(async (_type: string, options: { workflowId: string }) => ({ workflowId: options.workflowId, firstExecutionRunId: "run-http" }));
+    const clientFactory = vi.fn(async () => ({ client: { workflow: { start } }, close: async () => undefined })) as unknown as TemporalClientFactory;
+    const starter = new TemporalCodexAppServerTurnStarter({ address: "unused", namespace: "default", taskQueue: "proof", clientFactory });
+    const http = Fastify({ genReqId: () => "req:api-parent01" });
+    http.addHook("onRequest", async request => {
+      requestTraceContexts.remember(request.id, traceContextForRawRequest(request.raw));
+      observability.onRequest(request);
+    });
+    http.addHook("onResponse", async (request, reply) => observability.onResponse(request, reply));
+    http.post("/start", request => starter.start({ ...turn, traceId: request.id }));
+    try {
+      expect((await http.inject({ method: "POST", url: "/start", headers: { traceparent: inbound } })).statusCode).toBe(200);
+      expect(recorded).toHaveLength(1);
+      const options = start.mock.calls[0]![1] as unknown as { memo: Record<string, string>; args: Array<{ traceparent: string }> };
+      expect(parseTraceparent(options.memo.traceparent)).toMatchObject({ traceId: recorded[0]!.traceId, parentId: recorded[0]!.spanId });
+      expect(options.args[0]!.traceparent).toBe(options.memo.traceparent);
+    } finally {
+      await http.close();
+      observability.close();
+    }
+  });
+
+  it("propagates the recorded request span to Dot and both memory worker queues", async () => {
+    const traceId = "req:other-queues";
+    const context = createRequestTraceContext(inbound);
+    requestTraceContexts.remember(traceId, context);
+    const calls: Array<{ workflowType: string; memo: Record<string, string> | undefined }> = [];
+    const start = async (workflowType: string, options: { workflowId: string; memo?: Record<string, string> }) => {
+      calls.push({ workflowType, memo: options.memo });
+      return { workflowId: options.workflowId, firstExecutionRunId: "run-other" };
+    };
+    await scheduleMemoryMutation({ changeSetId: "memory_change:traced", traceId }, start);
+    await scheduleMemoryConsolidation({ runId: "memory_consolidation:traced", traceId }, "memory-workflow:traced", start);
+    const close = vi.fn(async () => undefined);
+    const clientFactory = vi.fn(async () => ({ client: { workflow: { start } }, close })) as unknown as TemporalClientFactory;
+    const dot = new TemporalDotGoalWorkflowCoordinator({ address: "unused", namespace: "default", taskQueue: "proof", clientFactory });
+    await dot.start("dot_goal:traced001", traceId);
+    await dot.ensure("dot_goal:traced002", traceId);
+    expect(calls).toHaveLength(4);
+    for (const call of calls) expect(call.memo).toEqual({ spaceTraceId: traceId, traceparent: context.traceparent, w3cTraceId: context.w3cTraceId });
+    expect(close).toHaveBeenCalledTimes(2);
+    await dot.ensure("dot_goal:traced003");
+    expect(calls.at(-1)?.memo).toEqual({});
   });
 
   it("counts a failed start by category without exporting the error message", async () => {
@@ -211,7 +277,8 @@ describe("workflow starters", () => {
   });
 
   it("adds the traceparent to queued room-agent turns and links background actions to their origin", async () => {
-    requestTraceContexts.remember("req:roomagent0001", createRequestTraceContext(inbound));
+    const requestContext = createRequestTraceContext(inbound);
+    requestTraceContexts.remember("req:roomagent0001", requestContext);
     const signalWithStart = vi.fn(async () => ({ signaledRunId: "run-2" }));
     const start = vi.fn(async () => ({}));
     const clientFactory = vi.fn(async () => ({ client: { workflow: { signalWithStart, start } }, close: vi.fn(async () => undefined) })) as unknown as TemporalClientFactory;
@@ -222,10 +289,13 @@ describe("workflow starters", () => {
     };
 
     await coordinator.enqueue(item);
-    const signalOptions = (signalWithStart.mock.calls[0] as unknown as [string, { signalArgs: RoomAgentSupervisorQueueItem[] }])[1];
+    const signalOptions = (signalWithStart.mock.calls[0] as unknown as [string, { signalArgs: RoomAgentSupervisorQueueItem[]; memo: Record<string, string> }])[1];
     expect(parseTraceparent(signalOptions.signalArgs[0]?.turn.traceparent)?.traceId).toBe(inboundTraceId);
+    expect(signalOptions.signalArgs[0]?.turn.traceparent).toBe(requestContext.traceparent);
+    expect(signalOptions.memo.traceparent).toBe(requestContext.traceparent);
 
-    requestTraceContexts.remember("req:internal0001", createRequestTraceContext(inbound));
+    const actionContext = createRequestTraceContext(inbound);
+    requestTraceContexts.remember("req:internal0001", actionContext);
     await coordinator.enqueueAction("room_agent_action:1", {
       roomId: turn.roomId, missionId: "room_agent_mission:trace", agentPaneId: turn.paneId, agentSessionId: "agent_session:1",
       requestId: "req:roomagent0001", selectedToolIds: [], actions: []
@@ -237,5 +307,6 @@ describe("workflow starters", () => {
       missionId: "room_agent_mission:trace",
       w3cTraceId: inboundTraceId
     });
+    expect(actionOptions.memo.traceparent).toBe(actionContext.traceparent);
   });
 });

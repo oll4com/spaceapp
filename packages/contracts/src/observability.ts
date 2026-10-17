@@ -87,6 +87,14 @@ export function categorizeFailureCode(code: string | null | undefined): FailureC
  */
 export const traceparentSchema = z.string().regex(/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/);
 
+/** Causal links contain identifiers only, never free text or span attributes. */
+export const traceLinkSchema = z.object({
+  traceId: z.string().regex(/^[0-9a-f]{32}$/).refine(value => !/^0+$/.test(value)),
+  spanId: z.string().regex(/^[0-9a-f]{16}$/).refine(value => !/^0+$/.test(value))
+}).strict();
+export const traceLinksSchema = z.array(traceLinkSchema).max(8);
+export type TraceLink = z.infer<typeof traceLinkSchema>;
+
 export interface ParsedTraceparent {
   traceId: string;
   parentId: string;

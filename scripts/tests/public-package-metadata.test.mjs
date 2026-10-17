@@ -84,6 +84,7 @@ test("public test command uses a portable one-file suite that imports every publ
     .sort();
   const publicBuildOrder = [
     "@space/contracts",
+    "@space/observability",
     "@space/streaming",
     "@space/opencode-control",
     "@space/memory-graph",

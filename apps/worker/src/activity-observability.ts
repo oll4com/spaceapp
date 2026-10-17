@@ -135,6 +135,14 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
+  /** Best-effort telemetry only; exceptions cannot change the activity result. */
+  onFinished?: (observation: {
+    startedAt: number;
+    finishedAt: number;
+    outcome: ActivityOutcome;
+    reasonCode: string | null;
+    category: FailureCategory | null;
+  }) => void;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
 }
@@ -145,6 +153,11 @@ function activityTraceparent(args: readonly unknown[]) {
   return parseTraceparent(found.traceparent);
 }
 
+/**
+ * Observe one activity attempt, preserving its returned value or thrown error.
+ * Logs/metrics classify outcomes; optional tracing hooks are best effort and
+ * receive timing and safe reason/category codes rather than error text.
+ */
 export async function observeActivityExecution<T>(
   info: ActivityInfo,
   args: readonly unknown[],
@@ -175,7 +188,8 @@ export async function observeActivityExecution<T>(
   const observation: ActivityObservation = { reasonCode: null };
 
   const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => {
-    const durationMs = Math.max(0, now() - startedAt);
+    const finishedAt = now();
+    const durationMs = Math.max(0, finishedAt - startedAt);
     metrics.activitiesInFlight.inc(labels, -1);
     metrics.activityExecutions.inc({ activity_type: activityType, outcome });
     metrics.activityDuration.observe(labels, durationMs / 1000);
@@ -194,20 +208,24 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
-        traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
-        parentSpanId: parent.parentId,
-        name: `activity ${activityType}`,
-        startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
-        endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
-        error: outcome === "FAILED" || outcome === "FAILED_RESULT",
-        kind: 1
-      });
-    }
+    try { dependencies.onFinished?.({ startedAt, finishedAt, outcome, reasonCode, category }); } catch { /* telemetry cannot fail work */ }
+    // Keep the legacy direct observer hook best effort, like the tracing callback.
+    try {
+      const parent = dependencies.spans ? activityTraceparent(args) : null;
+      if (parent) {
+        dependencies.spans!.record({
+          traceId: parent.traceId,
+          spanId: randomBytes(8).toString("hex"),
+          parentSpanId: parent.parentId,
+          name: `activity ${activityType}`,
+          startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
+          endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
+          attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+          error: outcome === "FAILED" || outcome === "FAILED_RESULT",
+          kind: 1
+        });
+      }
+    } catch { /* telemetry cannot fail work */ }
   };
 
   try {

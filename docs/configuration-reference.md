@@ -39,6 +39,47 @@ capabilities or cross-service compatibility. Authentication/server bootstrap,
 worker, web build and installer environment fields outside `SpaceApiConfig` are
 outside this registry. Full cross-service configuration coverage remains open.
 
+## Optional OTLP trace export
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is read directly by the API and worker
+tracing factories; it is outside the `SpaceApiConfig` registry above. Set it in
+each process that should export, for example:
+
+```sh
+SPACE_OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+```
+
+This is a collector **base URL**. The shared exporter appends `/v1/traces` and
+sends OTLP/HTTP JSON. HTTP and HTTPS are accepted, including a path prefix;
+embedded credentials, query strings and fragments are rejected. An unset,
+empty or invalid URL disables export. Disabled workers install no tracing
+workflow module or export timer and retain their existing activity logs and
+metrics.
+
+The setting applies to `space-api`, `space-worker`,
+`space-memory-maintenance-worker` and `space-memory-mutation-worker`. Memory
+workers still require their existing feature flags. API spans have kind SERVER;
+workflow runs and activity attempts have kind INTERNAL. Propagation links the
+actual API span to its workflow and activity attempts. Ordinary children inherit
+the workflow parent. A later operator turn under a long-lived supervisor uses its
+own API span and links to the supervisor. Continue-as-new links consecutive runs,
+and background turns start a fresh trace linked to their source when available.
+Replay suppresses the export sink.
+
+Production defaults are 256 spans per batch, 4096 queued spans, a 5-second flush
+interval and a 3-second timeout per POST. There are no additional environment
+settings for these limits. Full queues drop new spans; failures are counted and
+never awaited on a request, workflow or activity's execution path. Worker
+shutdown drains the closed queue using the same per-request deadlines.
+
+API attributes contain method, route template, status and request ID. Worker
+attributes are restricted to bounded IDs, types, attempt numbers, outcomes,
+safe reason codes and categories. Prompts, outputs, error text, stack traces,
+paths and arbitrary attributes are excluded. This enables traces only; it adds
+no OTLP metrics exporter, sampling configuration, CLI Host or Browser Host spans.
+See [observability and error semantics](quality/observability.md#traces-w3c-trace-context)
+for implementation boundaries and the real Temporal/API validation commands.
+
 ## Optional modules
 
 `SPACE_OPTIONAL_MODULES` turns on modules beyond the coding workspace:

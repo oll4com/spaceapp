@@ -69,6 +69,12 @@ function fixture(overrides: { runStatus?: string; pendingApproval?: boolean; sen
 const input = { sessionId: "agent_session:1", objective: "Ship the report", milestones: ["Draft", "Review"], criteria: ["Report published"], budget: { maxSteps: 2 } };
 
 describe("Dot Goals", () => {
+  it("passes the original API request id when starting a Goal workflow", async () => {
+    const { service, deps } = fixture();
+    const goal = await service.create("user:1", dotId, input, { requestIdForSpace: "req:dot-goal-trace" } as never);
+    expect(deps.workflow!.start).toHaveBeenCalledWith(goal.goalId, "req:dot-goal-trace");
+  });
+
   it("creates one open Goal per conversation for the owner's Dot and starts its workflow", async () => {
     const { service, deps } = fixture();
     const goal = await service.create("user:1", dotId, input, null);

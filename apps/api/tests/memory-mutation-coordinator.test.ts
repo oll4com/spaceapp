@@ -30,7 +30,8 @@ describe("Memory mutation coordinator", () => {
           taskQueue: MEMORY_MUTATION_TASK_QUEUE,
           workflowId: result.workflowId,
           workflowIdReusePolicy: "REJECT_DUPLICATE",
-          workflowIdConflictPolicy: "USE_EXISTING"
+          workflowIdConflictPolicy: "USE_EXISTING",
+          memo: { spaceTraceId: input.traceId }
         }
       }
     ]);

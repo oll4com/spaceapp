@@ -1,0 +1,57 @@
+name: Worker OTLP validation
+
+on:
+  push:
+    branches: [main, codex/worker-otlp-tracing]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-otlp-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+jobs:
+  tracing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check
+      - run: npm test -w @space/observability
+      - run: npm test -w @space/worker
+      - run: npm test -w @space/api -- otlp trace-correlation dot-goals memory-consolidation-coordinator memory-mutation-coordinator
+
+  repository:
+    # The main CI workflow already runs the complete public suite on every PR.
+    # Keep this independent full-source check available for manual diagnosis.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Install ripgrep for real file-search tests
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+        if: ${{ !cancelled() }}
