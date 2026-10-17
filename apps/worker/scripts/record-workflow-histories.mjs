@@ -100,9 +100,28 @@ async function recordAll() {
       console.log(`Recording fixture for ${name} (${workflowType})...`);
       const handle = await testEnv.client.workflow.start(workflowType, options);
       if (isContinuedAsNew) {
-        await testEnv.sleep("1s");
         const firstHandle = testEnv.client.workflow.getHandle(handle.workflowId, handle.firstExecutionRunId);
+        let closed = false;
+        for (let i = 0; i < 20; i++) {
+          await testEnv.sleep("100ms");
+          const desc = await firstHandle.describe();
+          if (desc.status?.name === "CONTINUED_AS_NEW" || desc.closeTime) {
+            closed = true;
+            break;
+          }
+        }
+        if (!closed) {
+          throw new Error(`Timed out waiting for first execution of ${name} (${handle.firstExecutionRunId}) to continue-as-new`);
+        }
         const history = await firstHandle.fetchHistory();
+        const lastEvent = history.events?.[history.events.length - 1];
+        const eventType = String(lastEvent?.eventType || "");
+        const isCanEvent = eventType.toLowerCase().includes("continued_as_new")
+          || eventType.toLowerCase().includes("continuedasnew")
+          || lastEvent?.workflowExecutionContinuedAsNewEventAttributes != null;
+        if (!isCanEvent) {
+          throw new Error(`Fetched history for ${name} does not end with continued-as-new event: ${JSON.stringify(lastEvent)}`);
+        }
         const filePath = resolve(fixturesDir, `${name}.json`);
         writeFileSync(filePath, JSON.stringify(history, null, 2), "utf8");
         console.log(`Saved ${name}.json (${history.events.length} events)`);

@@ -441,11 +441,26 @@ describe("Temporal Time-Skipping Workflow Sandbox", () => {
       // Activity waits on Temporal cancellation signal
       activityOverrides.runCodexAppServerTurn = vi.fn().mockImplementation(async () => {
         const ctx = Context.current();
-        await new Promise((_, reject) => {
-          ctx.cancellationSignal.addEventListener("abort", () => {
-            reject(new Error("CANCELLED"));
+        const heartbeatInterval = setInterval(() => {
+          try {
+            ctx.heartbeat();
+          } catch {
+            // Heartbeat can fail if context is completed or cancelled
+          }
+        }, 100);
+        try {
+          await new Promise((_, reject) => {
+            if (ctx.cancellationSignal.aborted) {
+              reject(new Error("CANCELLED"));
+              return;
+            }
+            ctx.cancellationSignal.addEventListener("abort", () => {
+              reject(new Error("CANCELLED"));
+            }, { once: true });
           });
-        });
+        } finally {
+          clearInterval(heartbeatInterval);
+        }
         return { status: "COMPLETED", message: "Finished" };
       });
 
