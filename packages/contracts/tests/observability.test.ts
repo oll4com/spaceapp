@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   categorizeFailureCode,
+  deterministicSpanId,
+  deterministicTraceId,
+  deterministicTraceparent,
   dummyTurnInputSchema,
   failureCategorySchema,
   fileSearchResponseSchema,
@@ -108,4 +111,39 @@ describe("additive observability contract fields", () => {
     expect(workerReadinessSchema.parse(readiness).workflowBacklogAgeSeconds).toBeUndefined();
     expect(workerReadinessSchema.parse({ ...readiness, workflowBacklogAgeSeconds: 2.5 }).workflowBacklogAgeSeconds).toBe(2.5);
   });
+
+  it("derives deterministic non-zero W3C traceId, spanId, and traceparent and accepts continuation source trace fields", () => {
+    const spanId = deterministicSpanId("workflow:w1:r1");
+    expect(spanId).toMatch(/^[0-9a-f]{16}$/);
+    expect(spanId).not.toBe("0000000000000000");
+    expect(deterministicSpanId("workflow:w1:r1")).toBe(spanId);
+    expect(deterministicSpanId("workflow:w1:r2")).not.toBe(spanId);
+
+    const traceId = deterministicTraceId("trace:bg-cont0001");
+    expect(traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(traceId).not.toBe("0".repeat(32));
+    expect(deterministicTraceId("trace:bg-cont0001")).toBe(traceId);
+
+    const tp = deterministicTraceparent("trace:bg-cont0001", "parent:trace:bg-cont0001");
+    expect(parseTraceparent(tp)).toEqual({
+      traceId,
+      parentId: deterministicSpanId("parent:trace:bg-cont0001"),
+      flags: "01"
+    });
+
+    const parsed = dummyTurnInputSchema.parse({
+      ...turn,
+      roomAgentContinuation: {
+        missionId: "mission:1",
+        continuationId: "cont0001",
+        sourceRunId: "agent_run:1",
+        sourceTraceId: "req:abcdefghijkl",
+        sourceTraceparent: tp,
+        generation: 1
+      }
+    });
+    expect(parsed.roomAgentContinuation?.sourceTraceId).toBe("req:abcdefghijkl");
+    expect(parsed.roomAgentContinuation?.sourceTraceparent).toBe(tp);
+  });
 });
+
