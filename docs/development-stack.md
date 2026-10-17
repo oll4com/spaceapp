@@ -112,8 +112,15 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners, checks the exact source, and executes unmodified
-`npm run check`, `npm test`, `npm run build` and `npm run hygiene:preflight`.
+and `macos-15-intel` runners and checks the exact source. Both run all 26 launcher
+regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
+Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
+private-instance API regressions in the four `instance-storage`/`dev-*-storage`
+and `dev-docx-isolation` test files, followed by the same complete real-stack proof.
+The broader native-macOS stock suites retain upstream limitations, including the
+Linux-only descriptor filesystem backend and `/proc` metadata helper; those suites
+are not claimed to pass on macOS. Their assertions and the Linux full-suite gate
+remain unchanged.
 The macOS job uses an ephemeral named Colima profile, removed afterward. It does
 not use a larger runner, paid fallback, provider credentials or an operator profile.
 

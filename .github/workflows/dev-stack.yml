@@ -114,8 +114,16 @@ jobs:
       - name: Full stock check
         run: npm run check
 
-      - name: Full stock tests
+      - name: Full stock tests (Linux reference platform)
+        if: runner.os == 'Linux'
         run: npm test
+
+      - name: Native macOS private-instance regressions
+        if: runner.os == 'macOS'
+        run: >-
+          node node_modules/vitest/vitest.mjs run --config apps/api/vitest.config.ts
+          apps/api/tests/instance-storage.test.ts apps/api/tests/dev-oauth-storage.test.ts
+          apps/api/tests/dev-docx-isolation.test.ts apps/api/tests/dev-incidents-storage.test.ts
 
       - name: Full stock build
         run: npm run build
